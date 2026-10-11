@@ -586,28 +586,21 @@ impl DomainService {
                     .collect(),
             }))
         };
-        let binding = self.store.mod_ack_binding(&self.instance, &seat, budget)?;
+        let binding = self
+            .store
+            .mod_ack_binding(&self.instance, &request.claim, budget)?;
         let Some(binding) = binding.filter(|binding| {
             binding.provenance == COOPERATIVE_TOP_LEVEL_PROVENANCE && binding.harness == "claude"
         }) else {
             // The check-in that opens the binding may not have committed yet.
             return report(ModAckOutcome::Retryable, Some(ModAckReason::NoLiveChannel));
         };
-        let same_session = request.claim.native_session == binding.native_session;
-        let effective = if request.claim.binding_generation == binding.generation && same_session {
+        // The binding is the one the claim's key names: the ack settles on behalf of the
+        // channel's binding. The decision is against the canonical binding, never the stale
+        // client claim (a resumed session carries a new generation or execution).
+        let effective = if request.claim.binding_generation == binding.generation {
             request.clone()
-        } else if same_session
-            && binding
-                .previous
-                .as_ref()
-                .is_some_and(|(generation, session)| {
-                    *generation == request.claim.binding_generation
-                        && *session == binding.native_session
-                })
-        {
-            // Resume: the previous generation of the same native session. The
-            // decision is against the canonical current binding, never the
-            // stale client claim.
+        } else {
             AckModDelivered {
                 claim: CallerClaim {
                     instance: self.instance.clone(),
@@ -623,11 +616,9 @@ impl DomainService {
                 },
                 ..request.clone()
             }
-        } else {
-            return report(ModAckOutcome::StaleGeneration, None);
         };
         // A channel in reconnect or rebind grace counts as live.
-        if !self.mod_channels.is_live(&seat, binding.generation) {
+        if !self.mod_channels.is_live(&seat, &binding.binding_id) {
             return report(ModAckOutcome::Retryable, Some(ModAckReason::NoLiveChannel));
         }
         let result = self.cooperative_mutation(
@@ -644,7 +635,7 @@ impl DomainService {
                 .any(|item| item.result.counts_as_mod_ack())
         {
             self.mod_channels
-                .record_ack(&seat, binding.generation, self.clock.utc_now());
+                .record_ack(&seat, &binding.binding_id, self.clock.utc_now());
         }
         Ok(result)
     }
@@ -679,12 +670,13 @@ impl DomainService {
 }
 
 impl LocalService for DomainService {
-    /// Spec D2: decide a mod watch registration against A2 in one read
-    /// transaction (the seat, its target's recovery hold, its open binding),
-    /// then record the channel with the binding's canonical generation. The
-    /// claim only names the seat and the native session it expects; nothing
-    /// the claim says about the generation is trusted. A store read that
-    /// fails is `busy` (retryable): the CLI retries with backoff.
+    /// Spec D2, §3 Wake: decide a mod watch registration against A2 in one read
+    /// transaction (the seat, its target's recovery hold, the claimed binding), then record the
+    /// channel under that binding. The claim's key (seat, harness, native session, no agent id)
+    /// must resolve to an open, connected, top-level binding of the seat: a subagent claim, an
+    /// unknown session or a disconnected binding holds no channel. Nothing the claim says about
+    /// the generation is trusted. A store read that fails is `busy` (retryable): the CLI retries
+    /// with backoff.
     fn watch_register(
         &self,
         request: &crate::protocol::watch::WatchRequest,
@@ -693,12 +685,19 @@ impl LocalService for DomainService {
     ) -> Result<(crate::ports::ModChannelId, u64), crate::protocol::watch::WatchRefusalReason> {
         use crate::protocol::{authority::Harness, watch::WatchRefusalReason as Refusal};
         let claim = &request.claim;
-        if claim.harness != Harness::Claude || claim.role != CallerRole::TopLevel {
+        if claim.harness != Harness::Claude
+            || claim.role != CallerRole::TopLevel
+            || claim.is_subagent()
+        {
             return Err(Refusal::NotClaude);
         }
         let view = self
             .store
-            .mod_seat_view(&claim.seat, budget)
+            .mod_binding_view(
+                &claim.seat,
+                crate::ports::ModBindingRef::Claim(claim),
+                budget,
+            )
             .map_err(|_| Refusal::Busy)?;
         let Some(view) = view else {
             return Err(Refusal::Unresolved);
@@ -715,11 +714,10 @@ impl LocalService for DomainService {
         if binding.harness != Harness::Claude.as_str() {
             return Err(Refusal::NotClaude);
         }
-        if binding.provenance != crate::protocol::authority::COOPERATIVE_TOP_LEVEL_PROVENANCE {
+        if binding.provenance != crate::protocol::authority::COOPERATIVE_TOP_LEVEL_PROVENANCE
+            || !binding.holds_channel()
+        {
             return Err(Refusal::NoBinding);
-        }
-        if binding.native_session != claim.native_session.as_str() {
-            return Err(Refusal::SessionMismatch);
         }
         if claim.instance != self.instance {
             return Err(Refusal::SessionMismatch);
@@ -727,6 +725,7 @@ impl LocalService for DomainService {
         let channel = self.mod_channels.register(
             crate::ports::ModChannelRegistration {
                 seat: claim.seat.clone(),
+                binding: binding.binding_id.clone(),
                 binding_generation: binding.generation,
                 native_session: claim.native_session.clone(),
                 harness: Harness::Claude,

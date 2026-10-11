@@ -1420,7 +1420,7 @@ pub fn warning_wakes_seat(
 /// Narrowing it to nothing would turn that unknown into "no warning" and skip
 /// the conservative offer probe, so a saturated set with no waking item keeps
 /// the unnarrowed answer instead. Native wake (`wake_seat_attention`) and the
-/// mod channel's attention fingerprint (`seats::mod_seat_view`) share it.
+/// mod channel's attention fingerprint (`seats::mod_binding_view`) share it.
 pub fn wake_warnings(
     db: &Connection,
     seat_id: &str,

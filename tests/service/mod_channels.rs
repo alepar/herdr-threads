@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    ports::{ModBindingView, ModSeatView},
+    ports::{ModBindingRef, ModBindingView, ModSeatView},
     protocol::{
         ids::NativeSessionId,
         results::ErrorCode,
@@ -44,7 +44,7 @@ impl RecordingSink {
 /// of the stall read.
 #[derive(Default)]
 struct FakeStore {
-    views: Mutex<HashMap<SeatId, Option<ModSeatView>>>,
+    views: Mutex<HashMap<BindingId, Option<ModSeatView>>>,
     /// `(published_at, body_len)` of the seat's pending ordinary receipts.
     receipts: Mutex<Vec<(UtcMillis, usize)>>,
     stall_calls: Mutex<Vec<(UtcMillis, usize)>>,
@@ -62,15 +62,19 @@ impl FakeStore {
     }
 }
 impl ModStoreReads for FakeStore {
-    fn mod_seat_view(
+    fn mod_binding_view(
         &self,
-        seat: &SeatId,
+        _seat: &SeatId,
+        binding: ModBindingRef<'_>,
         _budget: &CallBudget,
     ) -> Result<Option<ModSeatView>, ApiError> {
         if self.fail_views.load(Ordering::SeqCst) {
             return Err(ApiError::new(ErrorCode::StoreBusy, "busy".to_owned()));
         }
-        let view = self.views.lock().unwrap().get(seat).cloned().flatten();
+        let ModBindingRef::Id(binding) = binding else {
+            panic!("the registry reads bindings by id");
+        };
+        let view = self.views.lock().unwrap().get(binding).cloned().flatten();
         self.run_hook();
         Ok(view)
     }
@@ -159,6 +163,7 @@ impl Fixture {
         let id = self.registry.register(
             ModChannelRegistration {
                 seat: SeatId::new(seat),
+                binding: bid(seat, generation),
                 binding_generation: generation,
                 native_session: NativeSessionId::new("native"),
                 harness: Harness::Claude,
@@ -175,6 +180,7 @@ impl Fixture {
         let registry = Arc::clone(&self.registry);
         let registration = ModChannelRegistration {
             seat: seat(seat_name),
+            binding: bid(seat_name, generation),
             binding_generation: generation,
             native_session: NativeSessionId::new("native"),
             harness: Harness::Claude,
@@ -186,17 +192,23 @@ impl Fixture {
         }));
         sink
     }
-    fn set_view(&self, seat: &str, view: Option<ModSeatView>) {
+    /// Scripts what a pass reads for `binding`.
+    fn set_view(&self, binding: &BindingId, view: Option<ModSeatView>) {
         self.store
             .views
             .lock()
             .unwrap()
-            .insert(SeatId::new(seat), view);
+            .insert(binding.clone(), view);
     }
 }
 
 fn seat(name: &str) -> SeatId {
     SeatId::new(name)
+}
+
+/// The binding the fixture registers for `(seat, generation)`: one binding per pair.
+fn bid(seat: &str, generation: u64) -> BindingId {
+    BindingId::new(format!("{seat}-{generation}"))
 }
 
 fn view(seat_name: &str, generation: u64, fingerprint: ModFingerprint) -> ModSeatView {
@@ -207,10 +219,14 @@ fn view(seat_name: &str, generation: u64, fingerprint: ModFingerprint) -> ModSea
         continuity_resolved: true,
         held: false,
         binding: Some(ModBindingView {
+            binding_id: bid(seat_name, generation),
             generation,
             provenance: "cooperative_top_level".into(),
             harness: "claude".into(),
             native_session: "native".into(),
+            top_level: true,
+            connected: true,
+            ended_at: None,
         }),
         attention_version: fingerprint.attention_version,
         fingerprint: ModFingerprint {
@@ -229,18 +245,22 @@ fn pending(version: u64) -> ModFingerprint {
 }
 
 #[test]
-fn register_then_is_live_for_its_generation_only() {
+fn register_then_is_live_for_its_binding_only() {
     let f = fixture();
-    assert!(!f.registry.is_live(&seat("a"), 1));
+    assert!(!f.registry.is_live(&seat("a"), &bid("a", 1)));
     f.register("a", 1);
-    assert!(f.registry.is_live(&seat("a"), 1));
-    assert!(!f.registry.is_live(&seat("a"), 2));
-    assert!(!f.registry.is_live(&seat("b"), 1));
+    assert!(f.registry.is_live(&seat("a"), &bid("a", 1)));
+    assert!(!f.registry.is_live(&seat("a"), &bid("a", 2)));
+    assert!(!f.registry.is_live(&seat("b"), &bid("b", 1)));
+    // The binding's channel answers for its own seat only.
+    assert!(!f.registry.is_live(&seat("b"), &bid("a", 1)));
     assert_eq!(f.kicks(), 0);
     let logs = f.logs.lock().unwrap().clone();
     assert_eq!(
         logs,
-        vec!["mod channel registered seat=a generation=1 provenance=cooperative_mod_channel"]
+        vec![
+            "mod channel registered seat=a binding=a-1 generation=1 provenance=cooperative_mod_channel"
+        ]
     );
 }
 
@@ -259,7 +279,7 @@ fn second_registration_same_seat_replaces_old_with_close_replaced_and_no_kick() 
     assert!(new_sink.frames().is_empty());
     // The old connection ending afterwards must not disturb the new channel.
     f.registry.unregister(first, f.now());
-    assert!(f.registry.is_live(&seat("a"), 1));
+    assert!(f.registry.is_live(&seat("a"), &bid("a", 1)));
     assert_eq!(f.registry.status().unwrap().live_channels, 1);
     assert_eq!(f.kicks(), 0);
 }
@@ -271,7 +291,7 @@ fn register_refuses_disabled_when_setting_off() {
         f.try_register("a", 1).err(),
         Some(WatchRefusalReason::Disabled)
     );
-    assert!(!f.registry.is_live(&seat("a"), 1));
+    assert!(!f.registry.is_live(&seat("a"), &bid("a", 1)));
 }
 
 #[test]
@@ -288,7 +308,7 @@ fn set_mod_delivery_off_closes_every_channel_with_disabled() {
             }]
         );
     }
-    assert!(!f.registry.is_live(&seat("a"), 1));
+    assert!(!f.registry.is_live(&seat("a"), &bid("a", 1)));
     assert_eq!(f.kicks(), 2);
     let status = f.registry.status().unwrap();
     assert_eq!(status.mod_delivery, ModDeliverySetting::Off);
@@ -305,19 +325,19 @@ fn unregister_keeps_entry_live_in_reconnect_grace_then_expiry_removes_and_kicks(
     let (id, _) = f.register("a", 1);
     f.registry.unregister(id, f.now());
     f.advance(29_000);
-    assert!(f.registry.is_live(&seat("a"), 1));
+    assert!(f.registry.is_live(&seat("a"), &bid("a", 1)));
     assert_eq!(
         f.registry.status().unwrap().channels[0].state,
         ModChannelState::ReconnectGrace
     );
     f.registry.sweep(f.now());
-    assert!(f.registry.is_live(&seat("a"), 1));
+    assert!(f.registry.is_live(&seat("a"), &bid("a", 1)));
     assert_eq!(f.kicks(), 0);
     f.advance(2_000);
     // Expired but not yet swept: already not live.
-    assert!(!f.registry.is_live(&seat("a"), 1));
+    assert!(!f.registry.is_live(&seat("a"), &bid("a", 1)));
     f.registry.sweep(f.now());
-    assert!(!f.registry.is_live(&seat("a"), 1));
+    assert!(!f.registry.is_live(&seat("a"), &bid("a", 1)));
     assert_eq!(f.kicks(), 1);
     assert!(f.registry.status().unwrap().channels.is_empty());
 }
@@ -332,7 +352,7 @@ fn same_generation_reregistration_within_grace_cancels_kick() {
     f.advance(60_000);
     f.registry.sweep(f.now());
     assert_eq!(f.kicks(), 0);
-    assert!(f.registry.is_live(&seat("a"), 1));
+    assert!(f.registry.is_live(&seat("a"), &bid("a", 1)));
     assert!(sink.frames().is_empty());
     assert_eq!(
         f.registry.status().unwrap().channels[0].state,
@@ -341,43 +361,63 @@ fn same_generation_reregistration_within_grace_cancels_kick() {
 }
 
 #[test]
-fn close_binding_changed_starts_rebind_grace_live_for_every_generation() {
+fn close_binding_changed_starts_that_bindings_rebind_grace_only() {
     let f = fixture();
     let (_, sink) = f.register("a", 1);
+    let (_, sibling) = f.register("a", 2);
     f.registry
-        .close(&seat("a"), WatchCloseReason::BindingChanged, f.now());
+        .close(&bid("a", 1), WatchCloseReason::BindingChanged, f.now());
     assert_eq!(
         sink.frames(),
         vec![WatchFrame::Close {
             reason: WatchCloseReason::BindingChanged
         }]
     );
-    assert_eq!(f.kicks(), 0);
-    assert!(f.registry.is_live(&seat("a"), 1));
-    assert!(f.registry.is_live(&seat("a"), 2));
-    assert_eq!(
-        f.registry.status().unwrap().channels[0].state,
-        ModChannelState::RebindGrace
+    assert!(
+        sibling.frames().is_empty(),
+        "the seat's other channel is untouched"
     );
-    // A registration for the new generation ends the grace without a kick.
+    assert_eq!(f.kicks(), 0);
+    assert!(f.registry.is_live(&seat("a"), &bid("a", 1)));
+    assert!(f.registry.is_live(&seat("a"), &bid("a", 2)));
+    assert!(
+        !f.registry.is_live(&seat("a"), &bid("a", 3)),
+        "the grace covers that binding, not every binding of the seat"
+    );
+    let states: Vec<ModChannelState> = f
+        .registry
+        .status()
+        .unwrap()
+        .channels
+        .iter()
+        .map(|c| c.state)
+        .collect();
+    assert_eq!(
+        states,
+        vec![ModChannelState::RebindGrace, ModChannelState::Live]
+    );
+    // A registration for the same binding ends the grace without a kick.
     f.advance(5_000);
-    f.register("a", 2);
+    f.register("a", 1);
     f.advance(60_000);
     f.registry.sweep(f.now());
     assert_eq!(f.kicks(), 0);
-    assert!(f.registry.is_live(&seat("a"), 2));
-    assert!(!f.registry.is_live(&seat("a"), 1));
+    assert!(f.registry.is_live(&seat("a"), &bid("a", 1)));
 
     // Without one, expiry removes the entry and kicks.
     f.registry
-        .close(&seat("a"), WatchCloseReason::BindingChanged, f.now());
+        .close(&bid("a", 1), WatchCloseReason::BindingChanged, f.now());
     f.advance(29_000);
     f.registry.sweep(f.now());
-    assert!(f.registry.is_live(&seat("a"), 9));
+    assert!(f.registry.is_live(&seat("a"), &bid("a", 1)));
     f.advance(2_000);
     f.registry.sweep(f.now());
-    assert!(!f.registry.is_live(&seat("a"), 2));
+    assert!(!f.registry.is_live(&seat("a"), &bid("a", 1)));
     assert_eq!(f.kicks(), 1);
+    assert!(
+        f.registry.is_live(&seat("a"), &bid("a", 2)),
+        "the sibling is still live"
+    );
 }
 
 #[test]
@@ -390,17 +430,17 @@ fn close_retired_unresolved_disabled_stopping_remove_at_once_and_kick() {
     ] {
         let f = fixture();
         let (_, sink) = f.register("a", 1);
-        f.registry.close(&seat("a"), reason, f.now());
+        f.registry.close(&bid("a", 1), reason, f.now());
         assert_eq!(
             sink.frames(),
             vec![WatchFrame::Close { reason }],
             "{reason:?}"
         );
-        assert!(!f.registry.is_live(&seat("a"), 1), "{reason:?}");
+        assert!(!f.registry.is_live(&seat("a"), &bid("a", 1)), "{reason:?}");
         assert_eq!(f.kicks(), 1, "{reason:?}");
         assert!(f.registry.status().unwrap().channels.is_empty());
         // Closing a seat with no entry is a no-op: no second kick.
-        f.registry.close(&seat("a"), reason, f.now());
+        f.registry.close(&bid("a", 1), reason, f.now());
         assert_eq!(f.kicks(), 1, "{reason:?}");
     }
 }
@@ -424,7 +464,8 @@ fn stall_setup(
             .push((UtcMillis(registered.0 - age), body_len));
     }
     if pushed {
-        f.registry.record_attention_push(&seat("a"), 1, registered);
+        f.registry
+            .record_attention_push(&seat("a"), &bid("a", 1), registered);
     }
     f.advance(ack_age);
     let now = f.now();
@@ -442,7 +483,7 @@ fn stalled_requires_old_ack_old_receipt_published_before_last_push() {
     assert!(!f.registry.stalled(&seat("a"), now));
     // Recent ack (registration) -> not stalled.
     let (f, now) = stall_setup(over, true, Some(0), 10);
-    f.registry.record_ack(&seat("a"), 1, f.now());
+    f.registry.record_ack(&seat("a"), &bid("a", 1), f.now());
     assert!(!f.registry.stalled(&seat("a"), now));
     // No Attention ever pushed -> not stalled.
     let (f, now) = stall_setup(over, false, Some(0), 10);
@@ -460,7 +501,7 @@ fn stalled_requires_old_ack_old_receipt_published_before_last_push() {
     f.advance(over);
     let now = f.now();
     f.registry
-        .record_attention_push(&seat("a"), 1, UtcMillis(now.0 - 500));
+        .record_attention_push(&seat("a"), &bid("a", 1), UtcMillis(now.0 - 500));
     f.store
         .receipts
         .lock()
@@ -493,7 +534,7 @@ fn stall_close_starts_cooldown_refusing_same_generation_for_ten_minutes() {
     let (f, now) = stall_setup(over, true, Some(0), 10);
     // A sweep detects the stall and closes with Stalled.
     f.registry.sweep(now);
-    assert!(!f.registry.is_live(&seat("a"), 1));
+    assert!(!f.registry.is_live(&seat("a"), &bid("a", 1)));
     assert_eq!(f.kicks(), 1);
     // Refused for ten minutes for that generation only.
     f.advance(599_000);
@@ -503,7 +544,7 @@ fn stall_close_starts_cooldown_refusing_same_generation_for_ten_minutes() {
     );
     f.try_register("a", 2).unwrap();
     f.registry
-        .close(&seat("a"), WatchCloseReason::Retired, f.now());
+        .close(&bid("a", 1), WatchCloseReason::Retired, f.now());
     f.advance(2_000);
     f.try_register("a", 1).unwrap();
 }
@@ -515,7 +556,8 @@ fn stall_close_pushes_close_stalled_to_the_channel() {
     let registered = f.now();
     let (_, sink) = f.register("a", 1);
     f.store.receipts.lock().unwrap().push((registered, 10));
-    f.registry.record_attention_push(&seat("a"), 1, registered);
+    f.registry
+        .record_attention_push(&seat("a"), &bid("a", 1), registered);
     f.advance(over);
     f.registry.sweep(f.now());
     assert_eq!(
@@ -531,7 +573,7 @@ fn record_ack_resets_stall_clock() {
     let over = MOD_STALL_AFTER_MS as i64 + 1;
     let (f, now) = stall_setup(over, true, Some(0), 10);
     assert!(f.registry.stalled(&seat("a"), now));
-    f.registry.record_ack(&seat("a"), 1, now);
+    f.registry.record_ack(&seat("a"), &bid("a", 1), now);
     assert!(!f.registry.stalled(&seat("a"), now));
     f.advance(MOD_STALL_AFTER_MS as i64 - 1);
     assert!(!f.registry.stalled(&seat("a"), f.now()));
@@ -543,13 +585,13 @@ fn record_ack_resets_stall_clock() {
 fn notify_pushes_attention_and_records_push_time() {
     let f = fixture();
     let (_, sink) = f.register("a", 1);
-    f.set_view("a", Some(view("a", 1, pending(3))));
+    f.set_view(&bid("a", 1), Some(view("a", 1, pending(3))));
     // First reading with something pending is the initial sweep.
     f.registry.pass(f.now()).unwrap();
     assert_eq!(sink.frames(), vec![WatchFrame::Attention { version: 3 }]);
     // A changed fingerprint pushes again with the view's version.
     f.advance(1_000);
-    f.set_view("a", Some(view("a", 1, pending(4))));
+    f.set_view(&bid("a", 1), Some(view("a", 1, pending(4))));
     f.registry.pass(f.now()).unwrap();
     assert_eq!(
         sink.frames(),
@@ -578,10 +620,10 @@ fn notify_without_fingerprint_change_pushes_nothing() {
     let f = fixture();
     let (_, sink) = f.register("a", 1);
     // Nothing pending on the first reading: no frame.
-    f.set_view("a", Some(view("a", 1, ModFingerprint::default())));
+    f.set_view(&bid("a", 1), Some(view("a", 1, ModFingerprint::default())));
     f.registry.pass(f.now()).unwrap();
     assert!(sink.frames().is_empty());
-    f.set_view("a", Some(view("a", 1, pending(2))));
+    f.set_view(&bid("a", 1), Some(view("a", 1, pending(2))));
     f.registry.pass(f.now()).unwrap();
     assert_eq!(sink.frames().len(), 1);
     f.registry.pass(f.now()).unwrap();
@@ -589,7 +631,7 @@ fn notify_without_fingerprint_change_pushes_nothing() {
     assert_eq!(sink.frames().len(), 1, "an unchanged fingerprint is silent");
     // A settlement that only lowers the count is a change too.
     f.set_view(
-        "a",
+        &bid("a", 1),
         Some(view(
             "a",
             1,
@@ -606,7 +648,7 @@ fn notify_without_fingerprint_change_pushes_nothing() {
 #[test]
 fn pass_closes_channels_whose_seat_or_binding_no_longer_holds() {
     type Mutate = fn(&mut ModSeatView);
-    let cases: [(&str, Mutate, WatchCloseReason, usize); 5] = [
+    let cases: [(&str, Mutate, WatchCloseReason, usize); 7] = [
         (
             "retired",
             |v| v.retired = true,
@@ -620,14 +662,26 @@ fn pass_closes_channels_whose_seat_or_binding_no_longer_holds() {
             1,
         ),
         (
-            "binding ended",
+            "binding gone",
             |v| v.binding = None,
             WatchCloseReason::BindingChanged,
             0,
         ),
         (
-            "generation moved",
-            |v| v.binding.as_mut().unwrap().generation = 2,
+            "binding ended",
+            |v| v.binding.as_mut().unwrap().ended_at = Some(UtcMillis(9)),
+            WatchCloseReason::BindingChanged,
+            0,
+        ),
+        (
+            "binding disconnected",
+            |v| v.binding.as_mut().unwrap().connected = false,
+            WatchCloseReason::BindingChanged,
+            0,
+        ),
+        (
+            "binding no longer top-level",
+            |v| v.binding.as_mut().unwrap().top_level = false,
             WatchCloseReason::BindingChanged,
             0,
         ),
@@ -643,7 +697,7 @@ fn pass_closes_channels_whose_seat_or_binding_no_longer_holds() {
         let (_, sink) = f.register("a", 1);
         let mut v = view("a", 1, pending(1));
         mutate(&mut v);
-        f.set_view("a", Some(v));
+        f.set_view(&bid("a", 1), Some(v));
         f.registry.pass(f.now()).unwrap();
         assert_eq!(sink.frames(), vec![WatchFrame::Close { reason }], "{name}");
         assert_eq!(f.kicks(), kicks, "{name}");
@@ -651,7 +705,7 @@ fn pass_closes_channels_whose_seat_or_binding_no_longer_holds() {
     // A seat that vanished from the store is unresolved.
     let f = fixture();
     let (_, sink) = f.register("a", 1);
-    f.set_view("a", None);
+    f.set_view(&bid("a", 1), None);
     f.registry.pass(f.now()).unwrap();
     assert_eq!(
         sink.frames(),
@@ -662,13 +716,43 @@ fn pass_closes_channels_whose_seat_or_binding_no_longer_holds() {
 }
 
 #[test]
+fn pass_judges_each_channel_against_its_own_binding() {
+    let f = fixture();
+    let (_, a) = f.register("a", 1);
+    let (_, b) = f.register("a", 2);
+    // Binding 1 disconnected, binding 2 fine and with mail pending.
+    let mut gone = view("a", 1, pending(1));
+    gone.binding.as_mut().unwrap().connected = false;
+    f.set_view(&bid("a", 1), Some(gone));
+    f.set_view(&bid("a", 2), Some(view("a", 2, pending(1))));
+    f.registry.pass(f.now()).unwrap();
+    assert_eq!(
+        a.frames(),
+        vec![WatchFrame::Close {
+            reason: WatchCloseReason::BindingChanged
+        }]
+    );
+    assert_eq!(b.frames(), vec![WatchFrame::Attention { version: 1 }]);
+    assert!(f.registry.is_live(&seat("a"), &bid("a", 2)));
+    let mut moved = view("a", 2, pending(1));
+    moved.binding.as_mut().unwrap().generation = 7;
+    f.set_view(&bid("a", 2), Some(moved));
+    f.registry.pass(f.now()).unwrap();
+    assert_eq!(
+        b.frames().len(),
+        1,
+        "a placement refresh (generation moved) neither closes nor pushes"
+    );
+}
+
+#[test]
 fn pass_reports_a_store_error_and_keeps_the_channel() {
     let f = fixture();
     let (_, sink) = f.register("a", 1);
     f.store.fail_views.store(true, Ordering::SeqCst);
     let error = f.registry.pass(f.now()).unwrap_err();
     assert_eq!(error.code, ErrorCode::StoreBusy);
-    assert!(f.registry.is_live(&seat("a"), 1));
+    assert!(f.registry.is_live(&seat("a"), &bid("a", 1)));
     assert!(sink.frames().is_empty());
 }
 
@@ -697,7 +781,7 @@ fn status_reports_setting_counts_and_states() {
     f.register("a", 1);
     f.register("c", 3);
     f.registry
-        .close(&seat("c"), WatchCloseReason::BindingChanged, f.now());
+        .close(&bid("c", 3), WatchCloseReason::BindingChanged, f.now());
     f.registry.unregister(grace, f.now());
     let status = f.registry.status().unwrap();
     assert_eq!(status.mod_delivery, ModDeliverySetting::On);
@@ -814,6 +898,42 @@ mod domain {
         rusqlite::Connection::open(&rig.path).unwrap()
     }
 
+    impl Rig {
+        /// The binding of the claim `request()` makes (session `native`).
+        fn binding(&self) -> BindingId {
+            self.binding_of("native")
+        }
+
+        fn binding_of(&self, session: &str) -> BindingId {
+            BindingId::new(
+                db(self)
+                    .query_row(
+                        "SELECT binding_id FROM occupant_bindings WHERE native_session=?1 AND agent_id=''",
+                        [session],
+                        |r| r.get::<_, String>(0),
+                    )
+                    .unwrap(),
+            )
+        }
+
+        /// Another top-level Claude binding of seat `s` (a second session) and its id.
+        fn add_binding(&self, session: &str) -> BindingId {
+            db(self)
+                .execute(
+                    "INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES ('s',1,'p','b',1,1,'claude',?1,'00000000-0000-4000-8000-0000000000bb','cooperative_top_level',0,'term-p','inc')",
+                    [session],
+                )
+                .unwrap();
+            self.binding_of(session)
+        }
+    }
+
+    fn request_for(session: &str) -> WatchRequest {
+        let mut request = request();
+        request.claim.native_session = NativeSessionId::new(session);
+        request
+    }
+
     fn request() -> WatchRequest {
         WatchRequest {
             claim: CallerClaim {
@@ -851,7 +971,7 @@ mod domain {
         let rig = rig();
         let (_, version) = register(&rig, &request()).unwrap();
         assert_eq!(version, 5, "the seat's attention version at registration");
-        assert!(rig.registry.is_live(&seat("s"), 1));
+        assert!(rig.registry.is_live(&seat("s"), &rig.binding()));
         let status = rig.registry.status().unwrap();
         assert_eq!(status.live_channels, 1);
         assert_eq!(status.channels[0].harness, "claude");
@@ -864,8 +984,8 @@ mod domain {
         let mut claimed = request();
         claimed.claim.binding_generation = 99;
         register(&rig, &claimed).unwrap();
-        assert!(rig.registry.is_live(&seat("s"), 1));
-        assert!(!rig.registry.is_live(&seat("s"), 99));
+        assert!(rig.registry.is_live(&seat("s"), &rig.binding()));
+        assert!(!rig.registry.is_live(&seat("s"), &bid("s", 99)));
     }
 
     #[test]
@@ -901,15 +1021,22 @@ mod domain {
             register(&rig, &subagent).unwrap_err(),
             WatchRefusalReason::NotClaude
         );
-        // A codex binding for the seat.
+        let mut agent = request();
+        agent.claim.agent_id = Some(crate::protocol::ids::AgentId::new("agent-1"));
+        assert_eq!(
+            register(&rig, &agent).unwrap_err(),
+            WatchRefusalReason::NotClaude,
+            "a claim carrying an agent id is a subagent's"
+        );
+        // The seat's binding is a codex one: the Claude claim's key names no binding.
         db(&rig)
             .execute("UPDATE occupant_bindings SET harness='codex'", [])
             .unwrap();
         assert_eq!(
             register(&rig, &request()).unwrap_err(),
-            WatchRefusalReason::NotClaude
+            WatchRefusalReason::NoBinding
         );
-        assert!(!rig.registry.is_live(&seat("s"), 1));
+        assert!(!rig.registry.is_live(&seat("s"), &rig.binding()));
     }
 
     #[test]
@@ -938,7 +1065,7 @@ mod domain {
             register(&rig, &unknown).unwrap_err(),
             WatchRefusalReason::Unresolved
         );
-        assert!(!rig.registry.is_live(&seat("s"), 1));
+        assert!(!rig.registry.is_live(&seat("s"), &rig.binding()));
     }
 
     #[test]
@@ -954,16 +1081,28 @@ mod domain {
             register(&rig, &request()).unwrap_err(),
             WatchRefusalReason::Held
         );
-        assert!(!rig.registry.is_live(&seat("s"), 1));
+        assert!(!rig.registry.is_live(&seat("s"), &rig.binding()));
     }
 
     #[test]
     fn no_binding() {
         let rig = rig();
+        let held = rig.binding();
         // Provenance other than cooperative_top_level.
         db(&rig)
             .execute(
                 "UPDATE occupant_bindings SET observation_provenance='operator_human'",
+                [],
+            )
+            .unwrap();
+        assert_eq!(
+            register(&rig, &request()).unwrap_err(),
+            WatchRefusalReason::NoBinding
+        );
+        // A disconnected binding holds no channel.
+        db(&rig)
+            .execute(
+                "UPDATE occupant_bindings SET observation_provenance='cooperative_top_level',liveness='disconnected',disconnected_at=5,disconnect_reason='process_exit'",
                 [],
             )
             .unwrap();
@@ -990,20 +1129,22 @@ mod domain {
             register(&rig, &request()).unwrap_err(),
             WatchRefusalReason::NoBinding
         );
-        assert!(!rig.registry.is_live(&seat("s"), 1));
+        assert!(!rig.registry.is_live(&seat("s"), &held));
     }
 
     #[test]
     fn session_mismatch() {
         let rig = rig();
+        // A session the seat holds no binding for names no binding (it is not another
+        // session's channel to take).
         let mut stale = request();
         stale.claim.native_session = NativeSessionId::new("an-older-session");
         assert_eq!(
             register(&rig, &stale).unwrap_err(),
-            WatchRefusalReason::SessionMismatch
+            WatchRefusalReason::NoBinding
         );
         assert!(
-            !rig.registry.is_live(&seat("s"), 1),
+            !rig.registry.is_live(&seat("s"), &rig.binding()),
             "a refused registration is never live"
         );
         assert!(rig.registry.status().unwrap().channels.is_empty());
@@ -1013,7 +1154,7 @@ mod domain {
             register(&rig, &foreign).unwrap_err(),
             WatchRefusalReason::SessionMismatch
         );
-        assert!(!rig.registry.is_live(&seat("s"), 1));
+        assert!(!rig.registry.is_live(&seat("s"), &rig.binding()));
     }
 
     #[test]
@@ -1024,7 +1165,7 @@ mod domain {
             register(&rig, &request()).unwrap_err(),
             WatchRefusalReason::Disabled
         );
-        assert!(!rig.registry.is_live(&seat("s"), 1));
+        assert!(!rig.registry.is_live(&seat("s"), &rig.binding()));
     }
 
     #[test]
@@ -1034,13 +1175,13 @@ mod domain {
         // A stall handover starts the cooldown for generation 1.
         let now = SystemClock::new().utc_now();
         rig.registry
-            .close(&seat("s"), WatchCloseReason::Stalled, now);
+            .close(&rig.binding(), WatchCloseReason::Stalled, now);
         assert_eq!(rig.kicks.load(Ordering::SeqCst), 1);
         assert_eq!(
             register(&rig, &request()).unwrap_err(),
             WatchRefusalReason::Cooldown
         );
-        assert!(!rig.registry.is_live(&seat("s"), 1));
+        assert!(!rig.registry.is_live(&seat("s"), &rig.binding()));
     }
 
     #[test]
@@ -1100,6 +1241,213 @@ mod domain {
             ModChannelState::RebindGrace
         );
     }
+
+    fn register_with(rig: &Rig, request: &WatchRequest) -> (ModChannelId, Arc<RecordingSink>) {
+        let sink = Arc::new(RecordingSink::default());
+        let (id, _) = rig
+            .domain
+            .watch_register(request, sink.clone(), &budget())
+            .unwrap();
+        (id, sink)
+    }
+
+    /// An ordinary message `id` (sequence `seq` of thread `t`) published to seat `s`.
+    fn deliver(db: &rusqlite::Connection, id: &str, seq: u32) {
+        db.execute_batch(&format!(
+            "INSERT OR IGNORE INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0);
+             INSERT OR IGNORE INTO memberships(thread_id,seat_id,state) VALUES ('t','s','joined');
+             INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i','{id}','t',{seq},'ordinary','b',{seq},{seq});
+             INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES ('p-{id}','i','actor','{id}',zeroblob(32),'t',0,0,0,0,0,0,1,'sealed');
+             INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES ('p-{id}','t','s',1,300,0);
+             INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) SELECT 'p-{id}','{id}','i','t',decision_seq,{seq},{seq},0,1,0 FROM messages WHERE id='{id}';"
+        ))
+        .unwrap();
+    }
+
+    #[test]
+    fn two_claude_bindings_hold_two_live_channels() {
+        let rig = rig();
+        let (a, b) = (rig.binding(), rig.add_binding("native2"));
+        register(&rig, &request()).unwrap();
+        register(&rig, &request_for("native2")).unwrap();
+        assert!(rig.registry.binding_live(&seat("s"), &a));
+        assert!(rig.registry.binding_live(&seat("s"), &b));
+        assert!(rig.registry.is_live(&seat("s"), &a) && rig.registry.is_live(&seat("s"), &b));
+        let status = rig.registry.status().unwrap();
+        assert_eq!(status.live_channels, 2);
+        assert_eq!(status.channels.len(), 2);
+    }
+
+    #[test]
+    fn each_channel_receives_only_its_bindings_deliveries() {
+        let rig = rig();
+        let (a, b) = (rig.binding(), rig.add_binding("native2"));
+        let (_, a_sink) = register_with(&rig, &request());
+        let (_, b_sink) = register_with(&rig, &request_for("native2"));
+        let conn = db(&rig);
+        deliver(&conn, "m1", 1);
+        // A has read m1, B has not. (The seat's pending receipt is seat-level attention both
+        // channels see; what differs is each binding's own unread.)
+        for (binding, seq) in [(&a, 1), (&b, 0)] {
+            conn.execute(
+                "INSERT INTO binding_cursors(binding_id,thread_id,seq) VALUES (?1,'t',?2)",
+                rusqlite::params![binding.as_str(), seq],
+            )
+            .unwrap();
+        }
+        let now = SystemClock::new().utc_now();
+        rig.registry.pass(now).unwrap();
+        assert_eq!(a_sink.frames(), vec![WatchFrame::Attention { version: 5 }]);
+        assert_eq!(b_sink.frames(), vec![WatchFrame::Attention { version: 5 }]);
+        // Nothing changed: neither is pushed again.
+        rig.registry.pass(now).unwrap();
+        assert_eq!((a_sink.frames().len(), b_sink.frames().len()), (1, 1));
+        // New mail is unread for both: both channels are pushed, each once.
+        deliver(&conn, "m2", 2);
+        conn.execute("UPDATE wake_work SET attention_version=6", [])
+            .unwrap();
+        rig.registry.pass(now).unwrap();
+        assert_eq!(
+            a_sink.frames().last(),
+            Some(&WatchFrame::Attention { version: 6 })
+        );
+        assert_eq!(
+            b_sink.frames().last(),
+            Some(&WatchFrame::Attention { version: 6 })
+        );
+        assert_eq!((a_sink.frames().len(), b_sink.frames().len()), (2, 2));
+        // A reads on: only A's own unread moved, so only A's channel is pushed.
+        conn.execute(
+            "UPDATE binding_cursors SET seq=2 WHERE binding_id=?1",
+            [a.as_str()],
+        )
+        .unwrap();
+        rig.registry.pass(now).unwrap();
+        assert_eq!(
+            a_sink.frames().len(),
+            3,
+            "A's fingerprint moved (its unread cleared)"
+        );
+        assert_eq!(
+            b_sink.frames().len(),
+            2,
+            "B's did not: A's cursor is not B's"
+        );
+    }
+
+    #[test]
+    fn closing_one_channel_leaves_the_other_live() {
+        let rig = rig();
+        let (a, b) = (rig.binding(), rig.add_binding("native2"));
+        let (_, a_sink) = register_with(&rig, &request());
+        let (_, b_sink) = register_with(&rig, &request_for("native2"));
+        let now = SystemClock::new().utc_now();
+        rig.registry.close(&a, WatchCloseReason::Retired, now);
+        assert_eq!(
+            a_sink.frames(),
+            vec![WatchFrame::Close {
+                reason: WatchCloseReason::Retired
+            }]
+        );
+        assert!(b_sink.frames().is_empty());
+        assert!(!rig.registry.binding_live(&seat("s"), &a));
+        assert!(rig.registry.binding_live(&seat("s"), &b));
+        // The surviving channel still holds the seat's channel registration.
+        rig.registry.pass(now).unwrap();
+        assert!(rig.registry.binding_live(&seat("s"), &b));
+    }
+
+    #[test]
+    fn re_registering_a_binding_replaces_only_its_own_channel() {
+        let rig = rig();
+        let _ = rig.add_binding("native2");
+        let (_, first) = register_with(&rig, &request());
+        let (_, sibling) = register_with(&rig, &request_for("native2"));
+        let (_, second) = register_with(&rig, &request());
+        assert_eq!(
+            first.frames(),
+            vec![WatchFrame::Close {
+                reason: WatchCloseReason::Replaced
+            }]
+        );
+        assert!(sibling.frames().is_empty());
+        assert!(second.frames().is_empty());
+        assert_eq!(rig.registry.status().unwrap().channels.len(), 2);
+    }
+
+    #[test]
+    fn disconnect_closes_that_bindings_channel() {
+        use crate::store::bindings::{DisconnectReason, disconnect};
+        let rig = rig();
+        let (a, b) = (rig.binding(), rig.add_binding("native2"));
+        let (_, a_sink) = register_with(&rig, &request());
+        let (_, b_sink) = register_with(&rig, &request_for("native2"));
+        let now = SystemClock::new().utc_now();
+        rig.registry.pass(now).unwrap();
+        assert!(a_sink.frames().is_empty() && b_sink.frames().is_empty());
+        let conn = db(&rig);
+        let version = |conn: &rusqlite::Connection| -> i64 {
+            conn.query_row(
+                "SELECT attention_version FROM wake_work WHERE seat_id='s'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        let before = version(&conn);
+        assert!(disconnect(&conn, &a, DisconnectReason::ProcessExit, UtcMillis(5)).unwrap());
+        assert_eq!(
+            version(&conn),
+            before + 1,
+            "the mod_channel_release hook bumps the seat's attention version"
+        );
+        rig.registry.pass(now).unwrap();
+        assert_eq!(
+            a_sink.frames(),
+            vec![WatchFrame::Close {
+                reason: WatchCloseReason::BindingChanged
+            }]
+        );
+        assert!(
+            !b_sink
+                .frames()
+                .iter()
+                .any(|frame| matches!(frame, WatchFrame::Close { .. })),
+            "B stays connected: its channel is not closed"
+        );
+        assert!(rig.registry.binding_live(&seat("s"), &b));
+        // A disconnected binding cannot register again until it reconnects.
+        assert_eq!(
+            register(&rig, &request()).unwrap_err(),
+            WatchRefusalReason::NoBinding
+        );
+        // A repeated disconnect changes nothing and does not bump again.
+        let bumped = version(&conn);
+        assert!(!disconnect(&conn, &a, DisconnectReason::ProcessExit, UtcMillis(6)).unwrap());
+        assert_eq!(version(&conn), bumped);
+    }
+
+    #[test]
+    fn subagent_and_unknown_session_cannot_register() {
+        let rig = rig();
+        let mut subagent = request();
+        subagent.claim.role = CallerRole::Subagent;
+        let mut with_agent = request();
+        with_agent.claim.agent_id = Some(crate::protocol::ids::AgentId::new("agent-1"));
+        for refused in [subagent, with_agent] {
+            assert_eq!(
+                register(&rig, &refused).unwrap_err(),
+                WatchRefusalReason::NotClaude
+            );
+        }
+        assert_eq!(
+            register(&rig, &request_for("never-seen")).unwrap_err(),
+            WatchRefusalReason::NoBinding
+        );
+        assert!(rig.registry.status().unwrap().channels.is_empty());
+        // The seat's own session still registers.
+        register(&rig, &request()).unwrap();
+    }
 }
 
 #[test]
@@ -1107,7 +1455,7 @@ fn worker_pushes_on_the_observer_and_closes_stopping_on_cancel() {
     use crate::service::{pacer::Pacer, workers::start_mod_channel_worker};
     let f = fixture();
     let (_, sink) = f.register("a", 1);
-    f.set_view("a", Some(view("a", 1, pending(3))));
+    f.set_view(&bid("a", 1), Some(view("a", 1, pending(3))));
     let cancellation = Cancellation::default();
     let clock: Arc<dyn Clock> = f.clock.clone();
     let pacer = Arc::new(Pacer::new(
@@ -1130,7 +1478,7 @@ fn worker_pushes_on_the_observer_and_closes_stopping_on_cancel() {
     }
     assert_eq!(sink.frames(), vec![WatchFrame::Attention { version: 3 }]);
     // A commit observed later pushes the next version.
-    f.set_view("a", Some(view("a", 1, pending(4))));
+    f.set_view(&bid("a", 1), Some(view("a", 1, pending(4))));
     (f.registry.observer())();
     while sink.frames().len() < 2 && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(5));
@@ -1144,7 +1492,7 @@ fn worker_pushes_on_the_observer_and_closes_stopping_on_cancel() {
             reason: WatchCloseReason::Stopping
         })
     );
-    assert!(!f.registry.is_live(&seat("a"), 1));
+    assert!(!f.registry.is_live(&seat("a"), &bid("a", 1)));
     assert_eq!(f.kicks(), 1, "stopping removes the entry and kicks");
 }
 
@@ -1157,7 +1505,7 @@ fn seat_live_counts_every_unexpired_entry_whatever_its_generation() {
     f.registry.unregister(ModChannelId(1), f.now());
     assert!(f.registry.seat_live(&seat("a")), "reconnect grace");
     f.registry
-        .close(&seat("a"), WatchCloseReason::BindingChanged, f.now());
+        .close(&bid("a", 1), WatchCloseReason::BindingChanged, f.now());
     assert!(f.registry.seat_live(&seat("a")), "rebind grace");
     f.register("a", 2);
     assert!(f.registry.seat_live(&seat("a")), "live at generation 2");
@@ -1173,7 +1521,7 @@ fn seat_live_ignores_an_expired_grace_before_the_sweep() {
     let f = fixture();
     f.register("a", 1);
     f.registry
-        .close(&seat("a"), WatchCloseReason::BindingChanged, f.now());
+        .close(&bid("a", 1), WatchCloseReason::BindingChanged, f.now());
     f.advance(MOD_REBIND_GRACE_MS as i64 + 1);
     assert!(!f.registry.seat_live(&seat("a")), "expired rebind grace");
 }
@@ -1182,8 +1530,8 @@ fn seat_live_ignores_an_expired_grace_before_the_sweep() {
 fn registration_landing_between_pass_snapshot_and_close_survives() {
     type Mutate = fn(&mut ModSeatView);
     let cases: [(&str, Mutate); 3] = [
-        ("binding moved", |v| {
-            v.binding.as_mut().unwrap().generation = 2
+        ("binding ended", |v| {
+            v.binding.as_mut().unwrap().ended_at = Some(UtcMillis(9))
         }),
         ("retired", |v| v.retired = true),
         ("unresolved", |v| v.continuity_resolved = false),
@@ -1191,10 +1539,10 @@ fn registration_landing_between_pass_snapshot_and_close_survives() {
     for (name, mutate) in cases {
         let f = fixture();
         let (_, old_sink) = f.register("a", 1);
-        let mut v = view("a", 2, pending(1));
+        let mut v = view("a", 1, pending(1));
         mutate(&mut v);
-        f.set_view("a", Some(v));
-        let new_sink = f.register_during_next_read("a", 2);
+        f.set_view(&bid("a", 1), Some(v));
+        let new_sink = f.register_during_next_read("a", 1);
         f.registry.pass(f.now()).unwrap();
         assert!(
             new_sink.frames().is_empty(),
@@ -1207,7 +1555,7 @@ fn registration_landing_between_pass_snapshot_and_close_survives() {
             }],
             "{name}"
         );
-        assert!(f.registry.is_live(&seat("a"), 2), "{name}");
+        assert!(f.registry.is_live(&seat("a"), &bid("a", 1)), "{name}");
         assert_eq!(
             f.registry.status().unwrap().channels[0].state,
             ModChannelState::Live,
@@ -1224,10 +1572,10 @@ fn registration_landing_during_the_stall_read_is_not_closed_and_arms_no_cooldown
     let new_sink = f.register_during_next_read("a", 1);
     f.registry.sweep(now);
     assert!(new_sink.frames().is_empty(), "no Close{{stalled}}");
-    assert!(f.registry.is_live(&seat("a"), 1));
+    assert!(f.registry.is_live(&seat("a"), &bid("a", 1)));
     assert_eq!(f.kicks(), 0);
     f.registry
-        .close(&seat("a"), WatchCloseReason::Retired, f.now());
+        .close(&bid("a", 1), WatchCloseReason::Retired, f.now());
     f.try_register("a", 1).expect("no cooldown was armed");
 }
 
@@ -1237,32 +1585,218 @@ fn ack_landing_during_the_stall_read_prevents_the_stall_close() {
     let (f, now) = stall_setup(over, true, Some(0), 10);
     let registry = Arc::clone(&f.registry);
     *f.store.on_read.lock().unwrap() = Some(Box::new(move || {
-        registry.record_ack(&seat("a"), 1, now);
+        registry.record_ack(&seat("a"), &bid("a", 1), now);
     }));
     f.registry.sweep(now);
-    assert!(f.registry.is_live(&seat("a"), 1));
+    assert!(f.registry.is_live(&seat("a"), &bid("a", 1)));
     assert_eq!(f.kicks(), 0);
     f.try_register("a", 1).expect("no cooldown was armed");
 }
 
 #[test]
-fn record_ack_and_attention_push_for_another_generation_are_ignored() {
+fn record_ack_and_attention_push_for_another_binding_are_ignored() {
     let over = MOD_STALL_AFTER_MS as i64 + 1;
     let (f, now) = stall_setup(over, true, Some(0), 10);
     assert!(f.registry.stalled(&seat("a"), now));
-    f.registry.record_ack(&seat("a"), 2, now);
+    f.registry.record_ack(&seat("a"), &bid("a", 2), now);
     assert!(
         f.registry.stalled(&seat("a"), now),
-        "an ack for another generation does not reset the stall clock"
+        "an ack for another binding does not reset the stall clock"
     );
+    // The right binding under another seat is not this entry either.
+    f.registry.record_ack(&seat("b"), &bid("a", 1), now);
+    assert!(f.registry.stalled(&seat("a"), now));
     // A channel that never saw a push is not stalled; a push for another
-    // generation must not arm the predicate.
+    // binding must not arm the predicate.
     let f = fixture();
     f.register("a", 1);
     f.store.receipts.lock().unwrap().push((f.now(), 10));
     f.advance(over);
-    f.registry.record_attention_push(&seat("a"), 2, f.now());
+    f.registry
+        .record_attention_push(&seat("a"), &bid("a", 2), f.now());
     assert!(!f.registry.stalled(&seat("a"), f.now()));
-    f.registry.record_attention_push(&seat("a"), 1, f.now());
+    f.registry
+        .record_attention_push(&seat("a"), &bid("a", 1), f.now());
     assert!(f.registry.stalled(&seat("a"), f.now()));
+}
+
+#[test]
+fn two_claude_bindings_hold_two_live_channels() {
+    let f = fixture();
+    let (first, _) = f.register("a", 1);
+    let (second, _) = f.register("a", 2);
+    assert_ne!(first, second);
+    assert!(f.registry.binding_live(&seat("a"), &bid("a", 1)));
+    assert!(f.registry.binding_live(&seat("a"), &bid("a", 2)));
+    assert!(!f.registry.binding_live(&seat("a"), &bid("a", 3)));
+    assert!(!f.registry.binding_live(&seat("b"), &bid("a", 1)));
+    assert!(f.registry.seat_live(&seat("a")));
+    let status = f.registry.status().unwrap();
+    assert_eq!(status.live_channels, 2);
+    assert_eq!(status.channels.len(), 2);
+    assert!(status.channels.iter().all(|c| c.seat == seat("a")));
+    assert_eq!(f.kicks(), 0);
+}
+
+#[test]
+fn each_channel_receives_only_its_bindings_deliveries() {
+    let f = fixture();
+    let (_, a) = f.register("a", 1);
+    let (_, b) = f.register("a", 2);
+    // Binding 1 has mail; binding 2 has none.
+    f.set_view(&bid("a", 1), Some(view("a", 1, pending(3))));
+    f.set_view(&bid("a", 2), Some(view("a", 2, ModFingerprint::default())));
+    f.registry.pass(f.now()).unwrap();
+    assert_eq!(a.frames(), vec![WatchFrame::Attention { version: 3 }]);
+    assert!(b.frames().is_empty(), "binding 2 has nothing pending");
+    // Binding 2's own unread arrives: only its channel is pushed.
+    let unread = ModFingerprint {
+        attention_version: 3,
+        unread: 1,
+        max_unread_rowid: 9,
+        ..ModFingerprint::default()
+    };
+    f.set_view(&bid("a", 2), Some(view("a", 2, unread)));
+    f.registry.pass(f.now()).unwrap();
+    assert_eq!(a.frames().len(), 1, "binding 1's fingerprint did not move");
+    assert_eq!(b.frames(), vec![WatchFrame::Attention { version: 3 }]);
+    // The seat-level notify reaches every live channel of the seat.
+    f.registry.notify(&seat("a"), 8);
+    assert_eq!(
+        a.frames().last(),
+        Some(&WatchFrame::Attention { version: 8 })
+    );
+    assert_eq!(
+        b.frames().last(),
+        Some(&WatchFrame::Attention { version: 8 })
+    );
+}
+
+#[test]
+fn closing_one_channel_leaves_the_other_live() {
+    for reason in [
+        WatchCloseReason::Retired,
+        WatchCloseReason::Unresolved,
+        WatchCloseReason::Stopping,
+    ] {
+        let f = fixture();
+        let (_, a) = f.register("a", 1);
+        let (_, b) = f.register("a", 2);
+        f.registry.close(&bid("a", 1), reason, f.now());
+        assert_eq!(a.frames(), vec![WatchFrame::Close { reason }], "{reason:?}");
+        assert!(b.frames().is_empty(), "{reason:?}");
+        assert!(
+            !f.registry.binding_live(&seat("a"), &bid("a", 1)),
+            "{reason:?}"
+        );
+        assert!(
+            f.registry.binding_live(&seat("a"), &bid("a", 2)),
+            "{reason:?}"
+        );
+        assert!(f.registry.seat_live(&seat("a")), "{reason:?}");
+        // The remaining channel still gets its deliveries.
+        f.set_view(&bid("a", 2), Some(view("a", 2, pending(2))));
+        f.registry.pass(f.now()).unwrap();
+        assert_eq!(
+            b.frames(),
+            vec![WatchFrame::Attention { version: 2 }],
+            "{reason:?}"
+        );
+        f.registry.close(&bid("a", 2), reason, f.now());
+        assert!(!f.registry.seat_live(&seat("a")), "{reason:?}");
+    }
+}
+
+#[test]
+fn re_registering_a_binding_replaces_only_its_own_channel() {
+    let f = fixture();
+    let (first, old) = f.register("a", 1);
+    let (_, sibling) = f.register("a", 2);
+    let (replacement, new) = f.register("a", 1);
+    assert_ne!(first, replacement);
+    assert_eq!(
+        old.frames(),
+        vec![WatchFrame::Close {
+            reason: WatchCloseReason::Replaced
+        }]
+    );
+    assert!(
+        sibling.frames().is_empty(),
+        "the other binding was not replaced"
+    );
+    assert!(new.frames().is_empty());
+    assert_eq!(f.registry.status().unwrap().channels.len(), 2);
+    // The replaced connection ending afterwards disturbs neither live channel.
+    f.registry.unregister(first, f.now());
+    assert!(f.registry.binding_live(&seat("a"), &bid("a", 1)));
+    assert_eq!(f.registry.status().unwrap().live_channels, 2);
+    assert_eq!(f.kicks(), 0);
+}
+
+#[test]
+fn stall_cooldown_is_per_binding() {
+    let over = MOD_STALL_AFTER_MS as i64 + 1;
+    let f = fixture();
+    let registered = f.now();
+    let (_, stalled_sink) = f.register("a", 1);
+    let (_, healthy_sink) = f.register("a", 2);
+    f.store.receipts.lock().unwrap().push((registered, 10));
+    f.registry
+        .record_attention_push(&seat("a"), &bid("a", 1), registered);
+    f.registry
+        .record_attention_push(&seat("a"), &bid("a", 2), registered);
+    f.advance(over);
+    // Binding 2 acked just now; binding 1 never did.
+    f.registry.record_ack(&seat("a"), &bid("a", 2), f.now());
+    assert!(
+        f.registry
+            .binding_stalled(&seat("a"), &bid("a", 1), f.now())
+    );
+    assert!(
+        !f.registry
+            .binding_stalled(&seat("a"), &bid("a", 2), f.now())
+    );
+    assert!(
+        !f.registry.stalled(&seat("a"), f.now()),
+        "the seat is stalled only when every one of its channels is"
+    );
+    f.registry.sweep(f.now());
+    assert_eq!(
+        stalled_sink.frames(),
+        vec![WatchFrame::Close {
+            reason: WatchCloseReason::Stalled
+        }]
+    );
+    assert!(healthy_sink.frames().is_empty());
+    assert!(f.registry.binding_live(&seat("a"), &bid("a", 2)));
+    assert_eq!(f.kicks(), 1);
+    // The cooldown is binding 1's alone.
+    assert_eq!(
+        f.try_register("a", 1).err(),
+        Some(WatchRefusalReason::Cooldown)
+    );
+    f.try_register("a", 3)
+        .expect("another binding of the seat registers");
+    f.try_register("a", 2)
+        .expect("the healthy binding re-registers");
+    f.advance(MOD_STALL_COOLDOWN_MS as i64 + 1);
+    f.try_register("a", 1).expect("the cooldown expired");
+}
+
+#[test]
+fn seat_stalled_needs_every_channel_stalled() {
+    let over = MOD_STALL_AFTER_MS as i64 + 1;
+    let f = fixture();
+    let registered = f.now();
+    f.register("a", 1);
+    f.register("a", 2);
+    f.store.receipts.lock().unwrap().push((registered, 10));
+    for generation in [1, 2] {
+        f.registry
+            .record_attention_push(&seat("a"), &bid("a", generation), registered);
+    }
+    f.advance(over);
+    assert!(f.registry.stalled(&seat("a"), f.now()));
+    f.registry.record_ack(&seat("a"), &bid("a", 2), f.now());
+    assert!(!f.registry.stalled(&seat("a"), f.now()));
 }

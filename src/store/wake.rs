@@ -27,7 +27,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 /// and advance `attention_version` so the dispatcher re-derives the seat's
 /// wake reasons. Catch-up release (ht-1ip.6) calls it in the row-end
 /// transaction.
-pub fn note_new_attention(tx: &rusqlite::Transaction<'_>, seat: &SeatId) -> Result<(), ApiError> {
+pub fn note_new_attention(tx: &rusqlite::Connection, seat: &SeatId) -> Result<(), ApiError> {
     tx.execute(
         "INSERT INTO wake_work(seat_id,reason_bits,attention_version) VALUES (?1,1,1) ON CONFLICT(seat_id) DO UPDATE SET reason_bits=reason_bits|1,attention_version=attention_version+1",
         [seat.as_str()],

@@ -1040,10 +1040,8 @@ where
             &selection.target,
             generation,
         );
-        let mut claim = bridge::caller_claim(&current).map_err(|_| CallerFailure::NoBinding)?;
-        claim.native_session =
-            NativeSessionId::parse(session.to_owned()).map_err(|_| CallerFailure::Other)?;
-        claim.liveness = Some(env.fingerprint);
+        let claim = bridge::caller_claim(&current).map_err(|_| CallerFailure::NoBinding)?;
+        let claim = own_session_claim(claim, session, Some(env.fingerprint))?;
         return Ok((claim, selection.seat, *instance));
     }
     let contexts =
@@ -1055,10 +1053,29 @@ where
     if current.harness != Harness::Claude {
         return Err(CallerFailure::NotClaude);
     }
-    let mut claim = bridge::caller_claim(&current).map_err(|_| CallerFailure::NoBinding)?;
+    let claim = bridge::caller_claim(&current).map_err(|_| CallerFailure::NoBinding)?;
+    let claim = own_session_claim(claim, session, None)?;
+    Ok((claim, selection.seat, *instance))
+}
+
+/// The watch child's claim names the binding of the session it serves (spec §3 Wake): the
+/// top-level Claude binding keyed by the seat and the `--session` the mod passed. A seat holds a
+/// binding per session, so the registration must carry this session and never an agent id; the
+/// daemon resolves it to that binding and holds the channel there.
+fn own_session_claim(
+    mut claim: CallerClaim,
+    session: &str,
+    liveness: Option<crate::protocol::authority::LivenessFingerprint>,
+) -> Result<CallerClaim, CallerFailure> {
     claim.native_session =
         NativeSessionId::parse(session.to_owned()).map_err(|_| CallerFailure::Other)?;
-    Ok((claim, selection.seat, *instance))
+    claim.role = crate::protocol::authority::CallerRole::TopLevel;
+    claim.harness = crate::protocol::authority::Harness::Claude;
+    claim.agent_id = None;
+    if liveness.is_some() {
+        claim.liveness = liveness;
+    }
+    Ok(claim)
 }
 
 #[allow(clippy::too_many_arguments)]

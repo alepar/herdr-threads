@@ -1216,15 +1216,16 @@ fn wake_candidates_page(
 }
 
 impl crate::ports::ModStoreReads for SqliteStore {
-    fn mod_seat_view(
+    fn mod_binding_view(
         &self,
         seat: &crate::protocol::ids::SeatId,
+        binding: crate::ports::ModBindingRef<'_>,
         budget: &CallBudget,
     ) -> Result<Option<crate::ports::ModSeatView>, ApiError> {
         let db = self.context.open_query(budget.clone())?;
         db.execute_batch("BEGIN DEFERRED")
             .map_err(|e| db.map_error(e))?;
-        seats::mod_seat_view(&db, &self.instance, seat)
+        seats::mod_binding_view(&db, &self.instance, seat, binding)
     }
 
     fn mod_stall_oldest(
@@ -1760,54 +1761,39 @@ impl StorePort for SqliteStore {
     fn mod_ack_binding(
         &self,
         instance: &str,
-        seat: &crate::protocol::ids::SeatId,
+        claim: &crate::protocol::authority::CallerClaim,
         budget: &CallBudget,
     ) -> Result<Option<crate::ports::ModAckBinding>, ApiError> {
         use crate::protocol::ids::{ExecutionId, HostTargetId, NativeSessionId};
         let db = self.context.open_query(budget.clone())?;
-        // A seat holds many bindings (ht-54r.3): the channel's binding is the most recent open
-        // top-level one (presentation; ht-54r.12 keys the channel by binding), its predecessor
-        // the next older top-level row of any state. Subagent rows never head a mod channel.
-        let mut stmt = db
-            .prepare("SELECT b.generation,b.observation_provenance,b.harness,b.native_session,b.execution_id,b.target_id,b.ended_at IS NULL FROM occupant_bindings b JOIN seats s ON s.id=b.seat_id WHERE b.seat_id=?1 AND s.instance_id=?2 AND b.role='top_level' ORDER BY b.ordinal DESC")
-            .map_err(store_error)?;
-        let mut rows = stmt
-            .query_map(params![seat.as_str(), instance], |r| {
-                Ok((
-                    r.get::<_, i64>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, String>(2)?,
-                    r.get::<_, String>(3)?,
-                    r.get::<_, String>(4)?,
-                    r.get::<_, String>(5)?,
-                    r.get::<_, bool>(6)?,
-                ))
-            })
-            .map_err(store_error)?;
-        let mut open = None;
-        for row in rows.by_ref() {
-            let row = row.map_err(store_error)?;
-            if row.6 {
-                open = Some(row);
-                break;
-            }
-        }
-        let Some(open) = open else {
+        // The channel's binding is the one the claim's key names (spec §3 Wake): a seat holds
+        // many bindings and each session acks through its own. Subagent rows never head a channel.
+        let Some(row) = bindings::match_claim(&db, &bindings::BindingKey::from_claim(claim))?
+        else {
             return Ok(None);
         };
-        let previous = rows
-            .next()
-            .transpose()
-            .map_err(store_error)?
-            .map(|row| (row.0 as u64, NativeSessionId::new(row.3)));
+        if row.role != bindings::BindingRole::TopLevel {
+            return Ok(None);
+        }
+        let placement: Option<(String, String)> = db
+            .query_row(
+                "SELECT b.execution_id,b.target_id FROM occupant_bindings b JOIN seats s ON s.id=b.seat_id WHERE b.binding_id=?1 AND s.instance_id=?2",
+                params![row.binding_id.as_str(), instance],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()
+            .map_err(store_error)?;
+        let Some((execution, target)) = placement else {
+            return Ok(None);
+        };
         Ok(Some(crate::ports::ModAckBinding {
-            generation: open.0 as u64,
-            provenance: open.1,
-            harness: open.2,
-            native_session: NativeSessionId::new(open.3),
-            execution: ExecutionId::new(open.4),
-            target: HostTargetId::new(open.5),
-            previous,
+            binding_id: row.binding_id,
+            generation: row.generation,
+            provenance: row.provenance,
+            harness: row.harness,
+            native_session: NativeSessionId::new(row.native_session),
+            execution: ExecutionId::new(execution),
+            target: HostTargetId::new(target),
         }))
     }
     fn issue_cooperative_permit(

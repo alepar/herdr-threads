@@ -1910,12 +1910,13 @@ mod publication_order {
         release: Mutex<mpsc::Receiver<()>>,
     }
     impl ModStoreReads for PausedStore {
-        fn mod_seat_view(
+        fn mod_binding_view(
             &self,
             seat: &SeatId,
+            binding: ModBindingRef<'_>,
             budget: &CallBudget,
         ) -> Result<Option<ModSeatView>, ApiError> {
-            self.inner.mod_seat_view(seat, budget)
+            self.inner.mod_binding_view(seat, binding, budget)
         }
         fn mod_stall_oldest(
             &self,
