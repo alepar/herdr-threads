@@ -2677,6 +2677,7 @@ fn activation_v2_watch_full_pending_capacity_parks_until_real_channel_input() {
         })
     };
     let attention_work_before = attention_work_diagnostic();
+    let mut last_kicked_idle = None;
     let attention_work_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         wait_until(
             "all fixture send_attention jobs to complete before Watch",
@@ -2687,7 +2688,18 @@ fn activation_v2_watch_full_pending_capacity_parks_until_real_channel_input() {
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             ).unwrap();
-                (outstanding == 0).then_some((total, complete))
+                if outstanding == 0 {
+                    return Some((total, complete));
+                }
+                // Setup-only stepping: completed small jobs otherwise wait
+                // for the next safety tick. One ordinary kick per observed
+                // finished pass keeps real worker quanta and backoff intact.
+                let idle = rig.probe.registered_idle_events(Lane::Deadlines);
+                if last_kicked_idle != Some(idle) {
+                    last_kicked_idle = Some(idle);
+                    rig.probe.kick_registered(Lane::Deadlines);
+                }
+                None
             },
         )
     }));
