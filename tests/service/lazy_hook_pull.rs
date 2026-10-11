@@ -174,28 +174,45 @@ fn lazy_state(f: &Fixture, seat: &str, id: &str) -> String {
 }
 
 fn check_in(f: &Fixture, seat: &str, target: &str, harness: Harness) -> CallerClaim {
+    // One harness process per pane: a seat's sessions share it.
+    check_in_as(
+        f,
+        seat,
+        target,
+        harness,
+        "n1",
+        1000 + seat.bytes().map(u32::from).sum::<u32>(),
+    )
+}
+
+/// A top-level check-in of session `session` on process `pid`. Two bindings of one seat need two
+/// processes: a shared pid makes the second lifecycle claim supersede the first (a `/clear`).
+fn check_in_as(
+    f: &Fixture,
+    seat: &str,
+    target: &str,
+    harness: Harness,
+    session: &str,
+    pid: u32,
+) -> CallerClaim {
     let claim = CallerClaim {
         instance: "i".into(),
         seat: SeatId::new(seat),
         binding_generation: 1,
         role: CallerRole::TopLevel,
         harness,
-        native_session: NativeSessionId::new("n1"),
-        execution: ExecutionId::new("00000000-0000-4000-8000-000000000001"),
+        native_session: NativeSessionId::new(session),
+        execution: ExecutionId::new(format!("00000000-0000-4000-8000-{pid:012}")),
         target: HostTargetId::new(target),
         agent_id: None,
-        liveness: Some(crate::protocol::authority::LivenessFingerprint {
-            // One harness process per pane: a seat's sessions share it.
-            pid: 1000 + seat.bytes().map(u32::from).sum::<u32>(),
-            start: 1,
-        }),
+        liveness: Some(crate::protocol::authority::LivenessFingerprint { pid, start: 1 }),
     };
     let command = Command::CheckIn(CheckIn {
         mode: CheckInMode::Lifecycle {
             expected_binding_generation: 1,
         },
         claim,
-        operation: OperationId::new(format!("ci-{seat}")),
+        operation: OperationId::new(format!("ci-{seat}-{session}")),
         lineage_parent: None,
     });
     match f.service.handle(command, peer(), &budget()).unwrap() {
@@ -419,5 +436,153 @@ fn hook_pull_confirm_of_ordinary_and_lazy_advances_the_cursor_and_does_not_reoff
     assert!(
         offered(&f, &seat).is_empty(),
         "nothing is re-offered once the cursor passed both"
+    );
+}
+
+fn confirm(f: &Fixture, claim: &CallerClaim, id: &str, operation: &str) -> DeliveryConfirmOutcome {
+    let confirmed = f
+        .service
+        .handle(
+            Command::DeliveryConfirm(DeliveryConfirm {
+                claim: claim.clone(),
+                ids: vec![MessageId::new(id)],
+                operation: OperationId::new(operation),
+            }),
+            peer(),
+            &budget(),
+        )
+        .unwrap();
+    let CommandResult::DeliveryConfirmed(report) = confirmed else {
+        panic!("unexpected {confirmed:?}");
+    };
+    assert_eq!(report.results.len(), 1);
+    report.results[0].result
+}
+
+/// Seat `s` with two connected top-level bindings, `na` and `nb`.
+fn two_bindings(f: &Fixture) -> (CallerClaim, CallerClaim) {
+    let a = check_in_as(f, "s", "p", fourth(), "na", 2001);
+    let b = check_in_as(f, "s", "p", fourth(), "nb", 2002);
+    let connected: i64 =
+        f.db.query_row(
+            "SELECT count(*) FROM occupant_bindings WHERE seat_id='s' AND liveness='connected'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(connected, 2, "both bindings are connected");
+    (a, b)
+}
+
+fn binding_of(f: &Fixture, claim: &CallerClaim) -> BindingId {
+    BindingId::new(
+        f.db.query_row(
+            "SELECT binding_id FROM occupant_bindings WHERE seat_id='s' AND native_session=?1 AND ended_at IS NULL",
+            [claim.native_session.as_str()],
+            |r| r.get::<_, String>(0),
+        )
+        .unwrap(),
+    )
+}
+
+/// The receipt's state and who settled it, when and at which generation: a second settlement
+/// would change any of them.
+fn receipt_row(f: &Fixture, id: &str) -> (String, Option<i64>, Option<String>, Option<i64>) {
+    f.db.query_row(
+        "SELECT state, acked_at, ack_binding_id, ack_generation FROM receipt_state WHERE message_id=?1 AND seat_id='s'",
+        [id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+    )
+    .unwrap()
+}
+
+/// Kills: a hook pull that reads the seat (`claim: None`), so a message one binding settled never
+/// reaches its sibling, and a confirm of it that records a second settlement.
+#[test]
+fn hook_pull_ordinary_settled_by_a_sibling_still_reaches_the_other_binding() {
+    use crate::store::read_cursors;
+    let f = fixture();
+    let (a, b) = two_bindings(&f);
+    receivable_ordinary(&f, "s", "msg-o2", "x");
+    assert_eq!(offered(&f, &a), vec![MessageId::new("msg-o2")]);
+    assert_eq!(
+        confirm(&f, &a, "msg-o2", "dc-a"),
+        DeliveryConfirmOutcome::Settled
+    );
+    let before = receipt_row(&f, "msg-o2");
+    assert_eq!(before.0, "acked");
+
+    assert_eq!(
+        offered(&f, &b),
+        vec![MessageId::new("msg-o2")],
+        "B has not read it: its own stream still carries the message A settled"
+    );
+    assert_eq!(
+        confirm(&f, &b, "msg-o2", "dc-b"),
+        DeliveryConfirmOutcome::AlreadySettled
+    );
+    let binding_b = binding_of(&f, &b);
+    let tail: i64 =
+        f.db.query_row(
+            "SELECT max(sequence) FROM messages WHERE thread_id='t'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        read_cursors::cursor_for(&f.db, &binding_b, &ThreadId::new("t")).unwrap(),
+        Some(u64::try_from(tail).unwrap())
+    );
+    assert!(!read_cursors::has_unread(&f.db, &binding_b).unwrap());
+    assert_eq!(
+        receipt_row(&f, "msg-o2"),
+        before,
+        "B's display records no second settlement"
+    );
+    f.clock.0.fetch_add(
+        crate::delivery::ledger::REOFFER_AFTER_MS + 1,
+        Ordering::SeqCst,
+    );
+    assert!(offered(&f, &b).is_empty());
+}
+
+/// Kills: a late first pull that finds an empty page because the seat-level receipt settled.
+#[test]
+fn hook_pull_late_first_pull_after_a_sibling_settled_delivers() {
+    let f = fixture();
+    let (a, b) = two_bindings(&f);
+    receivable_ordinary(&f, "s", "msg-o2", "x");
+    assert_eq!(offered(&f, &a), vec![MessageId::new("msg-o2")]);
+    assert_eq!(
+        confirm(&f, &a, "msg-o2", "dc-a"),
+        DeliveryConfirmOutcome::Settled
+    );
+    f.clock.0.fetch_add(10 * 60 * 1000, Ordering::SeqCst);
+    assert_eq!(offered(&f, &b), vec![MessageId::new("msg-o2")]);
+}
+
+/// Kills: a seat-union lazy page that re-shows B a row B completed while A still has it unread.
+#[test]
+fn hook_pull_lazy_row_completed_by_one_binding_is_not_reoffered_to_it() {
+    let f = fixture();
+    let (a, b) = two_bindings(&f);
+    lazy_message(&f, "s", "msg-lz5", "p");
+    assert_eq!(offered(&f, &b), vec![MessageId::new("msg-lz5")]);
+    assert_eq!(
+        confirm(&f, &b, "msg-lz5", "dc-lz-b"),
+        DeliveryConfirmOutcome::Settled
+    );
+    f.clock.0.fetch_add(
+        crate::delivery::ledger::REOFFER_AFTER_MS + 1,
+        Ordering::SeqCst,
+    );
+    assert!(
+        offered(&f, &b).is_empty(),
+        "B completed it; A having it unread must not show it to B again"
+    );
+    assert_eq!(
+        offered(&f, &a),
+        vec![MessageId::new("msg-lz5")],
+        "A's own stream still has it"
     );
 }

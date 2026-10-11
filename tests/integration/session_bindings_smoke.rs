@@ -2227,3 +2227,157 @@ fn config9_foreground_and_background_agents_in_one_pane() {
         );
     }
 }
+
+impl Smoke {
+    /// `herdr-threads watch ack` as the Claude mod runs it for `who`'s session: one JSON line per id.
+    fn watch_ack(&self, who: &Agent, via: &str, id: &str) -> Value {
+        let argv: Vec<String> = self
+            .routing()
+            .into_iter()
+            .chain(
+                [
+                    "watch",
+                    "ack",
+                    "--session",
+                    who.session.as_str(),
+                    "--via",
+                    via,
+                    id,
+                ]
+                .map(String::from),
+            )
+            .collect();
+        let out = Self::finish(self.agent_command(who, &argv), None);
+        assert_eq!(out.code, 0, "{}", out.text());
+        out.stdout
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .find(|line| line["id"] == id)
+            .unwrap_or_else(|| panic!("no ack line for {id}: {}", out.text()))
+    }
+}
+
+// Kills: a watch drain that reads the seat instead of its binding (a message a sibling binding
+// settled never reaches the still-unread binding, on its first drain or after a reconnect), a mod
+// that does not ack such a message (the binding's cursor never passes it), an ack that records a
+// second settlement, and a seat-union lazy page that re-shows a row the binding completed while a
+// sibling still has it unread.
+#[test]
+fn config9_a_late_drain_after_a_sibling_settles_still_delivers() {
+    let Some(mut smoke) = Smoke::new("config9_a_late_drain_after_a_sibling_settles_still_delivers")
+    else {
+        return;
+    };
+    let (pane, peer_pane) = (smoke.pane(), smoke.pane());
+    let (seat, _) = (smoke.seat(&pane), smoke.seat(&peer_pane));
+    let fg = Agent::claude("sess-fg", &pane).in_process(smoke.stand_in());
+    let bg = Agent::claude("sess-bg", &pane).in_process(smoke.stand_in());
+    let peer = Agent::claude("sess-peer", &peer_pane);
+    for who in [&fg, &peer] {
+        assert_eq!(
+            smoke.hook(who, &claude_start(&who.session, "startup")).code,
+            0
+        );
+    }
+    let thread = joined_thread(&smoke, &peer, &fg, &seat);
+    assert_eq!(smoke.hook(&bg, &claude_start("sess-bg", "startup")).code, 0);
+    let (b_fg, b_bg) = (
+        smoke.binding(&seat, "claude", "sess-fg", ""),
+        smoke.binding(&seat, "claude", "sess-bg", ""),
+    );
+    for binding in [&b_fg, &b_bg] {
+        assert_eq!(binding.liveness, "connected", "{binding:?}");
+    }
+
+    // An ordinary, ACK-required message; the foreground's text inbox settles it for the seat.
+    let message = smoke
+        .cli(
+            &peer,
+            &[
+                "send",
+                &thread,
+                "--body",
+                "settle me",
+                "--require-ack",
+                &seat,
+            ],
+        )
+        .data()
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(smoke.text(&fg, &["inbox"]).code, 0);
+    let receipt = |smoke: &Smoke| -> (String, Option<i64>, Option<String>) {
+        smoke.db()
+            .query_row(
+                "SELECT state, acked_at, ack_binding_id FROM receipt_state WHERE message_id=?1 AND seat_id=?2",
+                rusqlite::params![message, seat],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap()
+    };
+    let settled = receipt(&smoke);
+    assert_eq!(settled.0, "acked", "the foreground settled it for the seat");
+    // The settlement appends ack events after the message, so positions compare to its sequence.
+    let sequence: i64 = smoke.count("SELECT sequence FROM messages WHERE id=?1", &[&message]);
+    assert!(
+        smoke.cursor(&b_fg.id, &thread).unwrap() >= sequence,
+        "the foreground read it"
+    );
+    assert!(
+        smoke.cursor(&b_bg.id, &thread).unwrap() < sequence,
+        "the background binding has not read"
+    );
+
+    // The background's channel still shows it, as an already-settled message.
+    let shown = |m: String| move |l: &Value| l["id"] == m.as_str() && l["kind"] == "message";
+    let mut bg_watch = smoke.watch(&bg);
+    let line = bg_watch.wait_line(
+        "the already-settled message on the first drain",
+        shown(message.clone()),
+    );
+    assert_eq!(line["ack_required"], false, "{line}");
+    // A reconnect before any ack shows it again.
+    drop(bg_watch);
+    let mut bg_watch = smoke.watch(&bg);
+    bg_watch.wait_line(
+        "the message again after a reconnect",
+        shown(message.clone()),
+    );
+
+    // The mod acks it: only the background's read position moves.
+    let acked = smoke.watch_ack(&bg, "context", &message);
+    assert_eq!(acked["result"], "already_settled", "{acked}");
+    assert!(
+        smoke.cursor(&b_bg.id, &thread).unwrap() >= sequence,
+        "the ack moved the background's own read position"
+    );
+    assert_eq!(receipt(&smoke), settled, "no second settlement");
+
+    // A lazy row the background completed is not shown to it again while the foreground still
+    // has it unread.
+    let lazy = smoke
+        .cli(&peer, &["send", &thread, "--body", "lazy"])
+        .data()
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let is_lazy = |m: String| move |l: &Value| l["id"] == m.as_str() && l["kind"] == "lazy";
+    bg_watch.wait_line("the lazy row", is_lazy(lazy.clone()));
+    let acked = smoke.watch_ack(&bg, "append", &lazy);
+    assert_eq!(acked["result"], "settled", "{acked}");
+    drop(bg_watch);
+    let bg_watch = smoke.watch(&bg);
+    // The connected status came after the first drain was requested; give the drain time to
+    // answer, then read everything that arrived.
+    let until = Instant::now() + Duration::from_secs(3);
+    while let Ok(line) = bg_watch
+        .lines
+        .recv_timeout(until.saturating_duration_since(Instant::now()))
+    {
+        assert!(
+            line["id"] != lazy.as_str(),
+            "the completed lazy row is shown again: {line}"
+        );
+    }
+}

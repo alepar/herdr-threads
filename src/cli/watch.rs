@@ -19,7 +19,7 @@ use crate::{
     ports::LocalClient,
     protocol::{
         authority::CallerClaim,
-        capabilities::MOD_WATCH,
+        capabilities::{BINDING_CURSORS, MOD_WATCH},
         commands::{AckModDelivered, Command, InboxQuery},
         ids::{MessageId, NativeSessionId, OperationId, SeatId},
         pagination::{Page, PageRequest},
@@ -335,7 +335,8 @@ pub(crate) struct WatchSession<'a> {
 
 /// What the `mod.watch_v1` capability probe learned.
 enum Probe {
-    Supported,
+    /// `cursors`: the daemon serves per-binding unread streams (`inbox.binding_cursors_v1`).
+    Supported { cursors: bool },
     /// The daemon answered, and it has no such feature.
     Unsupported,
     /// The call itself failed (busy, timeout, booting daemon, transport loss): the daemon
@@ -349,7 +350,9 @@ fn probe_mod_watch(client: &dyn LocalClient, budget: &CallBudget) -> Probe {
     match client.call_definitive(Command::Capabilities, budget) {
         Ok(Ok(CommandResult::Capabilities(list))) => {
             if list.capabilities.iter().any(|c| c == MOD_WATCH) {
-                Probe::Supported
+                Probe::Supported {
+                    cursors: list.capabilities.iter().any(|c| c == BINDING_CURSORS),
+                }
             } else {
                 Probe::Unsupported
             }
@@ -382,12 +385,14 @@ fn run_session_marked(
     mut alive: impl FnMut() -> bool,
 ) -> i32 {
     let mut state = EmitState::new(session.hint_path.clone()).with_command_prefix(command_prefix);
-    match probe_mod_watch(session.client, &cooperative_budget(session.clock)) {
-        Probe::Supported => {}
+    let cursors = match probe_mod_watch(session.client, &cooperative_budget(session.clock)) {
+        Probe::Supported { cursors } => cursors,
         Probe::Unsupported => return refuse(&mut state, out, WatchStatusReason::Unsupported),
         Probe::Failed => return refuse(&mut state, out, WatchStatusReason::DaemonUnavailable),
-    }
+    };
     let seat = session.claim.seat.clone();
+    // The binding's own stream, only against a daemon that serves it.
+    let reader = cursors.then(|| session.claim.clone());
     let (reply, mut conn) = match open_watch(session.socket, session.instance, session.claim) {
         Ok(opened) => opened,
         Err(OpenError::Unavailable) => {
@@ -407,6 +412,7 @@ fn run_session_marked(
             session.client,
             session.clock,
             &seat,
+            reader.as_ref(),
             accepted.attention_version,
             &mut state,
             out,
@@ -423,6 +429,7 @@ fn watch_loop(
     client: &dyn LocalClient,
     clock: &dyn Clock,
     seat: &SeatId,
+    claim: Option<&CallerClaim>,
     accepted_version: u64,
     state: &mut EmitState,
     out: &mut dyn Write,
@@ -463,7 +470,7 @@ fn watch_loop(
     ));
     let mut version = accepted_version;
     loop {
-        match drain(client, clock, seat, version, state, out) {
+        match drain(client, clock, seat, claim, version, state, out) {
             Ok(()) => {}
             Err(DrainError::Out) => return 0,
             Err(DrainError::Api | DrainError::Protocol) => {
@@ -507,6 +514,7 @@ struct ClientPageSource<'a> {
     client: &'a dyn LocalClient,
     clock: &'a dyn Clock,
     seat: &'a SeatId,
+    claim: Option<&'a CallerClaim>,
 }
 
 impl PageSource for ClientPageSource<'_> {
@@ -515,7 +523,7 @@ impl PageSource for ClientPageSource<'_> {
             .client
             .call(
                 Command::InboxBatchV2(InboxQuery {
-                    claim: None,
+                    claim: self.claim.cloned(),
                     seat: Some(self.seat.clone()),
                     page: PageRequest {
                         cursor,
@@ -541,6 +549,7 @@ pub(crate) fn drain(
     client: &dyn LocalClient,
     clock: &dyn Clock,
     seat: &SeatId,
+    claim: Option<&CallerClaim>,
     frame_version: u64,
     state: &mut EmitState,
     out: &mut dyn Write,
@@ -549,6 +558,7 @@ pub(crate) fn drain(
         client,
         clock,
         seat,
+        claim,
     };
     let attention_text =
         crate::protocol::watch::attention_marker_for(&state.assembler.command_prefix);

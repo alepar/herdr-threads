@@ -46,7 +46,7 @@ One object per line, `schema: 1`; consumers ignore unknown keys.
 
 | `kind` | `id` | notes |
 |---|---|---|
-| `message` | message id | ordinary receipt, `ack_required: true` |
+| `message` | message id | ordinary message; `ack_required: true` while its receipt is pending, `false` when another binding of the seat already settled it. Both are acked: the second answers `already_settled` and only moves this session's read position |
 | `lazy` | message id | `ack_required: false` |
 | `attention` | `attention:<version>` | never acked; re-sent once per version and after each (re)start |
 | `attention_cleared` | `attention_cleared:<version>` | after an attention line, nothing it pointed at is still pending; the mod drops unsent attention items |

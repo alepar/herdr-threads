@@ -692,6 +692,18 @@ test('per-id ack results: only retryable ids stay for a retry', async () => {
   expect(h.core.snapshot().rec.delivered.m1).toBe('context')
 })
 
+test('an already-settled message line is delivered and acked like a pending one', async () => {
+  const h = await harness({ state: busyState() }).boot()
+  h.ackResult = () => ({ code: 0, stdout: JSON.stringify({ id: 'm9', result: 'already_settled' }) })
+  h.line(msg('m9', { ack_required: false }))
+  await h.core.onToolCall({ tool: 'Bash' }, answered)
+  await flush()
+  expect(h.ackRuns().length).toBe(1)
+  expect(h.ackRuns()[0]).toContain('m9')
+  expect(h.core.snapshot().rec.delivered.m9).toBe('context')
+  expect(Object.keys(h.core.snapshot().rec.unacked)).toEqual([])
+})
+
 test('a non-zero ack exit makes every id retryable; a missing line too', async () => {
   const h = await harness({ state: busyState() }).boot()
   h.ackResult = () => ({ code: 1, stdout: JSON.stringify({ id: 'm1', result: 'settled' }) })

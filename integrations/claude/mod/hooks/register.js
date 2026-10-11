@@ -289,7 +289,7 @@ export function createCore(io) {
         body: String(o.body ?? ''),
         truncated,
         run: S.run,
-        ackable: !truncated && (o.kind === 'lazy' || o.ack_required === true),
+        ackable: !truncated && (o.kind === 'lazy' || o.kind === 'message'),
       })
     }
     retryAcks()
