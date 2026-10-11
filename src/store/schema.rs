@@ -68,7 +68,8 @@ const V29: &str = include_str!("../../migrations/0029_invitation_confirmation.sq
 
 const V30: &str = include_str!("../../migrations/0030_receipt_send_time.sql");
 const V31: &str = include_str!("../../migrations/0031_handoff_body_bounds.sql");
-pub(crate) const LATEST_VERSION: i64 = 31;
+const V32: &str = include_str!("../../migrations/0032_receipt_deadline_backfill.sql");
+pub(crate) const LATEST_VERSION: i64 = 32;
 
 /// Decode only persisted results, after the caller's digest has matched. Live
 /// protocol responses still require disposition. Missing original context
@@ -411,7 +412,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             verify_existing(conn)
         }
         17 => verify_existing(conn),
-        18..=31 => verify_existing(conn),
+        18..=32 => verify_existing(conn),
         _ => Err(api_error(
             ErrorCode::IncompatibleSchema,
             format!("unsupported schema version {version}"),
@@ -610,7 +611,62 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
     if version <= 30 {
         migrate_handoff_v30_to_v31(conn)?;
     }
-    verify_handoff_body_bounds_schema(conn)
+    verify_handoff_body_bounds_schema(conn)?;
+    if version <= 31 {
+        conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
+        let result = conn
+            .execute_batch(V32)
+            .and_then(|_| conn.pragma_update(None, "user_version", 32));
+        match result {
+            Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(store_error(error));
+            }
+        }
+    }
+    verify_receipt_deadline_backfill_schema(conn)
+}
+
+fn verify_receipt_deadline_backfill_schema(conn: &Connection) -> Result<(), ApiError> {
+    let expected = V32
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("--"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let expected = expected.split(';').next().unwrap().trim();
+    let actual: Option<String> = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='receipt_deadline_backfill'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(store_error)?;
+    if actual
+        .as_deref()
+        .map(|sql| sql.split_whitespace().collect::<String>())
+        != Some(expected.split_whitespace().collect::<String>())
+    {
+        return Err(api_error(
+            ErrorCode::IncompatibleSchema,
+            "missing or altered receipt deadline backfill table",
+        ));
+    }
+    let marker: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM receipt_deadline_backfill WHERE singleton=1)",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    if !marker {
+        return Err(api_error(
+            ErrorCode::IncompatibleSchema,
+            "missing receipt deadline backfill cursor",
+        ));
+    }
+    Ok(())
 }
 
 fn verify_existing_v29(conn: &Connection) -> Result<(), ApiError> {

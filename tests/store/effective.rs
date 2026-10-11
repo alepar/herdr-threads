@@ -978,6 +978,826 @@ fn receipt_upgrade_snapshot(db: &Connection, table: &str) -> Vec<Vec<rusqlite::t
         .unwrap()
 }
 
+struct UpgradeClock;
+impl Clock for UpgradeClock {
+    fn utc_now(&self) -> UtcMillis {
+        UtcMillis(5000)
+    }
+    fn monotonic_now(&self) -> crate::protocol::time::MonoInstant {
+        crate::protocol::time::MonoInstant(0)
+    }
+}
+
+fn dormant_upgrade_fixture(physical: usize, manifests: usize) -> (std::path::PathBuf, Connection) {
+    let db = v28_fixture();
+    for index in 0..physical + manifests {
+        let message = format!("old{index:04}");
+        let sequence = index as i64 + 1;
+        db.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES('i',?1,'t',?2,'ordinary','retained body',1000,?2)", rusqlite::params![message, sequence]).unwrap();
+        if index < physical {
+            db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES(?1,'t','s','pending',300)", [&message]).unwrap();
+        } else {
+            let preparation = format!("oldp{index:04}");
+            db.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES(?1,'i','actor',?1,zeroblob(32),'t',0,0,0,0,0,0,1,'sealed')", [&preparation]).unwrap();
+            db.execute("INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES(?1,'t','s',1,300,0)", [&preparation]).unwrap();
+            db.execute("INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('i',?1,?2,'t',?3,1000,?3,0,1,0)", rusqlite::params![preparation, message, sequence]).unwrap();
+        }
+    }
+    db.execute(
+        "UPDATE host_instances SET decision_seq=?1",
+        [(physical + manifests + 10) as i64],
+    )
+    .unwrap();
+    db.execute(
+        "UPDATE threads SET next_sequence=?1",
+        [(physical + manifests + 1) as i64],
+    )
+    .unwrap();
+    assert_eq!(
+        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        28
+    );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+            .get::<_, i64>(
+            0
+        ))
+        .unwrap(),
+        0
+    );
+    let path = std::env::temp_dir().join(format!("dormant-upgrade-{}.db", uuid::Uuid::new_v4()));
+    db.execute("VACUUM INTO ?1", [path.to_str().unwrap()])
+        .unwrap();
+    drop(db);
+    let reopened = Connection::open(&path).unwrap();
+    reopened.pragma_update(None, "foreign_keys", true).unwrap();
+    assert_eq!(
+        reopened
+            .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        28
+    );
+    (path, reopened)
+}
+
+#[test]
+fn dormant_upgrade_actual_v31_backfill32_reopens_and_rolls_back_without_recapture() {
+    for foreign_keys in [false, true] {
+        let (path, db) = dormant_upgrade_fixture(1, 1);
+        // Replay immutable prefixes on the actual populated v28 file; do not
+        // initialize latest and rewind its version to manufacture a precursor.
+        db.pragma_update(None, "foreign_keys", false).unwrap();
+        for (version, migration) in [
+            (
+                29,
+                include_str!("../../migrations/0029_invitation_confirmation.sql"),
+            ),
+            (
+                30,
+                include_str!("../../migrations/0030_receipt_send_time.sql"),
+            ),
+            (
+                31,
+                include_str!("../../migrations/0031_handoff_body_bounds.sql"),
+            ),
+        ] {
+            db.execute_batch("BEGIN IMMEDIATE").unwrap();
+            db.execute_batch(migration).unwrap();
+            db.pragma_update(None, "user_version", version).unwrap();
+            db.execute_batch("COMMIT").unwrap();
+        }
+        db.execute_batch("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,confirmation,inviter_seat_id) VALUES('retained-invitation','t','s',1,'pending',1,100,50,150,'require_ack','s'); UPDATE host_instances SET decision_seq=99 WHERE id='i';").unwrap();
+        drop(db);
+        let db = Connection::open(&path).unwrap();
+        db.pragma_update(None, "foreign_keys", foreign_keys)
+            .unwrap();
+        assert_eq!(
+            db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                .unwrap(),
+            31
+        );
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+                .get::<_, i64>(
+                0
+            ))
+            .unwrap(),
+            0
+        );
+        let tables = [
+            "receipts",
+            "receipt_state",
+            "messages",
+            "send_preparations",
+            "prepared_recipients",
+            "send_manifests",
+            "invitations",
+            "receipt_send_time_cutovers",
+        ];
+        let before: Vec<_> = tables
+            .iter()
+            .map(|table| receipt_upgrade_snapshot(&db, table))
+            .collect();
+        let catalog = |db: &Connection| {
+            db.prepare("SELECT type,name,tbl_name,rootpage,sql FROM sqlite_master WHERE name!='receipt_deadline_backfill' ORDER BY type,name").unwrap()
+                .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)?, r.get::<_, Option<String>>(4)?)))
+                .unwrap().map(Result::unwrap).collect::<Vec<_>>()
+        };
+        let old_catalog = catalog(&db);
+        // CREATE main table succeeds, but INSERT resolves to the obstructing
+        // temp view. Failure must roll back the newly created main table too.
+        db.execute_batch("CREATE TEMP VIEW receipt_deadline_backfill AS SELECT 1 AS singleton")
+            .unwrap();
+        assert!(schema::initialize(&db, || UtcMillis(0)).is_err());
+        assert!(db.is_autocommit());
+        assert_eq!(
+            db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                .unwrap(),
+            31
+        );
+        assert_eq!(
+            db.pragma_query_value(None, "foreign_keys", |r| r.get::<_, bool>(0))
+                .unwrap(),
+            foreign_keys
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT count(*) FROM sqlite_master WHERE name='receipt_deadline_backfill'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0
+        );
+        assert_eq!(catalog(&db), old_catalog);
+        drop(db); // Physical reopen clears only this connection's temp obstruction.
+        let db = Connection::open(&path).unwrap();
+        db.pragma_update(None, "foreign_keys", foreign_keys)
+            .unwrap();
+        assert_eq!(
+            db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                .unwrap(),
+            31
+        );
+        schema::initialize(&db, || UtcMillis(1)).unwrap();
+        assert_eq!(
+            db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                .unwrap(),
+            schema::LATEST_VERSION
+        );
+        assert_eq!(
+            catalog(&db),
+            old_catalog,
+            "additive32 preserves every prior object/rootpage"
+        );
+        for (table, retained) in tables.iter().zip(&before) {
+            assert_eq!(&receipt_upgrade_snapshot(&db, table), retained, "{table}");
+        }
+        assert_eq!(db.query_row("SELECT historical_decision_seq FROM receipt_send_time_cutovers WHERE instance_id='i'", [], |r| r.get::<_, i64>(0)).unwrap(), 12);
+        let marker = receipt_upgrade_snapshot(&db, "receipt_deadline_backfill");
+        assert_eq!(db.query_row("SELECT physical_after,physical_high_water,prepared_after,prepared_high_water,completed FROM receipt_deadline_backfill WHERE singleton=1", [], |r| Ok((r.get::<_, i64>(0)?,r.get::<_, i64>(1)?,r.get::<_, i64>(2)?,r.get::<_, i64>(3)?,r.get::<_, i64>(4)?))).unwrap(), (0,1,0,2,0));
+        db.execute_batch("UPDATE host_instances SET decision_seq=1000 WHERE id='i'")
+            .unwrap();
+        drop(db);
+        let db = Connection::open(&path).unwrap();
+        db.pragma_update(None, "foreign_keys", foreign_keys)
+            .unwrap();
+        schema::initialize(&db, || UtcMillis(2)).unwrap();
+        assert_eq!(
+            receipt_upgrade_snapshot(&db, "receipt_deadline_backfill"),
+            marker
+        );
+        assert_eq!(
+            receipt_upgrade_snapshot(&db, "receipt_send_time_cutovers"),
+            before[7]
+        );
+        assert_eq!(catalog(&db), old_catalog);
+        assert_eq!(
+            db.pragma_query_value(None, "foreign_keys", |r| r.get::<_, bool>(0))
+                .unwrap(),
+            foreign_keys
+        );
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+                .get::<_, i64>(
+                0
+            ))
+            .unwrap(),
+            0
+        );
+        drop(db);
+        std::fs::remove_file(path).unwrap();
+    }
+}
+
+fn assert_upgrade_warning_link(db: &Connection, table: &str, message: &str) {
+    let warning: Option<String> = db
+        .query_row(
+            &format!("SELECT warning_message_id FROM {table} WHERE message_id=?1 AND seat_id='s'"),
+            [message],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let warning = warning.unwrap_or_else(|| panic!("unwarned {table} obligation {message}"));
+    assert!(db.query_row("SELECT EXISTS(SELECT 1 FROM messages m JOIN warning_conditions c ON c.open_warning_id=m.id WHERE m.id=?1 AND m.kind='warn' AND m.thread_id='t' AND c.condition_kind='receipt' AND c.affected_seat_id='s' AND c.clear_warning_id IS NULL)",[warning],|r|r.get::<_,bool>(0)).unwrap(),"{table} {message} must link the durable open receipt warning");
+}
+
+#[test]
+fn dormant_upgrade_physical_projection_uses_original_send_time() {
+    let (path, db) = dormant_upgrade_fixture(1, 0);
+    schema::initialize(&db, || UtcMillis(5000)).unwrap();
+    assert_eq!(
+        effective_receipt(&db, "old0000", "s")
+            .unwrap()
+            .unwrap()
+            .deadline_at,
+        Some(1300)
+    );
+    drop(db);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn dormant_upgrade_discovers_physical_and_unmaterialized_manifest_without_availability() {
+    let (path, mut db) = dormant_upgrade_fixture(1, 1);
+    let retained = receipt_upgrade_snapshot(&db, "messages");
+    schema::initialize(&db, || UtcMillis(5000)).unwrap();
+    let context = crate::store::connection::StoreContext::new(
+        path.clone(),
+        std::sync::Arc::new(UpgradeClock),
+    );
+    let mut cursor = crate::store::receipts::ReceiptDueCursor::default();
+    let mut warnings = 0;
+    for _ in 0..5 {
+        let page = crate::store::receipts::scan_due(&context, &mut db, 100, &mut cursor).unwrap();
+        assert!(page.inspected <= 100);
+        warnings += page.warnings;
+        if !page.more {
+            break;
+        }
+    }
+    assert_eq!(
+        warnings, 1,
+        "one recipient/thread warning coalesces both obligations"
+    );
+    assert_eq!(db.query_row("SELECT (SELECT count(*) FROM receipts WHERE warning_message_id IS NOT NULL)+(SELECT count(*) FROM receipt_state WHERE warning_message_id IS NOT NULL)",[],|r|r.get::<_,i64>(0)).unwrap(),2,"both dormant source classes must reach indexed discovery");
+    assert_upgrade_warning_link(&db, "receipts", "old0000");
+    assert_upgrade_warning_link(&db, "receipt_state", "old0001");
+    assert_eq!(
+        receipt_upgrade_snapshot(&db, "messages")
+            .into_iter()
+            .filter(|r| retained.contains(r))
+            .count(),
+        2
+    );
+    drop(db);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn dormant_upgrade_bounded_batches_survive_restart_and_continuing_arrivals() {
+    let (path, mut db) = dormant_upgrade_fixture(250, 250);
+    let retained_preparations = receipt_upgrade_snapshot(&db, "send_preparations");
+    let retained_recipients = receipt_upgrade_snapshot(&db, "prepared_recipients");
+    let retained_manifests = receipt_upgrade_snapshot(&db, "send_manifests");
+    schema::initialize(&db, || UtcMillis(5000)).unwrap();
+    let context = crate::store::connection::StoreContext::new(
+        path.clone(),
+        std::sync::Arc::new(UpgradeClock),
+    );
+    let mut cursor = crate::store::receipts::ReceiptDueCursor::default();
+    let first = crate::store::receipts::scan_due(&context, &mut db, 100, &mut cursor).unwrap();
+    assert_eq!(first.inspected, 100);
+    assert!(
+        first.more,
+        "historical backlog must request immediate continuation"
+    );
+    let indexed: i64 = db.query_row("SELECT (SELECT count(*) FROM receipts WHERE deadline_at IS NOT NULL)+(SELECT count(*) FROM receipt_state WHERE deadline_at IS NOT NULL)",[],|r|r.get(0)).unwrap();
+    assert!(
+        indexed > 0 && indexed <= 100,
+        "backfill must commit one bounded prefix: {indexed}"
+    );
+    drop(db);
+    db = Connection::open(&path).unwrap();
+    db.pragma_update(None, "foreign_keys", true).unwrap();
+    schema::initialize(&db, || UtcMillis(9000)).unwrap();
+    cursor = crate::store::receipts::ReceiptDueCursor::default();
+    let mut finished = false;
+    for turn in 0..20 {
+        // New due work keeps arriving above the captured historical high-water.
+        let sequence: i64 = db
+            .query_row("SELECT next_sequence FROM threads WHERE id='t'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let decision: i64 = db
+            .query_row(
+                "SELECT decision_seq+1 FROM host_instances WHERE id='i'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let message = format!("arrival{turn}");
+        db.execute(
+            "UPDATE host_instances SET decision_seq=?1 WHERE id='i'",
+            [decision],
+        )
+        .unwrap();
+        db.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES('i',?1,'t',?2,'ordinary','new body',900,?3)",rusqlite::params![message,sequence,decision]).unwrap();
+        db.execute("UPDATE threads SET next_sequence=next_sequence+1", [])
+            .unwrap();
+        db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,deadline_at) VALUES(?1,'t','s','pending',300,1200)",[&message]).unwrap();
+        let page = crate::store::receipts::scan_due(&context, &mut db, 100, &mut cursor).unwrap();
+        assert!(page.inspected <= 100);
+        let warned: i64 = db.query_row("SELECT (SELECT count(*) FROM receipts WHERE message_id GLOB 'old*' AND warning_message_id IS NOT NULL)+(SELECT count(*) FROM receipt_state WHERE message_id GLOB 'old*' AND warning_message_id IS NOT NULL)",[],|r|r.get(0)).unwrap();
+        if turn == 0 {
+            assert!(
+                warned < 500,
+                "fixture must still have historical repair backlog"
+            );
+            assert!(
+                db.query_row(
+                    "SELECT warning_message_id IS NOT NULL FROM receipts WHERE message_id=?1",
+                    [&message],
+                    |r| r.get::<_, bool>(0)
+                )
+                .unwrap(),
+                "repair must not starve a new due receipt"
+            );
+        }
+        if warned == 500 {
+            finished = true;
+            break;
+        }
+        assert!(
+            page.more,
+            "initial overdue obligations disappeared after turn {turn}: {warned}"
+        );
+    }
+    assert!(
+        finished,
+        "finite historical backlog starved by arrivals or restart"
+    );
+    for index in 0..500 {
+        assert_upgrade_warning_link(
+            &db,
+            if index < 250 {
+                "receipts"
+            } else {
+                "receipt_state"
+            },
+            &format!("old{index:04}"),
+        );
+    }
+    assert_eq!(db.query_row("SELECT physical_after,physical_high_water,prepared_after,prepared_high_water,completed FROM receipt_deadline_backfill",[],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?,r.get::<_,bool>(4)?))).unwrap(),(250,250,251,251,true),"new arrivals must not enter the captured repair snapshot");
+    assert_eq!(
+        receipt_upgrade_snapshot(&db, "send_preparations"),
+        retained_preparations
+    );
+    assert_eq!(
+        receipt_upgrade_snapshot(&db, "prepared_recipients"),
+        retained_recipients
+    );
+    assert_eq!(
+        receipt_upgrade_snapshot(&db, "send_manifests"),
+        retained_manifests
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT historical_decision_seq FROM receipt_send_time_cutovers WHERE instance_id='i'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        510
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM receipt_state WHERE message_id NOT GLOB 'old*'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0,
+        "unpublished preparation must not materialize"
+    );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+            .get::<_, i64>(
+            0
+        ))
+        .unwrap(),
+        0
+    );
+    drop(db);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn dormant_upgrade_preserves_running_terminal_waived_and_retained_results() {
+    let (path, mut db) = dormant_upgrade_fixture(5, 5);
+    let observation = crate::store::control::AccountableActor {
+        harness: crate::protocol::authority::Harness::Codex,
+        native_session: crate::protocol::ids::NativeSessionId::new("ns"),
+        execution: crate::protocol::ids::ExecutionId::new("00000000-0000-4000-8000-0000000000aa"),
+        host_boot: crate::protocol::ids::HostBootId::new("b"),
+        target_generation: 1,
+        binding_generation: 1,
+        observed_at_utc: UtcMillis(1100),
+        provenance: "cooperative_top_level",
+    }
+    .observation(1100);
+    for index in 1..10 {
+        if index == 5 {
+            continue;
+        }
+        let message = format!("old{index:04}");
+        let (state, available, required) = match index % 5 {
+            1 => ("pending", Some(9700), 1),
+            2 => ("acked", None, 1),
+            3 => ("recipient_retired", None, 1),
+            4 => ("pending", None, 0),
+            _ => unreachable!(),
+        };
+        let actor = (state == "acked").then_some("s");
+        let generation = actor.map(|_| 1);
+        let proof = actor.map(|_| observation.as_str());
+        let acked = actor.map(|_| 1100);
+        if index < 5 {
+            db.execute("UPDATE receipts SET state=?1,available_at=?2,deadline_at=?3,ack_required=?4,ack_actor_seat_id=?5,ack_generation=?6,ack_observation=?7,acked_at=?8 WHERE message_id=?9",rusqlite::params![state,available,available.map(|at|at+300),required,actor,generation,proof,acked,message]).unwrap();
+        } else {
+            db.execute("INSERT INTO receipt_state(message_id,seat_id,state,available_at,deadline_at,ack_required,ack_actor_seat_id,ack_generation,ack_observation,acked_at) VALUES(?1,'s',?2,?3,?4,?5,?6,?7,?8,?9)",rusqlite::params![message,state,available,available.map(|at|at+300),required,actor,generation,proof,acked]).unwrap();
+        }
+    }
+    let result = "{\"kind\":\"acknowledged\",\"data\":{\"acknowledged\":[\"old0002\"],\"already_acknowledged\":[]}}";
+    db.execute("INSERT INTO operations(actor_scope,operation_key,digest,result_json,decided_at) VALUES('actor','retained',zeroblob(32),?1,1100)",[result]).unwrap();
+    let unchanged = |db: &Connection, table: &str| {
+        receipt_upgrade_snapshot(db,table).into_iter().filter(|row| {
+        let message_column = if table == "receipts" { 2 } else { 1 };
+        !matches!(&row[message_column], rusqlite::types::Value::Text(id) if id == "old0000" || id == "old0005")
+    }).collect::<Vec<_>>()
+    };
+    let before_physical = unchanged(&db, "receipts");
+    let before_sparse = unchanged(&db, "receipt_state");
+    let retained = receipt_upgrade_snapshot(&db, "operations");
+    schema::initialize(&db, || UtcMillis(5000)).unwrap();
+    let context = crate::store::connection::StoreContext::new(
+        path.clone(),
+        std::sync::Arc::new(UpgradeClock),
+    );
+    let mut cursor = crate::store::receipts::ReceiptDueCursor::default();
+    let mut warnings = 0;
+    for _ in 0..10 {
+        let page = crate::store::receipts::scan_due(&context, &mut db, 100, &mut cursor).unwrap();
+        warnings += page.warnings;
+        if !page.more {
+            break;
+        }
+    }
+    assert_eq!(
+        warnings, 1,
+        "one recipient/thread warning coalesces dormant obligations"
+    );
+    assert_eq!(db.query_row("SELECT (SELECT count(*) FROM receipts WHERE warning_message_id IS NOT NULL)+(SELECT count(*) FROM receipt_state WHERE warning_message_id IS NOT NULL)",[],|r|r.get::<_,i64>(0)).unwrap(),2,"only dormant required obligations expire");
+    assert_upgrade_warning_link(&db, "receipts", "old0000");
+    assert_upgrade_warning_link(&db, "receipt_state", "old0005");
+    assert_eq!(unchanged(&db, "receipts"), before_physical);
+    assert_eq!(unchanged(&db, "receipt_state"), before_sparse);
+    assert_eq!(receipt_upgrade_snapshot(&db, "operations"), retained);
+    schema::initialize(&db, || UtcMillis(9000)).unwrap();
+    for message in ["old0002", "old0007"] {
+        let receipt = effective_receipt(&db, message, "s").unwrap().unwrap();
+        assert_eq!(receipt.deadline_at, None);
+        assert_eq!(
+            receipt.ack_observation.as_deref(),
+            Some(observation.as_str())
+        );
+    }
+    drop(db);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn dormant_upgrade_all_terminal_backlog_counts_staged_rows_and_completes_once() {
+    let (path, mut db) = dormant_upgrade_fixture(250, 250);
+    db.execute("UPDATE receipts SET state='acked'", []).unwrap();
+    db.execute("INSERT INTO receipt_state(message_id,seat_id,state) SELECT sm.message_id,pr.seat_id,'acked' FROM send_manifests sm JOIN prepared_recipients pr ON pr.preparation_id=sm.preparation_id",[]).unwrap();
+    let before_physical = receipt_upgrade_snapshot(&db, "receipts");
+    let before_sparse = receipt_upgrade_snapshot(&db, "receipt_state");
+    schema::initialize(&db, || UtcMillis(5000)).unwrap();
+    let mut visited = 0;
+    let mut transitions = 0;
+    let mut done = false;
+    for _ in 0..8 {
+        let page = crate::store::materialization::backfill_receipt_deadlines(&mut db, 100).unwrap();
+        assert!(page.inspected <= 100);
+        visited += page.inspected;
+        transitions += u16::from(page.completed);
+        if !page.more {
+            done = true;
+            break;
+        }
+    }
+    assert!(done);
+    assert_eq!(
+        visited, 501,
+        "every physical/prepared row counts, including unpublished p"
+    );
+    assert_eq!(transitions, 1);
+    let again = crate::store::materialization::backfill_receipt_deadlines(&mut db, 100).unwrap();
+    assert_eq!(
+        (again.inspected, again.more, again.completed),
+        (0, false, false)
+    );
+    assert_eq!(receipt_upgrade_snapshot(&db, "receipts"), before_physical);
+    assert_eq!(
+        receipt_upgrade_snapshot(&db, "receipt_state"),
+        before_sparse
+    );
+    drop(db);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn dormant_upgrade_completion_and_due_warning_rollback_together_then_restart() {
+    let (path, mut db) = dormant_upgrade_fixture(1, 1);
+    schema::initialize(&db, || UtcMillis(5000)).unwrap();
+    let before = receipt_upgrade_snapshot(&db, "receipt_deadline_backfill");
+    let receipts = receipt_upgrade_snapshot(&db, "receipts");
+    db.execute_batch("CREATE TRIGGER fail_upgrade_due BEFORE INSERT ON warning_conditions BEGIN SELECT RAISE(ABORT,'test due failure'); END;").unwrap();
+    let context = crate::store::connection::StoreContext::new(
+        path.clone(),
+        std::sync::Arc::new(UpgradeClock),
+    );
+    let mut cursor = crate::store::receipts::ReceiptDueCursor {
+        high_water_ordinal: 1,
+        after_deadline: Some(9000),
+        after_ordinal: 1,
+        ..Default::default()
+    };
+    let saved_cursor = cursor.clone();
+    let error = crate::store::receipts::scan_due(&context, &mut db, 100, &mut cursor).unwrap_err();
+    assert!(error.detail.contains("test due failure"), "{error:?}");
+    assert_eq!(cursor, saved_cursor);
+    assert_eq!(
+        receipt_upgrade_snapshot(&db, "receipt_deadline_backfill"),
+        before
+    );
+    assert_eq!(receipt_upgrade_snapshot(&db, "receipts"), receipts);
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM receipt_state", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    db.execute_batch("DROP TRIGGER fail_upgrade_due").unwrap();
+    drop(db);
+    db = Connection::open(&path).unwrap();
+    db.pragma_update(None, "foreign_keys", true).unwrap();
+    schema::initialize(&db, || UtcMillis(9000)).unwrap();
+    let page = crate::store::receipts::scan_due(&context, &mut db, 100, &mut cursor).unwrap();
+    assert_eq!(page.warnings, 1);
+    assert_eq!(db.query_row("SELECT (SELECT count(*) FROM receipts WHERE warning_message_id IS NOT NULL)+(SELECT count(*) FROM receipt_state WHERE warning_message_id IS NOT NULL)",[],|r|r.get::<_,i64>(0)).unwrap(),2,"completion must reset the old due key before same-call selection");
+    assert_upgrade_warning_link(&db, "receipts", "old0000");
+    assert_upgrade_warning_link(&db, "receipt_state", "old0001");
+    let again = crate::store::materialization::backfill_receipt_deadlines(&mut db, 100).unwrap();
+    assert_eq!(
+        (again.inspected, again.more, again.completed),
+        (0, false, false)
+    );
+    drop(db);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn dormant_upgrade_keeps_due_cursor_until_the_one_completion_transition() {
+    let (path, mut db) = dormant_upgrade_fixture(250, 250);
+    schema::initialize(&db, || UtcMillis(5000)).unwrap();
+    let context = crate::store::connection::StoreContext::new(
+        path.clone(),
+        std::sync::Arc::new(UpgradeClock),
+    );
+    let mut cursor = crate::store::receipts::ReceiptDueCursor {
+        high_water_ordinal: 250,
+        after_deadline: Some(9000),
+        after_ordinal: 250,
+        ..Default::default()
+    };
+    let first = crate::store::receipts::scan_due(&context, &mut db, 100, &mut cursor).unwrap();
+    assert_eq!((first.inspected, first.warnings, first.more), (50, 0, true));
+    assert_eq!(
+        cursor.after_deadline,
+        Some(9000),
+        "repair must not restart traversal on every batch"
+    );
+    let mut warnings = 0;
+    let mut done = false;
+    for _ in 0..25 {
+        let page = crate::store::receipts::scan_due(&context, &mut db, 100, &mut cursor).unwrap();
+        assert!(page.inspected <= 100);
+        warnings += page.warnings;
+        if !page.more {
+            done = true;
+            break;
+        }
+    }
+    assert!(done);
+    assert_eq!(
+        warnings, 1,
+        "one recipient/thread warning coalesces all obligations"
+    );
+    assert_eq!(db.query_row("SELECT (SELECT count(*) FROM receipts WHERE warning_message_id IS NOT NULL)+(SELECT count(*) FROM receipt_state WHERE warning_message_id IS NOT NULL)",[],|r|r.get::<_,i64>(0)).unwrap(),500,"fresh completion walk must catch all repaired deadlines behind old key");
+    for index in 0..500 {
+        assert_upgrade_warning_link(
+            &db,
+            if index < 250 {
+                "receipts"
+            } else {
+                "receipt_state"
+            },
+            &format!("old{index:04}"),
+        );
+    }
+    drop(db);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn dormant_upgrade_removed_tails_finalize_without_spending_row_allowance() {
+    let (path, mut db) = dormant_upgrade_fixture(2, 2);
+    schema::initialize(&db, || UtcMillis(5000)).unwrap();
+    db.execute("DELETE FROM receipts WHERE ordinal=2", [])
+        .unwrap();
+    db.execute(
+        "DELETE FROM prepared_recipients WHERE preparation_id='oldp0003'",
+        [],
+    )
+    .unwrap();
+    let first = crate::store::materialization::backfill_receipt_deadlines(&mut db, 1).unwrap();
+    assert_eq!(
+        (first.inspected, first.more, first.completed),
+        (1, true, false)
+    );
+    let second = crate::store::materialization::backfill_receipt_deadlines(&mut db, 1).unwrap();
+    assert_eq!(
+        (second.inspected, second.more, second.completed),
+        (1, true, false)
+    ); // unpublished p
+    let third = crate::store::materialization::backfill_receipt_deadlines(&mut db, 1).unwrap();
+    assert_eq!(
+        (third.inspected, third.more, third.completed),
+        (1, true, false)
+    );
+    let final_page = crate::store::materialization::backfill_receipt_deadlines(&mut db, 1).unwrap();
+    assert_eq!(
+        (final_page.inspected, final_page.more, final_page.completed),
+        (0, false, true)
+    );
+    drop(db);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn dormant_upgrade_empty_snapshot_keeps_full_ordinary_due_allowance() {
+    let (path, mut db) = dormant_upgrade_fixture(0, 0);
+    db.execute("DELETE FROM prepared_recipients", []).unwrap();
+    schema::initialize(&db, || UtcMillis(5000)).unwrap();
+    for sequence in 1..=100 {
+        let message = format!("new{sequence}");
+        db.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES('i',?1,'t',?2,'ordinary','new body',1000,?2)",rusqlite::params![message,sequence]).unwrap();
+        db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,deadline_at) VALUES(?1,'t','s','pending',300,1300)",[message]).unwrap();
+    }
+    db.execute_batch(
+        "UPDATE threads SET next_sequence=101; UPDATE host_instances SET decision_seq=100;",
+    )
+    .unwrap();
+    let context = crate::store::connection::StoreContext::new(
+        path.clone(),
+        std::sync::Arc::new(UpgradeClock),
+    );
+    let mut cursor = crate::store::receipts::ReceiptDueCursor::default();
+    let page = crate::store::receipts::scan_due(&context, &mut db, 100, &mut cursor).unwrap();
+    assert_eq!((page.inspected, page.warnings), (100, 1));
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM receipts WHERE warning_message_id IS NOT NULL",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        100,
+        "full allowance must mark every new due obligation"
+    );
+    for sequence in 1..=100 {
+        assert_upgrade_warning_link(&db, "receipts", &format!("new{sequence}"));
+    }
+    let completed =
+        crate::store::materialization::backfill_receipt_deadlines(&mut db, 100).unwrap();
+    assert_eq!(
+        (completed.inspected, completed.more, completed.completed),
+        (0, false, false)
+    );
+    drop(db);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn dormant_upgrade_ack_before_repair_preserves_original_not_extended_deadline() {
+    use crate::protocol::authority::{
+        CallerClaim, CallerRole, Harness, MutationPermit, ObligationRef,
+    };
+    use crate::protocol::ids::{
+        ExecutionId, HostTargetId, MessageId, NativeSessionId, OperationId, SeatId,
+    };
+    for physical in [true, false] {
+        let (path, mut db) = dormant_upgrade_fixture(usize::from(physical), usize::from(!physical));
+        // Actual pre-upgrade NULL/NULL storage, including an existing sparse
+        // pending row; ACK is possible before this binding first registers.
+        if !physical {
+            db.execute("INSERT INTO receipt_state(message_id,seat_id,state) VALUES('old0000','s','pending')",[]).unwrap();
+        }
+        db.execute_batch("UPDATE host_instances SET host_boot='b',host_epoch=1 WHERE id='i'; UPDATE seats SET target_id='p',target_generation=1 WHERE id='s'; INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES('i','p','b',1,1,1100,'fresh','term-p','inc','coherent_enumeration',1); INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES('s',1,'p','b',1,1,'codex','ns','00000000-0000-4000-8000-0000000000aa','cooperative_top_level',1100,'term-p','inc'); INSERT INTO catch_up(seat_id,thread_id,frontier_seq,binding_generation,execution_id,entered_at,extension_until,state) VALUES('s','t',0,1,'00000000-0000-4000-8000-0000000000aa',1100,6000,'active');").unwrap();
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+                .get::<_, i64>(
+                0
+            ))
+            .unwrap(),
+            0
+        );
+        schema::initialize(&db, || UtcMillis(5000)).unwrap();
+        let before = effective_receipt(&db, "old0000", "s").unwrap().unwrap();
+        assert_eq!(before.deadline_at, Some(1300));
+        assert_eq!(
+            crate::store::receipts::effective_deadline(&db, &before).unwrap(),
+            Some(6000)
+        );
+        let request = crate::protocol::commands::Ack {
+            messages: vec![MessageId::new("old0000")],
+            operation: OperationId::new("upgrade-ack"),
+            claim: CallerClaim {
+                instance: "i".into(),
+                seat: SeatId::new("s"),
+                binding_generation: 1,
+                role: CallerRole::TopLevel,
+                harness: Harness::Codex,
+                native_session: NativeSessionId::new("ns"),
+                execution: ExecutionId::new("00000000-0000-4000-8000-0000000000aa"),
+                target: HostTargetId::new("p"),
+            },
+        };
+        let budget = CallBudget {
+            deadline: crate::protocol::time::MonoInstant(u64::MAX),
+            cancellation: Default::default(),
+        };
+        let digest =
+            schema::canonical_digest(&crate::store::receipts::ack_payload(&request)).unwrap();
+        let mut permit = MutationPermit::cooperative(
+            request.claim.clone(),
+            request.operation.clone(),
+            ObligationRef::CheckIn(request.claim.seat.clone()),
+            digest,
+            crate::protocol::time::MonoInstant(0),
+            (1, 0),
+            budget.clone(),
+        );
+        let context = crate::store::connection::StoreContext::new(
+            path.clone(),
+            std::sync::Arc::new(UpgradeClock),
+        );
+        crate::store::receipts::ack(&context, &mut db, &budget, &request, &mut permit).unwrap();
+        let after = effective_receipt(&db, "old0000", "s").unwrap().unwrap();
+        assert_eq!(after.state, EffectiveReceiptState::Acknowledged);
+        assert_eq!(
+            after.deadline_at,
+            Some(1300),
+            "ACK before repair must retain the original clock; physical={physical}"
+        );
+        assert_eq!(after.ack_actor_seat_id.as_deref(), Some("s"));
+        assert_eq!(after.ack_generation, Some(1));
+        assert_eq!(after.acked_at, Some(5000));
+        assert_eq!(
+            db.query_row(
+                "SELECT extension_until FROM catch_up WHERE seat_id='s' AND thread_id='t'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            6000
+        );
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM messages WHERE kind='warn'", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0,
+            "extension still suppresses overdue warning"
+        );
+        drop(db);
+        std::fs::remove_file(path).unwrap();
+    }
+}
+
 #[test]
 fn receipt_send_time_upgrade_preserves_populated_v28_and_v29_graph_and_restarts_once() {
     for version in [28, 29] {
@@ -1033,7 +1853,7 @@ fn receipt_send_time_upgrade_preserves_populated_v28_and_v29_graph_and_restarts_
         assert_eq!(
             db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
                 .unwrap(),
-            30
+            schema::LATEST_VERSION
         );
         for (name, expected) in tables.iter().zip(before) {
             assert_eq!(receipt_upgrade_snapshot(&db, name), expected, "{name}");
@@ -1161,7 +1981,7 @@ fn receipt_send_time_upgrade_failure_rolls_back_constraint_and_cutover_then_retr
             assert_eq!(
                 db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
                     .unwrap(),
-                30
+                schema::LATEST_VERSION
             );
             schema::initialize(&db, || UtcMillis(1)).unwrap();
             assert_eq!(
