@@ -315,6 +315,9 @@ fn lazy_state(f: &Fixture, id: &str) -> String {
     )
     .unwrap()
 }
+fn now_utc(f: &Fixture) -> UtcMillis {
+    UtcMillis(f.clock.0.load(Ordering::SeqCst))
+}
 fn advance(f: &Fixture, ms: i64) {
     f.clock.0.fetch_add(ms, Ordering::SeqCst);
 }
@@ -992,10 +995,11 @@ fn the_hook_pull_outlook_follows_offers_reoffers_and_parking() {
     let context = pull_seat(&f);
     let seat = SeatId::new("s");
     let generation = context.binding_generation;
+    let targets = [binding_of(&f, "n1")];
     let now = |f: &Fixture| UtcMillis(f.clock.0.load(Ordering::SeqCst));
     let outlook = |f: &Fixture| {
         f.state
-            .next_pull(&seat, generation, wake_attention(f), now(f))
+            .next_pull(&seat, &targets, generation, wake_attention(f), now(f))
     };
     assert_eq!(outlook(&f), NextPull::Unknown, "before any pull");
     page(pull(&f, &context, None));
@@ -1003,14 +1007,14 @@ fn the_hook_pull_outlook_follows_offers_reoffers_and_parking() {
         outlook(&f),
         NextPull::ReofferAt(UtcMillis(now(&f).0 + REOFFER_AFTER_MS))
     );
-    assert!(!f.state.holds_parked(&seat, generation));
+    assert!(!f.state.holds_parked(&seat, &targets, generation));
     for _ in 1..MAX_OFFERS_PER_GENERATION {
         advance(&f, REOFFER_AFTER_MS);
         assert_eq!(outlook(&f), NextPull::Delivers, "the re-offer is due");
         page(pull(&f, &context, None));
     }
     assert_eq!(outlook(&f), NextPull::Nothing);
-    assert!(f.state.holds_parked(&seat, generation));
+    assert!(f.state.holds_parked(&seat, &targets, generation));
     ordinary_message(&f, "m2", "later");
     bump_wake_attention(&f);
     assert_eq!(outlook(&f), NextPull::Delivers, "new attention");
@@ -1018,9 +1022,11 @@ fn the_hook_pull_outlook_follows_offers_reoffers_and_parking() {
     // Session-keyed bindings: a new session keeps the seat's binding generation; its first pull
     // discards the previous session's entry and starts over.
     page(pull(&f, &rotated, None));
+    let rotated_targets = [binding_of(&f, "n2")];
     assert_eq!(
         f.state.next_pull(
             &seat,
+            &rotated_targets,
             rotated.binding_generation,
             wake_attention(&f),
             now(&f)
@@ -1028,7 +1034,152 @@ fn the_hook_pull_outlook_follows_offers_reoffers_and_parking() {
         NextPull::ReofferAt(UtcMillis(now(&f).0 + REOFFER_AFTER_MS)),
         "a new session starts over"
     );
-    assert!(!f.state.holds_parked(&seat, rotated.binding_generation));
+    assert!(
+        !f.state
+            .holds_parked(&seat, &rotated_targets, rotated.binding_generation)
+    );
+}
+
+// ---- the offered ledger is per binding (ht-54r.94) ----
+
+/// A second live top-level binding of seat `s` in native session `n2`: a second process, so it does not
+/// supersede the first.
+fn second_binding(f: &Fixture) -> CallerClaim {
+    let mut second = claim("s", "p", fourth(), "n2", 1);
+    second.liveness = Some(crate::protocol::authority::LivenessFingerprint {
+        pid: 4242,
+        start: 1,
+    });
+    let second = check_in(f, fresh_execution(second, 9), "ci-b");
+    let connected: i64 = f
+        .db
+        .query_row(
+            "SELECT count(*) FROM occupant_bindings WHERE seat_id='s' AND ended_at IS NULL AND liveness='connected'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(connected, 2, "both bindings of the seat are connected");
+    second
+}
+
+/// The open binding of seat `s` in native session `session`.
+fn binding_of(f: &Fixture, session: &str) -> BindingId {
+    BindingId::new(
+        f.db.query_row::<String, _, _>(
+            "SELECT binding_id FROM occupant_bindings WHERE seat_id='s' AND native_session=?1 AND ended_at IS NULL",
+            [session],
+            |r| r.get(0),
+        )
+        .unwrap(),
+    )
+}
+
+// Kills: one ledger entry per seat, so B's pull wiped A's offers and A's confirm answered NotOffered
+// (main review I2).
+#[test]
+fn interleaved_pulls_of_two_bindings_confirm_their_own_offers() {
+    let f = fixture(1);
+    let a = pull_seat(&f);
+    let b = second_binding(&f);
+    assert_eq!(page(pull(&f, &a, None)).offered, ids(&["m1"]));
+    assert_eq!(page(pull(&f, &b, None)).offered, ids(&["m1"]));
+    assert_eq!(
+        confirm(&f, &a, &["m1"], "op-a"),
+        vec![("m1".to_owned(), Outcome::Settled, None)]
+    );
+    assert_eq!(receipt_state(&f, "m1"), "acked");
+    assert_eq!(
+        confirm(&f, &b, &["m1"], "op-b"),
+        vec![("m1".to_owned(), Outcome::AlreadySettled, None)]
+    );
+}
+
+// Kills: alternating pulls recreating count 1 and last_at, so neither the 60 s spacing nor the 3-offer bound
+// held per binding.
+#[test]
+fn alternating_pulls_keep_each_bindings_reoffer_spacing_and_count() {
+    let f = fixture(1);
+    let a = pull_seat(&f);
+    let b = second_binding(&f);
+    let first = page(pull(&f, &a, None));
+    assert_eq!(first.offered, ids(&["m1"]));
+    assert_eq!(page(pull(&f, &b, None)).offered, ids(&["m1"]));
+    assert_eq!(
+        pull(&f, &a, Some(first.attention_version)),
+        DeliveryPullReply::Unchanged {
+            attention_version: first.attention_version
+        },
+        "A's own spacing holds after B pulled"
+    );
+    for _ in 1..MAX_OFFERS_PER_GENERATION {
+        advance(&f, REOFFER_AFTER_MS);
+        assert_eq!(page(pull(&f, &a, None)).offered, ids(&["m1"]));
+        assert_eq!(page(pull(&f, &b, None)).offered, ids(&["m1"]));
+    }
+    advance(&f, 10 * REOFFER_AFTER_MS);
+    for binding in [&a, &b] {
+        let reply = pull(&f, binding, Some(first.attention_version));
+        assert!(
+            matches!(reply, DeliveryPullReply::Unchanged { .. }),
+            "three showings per binding, then parked: {reply:?}"
+        );
+    }
+    assert_eq!(receipt_state(&f, "m1"), "pending");
+}
+
+// Kills: a new session of one binding replacing the seat's entry and wiping its sibling's offers.
+#[test]
+fn a_new_session_of_one_binding_keeps_its_siblings_offers() {
+    let f = fixture(1);
+    let a = pull_seat(&f);
+    let b = second_binding(&f);
+    page(pull(&f, &a, None));
+    page(pull(&f, &b, None));
+    let a2 = rotate(&f, &a, "n3", 3);
+    page(pull(&f, &a2, None));
+    assert_eq!(
+        confirm(&f, &b, &["m1"], "op-b"),
+        vec![("m1".to_owned(), Outcome::Settled, None)]
+    );
+}
+
+// Kills: an outlook that answers from one binding's entry: a wake that reaches both bindings must wait for both.
+#[test]
+fn the_hook_pull_outlook_waits_for_every_target_binding() {
+    let f = fixture(1);
+    let a = pull_seat(&f);
+    let b = second_binding(&f);
+    let seat = SeatId::new("s");
+    let generation = a.binding_generation;
+    let (bind_a, bind_b) = (binding_of(&f, "n1"), binding_of(&f, "n2"));
+    let outlook = |f: &Fixture, targets: &[BindingId]| {
+        f.state
+            .next_pull(&seat, targets, generation, wake_attention(f), now_utc(f))
+    };
+    let shown_at = now_utc(&f);
+    page(pull(&f, &a, None));
+    assert_eq!(
+        outlook(&f, std::slice::from_ref(&bind_a)),
+        NextPull::ReofferAt(UtcMillis(shown_at.0 + REOFFER_AFTER_MS))
+    );
+    assert_eq!(
+        outlook(&f, &[bind_a.clone(), bind_b.clone()]),
+        NextPull::Unknown,
+        "B has not pulled in this process: its next pull may deliver"
+    );
+    advance(&f, 5_000);
+    page(pull(&f, &b, None));
+    assert_eq!(
+        outlook(&f, &[bind_a.clone(), bind_b.clone()]),
+        NextPull::ReofferAt(UtcMillis(shown_at.0 + REOFFER_AFTER_MS)),
+        "the earlier of the two re-offers"
+    );
+    assert_eq!(
+        outlook(&f, std::slice::from_ref(&bind_b)),
+        NextPull::ReofferAt(UtcMillis(shown_at.0 + 5_000 + REOFFER_AFTER_MS))
+    );
+    assert_eq!(outlook(&f, &[]), outlook(&f, &[bind_a, bind_b]));
 }
 
 // ---- informational notices on the pull (ht-poh.53) ----
@@ -1056,9 +1207,11 @@ fn leftover_notices_do_not_bring_a_held_wake_forward() {
         first.text
     );
     advance(&f, 10_000);
+    let targets = [binding_of(&f, "n1")];
     let outlook = |f: &Fixture| {
         f.state.next_pull(
             &seat,
+            &targets,
             generation,
             wake_attention(f),
             UtcMillis(f.clock.0.load(Ordering::SeqCst)),
@@ -1421,10 +1574,10 @@ fn items_read(f: &Fixture) -> usize {
 // already saw it (final review 11 S2: 70 s+ here; a large backlog overran the hook's budget).
 #[test]
 fn a_backlog_over_the_offer_table_keeps_the_reoffer_bounds_and_parks_for_inbox() {
-    use crate::delivery::ledger::MAX_OFFERS_PER_SEAT;
+    use crate::delivery::ledger::MAX_OFFERS_PER_BINDING;
     // The smallest backlog that overfills the table, plus a few. The first four bodies are over the limit
     // (truncated, never confirmable); the rest are short, so a store page holds 32 of them.
-    let backlog = MAX_OFFERS_PER_SEAT + 4;
+    let backlog = MAX_OFFERS_PER_BINDING + 4;
     let f = fixture(0);
     let big = "x".repeat(WATCH_BODY_LIMIT_BYTES + 100);
     for n in 0..backlog {
@@ -1436,10 +1589,11 @@ fn a_backlog_over_the_offer_table_keeps_the_reoffer_bounds_and_parks_for_inbox()
     service_notice(&f, "w-1");
     let seat = SeatId::new("s");
     let generation = context.binding_generation;
+    let targets = [binding_of(&f, "n1")];
     let now = |f: &Fixture| UtcMillis(f.clock.0.load(Ordering::SeqCst));
     let outlook = |f: &Fixture| {
         f.state
-            .next_pull(&seat, generation, wake_attention(f), now(f))
+            .next_pull(&seat, &targets, generation, wake_attention(f), now(f))
     };
     let mut shown = std::collections::BTreeMap::new();
     let mut seen = None;
@@ -1483,10 +1637,10 @@ fn a_backlog_over_the_offer_table_keeps_the_reoffer_bounds_and_parks_for_inbox()
     );
     assert_eq!(
         shown.len(),
-        MAX_OFFERS_PER_SEAT,
+        MAX_OFFERS_PER_BINDING,
         "the table filled, then took no new id"
     );
-    for n in MAX_OFFERS_PER_SEAT..backlog {
+    for n in MAX_OFFERS_PER_BINDING..backlog {
         let id = format!("b{n:03}");
         assert!(
             !shown.contains_key(&MessageId::new(&id)),
@@ -1501,7 +1655,7 @@ fn a_backlog_over_the_offer_table_keeps_the_reoffer_bounds_and_parks_for_inbox()
         "a full table is not Delivers-forever"
     );
     assert!(
-        f.state.holds_parked(&seat, generation),
+        f.state.holds_parked(&seat, &targets, generation),
         "a full table parks new ids for inbox"
     );
 
@@ -1525,7 +1679,7 @@ fn a_backlog_over_the_offer_table_keeps_the_reoffer_bounds_and_parks_for_inbox()
         }
         bounded(&shown);
     }
-    assert_eq!(shown.len(), MAX_OFFERS_PER_SEAT);
+    assert_eq!(shown.len(), MAX_OFFERS_PER_BINDING);
     assert!(
         shown
             .values()
@@ -1533,7 +1687,7 @@ fn a_backlog_over_the_offer_table_keeps_the_reoffer_bounds_and_parks_for_inbox()
         "every offered id was re-offered up to the bound, then parked"
     );
     assert_eq!(outlook(&f), NextPull::Nothing);
-    assert!(f.state.holds_parked(&seat, generation));
+    assert!(f.state.holds_parked(&seat, &targets, generation));
 
     // A new notice on the parked full table rides a page without reading the pending set: nothing in it could be
     // shown or freed.
@@ -1556,14 +1710,14 @@ fn a_backlog_over_the_offer_table_keeps_the_reoffer_bounds_and_parks_for_inbox()
 // Kills: an id withheld at capacity stuck behind `Unchanged` after the same whole read freed a slot.
 #[test]
 fn an_id_withheld_at_capacity_is_shown_once_a_whole_read_frees_a_slot() {
-    use crate::delivery::ledger::MAX_OFFERS_PER_SEAT;
-    let f = fixture(MAX_OFFERS_PER_SEAT + 1);
+    use crate::delivery::ledger::MAX_OFFERS_PER_BINDING;
+    let f = fixture(MAX_OFFERS_PER_BINDING + 1);
     let context = pull_seat(&f);
     let mut seen = None;
-    for _ in 0..MAX_OFFERS_PER_SEAT / PAGE_MAX_BLOCKS {
+    for _ in 0..MAX_OFFERS_PER_BINDING / PAGE_MAX_BLOCKS {
         seen = Some(page(pull(&f, &context, seen)).attention_version);
     }
-    let last = format!("m{}", MAX_OFFERS_PER_SEAT + 1);
+    let last = format!("m{}", MAX_OFFERS_PER_BINDING + 1);
     assert!(
         matches!(
             pull(&f, &context, seen),
@@ -1571,10 +1725,11 @@ fn an_id_withheld_at_capacity_is_shown_once_a_whole_read_frees_a_slot() {
         ),
         "the table is full: {last} waits"
     );
-    assert!(
-        f.state
-            .holds_parked(&SeatId::new("s"), context.binding_generation)
-    );
+    assert!(f.state.holds_parked(
+        &SeatId::new("s"),
+        &[binding_of(&f, "n1")],
+        context.binding_generation
+    ));
     // `inbox` settles m1 outside the hook: the version moves and the whole read drops m1 from the table.
     f.db.execute(
         "UPDATE receipts SET state='acked' WHERE message_id='m1' AND seat_id='s'",
@@ -1601,10 +1756,12 @@ fn notices_settled_by_a_pull_that_lost_a_rotation_race_are_still_returned() {
     let context = pull_seat(&f);
     service_notice(&f, "w-race");
     let newer = context.binding_generation + 1;
+    let racing = binding_of(&f, "n1");
+    let racing_entry = racing.clone();
     *f.state.probe.before_record.lock().unwrap() =
         Some(Box::new(move |ledger: &mut OfferedLedger| {
             ledger
-                .seat_mut(&SeatId::new("s"), newer, "n2")
+                .binding_mut(&SeatId::new("s"), &racing, newer)
                 .expect("a newer generation replaces the entry");
         }));
     let page = page(pull(&f, &context, None));
@@ -1623,7 +1780,7 @@ fn notices_settled_by_a_pull_that_lost_a_rotation_race_are_still_returned() {
     );
     assert!(!page.text.contains("message m1"), "{}", page.text);
     let ledger = f.state.lock();
-    let entry = ledger.get(&SeatId::new("s")).unwrap();
+    let entry = ledger.get(&racing_entry).unwrap();
     assert_eq!(entry.generation, newer);
     assert!(
         entry.offers.is_empty(),

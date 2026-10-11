@@ -787,14 +787,25 @@ impl<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> WakeRunner<'a, S, N
         // re-derives the candidate.
         if let Some(generation) = candidate.binding_generation {
             let now = self.store.clock().utc_now();
+            // The bindings this wake would reach; each has its own offered ledger entry.
+            let targets: Vec<BindingId> = candidate
+                .targets
+                .iter()
+                .map(|target| target.binding.clone())
+                .collect();
             match self.hook_pull.next_pull(
                 &candidate.seat,
+                &targets,
                 generation,
                 candidate.attention_version,
                 now,
             ) {
                 NextPull::ReofferAt(_) => return Ok(None),
-                NextPull::Nothing if !self.hook_pull.holds_parked(&candidate.seat, generation) => {
+                NextPull::Nothing
+                    if !self
+                        .hook_pull
+                        .holds_parked(&candidate.seat, &targets, generation) =>
+                {
                     return Ok(None);
                 }
                 _ => {}

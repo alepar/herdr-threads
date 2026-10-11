@@ -9,7 +9,7 @@ use crate::{
     delivery::{
         self, Assembler, DeliveryItem, DeliveryKind, DrainEvent, FrameItem, MAX_DRAIN_PAGES,
         PAGE_MAX_BYTES, PAGE_MAX_ITEMS, PageError, PageSource, Stop, drain_pages, frame,
-        ledger::{MAX_OFFERS_PER_SEAT, Offer, OfferedLedger},
+        ledger::{MAX_OFFERS_PER_BINDING, Offer, OfferedLedger},
     },
     harness::adapter::DeliveryMechanism,
     ports::{ModBindingView, ModFingerprint, ModSeatView, PulledNotice, ReadContext, StorePort},
@@ -114,16 +114,22 @@ impl crate::ports::HookPullOutlook for DeliveryPullState {
     fn next_pull(
         &self,
         seat: &crate::protocol::ids::SeatId,
+        targets: &[crate::protocol::ids::BindingId],
         binding_generation: u64,
         attention_version: u64,
         now: crate::protocol::time::UtcMillis,
     ) -> crate::ports::NextPull {
         self.lock()
-            .next_pull(seat, binding_generation, attention_version, now)
+            .next_pull(seat, targets, binding_generation, attention_version, now)
     }
 
-    fn holds_parked(&self, seat: &crate::protocol::ids::SeatId, binding_generation: u64) -> bool {
-        self.lock().holds_parked(seat, binding_generation)
+    fn holds_parked(
+        &self,
+        seat: &crate::protocol::ids::SeatId,
+        targets: &[crate::protocol::ids::BindingId],
+        binding_generation: u64,
+    ) -> bool {
+        self.lock().holds_parked(seat, targets, binding_generation)
     }
 }
 
@@ -329,7 +335,7 @@ impl DomainService {
         let (known, whole_read_current): (HashMap<MessageId, Offer>, bool) = {
             let mut ledger = self.delivery_pull.lock();
             // A newer generation's entry: this request read the binding before a rotation.
-            let Some(entry) = ledger.seat_mut(seat, binding.generation, &binding.native_session)
+            let Some(entry) = ledger.binding_mut(seat, &binding.binding_id, binding.generation)
             else {
                 return refused(DeliveryRefusalReason::Busy);
             };
@@ -402,7 +408,7 @@ impl DomainService {
         let (reserved_blocks, reserved_bytes) = notice_blocks.first().map_or((0, 0), |first| {
             (1 + usize::from(with_attention), block_bytes(first))
         });
-        let mut room_for_new = MAX_OFFERS_PER_SEAT.saturating_sub(known.len());
+        let mut room_for_new = MAX_OFFERS_PER_BINDING.saturating_sub(known.len());
         let mut withheld = false;
         // A full table whose last whole read saw this same pending set can show only its due offers: the drain stops
         // once it has met them all (or never starts), so it does not walk the backlog. A moved pending set (an
@@ -555,7 +561,7 @@ impl DomainService {
             {
                 race(&mut ledger);
             }
-            let Some(entry) = ledger.seat_mut(seat, binding.generation, &binding.native_session)
+            let Some(entry) = ledger.binding_mut(seat, &binding.binding_id, binding.generation)
             else {
                 // Rotated meanwhile: the page belongs to a superseded generation, so no message is recorded or shown
                 // (they stay pending for the new one). Notices this pull settled are committed as carried: return
@@ -661,7 +667,7 @@ impl DomainService {
         let claim_is_older = confirm.claim.binding_generation < binding.generation;
         let forwarded: Vec<MessageId> = {
             let mut ledger = self.delivery_pull.lock();
-            let Some(entry) = ledger.seat_mut(seat, binding.generation, &binding.native_session)
+            let Some(entry) = ledger.binding_mut(seat, &binding.binding_id, binding.generation)
             else {
                 return report(
                     DeliveryConfirmOutcome::Retryable,
@@ -714,7 +720,7 @@ impl DomainService {
                 ));
             };
             let mut ledger = self.delivery_pull.lock();
-            let mut entry = ledger.seat_mut(seat, binding.generation, &binding.native_session);
+            let mut entry = ledger.binding_mut(seat, &binding.binding_id, binding.generation);
             for item in stored.results {
                 if matches!(
                     item.result,

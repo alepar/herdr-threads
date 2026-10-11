@@ -246,6 +246,7 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
         // process is the pane's foreground process; with several targets also only when Herdr
         // reports the pane idle. No unique match, no composer wake; never a guess.
         let mut composer_harness: Option<String> = None;
+        let mut composer_binding: Option<crate::protocol::ids::BindingId> = None;
         if cooperative && !reservation.authority.targets().is_empty() {
             if reservation.authority.targets().len() > 1
                 && !poke_only
@@ -261,7 +262,10 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
                 Err(err) => return refuse_error(err),
             };
             match reservation.authority.composer_choice(&foreground) {
-                ComposerChoice::Binding(chosen) => composer_harness = Some(chosen.harness.clone()),
+                ComposerChoice::Binding(chosen) => {
+                    composer_harness = Some(chosen.harness.clone());
+                    composer_binding = Some(chosen.binding.clone());
+                }
                 ComposerChoice::NoMatch | ComposerChoice::Unspecified => {
                     return refuse(RefusalCause::Unsafe, WakeOutcome::Unsafe);
                 }
@@ -393,7 +397,19 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
                     } => *binding_generation,
                     ReservedWakeAuthority::RecoveryHint { .. } => None,
                 };
-                if generation.is_some_and(|g| self.hook_pull.holds_parked(&reservation.seat, g)) {
+                // Only the binding being woken counts: the composer's chosen binding, else the reservation's targets.
+                let targets: Vec<crate::protocol::ids::BindingId> = match &composer_binding {
+                    Some(chosen) => vec![chosen.clone()],
+                    None => reservation
+                        .authority
+                        .targets()
+                        .iter()
+                        .map(|target| target.binding.clone())
+                        .collect(),
+                };
+                if generation
+                    .is_some_and(|g| self.hook_pull.holds_parked(&reservation.seat, &targets, g))
+                {
                     MARKER
                 } else {
                     crate::harness::registry::builtins().wake_text(id)

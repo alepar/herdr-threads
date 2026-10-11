@@ -1023,10 +1023,10 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
 - **The offered ledger is process-local.** A daemon restart loses it: a later confirm is `not_offered`, the items
   stay pending, and the next pull offers them again (at-least-once): a pull is never answered unchanged before the
   daemon process has read the seat's whole pending set, whatever version the hook last saw.
-- **Re-offers are bounded.** An unconfirmed id is shown at most 3 times per binding generation, 60 s apart; after
-  that it waits for `inbox`. While a seat holds such an id, its idle wake names `inbox`. A seat's offered ledger
-  holds at most 256 ids and never evicts one: while it is full, new ids are not shown by the hook (they stay
-  pending) and the seat's idle wake names `inbox`, as for parked ids.
+- **Re-offers are bounded.** An unconfirmed id is shown at most 3 times per binding generation, 60 s apart, to
+  each binding; after that it waits for `inbox`. Each binding has its own offered ledger: at most 256 ids, never
+  evicting one. While it is full, new ids are not shown to that binding by the hook (they stay pending). While a
+  binding a wake would reach holds a parked id, or its ledger is full, that wake names `inbox`.
 - **An unreadable transcript leaves items pending.** A hook-pull hook confirms only ids whose frame header it
   found at the start of a line in a hook-injected step of a transcript it could read (text in tool output, model
   output or user input never confirms; malformed records are skipped): a missing, unreadable or unparseable transcript, or one that grew
@@ -1035,12 +1035,12 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   delivery. Absence is a downgrade signal only when the transcript was read in full over two distinct turns of
   one agent executable identity. The hook trusts the `transcriptPath` its harness payload names (cooperative
   model; the file is only read, never trusted for authority).
-- **A resume rotates the generation.** The offered set is discarded and items the resumed transcript already
-  holds are offered again.
+- **A resume keeps the binding.** A resume re-registers the same session's binding and keeps its offered set; a
+  new session (`/clear`) is a new binding with an empty one, and a rotated binding generation discards it.
 - **A native wake marker names `inbox` only for a harness whose turn start injects nothing.** A hook-pull harness (agy) is
   woken with the content-free `herdr-threads: wake up` only when its next hook pull would carry something: an id shown
   less than 60 s ago is not wake work until its re-offer is due, a seat whose next pull would show nothing is not woken,
-  and a seat holding ids parked for `inbox` is woken with the marker that names `inbox`. A woken pull
+  and a binding holding ids parked for `inbox` is woken with the marker that names `inbox`. A woken pull
   session that also runs `inbox` may display bodies twice; it never settles twice.
 - **Engine-reported idleness is trusted.** The mod takes busy and idle from Claude Code's turn events; the
   post-abort hold bounds the known Esc takeover.
