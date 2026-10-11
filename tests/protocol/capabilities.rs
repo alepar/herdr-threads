@@ -271,6 +271,7 @@ fn capability_constants_are_stable() {
             "history.full_bodies",
             "hook.parse_failure_report",
             "service.send_v1",
+            "messages.send_time_receipts_v1",
             "hook.harness_evidence",
             "hook.harness_evidence_v2",
             "harness.states",
@@ -330,8 +331,8 @@ fn every_advertised_capability_has_a_handler() {
                     crate::store::queries::query(&context, "probe-instance", &command, &budget());
                 assert_eq!(outcome.unwrap_err().code, ErrorCode::NotFound);
             }
-            LAZY_SEND => {
-                let command: Command=serde_json::from_value(serde_json::json!({"kind":"send_message","args":{"delivery_mode":"lazy","thread":"t","body":"quiet","invited_recipients":[],"deadline_millis":null,"operation":"op","claim":{"instance":"i","seat":"a","binding_generation":1,"role":"top_level","harness":"codex","native_session":"n","execution":"00000000-0000-4000-8000-0000000000aa","target":"pa"}}})).unwrap();
+            LAZY_SEND | SEND_TIME_RECEIPTS_V1 => {
+                let command: Command=serde_json::from_value(serde_json::json!({"kind":"send_message","args":{"delivery_mode":if *name == LAZY_SEND { "lazy" } else { "ordinary" },"thread":"t","body":"quiet","invited_recipients":[],"deadline_millis":null,"operation":"op","claim":{"instance":"i","seat":"a","binding_generation":1,"role":"top_level","harness":"codex","native_session":"n","execution":"00000000-0000-4000-8000-0000000000aa","target":"pa"}}})).unwrap();
                 assert!(command.validate().is_ok());
                 let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
                 assert_eq!(
@@ -490,6 +491,7 @@ fn bare_daemon_advertises_legacy_capabilities_without_v2_recorder() {
             "history.full_bodies",
             "hook.parse_failure_report",
             "service.send_v1",
+            "messages.send_time_receipts_v1",
             "hook.harness_evidence",
             "harness.states",
             "seat.managed_launch",
@@ -1698,4 +1700,36 @@ fn invitation_confirmation_wire_preserves_legacy_and_distinguishes_modern_reques
             assert!(conflict.validate().is_err());
         }
     }
+}
+
+#[test]
+fn public_operation_status_cannot_bypass_send_time_capability_guard() {
+    use crate::{
+        ports::StorePort,
+        protocol::{commands::OperationStatusQuery, ids::OperationId},
+        service::dispatch::DomainService,
+        store::{SqliteStore, StoreSettings, connection::StoreContext},
+    };
+    let isolation = crate::test_support::isolation::TestIsolation::new("ordinary-public-status");
+    let clock: Arc<dyn Clock> = Arc::new(FixedClock);
+    let store: Arc<dyn StorePort> = Arc::new(
+        SqliteStore::new(
+            StoreContext::new(isolation.path("store.db"), clock.clone()),
+            "probe-instance",
+            StoreSettings::default(),
+        )
+        .unwrap(),
+    );
+    let domain = DomainService::new("probe-instance".into(), store, clock);
+    let error = domain
+        .handle(
+            Command::OperationStatus(OperationStatusQuery {
+                operation: OperationId::new("historical-key"),
+            }),
+            PeerIdentity::from_kernel(501),
+            &budget(),
+        )
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::Unauthorized);
+    assert_eq!(error.detail, "verified operation scope required");
 }

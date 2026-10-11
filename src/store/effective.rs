@@ -1749,15 +1749,19 @@ pub fn effective_receipt(
         Option<i64>,
         Option<i64>,
         i64,
+        Option<i64>,
+        Option<i64>,
+        i64,
     )>;
     let logical: LogicalColumns = db.query_row(
-        "SELECT sm.thread_id, sm.base_sequence, pr.ordinal, sm.decision_seq, sm.decision_at, pr.frozen_duration_ms, pr.eligible_at_snapshot, pr.availability_provenance, rs.state, rs.warning_message_id, rs.ack_actor_seat_id, rs.ack_generation, rs.ack_observation, rs.acked_at, s.retired_at, s.retired_seq, MIN(pr.ack_required,COALESCE(rs.ack_required,1)) \
+        "SELECT sm.thread_id, sm.base_sequence, pr.ordinal, sm.decision_seq, sm.decision_at, pr.frozen_duration_ms, pr.eligible_at_snapshot, pr.availability_provenance, rs.state, rs.warning_message_id, rs.ack_actor_seat_id, rs.ack_generation, rs.ack_observation, rs.acked_at, s.retired_at, s.retired_seq, MIN(pr.ack_required,COALESCE(rs.ack_required,1)), rs.available_at, rs.deadline_at, COALESCE(cut.historical_decision_seq,0) \
          FROM send_manifests sm JOIN prepared_recipients pr ON pr.preparation_id=sm.preparation_id \
          JOIN seats s ON s.id=pr.seat_id \
          LEFT JOIN receipt_state rs ON rs.message_id=sm.message_id AND rs.seat_id=pr.seat_id \
+         LEFT JOIN receipt_send_time_cutovers cut ON cut.instance_id=sm.instance_id \
          WHERE sm.message_id=?1 AND pr.seat_id=?2",
         params![message_id, seat_id],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?, r.get(11)?, r.get(12)?, r.get(13)?, r.get(14)?, r.get(15)?, r.get(16)?)),
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?, r.get(11)?, r.get(12)?, r.get(13)?, r.get(14)?, r.get(15)?, r.get(16)?, r.get(17)?, r.get(18)?, r.get(19)?)),
     ).optional().map_err(store_error)?;
     if let Some((
         thread_id,
@@ -1777,6 +1781,9 @@ pub fn effective_receipt(
         retired_at,
         retired_seq,
         ack_required,
+        stored_available_at,
+        stored_deadline_at,
+        historical_cutover,
     )) = logical
     {
         if retired_at.is_some() && retired_seq.is_none() {
@@ -1785,19 +1792,42 @@ pub fn effective_receipt(
                 "retired seat lacks decision cutover",
             ));
         }
-        let start =
-            if eligible == 1 {
-                Some(send_at)
-            } else {
-                db.query_row(
-                "SELECT decision_at FROM seat_availability WHERE seat_id=?1 AND decision_seq>?2 \
-                 AND (?3 IS NULL OR decision_seq<?3) ORDER BY decision_seq LIMIT 1",
-                params![seat_id, send_seq, retired_seq], |r| r.get(0),
+        let first_availability: Option<(i64, i64)> = if eligible == 1 {
+            Some((send_at, send_seq))
+        } else {
+            db.query_row(
+                "SELECT decision_at,decision_seq FROM seat_availability WHERE seat_id=?1 AND decision_seq>?2 AND (?3 IS NULL OR decision_seq<?3) ORDER BY decision_seq LIMIT 1",
+                params![seat_id,send_seq,retired_seq],|r|Ok((r.get(0)?,r.get(1)?)),
             ).optional().map_err(store_error)?
-            };
-        let deadline = start
-            .map(|at| checked_deadline(UtcMillis(at), duration).map(|d| d.0))
-            .transpose()?;
+        };
+        let start = stored_available_at.or(first_availability.map(|(at, _)| at));
+        // Only availability already recorded at the upgrade cutover can preserve
+        // a legacy running clock. Later registration must not restart a dormant one.
+        let original_start = if send_seq <= historical_cutover {
+            first_availability
+                .filter(|(_, seq)| *seq <= historical_cutover)
+                .map(|(at, _)| at)
+                .unwrap_or(send_at)
+        } else {
+            send_at
+        };
+        let deadline = match stored_deadline_at {
+            Some(deadline) => Some(deadline),
+            None if state.as_deref().is_some_and(|s| s != "pending")
+                || (send_seq <= historical_cutover
+                    && retired_seq.is_some_and(|seq| seq <= historical_cutover)) =>
+            {
+                stored_available_at
+                    .or(first_availability
+                        .filter(|(_, seq)| {
+                            send_seq > historical_cutover || *seq <= historical_cutover
+                        })
+                        .map(|(at, _)| at))
+                    .map(|at| checked_deadline(UtcMillis(at), duration).map(|d| d.0))
+                    .transpose()?
+            }
+            None => Some(checked_deadline(UtcMillis(original_start), duration)?.0),
+        };
         let waived = if state.as_deref().is_none_or(|status| status == "pending") {
             ack_required == 0
                 || availability_provenance.as_deref() == Some("operator_human")
