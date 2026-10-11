@@ -1,0 +1,14 @@
+{
+  "base": "dd5bfe864b9f95457a2922490f611a3f5c2361be",
+  "tip": "9cb6f2c93b5d4f43f3e07a652f59e0b8999e3dcd",
+  "review": "Spec CLEAN / Quality CLEAN",
+  "immediate_quiescent_ack_source_hash": "cd0dcfbc307cc5ef8a792647a16e3a9f58de89157ee58ca22fa0adced79fa731",
+  "pre_dirty_diff": "19a58c7194bb7efcfca9fce8afd3e6618f414b6b2bcff5789d4b4a0ba7e63643",
+  "patch_sha256": "a669158e624bbc55389845f544e6afcbdf4ff42d79b90c88a1e3782438e7f94f",
+  "after": {
+    "integrations/claude/mod/hooks/register.js": "65898e9306e00a88fc8a5625bb70f517162e20c6fc8e707d87cc14ba38060348",
+    "integrations/claude/mod/tests/delivery.test.ts": "d76fe46d9c36d9219b54794fcd877b63865bb1b60aa7eae7e750d92fd2361c89"
+  },
+  "all_final_bytes_match_immutable_tip": true,
+  "only_reviewed_two_file_patch": true
+}

@@ -1466,7 +1466,16 @@
       "tests/service/delivery_presentation.rs",
       "tests/daemon/watch_connection.rs",
       "tests/daemon/control.rs",
-      "tests/cli/hook.rs"
+      "tests/cli/hook.rs",
+      "migrations/0041_presentation_relevance.sql",
+      "src/store/presentation_relevance.rs",
+      "src/delivery/presentation.rs",
+      "src/harness/registry.rs",
+      "src/harness/agy/decode.rs",
+      "tests/harness/agy_decode.rs",
+      "tests/store/schema.rs",
+      "tests/combined.rs",
+      "src/test_support/mod.rs"
     ]
   }
 ]
