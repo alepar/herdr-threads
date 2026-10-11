@@ -3,7 +3,7 @@ use herdr_threads::{
     protocol::{results::ErrorCode, time::UtcMillis},
     store::schema,
 };
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 
 // Build genuine historical schemas from their immutable migration chain, never
 // relabel a latest database by rewinding user_version. Replaying the chain
@@ -23,7 +23,7 @@ fn historical(version: usize) -> Connection {
         paths.sort();
         let mut images = Vec::new();
         for (applied, path) in std::iter::once(None)
-            .chain(paths.into_iter().take(28).map(Some))
+            .chain(paths.into_iter().take(31).map(Some))
             .enumerate()
         {
             if let Some(path) = path {
@@ -83,13 +83,13 @@ fn objects(db: &Connection) -> Vec<(String, String, String)> {
 }
 #[test]
 fn registered28_fresh_and_genuine_historical_chains_reopen() {
-    for previous in [0, 1, 15, 22, 25, 26, 27] {
+    for previous in [0, 1, 15, 22, 25, 26, 27, 28, 29, 30] {
         let db = historical(previous);
         schema::initialize(&db, || UtcMillis(0)).unwrap();
-        assert_eq!(version(&db), 28, "actual {previous}->28");
-        assert_eq!(objects(&db), objects(&historical(28)));
+        assert_eq!(version(&db), 31, "actual {previous}->31");
+        assert_eq!(objects(&db), objects(&historical(31)));
         schema::initialize(&db, || UtcMillis(1)).unwrap();
-        assert_eq!(version(&db), 28);
+        assert_eq!(version(&db), 31);
     }
 }
 #[test]
@@ -203,7 +203,7 @@ fn registered28_preserves25_and26_history_and_rolls_back_late_ddl_failure() {
                 .unwrap();
         }
         schema::initialize(&db, || UtcMillis(0)).unwrap();
-        assert_eq!(version(&db), 28);
+        assert_eq!(version(&db), 31);
         assert_eq!(evidence(&db), before);
         let ordinary: String = db
             .query_row(
@@ -328,4 +328,324 @@ fn legacy_key_index_retains_foreign_namespaces_with_bounded_lookup_after_1000_at
             .get(),
         1001
     );
+}
+
+#[test]
+fn handoff_body_bounds_upgrade_preserves_existing_identity_bytes_and_keys() {
+    for previous in [28, 29, 30] {
+        let db = historical(previous);
+        db.execute_batch(
+            "PRAGMA foreign_keys=ON; INSERT INTO host_instances(id,created_at) VALUES('i',0)",
+        )
+        .unwrap();
+        super::thread(&db);
+        super::joined_agent(&db);
+        assert_eq!(
+            version(&db),
+            previous as i64,
+            "seeding must preserve the genuine old schema"
+        );
+        let mut id = identity();
+        id.payload.handoff.channel = herdr_threads::protocol::handoff::HandoffChannel::New {
+            name: None,
+            topic: "topic".into(),
+            goal: "goal".into(),
+        };
+        id.digest = id.semantic_digest().unwrap();
+        {
+            let tx = db.unchecked_transaction().unwrap();
+            herdr_threads::store::topology_handoff::begin_pending(
+                &tx,
+                &namespace(),
+                &id,
+                UtcMillis(0),
+            )
+            .unwrap();
+            tx.commit().unwrap();
+        }
+        let bytes: Vec<u8> = db
+            .query_row("SELECT identity_json FROM bootstrap_handoffs", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        schema::initialize(&db, || UtcMillis(1)).unwrap();
+        assert_eq!(version(&db), 31);
+        let retained: Vec<u8> = db
+            .query_row("SELECT identity_json FROM bootstrap_handoffs", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(retained, bytes);
+        assert_eq!(
+            db.pragma_query_value::<i64, _>(None, "foreign_keys", |r| r.get(0))
+                .unwrap(),
+            1
+        );
+        assert!(
+            herdr_threads::store::topology_handoff::current(&db, &namespace(), &id)
+                .unwrap()
+                .is_some()
+        );
+        let mut max = id;
+        max.compound = herdr_threads::protocol::ids::OperationId::new("maximum");
+        max.payload.handoff.keys.compound = max.compound.clone();
+        max.payload.handoff.keys.begin =
+            herdr_threads::protocol::ids::OperationId::new("max-begin");
+        max.payload.handoff.keys.create =
+            herdr_threads::protocol::ids::OperationId::new("max-create");
+        max.payload.handoff.keys.invite =
+            herdr_threads::protocol::ids::OperationId::new("max-invite");
+        max.payload.handoff.keys.send = herdr_threads::protocol::ids::OperationId::new("max-send");
+        max.payload.handoff.keys.complete =
+            herdr_threads::protocol::ids::OperationId::new("max-complete");
+        max.payload.handoff_key = herdr_threads::protocol::ids::OperationId::new("max-handoff");
+        max.payload.resolve_key = herdr_threads::protocol::ids::OperationId::new("max-resolve");
+        max.payload.attach_key = herdr_threads::protocol::ids::OperationId::new("max-attach");
+        max.payload.linked_complete_key =
+            herdr_threads::protocol::ids::OperationId::new("max-linked-complete");
+        max.payload.handoff.body = "\u{1}".repeat(65_536);
+        max.digest = max.semantic_digest().unwrap();
+        let tx = db.unchecked_transaction().unwrap();
+        herdr_threads::store::topology_handoff::begin_pending(
+            &tx,
+            &namespace(),
+            &max,
+            UtcMillis(2),
+        )
+        .unwrap();
+        tx.commit().unwrap();
+        assert!(
+            herdr_threads::store::topology_handoff::current(&db, &namespace(), &max)
+                .unwrap()
+                .is_some()
+        );
+    }
+}
+
+#[test]
+fn handoff_bounds_upgrade_preserves_populated_completed_and_recovery_history() {
+    use herdr_threads::protocol::{handoff::*, ids::*};
+    use sha2::{Digest, Sha256};
+    for previous in [28, 29, 30] {
+        let db = historical(previous);
+        db.execute_batch("PRAGMA foreign_keys=ON; INSERT INTO host_instances(id,created_at) VALUES('i',0); INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('t','i','topic','goal',0,0)").unwrap();
+        super::joined_agent(&db);
+        assert_eq!(
+            version(&db),
+            previous as i64,
+            "seeding must preserve the genuine old schema"
+        );
+        let id = identity();
+        let tx = db.unchecked_transaction().unwrap();
+        herdr_threads::store::topology_handoff::begin_pending(&tx, &namespace(), &id, UtcMillis(0))
+            .unwrap();
+        super::record_created(&tx);
+        let recovery = super::saved_recovery(
+            &tx,
+            &id,
+            BootstrapRecoveryDisposition::CreatedPane {
+                evidence: super::created(),
+                structural_reference: HostCallId::new("inspection"),
+            },
+            BootstrapState::Created,
+            Some(super::created()),
+        );
+        let attachment = BootstrapAttachment {
+            attempt: BootstrapAttempt::first(),
+            created: super::created(),
+            resolve_operation: id.payload.resolve_key.clone(),
+            resolved_seat: SeatId::new("peer"),
+            handoff: HandoffIdentity {
+                compound: id.payload.handoff_key.clone(),
+                digest: "b".repeat(64),
+                claim: id.claim.clone(),
+                thread: Some(ThreadId::new("t")),
+                recipient: SeatId::new("peer"),
+                create_key: id.payload.handoff.keys.create.clone(),
+                invite_key: id.payload.handoff.keys.invite.clone(),
+                send_key: id.payload.handoff.keys.send.clone(),
+            },
+        };
+        attachment.validate(&id).unwrap();
+        let report = serde_json::json!({"outcome":"started","pane":"w:p2","seat":"peer","harness":"codex","argv":id.payload.launch.argv});
+        let completed = CompletedBootstrapResult {
+            identity: id.clone(),
+            attachment: attachment.clone(),
+            retained: LinkedBootstrapReport {
+                thread: ThreadId::new("t"),
+                recipient: SeatId::new("peer"),
+                pane: HostTargetId::new("w:p2"),
+                kind: "launch".into(),
+                launch: id.payload.launch.clone(),
+                report_digest: format!(
+                    "{:x}",
+                    Sha256::digest(serde_json::to_vec(&report).unwrap())
+                ),
+                report,
+                terminal: super::created().terminal,
+                host_incarnation: super::created().host_incarnation,
+            },
+            legacy_result: HandoffResult {
+                compound: id.payload.handoff_key.clone(),
+                thread: Some(ThreadId::new("t")),
+                state: HandoffState::Completed,
+            },
+        };
+        completed.retained.validate().unwrap();
+        tx.execute(
+            "INSERT INTO bootstrap_attachments(parent_id,attempt,attachment_json) VALUES(1,1,?1)",
+            [serde_json::to_vec(&attachment).unwrap()],
+        )
+        .unwrap();
+        tx.execute(
+            "INSERT INTO bootstrap_reports(parent_id,completed_json) VALUES(1,?1)",
+            [serde_json::to_vec(&completed).unwrap()],
+        )
+        .unwrap();
+        tx.execute(
+            "UPDATE bootstrap_handoffs SET state='completed',terminal_at=1 WHERE id=1",
+            [],
+        )
+        .unwrap();
+        tx.commit().unwrap();
+        let before = herdr_threads::store::topology_handoff::current(&db, &namespace(), &id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(before.completed, Some(Box::new(completed)));
+        assert_eq!(before.recovery, Some(Box::new(recovery)));
+        let dump = |db: &Connection| {
+            [
+                "bootstrap_handoffs",
+                "bootstrap_attempts",
+                "bootstrap_child_keys",
+                "bootstrap_recovery_decisions",
+                "bootstrap_attachments",
+                "bootstrap_reports",
+            ]
+            .into_iter()
+            .map(|table| {
+                let mut statement = db
+                    .prepare(&format!("SELECT * FROM {table} ORDER BY rowid"))
+                    .unwrap();
+                let columns = statement.column_count();
+                statement
+                    .query_map([], |row| {
+                        (0..columns)
+                            .map(|column| row.get::<_, rusqlite::types::Value>(column))
+                            .collect::<rusqlite::Result<Vec<_>>>()
+                    })
+                    .unwrap()
+                    .collect::<rusqlite::Result<Vec<_>>>()
+                    .unwrap()
+            })
+            .collect::<Vec<_>>()
+        };
+        let roots = |db: &Connection| {
+            db.prepare("SELECT name,rootpage FROM sqlite_schema WHERE rootpage>0 AND name NOT LIKE 'bootstrap_%' AND name NOT LIKE 'sqlite_%' AND name NOT IN ('receipts','receipt_state') AND name NOT LIKE 'receipts_%' AND name NOT LIKE 'receipt_state_%' ORDER BY name")
+            .unwrap().query_map([], |r| Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?))).unwrap().map(Result::unwrap).collect::<Vec<_>>()
+        };
+        let original = dump(&db);
+        struct PrivateDb(std::path::PathBuf);
+        impl Drop for PrivateDb {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.0);
+            }
+        }
+        let private = PrivateDb(std::env::temp_dir().join(format!(
+            "ht-handoff-bounds-upgrade-{}.db",
+            uuid::Uuid::new_v4()
+        )));
+        db.execute("VACUUM INTO ?1", [private.0.to_str().unwrap()])
+            .unwrap();
+        drop(db);
+        let db = Connection::open(&private.0).unwrap();
+        db.pragma_update(None, "foreign_keys", true).unwrap();
+        assert_eq!(version(&db), previous as i64);
+        let old_roots = roots(&db);
+        let old_cutover: Option<i64> = if previous == 30 {
+            db.query_row("SELECT historical_decision_seq FROM receipt_send_time_cutovers WHERE instance_id='i'", [], |r| r.get(0)).optional().unwrap()
+        } else {
+            None
+        };
+        schema::initialize(&db, || UtcMillis(2)).unwrap();
+        assert_eq!(version(&db), 31);
+        let new_roots = roots(&db);
+        for root in old_roots {
+            assert!(new_roots.contains(&root), "retained root {root:?}");
+        }
+        if previous == 30 {
+            assert_eq!(db.query_row("SELECT historical_decision_seq FROM receipt_send_time_cutovers WHERE instance_id='i'", [], |r| r.get::<_,i64>(0)).optional().unwrap(), old_cutover);
+        }
+        assert_eq!(dump(&db), original);
+        drop(db);
+        let db = Connection::open(&private.0).unwrap();
+        db.pragma_update(None, "foreign_keys", true).unwrap();
+        schema::initialize(&db, || UtcMillis(3)).unwrap();
+        assert_eq!(
+            herdr_threads::store::topology_handoff::current(&db, &namespace(), &id)
+                .unwrap()
+                .unwrap(),
+            before
+        );
+        assert_eq!(
+            db.pragma_query_value::<i64, _>(None, "foreign_keys", |r| r.get(0))
+                .unwrap(),
+            1
+        );
+    }
+}
+
+#[test]
+fn handoff_bounds_upgrade_failure_restores_fk_and_retries_without_recapturing_receipt_cutover() {
+    for previous in [28, 29, 30] {
+        for foreign_keys in [false, true] {
+            let db = historical(previous);
+            db.execute_batch(
+                "INSERT INTO host_instances(id,created_at,decision_seq) VALUES('i',0,7)",
+            )
+            .unwrap();
+            db.pragma_update(None, "foreign_keys", foreign_keys)
+                .unwrap();
+            // Fail inside migration31 after receipt30 has committed, then repair
+            // only the local obstruction and retry the same actual old database.
+            db.execute_batch("CREATE TEMP TABLE ht29_handoffs(obstruction TEXT)")
+                .unwrap();
+            assert!(schema::initialize(&db, || UtcMillis(0)).is_err());
+            assert_eq!(version(&db), 30);
+            assert_eq!(
+                db.pragma_query_value::<bool, _>(None, "foreign_keys", |r| r.get(0))
+                    .unwrap(),
+                foreign_keys
+            );
+            assert_eq!(
+                objects(&db),
+                objects(&historical(30)),
+                "failed31 must retain old bootstrap DDL"
+            );
+            let cutover: Vec<(String, i64)> = db.prepare("SELECT instance_id,historical_decision_seq FROM receipt_send_time_cutovers ORDER BY instance_id").unwrap().query_map([], |r| Ok((r.get(0)?,r.get(1)?))).unwrap().map(Result::unwrap).collect();
+            db.execute_batch("DROP TABLE temp.ht29_handoffs; UPDATE host_instances SET decision_seq=99 WHERE id='i'").unwrap();
+            schema::initialize(&db, || UtcMillis(1)).unwrap();
+            assert_eq!(version(&db), 31);
+            schema::initialize(&db, || UtcMillis(2)).unwrap();
+            let retained: Vec<(String, i64)> = db.prepare("SELECT instance_id,historical_decision_seq FROM receipt_send_time_cutovers ORDER BY instance_id").unwrap().query_map([], |r| Ok((r.get(0)?,r.get(1)?))).unwrap().map(Result::unwrap).collect();
+            assert_eq!(
+                retained, cutover,
+                "retry31 and reopen must never recapture cutover30"
+            );
+            assert_eq!(
+                db.pragma_query_value::<bool, _>(None, "foreign_keys", |r| r.get(0))
+                    .unwrap(),
+                foreign_keys
+            );
+            assert!(
+                db.prepare("PRAGMA foreign_key_check")
+                    .unwrap()
+                    .query([])
+                    .unwrap()
+                    .next()
+                    .unwrap()
+                    .is_none()
+            );
+        }
+    }
 }

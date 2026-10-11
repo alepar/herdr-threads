@@ -12,10 +12,10 @@ use crate::protocol::{
     results::{ApiError, ErrorCode},
 };
 
-/// Retained envelope ceiling, aligned with the existing delivery terminal's
-/// 131072-byte bound (original journal intent remains independently 64 KiB).
+/// Retained body-bearing identity ceiling, including JSON escaping and metadata.
+/// Local originals and terminal envelopes have separate bounded serializers.
 /// Encode and retained reads refuse overflow; neither truncates data.
-pub const MAX_IDENTITY_BYTES: usize = 128 * 1024;
+pub const MAX_IDENTITY_BYTES: usize = 512 * 1024;
 
 /// Encode the entire validated immutable identity in its canonical namespace.
 /// Frozen paths are compared as supplied bytes, without replay normalization.
@@ -119,6 +119,19 @@ mod tests {
         assert_eq!(decoded.payload.launch.argv, ["--model", "fixed"]);
         assert_eq!(decoded, submitted);
         compare_identity(canonical, &encoded, &submitted).unwrap();
+    }
+
+    #[test]
+    fn maximum_escaped_body_identity_survives_canonical_encoding() {
+        let mut submitted = identity();
+        submitted.payload.handoff.body = "\u{1}".repeat(65_536);
+        submitted.digest = submitted.semantic_digest().unwrap();
+        let encoded = encode_identity(&submitted.payload.handoff.namespace, &submitted).unwrap();
+        assert!(encoded.len() >= 393_216);
+        eprintln!("maximum escaped canonical identity={}", encoded.len());
+        compare_identity(&submitted.payload.handoff.namespace, &encoded, &submitted).unwrap();
+        let decoded: BootstrapIdentity = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(decoded.payload.handoff.body, "\u{1}".repeat(65_536));
     }
 
     fn refresh(mut submitted: BootstrapIdentity) -> BootstrapIdentity {
@@ -288,6 +301,7 @@ mod tests {
         let mut submitted = identity();
         // Escaped argv stays within the protocol's 64 KiB raw argv bound.
         // This does not assert journal acceptance for a large original intent.
+        submitted.payload.handoff.body = "\u{1}".repeat(65_536);
         submitted.payload.launch.argv = vec!["\"".repeat(4096); 16];
         let excess = serde_json::to_vec(&submitted).unwrap().len() - MAX_IDENTITY_BYTES;
         let last = submitted.payload.launch.argv.last_mut().unwrap();

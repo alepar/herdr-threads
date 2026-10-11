@@ -445,7 +445,7 @@ fn publication_explicit_cwd_claude_options_and_invalid_inputs() {
             ..request()
         },
         Request {
-            body: " ".into(),
+            body: "".into(),
             ..request()
         },
         Request {
@@ -540,6 +540,7 @@ mod live {
         reference: super::super::super::journal::IntentRef,
         native_marker: Option<std::path::PathBuf>,
         block_native: bool,
+        verify_wire: bool,
     }
     impl LocalClient for Peer {
         fn call_with_output(
@@ -551,6 +552,19 @@ mod live {
             self.call(command, budget)
         }
         fn call(&self, command: Command, budget: &CallBudget) -> Result<CommandResult, ApiError> {
+            if self.verify_wire {
+                let wire = crate::protocol::wire::WireRequest {
+                    version: crate::protocol::wire::PROTOCOL_VERSION,
+                    request_id: "maximum-body".into(),
+                    expected_instance: "00000000-0000-4000-8000-000000000001".into(),
+                    expected_boot: None,
+                    output: None,
+                    command: command.clone(),
+                };
+                let bytes = serde_json::to_vec(&wire).unwrap();
+                assert!(bytes.len() + 4 <= crate::protocol::wire::MAX_WIRE_FRAME_BYTES);
+                crate::protocol::wire::WireRequest::decode(&bytes).unwrap();
+            }
             let mut s = self.state.lock().unwrap();
             let role = match &command {
                 Command::Capabilities => "capabilities",
@@ -990,6 +1004,7 @@ mod live {
                 )
             };
             if maximal {
+                identity.payload.handoff.body = "\u{1}".repeat(65_536);
                 identity.payload.launch.argv.push("--config=".into());
                 let mut created = crate::protocol::handoff::topology_contract_tests::created();
                 created.witness.endpoint = identity.payload.handoff.namespace.host_endpoint.clone();
@@ -1071,6 +1086,7 @@ mod live {
                     reference,
                     native_marker: None,
                     block_native: false,
+                    verify_wire: request.body.len() == 65_536,
                 }),
                 _temp: temp,
                 clock,
@@ -2089,7 +2105,11 @@ mod live {
             reads += statistics[0];
             maximum_capacity = maximum_capacity.max(statistics[2]);
             assert!(statistics[0] <= 4, "one oversized bundle per page");
-            assert!(statistics[1] <= 5_390_340);
+            assert!(
+                statistics[1] <= 5_390_340,
+                "bundle bytes={} identity={identity} report={report} original={original} submission={submission} child={child} terminal={terminal}",
+                statistics[1]
+            );
             assert_eq!(
                 statistics[2],
                 statistics[1] + statistics[0],
@@ -2274,6 +2294,69 @@ mod live {
             );
         }
     }
+    #[test]
+    fn maximum_instruction_file_freezes_through_bootstrap_completion_and_retry() {
+        for body in ["x".repeat(65_536), "\u{1}".repeat(65_536)] {
+            let source = Temp::new();
+            let path = source.path().join("instructions");
+            std::fs::write(&path, &body).unwrap();
+            let parsed = crate::cli::commands::parse_argv([
+                "ht",
+                "handoff",
+                "--new-tab",
+                "peer",
+                "--kind",
+                "codex",
+                "--thread",
+                "chosen",
+                "--file",
+                path.to_str().unwrap(),
+            ])
+            .unwrap();
+            let crate::cli::commands::CliAction::TopologyHandoff(mut r) = parsed.action else {
+                panic!("wrong handoff route")
+            };
+            r.binary = Some("/bin/quoted path".into());
+            let f = Fixture::with_request(Fault::CompleteBefore, r, Some(vec![]));
+            let original = f
+                .journal
+                .snapshot_bootstrap_origin(&f.peer.reference)
+                .unwrap();
+            std::fs::write(&path, "changed source").unwrap();
+            std::fs::remove_file(&path).unwrap();
+            let mut launcher = DownstreamLauncher::default();
+            let mut output = vec![];
+            assert!(downstream(&f, &mut launcher, &mut output).is_err());
+            f.peer.state.lock().unwrap().db =
+                rusqlite::Connection::open(&f.peer.database_path).unwrap();
+            let result = downstream(&f, &mut launcher, &mut output).unwrap();
+            assert_eq!(result.state, BootstrapState::Completed);
+            assert_eq!(launcher.starts, 1);
+            let state = f.peer.state.lock().unwrap();
+            let saved: String = state
+                .db
+                .query_row("SELECT body FROM messages WHERE body=?1", [&body], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            assert_eq!(saved, body);
+            drop(state);
+            let terminal = read_terminal(&f.journal, &f.peer.reference)
+                .unwrap()
+                .unwrap();
+            assert_eq!(terminal.original.as_bytes(), original);
+            assert_eq!(terminal.completed.identity.payload.handoff.body, body);
+            let argv = terminal.completed.retained.report["argv"]
+                .as_array()
+                .unwrap();
+            assert!(argv.iter().all(|arg| !arg.as_str().unwrap().contains(&body)
+                && !arg.as_str().unwrap().contains(path.to_str().unwrap())));
+            let mut replay = vec![];
+            downstream(&f, &mut launcher, &mut replay).unwrap();
+            assert_eq!(launcher.starts, 1);
+        }
+    }
+
     #[test]
     fn downstream_atomic_completion_runs_exact_child_then_flushes_success() {
         let f = Fixture::downstream(Fault::None);
@@ -4073,6 +4156,7 @@ mod live {
             reference,
             native_marker: Some(root.join("native-calls")),
             block_native: input["block"].as_bool().unwrap(),
+            verify_wire: false,
         };
         let clock = crate::app::SystemClock::new();
         let context = HostCallContext {
@@ -5343,6 +5427,7 @@ fn phase13_prepublication_capacity_uses_actual_request_envelope_bound() {
     let mut identity = crate::protocol::handoff::topology_contract_tests::identity();
     let witness = crate::protocol::handoff::topology_contract_tests::created().witness;
     super::preflight_progress_capacity(&identity, &witness).unwrap();
+    identity.payload.handoff.body = "\u{1}".repeat(65_536);
     identity.payload.launch.argv = vec!["\"".repeat(4096); 16];
     let excess = serde_json::to_vec(&identity).unwrap().len()
         - crate::store::topology_handoff::MAX_IDENTITY_BYTES;
@@ -5434,4 +5519,46 @@ fn fresh_root_preparation_uses_current_admission_and_v1_generated_input() {
         "{refused:?}"
     );
     assert!(!temp.path().join("intents").exists());
+}
+
+#[test]
+fn maximum_escaped_bootstrap_survives_origin_and_request_progress() {
+    let temp = Temp::new();
+    let mut request = request();
+    request.body = "\u{1}".repeat(65_536);
+    let identity = prepared(&request, temp.path()).unwrap();
+    let journal = super::super::journal::Journal::open(temp.path().join("intents")).unwrap();
+    let reference = publish(&journal, &identity, 1).unwrap();
+    let origin = journal.snapshot_bootstrap_origin(&reference).unwrap();
+    assert!(origin.len() >= 393_216);
+    let mut created = crate::protocol::handoff::topology_contract_tests::created();
+    created.witness.endpoint = identity.payload.handoff.namespace.host_endpoint.clone();
+    preflight_progress_capacity(&identity, &created.witness).unwrap();
+    let progress = BootstrapProgress {
+        version: 1,
+        identity: identity.clone(),
+        attempt: crate::protocol::handoff::BootstrapAttempt::first(),
+        possible_creation: true,
+        request: Some(crate::ports::CreateTabRequest {
+            correlation: created.correlation,
+            workspace: identity.payload.workspace.clone(),
+            cwd: identity.payload.cwd.clone(),
+            label: identity.payload.label.clone(),
+            focus: identity.payload.focus,
+            env: identity.payload.env.clone(),
+            expected_witness: created.witness,
+        }),
+        creation: None,
+        not_submitted: false,
+    };
+    save_bootstrap_progress(&journal, &reference, &progress).unwrap();
+    eprintln!(
+        "maximum escaped bootstrap: origin={} progress={}",
+        origin.len(),
+        serde_json::to_vec(&progress).unwrap().len()
+    );
+    let loaded = load_bootstrap_progress(&journal, &reference, &identity)
+        .unwrap()
+        .unwrap();
+    assert_eq!(loaded.identity.payload.handoff.body, "\u{1}".repeat(65_536));
 }

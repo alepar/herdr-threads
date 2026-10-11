@@ -14,14 +14,14 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Serialize, de::DeserializeOwned};
 
 /// Storage envelope limits, independently enforced without truncating data.
-/// Identity remains 128 KiB; creation/attachment are also bounded 128 KiB.
+/// Identity is bounded at 512 KiB; creation/attachment remain bounded 128 KiB.
 /// Recovery includes the identity plus disposition/evidence and operator metadata.
 /// Completed adds identity, attachment, the <=1 MiB retained report, repeated
 /// launch argv and legacy result. These are storage ceilings, not a promise that
 /// every protocol-valid envelope fits; future writers must refuse overflow.
 pub const MAX_CREATION_BYTES: usize = 128 * 1024;
 pub const MAX_ATTACHMENT_BYTES: usize = 128 * 1024;
-pub const MAX_RECOVERY_BYTES: usize = 256 * 1024;
+pub const MAX_RECOVERY_BYTES: usize = 1024 * 1024;
 pub const MAX_COMPLETED_BYTES: usize = 2 * 1024 * 1024;
 
 pub(super) fn corrupt() -> ApiError {

@@ -289,6 +289,7 @@ pub fn publish(
 ) -> Result<super::journal::IntentRef, RunError> {
     use super::journal::{BootstrapPlan, SemanticMutation};
     identity.validate().map_err(super::invalid_request)?;
+    crate::store::topology_handoff::encode_identity(&identity.payload.handoff.namespace, identity)?;
     if !identity.payload.cwd.is_dir() {
         return Err(super::invalid_request(
             "bootstrap cwd disappeared before publication",
@@ -766,7 +767,7 @@ pub(crate) struct BootstrapProgress {
     pub creation: Option<crate::ports::CreatedTab>,
     pub not_submitted: bool,
 }
-const MAX_BOOTSTRAP_PROGRESS: usize = 128 * 1024;
+pub(crate) const MAX_BOOTSTRAP_PROGRESS: usize = 512 * 1024;
 fn save_bootstrap_progress(
     journal: &super::journal::Journal,
     reference: &super::journal::IntentRef,

@@ -514,8 +514,8 @@ future composer change stops new Root launches rather than producing reports tha
 completion cannot validate.
 
 Canonical topology storage has encoded-byte ceilings for retained bootstrap envelopes:
-128 KiB for the full frozen identity, creation evidence and attachment; 256 KiB for
-an immutable recovery decision; and 2 MiB for the full completed result, including
+512 KiB for the full frozen identity; 128 KiB for metadata-only creation evidence
+and attachment; 1 MiB for an immutable recovery decision; and 2 MiB for the full completed result, including
 identity, attachment, launcher report and legacy result. The launch report's inner
 JSON retains its independent 1 MiB protocol bound. JSON escaping and repeated nested
 fields count toward the storage ceiling; a protocol-shaped envelope need not fit.
@@ -524,11 +524,31 @@ reads of oversized or corrupt data must refuse, never present clipped data or gr
 submission permission. Records are never truncated to fit. These limits neither
 change attribution nor authorize from a client-local journal or today's occupant.
 Public preparation also checks the actual serialized request-bearing local progress
-against its existing 128 KiB cap using the observed endpoint witness, before publication,
+against its 512 KiB cap using the observed endpoint witness, before publication,
 Begin or reservation. A canonical maximum-size identity need not fit that larger producer
 envelope. Future native response metadata is not statically known; an unpersistable created
 response conservatively retains possible creation and refuses automatic resubmission.
 Transition writers retain the canonical guards and enforce the same limits.
+Handoff instructions use ordinary message bytes: nonempty UTF-8 up to 65,536 bytes,
+including whitespace and NUL. Exactly one positional, file or stdin source is acquired
+once with a bounded read before publication; the actual body, never its source path,
+is frozen in every compound intent. Topic and goal limits remain independent.
+A maximum six-byte-escaped body occupies 393,216 JSON bytes per occurrence. Delivery
+Send envelopes repeat it in the immutable plan and child request (786,432 bytes before
+metadata); the global wire ceiling remains 1 MiB. Delivery origins are bounded at
+512 KiB and terminal records at 1 MiB: nesting the exact original JSON as a string
+adds a backslash to each body escape (458,752 bytes for that occurrence). Bootstrap
+origins retain their identity-derived bound; linked progress remains 2 MiB and terminal
+records retain their completion-plus-escaped-origin bound. Actual serializer fixtures
+cover these repetitions and historical originals without clipping or recomputing digests.
+Origin capacity is checked before allocator publication, bootstrap identity and
+request-bearing progress before topology effects, and terminal capacity before completion.
+The bounded archival scanner uses these same handoff origin/progress/terminal ceilings;
+its legacy launch-handoff origin shares the 512 KiB body-bearing cap. Generic non-handoff
+record and header caps remain independent, and oversized records still veto coverage.
+Independent oversized metadata and native responses still refuse rather than truncate.
+The schema upgrade rebuilds only the two body-bearing bounded tables, copies their
+historical blobs and operation keys verbatim, and checks foreign keys before commit.
 
 These are decisions, not bugs. Each is safe to rely on only as stated.
 
