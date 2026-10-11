@@ -1413,13 +1413,13 @@ fn report_captured(
     (report, code)
 }
 
-/// The `setup.event_registration` value: `legacy` for hooks installed before per-event
-/// registration (still working, informational only), else `current`.
+/// The `setup.event_registration` value: `legacy` for shared or UUID-marked native commands
+/// (still working, informational only), else `current`.
 fn event_registration(legacy: bool) -> &'static str {
     if legacy { "legacy" } else { "current" }
 }
 
-/// The informational line for hooks that predate per-event registration. Never a limitation:
+/// The informational line for legacy native commands. Never a limitation:
 /// the hooks work, so doctor does not turn `degraded` over it.
 fn legacy_registration_line(harness: &str, setup: &Value) -> Option<String> {
     (setup["event_registration"] == json!("legacy")).then(|| {
@@ -1429,8 +1429,8 @@ fn legacy_registration_line(harness: &str, setup: &Value) -> Option<String> {
             ""
         };
         format!(
-            "{harness} hooks predate per-event registration (no --event): re-run \
-             `herdr-threads setup {harness}`{retrust}\n"
+            "{harness} hooks use legacy commands: re-run \
+             `herdr-threads setup {harness}` to migrate to stable hook-event commands{retrust}\n"
         )
     })
 }

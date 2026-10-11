@@ -65,8 +65,8 @@ output delivery was not run natively. `plan_codex_for_version` returns
 `herdr-threads setup codex` instead installs the same three groups (each with
 timeout 10) at user level, the way Herdr installs its own Codex hook: appended
 to `$CODEX_HOME/hooks.json` (default `~/.codex/hooks.json`) through
-`install_user_settings(SettingsKind::CodexUser, ..)`, with an ownership marker
-in each command and a private manifest, so `unsetup codex` removes only them.
+`install_user_settings(SettingsKind::CodexUser, ..)`, with each exact group recorded
+in a private ownership manifest, so `unsetup codex` removes only them.
 Codex also keeps the hooks of `$CODEX_HOME/config.toml`, `/etc/codex` and
 trusted project `.codex/` layers (app-server `hooks/list` with a scratch
 `CODEX_HOME` on 0.157.1, 0.158.0 and 0.159.2); setup reads those only to report
@@ -218,3 +218,14 @@ it. Do not copy the historical network settings as a workaround for permission
 denial, or infer default-deny from a failed curl request. Details of existing owned
 settings and cleanup are in the
 [legacy allowance notes](../../docs/install.md#codex-sandbox-socket-allowance).
+
+
+Native setup registers a complete `herdr-threads hook-event HARNESS EVENT` command for each
+owned event, with the canonical state directory and Herdr endpoint pinned. Equivalent setup
+reuses the exact group in place. The private ownership manifest retains the installation UUID,
+exact groups and their SHA-256 fingerprints; the shell command contains no per-install UUID.
+An identical unrecorded stable group is foreign and setup refuses it. Legacy UUID-marked groups
+remain eligible for the existing explicit adoption path. Explicit setup migrates recorded legacy
+registrations recoverably, preserving unrelated settings and group order. Status does not migrate.
+Codex may require native review of changed commands. Hook registration never writes native trust
+or permission grants. Unsetup removes only exact unambiguous owned groups and preserves edited or duplicate groups.

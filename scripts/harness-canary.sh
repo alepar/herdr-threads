@@ -454,7 +454,7 @@ chk_t0_config_load() {
 # t0_py CMD ARGS...: small JSON/capture readers for the checks below; prints a result, exit 0 unless noted.
 t0_py() {
   python3 - "$@" <<'PY'
-import glob, json, os, re, sys
+import glob, hashlib, json, os, re, sys, uuid
 
 cmd, args = sys.argv[1], sys.argv[2:]
 
@@ -467,20 +467,41 @@ def load(path):
         return None
 
 
-def owned_groups(doc, event):
+def owned_groups(doc, event, setup, config_path):
+    manifest = load(setup.get("manifest", ""))
+    if not isinstance(manifest, dict):
+        return []
+    try:
+        identity = manifest["installation_id"]
+        if str(uuid.UUID(identity)) != identity:
+            return []
+    except (KeyError, ValueError, TypeError, AttributeError):
+        return []
+    if (manifest.get("version") not in (2, 3) or manifest.get("phase", "installed") != "installed"
+            or manifest.get("path") != config_path or manifest.get("scope") != "user"):
+        return []
     hooks = doc.get("hooks") if isinstance(doc, dict) else None
     groups = hooks.get(event) if isinstance(hooks, dict) else None
-    out = []
-    for g in groups if isinstance(groups, list) else []:
-        cmds = [h.get("command", "") for h in g.get("hooks", []) if isinstance(h, dict)] if isinstance(g, dict) else []
-        if any("herdr-threads-owner:" in c for c in cmds):
-            out.append(g)
-    return out
+    recorded = manifest.get("owned")
+    if not isinstance(recorded, list) or manifest.get("harness") != ("claude" if os.path.basename(config_path) == "settings.json" else "codex"):
+        return []
+    entries = [e for e in recorded if isinstance(e, dict) and e.get("event") == event]
+    if len(entries) != 1 or not isinstance(groups, list):
+        return []
+    entry = entries[0]
+    group = entry.get("group")
+    digest = "sha256:" + hashlib.sha256(json.dumps(group, separators=(",", ":"), sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+    command = (group.get("hooks") or [{}])[0].get("command") if isinstance(group, dict) else None
+    occurrences = sum(h.get("command") == command for candidate in groups if isinstance(candidate, dict)
+                      for h in candidate.get("hooks", []) if isinstance(h, dict))
+    if not isinstance(command, str) or entry.get("fingerprint") != digest or groups.count(group) != 1 or occurrences != 1:
+        return []
+    return [group]
 
 
 def hook_captures(harness, capdir):
     """(stdin path, parsed stdin or None) of every capture whose argv ends `hook <harness>` or
-    `hook <harness> --event <NAME>` (setup registers each hook with its event)."""
+    `hook <harness> --event <NAME>` or stable `hook-event <harness> <NAME>`."""
     found = []
     for argv_path in sorted(glob.glob(os.path.join(capdir, "*.argv"))):
         try:
@@ -493,7 +514,14 @@ def hook_captures(harness, capdir):
             and argv[-2] == "--event"
             and re.fullmatch(r"[A-Za-z0-9]{1,63}", argv[-1]) is not None
         )
-        if argv[-2:] != ["hook", harness] and not evented:
+        stable = (
+            len(argv) >= 3
+            and argv[-3:-1] == ["hook-event", harness]
+            and argv[-1] in ({"SessionStart", "PreToolUse"} if harness == "claude"
+                             else {"SessionStart", "SubagentStart", "PreToolUse"} if harness == "codex"
+                             else set())
+        )
+        if argv[-2:] != ["hook", harness] and not evented and not stable:
             continue
         stdin_path = argv_path[: -len(".argv")] + ".stdin"
         try:
@@ -521,8 +549,8 @@ if cmd == "setup-assert":  # HARNESS DIAGNOSTIC_VERSION OUTFILE CONFIGDIR -> `pa
     # qualify it. The independent t0.version check retains diagnostic V.
     elif harness == "claude":
         settings = load(os.path.join(confdir, "settings.json"))
-        pre = [g for g in owned_groups(settings, "PreToolUse") if "Bash" in str(g.get("matcher", ""))]
-        if not owned_groups(settings, "SessionStart"):
+        pre = [g for g in owned_groups(settings, "PreToolUse", setup, os.path.join(confdir, "settings.json")) if "Bash" in str(g.get("matcher", ""))]
+        if not owned_groups(settings, "SessionStart", setup, os.path.join(confdir, "settings.json")):
             print("fail\tclaude settings.json has no owned SessionStart group")
         elif not pre:
             print("fail\tclaude settings.json has no owned PreToolUse(Bash) group")
@@ -530,7 +558,7 @@ if cmd == "setup-assert":  # HARNESS DIAGNOSTIC_VERSION OUTFILE CONFIGDIR -> `pa
             print("pass\tinstalled; owned SessionStart and PreToolUse(Bash) groups present")
     else:
         hooks = load(os.path.join(confdir, "hooks.json"))
-        missing = [e for e in ("SessionStart", "SubagentStart", "PreToolUse") if not owned_groups(hooks, e)]
+        missing = [e for e in ("SessionStart", "SubagentStart", "PreToolUse") if not owned_groups(hooks, e, setup, os.path.join(confdir, "hooks.json"))]
         if missing:
             print(f"fail\tcodex hooks.json has no owned group for {', '.join(missing)}")
         else:
@@ -554,11 +582,20 @@ elif cmd == "unsetup-assert":  # HARNESS OUTFILE CONFIGDIR PRECONFIG -> `pass|fa
             residue = "herdr-threads-owner:" in open(hooks_path, encoding="utf-8", errors="replace").read()
         except OSError:
             residue = False
+        installed = load(os.path.join(os.path.dirname(outfile), "setup.out"))
+        commands = installed.get("setup", {}).get("commands", {}) if isinstance(installed, dict) else {}
+        remaining = load(hooks_path)
+        groups = remaining.get("hooks", {}) if isinstance(remaining, dict) else {}
+        residue = residue or any(
+            isinstance(group, dict) and any(isinstance(hook, dict) and hook.get("command") == command
+                for hook in group.get("hooks", []))
+            for event, command in commands.items() for group in groups.get(event, [])
+        )
         conf = os.path.join(confdir, "config.toml")
         before = open(pre, "rb").read() if os.path.exists(pre) else None
         after = open(conf, "rb").read() if os.path.exists(conf) else None
         if residue:
-            print("fail\tcodex hooks.json still holds an herdr-threads-owner: command")
+            print("fail\tcodex hooks.json still holds an installed herdr-threads command")
         elif before != after:
             print("fail\tcodex config.toml differs from its pre-setup bytes (" + ("absent" if before is None else "present") + " before, " + ("absent" if after is None else "present") + " after)")
         else:

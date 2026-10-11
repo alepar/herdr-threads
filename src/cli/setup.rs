@@ -13,7 +13,7 @@
 //!   `~/.codex/hooks.json`). No sandbox allowance is installed. Historical
 //!   config.toml ownership remains inspectable and removable by unsetup.
 //!
-//! Every write is owned: groups carry an installation marker, a private
+//! Every write is owned: groups have exact ownership records, a private
 //! manifest under `<state-dir>/setup/` records exactly what was added, a
 //! foreign identical entry refuses, files are replaced atomically after an
 //! unchanged-baseline check, re-running is idempotent, and `unsetup` removes
@@ -31,7 +31,7 @@
 //! Setup resolves the selected executable without invoking it and declares
 //! the registered contract. Runtime metadata and native delivery remain unknown.
 //! The installed hook command is exactly the hook entrypoint's
-//! [`hook::installed_argv`], which its `parse_hook_argv` accepts.
+//! [`hook::installed_event_argv`], which its `parse_hook_argv` accepts.
 
 pub(crate) mod foreground;
 
@@ -122,13 +122,17 @@ HERDR_SOCKET_PATH (set inside Herdr), else Herdr's defaults when they exist
 ~/.config, then herdr/herdr.sock), else detected with the herdr CLI (`herdr plugin list`,
 `herdr status server`).
 Ambiguity is refused. The installed hook command is
-`<this executable> --state-dir <state> --host-endpoint <socket> hook <harness>`, registered
-for each event with `--event <EVENT>` appended (hooks installed before that keep working;
+`<this executable> --state-dir <state> --host-endpoint <socket> hook-event <harness> <EVENT>`
+for each native event (legacy hook commands keep working;
 `doctor` suggests re-running setup); in any session that is not a pane of that Herdr
 instance it prints nothing, runs no version probe and starts no daemon, and only sends a
 short best-effort evidence note to a daemon already running (gate files under
 <state>/harness/evidence).
-Each harness's ownership manifest lives in <state>/setup/.
+Each harness's ownership manifest lives in <state>/setup/. Native commands use the stable
+hook-event HARNESS EVENT entrypoint with canonical routing. Installation UUIDs remain in the
+manifest, outside shell commands. Equivalent setup retains exact owned groups in place; unrecorded
+identical stable groups are foreign and cause a safe refusal. Setup explicitly migrates recorded
+legacy hooks; status only inspects them. Changed native commands may require review again.
 
 A hook file that already holds exactly this command's hook groups under another setup's
 owner marker (for example a hooks.json copied with its trust into a second CODEX_HOME) is
