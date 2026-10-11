@@ -1,7 +1,7 @@
 # super-auto run — 2026-10-09-session-keyed-seat-bindings
 
 flags: planOneShot=f skipPlanRoast=f skipCodeRoast=f autonomous=t
-phase: fix-loop
+phase: roast-code
 codeMechanism: Workflow
 
 idea: Goal: implement the new herdr-threads seat-bindings model we designed in this session, absorbing the Hermes global-enrollment work (ht-4ne, branch super-auto/hermes-global-enrollment, unmerged) it sprang from. Flags: planOneShot=false (interactive Mode A design for remaining questions), skipPlanRoast=false, skipCodeRoast=false, autonomous=true from after the design. The Codex CODEX_EXEC_SERVER_URL pane-env installer step runs separately on branch codex-daemon-env and is out of scope here.
@@ -14,7 +14,7 @@ graph-pass: depth 7→6 · width 3.6→4.2 · applied 7 · parked 0 (human-appro
 stepBackDesign-round-1: patch — four clusters (supersede rule, V29 row classes, human-seat transitions, claim-source completeness), no recurrence; root goal stands
 roast-design: 2026-10-10-session-keyed-seat-bindings-roast-design-1.md, 2026-10-10-session-keyed-seat-bindings-roast-design-2.md
 
-roastCodeRound: 1
+roastCodeRound: 2
 roast-code: 2026-10-10-session-keyed-seat-bindings-roast-pr-1.md
 stepBackCode-round-1: patch — no recurrence yet (round 1); three clusters (lazy-unread-per-binding, role-from-resolved-binding, authority-by-role-and-liveness) where the per-seat→per-binding migration was applied unevenly; sweep each rule
 scopeFilter-round-1: [Should-fix] src/store/queries.rs:6514 in-scope — The inbox v2 lazy source pages the seat-level set instead of the binding's own cursor, which breaks per-binding cursors, a core goal behavior.
