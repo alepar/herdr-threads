@@ -14,6 +14,8 @@ struct AutomaticClient {
     thread: Mutex<Option<ThreadId>>,
     sent: Mutex<bool>,
     send_count: Mutex<usize>,
+    invitations: Mutex<usize>,
+    rejected: Mutex<bool>,
     lose_ensure: Mutex<bool>,
     binding_changed: Mutex<bool>,
     completed: Mutex<bool>,
@@ -27,6 +29,8 @@ impl AutomaticClient {
             thread: Mutex::new(None),
             sent: Mutex::new(false),
             send_count: Mutex::new(0),
+            invitations: Mutex::new(0),
+            rejected: Mutex::new(false),
             lose_ensure: Mutex::new(false),
             binding_changed: Mutex::new(false),
             completed: Mutex::new(false),
@@ -91,7 +95,12 @@ impl LocalClient for AutomaticClient {
                     }
                     AutomaticDeliveryAction::Ensure(ensure) => {
                         assert_eq!(ensure.operation, keys.ensure);
-                        *self.thread.lock().unwrap() = Some(ThreadId::new("t-pair"));
+                        let mut thread = self.thread.lock().unwrap();
+                        if thread.is_none() {
+                            *self.invitations.lock().unwrap() += 1;
+                            *thread = Some(ThreadId::new("t-pair"));
+                        }
+                        drop(thread);
                         if std::mem::take(&mut *self.lose_ensure.lock().unwrap()) {
                             return Err(ApiError::unknown_outcome("Ensure committed; reply lost"));
                         }
@@ -104,6 +113,12 @@ impl LocalClient for AutomaticClient {
                             send.direct_recipient.as_ref().unwrap().as_str(),
                             "recipient"
                         );
+                        if *self.rejected.lock().unwrap() && !*self.sent.lock().unwrap() {
+                            return Err(ApiError::new(
+                                ErrorCode::MembershipRequired,
+                                "recipient rejected; explicitly reinvite",
+                            ));
+                        }
                         *self.sent.lock().unwrap() = true;
                         *self.send_count.lock().unwrap() += 1;
                         Ok(CommandResult::MessageSent(MessageId::new("m-pair")))
@@ -209,6 +224,108 @@ fn automatic_launched_pane_uses_ensure_send_and_one_start() {
     assert_eq!(calls.iter().filter(|c| matches!(c, Command::AutomaticHandoffDelivery(v) if matches!(v.action, crate::protocol::handoff::AutomaticDeliveryAction::Ensure(_)))).count(), 1);
     assert_eq!(calls.iter().filter(|c| matches!(c, Command::AutomaticHandoffDelivery(v) if matches!(v.action, crate::protocol::handoff::AutomaticDeliveryAction::Send(_)))).count(), 1);
     assert!(!bytes.is_empty());
+}
+
+#[test]
+fn automatic_launched_pane_lost_ensure_then_reject_preserves_original_without_send_or_start() {
+    let parsed = crate::cli::commands::parse_argv([
+        "ht",
+        "handoff",
+        "--pane",
+        "w1:p2",
+        "--kind",
+        "codex",
+        "--",
+        "secret durable task",
+    ])
+    .unwrap();
+    let crate::cli::commands::CliAction::Handoff(request) = parsed.action else {
+        panic!("wrong parser route")
+    };
+    assert!(request.automatic);
+    let (_temp, journal) = journal();
+    let client = AutomaticClient::new();
+    *client.lose_ensure.lock().unwrap() = true;
+    let mut launcher = AutomaticLauncher::default();
+    let mut output = OutputSpec::default();
+    output.context.state_dir = Some("/tmp/automatic-state".into());
+    output.context.host = Some("/tmp/automatic-host.sock".into());
+    let mut original_claim = claim();
+    original_claim.harness = Harness::Codex;
+    let mut first_output = vec![];
+    let first = start(
+        &journal,
+        request,
+        original_claim.clone(),
+        "recipient",
+        &client,
+        &mut launcher,
+        &TestClock,
+        &output,
+        &mut first_output,
+    );
+    assert!(
+        matches!(first, Err(RunError::Api(ref e)) if e.code == ErrorCode::UnknownOutcome),
+        "{first:?}"
+    );
+    assert!(!first_output.is_empty(), "lost Ensure needs retry guidance");
+    assert_eq!(*client.invitations.lock().unwrap(), 1);
+    assert_eq!(*client.send_count.lock().unwrap(), 0);
+    assert_eq!(launcher.starts, 0);
+
+    let reference =
+        crate::cli::handoff_delivery::resolve_automatic_recovery_ref(&journal, "local:1").unwrap();
+    let original =
+        crate::cli::handoff_delivery::load_automatic_original(&journal, &reference).unwrap();
+    let original_bytes = serde_json::to_vec(&original.semantic).unwrap();
+    let original_digest = original.header.semantic_digest.clone();
+    let namespace = crate::protocol::handoff::HandoffNamespace {
+        instance: original_claim.instance.clone(),
+        state_dir: "/tmp/automatic-state".into(),
+        host_endpoint: "/tmp/automatic-host.sock".into(),
+    };
+    *client.rejected.lock().unwrap() = true;
+    let mut retry_output = vec![];
+    let retry = retry_automatic_live(
+        &journal,
+        "local:1",
+        &original_claim,
+        crate::cli::actor_route::InvocationActor::Agent,
+        &namespace,
+        &client,
+        &mut launcher,
+        &TestClock,
+        &output,
+        &mut retry_output,
+    );
+    assert!(
+        matches!(retry, Err(RunError::Api(ref e)) if e.code == ErrorCode::MembershipRequired && e.detail.contains("reinvite")),
+        "{retry:?}"
+    );
+    assert!(
+        !retry_output.is_empty(),
+        "rejection needs recovery guidance"
+    );
+    assert_eq!(*client.invitations.lock().unwrap(), 1);
+    assert_eq!(*client.send_count.lock().unwrap(), 0);
+    assert_eq!(launcher.starts, 0);
+    let retained =
+        crate::cli::handoff_delivery::load_automatic_original(&journal, &reference).unwrap();
+    assert_eq!(retained.header.semantic_digest, original_digest);
+    assert_eq!(
+        serde_json::to_vec(&retained.semantic).unwrap(),
+        original_bytes
+    );
+    assert!(
+        String::from_utf8(original_bytes)
+            .unwrap()
+            .contains("secret durable task")
+    );
+    assert!(journal.resolve_recovery_ref("local:1").is_ok());
+    assert!(client.calls.lock().unwrap().iter().all(|call| !matches!(
+        call,
+        Command::Invite(_) | Command::Accept(_) | Command::Ack(_)
+    )));
 }
 
 #[test]

@@ -2210,8 +2210,30 @@ fn automatic_canonical_lost_ensure_then_real_reject_or_leave_cannot_publish_or_r
             }))
             .unwrap();
         }
+        // Reject itself now appends a warning notice. Freeze the all-kind
+        // baseline after that ordinary decision so retry gets no false credit.
+        let messages_after_lifecycle: i64 =
+            f.db.query_row("SELECT count(*) FROM messages", [], |r| r.get(0))
+                .unwrap();
+        if phase == "reject" {
+            assert_eq!(
+                f.db.query_row(
+                    "SELECT count(*) FROM messages WHERE thread_id=?1 AND kind='warn'",
+                    [thread.as_str()],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+                1
+            );
+        }
         assert_eq!(automatic_call(&f, request.ensure()).unwrap(), ensured);
         assert!(automatic_call(&f, request.send(thread)).is_err(), "{phase}");
+        assert_eq!(
+            f.db.query_row("SELECT count(*) FROM messages", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            messages_after_lifecycle,
+            "{phase}: automatic retry must not add a message or notice"
+        );
         assert_eq!(
             f.db.query_row("SELECT count(*) FROM invitations", [], |r| r
                 .get::<_, i64>(0))
