@@ -4445,10 +4445,14 @@ pub(crate) fn attach_registered_child(
     let mut placement = cooperative_placement(tx, at, &child_claim, false, mapping)?;
     placement.provenance =
         crate::protocol::authority::COOPERATIVE_ENV_SESSION_PROVENANCE.to_owned();
-    Ok(matches!(
+    let created = matches!(
         bindings::attach_subagent(tx, &child_claim, &parent, &placement, at.utc)?,
         bindings::EnrollOutcome::Enrolled { .. }
-    ))
+    );
+    // A child CLI call that beat this start event enrolled a stray top-level plain-call row;
+    // the registered subagent row replaces it, whether just created or already there.
+    bindings::supersede_plain_child_row(tx, &child_claim, at.utc)?;
+    Ok(created)
 }
 
 /// A cooperative check-in constructs its bounded offer inside the deciding SQLite

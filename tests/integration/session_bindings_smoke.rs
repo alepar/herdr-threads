@@ -758,9 +758,10 @@ fn config1_claude_main_and_two_subagents() {
     let _ = peer_seat;
 
     // /clear in the main pane: the new session's SessionStart supersedes the old binding (same
-    // harness process). A stale caller that still carries the pre-/clear session id reconnects
-    // the old binding (any call the binding makes) without disconnecting the live one; the
-    // liveness worker's same-process rule then disconnects the old binding `superseded` again.
+    // harness process). A stale caller that still carries the pre-/clear session id is served as
+    // the old, superseded binding and never reconnects it (ht-54r.87): the old binding stays
+    // disconnected, the live one stays connected, and nothing writes `liveness`, so the archival
+    // mutation revision does not churn, now or after one liveness cadence.
     let process = smoke.binding(&seat, "claude", "sess-main", "");
     let cleared = Agent::claude("sess-clear", &pane).in_process_of(&process);
     let out = smoke.hook(&cleared, &claude_start("sess-clear", "clear"));
@@ -773,23 +774,47 @@ fn config1_claude_main_and_two_subagents() {
     assert_eq!(old.liveness, "disconnected", "{old:?}");
     let live = smoke.binding(&seat, "claude", "sess-clear", "");
     assert_eq!(live.liveness, "connected", "{live:?}");
+    let revision = || smoke.count("SELECT mutation_revision FROM archival_instances", &[]);
+    // A `thread create` is the call that resolves and writes through the caller's binding, but it
+    // bumps the archival revision itself. The live session's own create is the control: the stale
+    // caller's create must bump it by exactly the same amount, with no `liveness` write on top.
+    let control_before = revision();
+    let control = smoke.cli(&cleared, &["thread", "create", "--topic", "live caller"]);
+    assert_eq!(control.code, 0, "{}", control.text());
+    let create_bump = revision() - control_before;
     let stale = Agent::claude("sess-main", &pane).in_process_of(&process);
+    let revision_before = revision();
     let served = smoke.cli(&stale, &["thread", "create", "--topic", "stale caller"]);
     assert_eq!(served.code, 0, "{}", served.text());
-    wait_until(
-        "the stale binding to be superseded again",
-        Duration::from_secs(30),
-        || {
-            let after = smoke.all_bindings(&seat);
-            assert_eq!(
-                after.iter().find(|b| b.id == live.id).unwrap().liveness,
-                "connected",
-                "the live binding does not flap"
-            );
-            let old_after = after.iter().find(|b| b.id == top.id).unwrap();
-            old_after.liveness == "disconnected" && old_after.reason == old.reason
-        },
+    let revision_after_call = revision();
+    assert_eq!(
+        revision_after_call - revision_before,
+        create_bump,
+        "the stale call wrote liveness on top of its thread create"
     );
+    let still_settled = || {
+        let after = smoke.all_bindings(&seat);
+        let old_after = after.iter().find(|b| b.id == top.id).unwrap();
+        assert_eq!(old_after.liveness, "disconnected", "{old_after:?}");
+        assert_eq!(old_after.reason, old.reason, "{old_after:?}");
+        assert_eq!(
+            after.iter().find(|b| b.id == live.id).unwrap().liveness,
+            "connected",
+            "the live binding does not flap"
+        );
+    };
+    still_settled();
+    // One liveness cadence later (the worker's next pass): the same three facts, and no churn.
+    let until = Instant::now() + Duration::from_secs(6);
+    while Instant::now() < until {
+        still_settled();
+        assert_eq!(
+            revision(),
+            revision_after_call,
+            "a stale call or a worker pass wrote liveness"
+        );
+        std::thread::sleep(Duration::from_millis(250));
+    }
 }
 
 // Kills: a subagent's text inbox that cannot display or advance its own cursor (fixed by ht-54r.58).

@@ -482,14 +482,15 @@ fn ack_impl(
                 &ObligationRef::CheckIn(seat.clone()),
                 &digest,
             )?;
-            // Any connected top-level binding of the seat may settle (spec §2 ACK). A call with
-            // its fingerprint has already reconnected its binding in the resolver; a
-            // disconnected binding that this call could not reconnect (no liveness fingerprint)
-            // is refused like a stale-context ACK.
+            // Any connected top-level binding of the seat may settle (spec §2 ACK). A
+            // fingerprinted call has already reconnected its binding in the resolver when it was
+            // disconnected by a process exit or migration; a disconnected binding that this call
+            // could not reconnect (no fingerprint, or superseded, ended or retired) is refused
+            // like a stale-context ACK.
             if !actor.binding_connected {
                 return Err(api_error(
                     ErrorCode::CallerUnverified,
-                    "a disconnected binding reconnects only on a call that carries its liveness fingerprint",
+                    "a disconnected binding reconnects only on a fingerprinted call after a process exit or migration, not after a supersede or end event",
                 ));
             }
             let mut newly = Vec::new();

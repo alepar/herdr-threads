@@ -5,7 +5,9 @@
 //! belongs to a process with another start stamp), or when it is connected with no
 //! fingerprint (decision 9: no zombie bindings).
 //! Among connected top-level bindings sharing one process (same instance, harness, pid and start)
-//! only the latest lifecycle claim stays connected; the rest disconnect `Superseded`. Every write
+//! the latest lifecycle claim stays connected; the rest, plain-call-only bindings included,
+//! disconnect `Superseded`. A plain-call-only binding ranks below every lifecycle-claimed one (it
+//! can lose, never win), and a group with no lifecycle claim is left as it is. Every write
 //! goes through `bindings::disconnect`, the sole transition: the worker never ends a binding,
 //! retires, moves or merges (TRUST-POLICY: liveness evidence is structural). Human bindings and
 //! seats that are unresolved, retired or under a recovery hold are never judged
@@ -55,10 +57,11 @@ pub fn classify(
         let binding = &candidate.binding;
         match binding.fingerprint {
             Some(fingerprint) if fingerprint.is_alive(processes) => {
-                // Only lifecycle-claimed bindings share a process: a plain-call-only binding
-                // neither supersedes nor is superseded (ht-54r.79). Keep in step with
-                // `store::bindings::is_superseded_now` and its `supersede_rank`.
-                if binding.role == BindingRole::TopLevel && binding.lifecycle_claimed() {
+                // Every alive top-level binding shares its process, plain-call-only ones
+                // included: they rank below lifecycle-claimed bindings and so can lose, never
+                // win (ht-54r.87). Keep in step with `store::bindings::is_superseded_now` and
+                // its `supersede_rank`.
+                if binding.role == BindingRole::TopLevel {
                     sharing
                         .entry((
                             candidate.instance.clone(),
@@ -78,12 +81,20 @@ pub fn classify(
         }
     }
     for group in sharing.values().filter(|group| group.len() > 1) {
-        let Some(winner) = group
-            .iter()
-            .max_by_key(|c| (c.claimed_at, c.binding.ordinal))
-        else {
+        let rank = |c: &&&LivenessCandidate| {
+            (
+                c.binding.lifecycle_claimed(),
+                c.claimed_at,
+                c.binding.ordinal,
+            )
+        };
+        let Some(winner) = group.iter().max_by_key(rank) else {
             continue;
         };
+        // No lifecycle claimer in the group: a plain-call-only binding never wins.
+        if !winner.binding.lifecycle_claimed() {
+            continue;
+        }
         decisions.extend(
             group
                 .iter()

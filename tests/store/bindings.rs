@@ -656,7 +656,7 @@ mod resolution {
         let first = resolve(&db, &claim("sess-A", None), true).unwrap();
         let id = first.binding().binding_id.clone();
         let provenance = first.binding().provenance.clone();
-        disconnect(&db, &id, DisconnectReason::EndEvent, UtcMillis(20)).unwrap();
+        disconnect(&db, &id, DisconnectReason::ProcessExit, UtcMillis(20)).unwrap();
         let observed_before = observed_at(&db, &id);
         let mut c = claim("sess-A", None);
         c.liveness = Some(LivenessFingerprint { pid: 8, start: 99 });
@@ -708,7 +708,7 @@ mod resolution {
     }
 
     #[test]
-    fn superseded_binding_plain_call_reconnects_without_superseding() {
+    fn superseded_binding_plain_call_stays_disconnected_and_supersedes_nothing() {
         use std::sync::Mutex;
         static SEEN: Mutex<Vec<EnrollTrigger>> = Mutex::new(Vec::new());
         fn record(
@@ -750,6 +750,13 @@ mod resolution {
         let state = |id: &BindingId| get(&db, id).unwrap().unwrap();
         assert_eq!(state(&a).disconnect_reason.as_deref(), Some("superseded"));
         let seen_before = SEEN.lock().unwrap().len();
+        db.execute(
+            "INSERT OR IGNORE INTO archival_instances(instance_id,runtime_boot) VALUES ('i','boot')",
+            [],
+        )
+        .unwrap();
+        let revision = || count(&db, "SELECT mutation_revision FROM archival_instances");
+        let revision_before = revision();
         let c = claim("sess-A", None);
         resolve_claim_with_hooks(
             &db,
@@ -763,7 +770,8 @@ mod resolution {
             hooks,
         )
         .unwrap();
-        assert_eq!(state(&a).liveness, Liveness::Connected);
+        assert_eq!(state(&a).liveness, Liveness::Disconnected);
+        assert_eq!(state(&a).disconnect_reason.as_deref(), Some("superseded"));
         assert_eq!(
             state(&b).liveness,
             Liveness::Connected,
@@ -774,6 +782,106 @@ mod resolution {
             seen_before,
             "no enroll hook ran"
         );
+        assert_eq!(revision(), revision_before, "no liveness write, no churn");
+    }
+
+    #[test]
+    fn plain_call_does_not_reconnect_an_end_event_binding() {
+        let db = db();
+        let id = resolve(&db, &claim("sess-A", None), true)
+            .unwrap()
+            .binding()
+            .binding_id
+            .clone();
+        disconnect(&db, &id, DisconnectReason::EndEvent, UtcMillis(20)).unwrap();
+        let r = resolve(&db, &claim("sess-A", None), false).unwrap();
+        assert_eq!(r.binding().binding_id, id, "served as that binding");
+        let row = get(&db, &id).unwrap().unwrap();
+        assert_eq!(row.liveness, Liveness::Disconnected);
+        assert_eq!(row.disconnect_reason.as_deref(), Some("liveness_end_event"));
+    }
+
+    #[test]
+    fn plain_call_does_not_reconnect_when_a_lifecycle_binding_holds_the_process() {
+        let db = db();
+        let a = resolve(&db, &claim("sess-A", None), true)
+            .unwrap()
+            .binding()
+            .binding_id
+            .clone();
+        disconnect(&db, &a, DisconnectReason::ProcessExit, UtcMillis(20)).unwrap();
+        // A lifecycle binding of another session now holds the same process (same fingerprint).
+        let b = resolve(&db, &claim("sess-B", None), true)
+            .unwrap()
+            .binding()
+            .binding_id
+            .clone();
+        resolve(&db, &claim("sess-A", None), false).unwrap();
+        let a_row = get(&db, &a).unwrap().unwrap();
+        assert_eq!(a_row.liveness, Liveness::Disconnected);
+        assert_eq!(
+            a_row.disconnect_reason.as_deref(),
+            Some("liveness_process_exit")
+        );
+        assert_eq!(get(&db, &b).unwrap().unwrap().liveness, Liveness::Connected);
+    }
+
+    #[test]
+    fn v32_readopted_binding_then_session_start_successor_stays_superseded() {
+        let db = db();
+        let a = resolve(&db, &claim("sess-A", None), true)
+            .unwrap()
+            .binding()
+            .binding_id
+            .clone();
+        migrate(&db, &a, "sess-A");
+        let r = resolve(&db, &claim("sess-A", None), false).unwrap();
+        assert_eq!(r.binding().binding_id, a);
+        assert_eq!(r.binding().liveness, Liveness::Connected);
+        assert_eq!(r.binding().provenance, COOPERATIVE_ENV_SESSION_PROVENANCE);
+        // A SessionStart successor in the same process supersedes it (production hooks).
+        let b = resolve(&db, &claim("sess-B", None), true)
+            .unwrap()
+            .binding()
+            .binding_id
+            .clone();
+        let a_row = get(&db, &a).unwrap().unwrap();
+        assert_eq!(a_row.disconnect_reason.as_deref(), Some("superseded"));
+        // The stale caller's plain call neither reconnects nor re-adopts it.
+        let again = resolve(&db, &claim("sess-A", None), false).unwrap();
+        assert_eq!(again.binding().binding_id, a);
+        let a_row = get(&db, &a).unwrap().unwrap();
+        assert_eq!(a_row.liveness, Liveness::Disconnected);
+        assert_eq!(a_row.disconnect_reason.as_deref(), Some("superseded"));
+        assert_eq!(get(&db, &b).unwrap().unwrap().liveness, Liveness::Connected);
+    }
+
+    #[test]
+    fn v32_readopt_refused_while_a_lifecycle_binding_holds_the_process() {
+        let db = db();
+        let a = resolve(&db, &claim("sess-A", None), true)
+            .unwrap()
+            .binding()
+            .binding_id
+            .clone();
+        migrate(&db, &a, "sess-A");
+        let b = resolve(&db, &claim("sess-B", None), true)
+            .unwrap()
+            .binding()
+            .binding_id
+            .clone();
+        let r = resolve(&db, &claim("sess-A", None), false).unwrap();
+        assert!(matches!(
+            r,
+            Resolution::Existing {
+                reconnected: false,
+                ..
+            }
+        ));
+        let a_row = get(&db, &a).unwrap().unwrap();
+        assert_eq!(a_row.liveness, Liveness::Disconnected);
+        assert_eq!(a_row.disconnect_reason.as_deref(), Some("migrated"));
+        assert_eq!(get(&db, &b).unwrap().unwrap().liveness, Liveness::Connected);
     }
 
     #[test]
