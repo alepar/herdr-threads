@@ -8071,3 +8071,90 @@ fn presentation_capacity_due_promoted_lazy_defers_oversize_render_then_retries()
     assert_eq!(window.f.db.query_row("SELECT state FROM lazy_recipients WHERE message_id=?1 AND seat_id='c'",[id.as_str()],|r|r.get::<_,String>(0)).unwrap(),"pending");
     assert_eq!(window.offers()[&id],original_offer,"direct store output cannot claim service recording or lazy completion");
 }
+
+
+// Kills: zero-capacity due traversal resetting or reserializing a partial normal
+// body, or failing to resume that exact body in the call that reclaims a slot.
+#[test]
+fn presentation_capacity_due_walk_preserves_partial_body_until_real_ack() {
+    use crate::protocol::{commands::DeliveryMode, delivery::DeliveryPullReplyV2};
+    let window = OfferWindowFixture::new(true);
+    for _ in 0..4 { window.pull(); }
+    {
+        let mut ledger = window.f.state.lock();
+        let entry = ledger.seat_mut(&window.recipient.seat,window.recipient.binding_generation,window.recipient.native_session.as_str()).unwrap();
+        for n in 0..255 { entry.record(&MessageId::new(format!("absent-{n:03}")),window.f.clock.utc_now(),false); }
+    }
+    let first = window.send(0,DeliveryMode::Ordinary,&"a".repeat(58000));
+    let second = window.send(1,DeliveryMode::Ordinary,&"é".repeat(32768));
+    let mut allocated = false;
+    for _ in 0..4 {
+        if let DeliveryPullReplyV2::Page(page) = window.pull() && page.truncated.contains(&first) { allocated = true; break; }
+    }
+    assert!(allocated);
+    let partial: String = window.f.db.query_row("SELECT ordinary_partial FROM invitation_presentation_consumers WHERE seat_id='c' AND consumer='watch'",[],|r|r.get(0)).unwrap();
+    let partial: std::collections::HashMap<String,String> = serde_json::from_str(&partial).unwrap();
+    assert!(partial.get(second.as_str()).is_some_and(|body| !body.is_empty()),"fixture must retain a real source-created partial body");
+    let parked = capacity_normal_state(&window);
+    advance(&window.f,REOFFER_AFTER_MS);
+    let mut reoffered = false;
+    for _ in 0..4 {
+        if let DeliveryPullReplyV2::Page(page) = window.pull() { reoffered |= page.truncated.contains(&first); }
+        assert_eq!(capacity_normal_state(&window),parked);
+    }
+    assert!(reoffered);
+    window.ack(std::slice::from_ref(&first),false,false,"partial-release");
+    let DeliveryPullReplyV2::Page(page) = window.pull() else { panic!("same-call partial resume"); };
+    assert!(page.truncated.contains(&second));
+    let work = window.f.service.presentation.last_work.lock().unwrap().unwrap();
+    assert_eq!(work.ordinary_due_key_probes,0,"one ordinary source per call");
+    assert!(work.ordinary>0);
+}
+
+
+// Kills: globally suppressing continuation at capacity and starving independent
+// passive invitation/context/notice work, or treating confirmation as acceptance.
+#[test]
+fn presentation_capacity_parked_ordinary_still_drains_passive_context_and_notices() {
+    use crate::protocol::{commands::SetTopic, delivery::{DeliveryPullReplyV2,PresentationItemV2}};
+    let window = OfferWindowFixture::new(false);
+    for _ in 0..4 { window.pull(); }
+    {
+        let mut ledger = window.f.state.lock();
+        let entry = ledger.seat_mut(&window.recipient.seat,window.recipient.binding_generation,window.recipient.native_session.as_str()).unwrap();
+        for n in 0..256 { entry.record(&MessageId::new(format!("absent-{n:03}")),window.f.clock.utc_now(),false); }
+    }
+    let original = window.offers();
+    let thread = canonical_lazy_invitation_backlog(&window.f,&window.recipient,&window.sender,1,"parked-passive");
+    service_notice(&window.f,"capacity-notice");
+    let (mut invitation,mut notice,mut quiet) = (false,false,false);
+    for _ in 0..8 {
+        match window.pull() {
+            DeliveryPullReplyV2::Page(page) => {
+                for item in &page.items { match item {
+                    PresentationItemV2::Invitation{..} => invitation=true,
+                    PresentationItemV2::Notice{warning,..} if warning.as_str()=="capacity-notice" => notice=true,
+                    _ => {},
+                }}
+                assert!(page.offered.is_empty() && page.truncated.is_empty());
+                quiet = !page.more;
+            }
+            DeliveryPullReplyV2::Unchanged{..} => quiet=true,
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(window.offers(),original);
+        if quiet { break; }
+    }
+    assert!(invitation && notice && quiet);
+    window.f.service.handle(Command::SetTopic(SetTopic {
+        thread,topic:"updated capacity context".into(),operation:OperationId::new("capacity-context-update"),claim:window.sender.clone(),
+    }),peer(),&budget()).unwrap();
+    let mut changed = false;
+    for _ in 0..4 {
+        if let DeliveryPullReplyV2::Page(page)=window.pull() { changed |= page.text.contains("updated capacity context"); }
+        if changed { break; }
+    }
+    assert!(changed);
+    assert_eq!(window.offers(),original);
+    assert_eq!(window.f.db.query_row("SELECT count(*) FROM invitations WHERE seat_id='s' AND state='pending'",[],|r|r.get::<_,i64>(0)).unwrap(),1);
+}
