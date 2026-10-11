@@ -976,12 +976,66 @@ mod binding_presentation {
         );
         items.push(items[0].clone());
         let invalid = serde_json::json!({"prefix":[],"items":items}).to_string();
-        f.db.execute("UPDATE invitation_presentation_consumers SET ordinary_pending=?1 WHERE binding_id='b' AND consumer='watch'", [&invalid]).unwrap();
         assert!(
-            f.store.presentation_pull(f.input("b"), &budget()).is_err(),
+            invalid.len() <= 155731,
+            "isolate the carry item-count bound"
+        );
+        let snapshot = || {
+            [
+                ("invitation_presentation_consumers", "binding_id,consumer"),
+                ("presentation_warning_proofs", "binding_id,consumer"),
+                ("presentation_warning_fence", "singleton"),
+                ("binding_cursors", "binding_id,thread_id"),
+                ("receipt_state", "message_id,seat_id"),
+            ]
+            .map(|(table, order)| {
+                let mut statement =
+                    f.db.prepare(&format!("SELECT * FROM {table} ORDER BY {order}"))
+                        .unwrap();
+                let width = statement.column_count();
+                statement
+                    .query_map([], |row| {
+                        (0..width)
+                            .map(|n| row.get::<_, rusqlite::types::Value>(n))
+                            .collect::<rusqlite::Result<Vec<_>>>()
+                    })
+                    .unwrap()
+                    .collect::<rusqlite::Result<Vec<_>>>()
+                    .unwrap()
+            })
+        };
+        let before = snapshot();
+        let error = f.db.execute("UPDATE invitation_presentation_consumers SET ordinary_pending=?1 WHERE binding_id='b' AND consumer='watch'", [&invalid]).unwrap_err();
+        assert!(
+            matches!(error, rusqlite::Error::SqliteFailure(code, _) if code.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_CHECK),
+            "canonical SQL must reject the 33rd carry item"
+        );
+        assert_eq!(snapshot(), before, "rejected SQL changes no state");
+
+        // Corrupt only this isolated fixture to exercise the independent reader
+        // guard. Restore canonical CHECKs before any production call.
+        f.db.pragma_update(None, "ignore_check_constraints", "ON")
+            .unwrap();
+        let seeded = f.db.execute("UPDATE invitation_presentation_consumers SET ordinary_pending=?1 WHERE binding_id='b' AND consumer='watch'", [&invalid]);
+        f.db.pragma_update(None, "ignore_check_constraints", "OFF")
+            .unwrap();
+        seeded.unwrap();
+        let corrupt_before = snapshot();
+        let error = f
+            .store
+            .presentation_pull(f.input("b"), &budget())
+            .unwrap_err();
+        assert_eq!(
+            error.code,
+            herdr_threads::protocol::results::ErrorCode::StoreCorrupt,
             "33rd carry item must refuse before unbounded work"
         );
         assert_eq!(f.db.query_row("SELECT ordinary_pending FROM invitation_presentation_consumers WHERE binding_id='b' AND consumer='watch'", [], |r| r.get::<_,String>(0)).unwrap(), invalid, "refused pull rolls back its canonical state changes");
+        assert_eq!(
+            snapshot(),
+            corrupt_before,
+            "refused pull rolls back consumer, proof, fence, cursor and receipt state"
+        );
     }
     #[test]
     fn unread_partial_presentation_resumes_after_same_binding_full_body_read() {

@@ -6226,8 +6226,9 @@ fn adapter_migration_main24_to26_preserves_archival_guards_and_intent_history() 
     }
 }
 
-/// V33 owns the narrowed insert and update fences of occupant_bindings; every other binding
-/// trigger must equal its pre-upgrade text. Returns the upgraded guards.
+/// V33 owns the narrowed insert and update fences of occupant_bindings; every other
+/// pre-existing trigger retains its text. Later guards match the full fresh catalog.
+/// Returns all upgraded guards.
 fn assert_v33_guards(
     before: &[(String, String)],
     after: &[(String, String)],
@@ -6236,11 +6237,12 @@ fn assert_v33_guards(
         "archival_fence_occupant_bindings_insert",
         "archival_fence_occupant_bindings_update",
     ];
-    assert_eq!(
-        before.iter().map(|g| &g.0).collect::<Vec<_>>(),
-        after.iter().map(|g| &g.0).collect::<Vec<_>>()
-    );
-    for (old, new) in before.iter().zip(after) {
+    assert_eq!(after, binding_archival_guards(&fresh_db()));
+    for old in before {
+        let new = after
+            .iter()
+            .find(|guard| guard.0 == old.0)
+            .unwrap_or_else(|| panic!("{} must survive the upgrade", old.0));
         if owned.contains(&old.0.as_str()) {
             assert_ne!(old.1, new.1, "{} must be narrowed by V33", old.0);
             assert!(new.1.contains("WHEN EXISTS"), "{}", new.1);
@@ -7589,12 +7591,16 @@ fn released_main31_populated_automatic_graph_physically_upgrades_and_reopens() {
     };
     let failed_before = snapshot(&db);
     let catalog_before = catalog(&db);
+    let version_before: i64 = db
+        .pragma_query_value(None, "user_version", |r| r.get(0))
+        .unwrap();
+    assert_eq!(version_before, 42, "fixture precedes the V43 rebuild");
     let error = schema::initialize(&db, || UtcMillis(101)).unwrap_err();
     assert_eq!(error.code, ErrorCode::StoreCorrupt);
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        38
+        version_before
     );
     assert!(
         db.pragma_query_value(None, "foreign_keys", |r| r.get::<_, bool>(0))

@@ -1733,9 +1733,40 @@ mod daemon {
                 )
                 .unwrap();
         }
+        let counts: (i64, i64) = world.db.query_row(
+            "SELECT (SELECT count(*) FROM invitations i JOIN threads t ON t.id=i.thread_id WHERE i.seat_id=?1 AND t.instance_id=?2 AND i.state='pending' AND i.confirmation='lazy'),(SELECT count(*) FROM digest_pending_invitations d JOIN threads t ON t.id=d.thread_id WHERE d.seat_id=?1 AND t.instance_id=?2)",
+            rusqlite::params![recipient.seat.as_str(), recipient.instance],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ).unwrap();
+        assert_eq!(counts, (24, 24), "canonical pending/projected invitations");
+        #[derive(Default)]
+        struct PullObservation {
+            pulls: usize,
+            pages: usize,
+            unchanged: usize,
+            invitations: usize,
+            last_items: usize,
+            last_token: bool,
+            last_more: bool,
+        }
+        impl PullObservation {
+            fn summary(&self) -> String {
+                format!(
+                    "pulls={},pages={},unchanged={},invitations={},last_items={},last_token={},last_more={}",
+                    self.pulls,
+                    self.pages,
+                    self.unchanged,
+                    self.invitations,
+                    self.last_items,
+                    self.last_token,
+                    self.last_more
+                )
+            }
+        }
         struct Canonical<'a> {
             service: &'a DomainService,
             page: RefCell<Option<DeliveryPageV2>>,
+            observation: RefCell<PullObservation>,
         }
         impl HookStepDaemon for Canonical<'_> {
             fn supports_capability(&self, name: &str) -> bool {
@@ -1744,7 +1775,41 @@ mod daemon {
             fn call(&self, command: Command) -> Result<CommandResult, ApiError> {
                 // The external transport is in-process, but every deciding pull
                 // and confirmation is the actual production DomainService.
-                let result = self.service.handle(command, peer(), &budget())?;
+                // Failure-local bounded evidence: the adapter intentionally
+                // turns daemon errors/refusals into quiet output. Do not let
+                // that obscure the first failed canonical boundary here.
+                let kind = match &command {
+                    Command::DeliveryPullV2(_) => {
+                        self.observation.borrow_mut().pulls += 1;
+                        "PullV2"
+                    }
+                    Command::DeliveryPresentationConfirmV2(_) => "ConfirmV2",
+                    Command::DeliveryConfirm(_) => "TranscriptConfirm",
+                    _ => "other",
+                };
+                let result = self
+                    .service
+                    .handle(command, peer(), &budget())
+                    .unwrap_or_else(|error| {
+                        let detail: String = error.detail.chars().take(512).collect();
+                        panic!(
+                            "canonical {kind}: code={:?}, detail={detail:?}; {}",
+                            error.code,
+                            self.observation.borrow().summary()
+                        );
+                    });
+                match &result {
+                    CommandResult::DeliveryPulledV2(DeliveryPullReplyV2::Refused { reason }) => {
+                        panic!(
+                            "canonical PullV2 refused: {reason:?}; {}",
+                            self.observation.borrow().summary()
+                        );
+                    }
+                    CommandResult::DeliveryPulledV2(DeliveryPullReplyV2::Unchanged { .. }) => {
+                        self.observation.borrow_mut().unchanged += 1;
+                    }
+                    _ => {}
+                }
                 let result_bytes = serde_json::to_vec(&result).unwrap().len();
                 let response = crate::protocol::wire::WireResponse {
                     version: crate::protocol::wire::PROTOCOL_VERSION,
@@ -1764,6 +1829,16 @@ mod daemon {
                     framed.len() - 4
                 );
                 if let CommandResult::DeliveryPulledV2(DeliveryPullReplyV2::Page(page)) = &result {
+                    let mut observation = self.observation.borrow_mut();
+                    observation.pages += 1;
+                    observation.invitations += page
+                        .items
+                        .iter()
+                        .filter(|item| matches!(item, PresentationItemV2::Invitation { .. }))
+                        .count();
+                    observation.last_items = page.items.len();
+                    observation.last_token = page.presentation_token.is_some();
+                    observation.last_more = page.more;
                     *self.page.borrow_mut() = Some(page.clone());
                 }
                 Ok(result)
@@ -1772,6 +1847,7 @@ mod daemon {
         let daemon = Canonical {
             service: &world.service,
             page: RefCell::new(None),
+            observation: RefCell::new(PullObservation::default()),
         };
         let rig = Rig::new();
         let identity = ident("a");
@@ -1882,7 +1958,8 @@ mod daemon {
         assert_eq!(
             full.len(),
             24,
-            "every canonical invitation becomes full through bounded V2 pages"
+            "every canonical invitation becomes full through bounded V2 pages; {}",
+            daemon.observation.borrow().summary()
         );
         assert!(
             largest > 32_768,

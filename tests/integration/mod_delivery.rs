@@ -1087,9 +1087,20 @@ impl Rig {
 
     /// `watch ack` as the mod runs it; returns (exit code, one value per line).
     fn ack(&self, session: &str, via: &str, ids: &[&str]) -> (i32, Vec<Value>) {
+        self.ack_with(session, via, ids, &[])
+    }
+
+    fn ack_with(
+        &self,
+        session: &str,
+        via: &str,
+        ids: &[&str],
+        env: &[(&str, &str)],
+    ) -> (i32, Vec<Value>) {
         let mut args = vec!["watch", "ack", "--session", session, "--via", via];
         args.extend_from_slice(ids);
         let mut command = self.command(Some(PANE_B), &args);
+        command.envs(env.iter().copied());
         let out = collect(
             command
                 .stdin(Stdio::null())
@@ -2588,8 +2599,8 @@ fn activation_v2_elected_watch_capabilities_lease_output_confirm() {
     assert_ne!(claim["execution"], claim["native_session"]);
     let (offered_generation, offered_execution, frontier, notice_ordinal, binding_generation, binding_execution):
         (i64, String, i64, i64, i64, String) = rig.db().query_row(
-            "SELECT o.binding_generation,o.execution_id,o.offered_ordinal,d.ordinal,b.generation,b.execution_id FROM digest_notice_offer o JOIN digest_programmatic_warnings d ON d.seat_id=o.seat_id JOIN seats s ON s.id=o.seat_id JOIN occupant_bindings b ON b.seat_id=s.id AND b.generation=s.generation AND b.ended_at IS NULL WHERE o.seat_id=?1 AND d.warning_id=?2",
-            [&rig.b, notice["warning"].as_str().unwrap()],
+            "SELECT offered.generation,offered.execution_id,o.offered_ordinal,d.ordinal,b.generation,b.execution_id FROM digest_notice_offer o JOIN occupant_bindings offered ON offered.binding_id=o.binding_id AND offered.seat_id=o.seat_id JOIN digest_programmatic_warnings d ON d.seat_id=o.seat_id JOIN occupant_bindings b ON b.seat_id=o.seat_id AND b.harness='claude' AND b.native_session=?3 AND b.agent_id='' AND b.role='top_level' AND b.ended_at IS NULL AND b.liveness='connected' AND b.binding_id=o.binding_id WHERE o.seat_id=?1 AND d.warning_id=?2",
+            [rig.b.as_str(), notice["warning"].as_str().unwrap(), claim["native_session"].as_str().unwrap()],
             |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?)),
         ).unwrap();
     assert_eq!(offered_generation, binding_generation);
@@ -3174,8 +3185,8 @@ fn activation_v2_watch_replacement_replays_uncommitted_output() {
         .find(|item| item["kind"] == "notice")
         .unwrap();
     let covered: bool = rig.db().query_row(
-        "SELECT d.ordinal<=COALESCE(o.offered_ordinal,0) FROM digest_programmatic_warnings d JOIN seats s ON s.id=d.seat_id JOIN occupant_bindings b ON b.seat_id=s.id AND b.generation=s.generation AND b.ended_at IS NULL LEFT JOIN digest_notice_offer o ON o.seat_id=s.id AND o.binding_generation=b.generation AND o.execution_id=b.execution_id WHERE d.seat_id=?1 AND d.warning_id=?2",
-        [&rig.b, notice["warning"].as_str().unwrap()], |row| row.get(0),
+        "SELECT d.ordinal<=COALESCE(o.offered_ordinal,0) FROM digest_programmatic_warnings d JOIN occupant_bindings b ON b.seat_id=d.seat_id AND b.harness='claude' AND b.native_session=?3 AND b.agent_id='' AND b.role='top_level' AND b.ended_at IS NULL AND b.liveness='connected' LEFT JOIN digest_notice_offer o ON o.seat_id=b.seat_id AND o.binding_id=b.binding_id WHERE d.seat_id=?1 AND d.warning_id=?2",
+        [rig.b.as_str(), notice["warning"].as_str().unwrap(), old_confirm.request["command"]["args"]["claim"]["native_session"].as_str().unwrap()], |row| row.get(0),
     ).unwrap();
     assert!(
         covered,
@@ -4424,8 +4435,8 @@ fn stale_attention_is_retracted_after_accept_and_after_a_notice_offer() {
     assert!(notice.get("ack_required").is_none(), "{notice}");
     let (offered_generation, offered_execution, frontier, ordinal, generation, execution, thread):
         (i64, String, i64, i64, i64, String, String) = rig.db().query_row(
-            "SELECT o.binding_generation,o.execution_id,o.offered_ordinal,d.ordinal,b.generation,b.execution_id,d.thread_id FROM digest_notice_offer o JOIN digest_programmatic_warnings d ON d.seat_id=o.seat_id JOIN seats s ON s.id=o.seat_id JOIN occupant_bindings b ON b.seat_id=s.id AND b.generation=s.generation AND b.ended_at IS NULL WHERE o.seat_id=?1 AND d.warning_id=?2",
-            [&rig.b, warning],
+            "SELECT offered.generation,offered.execution_id,o.offered_ordinal,d.ordinal,b.generation,b.execution_id,d.thread_id FROM digest_notice_offer o JOIN occupant_bindings offered ON offered.binding_id=o.binding_id AND offered.seat_id=o.seat_id JOIN digest_programmatic_warnings d ON d.seat_id=o.seat_id JOIN occupant_bindings b ON b.seat_id=o.seat_id AND b.harness='claude' AND b.native_session=?3 AND b.agent_id='' AND b.role='top_level' AND b.ended_at IS NULL AND b.liveness='connected' AND b.binding_id=o.binding_id WHERE o.seat_id=?1 AND d.warning_id=?2",
+            [rig.b.as_str(), warning, SESSION_B],
             |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?)),
         ).unwrap();
     assert_eq!(thread, managed.as_str());
@@ -4481,7 +4492,9 @@ fn clear_rebind_pending_item_restreamed_to_new_session() {
     assert_eq!(old.exit_code(STEP), 0);
     rig.wait_channel(Some("rebind_grace"));
     assert_eq!(rig.receipt_state(&id), "pending");
-    let mut new = rig.watch("SB2");
+    // `/clear` keeps the harness process, but its native session (and therefore
+    // execution claim) is SB2. Retain the old process fingerprint from command().
+    let mut new = rig.watch_with(PANE_B, "SB2", &[("CLAUDE_CODE_SESSION_ID", "SB2")]);
     new.wait_connected();
     let line = new.wait_item(&id);
     assert_eq!(
@@ -4489,7 +4502,17 @@ fn clear_rebind_pending_item_restreamed_to_new_session() {
         "re-streamed to the new session"
     );
     rig.wait_channel(Some("live"));
-    let settled = rig.ack_result("SB2", "context", &id);
+    let (code, lines) = rig.ack_with(
+        "SB2",
+        "context",
+        &[&id],
+        &[("CLAUDE_CODE_SESSION_ID", "SB2")],
+    );
+    assert_eq!(code, 0, "watch ack {id}: {lines:?}");
+    let settled = lines
+        .into_iter()
+        .find(|line| line["id"] == id)
+        .unwrap_or_else(|| panic!("no result line for {id}"));
     assert_eq!(settled["result"], "settled", "{settled}");
 }
 
@@ -4914,8 +4937,8 @@ fn notice_published_while_live_reaches_the_next_pre_tool_use_once() {
     assert!(notice.get("ack_required").is_none(), "{notice}");
     let (offered_generation, offered_execution, frontier, ordinal, generation, execution, thread):
         (i64, String, i64, i64, i64, String, String) = rig.db().query_row(
-            "SELECT o.binding_generation,o.execution_id,o.offered_ordinal,d.ordinal,b.generation,b.execution_id,d.thread_id FROM digest_notice_offer o JOIN digest_programmatic_warnings d ON d.seat_id=o.seat_id JOIN seats s ON s.id=o.seat_id JOIN occupant_bindings b ON b.seat_id=s.id AND b.generation=s.generation AND b.ended_at IS NULL WHERE o.seat_id=?1 AND d.warning_id=?2",
-            [&rig.b, warning],
+            "SELECT offered.generation,offered.execution_id,o.offered_ordinal,d.ordinal,b.generation,b.execution_id,d.thread_id FROM digest_notice_offer o JOIN occupant_bindings offered ON offered.binding_id=o.binding_id AND offered.seat_id=o.seat_id JOIN digest_programmatic_warnings d ON d.seat_id=o.seat_id JOIN occupant_bindings b ON b.seat_id=o.seat_id AND b.harness='claude' AND b.native_session=?3 AND b.agent_id='' AND b.role='top_level' AND b.ended_at IS NULL AND b.liveness='connected' AND b.binding_id=o.binding_id WHERE o.seat_id=?1 AND d.warning_id=?2",
+            [rig.b.as_str(), warning, SESSION_B],
             |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?)),
         ).unwrap();
     assert_eq!(thread, managed.as_str());

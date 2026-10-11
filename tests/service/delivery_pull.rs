@@ -218,6 +218,28 @@ fn claim(
         }),
     }
 }
+/// Initial positive fixture claim uses the seat's actual mapping generation.
+/// Raw `claim` and `check_in` keep caller-supplied generations for negative controls.
+fn fixture_claim(
+    f: &Fixture,
+    seat: &str,
+    target: &str,
+    harness: Harness,
+    session: &str,
+) -> CallerClaim {
+    let generation: i64 = f.db.query_row(
+        "SELECT generation FROM seats WHERE id=?1 AND instance_id='i' AND target_id=?2 AND state='resolved'",
+        params![seat, target],
+        |row| row.get(0),
+    ).unwrap();
+    claim(
+        seat,
+        target,
+        harness,
+        session,
+        u64::try_from(generation).unwrap(),
+    )
+}
 fn fresh_execution(mut claim: CallerClaim, n: u8) -> CallerClaim {
     claim.execution = ExecutionId::new(format!("00000000-0000-4000-8000-0000000000{n:02}"));
     claim
@@ -1218,7 +1240,7 @@ fn presentation_two_live_bindings_keep_offer_stamps_replay_and_carry_independent
         .unwrap();
     let inviter = check_in(
         &f,
-        claim("x", "px", fourth(), "binding-isolation-inviter", 0),
+        fixture_claim(&f, "x", "px", fourth(), "binding-isolation-inviter"),
         "binding-isolation-ci",
     );
     canonical_lazy_invitation_backlog(&f, &a, &inviter, 1, "binding-isolation-baseline");
@@ -1999,7 +2021,11 @@ fn a_lazy_invitation_reaches_hook_pull_without_attention_or_acceptance() {
     else {
         panic!("quiet pull must be unchanged")
     };
-    let inviter = check_in(&f, claim("x", "px", fourth(), "inviter", 0), "ci-inviter");
+    let inviter = check_in(
+        &f,
+        fixture_claim(&f, "x", "px", fourth(), "inviter"),
+        "ci-inviter",
+    );
     let CommandResult::ThreadCreated(thread) = f
         .service
         .handle(
@@ -2083,10 +2109,14 @@ fn departed_receipt_origins_survive_pull_offers_late_association_and_partial_ack
     use crate::protocol::commands::{Ack, Leave};
     let mut f = fixture(0);
     let a = pull_seat(&f);
-    let b = check_in(&f, claim("x", "px", fourth(), "origin-b", 0), "ci-origin-b");
+    let b = check_in(
+        &f,
+        fixture_claim(&f, "x", "px", fourth(), "origin-b"),
+        "ci-origin-b",
+    );
     let recipient = check_in(
         &f,
-        claim("c", "pc", fourth(), "recipient", 0),
+        fixture_claim(&f, "c", "pc", fourth(), "recipient"),
         "ci-recipient",
     );
     for (n, author) in [(1, "s"), (2, "s"), (3, "x")] {
@@ -2306,12 +2336,12 @@ fn canonical_lazy_invitation_signals_a_passive_channel_drain_without_attention_h
     let f = fixture(0);
     let recipient = check_in(
         &f,
-        claim("s", "p", Harness::Claude, "channel", 0),
+        fixture_claim(&f, "s", "p", Harness::Claude, "channel"),
         "channel-ci",
     );
     let inviter = check_in(
         &f,
-        claim("x", "px", fourth(), "inviter", 0),
+        fixture_claim(&f, "x", "px", fourth(), "inviter"),
         "channel-inviter-ci",
     );
     let reads = Arc::new(
@@ -2419,7 +2449,7 @@ fn canonical_lazy_invitation_content_changes_on_accept_reject_and_retirement_onl
     let recipient = pull_seat(&f);
     let inviter = check_in(
         &f,
-        claim("x", "px", fourth(), "version-inviter", 0),
+        fixture_claim(&f, "x", "px", fourth(), "version-inviter"),
         "version-inviter-ci",
     );
     let create = |suffix: &str, invite: bool| {
@@ -2988,8 +3018,8 @@ fn presentation_v2_service_requirement_attach_release_fresh_replacement_keeps_ex
                         DeliveryPresentationConfirmationV2::Confirmed
                     );
                     assert_eq!(confirmed.acknowledged_controls, page.emitted_controls);
-                    let consumer: (Option<String>,String,i64,String) = f.db.query_row("SELECT outbox_token,last_token,generation,execution FROM invitation_presentation_consumers WHERE seat_id=?1 AND consumer='hook'",
-                    [claim.seat.as_str()], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).unwrap();
+                    let consumer: (Option<String>,String,i64,String) = f.db.query_row("SELECT outbox_token,last_token,generation,execution FROM invitation_presentation_consumers WHERE binding_id=?1 AND consumer='hook'",
+                    [binding_for_claim(&f, claim).as_str()], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).unwrap();
                     assert_eq!(
                         consumer,
                         (
@@ -3017,8 +3047,8 @@ fn presentation_v2_service_requirement_attach_release_fresh_replacement_keeps_ex
                 );
                 if seen.len() == expected.len() {
                     for (id, _, _) in expected {
-                        let complete: i64 = f.db.query_row("SELECT complete_count FROM invitation_presentation_items WHERE seat_id=?1 AND consumer='hook' AND invitation_id=?2 AND generation=?3 AND execution=?4",
-                        params![claim.seat.as_str(),id.as_str(),claim.binding_generation as i64,claim.execution.as_str()], |r| r.get(0)).unwrap();
+                        let complete: i64 = f.db.query_row("SELECT complete_count FROM invitation_presentation_items WHERE binding_id=?1 AND consumer='hook' AND invitation_id=?2 AND generation=?3 AND execution=?4",
+                        params![binding_for_claim(&f, claim).as_str(),id.as_str(),claim.binding_generation as i64,claim.execution.as_str()], |r| r.get(0)).unwrap();
                         assert_eq!(complete, 1, "current execution records a complete offer");
                     }
                     return;
@@ -3135,7 +3165,19 @@ fn presentation_v2_service_requirement_attach_release_fresh_replacement_keeps_ex
     // A confirmed unchanged old command is not duplicated in that execution.
     // Real CheckIn rotation makes both pending items newly visible together.
     let before_rotation = obligations();
+    let original_binding = binding_for_claim(&f, &recipient);
+    let original_consumer = || {
+        f.db.query_row(
+            "SELECT * FROM invitation_presentation_consumers WHERE binding_id=?1 AND consumer='hook'",
+            [original_binding.as_str()],
+            |row| (0..row.as_ref().column_count())
+                .map(|column| row.get::<_, rusqlite::types::Value>(column))
+                .collect::<rusqlite::Result<Vec<_>>>(),
+        ).unwrap()
+    };
+    let before_consumer = original_consumer();
     let rotated = rotate(&f, &recipient, "required-command-fresh-session", 2);
+    assert_ne!(binding_for_claim(&f, &rotated), original_binding);
     assert_ne!(rotated.execution, recipient.execution);
     assert_eq!(rotated.seat, recipient.seat);
     assert_eq!(obligations(), before_rotation);
@@ -3149,6 +3191,11 @@ fn presentation_v2_service_requirement_attach_release_fresh_replacement_keeps_ex
                 1_090_000,
             ),
         ],
+    );
+    assert_eq!(
+        original_consumer(),
+        before_consumer,
+        "fresh binding presentation preserves the old consumer row and token"
     );
     // Parsing the ordinary command is not a claim that native acceptance may
     // bypass the still-pending required invitation; neither command is run.
@@ -3168,7 +3215,7 @@ fn an_old_visible_invitation_topic_change_survives_a_saturated_newest_window() {
     let recipient = pull_seat(&f);
     let inviter = check_in(
         &f,
-        claim("x", "px", fourth(), "saturated-inviter", 0),
+        fixture_claim(&f, "x", "px", fourth(), "saturated-inviter"),
         "saturated-inviter-ci",
     );
     // The smallest backlog with a visible invitation outside WINDOW1001.
@@ -3244,7 +3291,7 @@ fn a_finite_invitation_backlog_progresses_beyond_the_whole_display_cache() {
     let recipient = pull_seat(&f);
     let inviter = check_in(
         &f,
-        claim("x", "px", fourth(), "capacity-inviter", 0),
+        fixture_claim(&f, "x", "px", fourth(), "capacity-inviter"),
         "capacity-inviter-ci",
     );
     let count = crate::delivery::ledger::MAX_INVITATION_DISPLAYS_PER_BINDING + 1;
@@ -3289,7 +3336,7 @@ fn a_departed_inviter_remains_actionable_after_whole_deadline_warning_until_acce
     let inviter = pull_seat(&f);
     let recipient = check_in(
         &f,
-        claim("x", "px", fourth(), "invited-recipient", 0),
+        fixture_claim(&f, "x", "px", fourth(), "invited-recipient"),
         "invited-recipient-ci",
     );
     let CommandResult::ThreadCreated(thread) = f
@@ -3416,7 +3463,7 @@ fn presentation_v2_replays_one_canonical_invitation_until_emit_confirmation() {
     let recipient = pull_seat(&f);
     let inviter = check_in(
         &f,
-        claim("x", "px", fourth(), "v2-inviter", 0),
+        fixture_claim(&f, "x", "px", fourth(), "v2-inviter"),
         "v2-inviter-ci",
     );
     canonical_lazy_invitation_backlog(&f, &recipient, &inviter, 1, "durable-v2");
@@ -3537,7 +3584,7 @@ fn canonical_invitation_context_coalesces_topic_changes_without_recipient_fanout
     let recipient = pull_seat(&f);
     let inviter = check_in(
         &f,
-        claim("x", "px", fourth(), "context-inviter", 0),
+        fixture_claim(&f, "x", "px", fourth(), "context-inviter"),
         "context-inviter-ci",
     );
     let thread = canonical_lazy_invitation_backlog(&f, &recipient, &inviter, 1, "context-source");
@@ -3710,7 +3757,7 @@ fn presentation_refresh_observes_lazy_context_and_removal_without_consuming_outp
     let recipient = pull_seat(&f);
     let inviter = check_in(
         &f,
-        claim("x", "px", fourth(), "refresh-inviter", 0),
+        fixture_claim(&f, "x", "px", fourth(), "refresh-inviter"),
         "refresh-inviter-ci",
     );
     let thread = canonical_lazy_invitation_backlog(&f, &recipient, &inviter, 3, "refresh");
@@ -3790,7 +3837,7 @@ fn presentation_refresh_preserves_live_presentation_header_and_outbox_across_reb
     let recipient = pull_seat(&f);
     let inviter = check_in(
         &f,
-        claim("x", "px", fourth(), "refresh-preserve-inviter", 0),
+        fixture_claim(&f, "x", "px", fourth(), "refresh-preserve-inviter"),
         "refresh-preserve-ci",
     );
     canonical_lazy_invitation_backlog(&f, &recipient, &inviter, 1, "refresh-preserve");
@@ -3899,12 +3946,12 @@ fn presentation_refresh_stub_allows_actual_watch_full_offer_and_replaced_owner_r
     let mut f = fixture(0);
     let recipient = check_in(
         &f,
-        claim("c", "pc", Harness::Claude, "watch-full-context", 0),
+        fixture_claim(&f, "c", "pc", Harness::Claude, "watch-full-context"),
         "watch-full-ci",
     );
     let inviter = check_in(
         &f,
-        claim("x", "px", fourth(), "watch-full-inviter", 0),
+        fixture_claim(&f, "x", "px", fourth(), "watch-full-inviter"),
         "watch-full-inviter-ci",
     );
     canonical_lazy_invitation_backlog(&f, &recipient, &inviter, 1, "watch-full");
@@ -4046,7 +4093,7 @@ fn presentation_final_watch_codec_counts_escaped_canonical_invitation_batch() {
     let recipient = pull_seat(&f);
     let inviter = check_in(
         &f,
-        claim("x", "px", fourth(), "watch-frame-inviter", 0),
+        fixture_claim(&f, "x", "px", fourth(), "watch-frame-inviter"),
         "watch-frame-ci",
     );
     let topic = "\0".repeat(300);
@@ -4191,7 +4238,7 @@ fn presentation_final_cleanup_preserves_passive_removal_observation() {
     let recipient = pull_seat(&f);
     let inviter = check_in(
         &f,
-        claim("x", "px", fourth(), "cleanup-inviter", 0),
+        fixture_claim(&f, "x", "px", fourth(), "cleanup-inviter"),
         "cleanup-ci",
     );
     let thread = canonical_lazy_invitation_backlog(&f, &recipient, &inviter, 1, "cleanup-order");
@@ -4278,12 +4325,12 @@ fn presentation_registry_pass_drives_bounded_passive_refresh_before_full_pull() 
     let mut f = fixture(0);
     let recipient = check_in(
         &f,
-        claim("c", "pc", Harness::Claude, "registry-refresh", 0),
+        fixture_claim(&f, "c", "pc", Harness::Claude, "registry-refresh"),
         "registry-refresh-ci",
     );
     let inviter = check_in(
         &f,
-        claim("x", "px", fourth(), "registry-refresh-inviter", 0),
+        fixture_claim(&f, "x", "px", fourth(), "registry-refresh-inviter"),
         "registry-refresh-inviter-ci",
     );
     let reads: Arc<dyn ModStoreReads> = f.store.clone();
@@ -4435,7 +4482,10 @@ fn presentation_private_skipped_body_requires_exact_retained_cursor() {
         )
         .unwrap_err();
     assert_eq!(error.code, ErrorCode::StoreCorrupt);
-    assert!(error.detail.contains("skipped body cursor"));
+    assert_eq!(
+        error.detail,
+        "ordinary accumulator lacks matching body cursor"
+    );
 }
 
 #[test]
@@ -4459,7 +4509,7 @@ fn presentation_ordinary_carry_survives_completed_control_partial_and_invitation
     );
     let inviter = check_in(
         &f,
-        claim("x", "px", fourth(), "carry-inviter", 0),
+        fixture_claim(&f, "x", "px", fourth(), "carry-inviter"),
         "carry-inviter-ci",
     );
     canonical_lazy_invitation_backlog(&f, &recipient, &inviter, 24, "carry-priority");
@@ -4594,7 +4644,7 @@ fn presentation_current_handler_derives_timed_invitation_attention() {
     let recipient = pull_seat(&f);
     let inviter = check_in(
         &f,
-        claim("x", "px", fourth(), "relevance-inviter", 0),
+        fixture_claim(&f, "x", "px", fourth(), "relevance-inviter"),
         "relevance-inviter-ci",
     );
     let CommandResult::ThreadCreated(thread) = f
@@ -4652,7 +4702,7 @@ fn presentation_promoted_lazy_raw_carry_survives_restart_with_frozen_prefix() {
         .unwrap();
     let inviter = check_in(
         &f,
-        claim("x", "px", fourth(), "promoted-carry-inviter", 0),
+        fixture_claim(&f, "x", "px", fourth(), "promoted-carry-inviter"),
         "promoted-carry-ci",
     );
     canonical_lazy_invitation_backlog(&f, &recipient, &inviter, 1, "promoted-baseline");
@@ -4764,7 +4814,7 @@ fn presentation_confirmation_preserves_original_slots_and_exact_subsets_on_resta
     let recipient = pull_seat(&f);
     let inviter = check_in(
         &f,
-        claim("x", "px", fourth(), "confirm-slot-inviter", 0),
+        fixture_claim(&f, "x", "px", fourth(), "confirm-slot-inviter"),
         "confirm-slot-ci",
     );
     canonical_lazy_invitation_backlog(&f, &recipient, &inviter, 1, "confirm-slot");
@@ -4849,7 +4899,7 @@ fn presentation_actual_candidate_sizing_and_rpc_wrapper_work_remain_bounded() {
     let recipient = pull_seat(&f);
     let inviter = check_in(
         &f,
-        claim("x", "px", fourth(), "sizing-bound-inviter", 0),
+        fixture_claim(&f, "x", "px", fourth(), "sizing-bound-inviter"),
         "sizing-bound-ci",
     );
     canonical_lazy_invitation_backlog(&f, &recipient, &inviter, 100, "sizing-bound");
@@ -4981,7 +5031,7 @@ fn presentation_handler_clears_unconfirmed_epoch_then_reopens_new_episode() {
     let recipient = pull_seat(&f);
     let inviter = check_in(
         &f,
-        claim("x", "px", fourth(), "episode-inviter", 0),
+        fixture_claim(&f, "x", "px", fourth(), "episode-inviter"),
         "episode-ci",
     );
     let invite = |suffix: &str| {
@@ -5198,7 +5248,7 @@ fn presentation_handler_published_warn_reopens_at_unchanged_native_version() {
     let recipient = pull_seat(&f);
     let inviter = check_in(
         &f,
-        claim("x", "px", fourth(), "warn-epoch-inviter", 0),
+        fixture_claim(&f, "x", "px", fourth(), "warn-epoch-inviter"),
         "warn-epoch-ci",
     );
     let CommandResult::ThreadCreated(thread) = f
@@ -5373,12 +5423,12 @@ fn presentation_quiet_channel_observes_new_lazy_ordinary_without_wake() {
     let mut f = fixture(0);
     let recipient = check_in(
         &f,
-        claim("c", "pc", Harness::Claude, "quiet-lazy-recipient", 0),
+        fixture_claim(&f, "c", "pc", Harness::Claude, "quiet-lazy-recipient"),
         "quiet-lazy-ci",
     );
     let sender = check_in(
         &f,
-        claim("x", "px", fourth(), "quiet-lazy-sender", 0),
+        fixture_claim(&f, "x", "px", fourth(), "quiet-lazy-sender"),
         "quiet-lazy-sender-ci",
     );
     let reads: Arc<dyn ModStoreReads> = f.store.clone();
@@ -5486,7 +5536,7 @@ fn presentation_confirm_rejects_oversized_private_json_before_decoding() {
         let recipient = pull_seat(&f);
         let inviter = check_in(
             &f,
-            claim("x", "px", fourth(), "private-bound-inviter", 0),
+            fixture_claim(&f, "x", "px", fourth(), "private-bound-inviter"),
             "private-bound-ci",
         );
         canonical_lazy_invitation_backlog(&f, &recipient, &inviter, 1, "private-bound");
@@ -5561,7 +5611,7 @@ fn presentation_handler_partial_confirmation_retains_canonical_slots_across_rest
     let recipient = pull_seat(&f);
     let inviter = check_in(
         &f,
-        claim("x", "px", fourth(), "public-subset-inviter", 0),
+        fixture_claim(&f, "x", "px", fourth(), "public-subset-inviter"),
         "public-subset-ci",
     );
     let CommandResult::ThreadCreated(thread) = f
@@ -5726,7 +5776,7 @@ fn presentation_private_state_rejects_typed_corruption_without_confirmation_effe
         let recipient = pull_seat(&f);
         let inviter = check_in(
             &f,
-            claim("x", "px", fourth(), "typed-corrupt-inviter", 0),
+            fixture_claim(&f, "x", "px", fourth(), "typed-corrupt-inviter"),
             "typed-corrupt-ci",
         );
         canonical_lazy_invitation_backlog(&f, &recipient, &inviter, 1, "typed-corrupt");
@@ -5794,12 +5844,12 @@ fn presentation_watch_fresh_confirmation_records_exact_owner_publication_cutoff_
     let mut f = fixture(0);
     let recipient = check_in(
         &f,
-        claim("c", "pc", Harness::Claude, "stall-v2-recipient", 0),
+        fixture_claim(&f, "c", "pc", Harness::Claude, "stall-v2-recipient"),
         "stall-v2-ci",
     );
     let sender = check_in(
         &f,
-        claim("x", "px", fourth(), "stall-v2-sender", 0),
+        fixture_claim(&f, "x", "px", fourth(), "stall-v2-sender"),
         "stall-v2-sender-ci",
     );
     let reads: Arc<dyn ModStoreReads> = f.store.clone();
@@ -5989,7 +6039,7 @@ fn presentation_publication_scalar_maximum_roundtrips_without_changing_carry() {
     let recipient = pull_seat(&f);
     let inviter = check_in(
         &f,
-        claim("x", "px", fourth(), "scalar-inviter", 0),
+        fixture_claim(&f, "x", "px", fourth(), "scalar-inviter"),
         "scalar-ci",
     );
     canonical_lazy_invitation_backlog(&f, &recipient, &inviter, 1, "scalar");
@@ -6030,7 +6080,7 @@ fn presentation_publication_walk_counts_foreign_prefix_before_filter_and_progres
     let recipient = pull_seat(&f);
     let sender = check_in(
         &f,
-        claim("x", "px", fourth(), "prefix-sender", 0),
+        fixture_claim(&f, "x", "px", fourth(), "prefix-sender"),
         "prefix-sender-ci",
     );
     let CommandResult::ThreadCreated(foreign) = f
@@ -6169,7 +6219,7 @@ fn presentation_publication_invalid_scalars_refuse_before_confirmation_effects()
         let recipient = pull_seat(&f);
         let inviter = check_in(
             &f,
-            claim("x", "px", fourth(), "invalid-scalar-inviter", 0),
+            fixture_claim(&f, "x", "px", fourth(), "invalid-scalar-inviter"),
             "invalid-scalar-ci",
         );
         canonical_lazy_invitation_backlog(&f, &recipient, &inviter, 1, "invalid-scalar");
@@ -6218,7 +6268,7 @@ fn presentation_publication_refresh_and_pull_rebind_preserve_each_others_progres
         let recipient = pull_seat(&f);
         let sender = check_in(
             &f,
-            claim("x", "px", fourth(), "reset-publication-sender", 0),
+            fixture_claim(&f, "x", "px", fourth(), "reset-publication-sender"),
             "reset-publication-ci",
         );
         for n in 0..201 {
@@ -6341,7 +6391,7 @@ fn presentation_private_context_cursors_refuse_invalid_thread_ids_before_effects
             let recipient = pull_seat(&f);
             let inviter = check_in(
                 &f,
-                claim("x", "px", fourth(), "cursor-bound-inviter", 0),
+                fixture_claim(&f, "x", "px", fourth(), "cursor-bound-inviter"),
                 "cursor-bound-ci",
             );
             canonical_lazy_invitation_backlog(&f, &recipient, &inviter, 1, "cursor-bound");
@@ -6388,7 +6438,7 @@ fn presentation_private_item_refresh_text_bounds_refuse_before_effects() {
         let recipient = pull_seat(&f);
         let inviter = check_in(
             &f,
-            claim("x", "px", fourth(), "item-bound-inviter", 0),
+            fixture_claim(&f, "x", "px", fourth(), "item-bound-inviter"),
             "item-bound-ci",
         );
         canonical_lazy_invitation_backlog(&f, &recipient, &inviter, 1, "item-bound");
@@ -6442,7 +6492,7 @@ fn presentation_publication_signal_preserves_active_capture_and_replays_across_r
     let recipient = pull_seat(&f);
     let sender = check_in(
         &f,
-        claim("x", "px", fourth(), "capture-lazy-sender", 0),
+        fixture_claim(&f, "x", "px", fourth(), "capture-lazy-sender"),
         "capture-lazy-ci",
     );
     let send = |f: &Fixture, key: &str, body: String| {
@@ -6618,7 +6668,7 @@ fn presentation_registered_channel_materializes_each_published_warn_before_drain
     let mut f = fixture(0);
     let recipient = check_in(
         &f,
-        claim("c", "pc", Harness::Claude, "warn-channel-recipient", 0),
+        fixture_claim(&f, "c", "pc", Harness::Claude, "warn-channel-recipient"),
         "warn-channel-ci",
     );
     let reads: Arc<dyn ModStoreReads> = f.store.clone();
@@ -7499,6 +7549,15 @@ fn reclamation_read_full_body(f: &Fixture, message: &MessageId) -> String {
         cursor = Some(body_next_cursor.expect("bounded continuation makes progress"));
     }
     panic!("fixture full body exceeds bounded continuation reads")
+}
+
+fn reclamation_cursor(f: &Fixture, claim: &CallerClaim) -> i64 {
+    f.db.query_row(
+        "SELECT seq FROM binding_cursors WHERE binding_id=?1 AND thread_id='t'",
+        [binding_for_claim(f, claim).as_str()],
+        |row| row.get(0),
+    )
+    .unwrap()
 }
 
 fn reclamation_advance_displayed(
@@ -8541,7 +8600,7 @@ fn presentation_publication_foreign_refresh_refuses_without_touching_hook_or_wat
     let recipient = pull_seat(&f);
     let inviter = check_in(
         &f,
-        claim("x", "px", fourth(), "foreign-refresh-inviter", 0),
+        fixture_claim(&f, "x", "px", fourth(), "foreign-refresh-inviter"),
         "foreign-refresh-ci",
     );
     canonical_lazy_invitation_backlog(&f, &recipient, &inviter, 1, "foreign-refresh");
@@ -8603,7 +8662,7 @@ fn presentation_handler_initial_ordinary_receipt_delivers_body_without_invented_
     let recipient = pull_seat(&f);
     let sender = check_in(
         &f,
-        claim("x", "px", fourth(), "initial-ordinary-sender", 0),
+        fixture_claim(&f, "x", "px", fourth(), "initial-ordinary-sender"),
         "initial-ordinary-ci",
     );
     f.service
@@ -8667,18 +8726,18 @@ fn presentation_publication_watch_reconnect_keeps_positive_frontier_without_nati
     let mut f = fixture(0);
     let recipient = check_in(
         &f,
-        claim(
+        fixture_claim(
+            &f,
             "c",
             "pc",
             Harness::Claude,
             "publication-reconnect-recipient",
-            0,
         ),
         "publication-reconnect-ci",
     );
     let sender = check_in(
         &f,
-        claim("x", "px", fourth(), "publication-reconnect-sender", 0),
+        fixture_claim(&f, "x", "px", fourth(), "publication-reconnect-sender"),
         "publication-reconnect-sender-ci",
     );
     let reads: Arc<dyn ModStoreReads> = f.store.clone();
@@ -8769,7 +8828,7 @@ fn presentation_publication_generation_overflow_rolls_back_frontier_and_version(
         let recipient = pull_seat(&f);
         let sender = check_in(
             &f,
-            claim("x", "px", fourth(), "publication-overflow-sender", 0),
+            fixture_claim(&f, "x", "px", fourth(), "publication-overflow-sender"),
             "publication-overflow-ci",
         );
         f.store
@@ -8851,12 +8910,12 @@ fn presentation_quiet_channel_observes_new_ordinary_ack_message() {
     let mut f = fixture(0);
     let recipient = check_in(
         &f,
-        claim("c", "pc", Harness::Claude, "quiet-ordinary-recipient", 0),
+        fixture_claim(&f, "c", "pc", Harness::Claude, "quiet-ordinary-recipient"),
         "quiet-ordinary-ci",
     );
     let sender = check_in(
         &f,
-        claim("x", "px", fourth(), "quiet-ordinary-sender", 0),
+        fixture_claim(&f, "x", "px", fourth(), "quiet-ordinary-sender"),
         "quiet-ordinary-sender-ci",
     );
     let reads: Arc<dyn ModStoreReads> = f.store.clone();
@@ -8985,7 +9044,7 @@ fn private_invitation_id_fixture(branch: &str) -> (Fixture, CallerClaim, i64) {
     let recipient = pull_seat(&f);
     let inviter = check_in(
         &f,
-        claim("x", "px", fourth(), "private-id-inviter", 0),
+        fixture_claim(&f, "x", "px", fourth(), "private-id-inviter"),
         "private-id-ci",
     );
     canonical_lazy_invitation_backlog(&f, &recipient, &inviter, 1, "private-id");
@@ -9532,7 +9591,19 @@ fn presentation_capacity_reclaimed_or_initially_free_with_missing_due_keys_quiet
                 window.drain(1),
                 std::collections::BTreeSet::from([id.clone()])
             );
+            let stamps = window.offers();
+            let cursor = reclamation_cursor(&window.f, &window.recipient);
             window.ack(std::slice::from_ref(id), false, false, "capacity-terminal");
+            window.pull();
+            assert_eq!(reclamation_cursor(&window.f, &window.recipient), cursor);
+            assert_eq!(window.offers(), stamps, "ACK alone keeps the unread offer");
+            assert!(!stamps[id].truncated, "the short body was fully emitted");
+            reclamation_advance_displayed(
+                &window.f,
+                &window.recipient,
+                std::slice::from_ref(id),
+                "capacity-terminal-displayed",
+            );
         }
         {
             let mut ledger = window.f.state.lock();
@@ -9641,7 +9712,27 @@ fn presentation_capacity_last_slot_parks_unknown_carry_and_only_continues_for_du
         assert_eq!(work.ordinary, usize::from(missing_due));
         assert_eq!(window.offers().len(), 256);
         assert!(!window.offers().contains_key(&parked_id));
+        let stamps = window.offers();
+        let cursor = reclamation_cursor(&window.f, &window.recipient);
         window.ack(std::slice::from_ref(&first), false, false, "last-slot-ack");
+        window.pull();
+        assert_eq!(reclamation_cursor(&window.f, &window.recipient), cursor);
+        assert_eq!(
+            window.offers(),
+            stamps,
+            "ACK alone cannot free the last slot"
+        );
+        assert_eq!(capacity_normal_state(&window), parked);
+        assert!(
+            !stamps[&first].truncated,
+            "the first body was fully emitted"
+        );
+        reclamation_advance_displayed(
+            &window.f,
+            &window.recipient,
+            std::slice::from_ref(&first),
+            "last-slot-displayed",
+        );
         let DeliveryPullReplyV2::Page(page) = window.pull() else {
             panic!("resume retained sibling");
         };
@@ -9690,7 +9781,7 @@ fn presentation_capacity_replay_preserves_finite_due_progress_and_positive_slot_
         let recipient = pull_seat(&f);
         let inviter = check_in(
             &f,
-            claim("x", "px", fourth(), "capacity-replay-inviter", 0),
+            fixture_claim(&f, "x", "px", fourth(), "capacity-replay-inviter"),
             "capacity-replay-ci",
         );
         canonical_lazy_invitation_backlog(&f, &recipient, &inviter, 1, "capacity-replay");
@@ -9891,7 +9982,7 @@ fn presentation_capacity_snapshot_validation_scope_and_failed_calls() {
         .passive_generation;
     let sender = check_in(
         &f,
-        claim("x", "px", fourth(), "capacity-publication", 0),
+        fixture_claim(&f, "x", "px", fourth(), "capacity-publication"),
         "capacity-publication-ci",
     );
     f.service
@@ -10143,6 +10234,34 @@ fn presentation_capacity_due_walk_preserves_partial_body_until_real_ack() {
             assert_eq!(capacity_normal_state(&window), parked);
         }
         assert!(reoffered);
+        let retained = window.offers();
+        let cursor = reclamation_cursor(&window.f, &window.recipient);
+        if !lazy {
+            window.ack(
+                std::slice::from_ref(&first),
+                false,
+                false,
+                "partial-release",
+            );
+            window.pull();
+            assert_eq!(reclamation_cursor(&window.f, &window.recipient), cursor);
+            assert_eq!(
+                window.offers(),
+                retained,
+                "manual ACK retains unread full stamps"
+            );
+            assert_eq!(capacity_normal_state(&window), parked);
+        }
+        assert_eq!(
+            reclamation_read_full_body(&window.f, &first),
+            "a".repeat(58000)
+        );
+        assert_eq!(
+            reclamation_cursor(&window.f, &window.recipient),
+            cursor,
+            "read-only body RPC does not claim display by itself"
+        );
+        assert_eq!(window.offers(), retained);
         if lazy {
             window
                 .f
@@ -10173,13 +10292,14 @@ fn presentation_capacity_due_walk_preserves_partial_body_until_real_ack() {
                 "displayed"
             );
         } else {
-            window.ack(
+            reclamation_advance_displayed(
+                &window.f,
+                &window.recipient,
                 std::slice::from_ref(&first),
-                false,
-                false,
-                "partial-release",
+                "partial-first-full-display",
             );
         }
+        assert!(reclamation_cursor(&window.f, &window.recipient) > cursor);
         let DeliveryPullReplyV2::Page(page) = window.pull() else {
             panic!("same-call partial resume");
         };
@@ -10373,11 +10493,29 @@ fn presentation_capacity_retained_concurrent_offer_count_does_not_refuse_passive
     }
     assert!(delivered);
     assert_eq!(original[&known].count, 4);
+    let cursor = reclamation_cursor(&window.f, &window.recipient);
     window.ack(
         std::slice::from_ref(&known),
         false,
         false,
         "concurrent-history-ack",
+    );
+    window.pull();
+    assert_eq!(reclamation_cursor(&window.f, &window.recipient), cursor);
+    assert_eq!(
+        window.offers(),
+        original,
+        "ACK alone preserves the complete count-four stamp"
+    );
+    assert!(
+        !original[&known].truncated,
+        "V1 fully emitted the short body"
+    );
+    reclamation_advance_displayed(
+        &window.f,
+        &window.recipient,
+        std::slice::from_ref(&known),
+        "concurrent-history-displayed",
     );
     window.pull();
     assert!(
@@ -10753,16 +10891,57 @@ fn presentation_owner_replay_full_final_page_keeps_logical_due_continuation() {
         }
     }
     assert_eq!(capacity_normal_state(&window), walk);
+    let cursor = reclamation_cursor(&window.f, &window.recipient);
     window.ack(
         std::slice::from_ref(&due),
         false,
         false,
         "owner-full-resume",
     );
+    window.pull();
+    assert_eq!(reclamation_cursor(&window.f, &window.recipient), cursor);
+    assert_eq!(
+        window.offers(),
+        after,
+        "manual ACK retains all 256 unread stamps"
+    );
+    assert_eq!(capacity_normal_state(&window), walk);
+    // The chosen due key is ordered by ID, not thread sequence. Its display
+    // must include the actual prefix and the first body's full continuation.
+    assert_eq!(
+        reclamation_read_full_body(&window.f, &sent[0]),
+        "x".repeat(WATCH_BODY_LIMIT_BYTES + 1)
+    );
+    let due_position = sent[..256].iter().position(|id| id == &due).unwrap();
+    assert!(
+        sent[..=due_position]
+            .iter()
+            .skip(1)
+            .all(|id| !after[id].truncated)
+    );
+    reclamation_advance_displayed(
+        &window.f,
+        &window.recipient,
+        &sent[..=due_position],
+        "owner-full-displayed-prefix",
+    );
     let DeliveryPullReplyV2::Page(resumed) = window.pull() else {
-        panic!("ACK resumes carried unknown257")
+        panic!("full display and ACK resume carried unknown257")
     };
     assert!(resumed.offered.contains(&sent[256]));
+    let resumed_stamps = window.offers();
+    for (id, stamp) in &after {
+        if id != &due {
+            assert_eq!(
+                &resumed_stamps[id], stamp,
+                "unsettled prefix keeps its full stamp"
+            );
+        }
+    }
+    assert_eq!(window.f.db.query_row::<i64, _, _>(
+        "SELECT count(*) FROM prepared_recipients pr JOIN send_manifests sm ON sm.preparation_id=pr.preparation_id LEFT JOIN receipt_state rs ON rs.message_id=sm.message_id AND rs.seat_id=pr.seat_id WHERE pr.seat_id='c' AND COALESCE(rs.state,'pending')='pending' AND pr.ack_required=1",
+        [], |row| row.get(0),
+    ).unwrap(), 256, "display settles no other receipt and never displays unknown257 early");
 }
 
 fn owner_outlook(window: &OfferWindowFixture) -> (bool, Option<u64>, Option<u64>, NextPull) {
@@ -11439,6 +11618,34 @@ fn presentation_owner_replay_preserves_partial_body_until_real_ack() {
             assert_eq!(window.offers(), stamps);
         }
         assert!(reoffered);
+        let retained = window.offers();
+        let cursor = reclamation_cursor(&window.f, &window.recipient);
+        if !lazy {
+            window.ack(
+                std::slice::from_ref(&first),
+                false,
+                false,
+                "partial-release",
+            );
+            window.pull();
+            assert_eq!(reclamation_cursor(&window.f, &window.recipient), cursor);
+            assert_eq!(
+                window.offers(),
+                retained,
+                "manual ACK retains unread full stamps"
+            );
+            assert_eq!(capacity_normal_state(&window), parked);
+        }
+        assert_eq!(
+            reclamation_read_full_body(&window.f, &first),
+            "a".repeat(58000)
+        );
+        assert_eq!(
+            reclamation_cursor(&window.f, &window.recipient),
+            cursor,
+            "read-only body RPC does not claim display by itself"
+        );
+        assert_eq!(window.offers(), retained);
         if lazy {
             window
                 .f
@@ -11469,13 +11676,14 @@ fn presentation_owner_replay_preserves_partial_body_until_real_ack() {
                 "displayed"
             );
         } else {
-            window.ack(
+            reclamation_advance_displayed(
+                &window.f,
+                &window.recipient,
                 std::slice::from_ref(&first),
-                false,
-                false,
-                "partial-release",
+                "partial-first-full-display",
             );
         }
+        assert!(reclamation_cursor(&window.f, &window.recipient) > cursor);
         let DeliveryPullReplyV2::Page(page) = window.pull() else {
             panic!("same-call partial resume");
         };

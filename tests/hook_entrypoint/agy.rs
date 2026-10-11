@@ -959,6 +959,7 @@ mod activation {
             Self::run_process(
                 fx,
                 home,
+                harness,
                 &format!("{base} '--event' '{event}'"),
                 PANE,
                 &serde_json::to_vec(&input).unwrap(),
@@ -968,15 +969,22 @@ mod activation {
         fn run_process(
             fx: &continuity::Fixture,
             home: &Path,
+            harness: Harness,
             registered: &str,
             pane: &str,
             input: &[u8],
             broken_stdout: bool,
         ) -> Hook {
-            let mut command = scrubbed_command("/bin/sh");
+            // Exercise the real registered CLI beneath its declared harness,
+            // as run_hook_traced does; PATH alone is not process ancestry.
+            let mut command = herdr_threads::test_support::harness_shim::under_harness(
+                harness.as_str(),
+                Path::new("/bin/sh"),
+                &["-c", registered],
+                &[],
+            );
+            herdr_threads::test_support::isolation::scrub_env(&mut command);
             command
-                .arg("-c")
-                .arg(registered)
                 .env("HERDR_ENV", "1")
                 .env("HERDR_PANE_ID", pane)
                 .env("HERDR_SOCKET_PATH", &fx.host)
@@ -1020,6 +1028,7 @@ mod activation {
             let startup = Self::run_process(
                 &self.fx,
                 &self.home,
+                Harness::Claude,
                 &registered,
                 "w9:p2",
                 &continuity::session_start("claude", "origin-session", "startup"),
@@ -1444,6 +1453,7 @@ mod activation {
         let startup = Elected::run_process(
             &elected.fx,
             &elected.home,
+            Harness::Claude,
             &registered,
             "w9:p2",
             &continuity::session_start("claude", "origin-session", "startup"),
@@ -1476,19 +1486,47 @@ mod activation {
 
         let observer = Observer::start(&elected.fx, Fault::None);
         let body = "direct Ensure body remains pending after Hook presentation";
-        let sent = cooperative(
-            &elected.state,
-            &elected.fx.host,
-            origin.seat.as_str(),
-            "w9:p2",
-            &[
+        let sent: Value = {
+            // Preserve the actual registered sender session/fingerprint. The
+            // shared helper selects its unrelated claude/sess-1 fixture.
+            let _origin = herdr_threads::cli::caller::fix_origin(
+                herdr_threads::cli::caller::CallerOrigin::Agent(
+                    herdr_threads::harness::caller_env::EnvClaim {
+                        harness: origin.harness,
+                        native_session: origin.native_session.clone(),
+                        agent_id: origin.agent_id.clone(),
+                        role: origin.role,
+                        fingerprint: origin.liveness.expect("registered sender fingerprint"),
+                        provenance:
+                            herdr_threads::protocol::authority::COOPERATIVE_ENV_SESSION_PROVENANCE,
+                    },
+                ),
+            );
+            let args = [
+                "herdr-threads",
+                "--json",
+                "--state-dir",
+                elected.state.to_str().unwrap(),
+                "--host-endpoint",
+                elected.fx.host.to_str().unwrap(),
+                "--cooperative-seat",
+                origin.seat.as_str(),
+                "--cooperative-target",
+                origin.target.as_str(),
+                "--cooperative-harness",
+                origin.harness.as_str(),
+                "--cooperative-role",
+                "top-level",
                 "send",
                 "--seat",
                 elected.recipient.seat.as_str(),
                 "--body",
                 body,
-            ],
-        );
+            ];
+            let mut output = Vec::new();
+            herdr_threads::cli::run(args, &mut output).unwrap();
+            serde_json::from_slice(&output).unwrap()
+        };
         let producer = observer.take();
         assert_eq!(
             producer
