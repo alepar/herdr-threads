@@ -866,12 +866,15 @@ impl Journal {
             body_len,
             flushed_through: flushed,
         };
+        // One buffer, one write (as save_progress_at, ffd09598): `to_writer` on the bare file
+        // issues a write(2) per JSON token, which stalled CLI exits under suite load (ht-poh.55).
+        let bytes = serde_json::to_vec(&progress)?;
         let temp = self
             .root
             .join(format!(".display-lazy-{}.tmp", Uuid::new_v4()));
         let result = (|| {
             let mut file = private_new(&temp)?;
-            serde_json::to_writer(&mut file, &progress)?;
+            file.write_all(&bytes)?;
             durable_sync(&file)?;
             fs::rename(&temp, &path)?;
             durable_sync(&File::open(&self.root)?)
@@ -1122,9 +1125,11 @@ impl Journal {
             body_len,
             flushed_through: flushed,
         };
+        // Single buffered write, as in record_lazy_displayed_chunk (ht-poh.55).
+        let bytes = serde_json::to_vec(&progress)?;
         let temp = self.root.join(format!(".display-{}.tmp", Uuid::new_v4()));
         let mut file = private_new(&temp)?;
-        serde_json::to_writer(&mut file, &progress)?;
+        file.write_all(&bytes)?;
         durable_sync(&file)?;
         fs::rename(&temp, &path)?;
         durable_sync(&File::open(&self.root)?)?;
@@ -1335,12 +1340,14 @@ impl Journal {
             thread: semantic.thread().cloned(),
             semantic_digest: format!("{:x}", Sha256::digest(&body)),
         };
+        // Single buffered write, as in record_lazy_displayed_chunk (ht-poh.55).
+        let mut bytes = serde_json::to_vec(&header)?;
+        bytes.push(b'\n');
+        bytes.extend_from_slice(&body);
+        bytes.push(b'\n');
         let path = self.root.join(format!(".intent-{}", Uuid::new_v4()));
         let mut file = private_new(&path)?;
-        serde_json::to_writer(&mut file, &header)?;
-        file.write_all(b"\n")?;
-        file.write_all(&body)?;
-        file.write_all(b"\n")?;
+        file.write_all(&bytes)?;
         durable_sync(&file)?;
         fs::rename(path, self.path(&reference))?;
         // The entry is already visible. A failed durability barrier must not
