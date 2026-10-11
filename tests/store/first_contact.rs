@@ -409,6 +409,7 @@ fn first_contact_is_attached_once_per_binding() {
     let again = check_in(&store, lifecycle(same, "a2")).unwrap();
     assert!(again.first_contact.is_none() && again.fast_forward.is_none());
     let current = crate::protocol::commands::CheckIn {
+        lineage_parent: None,
         mode: crate::protocol::commands::CheckInMode::Current,
         claim: first.context.clone(),
         operation: OperationId::new("a3"),
@@ -650,6 +651,7 @@ fn plain_touch_never_fast_forwards() {
     let (store, conn, first, _) = resumed(300, 60);
     // A plain call (Current mode) by the disconnected-but-open binding is a touch.
     let current = crate::protocol::commands::CheckIn {
+        lineage_parent: None,
         mode: crate::protocol::commands::CheckInMode::Current,
         claim: first.context.clone(),
         operation: OperationId::new("touch"),

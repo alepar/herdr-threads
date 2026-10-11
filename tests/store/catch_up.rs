@@ -911,6 +911,7 @@ fn budget() -> CallBudget {
 /// A lifecycle check-in by `execution`: the production binding writer.
 fn check_in(store: &SqliteStore, execution: &str, expected_generation: u64) -> u64 {
     let command = CheckIn {
+        lineage_parent: None,
         mode: CheckInMode::Lifecycle {
             expected_binding_generation: expected_generation,
         },

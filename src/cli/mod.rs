@@ -2973,6 +2973,7 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
                 mode,
                 event_id,
                 operator,
+                ..
             } = &pending.semantic
             {
                 let saved_session = contexts

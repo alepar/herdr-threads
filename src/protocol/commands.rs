@@ -652,6 +652,10 @@ pub struct CheckIn {
     pub mode: CheckInMode,
     pub claim: CallerClaim,
     pub operation: OperationId,
+    /// Hermes `parent_session_id`: a predecessor hint the daemon verifies (same seat, harness,
+    /// top-level binding, same process fingerprint) before it links lineage; otherwise ignored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lineage_parent: Option<NativeSessionId>,
 }
 /// Lifecycle requests deliberately rotate using a fixed expected generation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1133,6 +1137,11 @@ impl Command {
             }
             Self::AcceptRequired(accept) => accept.validate(),
             Self::Reject(reject) => validate_rejection_reason(&reject.reason),
+            Self::CheckIn(check) | Self::OperatorCheckIn(check)
+                if check.lineage_parent.as_ref() == Some(&check.claim.native_session) =>
+            {
+                Err("lineage parent is the claiming session itself")
+            }
             Self::ContinuityCheckIn(continuity) => continuity.validate(),
             Self::RecordManagedLaunch(launch) => launch.validate(),
             Self::OperatorOrphanInvite(invite) if invite.deadline_millis == Some(0) => {

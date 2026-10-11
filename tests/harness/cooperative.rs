@@ -394,6 +394,7 @@ fn qualified_turn_normalized_intent_reaches_context_without_native_resume_claim(
     .unwrap();
     let mut decoded = DecodedEvent::from_native(event);
     decoded.intent = EventIntent::QualifiedTurn(QualifiedTurn {
+        lineage_parent: None,
         session: "opaque".into(),
         event_key: "entry".into(),
         reset: None,

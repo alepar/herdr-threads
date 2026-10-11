@@ -4274,6 +4274,23 @@ pub(crate) fn resolve_cooperative(
     mode: Option<crate::protocol::commands::CheckInMode>,
     mapping: &CooperativeMapping,
 ) -> Result<bindings::Resolution, ApiError> {
+    resolve_cooperative_with_lineage(tx, at, claim, mode, mapping, None)
+}
+
+/// [`resolve_cooperative`] with a lineage predecessor hint (Hermes `parent_session_id`, spec §1
+/// Lineage). The hint names a session; it resolves to the open top-level binding of that session on
+/// the claim's seat and harness, and is honoured only when `bindings::validate_lineage` holds (same
+/// seat, harness, top-level, same process fingerprint). A successor not yet enrolled seeds from the
+/// predecessor (`ResolveRequest.lineage`); one already enrolled (CLI-first, an accepted limit) links
+/// `lineage_from` once and copies with MAX, so no cursor moves backwards.
+pub(crate) fn resolve_cooperative_with_lineage(
+    tx: &Transaction<'_>,
+    at: DecisionInstant,
+    claim: &crate::protocol::authority::CallerClaim,
+    mode: Option<crate::protocol::commands::CheckInMode>,
+    mapping: &CooperativeMapping,
+    lineage_parent: Option<&crate::protocol::ids::NativeSessionId>,
+) -> Result<bindings::Resolution, ApiError> {
     let lifecycle = matches!(
         mode,
         Some(crate::protocol::commands::CheckInMode::Lifecycle { .. })
@@ -4304,16 +4321,44 @@ pub(crate) fn resolve_cooperative(
         observed_at: at.utc,
         registered_at: Some(at.utc),
     };
-    bindings::resolve_claim(
+    let predecessor = match lineage_parent {
+        Some(parent) if *parent != claim.native_session && !claim.is_subagent() => {
+            bindings::match_claim(
+                tx,
+                &bindings::BindingKey {
+                    seat: claim.seat.clone(),
+                    harness: claim.harness.as_str().to_owned(),
+                    native_session: parent.clone(),
+                    agent_id: None,
+                },
+            )?
+            .filter(|row| row.role == bindings::BindingRole::TopLevel)
+            .map(|row| row.binding_id)
+        }
+        _ => None,
+    };
+    let resolution = bindings::resolve_claim(
         tx,
         &bindings::ResolveRequest {
             claim,
             lifecycle,
             placement: &placement,
-            lineage: None,
+            lineage: predecessor.as_ref(),
         },
         at.utc,
-    )
+    )?;
+    if let Some(predecessor) = &predecessor
+        && !matches!(resolution, bindings::Resolution::Enrolled { .. })
+    {
+        let successor = resolution.binding();
+        if successor.role == bindings::BindingRole::TopLevel
+            && successor.lineage_from.is_none()
+            && bindings::validate_lineage(tx, claim, predecessor)?
+        {
+            bindings::link_lineage(tx, &successor.binding_id, predecessor)?;
+        }
+    }
+    Ok(resolution)
 }
 
 /// A cooperative check-in constructs its bounded offer inside the deciding SQLite
@@ -4398,7 +4443,14 @@ pub fn register_available(
                     ),
                 ));
             }
-            let resolution = resolve_cooperative(tx, at, claim, Some(command.mode), &mapping)?;
+            let resolution = resolve_cooperative_with_lineage(
+                tx,
+                at,
+                claim,
+                Some(command.mode),
+                &mapping,
+                command.lineage_parent.as_ref(),
+            )?;
             let binding_id = resolution.binding().binding_id.clone();
             // Spec §2: a new binding's first response carries its history stats (once: only the
             // check-in that enrolls it); a resumed or reconnected one whose unread backlog

@@ -462,6 +462,8 @@ class Bridge:
         parent = kwargs.get("parent_session_id")
         # Native delegate_task children run with platform "subagent". Only their
         # parented pre_llm_call is answered, locally, with the child restriction.
+        # Any other parented pre_llm_call (compression or /branch successor) is a
+        # top-level turn whose parent_session_id is forwarded as a lineage hint.
         if platform == "subagent":
             if name != "pre_llm_call" or not opaque(parent):
                 return None
@@ -477,7 +479,7 @@ class Bridge:
         if name == "pre_llm_call":
             if not opaque(parent, empty=True) or not opaque(turn):
                 return None
-            role = "child" if parent else "top"
+            role = "child" if platform == "subagent" else "top"
             if not self.remember_role(session, turn, role, entered):
                 return None
         elif name == "post_tool_call":
@@ -493,7 +495,7 @@ class Bridge:
         deadline = entered + span
         if time.monotonic() >= deadline:
             return None
-        if name == "pre_llm_call" and parent:
+        if name == "pre_llm_call" and platform == "subagent":
             return {"context": CHILD_RESTRICTION}
         # Exact native session/turn key is stable across callback retries and
         # process restarts. Observers/missing turns have invocation-only IDs.

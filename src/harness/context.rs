@@ -203,6 +203,9 @@ pub struct QualifiedTurn {
     pub event_key: String,
     pub reset: Option<ResetObservation>,
     pub ordering: Option<ObservationOrder>,
+    /// Hermes `parent_session_id` of a non-delegate top-level turn: a compression or branch
+    /// predecessor hint the daemon verifies. Never an identity claim.
+    pub lineage_parent: Option<String>,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResetObservation {

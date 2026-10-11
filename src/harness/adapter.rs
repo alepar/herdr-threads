@@ -1230,6 +1230,7 @@ mod tests {
         };
         let turn = || {
             EventIntent::QualifiedTurn(QualifiedTurn {
+                lineage_parent: None,
                 session: "s".into(),
                 event_key: "event".into(),
                 reset: None,

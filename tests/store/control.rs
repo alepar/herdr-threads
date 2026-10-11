@@ -4861,6 +4861,7 @@ fn registration_ignores_an_exhausted_binding_history_generation_and_rolls_back_w
     let (context, mut conn, path, _) = fixture(100);
     conn.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES ('s2',?1,'s2','b',1,1,'codex','old','old','cooperative_top_level',0,'term-'||'s2','inc')",[i64::MAX]).unwrap();
     let command = CheckIn {
+        lineage_parent: None,
         mode: CheckInMode::Lifecycle {
             expected_binding_generation: 1,
         },
@@ -6841,6 +6842,7 @@ fn registration_requires_and_records_reconfirmation_evidence() {
     };
     let (context, mut conn, path, _) = fixture(100);
     let command = CheckIn {
+        lineage_parent: None,
         mode: CheckInMode::Lifecycle {
             expected_binding_generation: 1,
         },

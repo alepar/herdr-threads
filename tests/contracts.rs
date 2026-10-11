@@ -364,6 +364,7 @@ fn registration_request_binds_operation_and_selected_offer_context() {
     };
     let request = RegisterAvailableRequest {
         command: CheckIn {
+            lineage_parent: None,
             mode: herdr_threads::protocol::commands::CheckInMode::Current,
             claim: CallerClaim {
                 instance: "i".into(),

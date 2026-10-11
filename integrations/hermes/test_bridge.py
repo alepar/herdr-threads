@@ -473,7 +473,6 @@ class BridgeTests(unittest.TestCase):
         child = self.request(payload=self.callbacks["child"])
         self.assertIn("never check in", child["context"])
         self.assertIn("forbidden to subagents", child["context"])
-        self.assertEqual(self.request(payload={**self.callbacks["child"], "platform": "cli"}), child)
         self.assertIsNone(self.request(payload={**self.callbacks["child"], "parent_session_id": ""}))
         subagent = {**self.callbacks["tool"], "platform": "subagent", "parent_session_id": "session-Ω"}
         for callback in ("post_tool_call", "on_session_start"):
@@ -483,6 +482,23 @@ class BridgeTests(unittest.TestCase):
         self.assertIsNone(self.request(payload={**self.callbacks["qualified"], "platform": "gateway"}))
         self.assertEqual(self.requests(), [])
         self.assertEqual(self.request(payload={**self.callbacks["qualified"], "platform": ""}), {"context": "bounded cooperative context"})
+
+    def test_pre_llm_call_forwards_parent_session_id_and_platform(self):
+        self.load()
+        # A compression or /branch successor: platform cli with a parent session is a
+        # top-level turn (not the delegate child restriction) whose parent rides the envelope.
+        payload = {**self.callbacks["qualified"], "parent_session_id": "session-parent"}
+        self.assertEqual(self.request(payload=payload), {"context": "bounded cooperative context"})
+        request = self.requests()[-1]["request"]
+        self.assertEqual(request["parent_session_id"], "session-parent")
+        self.assertEqual(request["platform"], "cli")
+        self.assertEqual(request["role_association"]["role"], "top")
+        self.assertEqual(request["role_association"]["enrollment_witness"], "cli_platform")
+        # A native delegate child (platform subagent) is answered locally and never forwarded.
+        before = len(self.requests())
+        child = self.request(payload=self.callbacks["child"])
+        self.assertIn("forbidden to subagents", child["context"])
+        self.assertEqual(len(self.requests()), before)
 
     def test_observer_cache_exact_key_expiry_capacity_busy_and_reset(self):
         self.load()

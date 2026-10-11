@@ -690,6 +690,7 @@ fn explicit_cooperative_cli_check_in_reaches_elected_service_over_socket() {
     let next_result = herdr_threads::ports::LocalClient::call(
         &client,
         Command::CheckIn(herdr_threads::protocol::commands::CheckIn {
+            lineage_parent: None,
             mode: herdr_threads::protocol::commands::CheckInMode::Lifecycle {
                 expected_binding_generation: 1,
             },
