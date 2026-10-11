@@ -5531,6 +5531,105 @@ mod live {
             fn status(&self) -> AutomaticBootstrapResult {
                 self.status_for(&self.identity)
             }
+            fn complete_child_with_lost_parent_reply(&self) -> DownstreamLauncher {
+                self.fail_outer_complete_once
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                let mut launcher = DownstreamLauncher::default();
+                let result = resume_automatic_to_writer(
+                    &self.base.journal,
+                    &self.reference,
+                    super::super::super::super::actor_route::InvocationActor::Agent,
+                    self.ns(),
+                    self,
+                    self,
+                    &mut launcher,
+                    &self.base.clock,
+                    BootstrapSubmissionInputs {
+                        witness: &self.base.witness,
+                        context: &self.base.context,
+                    },
+                    &crate::protocol::output::OutputSpec::default(),
+                    &mut Vec::new(),
+                );
+                assert!(matches!(result, Err(RunError::Api(_))));
+                assert_eq!(self.status().state, BootstrapState::Attached);
+                launcher
+            }
+            fn historical_retry(
+                &self,
+                namespace: &HandoffNamespace,
+            ) -> Result<(bool, Vec<u8>), RunError> {
+                let parsed = super::super::super::super::commands::parse_argv([
+                    "ht",
+                    "retry",
+                    self.reference.recovery_ref().as_str(),
+                ])?;
+                assert_eq!(
+                    super::super::super::super::retry::preflight_original_actor(
+                        self.base.journal.root(),
+                        &self.reference.recovery_ref(),
+                        parsed.actor,
+                        &parsed.output.context,
+                    )?,
+                    super::super::super::super::journal::OriginalActor::Agent
+                );
+                let mut output = Vec::new();
+                let completed =
+                    super::super::super::super::topology_runtime::try_completed_with_namespace(
+                        &parsed,
+                        &self.base.journal,
+                        namespace,
+                        self,
+                        &self.base.clock,
+                        &mut output,
+                    )?;
+                Ok((completed, output))
+            }
+            fn sender_lifecycle_check_in(&self) -> crate::protocol::authority::CallerClaim {
+                let mut successor = self.identity.claim.clone();
+                successor.execution =
+                    crate::protocol::ids::ExecutionId::new(uuid::Uuid::new_v4().to_string());
+                let command = crate::protocol::commands::CheckIn {
+                    mode: crate::protocol::commands::CheckInMode::Lifecycle {
+                        expected_binding_generation: successor.binding_generation,
+                    },
+                    claim: successor,
+                    operation: crate::protocol::ids::OperationId::new(
+                        uuid::Uuid::new_v4().to_string(),
+                    ),
+                };
+                let budget = super::super::super::super::cooperative_budget(&self.base.clock);
+                let permit = self
+                    .store
+                    .issue_cooperative_permit(
+                        crate::store::cooperative_permit_request(
+                            &crate::protocol::commands::PermitMutation::CheckIn(command.clone()),
+                        )
+                        .unwrap(),
+                        &budget,
+                    )
+                    .unwrap();
+                let CommandResult::CheckedIn(checked) = self
+                    .store
+                    .register_available(
+                        crate::ports::RegisterAvailableRequest {
+                            command,
+                            read: crate::ports::ReadContext {
+                                instance: self.ns().instance.clone(),
+                                output: Default::default(),
+                                operation_scope: None,
+                            },
+                            operator: None,
+                        },
+                        permit,
+                        &budget,
+                    )
+                    .unwrap()
+                else {
+                    panic!("sender lifecycle check-in result")
+                };
+                checked.context
+            }
             fn status_for(
                 &self,
                 identity: &AutomaticBootstrapIdentity,
@@ -6800,6 +6899,270 @@ mod live {
             assert_eq!(second.state, BootstrapState::Completed);
             assert_eq!(peer.base.peer.state.lock().unwrap().native_calls, 1);
             assert_eq!(launcher.starts, 1);
+        }
+
+        #[test]
+        fn public_historical_retry_reconciles_completed_child_after_sender_check_in() {
+            use super::super::super::super::{
+                actor_route::InvocationActor, journal::OriginalActor,
+            };
+
+            let peer = AutoPeer::new();
+            peer.fail_outer_complete_once
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            let mut launcher = DownstreamLauncher::default();
+            let output = crate::protocol::output::OutputSpec {
+                format: crate::protocol::output::OutputFormat::Json,
+                context: crate::protocol::output::ContinuationContext {
+                    state_dir: Some(peer.ns().state_dir.to_string_lossy().into_owned()),
+                    host: Some(peer.ns().host_endpoint.to_string_lossy().into_owned()),
+                },
+            };
+            let original = peer
+                .base
+                .journal
+                .snapshot_bootstrap_origin(&peer.reference)
+                .unwrap();
+            assert!(
+                resume_automatic_to_writer(
+                    &peer.base.journal,
+                    &peer.reference,
+                    InvocationActor::Agent,
+                    peer.ns(),
+                    &peer,
+                    &peer,
+                    &mut launcher,
+                    &peer.base.clock,
+                    BootstrapSubmissionInputs {
+                        witness: &peer.base.witness,
+                        context: &peer.base.context,
+                    },
+                    &output,
+                    &mut Vec::new(),
+                )
+                .is_err()
+            );
+            let attached = peer.status();
+            assert_eq!(attached.state, BootstrapState::Attached);
+            let attachment = attached.attachment.as_ref().unwrap();
+            let mut child_query = attachment.child.clone();
+            child_query.action = AutomaticDeliveryAction::Status;
+            let CommandResult::Handoff(child) = peer
+                .store
+                .automatic_delivery_query(
+                    peer.ns(),
+                    &child_query,
+                    &super::super::super::super::cooperative_budget(&peer.base.clock),
+                )
+                .unwrap()
+            else {
+                panic!("canonical automatic child status")
+            };
+            assert_eq!(child.state, HandoffState::Completed);
+            let progress_path = peer.base.journal.root().join(format!(
+                "automatic-child-{}.progress",
+                peer.reference.operation.as_str()
+            ));
+            let progress: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&progress_path).unwrap()).unwrap();
+            let saved_report = progress["launch"].clone();
+            assert_eq!(saved_report["outcome"], "started");
+            let before = {
+                let state = peer.base.peer.state.lock().unwrap();
+                (
+                    state.native_calls,
+                    state
+                        .db
+                        .query_row("SELECT count(*) FROM invitations", [], |row| {
+                            row.get::<_, i64>(0)
+                        })
+                        .unwrap(),
+                    state
+                        .db
+                        .query_row(
+                            "SELECT count(*) FROM messages WHERE kind='ordinary'",
+                            [],
+                            |row| row.get::<_, i64>(0),
+                        )
+                        .unwrap(),
+                )
+            };
+            let successor = peer.sender_lifecycle_check_in();
+            assert_ne!(successor, peer.identity.claim);
+            assert_eq!(successor.binding_generation, 2);
+
+            let recovery = peer.reference.recovery_ref();
+            let mut parsed = super::super::super::super::commands::parse_argv([
+                "ht",
+                "retry",
+                recovery.as_str(),
+            ])
+            .unwrap();
+            parsed.output = output.clone();
+            assert_eq!(
+                super::super::super::super::retry::preflight_original_actor(
+                    peer.base.journal.root(),
+                    &peer.reference.recovery_ref(),
+                    parsed.actor,
+                    &parsed.output.context,
+                )
+                .unwrap(),
+                OriginalActor::Agent
+            );
+            let mut replay = Vec::new();
+            assert!(
+                super::super::super::super::topology_runtime::try_completed_with_namespace(
+                    &parsed,
+                    &peer.base.journal,
+                    peer.ns(),
+                    &peer,
+                    &peer.base.clock,
+                    &mut replay,
+                )
+                .unwrap(),
+                "historical retry must absorb completed child before live caller selection"
+            );
+            assert_eq!(peer.status().state, BootstrapState::Completed);
+            assert_eq!(launcher.starts, 1);
+            let after = {
+                let state = peer.base.peer.state.lock().unwrap();
+                (
+                    state.native_calls,
+                    state
+                        .db
+                        .query_row("SELECT count(*) FROM invitations", [], |row| {
+                            row.get::<_, i64>(0)
+                        })
+                        .unwrap(),
+                    state
+                        .db
+                        .query_row(
+                            "SELECT count(*) FROM messages WHERE kind='ordinary'",
+                            [],
+                            |row| row.get::<_, i64>(0),
+                        )
+                        .unwrap(),
+                )
+            };
+            assert_eq!(after, before);
+            let report: serde_json::Value = serde_json::from_slice(&replay).unwrap();
+            assert_eq!(report["bootstrap"]["state"], "completed");
+            assert_eq!(report["bootstrap"]["launch"], saved_report);
+            let terminal = peer.base.journal.root().join(format!(
+                "automatic-bootstrap-{:020}-{}.terminal",
+                peer.reference.ordinal,
+                peer.reference.operation.as_str()
+            ));
+            let saved: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(terminal).unwrap()).unwrap();
+            assert_eq!(saved["original"].as_str().unwrap().as_bytes(), original);
+            assert!(peer.base.journal.load(&peer.reference).is_err());
+        }
+
+        #[test]
+        fn historical_retry_refuses_missing_or_contradictory_successful_launch() {
+            for missing in [true, false] {
+                let peer = AutoPeer::new();
+                let launcher = peer.complete_child_with_lost_parent_reply();
+                assert_eq!(launcher.starts, 1);
+                peer.sender_lifecycle_check_in();
+                let path = peer.base.journal.root().join(format!(
+                    "automatic-child-{}.progress",
+                    peer.reference.operation.as_str()
+                ));
+                let mut progress: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+                if missing {
+                    progress["launch"] = serde_json::Value::Null;
+                } else {
+                    progress["launch"]["outcome"] = serde_json::json!("possible_start");
+                }
+                std::fs::write(&path, serde_json::to_vec(&progress).unwrap()).unwrap();
+                let before = peer.base.peer.state.lock().unwrap().native_calls;
+                let result = peer.historical_retry(peer.ns());
+                assert!(
+                    matches!(result, Err(RunError::Api(_))),
+                    "missing={missing}: {result:?}"
+                );
+                assert_eq!(peer.status().state, BootstrapState::Attached);
+                assert_eq!(peer.base.peer.state.lock().unwrap().native_calls, before);
+                assert_eq!(launcher.starts, 1);
+            }
+        }
+
+        #[test]
+        fn historical_retry_refuses_wrong_namespace_and_changed_original() {
+            let peer = AutoPeer::new();
+            let launcher = peer.complete_child_with_lost_parent_reply();
+            peer.sender_lifecycle_check_in();
+            let mut other_namespace = peer.ns().clone();
+            other_namespace.host_endpoint = peer.base._temp.path().join("different-host.sock");
+            assert!(peer.historical_retry(&other_namespace).is_err());
+            let path = peer.base.journal.root().join(format!(
+                "{:020}-{}.intent",
+                peer.reference.ordinal,
+                peer.reference.operation.as_str()
+            ));
+            let original = std::fs::read_to_string(&path).unwrap();
+            let (header, body) = original.split_once('\n').unwrap();
+            let mut header: serde_json::Value = serde_json::from_str(header).unwrap();
+            header["semantic_digest"] = serde_json::json!("changed-original-digest");
+            std::fs::write(&path, format!("{header}\n{body}")).unwrap();
+            assert!(
+                super::super::super::super::retry::preflight_original_actor(
+                    peer.base.journal.root(),
+                    &peer.reference.recovery_ref(),
+                    super::super::super::super::actor_route::InvocationActor::Agent,
+                    &Default::default(),
+                )
+                .is_err()
+            );
+            assert_eq!(peer.status().state, BootstrapState::Attached);
+            assert_eq!(launcher.starts, 1);
+            assert_eq!(peer.base.peer.state.lock().unwrap().native_calls, 1);
+        }
+
+        #[test]
+        fn historical_retry_does_not_admit_live_child_with_possible_start() {
+            let peer = AutoPeer::new();
+            let mut launcher = DownstreamLauncher {
+                unknown: true,
+                ..Default::default()
+            };
+            let result = resume_automatic_to_writer(
+                &peer.base.journal,
+                &peer.reference,
+                super::super::super::super::actor_route::InvocationActor::Agent,
+                peer.ns(),
+                &peer,
+                &peer,
+                &mut launcher,
+                &peer.base.clock,
+                BootstrapSubmissionInputs {
+                    witness: &peer.base.witness,
+                    context: &peer.base.context,
+                },
+                &crate::protocol::output::OutputSpec::default(),
+                &mut Vec::new(),
+            );
+            assert!(matches!(
+                result,
+                Err(RunError::Api(ApiError {
+                    code: crate::protocol::results::ErrorCode::UnknownOutcome,
+                    ..
+                }))
+            ));
+            peer.sender_lifecycle_check_in();
+            assert!(matches!(
+                peer.historical_retry(peer.ns()),
+                Err(RunError::Api(ApiError {
+                    code: crate::protocol::results::ErrorCode::CallerUnverified,
+                    ..
+                }))
+            ));
+            assert_eq!(peer.status().state, BootstrapState::Attached);
+            assert_eq!(launcher.starts, 1);
+            assert_eq!(peer.base.peer.state.lock().unwrap().native_calls, 1);
         }
 
         #[test]

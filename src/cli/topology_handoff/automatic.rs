@@ -901,7 +901,65 @@ pub(super) fn try_completed<C: LocalClient + ?Sized, W: Write>(
         if retained.is_some() {
             return Err(invalid("automatic terminal lacks canonical completion"));
         }
-        return Ok(false);
+        if current.state != BootstrapState::Attached {
+            return Ok(false);
+        }
+        let attachment = current
+            .attachment
+            .as_ref()
+            .ok_or_else(|| invalid("automatic bootstrap lacks canonical attachment"))?;
+        attachment.validate(&id).map_err(invalid)?;
+        let mut child_status = attachment.child.clone();
+        child_status.action = AutomaticDeliveryAction::Status;
+        let child = match call(
+            client,
+            clock,
+            Command::AutomaticHandoffDelivery(Box::new(child_status)),
+        ) {
+            Ok(CommandResult::Handoff(child)) => child,
+            Ok(_) => return Err(invalid("unexpected automatic child status")),
+            Err(RunError::Api(e))
+                if matches!(e.code, ErrorCode::Conflict | ErrorCode::NotFound) =>
+            {
+                return Ok(false);
+            }
+            Err(error) => return Err(error),
+        };
+        if child.state != HandoffState::Completed {
+            return Ok(false);
+        }
+        let progress = load_child(journal, reference, &id, attachment)?;
+        let thread = progress
+            .thread
+            .as_ref()
+            .filter(|thread| child.thread.as_ref() == Some(*thread))
+            .filter(|thread| current.thread.as_ref() == Some(*thread))
+            .ok_or_else(|| invalid("automatic child retained thread differs"))?;
+        if !matches!(progress.message, Some(CommandResult::MessageSent(_))) {
+            return Err(invalid("automatic child lacks retained sent message"));
+        }
+        let report = progress
+            .launch
+            .as_ref()
+            .filter(|report| progress.possible_start && report["outcome"] == "started")
+            .ok_or_else(|| invalid("automatic child lacks successful retained launch"))?;
+        let retained = retained_report(&id, attachment, thread, report)?;
+        let finished = parent_result(
+            &id,
+            call(
+                client,
+                clock,
+                parent_request(
+                    &id,
+                    AutomaticBootstrapAction::Complete {
+                        attachment: Box::new(attachment.clone()),
+                        retained,
+                    },
+                ),
+            )?,
+        )?;
+        present_completed(journal, reference, &id, finished, output, writer)?;
+        return Ok(true);
     }
     present_completed(journal, reference, &id, current, output, writer)?;
     Ok(true)
