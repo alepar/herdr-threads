@@ -236,8 +236,8 @@ model open work, and summary closure never changes receipt state or installs glo
   idempotently per key; a lifecycle check-in reconnects and re-registers the session's own binding in place;
   a plain call touches its binding and refreshes its fingerprint, and reconnects it only when that binding is
   open, on a resolved seat, disconnected for `liveness_process_exit` or `migrated`, the call carries a liveness
-  fingerprint and no connected lifecycle-claimed top-level binding of the same instance and harness already
-  holds that fingerprint (spec §3). A binding disconnected `superseded`, `liveness_end_event`, `seat_retired`,
+  fingerprint and no connected lifecycle-claimed top-level binding (a `managed_launch` placeholder does not
+  count) of the same instance and harness already holds that fingerprint (spec §3). A binding disconnected `superseded`, `liveness_end_event`, `seat_retired`,
   `seat_unresolved` or `replaced` never reconnects on a plain call: the call is served as that binding
   (attribution and cursor) and its liveness is unchanged, so a stale caller never flaps it. A plain reconnect records the call's fingerprint and keeps the binding's lifecycle claim
   time, placement, provenance and cursors; it runs no enroll hook, so it never supersedes, never replaces a
@@ -267,8 +267,10 @@ model open work, and summary closure never changes receipt state or installs glo
   binding enrolled by a plain call (provenance `cooperative_env_session`, recorded honestly and never
   rewritten by a later tool-boundary check-in) never supersedes; in the liveness worker's same-process
   rule it ranks below every lifecycle-claimed binding of that process (it can lose, never win; this
-  includes a V32-migrated binding re-adopted by a plain call), and a group with no lifecycle claimer is
-  left as it is, so a delegate child's early CLI call never disconnects its parent. When `subagent_start`
+  includes a V32-migrated binding re-adopted by a plain call), a `managed_launch` placeholder ranks the
+  same way (it is no session: it can lose, never win), and a group with no lifecycle-claimed session is
+  left as it is, so a delegate child's early CLI call never disconnects its parent and a placeholder never
+  disconnects the session of its process. When `subagent_start`
   registers a child session, the child's connected top-level plain-call row on that seat is disconnected
   `superseded` (the registered subagent binding replaces it), so the child is read-only from then on.
   Subagents never supersede and are never superseded, and a supersede-induced disconnect never triggers
@@ -287,8 +289,9 @@ model open work, and summary closure never changes receipt state or installs glo
   hook's current fingerprint (a retried intent submits the current one, never the journaled one); a
   reattachment request without one is refused `liveness_fingerprint_required` (decision 9). Among connected top-level bindings
   of one instance and harness sharing one fingerprint, the latest lifecycle claim stays connected
-  and the others, plain-call-only bindings included, are disconnected `superseded`; a group with no
-  lifecycle claim is left as it is (subagents excluded). Disconnection on liveness evidence
+  and the others, plain-call-only bindings and `managed_launch` placeholders included, are disconnected
+  `superseded`; neither of those two kinds ever wins, and a group with no lifecycle-claimed session is
+  left as it is (subagents excluded). Disconnection on liveness evidence
   is structural evidence, never a heuristic: it goes through the one `store::bindings::disconnect`
   transition, and the worker never ends a binding, retires, moves or merges a seat. It never judges a
   human binding (a person has no harness process), and it skips seats that are unresolved or retired

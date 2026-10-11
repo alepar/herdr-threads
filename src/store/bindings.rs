@@ -153,6 +153,16 @@ impl BindingRow {
     pub fn lifecycle_claimed(&self) -> bool {
         self.provenance != crate::protocol::authority::COOPERATIVE_ENV_SESSION_PROVENANCE
     }
+
+    /// Whether the binding may win the same-process rule (worker `classify`,
+    /// `is_superseded_now`, the plain-reconnect guard): lifecycle-claimed and not a
+    /// `managed_launch` placeholder. A placeholder carries the started process's fingerprint but
+    /// is no session (TRUST-POLICY A4): like a plain-only binding it can lose, never win, mirroring
+    /// the `same_pid_supersede` exemption.
+    pub fn may_win_same_process(&self) -> bool {
+        self.lifecycle_claimed()
+            && self.provenance != crate::protocol::authority::MANAGED_LAUNCH_PROVENANCE
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -701,13 +711,14 @@ pub fn apply_liveness(
     Ok(changed)
 }
 
-/// The winner key of a same-process group: lifecycle-claimed beats plain-call-only
+/// The winner key of a same-process group: a binding that may win (lifecycle-claimed, not a
+/// `managed_launch` placeholder) beats plain-call-only bindings and placeholders
 /// (`false < true`), then the latest lifecycle claim, ties by ordinal. The liveness worker's
 /// `service::liveness::classify` must use the same ordering and the same membership filter (every
 /// alive top-level candidate, plain-only ones included); it carries its own copy.
 fn supersede_rank(candidate: &LivenessCandidate) -> (bool, i64, i64) {
     (
-        candidate.binding.lifecycle_claimed(),
+        candidate.binding.may_win_same_process(),
         candidate.claimed_at,
         candidate.binding.ordinal,
     )
@@ -717,8 +728,8 @@ fn supersede_rank(candidate: &LivenessCandidate) -> (bool, i64, i64) {
 /// `Superseded` verdict was judged on an unlocked read, and the judged loser may have checked in
 /// since (spec §3: "the most recent lifecycle claimer wins"). True only while `candidate` shares
 /// its process with another top-level candidate that out-ranks it and the group's top-ranked
-/// member is lifecycle-claimed: a plain-call-only binding never wins, and a group with no
-/// lifecycle claimer is left as it is.
+/// member may win: a plain-call-only binding or a `managed_launch` placeholder never wins, and a
+/// group with no lifecycle-claimed session is left as it is.
 fn is_superseded_now(current: &[LivenessCandidate], candidate: &LivenessCandidate) -> bool {
     if candidate.binding.role != BindingRole::TopLevel || candidate.binding.fingerprint.is_none() {
         return false;
@@ -735,7 +746,8 @@ fn is_superseded_now(current: &[LivenessCandidate], candidate: &LivenessCandidat
     else {
         return false;
     };
-    winner.binding.lifecycle_claimed() && winner.binding.binding_id != candidate.binding.binding_id
+    winner.binding.may_win_same_process()
+        && winner.binding.binding_id != candidate.binding.binding_id
 }
 
 /// Enroll hook: an enrollment *by a lifecycle check-in*, or a lifecycle check-in, of a top-level binding disconnects
@@ -1315,8 +1327,8 @@ pub(crate) fn resolve_claim_with_hooks(
 /// or `replaced` stays disconnected (the call is a stale caller, spec §1). The claim must carry
 /// a liveness fingerprint (derived at call time from the caller's running harness ancestor, so
 /// it is the "live fingerprint"; the store has no process table), the seat must be resolved, and
-/// for a top-level row no other connected lifecycle-claimed top-level binding of the same
-/// instance and harness may already hold that fingerprint (it would win the worker's
+/// for a top-level row no other connected lifecycle-claimed top-level binding (a `managed_launch`
+/// placeholder does not count) of the same instance and harness may already hold that fingerprint (it would win the worker's
 /// same-process rule anyway). A subagent shares its parent's process and never supersedes or is
 /// superseded, so it skips the last check.
 fn plain_reconnect_allowed(
@@ -1344,7 +1356,7 @@ fn plain_reconnect_allowed(
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM occupant_bindings WHERE ended_at IS NULL AND liveness='connected' \
              AND role='top_level' AND binding_id<>?1 AND harness=?2 AND liveness_pid=?3 AND liveness_start=?4 \
-             AND observation_provenance<>?5 \
+             AND observation_provenance NOT IN (?5,?7) \
              AND seat_id IN (SELECT id FROM seats WHERE instance_id=(SELECT instance_id FROM seats WHERE id=?6)))",
             params![
                 row.binding_id.as_str(),
@@ -1353,6 +1365,7 @@ fn plain_reconnect_allowed(
                 to_i64(fingerprint.start, "liveness start")?,
                 crate::protocol::authority::COOPERATIVE_ENV_SESSION_PROVENANCE,
                 row.seat.as_str(),
+                crate::protocol::authority::MANAGED_LAUNCH_PROVENANCE,
             ],
             |r| r.get(0),
         )

@@ -341,6 +341,64 @@ fn a_plain_readopted_binding_loses_to_the_lifecycle_binding_of_its_process() {
     assert!(fx.connected(&lifecycle));
 }
 
+/// Turns a binding into a `managed_launch` placeholder: a `launch:` session, no registration,
+/// placeholder provenance (TRUST-POLICY A4: it is no session and never supersedes one).
+fn mark_placeholder(fx: &Fx, binding: &str) {
+    fx.raw()
+        .execute(
+            "UPDATE occupant_bindings SET observation_provenance='managed_launch', native_session='launch:'||binding_id, execution_id='launch:'||binding_id, registered_at=NULL WHERE binding_id=?1",
+            [binding],
+        )
+        .unwrap();
+}
+
+#[test]
+fn a_managed_launch_placeholder_never_wins_the_same_process_rule() {
+    // Placeholder plus a plain-call-enrolled session of the same process, in either claim order:
+    // the placeholder outranks nothing, so no lifecycle claimer exists and both stay connected.
+    for (label, placeholder_at, session_at) in [
+        ("liveness-placeholder-older", 10, 20),
+        ("liveness-placeholder-newer", 30, 20),
+    ] {
+        let fx = Fx::new(label);
+        fx.table.set(100, 5);
+        let placeholder = fx.bind("s", "claude", "L", Some((100, 5)), placeholder_at);
+        let session = fx.bind("s", "claude", "A", Some((100, 5)), session_at);
+        mark_placeholder(&fx, &placeholder);
+        mark_plain(&fx, &session);
+        let candidates = fx.store.liveness_candidates(None, &budget()).unwrap();
+        assert_eq!(
+            classify(&candidates, fx.table.as_ref()),
+            vec![],
+            "{label}: a placeholder never wins"
+        );
+        fx.worker.pass(&budget()).unwrap();
+        assert!(fx.connected(&session), "{label}: the session stays");
+        // The store's in-transaction re-check refuses a forged verdict against the session too.
+        let forged = LivenessDecision {
+            binding: crate::protocol::ids::BindingId::new(session.clone()),
+            fingerprint: Some(crate::protocol::authority::LivenessFingerprint {
+                pid: 100,
+                start: 5,
+            }),
+            reason: DisconnectReason::Superseded,
+        };
+        assert_eq!(fx.store.apply_liveness(&[forged], &budget()).unwrap(), 0);
+        assert!(fx.connected(&session), "{label}: the store re-check agrees");
+    }
+
+    // Placeholder claimed after a lifecycle-claimed session of its process: the session wins
+    // and the placeholder is what loses.
+    let fx = Fx::new("liveness-placeholder-vs-lifecycle");
+    fx.table.set(100, 5);
+    let session = fx.bind("s", "claude", "A", Some((100, 5)), 20);
+    let placeholder = fx.bind("s", "claude", "L", Some((100, 5)), 30);
+    mark_placeholder(&fx, &placeholder);
+    fx.worker.pass(&budget()).unwrap();
+    assert!(fx.connected(&session));
+    assert_eq!(fx.state(&placeholder), superseded());
+}
+
 /// Drives the store's `connect` primitive with the plain-call trigger directly (the rig has no
 /// resolver). The store no longer produces this state from a plain call on a superseded binding
 /// (ht-54r.87), so the tests using it are worker-only guards: the worker still converges if such

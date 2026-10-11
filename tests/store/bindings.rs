@@ -827,6 +827,32 @@ mod resolution {
     }
 
     #[test]
+    fn a_managed_launch_placeholder_on_the_process_does_not_block_a_plain_reconnect() {
+        let db = db();
+        let a = resolve(&db, &claim("sess-A", None), true)
+            .unwrap()
+            .binding()
+            .binding_id
+            .clone();
+        disconnect(&db, &a, DisconnectReason::ProcessExit, UtcMillis(20)).unwrap();
+        // A connected binding holding the same process, but it is a `managed_launch`
+        // placeholder: no session, so it never wins the same-process rule.
+        let b = resolve(&db, &claim("sess-B", None), true)
+            .unwrap()
+            .binding()
+            .binding_id
+            .clone();
+        db.execute(
+            "UPDATE occupant_bindings SET observation_provenance='managed_launch' WHERE binding_id=?1",
+            [b.as_str()],
+        )
+        .unwrap();
+        resolve(&db, &claim("sess-A", None), false).unwrap();
+        assert_eq!(get(&db, &a).unwrap().unwrap().liveness, Liveness::Connected);
+        assert_eq!(get(&db, &b).unwrap().unwrap().liveness, Liveness::Connected);
+    }
+
+    #[test]
     fn v32_readopted_binding_then_session_start_successor_stays_superseded() {
         let db = db();
         let a = resolve(&db, &claim("sess-A", None), true)

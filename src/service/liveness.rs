@@ -6,8 +6,9 @@
 //! fingerprint (decision 9: no zombie bindings).
 //! Among connected top-level bindings sharing one process (same instance, harness, pid and start)
 //! the latest lifecycle claim stays connected; the rest, plain-call-only bindings included,
-//! disconnect `Superseded`. A plain-call-only binding ranks below every lifecycle-claimed one (it
-//! can lose, never win), and a group with no lifecycle claim is left as it is. Every write
+//! disconnect `Superseded`. A plain-call-only binding or a `managed_launch` placeholder ranks
+//! below every lifecycle-claimed session (it can lose, never win), and a group with no
+//! lifecycle-claimed session is left as it is. Every write
 //! goes through `bindings::disconnect`, the sole transition: the worker never ends a binding,
 //! retires, moves or merges (TRUST-POLICY: liveness evidence is structural). Human bindings and
 //! seats that are unresolved, retired or under a recovery hold are never judged
@@ -57,9 +58,9 @@ pub fn classify(
         let binding = &candidate.binding;
         match binding.fingerprint {
             Some(fingerprint) if fingerprint.is_alive(processes) => {
-                // Every alive top-level binding shares its process, plain-call-only ones
-                // included: they rank below lifecycle-claimed bindings and so can lose, never
-                // win (ht-54r.87). Keep in step with `store::bindings::is_superseded_now` and
+                // Every alive top-level binding shares its process, plain-call-only ones and
+                // `managed_launch` placeholders included: they rank below lifecycle-claimed
+                // sessions and so can lose, never win (ht-54r.87). Keep in step with `store::bindings::is_superseded_now` and
                 // its `supersede_rank`.
                 if binding.role == BindingRole::TopLevel {
                     sharing
@@ -83,7 +84,7 @@ pub fn classify(
     for group in sharing.values().filter(|group| group.len() > 1) {
         let rank = |c: &&&LivenessCandidate| {
             (
-                c.binding.lifecycle_claimed(),
+                c.binding.may_win_same_process(),
                 c.claimed_at,
                 c.binding.ordinal,
             )
@@ -91,8 +92,9 @@ pub fn classify(
         let Some(winner) = group.iter().max_by_key(rank) else {
             continue;
         };
-        // No lifecycle claimer in the group: a plain-call-only binding never wins.
-        if !winner.binding.lifecycle_claimed() {
+        // No lifecycle-claimed session in the group: a plain-call-only binding or a
+        // `managed_launch` placeholder never wins.
+        if !winner.binding.may_win_same_process() {
             continue;
         }
         decisions.extend(
