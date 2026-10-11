@@ -324,9 +324,11 @@ model open work, and summary closure never changes receipt state or installs glo
   connected top-level binding of the seat to ACK or fully display a message settles the obligation, once;
   the receipt records that binding as `ack_binding_id` (beside the historical `ack_generation`, which is
   the mapping generation). A later ACK of an already settled obligation, by any binding, succeeds with no
-  change and the first `ack_binding_id` stays. An ACK by a disconnected binding
-  reconnects it first (any call carrying its fingerprint does) and then settles; only a claim without a
-  fingerprint, which cannot reconnect, is refused as a stale-context ACK (`caller_unverified`). Each ordinary send records the acting
+  change and the first `ack_binding_id` stays. An ACK by a binding disconnected by
+  process exit or migration reconnects it first (a plain call carrying its live fingerprint does) and then
+  settles. A binding disconnected as superseded, ended by a harness end event or retired with its seat is
+  not reconnected by a plain call (only a lifecycle check-in of that session reclaims it), so its ACK is
+  refused as a stale-context ACK (`caller_unverified`), as is a claim without a fingerprint. Each ordinary send records the acting
   binding as `messages.sender_binding_id`; service-authored sends leave it empty.
 - *Lineage* (ht-54r.20): a successor copies its predecessor's cursors, then supersedes it, only when the
   predecessor is a top-level binding of the same seat and harness with the same process fingerprint (pid

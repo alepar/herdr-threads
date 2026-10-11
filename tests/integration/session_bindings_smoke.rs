@@ -233,6 +233,16 @@ impl Smoke {
         pid
     }
 
+    /// Stops the stand-in started by `stand_in` whose pid is `pid` (the agent's process exits).
+    pub(super) fn end_stand_in(&mut self, pid: i64) {
+        let index = self
+            .processes
+            .iter()
+            .position(|child| i64::from(child.id()) == pid)
+            .expect("a stand-in with that pid");
+        self.processes.remove(index).stop();
+    }
+
     pub(super) fn routing(&self) -> Vec<String> {
         [
             "--state-dir",
@@ -2093,7 +2103,10 @@ fn config9_foreground_and_background_agents_in_one_pane() {
     let thread = joined_thread(&smoke, &peer, &fg, &seat);
     // The background session and a `claude -p` one-shot join the pane after the thread exists.
     assert_eq!(smoke.hook(&bg, &claude_start("sess-bg", "startup")).code, 0);
-    let one_shot = Agent::claude("sess-p", &pane).shimmed();
+    // A long-lived stand-in, not a shim that exits at once: the liveness worker (5 s) would
+    // otherwise disconnect the one-shot before the assertions below read it as connected.
+    let one_shot_pid = smoke.stand_in();
+    let one_shot = Agent::claude("sess-p", &pane).in_process(one_shot_pid);
     let created = smoke.cli(&one_shot, &["thread", "create", "--topic", "one-shot's"]);
     assert_eq!(created.code, 0, "{}", created.text());
 
@@ -2200,6 +2213,7 @@ fn config9_foreground_and_background_agents_in_one_pane() {
     assert_eq!(smoke.cursor(&b_bg.id, &thread), Some(smoke.head(&thread)));
 
     // The one-shot exits: its binding disconnects, the sessions stay.
+    smoke.end_stand_in(one_shot_pid);
     wait_until(
         "the one-shot to disconnect",
         Duration::from_secs(30),
