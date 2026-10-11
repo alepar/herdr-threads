@@ -379,8 +379,20 @@ fn new_thread_fixture() -> (
     BootstrapIdentity,
     HandoffIdentity,
 ) {
+    new_thread_fixture_with_policy(None)
+}
+fn new_thread_fixture_with_policy(
+    policy: Option<HandoffPolicy>,
+) -> (
+    StoreContext,
+    Connection,
+    PathBuf,
+    BootstrapIdentity,
+    HandoffIdentity,
+) {
     let (context, mut db, path, _) = bound_fixture(100);
     let mut id = crate::protocol::handoff::topology_contract_tests::identity();
+    id.payload.handoff.policy = policy;
     id.claim = claim("s1");
     id.scope = crate::cli::journal::IntentScope::Cooperative {
         instance: "i".into(),
@@ -728,4 +740,107 @@ fn actual_main_linked_phase_rejects_unfrozen_invitation_confirmation() {
     drop(db);
     drop(context);
     std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn handoff_policy_linked_frozen_children_match_both_modes_and_reject_tampering() {
+    use crate::protocol::commands::{
+        DeliveryMode, InvitationConfirmation, Invite, PermitMutation, SendMessage,
+    };
+    for confirmation in [
+        InvitationConfirmation::Lazy,
+        InvitationConfirmation::RequireAck,
+    ] {
+        let invite_duration = (confirmation == InvitationConfirmation::RequireAck).then_some(11000);
+        let (context, mut db, path, id, child) =
+            new_thread_fixture_with_policy(Some(HandoffPolicy {
+                deadline_millis: Some(7000),
+                invitation_confirmation: confirmation,
+                invite_deadline_millis: invite_duration,
+            }));
+        let create = create_for(&id);
+        let budget = CallBudget {
+            deadline: MonoInstant(u64::MAX),
+            cancellation: Cancellation::default(),
+        };
+        let CommandResult::ThreadCreated(thread) = create_thread_in_namespace(
+            &context,
+            &mut db,
+            &budget,
+            &create,
+            create_permit(&create),
+            &id.payload.handoff.namespace,
+        )
+        .unwrap() else {
+            panic!()
+        };
+        let invite = Invite {
+            confirmation: Some(confirmation),
+            thread: thread.clone(),
+            seat: child.recipient.clone(),
+            deadline_millis: invite_duration,
+            operation: id.payload.handoff.keys.invite.clone(),
+            claim: id.claim.clone(),
+        };
+        let send = SendMessage {
+            delivery_mode: DeliveryMode::Ordinary,
+            thread,
+            body: id.payload.handoff.body.clone(),
+            invited_recipients: vec![child.recipient.clone()],
+            deadline_millis: Some(7000),
+            relays_user: false,
+            user_intent: None,
+            operation: id.payload.handoff.keys.send.clone(),
+            claim: id.claim.clone(),
+        };
+        let validate = |mutation: &PermitMutation| {
+            topology_handoff::validate_selected_child_phase(
+                &db,
+                &id.payload.handoff.namespace,
+                mutation,
+                false,
+            )
+        };
+        let before = db.total_changes();
+        validate(&PermitMutation::Invite(invite.clone())).unwrap();
+        validate(&PermitMutation::SendMessage(send.clone())).unwrap();
+        for change in ["confirmation", "duration", "key"] {
+            let mut altered = invite.clone();
+            match change {
+                "confirmation" => {
+                    altered.confirmation = Some(if confirmation == InvitationConfirmation::Lazy {
+                        InvitationConfirmation::RequireAck
+                    } else {
+                        InvitationConfirmation::Lazy
+                    })
+                }
+                "duration" => altered.deadline_millis = Some(19000),
+                _ => altered.operation = id.payload.handoff.keys.send.clone(),
+            }
+            assert!(
+                validate(&PermitMutation::Invite(altered)).is_err(),
+                "{confirmation:?} {change}"
+            );
+        }
+        for change in ["duration", "key", "mode"] {
+            let mut altered = send.clone();
+            match change {
+                "duration" => altered.deadline_millis = Some(13000),
+                "key" => altered.operation = id.payload.handoff.keys.invite.clone(),
+                _ => altered.delivery_mode = DeliveryMode::Lazy,
+            }
+            assert!(
+                validate(&PermitMutation::SendMessage(altered)).is_err(),
+                "{change}"
+            );
+        }
+        assert_eq!(
+            db.total_changes(),
+            before,
+            "phase validation mutates no canonical or native state"
+        );
+        drop(db);
+        drop(context);
+        std::fs::remove_file(path).unwrap();
+    }
 }

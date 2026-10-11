@@ -4476,7 +4476,7 @@ fn receipt_discovery_sparse_episodes_survive_source_rowid_reuse_and_snapshot_res
 fn receipt_discovery_populated34_upgrade_rolls_back_and_reopens_with_bounded_bootstrap() {
     let (context, mut db, _) = receipt_discovery_historical(34);
     for n in 0..125 {
-        db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,author_kind,actor_seat_id,body,decision_at,decision_seq) VALUES (?1,'i','t',?2,'ordinary','native',?3,'x',0,?2)",params![format!("historical-{n}"),n+1,if n==1{"b"}else{"a"}]).unwrap();
+        db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,author_kind,actor_seat_id,body,decision_at,decision_seq) VALUES (?1,'i','t',?2,'ordinary',NULL,?3,'x',0,?2)",params![format!("historical-{n}"),n+1,if n==1{"b"}else{"a"}]).unwrap();
         db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES (?1,'t','b','pending',1,0,5000)",[format!("historical-{n}")]).unwrap();
         db.execute("INSERT INTO receipt_state(message_id,seat_id,state,ack_required,deadline_at) VALUES (?1,'c','pending',1,5000)",[format!("historical-{n}")]).unwrap();
         if n == 1 {
@@ -4982,8 +4982,9 @@ fn receipt_discovery_orphan_wrong_audience_and_service_markers_cannot_invent_ori
     )
     .unwrap();
     for (n, kind, actor, service) in [
-        (4, None, Some("b"), None),
+        (4, None, None::<&str>, None),
         (5, Some("programmatic"), None, Some("service")),
+        (6, Some("built_in"), None, None),
     ] {
         let id = format!("unknown-service-{n}");
         db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,author_kind,actor_seat_id,author_service_id,actor_label,body,decision_at,decision_seq) VALUES (?1,'i','t',?2,'ordinary',?3,?4,?5,'b','x',0,?2)",params![id,n,kind,actor,service]).unwrap();
@@ -5008,6 +5009,129 @@ fn receipt_discovery_orphan_wrong_audience_and_service_markers_cannot_invent_ori
         )
         .unwrap(),
         0,
-        "raw overlay markers, wrong manifest audience, nullable kind and service label cannot establish canonical native origin"
+        "raw overlay markers, wrong manifest audience, unknown NULL kind without actor, built-in and service label cannot establish canonical native origin"
+    );
+}
+
+#[test]
+fn receipt_origin_actual_ordinary_send_with_null_native_author_notifies_sender() {
+    use crate::ports::StorePort;
+    use crate::protocol::{
+        commands::PermitMutation,
+        results::CommandResult,
+        time::{CallBudget, Cancellation},
+    };
+    let (context, mut db, clock) = setup();
+    let path: String = db
+        .query_row(
+            "SELECT file FROM pragma_database_list WHERE name='main'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let store = crate::store::SqliteStore::new(
+        StoreContext::new(path.into(), clock.clone()),
+        "i",
+        Default::default(),
+    )
+    .unwrap();
+    let mut send = send_request(vec!["c"]);
+    send.deadline_millis = Some(1);
+    let budget = CallBudget {
+        deadline: MonoInstant(u64::MAX),
+        cancellation: Cancellation::default(),
+    };
+    loop {
+        match store
+            .prepare_send_step(
+                &send,
+                crate::ports::DurableWorkAdmission::new(16).unwrap(),
+                &budget,
+            )
+            .unwrap()
+        {
+            crate::ports::SendPreparationProgress::Ready { .. } => break,
+            crate::ports::SendPreparationProgress::More { .. } => {}
+            other => panic!("unexpected fresh send preparation: {other:?}"),
+        }
+    }
+    let mutation = PermitMutation::SendMessage(send);
+    let permit = store
+        .issue_cooperative_permit(
+            crate::store::cooperative_permit_request(&mutation).unwrap(),
+            &budget,
+        )
+        .unwrap();
+    let CommandResult::MessageSent(message) = store.mutate(mutation, permit, &budget).unwrap()
+    else {
+        panic!()
+    };
+    let author: (Option<String>, String) = db
+        .query_row(
+            "SELECT author_kind,actor_seat_id FROM messages WHERE id=?1",
+            [message.as_str()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        author,
+        (None, "a".into()),
+        "exercise the unchanged actual native publication producer"
+    );
+    for _ in 0..100 {
+        let jobs: Vec<String> = db
+            .prepare("SELECT id FROM work_jobs WHERE status='pending' ORDER BY ordinal")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        if jobs.is_empty() {
+            break;
+        }
+        for job in jobs {
+            crate::store::materialization::advance_work(
+                &mut db,
+                &job,
+                crate::ports::DurableWorkAdmission::new(16).unwrap(),
+                &budget,
+                context.clock(),
+            )
+            .unwrap();
+        }
+    }
+    clock.0.store(2000, Ordering::SeqCst);
+    for _ in 0..10 {
+        receipts::scan_due(
+            &context,
+            &mut db,
+            100,
+            &mut receipts::ReceiptDueCursor::default(),
+        )
+        .unwrap();
+    }
+    let warning = crate::store::effective::effective_receipt(&db, message.as_str(), "c")
+        .unwrap()
+        .unwrap()
+        .warning_message_id
+        .unwrap();
+    let origin: (String, String) = db
+        .query_row(
+            "SELECT seat_id,source_message_id FROM receipt_warning_origins WHERE warning_id=?1",
+            [&warning],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(origin, ("a".into(), message.as_str().into()));
+    drop(db);
+    let db = context.open_writer().unwrap();
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM receipt_warning_origins WHERE warning_id=?1 AND seat_id='a'",
+            [warning],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
     );
 }

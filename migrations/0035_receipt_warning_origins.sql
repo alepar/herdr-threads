@@ -53,7 +53,7 @@ CREATE TRIGGER receipt_warning_origin_receipts_insert AFTER INSERT ON receipts
  BEGIN
  INSERT INTO receipt_warning_origins(instance_id,seat_id,warning_id,source_message_id)
  SELECT m.instance_id,m.actor_seat_id,c.open_warning_id,m.id FROM receipts r
- JOIN messages m ON m.id=r.message_id AND m.author_kind='native'
+ JOIN messages m ON m.id=r.message_id AND (m.author_kind='native' OR m.author_kind IS NULL) AND m.author_service_id IS NULL
  JOIN seats s ON s.id=m.actor_seat_id AND s.instance_id=m.instance_id
  JOIN warning_conditions c ON c.open_warning_id=r.warning_message_id
     AND c.condition_kind='receipt' AND c.clear_warning_id IS NULL
@@ -65,7 +65,7 @@ CREATE TRIGGER receipt_warning_origin_receipts_update AFTER UPDATE OF warning_me
  BEGIN
  INSERT INTO receipt_warning_origins(instance_id,seat_id,warning_id,source_message_id)
  SELECT m.instance_id,m.actor_seat_id,c.open_warning_id,m.id FROM receipts r
- JOIN messages m ON m.id=r.message_id AND m.author_kind='native'
+ JOIN messages m ON m.id=r.message_id AND (m.author_kind='native' OR m.author_kind IS NULL) AND m.author_service_id IS NULL
  JOIN seats s ON s.id=m.actor_seat_id AND s.instance_id=m.instance_id
  JOIN warning_conditions c ON c.open_warning_id=r.warning_message_id
     AND c.condition_kind='receipt' AND c.clear_warning_id IS NULL
@@ -77,7 +77,7 @@ CREATE TRIGGER receipt_warning_origin_receipt_state_insert AFTER INSERT ON recei
  BEGIN
  INSERT INTO receipt_warning_origins(instance_id,seat_id,warning_id,source_message_id)
  SELECT m.instance_id,m.actor_seat_id,c.open_warning_id,m.id FROM receipt_state r
- JOIN messages m ON m.id=r.message_id AND m.author_kind='native'
+ JOIN messages m ON m.id=r.message_id AND (m.author_kind='native' OR m.author_kind IS NULL) AND m.author_service_id IS NULL
  JOIN send_manifests sm ON sm.message_id=r.message_id AND sm.instance_id=m.instance_id AND sm.thread_id=m.thread_id
  JOIN prepared_recipients pr ON pr.preparation_id=sm.preparation_id AND pr.seat_id=r.seat_id AND pr.thread_id=m.thread_id
  JOIN seats s ON s.id=m.actor_seat_id AND s.instance_id=m.instance_id
@@ -91,7 +91,7 @@ CREATE TRIGGER receipt_warning_origin_receipt_state_update AFTER UPDATE OF warni
  BEGIN
  INSERT INTO receipt_warning_origins(instance_id,seat_id,warning_id,source_message_id)
  SELECT m.instance_id,m.actor_seat_id,c.open_warning_id,m.id FROM receipt_state r
- JOIN messages m ON m.id=r.message_id AND m.author_kind='native'
+ JOIN messages m ON m.id=r.message_id AND (m.author_kind='native' OR m.author_kind IS NULL) AND m.author_service_id IS NULL
  JOIN send_manifests sm ON sm.message_id=r.message_id AND sm.instance_id=m.instance_id AND sm.thread_id=m.thread_id
  JOIN prepared_recipients pr ON pr.preparation_id=sm.preparation_id AND pr.seat_id=r.seat_id AND pr.thread_id=m.thread_id
  JOIN seats s ON s.id=m.actor_seat_id AND s.instance_id=m.instance_id
@@ -107,7 +107,7 @@ CREATE TRIGGER receipt_warning_origin_condition AFTER INSERT ON warning_conditio
  BEGIN
 INSERT INTO receipt_warning_origins(instance_id,seat_id,warning_id,source_message_id)
 SELECT m.instance_id,m.actor_seat_id,c.open_warning_id,m.id FROM receipts r
- JOIN messages m ON m.id=r.message_id AND m.author_kind='native'
+ JOIN messages m ON m.id=r.message_id AND (m.author_kind='native' OR m.author_kind IS NULL) AND m.author_service_id IS NULL
  JOIN seats s ON s.id=m.actor_seat_id AND s.instance_id=m.instance_id
  JOIN warning_conditions c ON c.open_warning_id=r.warning_message_id
     AND c.condition_kind='receipt' AND c.clear_warning_id IS NULL
@@ -115,7 +115,7 @@ SELECT m.instance_id,m.actor_seat_id,c.open_warning_id,m.id FROM receipts r
  WHERE r.message_id=(SELECT source_message_id FROM messages WHERE id=NEW.open_warning_id) AND r.seat_id=NEW.affected_seat_id ON CONFLICT(warning_id,seat_id) DO NOTHING;
 INSERT INTO receipt_warning_origins(instance_id,seat_id,warning_id,source_message_id)
 SELECT m.instance_id,m.actor_seat_id,c.open_warning_id,m.id FROM receipt_state r
- JOIN messages m ON m.id=r.message_id AND m.author_kind='native'
+ JOIN messages m ON m.id=r.message_id AND (m.author_kind='native' OR m.author_kind IS NULL) AND m.author_service_id IS NULL
  JOIN send_manifests sm ON sm.message_id=r.message_id AND sm.instance_id=m.instance_id AND sm.thread_id=m.thread_id
  JOIN prepared_recipients pr ON pr.preparation_id=sm.preparation_id AND pr.seat_id=r.seat_id AND pr.thread_id=m.thread_id
  JOIN seats s ON s.id=m.actor_seat_id AND s.instance_id=m.instance_id

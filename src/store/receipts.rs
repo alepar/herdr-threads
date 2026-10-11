@@ -562,7 +562,7 @@ fn project_receipt_origin(
     } else {
         ""
     };
-    tx.execute(&format!("INSERT OR IGNORE INTO receipt_warning_origins(instance_id,seat_id,warning_id,source_message_id) SELECT m.instance_id,m.actor_seat_id,c.open_warning_id,m.id FROM {table} r JOIN messages m ON m.id=r.message_id AND m.author_kind='native' {publication} JOIN seats s ON s.id=m.actor_seat_id AND s.instance_id=m.instance_id JOIN warning_conditions c ON c.open_warning_id=r.warning_message_id AND c.condition_kind='receipt' AND c.clear_warning_id IS NULL AND c.thread_id=m.thread_id AND c.affected_seat_id=r.seat_id WHERE r.message_id=?1 AND r.seat_id=?2"),params![message,seat]).map_err(store_error)?;
+    tx.execute(&format!("INSERT OR IGNORE INTO receipt_warning_origins(instance_id,seat_id,warning_id,source_message_id) SELECT m.instance_id,m.actor_seat_id,c.open_warning_id,m.id FROM {table} r JOIN messages m ON m.id=r.message_id AND (m.author_kind='native' OR m.author_kind IS NULL) AND m.author_service_id IS NULL {publication} JOIN seats s ON s.id=m.actor_seat_id AND s.instance_id=m.instance_id JOIN warning_conditions c ON c.open_warning_id=r.warning_message_id AND c.condition_kind='receipt' AND c.clear_warning_id IS NULL AND c.thread_id=m.thread_id AND c.affected_seat_id=r.seat_id WHERE r.message_id=?1 AND r.seat_id=?2"),params![message,seat]).map_err(store_error)?;
     Ok(())
 }
 

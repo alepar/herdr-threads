@@ -978,6 +978,17 @@ where
             .host
             .get_or_insert_with(|| context.host_endpoint.to_string_lossy().into_owned());
     }
+    match &parsed.action {
+        CliAction::Handoff(request) => {
+            let (_, client) = connection.get()?;
+            require_handoff_capabilities(client, clock.as_ref(), request.policy.as_ref())?;
+        }
+        CliAction::TopologyHandoff(request) => {
+            let (_, client) = connection.get()?;
+            require_handoff_capabilities(client, clock.as_ref(), request.policy.as_ref())?;
+        }
+        _ => {}
+    }
     // Capture omission before default_seat resolves the caller read. The second
     // guard below adds the canonical selected seat while retaining that choice.
     let _origin_inbox = output::InboxInvocationGuard::enter(&parsed, None);
@@ -2046,6 +2057,24 @@ fn default_seat(action: &mut CliAction, seat: crate::protocol::ids::SeatId) {
         CliAction::Wire(Command::Participants(query)) => query.caller = Some(seat),
         _ => {}
     }
+}
+
+/// Refuse before allocating caller/recipient seats, publishing work or launching.
+pub(crate) fn require_handoff_capabilities<C: LocalClient + ?Sized>(
+    client: &C,
+    clock: &dyn Clock,
+    policy: Option<&crate::protocol::handoff::HandoffPolicy>,
+) -> Result<(), RunError> {
+    require_send_time_receipts_capability(client, clock)?;
+    if policy.is_some() {
+        require_mutation_capability(
+            client,
+            clock,
+            crate::protocol::capabilities::INVITATION_CONFIRMATION_V1,
+            "freezing handoff invitation confirmation",
+        )?;
+    }
+    Ok(())
 }
 
 /// Recipient pane selection never changes the caller's cooperative claim.

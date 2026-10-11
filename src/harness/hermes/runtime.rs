@@ -1070,6 +1070,7 @@ pub struct PrelaunchObservation {
     pub interpreter: PathBuf,
     pub source_root: PathBuf,
     pub observation_fingerprint: String,
+    pub launch_input_fingerprint: String,
 }
 pub fn decode_prelaunch_observation(
     bytes: &[u8],
@@ -1120,6 +1121,18 @@ pub fn decode_prelaunch_observation(
     let stamp = crate::harness::setup::fingerprint(
         &serde_json::to_vec(&value).map_err(|_| ProbeFailure::Malformed)?,
     );
+    // These exact schema3 keys describe integration readiness, not selected
+    // native launch inputs. All validation and the original full stamp remain.
+    let mut launch_inputs = value.clone();
+    for key in ["enabled", "disabled", "config_quality", "fallback_kind"] {
+        launch_inputs
+            .as_object_mut()
+            .ok_or(ProbeFailure::Malformed)?
+            .remove(key);
+    }
+    let launch_input_fingerprint = crate::harness::setup::fingerprint(
+        &serde_json::to_vec(&launch_inputs).map_err(|_| ProbeFailure::Malformed)?,
+    );
     value
         .as_object_mut()
         .ok_or(ProbeFailure::Malformed)?
@@ -1143,6 +1156,7 @@ pub fn decode_prelaunch_observation(
         interpreter: interpreter.into(),
         source_root: typed.source_root.ok_or(ProbeFailure::Malformed)?,
         observation_fingerprint: stamp,
+        launch_input_fingerprint,
     })
 }
 

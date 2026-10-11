@@ -837,11 +837,11 @@ fn managed_launch_request_preserves_bounded_native_argument_tokens() {
         target: HostTargetId::new("p"),
         harness: Harness::Codex,
         argv: vec![],
-        configured_hook: ConfiguredHook {
+        configured_hook: Some(ConfiguredHook {
             scope: "project".into(),
             path: "/tmp/hook".into(),
             fingerprint: "hash".into(),
-        },
+        }),
         expected_terminal: TerminalId::new("terminal"),
         expected_generation: 2,
         expected_incarnation: "native-incarnation".into(),
@@ -2497,11 +2497,11 @@ fn process_hint_mode_mismatch_rejects_correlation() {
         target: HostTargetId::new("pane_1"),
         harness: Harness::Codex,
         argv: vec!["original arg".into()],
-        configured_hook: ConfiguredHook {
+        configured_hook: Some(ConfiguredHook {
             scope: "project".into(),
             path: "/owned/hook".into(),
             fingerprint: "sha256:fixture".into(),
-        },
+        }),
         expected_terminal: TerminalId::new("term_1"),
         expected_generation: 7,
         expected_incarnation: "server_1".into(),
@@ -2592,11 +2592,11 @@ fn task48_native_empty_data_retains_internal_field_fences() {
         target: HostTargetId::new("pane"),
         harness: Harness::Claude,
         argv: vec![String::new()],
-        configured_hook: ConfiguredHook {
+        configured_hook: Some(ConfiguredHook {
             scope: "project".into(),
             path: "/tmp/owned".into(),
             fingerprint: "hash".into(),
-        },
+        }),
         expected_terminal: TerminalId::new("terminal"),
         expected_generation: 1,
         expected_incarnation: "incarnation".into(),
@@ -2608,9 +2608,12 @@ fn task48_native_empty_data_retains_internal_field_fences() {
             let mut request = original.clone();
             let (value, limit) = match field {
                 0 => (&mut request.expected_incarnation, 128),
-                1 => (&mut request.configured_hook.scope, 128),
-                2 => (&mut request.configured_hook.path, 1024),
-                _ => (&mut request.configured_hook.fingerprint, 256),
+                1 => (&mut request.configured_hook.as_mut().unwrap().scope, 128),
+                2 => (&mut request.configured_hook.as_mut().unwrap().path, 1024),
+                _ => (
+                    &mut request.configured_hook.as_mut().unwrap().fingerprint,
+                    256,
+                ),
             };
             *value = if oversized {
                 "x".repeat(limit + 1)

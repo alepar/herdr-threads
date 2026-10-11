@@ -923,6 +923,7 @@ fn stopped_daemon_is_unavailable_for_every_descriptor_read() {
                 SemanticMutation::Handoff(Box::new(HandoffPlan {
                     startup_input: None,
                     request: HandoffRequest {
+                        policy: None,
                         thread: Some(ThreadId::new("t")),
                         thread_name: None,
                         topic: None,

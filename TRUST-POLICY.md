@@ -648,8 +648,19 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
 - **Launch is not check-in.** A successful `launch` means Herdr started the agent, not that it registered.
   Its only record is a wake-eligible occupant claim (`managed_launch`, A3) on a seat with no open binding: not
   a registration, availability, receipt or authority for any accountable action, and replaced by the agent's
-  first lifecycle check-in. Launch forms without captured hook evidence are refused (implemented for
-  `codex resume`).
+  first lifecycle check-in. Forms outside the captured native launch grammar remain refused
+  (including `codex resume`).
+- **Integration readiness is advisory for launch.** Missing, stale, disabled, untrusted or
+  wrong-profile owned hooks do not authorize attribution and do not alone block a structurally
+  safe selected native launch. No configuration descriptor or fingerprint is invented when none
+  is used. Registration identity, selected native binary/API/profile/home, argv/environment,
+  caller/seat/empty-shell and host guards remain mandatory. Actually used owned configuration
+  retains its exact fingerprint recheck. Hermes also rechecks validated selected native launch
+  inputs: runtime/source/module/interpreter identity, profile/logical and physical home,
+  environment/bootstrap and API evidence. Only the schema3 top-level `enabled`, `disabled`,
+  `config_quality` and `fallback_kind` diagnostic values are excluded from that launch stamp;
+  the complete observation stamp and all schema/fallback rejection rules remain unchanged.
+  Native trust refusal stays a refusal; launch never auto-approves, accepts invitations or ACKs.
 - **Process hints are cooperative recognition input.** A registered launch policy may require Herdr's
   narrow `process_hint` mode, advertised by each compatible start negotiation and fenced to the actual
   local server peer before submission. The request and startup correlation record the requested mode,
@@ -919,3 +930,15 @@ inspection or receipt provenance. An incorrect producer claim can permit
 duplicate topology. Error classes, response loss and unknown submission never
 stand in for this claim. Public dispatch remains inert until the actual typed
 transport producer is integrated with all canonical guards.
+
+Receipt warning origins retain the canonical immutable message author interpretation:
+`author_kind='native'` or historical NULL kind with a canonical same-instance actor seat
+and no service author identifies the native origin. NULL kind without an actor seat,
+built-in/service authors, labels and unrelated sparse overlay rows establish no origin.
+This applies to exact receipt marker triggers and bounded historical projection; stored
+message history is never rewritten to manufacture provenance.
+
+Launch setup status failures/unavailable observations are diagnostic and establish no
+owned-hook claim. They do not veto an independently validated native launch. The
+selected binary, native API/profile inputs and fingerprints of configuration actually
+used remain mandatory; incomplete structural observations still refuse submission.

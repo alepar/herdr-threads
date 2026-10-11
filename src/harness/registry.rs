@@ -840,7 +840,7 @@ impl Registration {
                 "launch setup status belongs to a different scope",
             ));
         }
-        super::launch::owned_launch_hook(status)?;
+        // Integration readiness is advisory; the provider checks any hook it actually uses.
         self.launch_policy()
             .ok_or_else(|| {
                 ApiError::new(
@@ -978,7 +978,7 @@ impl Registration {
                 "prelaunch status scope mismatch",
             ));
         }
-        super::launch::owned_launch_hook(status)?;
+        // Integration readiness is advisory; the provider checks any hook it actually uses.
         self.launch_policy()
             .ok_or_else(|| crate::protocol::results::ApiError::unsupported("launch unavailable"))?
             .prepare_prelaunch(request, scope, handle.state.as_ref(), status, probe, budget)

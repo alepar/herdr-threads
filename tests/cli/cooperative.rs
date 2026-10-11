@@ -5022,6 +5022,7 @@ mod main539_composition {
         let mut phase = "unset";
         let error = crate::cli::handoff::stage_work(
             crate::cli::handoff::Staging {
+                policy: None,
                 channel: &channel,
                 body: "work",
                 recipient: &recipient,

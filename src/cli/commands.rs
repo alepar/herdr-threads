@@ -731,7 +731,7 @@ enum Top {
     Launch(LaunchArgs),
     /// Deliver durable work to a new tab, explicit launch pane, or existing peer.
     #[command(after_help = format!("{}\n\n{}", super::handoff::HANDOFF_HELP, super::topology_recover::RECOVERY_HELP))]
-    Handoff(HandoffArgs),
+    Handoff(Box<HandoffArgs>),
     #[command(name = "_topology-recover", hide = true)]
     TopologyRecover(RecoveryArgs),
     /// Your own identity as a person in this Herdr pane.
@@ -1300,6 +1300,15 @@ struct LaunchArgs {
 #[derive(Args)]
 #[command(group(clap::ArgGroup::new("instruction_source").required(true).multiple(false).args(["body", "file", "stdin"])))]
 struct HandoffArgs {
+    /// Addressed instructions receipt deadline in positive seconds.
+    #[arg(long)]
+    deadline: Option<u64>,
+    /// Request timed invitation acceptance independently of message receipt.
+    #[arg(long)]
+    require_invite_ack: bool,
+    /// Invitation acceptance deadline in positive seconds; implies --require-invite-ack.
+    #[arg(long)]
+    invite_deadline: Option<u64>,
     #[arg(long, conflicts_with_all = ["existing", "tab", "pane", "seat"])]
     new_tab: Option<String>,
     #[arg(long)]
@@ -2609,6 +2618,18 @@ fn parse_cli_in_registry(
             if let Some(name) = &args.thread_name {
                 validate_thread_name(name).map_err(validation_error)?;
             }
+            let policy = crate::protocol::handoff::HandoffPolicy {
+                deadline_millis: deadline(args.deadline)?,
+                invitation_confirmation: if args.require_invite_ack
+                    || args.invite_deadline.is_some()
+                {
+                    InvitationConfirmation::RequireAck
+                } else {
+                    InvitationConfirmation::Lazy
+                },
+                invite_deadline_millis: deadline(args.invite_deadline)?,
+            };
+            policy.validate().map_err(invalid)?;
             let body = super::input::read_body(args.body, args.file, args.stdin)?;
             if args.new_tab.is_some() || args.existing {
                 if args.existing
@@ -2619,6 +2640,7 @@ fn parse_cli_in_registry(
                     return Err(invalid("native launch arguments conflict with --existing"));
                 }
                 CliAction::TopologyHandoff(super::topology_handoff::Request {
+                    policy: Some(policy),
                     new_tab: args.new_tab,
                     existing: args.existing,
                     selector: args.selector,
@@ -2636,6 +2658,7 @@ fn parse_cli_in_registry(
                 })
             } else {
                 CliAction::Handoff(super::handoff::HandoffRequest {
+                    policy: Some(policy),
                     thread: args.thread.map(thread_id).transpose()?,
                     thread_name: args.thread_name,
                     topic: args.topic.map(|s| bounded(s, "topic")).transpose()?,

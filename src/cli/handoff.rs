@@ -57,7 +57,14 @@ Handoff stages an invitation when needed and a message addressed to the exact
 recipient; launch modes then perform guarded launch. Startup gets fixed inbox
 instructions, not a second copy of the body. Handoff never accepts or ACKs for
 the recipient, nor declares task adoption or task completion.
-Native execution still needs the selected harness's approval/configuration.
+Invitations default to lazy. --require-invite-ack requests timed acceptance;
+--invite-deadline SECONDS also requests it with that duration. The addressed body
+always requires its own ACK, with --deadline SECONDS or the configured default,
+starting at send even without registration/join. Missed requested deadlines
+notify the original sender. Explicit policy/durations freeze before staging;
+omitted numeric defaults resolve once at canonical child creation, then replay.
+Missing/stale/wrong-profile owned hook readiness is diagnostic. Native execution
+still respects selected harness approval and all structural safety checks.
 
 Committed work survives failure. pending-ops lists the compound reference; retry REF
 resumes exact keyed steps without duplicate messages or invitations. A confirmed
@@ -91,6 +98,8 @@ attempt. Product cleanup never closes created topology.";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HandoffRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy: Option<crate::protocol::handoff::HandoffPolicy>,
     pub thread: Option<ThreadId>,
     pub thread_name: Option<String>,
     pub topic: Option<String>,
@@ -111,6 +120,9 @@ pub struct HandoffPlan {
 }
 impl HandoffRequest {
     fn validate(&self) -> io::Result<()> {
+        if let Some(policy) = &self.policy {
+            policy.validate().map_err(io::Error::other)?;
+        }
         if self.body.is_empty() || self.body.len() > super::input::MAX_BODY_BYTES {
             return Err(io::Error::other(
                 "handoff body must contain 1..65536 UTF-8 bytes",
@@ -170,6 +182,7 @@ pub(crate) struct StagedWork {
     pub invitation_attempted: bool,
 }
 pub(crate) struct Staging<'a> {
+    pub policy: Option<&'a crate::protocol::handoff::HandoffPolicy>,
     pub channel: &'a crate::protocol::handoff::HandoffChannel,
     pub body: &'a str,
     pub recipient: &'a SeatId,
@@ -226,10 +239,10 @@ pub(crate) fn stage_work<C: LocalClient + ?Sized>(
             }
             call(
                 SemanticMutation::Invite {
-                    confirmation: None,
+                    confirmation: plan.policy.map(|p| p.invitation_confirmation),
                     thread: thread.clone(),
                     seat: plan.recipient.clone(),
-                    deadline_millis: None,
+                    deadline_millis: plan.policy.and_then(|p| p.invite_deadline_millis),
                 },
                 plan.invite_key,
             )?
@@ -251,7 +264,7 @@ pub(crate) fn stage_work<C: LocalClient + ?Sized>(
                 thread,
                 body: plan.body.into(),
                 invited_recipients: vec![plan.recipient.clone()],
-                deadline_millis: None,
+                deadline_millis: plan.policy.and_then(|p| p.deadline_millis),
                 relays_user: false,
                 user_intent: None,
             },
@@ -657,6 +670,7 @@ pub fn start<C: LocalClient + ?Sized, W: Write>(
     writer: &mut W,
 ) -> Result<(), RunError> {
     request.validate()?;
+    super::require_handoff_capabilities(client, clock, request.policy.as_ref())?;
     if claim.role != crate::protocol::authority::CallerRole::TopLevel || claim.instance.is_empty() {
         return Err(super::invalid_request(
             "handoff requires top-level caller context",
@@ -849,6 +863,7 @@ pub fn resume<C: LocalClient + ?Sized, W: Write>(
         }
         ProgressPhase::LaunchEligible => {}
     }
+    super::require_handoff_capabilities(client, clock, plan.request.policy.as_ref())?;
     let template = match &plan.startup_input {
         Some(template) => template.clone(),
         None => launcher.select_startup_input(&plan.request.launch)?,
@@ -1019,6 +1034,7 @@ pub(crate) fn execute_steps<C: LocalClient + ?Sized>(
         };
         stage_work(
             Staging {
+                policy: plan.request.policy.as_ref(),
                 channel: &channel,
                 body: &plan.request.body,
                 recipient: &plan.recipient,
