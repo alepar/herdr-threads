@@ -84,3 +84,18 @@ under epic ht-54r; commits are on `super-auto/session-keyed-seat-bindings`.
 | operations.md omitted "replacement" from non-reconnecting reasons (independent review, Minor) | fixed | docs/operations.md:224 |
 
 Independent review of the audit-2 fixes (99bc9a63, 25893108, 0160c11e, 14b4a4df): all four resolved, no Critical/Important, security angle: no bypass (no plain call or hook pull revives a superseded, ended, retired or replaced binding; subagent claims refused before the store; mod-ACK gate pinned by test).
+
+## Main review of a79a326c (mtCJ3BMEw) and final review 7
+
+| Finding (source) | Disposition | Evidence |
+|---|---|---|
+| I1: hook-pull StorePageSource / watch ClientPageSource read with claim=None → a still-unread binding misses a message a sibling settled (main, Important) | fixed | ht-54r.93: drains read as the binding (`Reader::Bound`); attention hash per binding; late-drain/reconnect tests (config9 late drain, hook_pull_late_first_pull) |
+| I2: OfferedLedger seat-keyed → alternating sessions delete each other's offers, break 3-offer/60 s bound (main, Important; previously punch-listed as perf) | fixed | ht-54r.94: ledger keyed by binding id; A Pull, B Pull, A Confirm settles; per-binding bounds tested |
+| trust_policy::carried_forward_binding_still_matches_session_after_later_incarnation_change fails under an agent's env (main focused run) | fixed (root cause: tests inherited ambient harness markers) | ht-54r.95: test_support scrubs adapter-declared attribution vars from spawned children; suites pass with fake Codex/Claude markers exported; 575c5280 keeps *_HOME/*_CONFIG_DIR isolation vars |
+| M1: operations.md no-fingerprint liveness wording (main, Minor) | fixed | ht-54r.96 |
+| F1: truncated message read via `body` never advances the binding cursor (final review 7, plausible) | fixed | f39ccbf4 (full text `body` read advances the caller's own cursor; partial/--offset/--json/--machine do not), bacec8cc (walk counts this binding's own display ACKs; not others', not explicit ack); red→green tests |
+| F2 per-binding warning frontier; F3 lineage MAX cursor copy (final review 7, minor) | deferred | informational warnings only / Hermes plain-call-first window only, cursors only move forward |
+| Mod wakes idle session for sibling-settled message (independent review, Minor) | fixed | 575c5280: ack_required:false lines appended like lazy rows, never idle-wake; mod suite 97/97 |
+| TRUST-POLICY pull "seat's whole pending set" wording; body-read output format rule (independent review, Minor) | fixed | 575c5280 |
+
+Independent review of round 3 + F1: no Critical/Important; security: no path to advance or settle for another binding, subagents cursor-only, no revival of superseded/ended/retired bindings.

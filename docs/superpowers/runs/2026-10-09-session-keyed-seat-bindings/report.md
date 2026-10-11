@@ -153,3 +153,7 @@ Main (mljuxaWLC) declined the first hand-back (65b095fd) because final review 4 
 - Sweep: see the status line (run.md codeBuckets.sweep).
 
 Remaining after the addendum: managed-launch placeholder still uses the strict single-foreground read (follow-up); a lost, never-replayed lifecycle check-in leaves a plain-only session losing to its predecessor (accepted limit); performance punch list; real-harness payload shapes, sandboxes and Linux untested; `Outside-adapter:` trailer present on 9 of 156 pre-rule commits (dispositions.md).
+
+## Addendum 2 — main review of a79a326c and fix round 3 (2026-10-11)
+
+Main (mtCJ3BMEw) found two Important defects in a79a326c (I1 binding-unaware hook-pull/watch drains; I2 seat-keyed offer ledger), a Minor doc error, and a test failing under an agent's environment. Fix round 3 (ht-54r.93–.96) resolved all four; final review 7 found no open Critical/Important and one plausible gap (F1, truncated message read via `body`), fixed in f39ccbf4 and bacec8cc. An independent review of round 3 + F1 found no Critical/Important and no security bypass; its 4 Minor items were fixed in 575c5280 (incl. the Claude mod no longer waking an idle session for sibling-settled mail). Dispositions: `dispositions.md`. Final sweep: 5552/5552 nextest, mod suite 97/97, harness-neutral 0, no leaks (run.md codeBuckets.sweep).
