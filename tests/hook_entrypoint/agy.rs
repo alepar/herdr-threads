@@ -610,3 +610,390 @@ fn agy_turn_hook_carries_lazy_invitation_without_accepting_or_confirming_it() {
         0
     );
 }
+
+/// Registered bridge activation evidence. The daemon is the elected production
+/// composition; only its external Herdr host and the private socket observer are
+/// test-owned. A successful hook here proves emission/commit, not native uptake.
+mod activation {
+    use super::*;
+    use herdr_threads::{
+        daemon::ownership::EndpointDescriptor,
+        harness::agy::delivery::{Identity, resolve_identity},
+        protocol::{
+            authority::CallerClaim,
+            capabilities::DELIVERY_PRESENTATION_V2,
+            commands::{CreateThread, InvitationConfirmation, Invite},
+            delivery::{
+                DeliveryPageV2, DeliveryPresentationConfirmationV2, DeliveryPullReplyV2,
+                PresentationControlStampV2, PresentationItemV2, PresentationRenderSelection,
+            },
+            ids::OperationId,
+            results::{ApiError, ErrorCode},
+            wire::{WireRequest, WireResponse, encode_wire_response},
+        },
+    };
+    use std::{
+        io::Read,
+        os::{fd::OwnedFd, unix::{fs::{MetadataExt, PermissionsExt}, net::{UnixListener, UnixStream}}},
+        sync::Mutex,
+    };
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Fault {
+        None,
+        OmitCapability,
+        RefuseCapabilities,
+        DropConfirm,
+        LoseConfirmReply,
+    }
+
+    #[derive(Clone, Debug)]
+    struct Exchange {
+        command: Command,
+        result: Option<Result<CommandResult, ApiError>>,
+    }
+
+    /// Forward exact frames to the actual elected daemon. Negative modes only
+    /// remove/refuse capability discovery or drop one real confirmation exchange.
+    /// They never fabricate a capable reply, page, token or successful completion.
+    struct Observer {
+        stop: Arc<AtomicBool>,
+        worker: Option<std::thread::JoinHandle<()>>,
+        exchanges: Arc<Mutex<Vec<Exchange>>>,
+        endpoint: PathBuf,
+        upstream: PathBuf,
+        descriptor_path: PathBuf,
+        original_descriptor: Vec<u8>,
+    }
+
+    fn frame(stream: &mut UnixStream) -> std::io::Result<Vec<u8>> {
+        let mut prefix = [0; 4];
+        stream.read_exact(&mut prefix)?;
+        let size = u32::from_be_bytes(prefix) as usize;
+        assert!(size <= herdr_threads::protocol::wire::MAX_WIRE_FRAME_BYTES);
+        let mut bytes = vec![0; size + 4];
+        bytes[..4].copy_from_slice(&prefix);
+        stream.read_exact(&mut bytes[4..])?;
+        Ok(bytes)
+    }
+
+    impl Observer {
+        fn start(fx: &continuity::Fixture, fault: Fault) -> Self {
+            let descriptor_path = fx.instance_dir.join("endpoint.json");
+            let original_descriptor = fs::read(&descriptor_path).unwrap();
+            let mut descriptor: EndpointDescriptor =
+                serde_json::from_slice(&original_descriptor).unwrap();
+            let endpoint = descriptor.endpoint.clone();
+            let upstream = fx.host.parent().unwrap().join("elected.sock");
+            // Keep the descriptor's validated stable pathname. The real listener
+            // remains live at its renamed private pathname throughout the test.
+            fs::rename(&endpoint, &upstream).unwrap();
+            let listener = UnixListener::bind(&endpoint).unwrap();
+            fs::set_permissions(&endpoint, fs::Permissions::from_mode(0o600)).unwrap();
+            let metadata = fs::metadata(&endpoint).unwrap();
+            descriptor.socket_device = metadata.dev();
+            descriptor.socket_inode = metadata.ino();
+            fs::write(&descriptor_path, serde_json::to_vec(&descriptor).unwrap()).unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let stop = Arc::new(AtomicBool::new(false));
+            let exchanges = Arc::new(Mutex::new(Vec::new()));
+            let worker_stop = stop.clone();
+            let observed = exchanges.clone();
+            let target = upstream.clone();
+            let worker = std::thread::spawn(move || {
+                let mut dropped = false;
+                while !worker_stop.load(Ordering::SeqCst) {
+                    let (mut client, _) = match listener.accept() {
+                        Ok(connection) => connection,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(Duration::from_millis(2));
+                            continue;
+                        }
+                        Err(error) => panic!("observer accept: {error}"),
+                    };
+                    client.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+                    client.set_write_timeout(Some(Duration::from_secs(2))).unwrap();
+                    let Ok(request_bytes) = frame(&mut client) else { continue };
+                    let request = WireRequest::decode(&request_bytes[4..]).unwrap();
+                    let confirm = matches!(request.command, Command::DeliveryPresentationConfirmV2(_));
+                    if confirm && fault == Fault::DropConfirm && !dropped {
+                        dropped = true;
+                        observed.lock().unwrap().push(Exchange { command: request.command, result: None });
+                        continue;
+                    }
+                    let mut server = UnixStream::connect(&target).unwrap();
+                    server.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                    server.set_write_timeout(Some(Duration::from_secs(2))).unwrap();
+                    server.write_all(&request_bytes).unwrap();
+                    let mut response_bytes = frame(&mut server).unwrap();
+                    let mut response: WireResponse = serde_json::from_slice(&response_bytes[4..]).unwrap();
+                    if matches!(request.command, Command::Capabilities) {
+                        match fault {
+                            Fault::OmitCapability => {
+                                let Ok(CommandResult::Capabilities(capabilities)) = &mut response.result else { panic!("real capabilities") };
+                                capabilities.capabilities.retain(|name| name != DELIVERY_PRESENTATION_V2);
+                                response_bytes = encode_wire_response(&response).unwrap();
+                            }
+                            Fault::RefuseCapabilities => {
+                                response.result = Err(ApiError::new(ErrorCode::Unsupported, "historical peer refuses capabilities"));
+                                response_bytes = encode_wire_response(&response).unwrap();
+                            }
+                            _ => {}
+                        }
+                    }
+                    observed.lock().unwrap().push(Exchange { command: request.command, result: Some(response.result) });
+                    if confirm && fault == Fault::LoseConfirmReply && !dropped {
+                        dropped = true;
+                        continue;
+                    }
+                    // Unmodified response bytes in every positive exchange.
+                    let _ = client.write_all(&response_bytes);
+                }
+            });
+            Self { stop, worker: Some(worker), exchanges, endpoint, upstream, descriptor_path, original_descriptor }
+        }
+        fn take(&self) -> Vec<Exchange> {
+            std::mem::take(&mut *self.exchanges.lock().unwrap())
+        }
+    }
+    impl Drop for Observer {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::SeqCst);
+            self.worker.take().unwrap().join().unwrap();
+            fs::remove_file(&self.endpoint).unwrap();
+            fs::rename(&self.upstream, &self.endpoint).unwrap();
+            fs::write(&self.descriptor_path, &self.original_descriptor).unwrap();
+        }
+    }
+
+    struct Elected {
+        fx: continuity::Fixture,
+        home: PathBuf,
+        state: PathBuf,
+        identity: Identity,
+        recipient: CallerClaim,
+    }
+    impl Elected {
+        fn start() -> Self {
+            let fx = continuity::Fixture::start(
+                &[(PANE, continuity::Agent::NoSession), ("w9:p2", continuity::Agent::NoSession)],
+                |_, _| {},
+            );
+            fx.wait_reconciled();
+            let root = fx.host.parent().unwrap();
+            let home = root.join("agy-home");
+            let brain = home.join(".gemini/antigravity-cli/brain").join(TOP);
+            fs::create_dir_all(brain.join(".system_generated/logs")).unwrap();
+            fs::write(brain.join(".system_generated/logs/transcript_full.jsonl"), b"").unwrap();
+            let presence = home.join(".gemini/antigravity-cli/presence");
+            fs::create_dir_all(&presence).unwrap();
+            fs::write(presence.join(format!("{TOP}.lock")), b"").unwrap();
+            // An isolated executable identity, measured exactly as the child
+            // measures it; no native AGY invocation or version gate is involved.
+            let agy = root.join("bin/agy");
+            fs::write(&agy, b"#!/bin/sh\nexit 1\n").unwrap();
+            fs::set_permissions(&agy, fs::Permissions::from_mode(0o700)).unwrap();
+            let identity = resolve_identity(None, Some(std::ffi::OsStr::new(&harness_path(&fx.host)))).unwrap();
+            let state = root.join("state");
+            let mut elected = Self {
+                // Replaced with the canonical CheckedIn context immediately
+                // below; build it from the actual hook response, never a claim hint.
+                recipient: CallerClaim {
+                    instance: fx.instance.to_string(), seat: herdr_threads::protocol::ids::SeatId::new("pending"),
+                    binding_generation: 0, role: herdr_threads::protocol::authority::CallerRole::TopLevel,
+                    harness: herdr_threads::protocol::authority::Harness::Agent(builtins().agent("agy").unwrap()),
+                    native_session: herdr_threads::protocol::ids::NativeSessionId::new(TOP),
+                    execution: herdr_threads::protocol::ids::ExecutionId::new(Uuid::new_v4().to_string()),
+                    target: herdr_threads::protocol::ids::HostTargetId::new(PANE),
+                },
+                fx, home, state, identity,
+            };
+            let observer = Observer::start(&elected.fx, Fault::None);
+            let startup = elected.run("SessionStart", false);
+            assert_eq!(startup.code, Some(0), "{}", startup.stderr);
+            assert!(!startup.stdout.is_empty(), "{}", startup.stderr);
+            elected.recipient = observer.take().into_iter().find_map(|exchange| match exchange.result {
+                Some(Ok(CommandResult::CheckedIn(checked))) => Some(checked.context),
+                _ => None,
+            }).expect("installed SessionStart reaches canonical CheckIn");
+            drop(observer);
+            elected
+        }
+        fn adapter_state(&self) -> PathBuf {
+            self.fx.instance_dir.join("adapter-state/agy")
+        }
+        fn downgrade(&self) {
+            let state = self.adapter_state();
+            fs::create_dir_all(&state).unwrap();
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+            let record = herdr_threads::harness::agy::delivery::DowngradeRecord {
+                v: 1, identity: self.identity.clone(), misses: vec![], downgraded_at: Some(now),
+                reason: Some("abort".into()), probation: false, probation_at: None,
+            };
+            fs::write(state.join("downgrade.json"), serde_json::to_vec(&record).unwrap()).unwrap();
+        }
+        fn run(&self, event: &str, broken_stdout: bool) -> Hook {
+            let harness: Harness = OccupantHarness::Agent(builtins().agent("agy").unwrap()).into();
+            let argv = installed_argv(BIN, Some(self.state.to_str().unwrap()), None, harness);
+            let base = herdr_threads::harness::setup::shell_command(&argv).unwrap();
+            let brain = self.home.join(".gemini/antigravity-cli/brain").join(TOP);
+            let input = json!({"conversationId":TOP,"artifactDirectoryPath":brain,"transcriptPath":brain.join(".system_generated/logs/transcript_full.jsonl"),"workspacePaths":[self.home],"invocationNum":0,"initialNumSteps":1});
+            let mut command = scrubbed_command("/bin/sh");
+            command.arg("-c").arg(format!("{base} '--event' '{event}'"))
+                .env("HERDR_ENV", "1").env("HERDR_PANE_ID", PANE)
+                .env("HERDR_SOCKET_PATH", &self.fx.host).env("PATH", harness_path(&self.fx.host))
+                .env("HOME", &self.home).env_remove("ANTIGRAVITY_AGENT")
+                .stdin(Stdio::piped()).stderr(Stdio::piped());
+            if broken_stdout {
+                let (reader, writer) = UnixStream::pair().unwrap();
+                drop(reader);
+                command.stdout(Stdio::from(OwnedFd::from(writer)));
+            } else {
+                command.stdout(Stdio::piped());
+            }
+            herdr_threads::test_support::spawn::tag(&mut command);
+            let started = Instant::now();
+            let mut child = command.spawn_owned().unwrap();
+            child.stdin.take().unwrap().write_all(&serde_json::to_vec(&input).unwrap()).unwrap();
+            let output = child.wait_with_output().unwrap();
+            Hook { code: output.status.code(), stdout: output.stdout, stderr: String::from_utf8_lossy(&output.stderr).into_owned(), elapsed: started.elapsed(), timeout_scale: None }
+        }
+        fn invite(&self) {
+            // The sender is enrolled through its installed production hook too.
+            let startup = self.fx.hook("claude", "w9:p2", &continuity::session_start("claude", "origin-session", "startup"));
+            assert_eq!(startup.code, Some(0), "{}", startup.stderr);
+            let db = self.fx.db();
+            let origin: CallerClaim = db.query_row("SELECT seat_id,generation,execution_id FROM occupant_bindings WHERE target_id='w9:p2' AND ended_at IS NULL", [], |row| {
+                Ok(CallerClaim { instance: self.fx.instance.to_string(), seat: herdr_threads::protocol::ids::SeatId::new(row.get::<_,String>(0)?), binding_generation: row.get(1)?,
+                    role: herdr_threads::protocol::authority::CallerRole::TopLevel, harness: herdr_threads::protocol::authority::Harness::Claude,
+                    native_session: herdr_threads::protocol::ids::NativeSessionId::new("origin-session"), execution: herdr_threads::protocol::ids::ExecutionId::new(row.get::<_,String>(2)?), target: herdr_threads::protocol::ids::HostTargetId::new("w9:p2") })
+            }).unwrap();
+            let CommandResult::ThreadCreated(thread) = self.fx.call(Command::CreateThread(CreateThread { name: None, topic: "registered hook activation".into(), goal: "exact emitted control".into(), operation: OperationId::new("activation-thread"), claim: origin.clone() })).unwrap() else { panic!("created thread") };
+            self.fx.call(Command::Invite(Invite { confirmation: Some(InvitationConfirmation::RequireAck), thread, seat: self.recipient.seat.clone(), deadline_millis: Some(300_000), operation: OperationId::new("activation-invite"), claim: origin })).unwrap();
+        }
+        fn assert_passive_side_effects(&self) {
+            assert_eq!(self.fx.count("SELECT count(*) FROM invitations WHERE state='pending'"), 1, "presentation never accepts the invitation");
+            assert_eq!(self.fx.count("SELECT count(*) FROM receipts WHERE state='acked'"), 0, "presentation never ACKs a receipt");
+        }
+    }
+
+    fn actual_page(exchanges: &[Exchange]) -> DeliveryPageV2 {
+        assert!(exchanges.iter().any(|exchange| matches!(&exchange.result, Some(Ok(CommandResult::Capabilities(caps))) if caps.capabilities.iter().any(|name| name == DELIVERY_PRESENTATION_V2))), "elected daemon must actually advertise V2");
+        exchanges.iter().find_map(|exchange| match &exchange.result {
+            Some(Ok(CommandResult::DeliveryPulledV2(DeliveryPullReplyV2::Page(page)))) => Some(page.clone()),
+            _ => None,
+        }).expect("installed registered hook selects real V2 Pull")
+    }
+
+    fn confirm(exchanges: &[Exchange]) -> &Exchange {
+        exchanges.iter().find(|exchange| matches!(exchange.command, Command::DeliveryPresentationConfirmV2(_))).expect("production HookStepCommit sends explicit Confirm")
+    }
+
+    fn round_trip(user: bool) {
+        let elected = Elected::start();
+        if user { elected.downgrade(); }
+        elected.invite();
+        let observer = Observer::start(&elected.fx, Fault::None);
+        let hook = elected.run("PreInvocation", false);
+        assert_eq!(hook.code, Some(0), "{}", hook.stderr);
+        let exchanges = observer.take();
+        let page = actual_page(&exchanges);
+        assert_eq!(page.render, PresentationRenderSelection::Hook { selector: u8::from(user) });
+        assert_eq!(page.output_bytes as usize, hook.stdout.len());
+        assert!(!hook.stdout.is_empty() && hook.stdout.len() <= 65_536);
+        let native: Value = serde_json::from_slice(&hook.stdout).unwrap();
+        let expected = if user { json!({"injectSteps":[{"userMessage":page.text}]}) } else { json!({"injectSteps":[{"systemMessage":{"systemMessage":page.text}}]}) };
+        assert_eq!(native, expected, "registered native codec bytes");
+        assert!(page.items.iter().any(|item| matches!(item, PresentationItemV2::Invitation { .. })), "canonical invitation is physically emitted");
+        assert!(page.emitted_controls.iter().any(|stamp| matches!(stamp, PresentationControlStampV2::Attention { .. })), "exercise a nonempty exact control confirmation");
+        let completed = confirm(&exchanges);
+        let Command::DeliveryPresentationConfirmV2(request) = &completed.command else { unreachable!() };
+        assert_eq!(request.claim, elected.recipient);
+        assert_eq!(Some(&request.token), page.presentation_token.as_ref());
+        assert_eq!(request.emitted_controls, page.emitted_controls);
+        let Some(Ok(CommandResult::DeliveryPresentationConfirmedV2(reply))) = &completed.result else { panic!("canonical explicit confirmation: {completed:?}") };
+        assert_eq!(reply.status, DeliveryPresentationConfirmationV2::Confirmed);
+        assert_eq!(reply.acknowledged_controls, page.emitted_controls);
+        assert_eq!(elected.fx.count("SELECT count(*) FROM invitation_presentation_consumers WHERE consumer='hook' AND outbox_token IS NULL AND last_token IS NOT NULL"), 1);
+        elected.assert_passive_side_effects();
+    }
+
+    // Kills: advertisement omitted; registered bridge remains on V1; native
+    // selector drift; or successful emission fails to execute HookStepCommit.
+    #[test]
+    fn activation_v2_registered_agy_system_hook_round_trip() { round_trip(false); }
+    #[test]
+    fn activation_v2_registered_agy_user_hook_round_trip() { round_trip(true); }
+
+    // Kills: failed actual stdout emission still commits the canonical page.
+    #[test]
+    fn activation_v2_registered_agy_failed_stdout_replays_without_completion() {
+        let elected = Elected::start();
+        elected.invite();
+        let observer = Observer::start(&elected.fx, Fault::None);
+        elected.run("PreInvocation", true);
+        let failed = observer.take();
+        let pending = actual_page(&failed);
+        assert!(!failed.iter().any(|exchange| matches!(exchange.command, Command::DeliveryPresentationConfirmV2(_))));
+        assert_eq!(elected.fx.count("SELECT count(*) FROM invitation_presentation_consumers WHERE consumer='hook' AND outbox_token IS NOT NULL AND last_token IS NULL"), 1);
+        let hook = elected.run("PreInvocation", false);
+        assert_eq!(hook.code, Some(0), "{}", hook.stderr);
+        let replay = observer.take();
+        let page = actual_page(&replay);
+        assert_eq!(page.presentation_token, pending.presentation_token);
+        assert_eq!(page.text, pending.text);
+        assert_eq!(page.output_bytes as usize, hook.stdout.len());
+        assert!(matches!(&confirm(&replay).result, Some(Ok(CommandResult::DeliveryPresentationConfirmedV2(reply))) if reply.status == DeliveryPresentationConfirmationV2::Confirmed));
+        elected.assert_passive_side_effects();
+    }
+
+    // Kills: a missing completion retires unseen state, or response loss makes
+    // a successfully committed token non-idempotent.
+    #[test]
+    fn activation_v2_registered_agy_lost_completion_preserves_exact_recovery() {
+        for fault in [Fault::DropConfirm, Fault::LoseConfirmReply] {
+            let elected = Elected::start();
+            elected.invite();
+            let observer = Observer::start(&elected.fx, fault);
+            let hook = elected.run("PreInvocation", false);
+            assert_eq!(hook.code, Some(0), "{}", hook.stderr);
+            let exchanges = observer.take();
+            let page = actual_page(&exchanges);
+            let completed = confirm(&exchanges);
+            if fault == Fault::DropConfirm {
+                assert!(completed.result.is_none());
+                assert_eq!(elected.fx.count("SELECT count(*) FROM invitation_presentation_consumers WHERE consumer='hook' AND outbox_token IS NOT NULL"), 1);
+                let replay = elected.run("PreInvocation", false);
+                assert_eq!(replay.stdout, hook.stdout);
+                let replayed = observer.take();
+                assert_eq!(actual_page(&replayed).presentation_token, page.presentation_token);
+                assert!(matches!(&confirm(&replayed).result, Some(Ok(CommandResult::DeliveryPresentationConfirmedV2(reply))) if reply.status == DeliveryPresentationConfirmationV2::Confirmed));
+            } else {
+                assert!(matches!(&completed.result, Some(Ok(CommandResult::DeliveryPresentationConfirmedV2(reply))) if reply.status == DeliveryPresentationConfirmationV2::Confirmed));
+                let CommandResult::DeliveryPresentationConfirmedV2(reply) = elected.fx.call(completed.command.clone()).unwrap() else { panic!("actual replay Confirm") };
+                assert_eq!(reply.status, DeliveryPresentationConfirmationV2::AlreadyConfirmed);
+                assert_eq!(reply.acknowledged_controls, page.emitted_controls);
+            }
+            elected.assert_passive_side_effects();
+        }
+    }
+
+    // Controlled historical peer negatives reach the real registered bridge;
+    // they are never used as active capability or completion evidence.
+    #[test]
+    fn registered_agy_omitted_or_refused_capability_uses_historical_pull() {
+        for fault in [Fault::OmitCapability, Fault::RefuseCapabilities] {
+            let elected = Elected::start();
+            elected.invite();
+            let observer = Observer::start(&elected.fx, fault);
+            let hook = elected.run("PreInvocation", false);
+            assert_eq!(hook.code, Some(0), "{}", hook.stderr);
+            let exchanges = observer.take();
+            assert!(exchanges.iter().any(|exchange| matches!(exchange.command, Command::Capabilities)));
+            assert!(exchanges.iter().any(|exchange| matches!(exchange.command, Command::DeliveryPull(_))), "historical capability discovery selects real V1 bridge");
+            assert!(!exchanges.iter().any(|exchange| matches!(exchange.command, Command::DeliveryPullV2(_) | Command::DeliveryPresentationConfirmV2(_))));
+            assert!(system_message(&hook).contains("registered hook activation"));
+            elected.assert_passive_side_effects();
+        }
+    }
+}

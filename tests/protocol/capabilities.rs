@@ -265,6 +265,7 @@ fn capability_constants_are_stable() {
     assert_eq!(SEAT_MANAGED_LAUNCH, "seat.managed_launch");
     assert_eq!(INBOX_BATCH, "inbox.batch_v1");
     assert_eq!(LAZY_HOOK_DELIVERY, "hook.lazy_delivery_v1");
+    assert_eq!(DELIVERY_PRESENTATION_V2, "delivery.presentation_v2");
     assert_eq!(
         ADVERTISED,
         &[
@@ -290,7 +291,8 @@ fn capability_constants_are_stable() {
             "mod.watch_v1",
             "seat.wake_on_v1",
             "delivery.pull_v1",
-            "hook.lazy_delivery_v1"
+            "hook.lazy_delivery_v1",
+            "delivery.presentation_v2"
         ]
     );
 }
@@ -399,6 +401,7 @@ fn every_advertised_capability_has_a_handler() {
                 );
             }
             MOD_WATCH => probe_mod_watch(),
+            DELIVERY_PRESENTATION_V2 => presentation_capability_routes_use_configured_domain(),
             DELIVERY_PULL => {
                 // The command decodes and routes to the domain service (served by
                 // `service::delivery_pull`, tested there); this daemon has none.
@@ -1840,4 +1843,91 @@ fn automatic_contract_declarations_do_not_advertise_an_unimplemented_runtime() {
             .iter()
             .any(|cap| cap == AUTOMATIC_HANDOFF_V1)
     );
+}
+
+
+/// Kills: advertising V2 while either deciding route is absent from the
+/// configured DomainService, or canonical Confirm loses the captured controls.
+/// Unlike the older NoDomain probes this must allocate and retire real output.
+#[test]
+fn presentation_capability_routes_use_configured_domain() {
+    use crate::{
+        harness::registry::builtins,
+        ports::StorePort,
+        protocol::{
+            authority::{CallerClaim, CallerRole, Harness},
+            commands::{CheckIn, CheckInMode, CreateThread, Invite, InvitationConfirmation},
+            delivery::{DeliveryPullV2, DeliveryPullReplyV2, DeliveryPresentationConfirmV2,
+                DeliveryPresentationConfirmationV2, PresentationConsumer, PresentationRenderRequest},
+            ids::{SeatId, HostTargetId, NativeSessionId, ExecutionId, OperationId},
+        },
+        service::{dispatch::DomainService, fair_writer::FairWriter},
+        store::{SqliteStore, StoreSettings, connection::StoreContext},
+        test_support::isolation::TestIsolation,
+    };
+    let isolated = TestIsolation::new("presentation-capability-route");
+    let clock: Arc<dyn Clock> = Arc::new(FixedClock);
+    let context = StoreContext::new(isolated.path("store.db"), clock.clone());
+    let db = context.open_writer().unwrap();
+    let instance = Uuid::new_v4();
+    let boot = Uuid::new_v4();
+    db.execute("INSERT INTO host_instances(id,created_at,host_boot,host_epoch) VALUES (?1,0,'b',1)", [instance.to_string()]).unwrap();
+    for seat in ["origin", "recipient"] {
+        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES (?1,?2,'resolved','native',?1,0,0,0)", rusqlite::params![seat, instance.to_string()]).unwrap();
+        db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES (?1,?2,'b',1,0,1,'fresh','unknown','unknown',0,0,'term-'||?2,'inc-'||?2,'coherent_enumeration',1)", rusqlite::params![instance.to_string(),seat]).unwrap();
+    }
+    let store: Arc<dyn StorePort> = Arc::new(SqliteStore::new(context, instance.to_string(), StoreSettings::default()).unwrap());
+    let domain = DomainService::new(instance.to_string(), store, clock)
+        .with_cooperative_owner(501, Arc::new(FairWriter::new(32)));
+    let handler = ControlService::new(
+        StopController::new(instance, boot, Cancellation::default()),
+        move |_: &CallBudget| HealthInputs::unknown(instance, boot), domain,
+    );
+    let call = |command| handler.handle(command, PeerIdentity::from_kernel(501), &budget()).unwrap();
+    let CommandResult::Capabilities(caps) = call(Command::Capabilities) else { panic!("capabilities") };
+    assert!(caps.capabilities.iter().any(|name| name == DELIVERY_PRESENTATION_V2), "configured actual capability response must advertise the selected routes");
+    let check_in = |seat: &str| {
+        let claim = CallerClaim {
+            instance: instance.to_string(), seat: SeatId::new(seat), binding_generation: 0,
+            role: CallerRole::TopLevel,
+            harness: Harness::Agent(builtins().agent("agy").unwrap()),
+            native_session: NativeSessionId::new(format!("session-{seat}")),
+            execution: ExecutionId::new(Uuid::new_v4().to_string()), target: HostTargetId::new(seat),
+        };
+        let CommandResult::CheckedIn(checked) = call(Command::CheckIn(CheckIn {
+            mode: CheckInMode::Lifecycle { expected_binding_generation: 0 }, claim,
+            operation: OperationId::new(format!("check-in-{seat}")),
+        })) else { panic!("canonical binding") };
+        checked.context
+    };
+    let origin = check_in("origin");
+    let recipient = check_in("recipient");
+    let CommandResult::ThreadCreated(thread) = call(Command::CreateThread(CreateThread {
+        name: None, topic: "capability route".into(), goal: "canonical page retirement".into(),
+        operation: OperationId::new("route-create"), claim: origin.clone(),
+    })) else { panic!("created thread") };
+    call(Command::Invite(Invite { confirmation: Some(InvitationConfirmation::RequireAck), thread,
+        seat: recipient.seat.clone(), deadline_millis: Some(300_000),
+        operation: OperationId::new("route-invite"), claim: origin,
+    }));
+    let CommandResult::DeliveryPulledV2(DeliveryPullReplyV2::Page(page)) = call(Command::DeliveryPullV2(DeliveryPullV2 {
+        claim: recipient.clone(), consumer: PresentationConsumer::Hook,
+        render: PresentationRenderRequest::Hook { confirmable_selector: 0, passive_selector: 0 },
+        presentation_lease: None, marker_prefix: vec![],
+    })) else { panic!("configured production PullV2 route allocates a canonical page") };
+    assert!(!page.items.is_empty());
+    assert!(!page.emitted_controls.is_empty(), "exercise canonical control retirement");
+    let token = page.presentation_token.expect("canonical presentation token");
+    let confirm = Command::DeliveryPresentationConfirmV2(DeliveryPresentationConfirmV2 {
+        emitted_controls: page.emitted_controls.clone(), claim: recipient,
+        consumer: PresentationConsumer::Hook, token: token.clone(), presentation_lease: None,
+    });
+    let CommandResult::DeliveryPresentationConfirmedV2(reply) = call(confirm.clone()) else { panic!("configured production Confirm route") };
+    assert_eq!(reply.status, DeliveryPresentationConfirmationV2::Confirmed);
+    assert_eq!(reply.acknowledged_controls, page.emitted_controls);
+    let CommandResult::DeliveryPresentationConfirmedV2(replay) = call(confirm) else { panic!("exact canonical replay") };
+    assert_eq!(replay.status, DeliveryPresentationConfirmationV2::AlreadyConfirmed);
+    assert_eq!(replay.acknowledged_controls, reply.acknowledged_controls);
+    assert_eq!(db.query_row("SELECT last_token FROM invitation_presentation_consumers WHERE seat_id='recipient' AND consumer='hook'", [], |row| row.get::<_,String>(0)).unwrap(), token);
+    assert_eq!(db.query_row("SELECT count(*) FROM invitations WHERE state='pending'", [], |row| row.get::<_,i64>(0)).unwrap(), 1);
 }
