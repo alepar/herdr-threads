@@ -1,0 +1,72 @@
+--- a/tests/harness/agy_delivery.rs
++++ b/tests/harness/agy_delivery.rs
+@@ -1768,3 +1768,69 @@
+         "un-emitted probation must remain available"
+     );
+ }
++fn native_escaping_invitation_page() -> String {
++    use crate::delivery::invitation::InvitationContext;
++    let items: Vec<_> = (0..8)
++        .map(|n| {
++            InvitationContext {
++                id: crate::protocol::ids::InvitationId::new(format!("invite-{n}")),
++                thread: crate::protocol::ids::ThreadId::new(format!("thread-{n}")),
++                topic: "\0".repeat(1024),
++                goal: "\0".repeat(1024),
++                episode: 1,
++                topic_revision: 1,
++                command_epoch: 0,
++                confirmation: Some(crate::protocol::commands::InvitationConfirmation::Lazy),
++                deadline: None,
++                required: None,
++            }
++            .render(&["herdr-threads".into()])
++        })
++        .collect();
++    crate::delivery::frame(&items)
++}
++
++#[test]
++fn system_message_native_invitation_frame_respects_final_64k_bound() {
++    let rig = Rig::new();
++    let text = native_escaping_invitation_page();
++    assert!(text.len() < 65_536, "supported canonical plaintext page");
++    let output = rig.pre(
++        0,
++        &Fake::with(vec![page(&[], &text, 11)]),
++        &runtime(1000, &ident("a")),
++    );
++    let native: Value = serde_json::from_slice(&output).unwrap();
++    assert_eq!(
++        native["injectSteps"][0]["systemMessage"]["systemMessage"],
++        text
++    );
++    assert!(
++        output.len() <= 65_536,
++        "final systemMessage frame is {} bytes",
++        output.len()
++    );
++}
++
++#[test]
++fn downgraded_user_message_native_invitation_frame_respects_final_64k_bound() {
++    let rig = Rig::new();
++    let identity = ident("a");
++    let mut record = DowngradeRecord::blank(&identity);
++    record.downgrade("abort", 1000);
++    save_downgrade(&rig.state, &record);
++    let text = native_escaping_invitation_page();
++    assert!(text.len() < 65_536, "supported canonical plaintext page");
++    let output = rig.pre(
++        0,
++        &Fake::with(vec![page(&[], &text, 11)]),
++        &runtime(1001, &identity),
++    );
++    let native: Value = serde_json::from_slice(&output).unwrap();
++    assert_eq!(native["injectSteps"][0]["userMessage"], text);
++    assert!(
++        output.len() <= 65_536,
++        "final userMessage frame is {} bytes",
++        output.len()
++    );
++}

@@ -1,0 +1,22 @@
+{
+  "positive_quiescent_ack": "impl_15 session99399 drained; no active commands; source held untilack",
+  "target": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2",
+  "scope": "tests/harness/agy_delivery.rs",
+  "before": "495c2df9b564be0a2ee074abdfa150973876a352da0316e81f1b9e1d944b07b4",
+  "after": "5e11d71234b3232034346d61165532074a8226f1c50321b15d5e821b1c2f4e98",
+  "patches": [
+    {
+      "patch": "task-15-emit-helper-probation-red.diff",
+      "sha256": "233ab18b379a8b6c45cb3801cd085afdc43c1b942f75935f7dfe914b4250a549",
+      "tip": "7c51d5f2",
+      "immutable_before_after_exact": true
+    },
+    {
+      "patch": "task-15-emit-helper-native-frame-red.diff",
+      "sha256": "3c1645137387a1044011e4ecd57b48273b8c69f64340c9d9096bfaf223e69a7f",
+      "tip": "2f5e1d9e",
+      "immutable_before_after_exact": true
+    }
+  ],
+  "state": "test-only; actualprobation/nativeREDpending; no productionedits"
+}

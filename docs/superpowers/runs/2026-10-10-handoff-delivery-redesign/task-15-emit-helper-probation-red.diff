@@ -1,0 +1,52 @@
+--- a/tests/harness/agy_delivery.rs
++++ b/tests/harness/agy_delivery.rs
+@@ -1722,3 +1722,49 @@
+         "pruning runs only when a file is first created"
+     );
+ }
++/// Preparing a probation injection cannot consume the one retry if stdout never reaches agy.
++#[test]
++fn preparing_probation_does_not_open_it_before_emission() {
++    let rig = Rig::new();
++    let identity = ident("a");
++    let mut record = DowngradeRecord::blank(&identity);
++    record.downgrade("abort", 1000);
++    save_downgrade(&rig.state, &record);
++    let input = HookInput {
++        bytes: serde_json::to_vec(&json!({
++            "conversationId": CONV,
++            "transcriptPath": rig.transcript.to_str().unwrap(),
++            "invocationNum": 0,
++            "initialNumSteps": 1,
++        }))
++        .unwrap(),
++        registered_event: Some("PreInvocation".to_owned()),
++    };
++    let decoded = decode(
++        &AgyAdmission {
++            step: InjectionStep::SystemMessage,
++        },
++        &input,
++    )
++    .unwrap();
++    let fake = offering();
++    let output = run_step(
++        &HookStepContext {
++            input: &input,
++            decoded: &decoded,
++            claim: Some(claim(0)),
++            daemon: Some(&fake),
++            state_dir: Some(rig.state.clone()),
++            command_prefix: vec!["herdr-threads".into()],
++            deadline: Instant::now() + Duration::from_secs(30),
++        },
++        &runtime(1000 + 24 * HOUR, &identity),
++    );
++    assert_eq!(output, fixture_bytes("output-system-message.json"));
++    // Deliberately no write or flush of the returned native bytes.
++    assert_eq!(
++        rig.record(),
++        Some(record),
++        "un-emitted probation must remain available"
++    );
++}
