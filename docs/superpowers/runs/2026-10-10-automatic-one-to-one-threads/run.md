@@ -1,7 +1,7 @@
 # super-auto run — 2026-10-10-automatic-one-to-one-threads
 
 flags: planOneShot=true skipPlanRoast=false skipCodeRoast=false autonomous=true
-phase: report
+phase: finish
 
 idea: Use $super-auto, fully autonomous end to end with both roasts on, to implement this feature in this repo: automatic 1:1 threads. An agent can send a message to another agent by giving only a target seat ID, without specifying a thread. The plugin automatically creates (or reuses an existing) "1:1" thread with exactly two participants, the sender and the recipient, which otherwise behaves like a normal thread. The handoff command gets the same treatment: if no thread is specified, the handoff goes through the 1:1 thread. When the integration branch is ready for merge, run `herdr-threads join dev-herdr-threads` (thread taQXwBH7X) and send a --nudge message there stating that this feature is ready for integration into main.
 branch: super-auto/automatic-one-to-one-threads
@@ -70,3 +70,5 @@ Report phase entered: exact-tip fullsuite readiness verification pending before 
 First successful postroast gate:979e4993,4,621/4,621pass44skipped,wall194.052s<300, scopedleakclean. Separate release-default109.691s/test-support86.460s/nextestprepare19.931s excluded from timedgate; exactclippy16.956/default6.433/fmt/diffpass. Report.md written from durable buckets/ledger/reviews. Upstream analysis pending exactlyonce; later documentation finish commits require final ignored exact-tip fullgate before notification.
 
 Upstream analysis completed exactlyonce after report: fresh strongestgpt-6-astra, no tools. Four candidates triaged into installed-helper defect, native packet transport doc gap and two policy design questions; parked local upstream-feedback-draft.md for alepar/superpowers. No issue/ghwrite or feedbackURL; only report metrics line changed after analysis.
+
+Finish decision: user task requests a ready branch handoff to the integration coordinator; retain branch without merging/pushing main. This preauthorized handoff determines keep-as-is, so no repeated integration menu. Firstpostroastfullgate passed; finishing design records now, followed by final exact-tip readiness gate.
