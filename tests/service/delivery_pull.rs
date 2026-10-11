@@ -5868,7 +5868,7 @@ fn presentation_notice_settles_current_execution(watch: bool, remaining_conditio
     let before = frontier();
     assert_eq!(before.0 as u64, recipient.binding_generation);
     assert_eq!(before.1, recipient.execution.as_str());
-    if remaining_condition {
+    let remaining_thread = if remaining_condition {
         use crate::protocol::commands::{CreateThread, InvitationConfirmation, Invite};
         let CommandResult::ThreadCreated(thread) = f
             .service
@@ -5891,7 +5891,7 @@ fn presentation_notice_settles_current_execution(watch: bool, remaining_conditio
             .handle(
                 Command::Invite(Invite {
                     confirmation: Some(InvitationConfirmation::RequireAck),
-                    thread,
+                    thread: thread.clone(),
                     seat: recipient.seat.clone(),
                     deadline_millis: Some(60_000),
                     operation: OperationId::new("notice-condition-invite"),
@@ -5901,6 +5901,22 @@ fn presentation_notice_settles_current_execution(watch: bool, remaining_conditio
                 &budget(),
             )
             .unwrap();
+        Some(thread)
+    } else {
+        None
+    };
+    let remaining_witness = || {
+        remaining_thread.as_ref().map(|thread| {
+        f.db.query_row("SELECT id,state,confirmation,deadline_at FROM invitations WHERE thread_id=?1 AND seat_id=?2",
+            params![thread.as_str(),recipient.seat.as_str()], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,Option<i64>>(3)?))).unwrap()
+    })
+    };
+    let pending_witness = remaining_witness();
+    if let Some((id, state, confirmation, deadline)) = &pending_witness {
+        assert!(!id.is_empty());
+        assert_eq!(state, "pending");
+        assert_eq!(confirmation, "require_ack");
+        assert!(deadline.is_some());
     }
     let second = notify("frontier-second-notify");
     let initial_reply = if watch {
@@ -5936,6 +5952,11 @@ fn presentation_notice_settles_current_execution(watch: bool, remaining_conditio
         )
         .unwrap();
     assert!(after.2 >= ordinal && after.2 > before.2);
+    assert_eq!(
+        remaining_witness(),
+        pending_witness,
+        "notice settlement preserves the distinct pending invitation"
+    );
     use crate::protocol::delivery::PresentationControlStampV2;
     let attention = page
         .emitted_controls
@@ -5952,11 +5973,71 @@ fn presentation_notice_settles_current_execution(watch: bool, remaining_conditio
         "settling the carried witness must advertise continuation"
     );
     if watch {
+        let outbox = || {
+            f.db.query_row("SELECT json_array(outbox_token,outbox_descriptors,outbox_selection,outbox_render_key,outbox_codec_key,outbox_prefix,outbox_retired_mask,outbox_confirmed_mask) FROM invitation_presentation_consumers WHERE seat_id=?1 AND consumer='watch'", [recipient.seat.as_str()], |r|r.get::<_,String>(0)).unwrap()
+        };
+        let retained: serde_json::Value = serde_json::from_str(&outbox()).unwrap();
         let replay = window.raw_watch_pull();
         let DeliveryPullReplyV2::Page(replayed) = &replay else {
             panic!("lost-output notice replay")
         };
         assert_eq!(replayed.presentation_token, page.presentation_token);
+        let notices = |items: &[PresentationItemV2]| {
+            items
+                .iter()
+                .filter(|item| matches!(item, PresentationItemV2::Notice { .. }))
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            notices(&replayed.items),
+            notices(&page.items),
+            "lost output replays the identical Notice"
+        );
+        if remaining_condition {
+            assert_eq!(replayed.emitted_controls, page.emitted_controls);
+        } else {
+            assert!(
+                replayed
+                    .emitted_controls
+                    .iter()
+                    .all(|control| page.emitted_controls.contains(control)),
+                "replay cannot invent a control stamp"
+            );
+        }
+        let replay_state: serde_json::Value = serde_json::from_str(&outbox()).unwrap();
+        for index in 0..6 {
+            assert_eq!(
+                replay_state[index], retained[index],
+                "immutable outbox field {index}"
+            );
+        }
+        assert_eq!(replay_state[7], retained[7], "replay is not confirmation");
+        let descriptors: Vec<serde_json::Value> =
+            serde_json::from_str(retained[1].as_str().unwrap()).unwrap();
+        let allowed_retirement = descriptors
+            .iter()
+            .enumerate()
+            .filter(|(_, v)| v["item"]["kind"] == "attention")
+            .fold(0u64, |bits, (slot, _)| bits | (1 << slot));
+        let before_mask = retained[6].as_u64().unwrap();
+        let after_mask = replay_state[6].as_u64().unwrap();
+        assert_eq!(
+            before_mask & after_mask,
+            before_mask,
+            "retirement is monotone"
+        );
+        assert_eq!(
+            after_mask & !allowed_retirement,
+            before_mask & !allowed_retirement,
+            "only canonically obsolete Attention may retire; Notice slots remain"
+        );
+        if remaining_condition {
+            assert_eq!(
+                after_mask, before_mask,
+                "independent pending witness keeps Attention applicable"
+            );
+        }
         assert!(
             replayed.more,
             "durable notice continuation survives lost output"
@@ -6020,6 +6101,11 @@ fn presentation_notice_settles_current_execution(watch: bool, remaining_conditio
     assert!(
         window.offers().is_empty(),
         "no receipt ACK used to drive continuation"
+    );
+    assert_eq!(
+        remaining_witness(),
+        pending_witness,
+        "exact distinct confirming invitation stays pending throughout notice continuation"
     );
     assert_eq!(
         frontier(),
@@ -10157,9 +10243,38 @@ fn presentation_owner_replay_owner_permit_fences_replacement_during_store() {
             .unwrap()
             .try_lock()
             .is_err();
-        let replacing =
-            scope.spawn(|| service.watch_register(&register, Arc::new(Sink), &budget()));
+        let (observed_tx, observed_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let permit = registry
+            .presentation_owner(&window.recipient.seat)
+            .unwrap()
+            .unwrap();
+        let replacing = scope.spawn(|| {
+            let replacement_permit = registry
+                .presentation_owner(&register.claim.seat)
+                .unwrap()
+                .unwrap();
+            observed_tx
+                .send((
+                    Arc::ptr_eq(&permit, &replacement_permit),
+                    replacement_permit.try_lock().is_err(),
+                ))
+                .unwrap();
+            let result = service.watch_register(&register, Arc::new(Sink), &budget());
+            done_tx.send(()).unwrap();
+            result
+        });
+        // The replacement thread itself has observed the exact permit's
+        // contention. register() immediately locks that same registry permit;
+        // this does not instrument its internal Mutex::lock call.
+        let observed = observed_rx.recv_timeout(std::time::Duration::from_secs(5));
+        let completion = done_rx.try_recv();
         pause.release();
+        assert_eq!(observed.unwrap(), (true, true));
+        assert!(matches!(
+            completion,
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
         let result = pulling.join().unwrap().unwrap();
         let replacement = replacing.join().unwrap().unwrap();
         assert!(
@@ -10296,6 +10411,17 @@ fn presentation_owner_replay_mixed_invalid_keys_and_physical_fallback_drain_fini
         DeliveryPresentationConfirmV2, DeliveryPullReplyV2, PresentationConsumer,
     };
     let f = fixture(3);
+    service_notice(&f, "owner-wrong-mode");
+    lazy_message(
+        &f,
+        "msg-owner-unpublished",
+        "must never recover unpublished body",
+    );
+    f.db.execute(
+        "DELETE FROM send_manifests WHERE message_id='msg-owner-unpublished'",
+        [],
+    )
+    .unwrap();
     let recipient = pull_seat(&f);
     f.service
         .handle(
@@ -10310,17 +10436,6 @@ fn presentation_owner_replay_mixed_invalid_keys_and_physical_fallback_drain_fini
         .unwrap();
     f.db.execute(
         "DELETE FROM receipts WHERE message_id='m3' AND seat_id='s'",
-        [],
-    )
-    .unwrap();
-    service_notice(&f, "owner-wrong-mode");
-    lazy_message(
-        &f,
-        "msg-owner-unpublished",
-        "must never recover unpublished body",
-    );
-    f.db.execute(
-        "DELETE FROM send_manifests WHERE message_id='msg-owner-unpublished'",
         [],
     )
     .unwrap();
@@ -10769,4 +10884,209 @@ fn presentation_owner_replay_deferred_control_only_preserves_current_outlook() {
         assert!(body.offered.contains(&id));
         assert_eq!(window.offers(), stamps);
     }
+}
+
+// Causal WR17 prune-all RED: old outbox recovery initializes owner debt;
+// supported logical recording changes every captured stamp before the next
+// snapshot. The active pass is now empty, and a new passive invitation produces
+// a Page without logical Message IDs at either capacity.
+#[test]
+fn presentation_owner_replay_pruned_all_passive_page_preserves_current_outlook() {
+    use crate::{
+        protocol::{
+            commands::DeliveryMode,
+            delivery::{DeliveryPullReplyV2, PresentationItemV2},
+        },
+        test_support::failpoints::Failpoint,
+    };
+    for full in [false, true] {
+        for more in [false, true] {
+            for concurrent in [false, true] {
+                let mut window = OfferWindowFixture::new(true);
+                let id = window.send(0, DeliveryMode::Ordinary, "pruned owner stamp");
+                window.drain(1);
+                for _ in 0..4 {
+                    window.pull();
+                }
+                if full {
+                    let mut ledger = window.f.state.lock();
+                    let entry = ledger
+                        .seat_mut(
+                            &window.recipient.seat,
+                            window.recipient.binding_generation,
+                            window.recipient.native_session.as_str(),
+                        )
+                        .unwrap();
+                    for n in 0..255 {
+                        entry.record(
+                            &MessageId::new(format!("prune-all-missing-{n:03}")),
+                            window.f.clock.utc_now(),
+                            false,
+                        );
+                    }
+                }
+                canonical_lazy_invitation_backlog(
+                    &window.f,
+                    &window.recipient,
+                    &window.sender,
+                    1,
+                    "prune-all-old",
+                );
+                let DeliveryPullReplyV2::Page(old) = window.raw_watch_pull() else {
+                    panic!("old outbox")
+                };
+                assert!(old.presentation_token.is_some());
+                window.replace_watch();
+                let replay = window.raw_watch_pull();
+                assert!(
+                    matches!(&replay,DeliveryPullReplyV2::Page(page) if page.presentation_token==old.presentation_token && page.more)
+                );
+                window.confirm_nonmessage_presentation(&replay);
+                let (registry, _, lease) = window.watch.as_ref().unwrap();
+                assert_eq!(
+                    owner_store_input(&window.f, &window.recipient, registry.as_ref(), lease)
+                        .owner_replay
+                        .unwrap()
+                        .remaining
+                        .len(),
+                    if full { 256 } else { 1 }
+                );
+                {
+                    let mut ledger = window.f.state.lock();
+                    let entry = ledger
+                        .seat_mut(
+                            &window.recipient.seat,
+                            window.recipient.binding_generation,
+                            window.recipient.native_session.as_str(),
+                        )
+                        .unwrap();
+                    let ids = entry.offers.keys().cloned().collect::<Vec<_>>();
+                    for id in ids {
+                        entry.record(&id, window.f.clock.utc_now(), false);
+                    }
+                    entry.more_pending = more;
+                    entry.read_attention = Some(777);
+                    entry.whole_read = Some(888);
+                }
+                canonical_lazy_invitation_backlog(
+                    &window.f,
+                    &window.recipient,
+                    &window.sender,
+                    1,
+                    "prune-all-new",
+                );
+                let input =
+                    owner_store_input(&window.f, &window.recipient, registry.as_ref(), lease);
+                let snapshot = input.owner_replay.unwrap();
+                assert!(
+                    snapshot.active && snapshot.remaining.is_empty(),
+                    "actual captured work was pruned, not an initially empty lease"
+                );
+                assert_eq!(input.new_message_slots, if full { 0 } else { 255 });
+                let stamps = window.offers();
+                let state = window.f.state.clone();
+                let claim = window.recipient.clone();
+                let barrier = concurrent.then(|| {
+                    Failpoint::connection(
+                        "store.writer.acquired",
+                        window.f.directory.join("store.db").to_string_lossy(),
+                        move |_| {
+                            let mut ledger = state.lock();
+                            let entry = ledger
+                                .seat_mut(
+                                    &claim.seat,
+                                    claim.binding_generation,
+                                    claim.native_session.as_str(),
+                                )
+                                .unwrap();
+                            entry.more_pending = !more;
+                        },
+                    )
+                });
+                let DeliveryPullReplyV2::Page(page) = window.raw_watch_pull() else {
+                    panic!("passive output after prune-all")
+                };
+                assert!(page.offered.is_empty() && page.truncated.is_empty());
+                assert!(
+                    page.items
+                        .iter()
+                        .any(|item| matches!(item, PresentationItemV2::Invitation { .. }))
+                );
+                assert_eq!(window.offers(), stamps);
+                assert_eq!(window.offers()[&id].count, 2);
+                let expected = if concurrent { !more } else { more };
+                assert_eq!(
+                    owner_outlook(&window),
+                    (
+                        expected,
+                        Some(777),
+                        Some(888),
+                        if expected {
+                            NextPull::Delivers
+                        } else {
+                            NextPull::ReofferAt(UtcMillis(
+                                window.f.clock.utc_now().0 + REOFFER_AFTER_MS,
+                            ))
+                        }
+                    ),
+                    "full={full} before={more} concurrent={concurrent}"
+                );
+                if let Some(barrier) = barrier {
+                    assert_eq!(barrier.fired(), 1);
+                }
+            }
+        }
+    }
+}
+
+// Negative control for the prune-all fix: a real normal logical allocation is
+// allowed to update native outlook after recovery candidates were invalidated.
+#[test]
+fn presentation_owner_replay_pruned_all_allows_real_logical_allocation_bookkeeping() {
+    use crate::protocol::{commands::DeliveryMode, delivery::DeliveryPullReplyV2};
+    let mut window = OfferWindowFixture::new(true);
+    let id = window.send(0, DeliveryMode::Ordinary, "captured old");
+    window.drain(1);
+    for _ in 0..4 {
+        window.pull();
+    }
+    canonical_lazy_invitation_backlog(
+        &window.f,
+        &window.recipient,
+        &window.sender,
+        1,
+        "prune-logical-old",
+    );
+    assert!(matches!(
+        window.raw_watch_pull(),
+        DeliveryPullReplyV2::Page(_)
+    ));
+    window.replace_watch();
+    let replay = window.raw_watch_pull();
+    window.confirm_nonmessage_presentation(&replay);
+    {
+        let mut ledger = window.f.state.lock();
+        let entry = ledger
+            .seat_mut(
+                &window.recipient.seat,
+                window.recipient.binding_generation,
+                window.recipient.native_session.as_str(),
+            )
+            .unwrap();
+        entry.record(&id, window.f.clock.utc_now(), false);
+        entry.more_pending = true;
+    }
+    let fresh = window.send(1, DeliveryMode::Ordinary, "independent logical allocation");
+    let DeliveryPullReplyV2::Page(page) = window.raw_watch_pull() else {
+        panic!("logical output")
+    };
+    assert!(page.offered.contains(&fresh));
+    assert!(!page.offered.contains(&id));
+    assert_eq!(window.offers()[&fresh].count, 1);
+    assert_eq!(window.offers()[&id].count, 2);
+    assert_eq!(
+        owner_outlook(&window).0,
+        page.more,
+        "legitimate logical allocation retains normal bookkeeping"
+    );
 }
