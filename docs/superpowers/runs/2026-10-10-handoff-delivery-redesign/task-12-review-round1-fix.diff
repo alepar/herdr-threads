@@ -1,0 +1,214 @@
+diff --git a/tests/store/topology_attachment_guard.rs b/tests/store/topology_attachment_guard.rs
+index 6d4ca437..82faf6c0 100644
+--- a/tests/store/topology_attachment_guard.rs
++++ b/tests/store/topology_attachment_guard.rs
+@@ -1752,6 +1752,91 @@ fn automatic_linked_created_recovery_refuses_changed_witness_and_lifecycle_witho
+ #[test]
+ fn automatic_capacity_actual_serializer_maximum_body_records() {
+     use sha2::Digest;
++    // Use the canonical completion argv relation, not merely report shape validation.
++    // Extended bodies still bypass B-owned admission; small-body control validates publicly.
++    fn retained_report(
++        id: &AutomaticBootstrapIdentity,
++        attachment: &AutomaticBootstrapAttachment,
++    ) -> LinkedBootstrapReport {
++        let AutomaticOriginal::Handoff(child) = &attachment.child.original else {
++            panic!("handoff child")
++        };
++        let p = &id.plan.payload;
++        assert_eq!(child.launch.argv, p.launch.argv);
++        assert_eq!(child.delivery.payload.body, p.handoff.body);
++        assert_eq!(id.digest, id.semantic_digest().unwrap());
++        assert_eq!(
++            attachment.child.digest,
++            attachment
++                .child
++                .original
++                .digest(&attachment.child.claim)
++                .unwrap()
++        );
++        let thread = ThreadId::new("thread");
++        let prompts = crate::cli::handoff::bootstrap_v1::retained_prompts(
++            thread.as_str(),
++            &child.context,
++            &id.claim.instance,
++        );
++        let argv = if let Some(template) = &p.startup_input {
++            template.apply(&p.launch.argv, &prompts[0]).unwrap().0
++        } else {
++            let mut caller = p.launch.argv.clone();
++            caller.push(prompts[0].clone());
++            crate::harness::launch::compose_bootstrap_v1_argv(p.launch.harness, caller).unwrap()
++        };
++        let argv_value = serde_json::json!(argv);
++        let canonical = if let Some(template) = &p.startup_input {
++            prompts.iter().any(|text| {
++                template
++                    .apply(&p.launch.argv, text)
++                    .is_ok_and(|(v, _)| serde_json::json!(v) == argv_value)
++            })
++        } else {
++            crate::cli::handoff::bootstrap_v1::retained_argv_matches(
++                p.launch.harness,
++                &p.launch.argv,
++                thread.as_str(),
++                &child.context,
++                &id.claim.instance,
++                Some(&argv_value),
++            )
++            .unwrap()
++        };
++        assert!(canonical, "actual canonical Complete argv relationship");
++        assert_ne!(
++            argv_value,
++            serde_json::json!(p.launch.argv),
++            "startup inbox prompt is retained"
++        );
++        let report = serde_json::json!({"outcome":"started","pane":attachment.created.root_pane,"seat":attachment.resolved_seat,"harness":p.launch.harness.as_str(),"argv":argv_value});
++        let retained = LinkedBootstrapReport {
++            thread,
++            recipient: attachment.resolved_seat.clone(),
++            pane: attachment.created.root_pane.clone(),
++            kind: "launch".into(),
++            launch: p.launch.clone(),
++            report_digest: format!(
++                "{:x}",
++                sha2::Sha256::digest(serde_json::to_vec(&report).unwrap())
++            ),
++            report,
++            terminal: attachment.created.terminal.clone(),
++            host_incarnation: attachment.created.host_incarnation.clone(),
++        };
++        retained.validate().unwrap();
++        retained
++    }
++    // Flag values preserve the frozen Codex V1 grammar even with many escaped arguments.
++    fn escaped_argv(control_bytes: usize) -> Vec<String> {
++        "\u{1}"
++            .repeat(control_bytes)
++            .as_bytes()
++            .chunks(4088)
++            .map(|v| format!("--model={}", String::from_utf8(v.to_vec()).unwrap()))
++            .collect()
++    }
+     for body in ["x".repeat(65_536), "\u{1}".repeat(65_536)] {
+         let (_context, db, path, store, _observation, _budget, old, a) =
+             attachment_fixture_inner(false, false);
+@@ -1763,6 +1848,16 @@ fn automatic_capacity_actual_serializer_maximum_body_records() {
+             a.resolved_seat.clone(),
+         )
+         .unwrap();
++        let small_retained = retained_report(&id, &attachment);
++        AutomaticBootstrapMutation {
++            identity: id.clone(),
++            action: AutomaticBootstrapAction::Complete {
++                attachment: Box::new(attachment.clone()),
++                retained: small_retained,
++            },
++        }
++        .validate()
++        .unwrap();
+         id.plan.payload.handoff.body = body.clone();
+         id.digest = id.semantic_digest().unwrap();
+         let mut child = serde_json::to_value(&attachment.child).unwrap();
+@@ -1824,22 +1919,7 @@ fn automatic_capacity_actual_serializer_maximum_body_records() {
+         let original = serde_json::to_vec(&id).unwrap();
+         let attached = serde_json::to_vec(&attachment).unwrap();
+         let recovered = serde_json::to_vec(&result).unwrap();
+-        let mut retained = LinkedBootstrapReport {
+-            thread: ThreadId::new("thread"),
+-            recipient: attachment.resolved_seat.clone(),
+-            pane: attachment.created.root_pane.clone(),
+-            kind: "launch".into(),
+-            launch: id.plan.payload.launch.clone(),
+-            report: serde_json::json!({"outcome":"started","pane":attachment.created.root_pane,"seat":attachment.resolved_seat,"harness":id.plan.payload.launch.harness.as_str(),"argv":["launch"]}),
+-            report_digest: "c".repeat(64),
+-            terminal: attachment.created.terminal.clone(),
+-            host_incarnation: attachment.created.host_incarnation.clone(),
+-        };
+-        retained.report_digest = format!(
+-            "{:x}",
+-            sha2::Sha256::digest(serde_json::to_vec(&retained.report).unwrap())
+-        );
+-        retained.validate().unwrap();
++        let retained = retained_report(&id, &attachment);
+         let request_bytes = |identity: AutomaticBootstrapIdentity, action| {
+             serde_json::to_vec(&crate::protocol::wire::WireRequest {
+                 version: crate::protocol::wire::PROTOCOL_VERSION,
+@@ -1878,7 +1958,7 @@ fn automatic_capacity_actual_serializer_maximum_body_records() {
+         assert!(complete.len() <= crate::protocol::wire::MAX_WIRE_FRAME_BYTES);
+         assert!(recover.len() <= crate::protocol::wire::MAX_WIRE_FRAME_BYTES);
+         let mut maximum_argv = id.clone();
+-        maximum_argv.plan.payload.launch.argv = vec!["\u{1}".repeat(4096); 16];
++        maximum_argv.plan.payload.launch.argv = escaped_argv(16 * 4088);
+         maximum_argv.plan.payload.launch.validate().unwrap();
+         maximum_argv.digest = maximum_argv.semantic_digest().unwrap();
+         let maximum_original = serde_json::to_vec(&maximum_argv).unwrap();
+@@ -1892,15 +1972,7 @@ fn automatic_capacity_actual_serializer_maximum_body_records() {
+             .original
+             .digest(&maximum_attachment.child.claim)
+             .unwrap();
+-        let mut maximum_retained = retained.clone();
+-        maximum_retained.launch = maximum_argv.plan.payload.launch.clone();
+-        maximum_retained.report["argv"] =
+-            serde_json::to_value(&maximum_argv.plan.payload.launch.argv).unwrap();
+-        maximum_retained.report_digest = format!(
+-            "{:x}",
+-            sha2::Sha256::digest(serde_json::to_vec(&maximum_retained.report).unwrap())
+-        );
+-        maximum_retained.validate().unwrap();
++        let maximum_retained = retained_report(&maximum_argv, &maximum_attachment);
+         let maximum_recover = request_bytes(
+             maximum_argv.clone(),
+             AutomaticBootstrapAction::Recover {
+@@ -1952,24 +2024,14 @@ fn automatic_capacity_actual_serializer_maximum_body_records() {
+             let mut hi = 65536_usize;
+             while lo < hi {
+                 let mid = (lo + hi).div_ceil(2);
+-                near.plan.payload.launch.argv = "\u{1}"
+-                    .repeat(mid)
+-                    .as_bytes()
+-                    .chunks(4096)
+-                    .map(|v| String::from_utf8(v.to_vec()).unwrap())
+-                    .collect();
++                near.plan.payload.launch.argv = escaped_argv(mid);
+                 if serde_json::to_vec(&near).unwrap().len() <= 524288 {
+                     lo = mid;
+                 } else {
+                     hi = mid - 1;
+                 }
+             }
+-            near.plan.payload.launch.argv = "\u{1}"
+-                .repeat(lo)
+-                .as_bytes()
+-                .chunks(4096)
+-                .map(|v| String::from_utf8(v.to_vec()).unwrap())
+-                .collect();
++            near.plan.payload.launch.argv = escaped_argv(lo);
+             near.plan.payload.launch.validate().unwrap();
+             near.digest = near.semantic_digest().unwrap();
+             let mut near_attachment = attachment.clone();
+@@ -1984,22 +2046,7 @@ fn automatic_capacity_actual_serializer_maximum_body_records() {
+                 .unwrap();
+             let near_attachment_bytes = serde_json::to_vec(&near_attachment).unwrap();
+             let near_original = serde_json::to_vec(&near).unwrap();
+-            let report = serde_json::json!({"outcome":"started","pane":attachment.created.root_pane,"seat":attachment.resolved_seat,"harness":near.plan.payload.launch.harness.as_str(),"argv":near.plan.payload.launch.argv});
+-            let near_retained = LinkedBootstrapReport {
+-                thread: ThreadId::new("thread"),
+-                recipient: attachment.resolved_seat.clone(),
+-                pane: attachment.created.root_pane.clone(),
+-                kind: "launch".into(),
+-                launch: near.plan.payload.launch.clone(),
+-                report_digest: format!(
+-                    "{:x}",
+-                    sha2::Sha256::digest(serde_json::to_vec(&report).unwrap())
+-                ),
+-                report,
+-                terminal: attachment.created.terminal.clone(),
+-                host_incarnation: attachment.created.host_incarnation.clone(),
+-            };
+-            near_retained.validate().unwrap();
++            let near_retained = retained_report(&near, &near_attachment);
+             let near_recover = request_bytes(
+                 near.clone(),
+                 AutomaticBootstrapAction::Recover {

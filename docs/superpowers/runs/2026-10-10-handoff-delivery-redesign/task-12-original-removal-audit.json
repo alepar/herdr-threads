@@ -1,0 +1,91 @@
+{
+  "note": "Complete original patch contains additions AND deletions. This inventory checks significant removed lines still present in same file; repeated lines are not proof of reintroduced behavior, so dispositions identify retained separate scopes.",
+  "paths": [
+    {
+      "path": "src/cli/commands.rs",
+      "approved_removed_lines_present_in_current": [
+        "deadline_millis: deadline(args.deadline)?,"
+      ],
+      "semantic_disposition": "Shared deadline parsing remains for other commands; handoff independent policy args preserved."
+    },
+    {
+      "path": "src/cli/handoff_delivery.rs",
+      "approved_removed_lines_present_in_current": [
+        "let bytes = serde_json::to_vec(terminal).map_err(io::Error::other)?;",
+        "return Err(super::invalid_request(\"oversized delivery terminal record\"));",
+        "let identity = HandoffIdentity {",
+        "compound: keys.compound.clone(),",
+        "thread: plan.payload.channel.thread().cloned(),",
+        "recipient: plan.recipient.clone(),",
+        "create_key: keys.create.clone(),",
+        "invite_key: keys.invite.clone(),"
+      ],
+      "semantic_disposition": "These repeated terminal/identity construction lines remain in distinct legacy/automatic paths; complete original additions present, mainautomatic path preserved separately."
+    },
+    {
+      "path": "src/cli/launch.rs",
+      "approved_removed_lines_present_in_current": [
+        "assert_eq!(seats.calls.load(Ordering::SeqCst), 0);",
+        "assert!(host.submitted().is_empty());",
+        "assert!(seats.recorded.lock().unwrap().is_empty());",
+        "assert!(s.records().is_empty());",
+        "assert_eq!(seats.calls.load(Ordering::SeqCst), 0);",
+        "assert!(host.submitted().is_empty());",
+        "assert!(seats.recorded.lock().unwrap().is_empty());"
+      ],
+      "semantic_disposition": "Duplicate assertions from other retained tests; approved hook-advisory regression tests also retained."
+    },
+    {
+      "path": "src/harness/codex/setup.rs",
+      "approved_removed_lines_present_in_current": [
+        "|| registered == Some(lib::event_command(command, hook.event).as_str())"
+      ],
+      "semantic_disposition": "Historical legacy command recognition remains alongside stable native command comparison."
+    },
+    {
+      "path": "src/harness/hermes/launch.rs",
+      "approved_removed_lines_present_in_current": [
+        "let current = owned(request, &captured.observation)?;",
+        "if status.enabled != Some(true)"
+      ],
+      "semantic_disposition": "Owned used-config recheck exists only inside captured.hook Some; absent hook remains advisory, preserving approved no-readiness admission gate."
+    },
+    {
+      "path": "src/harness/setup.rs",
+      "approved_removed_lines_present_in_current": [
+        "shared_command(&manifest.owned).ok_or(SetupError::Invalid)?;",
+        ".is_some_and(|command| command.ends_with(&format!(\" # herdr-threads-owner:{id}\")))"
+      ],
+      "semantic_disposition": "Historical marker/shared-command parsing remains for recorded owned legacy routes; stable native ownership uses exact registered kind and event argv."
+    },
+    {
+      "path": "src/store/attention.rs",
+      "approved_removed_lines_present_in_current": [
+        "let invitations = pending_invitations(db, seat_id, None, decision_seq)?;"
+      ],
+      "semantic_disposition": "Canonical pending invitations remain discoverable; full-context servicepull semantics explicitly D-owned, attention classification guarded separately."
+    },
+    {
+      "path": "src/store/control.rs",
+      "approved_removed_lines_present_in_current": [
+        "tx.execute(\"INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at) VALUES (?1,?2,?3,?4,'pending',?5,?6,?7,?8)\",",
+        "tx.execute(\"INSERT INTO wake_work(seat_id,reason_bits,attention_version) VALUES (?1,1,1) ON CONFLICT(seat_id) DO UPDATE SET reason_bits=reason_bits|1,attention_version=attention_version+1\", [command.seat.as_str()]).map_err(store_error)?;"
+      ],
+      "semantic_disposition": "Ordinary invite wake remains under timed guard; operator orphan invitation retains historicaltimed provenance; main Ensure initial invitation unchanged intentionally pending B creation-policy work."
+    },
+    {
+      "path": "src/store/effective.rs",
+      "approved_removed_lines_present_in_current": [
+        ".map(|at| checked_deadline(UtcMillis(at), duration).map(|d| d.0))"
+      ],
+      "semantic_disposition": "Legacy deadline calculation still exists for other record classes; approved send-time/cutover predicates and added runtime deltas remain."
+    },
+    {
+      "path": "src/store/mod.rs",
+      "approved_removed_lines_present_in_current": [
+        "receipts::scan_due(&self.context, &mut writer, cap, &mut cursor)"
+      ],
+      "semantic_disposition": "Compatibility scan_due wrapper remains, approved finite discovery driver changes retained; full original patch supplied."
+    }
+  ]
+}

@@ -1,0 +1,1893 @@
+{
+  "approved": "53426ab6dc726d3406ca4b46654914cd817aa7d9",
+  "base": "945107f6acd8b05ade7b5e2d9f8b293282aa06f4",
+  "incoming": "02041b93aa974cc9c736699f7b79c9d13557d884",
+  "note": "Exhaustive line evidence, not semantic equivalence by itself; all unmatched/moved hunks explicitly dispositioned in final packet. Includes helpers and all tests.",
+  "paths": [
+    {
+      "path": "src/archival_legacy.rs",
+      "approved_added_lines": 12,
+      "same_path_lines": 12,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "src/cli/commands.rs",
+      "approved_added_lines": 72,
+      "same_path_lines": 72,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "src/cli/doctor.rs",
+      "approved_added_lines": 5,
+      "same_path_lines": 4,
+      "moved_lines": [],
+      "unmatched_lines": [
+        {
+          "line": "`herdr-threads setup {harness}` to migrate to stable hook-event commands{retrust}\\n\"",
+          "locations": [],
+          "disposition": "Existing stablehook migration message retains runtime retrust note; main renames formatting capture retrust\u2192retrust_note."
+        }
+      ],
+      "semantic_disposition": "Existing stablehook migration message retains runtime retrust note; main renames formatting capture retrust\u2192retrust_note."
+    },
+    {
+      "path": "src/cli/handoff.rs",
+      "approved_added_lines": 29,
+      "same_path_lines": 18,
+      "moved_lines": [],
+      "unmatched_lines": [
+        {
+          "line": "Select exactly one instruction source: a quoted body after --, --file PATH, or --stdin.",
+          "locations": [],
+          "disposition": "Approved help moved to harness-neutral src/cli/help.rs HANDOFF_TEMPLATE, reflowed with main automatic pair-routing prose. Body1..65536/exactbytes/frozen retry, independent invitation/message policy, send-time clock and originalsender timeout notification retained; runtime approval/advisory remains."
+        },
+        {
+          "line": "Instructions contain 1..65,536 UTF-8 bytes, preserved exactly as durable work, never native argv.",
+          "locations": [],
+          "disposition": "Approved help moved to harness-neutral src/cli/help.rs HANDOFF_TEMPLATE, reflowed with main automatic pair-routing prose. Body1..65536/exactbytes/frozen retry, independent invitation/message policy, send-time clock and originalsender timeout notification retained; runtime approval/advisory remains."
+        },
+        {
+          "line": "Files and stdin are acquired once before publication; retries use the frozen content.",
+          "locations": [],
+          "disposition": "Approved help moved to harness-neutral src/cli/help.rs HANDOFF_TEMPLATE, reflowed with main automatic pair-routing prose. Body1..65536/exactbytes/frozen retry, independent invitation/message policy, send-time clock and originalsender timeout notification retained; runtime approval/advisory remains."
+        },
+        {
+          "line": "Invitations default to lazy. --require-invite-ack requests timed acceptance;",
+          "locations": [],
+          "disposition": "Approved help moved to harness-neutral src/cli/help.rs HANDOFF_TEMPLATE, reflowed with main automatic pair-routing prose. Body1..65536/exactbytes/frozen retry, independent invitation/message policy, send-time clock and originalsender timeout notification retained; runtime approval/advisory remains."
+        },
+        {
+          "line": "--invite-deadline SECONDS also requests it with that duration. The addressed body",
+          "locations": [],
+          "disposition": "Approved help moved to harness-neutral src/cli/help.rs HANDOFF_TEMPLATE, reflowed with main automatic pair-routing prose. Body1..65536/exactbytes/frozen retry, independent invitation/message policy, send-time clock and originalsender timeout notification retained; runtime approval/advisory remains."
+        },
+        {
+          "line": "always requires its own ACK, with --deadline SECONDS or the configured default,",
+          "locations": [],
+          "disposition": "Approved help moved to harness-neutral src/cli/help.rs HANDOFF_TEMPLATE, reflowed with main automatic pair-routing prose. Body1..65536/exactbytes/frozen retry, independent invitation/message policy, send-time clock and originalsender timeout notification retained; runtime approval/advisory remains."
+        },
+        {
+          "line": "starting at send even without registration/join. Missed requested deadlines",
+          "locations": [],
+          "disposition": "Approved help moved to harness-neutral src/cli/help.rs HANDOFF_TEMPLATE, reflowed with main automatic pair-routing prose. Body1..65536/exactbytes/frozen retry, independent invitation/message policy, send-time clock and originalsender timeout notification retained; runtime approval/advisory remains."
+        },
+        {
+          "line": "notify the original sender. Explicit policy/durations freeze before staging;",
+          "locations": [],
+          "disposition": "Approved help moved to harness-neutral src/cli/help.rs HANDOFF_TEMPLATE, reflowed with main automatic pair-routing prose. Body1..65536/exactbytes/frozen retry, independent invitation/message policy, send-time clock and originalsender timeout notification retained; runtime approval/advisory remains."
+        },
+        {
+          "line": "omitted numeric defaults resolve once at canonical child creation, then replay.",
+          "locations": [],
+          "disposition": "Approved help moved to harness-neutral src/cli/help.rs HANDOFF_TEMPLATE, reflowed with main automatic pair-routing prose. Body1..65536/exactbytes/frozen retry, independent invitation/message policy, send-time clock and originalsender timeout notification retained; runtime approval/advisory remains."
+        },
+        {
+          "line": "Missing/stale/wrong-profile owned hook readiness is diagnostic. Native execution",
+          "locations": [],
+          "disposition": "Approved help moved to harness-neutral src/cli/help.rs HANDOFF_TEMPLATE, reflowed with main automatic pair-routing prose. Body1..65536/exactbytes/frozen retry, independent invitation/message policy, send-time clock and originalsender timeout notification retained; runtime approval/advisory remains."
+        },
+        {
+          "line": "still respects selected harness approval and all structural safety checks.",
+          "locations": [],
+          "disposition": "Approved help moved to harness-neutral src/cli/help.rs HANDOFF_TEMPLATE, reflowed with main automatic pair-routing prose. Body1..65536/exactbytes/frozen retry, independent invitation/message policy, send-time clock and originalsender timeout notification retained; runtime approval/advisory remains."
+        }
+      ],
+      "semantic_disposition": "Approved help moved to harness-neutral src/cli/help.rs HANDOFF_TEMPLATE, reflowed with main automatic pair-routing prose. Body1..65536/exactbytes/frozen retry, independent invitation/message policy, send-time clock and originalsender timeout notification retained; runtime approval/advisory remains."
+    },
+    {
+      "path": "src/cli/handoff_delivery.rs",
+      "approved_added_lines": 80,
+      "same_path_lines": 80,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "src/cli/hook.rs",
+      "approved_added_lines": 45,
+      "same_path_lines": 45,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "src/cli/journal.rs",
+      "approved_added_lines": 35,
+      "same_path_lines": 34,
+      "moved_lines": [],
+      "unmatched_lines": [
+        {
+          "line": "file.write_all(&encoded_header)?;",
+          "locations": [],
+          "disposition": "Main writes one assembled header/newline/body/newline buffer. Approved prepublication original-byte validation retained before file creation; no second independent header write."
+        }
+      ],
+      "semantic_disposition": "Main writes one assembled header/newline/body/newline buffer. Approved prepublication original-byte validation retained before file creation; no second independent header write."
+    },
+    {
+      "path": "src/cli/launch.rs",
+      "approved_added_lines": 56,
+      "same_path_lines": 56,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "src/cli/mod.rs",
+      "approved_added_lines": 105,
+      "same_path_lines": 105,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "src/cli/setup.rs",
+      "approved_added_lines": 9,
+      "same_path_lines": 2,
+      "moved_lines": [
+        {
+          "line": "`<this executable> --state-dir <state> --host-endpoint <socket> hook-event <harness> <EVENT>`",
+          "locations": [
+            "src/cli/help.rs"
+          ]
+        },
+        {
+          "line": "for each native event (legacy hook commands keep working;",
+          "locations": [
+            "src/cli/help.rs"
+          ]
+        },
+        {
+          "line": "Each harness's ownership manifest lives in <state>/setup/. Native commands use the stable",
+          "locations": [
+            "src/cli/help.rs"
+          ]
+        },
+        {
+          "line": "hook-event HARNESS EVENT entrypoint with canonical routing. Installation UUIDs remain in the",
+          "locations": [
+            "src/cli/help.rs"
+          ]
+        },
+        {
+          "line": "manifest, outside shell commands. Equivalent setup retains exact owned groups in place; unrecorded",
+          "locations": [
+            "src/cli/help.rs"
+          ]
+        },
+        {
+          "line": "identical stable groups are foreign and cause a safe refusal. Setup explicitly migrates recorded",
+          "locations": [
+            "src/cli/help.rs"
+          ]
+        },
+        {
+          "line": "legacy hooks; status only inspects them. Changed native commands may require review again.",
+          "locations": [
+            "src/cli/help.rs"
+          ]
+        }
+      ],
+      "unmatched_lines": [],
+      "semantic_disposition": "Explicit current-schema identity/comment35\u219239, no behavioral/bound/cardinality substitution."
+    },
+    {
+      "path": "src/cli/topology_handoff.rs",
+      "approved_added_lines": 17,
+      "same_path_lines": 17,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "src/cli/watch.rs",
+      "approved_added_lines": 4,
+      "same_path_lines": 0,
+      "moved_lines": [
+        {
+          "line": "InboxBatchV2Item::Invitation {",
+          "locations": [
+            "src/protocol/output_compact.rs",
+            "src/delivery/assemble.rs",
+            "tests/cli/lazy_display.rs",
+            "tests/cli/watch.rs",
+            "tests/delivery/extraction.rs"
+          ]
+        },
+        {
+          "line": "confirmation: Some(crate::protocol::commands::InvitationConfirmation::Lazy),",
+          "locations": [
+            "src/delivery/assemble.rs"
+          ]
+        },
+        {
+          "line": "..",
+          "locations": [
+            "src/ports.rs",
+            "src/app.rs",
+            "src/notification/dispatch.rs",
+            "src/protocol/commands.rs",
+            "src/protocol/output_compact.rs",
+            "src/protocol/summary.rs",
+            "src/cli/hook.rs",
+            "src/cli/human.rs",
+            "src/cli/journal.rs",
+            "src/cli/follow.rs",
+            "src/cli/commands.rs",
+            "src/cli/mod.rs",
+            "src/cli/lazy_display.rs",
+            "src/cli/hook_inbox.rs",
+            "src/cli/summary.rs",
+            "src/harness/bridge.rs",
+            "src/harness/manifest.rs",
+            "src/harness/state.rs",
+            "src/daemon/harness_states.rs",
+            "src/delivery/assemble.rs",
+            "src/service/dispatch.rs",
+            "src/service/workers.rs",
+            "src/client/service.rs",
+            "src/summary/ledger.rs",
+            "src/summary/fold.rs",
+            "src/summary/validate.rs",
+            "src/store/queries.rs",
+            "src/store/messages.rs",
+            "src/store/summary.rs",
+            "src/store/topology_handoff/attempts.rs",
+            "src/harness/claude/permissions.rs",
+            "src/protocol/handoff/automatic_bootstrap.rs",
+            "tests/view.rs",
+            "tests/host/bootstrap_recovery.rs",
+            "tests/identity/reconcile.rs",
+            "tests/protocol/output.rs",
+            "tests/cli/handoff.rs",
+            "tests/cli/cooperative.rs",
+            "tests/cli/journal.rs",
+            "tests/cli/lazy_display.rs",
+            "tests/cli/handoff_delivery.rs",
+            "tests/cli/watch.rs",
+            "tests/cli/topology_handoff.rs",
+            "tests/cli/summary.rs",
+            "tests/harness/state.rs",
+            "tests/harness/codex_schema.rs",
+            "tests/daemon/health_optimistic.rs",
+            "tests/daemon/transport.rs",
+            "tests/service/crash_matrix.rs",
+            "tests/service/resolution.rs",
+            "tests/store/service_send.rs",
+            "tests/store/receipts.rs",
+            "tests/store/archival_legacy.rs",
+            "tests/store/queries.rs",
+            "tests/store/lazy_inbox.rs",
+            "tests/store/summary.rs"
+          ]
+        }
+      ],
+      "unmatched_lines": [
+        {
+          "line": "} => {}",
+          "locations": [],
+          "disposition": "Main extracted drain into delivery::Assembler/page; original no-op Lazy arm becomes Assembled::InformationalNotice. Canonical pending item retained; full-context new servicepull invitation behavior explicitly D-owned."
+        }
+      ],
+      "semantic_disposition": "Main extracted drain into delivery::Assembler/page; original no-op Lazy arm becomes Assembled::InformationalNotice. Canonical pending item retained; full-context new servicepull invitation behavior explicitly D-owned."
+    },
+    {
+      "path": "src/client/service.rs",
+      "approved_added_lines": 150,
+      "same_path_lines": 150,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "src/daemon/control.rs",
+      "approved_added_lines": 3,
+      "same_path_lines": 3,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "src/harness/adapter.rs",
+      "approved_added_lines": 1,
+      "same_path_lines": 1,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "src/harness/claude.rs",
+      "approved_added_lines": 4,
+      "same_path_lines": 4,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "src/harness/claude/setup.rs",
+      "approved_added_lines": 8,
+      "same_path_lines": 8,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "src/harness/claude_mod.rs",
+      "approved_added_lines": 22,
+      "same_path_lines": 22,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "src/harness/codex.rs",
+      "approved_added_lines": 4,
+      "same_path_lines": 4,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "src/harness/codex/setup.rs",
+      "approved_added_lines": 35,
+      "same_path_lines": 34,
+      "moved_lines": [],
+      "unmatched_lines": [
+        {
+          "line": "lib::native_entries(SettingsKind::CodexUser, &argv)",
+          "locations": [],
+          "disposition": "Old fixed SettingsKind::CodexUser becomes codex adapter settings_kind(); native stable-event entries generated with same argv."
+        }
+      ],
+      "semantic_disposition": "Old fixed SettingsKind::CodexUser becomes codex adapter settings_kind(); native stable-event entries generated with same argv."
+    },
+    {
+      "path": "src/harness/hermes/launch.rs",
+      "approved_added_lines": 34,
+      "same_path_lines": 34,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "src/harness/hermes/runtime.rs",
+      "approved_added_lines": 14,
+      "same_path_lines": 14,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "src/harness/launch.rs",
+      "approved_added_lines": 20,
+      "same_path_lines": 20,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "src/harness/registry.rs",
+      "approved_added_lines": 2,
+      "same_path_lines": 2,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "src/harness/setup.rs",
+      "approved_added_lines": 414,
+      "same_path_lines": 409,
+      "moved_lines": [],
+      "unmatched_lines": [
+        {
+          "line": "if let Some(entries) = native_entries(SettingsKind::ClaudeUser, hook_argv)? {",
+          "locations": [],
+          "disposition": "Main neutral SettingsKindSpec registry replaces fixed ClaudeUser/CodexUser variants. Approved stable native event generation moves to plan_settings(kind)/codex::setup::plan_codex; legacy recorded-owner recognition uses registered kind from exact argv harness, no broadened ownership rule."
+        },
+        {
+          "line": "let native = native_entries(SettingsKind::CodexUser, hook_argv)?;",
+          "locations": [],
+          "disposition": "Main neutral SettingsKindSpec registry replaces fixed ClaudeUser/CodexUser variants. Approved stable native event generation moves to plan_settings(kind)/codex::setup::plan_codex; legacy recorded-owner recognition uses registered kind from exact argv harness, no broadened ownership rule."
+        },
+        {
+          "line": "let mut group = json!({\"hooks\":[{\"type\":\"command\",\"command\": native.as_ref().and_then(|entries| entries.iter().find(|e| e.event == name)).and_then(entry_command).map(str::to_owned).unwrap_or_else(|| event_command(&command, name))}]});",
+          "locations": [],
+          "disposition": "Main neutral SettingsKindSpec registry replaces fixed ClaudeUser/CodexUser variants. Approved stable native event generation moves to plan_settings(kind)/codex::setup::plan_codex; legacy recorded-owner recognition uses registered kind from exact argv harness, no broadened ownership rule."
+        },
+        {
+          "line": "&& [SettingsKind::ClaudeUser, SettingsKind::CodexUser]",
+          "locations": [],
+          "disposition": "Main neutral SettingsKindSpec registry replaces fixed ClaudeUser/CodexUser variants. Approved stable native event generation moves to plan_settings(kind)/codex::setup::plan_codex; legacy recorded-owner recognition uses registered kind from exact argv harness, no broadened ownership rule."
+        },
+        {
+          "line": ".any(|kind| native_entries(kind, &argv).is_ok_and(|entries| entries.is_some()))",
+          "locations": [],
+          "disposition": "Main neutral SettingsKindSpec registry replaces fixed ClaudeUser/CodexUser variants. Approved stable native event generation moves to plan_settings(kind)/codex::setup::plan_codex; legacy recorded-owner recognition uses registered kind from exact argv harness, no broadened ownership rule."
+        }
+      ],
+      "semantic_disposition": "Main neutral SettingsKindSpec registry replaces fixed ClaudeUser/CodexUser variants. Approved stable native event generation moves to plan_settings(kind)/codex::setup::plan_codex; legacy recorded-owner recognition uses registered kind from exact argv harness, no broadened ownership rule."
+    },
+    {
+      "path": "src/host/native.rs",
+      "approved_added_lines": 8,
+      "same_path_lines": 8,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "src/ports.rs",
+      "approved_added_lines": 23,
+      "same_path_lines": 23,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "src/protocol/capabilities.rs",
+      "approved_added_lines": 5,
+      "same_path_lines": 5,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "src/protocol/commands.rs",
+      "approved_added_lines": 22,
+      "same_path_lines": 22,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "src/protocol/handoff.rs",
+      "approved_added_lines": 138,
+      "same_path_lines": 138,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "src/protocol/output_compact.rs",
+      "approved_added_lines": 21,
+      "same_path_lines": 21,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "src/protocol/results.rs",
+      "approved_added_lines": 12,
+      "same_path_lines": 12,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "src/scheduler/deadlines.rs",
+      "approved_added_lines": 12,
+      "same_path_lines": 12,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "src/service/kicks.rs",
+      "approved_added_lines": 6,
+      "same_path_lines": 6,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "src/store/attention.rs",
+      "approved_added_lines": 134,
+      "same_path_lines": 134,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "src/store/control.rs",
+      "approved_added_lines": 35,
+      "same_path_lines": 35,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "src/store/effective.rs",
+      "approved_added_lines": 66,
+      "same_path_lines": 66,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "src/store/invitation_due.rs",
+      "approved_added_lines": 15,
+      "same_path_lines": 15,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "src/store/materialization.rs",
+      "approved_added_lines": 111,
+      "same_path_lines": 111,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "src/store/messages.rs",
+      "approved_added_lines": 1,
+      "same_path_lines": 1,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "src/store/mod.rs",
+      "approved_added_lines": 73,
+      "same_path_lines": 73,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "src/store/queries.rs",
+      "approved_added_lines": 47,
+      "same_path_lines": 47,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "src/store/receipts.rs",
+      "approved_added_lines": 140,
+      "same_path_lines": 140,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "src/store/schema.rs",
+      "approved_added_lines": 484,
+      "same_path_lines": 452,
+      "moved_lines": [],
+      "unmatched_lines": [
+        {
+          "line": "const V29: &str = include_str!(\"../../migrations/0029_invitation_confirmation.sql\");",
+          "locations": [],
+          "disposition": "Released1..31 unchanged exact; unpublished29..35\u219232..38 includes/verifiers/ranges/latest39; published main30 verification selects old/transformed exactDDL based actual cutpoint. Additive39 changes only4body bounds, restores FK flag and fullgraph verification. Digest arrays32 restored unchanged."
+        },
+        {
+          "line": "const V30: &str = include_str!(\"../../migrations/0030_receipt_send_time.sql\");",
+          "locations": [],
+          "disposition": "Released1..31 unchanged exact; unpublished29..35\u219232..38 includes/verifiers/ranges/latest39; published main30 verification selects old/transformed exactDDL based actual cutpoint. Additive39 changes only4body bounds, restores FK flag and fullgraph verification. Digest arrays32 restored unchanged."
+        },
+        {
+          "line": "const V31: &str = include_str!(\"../../migrations/0031_handoff_body_bounds.sql\");",
+          "locations": [],
+          "disposition": "Released1..31 unchanged exact; unpublished29..35\u219232..38 includes/verifiers/ranges/latest39; published main30 verification selects old/transformed exactDDL based actual cutpoint. Additive39 changes only4body bounds, restores FK flag and fullgraph verification. Digest arrays32 restored unchanged."
+        },
+        {
+          "line": "const V32: &str = include_str!(\"../../migrations/0032_receipt_deadline_backfill.sql\");",
+          "locations": [],
+          "disposition": "Released1..31 unchanged exact; unpublished29..35\u219232..38 includes/verifiers/ranges/latest39; published main30 verification selects old/transformed exactDDL based actual cutpoint. Additive39 changes only4body bounds, restores FK flag and fullgraph verification. Digest arrays32 restored unchanged."
+        },
+        {
+          "line": "const V33: &str = include_str!(\"../../migrations/0033_invitation_lifecycle.sql\");",
+          "locations": [],
+          "disposition": "Released1..31 unchanged exact; unpublished29..35\u219232..38 includes/verifiers/ranges/latest39; published main30 verification selects old/transformed exactDDL based actual cutpoint. Additive39 changes only4body bounds, restores FK flag and fullgraph verification. Digest arrays32 restored unchanged."
+        },
+        {
+          "line": "const V34: &str = include_str!(\"../../migrations/0034_invitation_warning_origin.sql\");",
+          "locations": [],
+          "disposition": "Released1..31 unchanged exact; unpublished29..35\u219232..38 includes/verifiers/ranges/latest39; published main30 verification selects old/transformed exactDDL based actual cutpoint. Additive39 changes only4body bounds, restores FK flag and fullgraph verification. Digest arrays32 restored unchanged."
+        },
+        {
+          "line": "const V35: &str = include_str!(\"../../migrations/0035_receipt_warning_origins.sql\");",
+          "locations": [],
+          "disposition": "Released1..31 unchanged exact; unpublished29..35\u219232..38 includes/verifiers/ranges/latest39; published main30 verification selects old/transformed exactDDL based actual cutpoint. Additive39 changes only4body bounds, restores FK flag and fullgraph verification. Digest arrays32 restored unchanged."
+        },
+        {
+          "line": "pub(crate) const LATEST_VERSION: i64 = 35;",
+          "locations": [],
+          "disposition": "Released1..31 unchanged exact; unpublished29..35\u219232..38 includes/verifiers/ranges/latest39; published main30 verification selects old/transformed exactDDL based actual cutpoint. Additive39 changes only4body bounds, restores FK flag and fullgraph verification. Digest arrays32 restored unchanged."
+        },
+        {
+          "line": ".and_then(|_| conn.pragma_update(None, \"user_version\", 29));",
+          "locations": [],
+          "disposition": "Released1..31 unchanged exact; unpublished29..35\u219232..38 includes/verifiers/ranges/latest39; published main30 verification selects old/transformed exactDDL based actual cutpoint. Additive39 changes only4body bounds, restores FK flag and fullgraph verification. Digest arrays32 restored unchanged."
+        },
+        {
+          "line": "18..=35 => verify_existing(conn),",
+          "locations": [],
+          "disposition": "Released1..31 unchanged exact; unpublished29..35\u219232..38 includes/verifiers/ranges/latest39; published main30 verification selects old/transformed exactDDL based actual cutpoint. Additive39 changes only4body bounds, restores FK flag and fullgraph verification. Digest arrays32 restored unchanged."
+        },
+        {
+          "line": "if version <= 30 {",
+          "locations": [],
+          "disposition": "Released1..31 unchanged exact; unpublished29..35\u219232..38 includes/verifiers/ranges/latest39; published main30 verification selects old/transformed exactDDL based actual cutpoint. Additive39 changes only4body bounds, restores FK flag and fullgraph verification. Digest arrays32 restored unchanged."
+        },
+        {
+          "line": "if version <= 29 {",
+          "locations": [],
+          "disposition": "Released1..31 unchanged exact; unpublished29..35\u219232..38 includes/verifiers/ranges/latest39; published main30 verification selects old/transformed exactDDL based actual cutpoint. Additive39 changes only4body bounds, restores FK flag and fullgraph verification. Digest arrays32 restored unchanged."
+        },
+        {
+          "line": "migrate_receipts_v29_to_v30(conn)?;",
+          "locations": [],
+          "disposition": "Released1..31 unchanged exact; unpublished29..35\u219232..38 includes/verifiers/ranges/latest39; published main30 verification selects old/transformed exactDDL based actual cutpoint. Additive39 changes only4body bounds, restores FK flag and fullgraph verification. Digest arrays32 restored unchanged."
+        },
+        {
+          "line": "if version <= 30 {",
+          "locations": [],
+          "disposition": "Released1..31 unchanged exact; unpublished29..35\u219232..38 includes/verifiers/ranges/latest39; published main30 verification selects old/transformed exactDDL based actual cutpoint. Additive39 changes only4body bounds, restores FK flag and fullgraph verification. Digest arrays32 restored unchanged."
+        },
+        {
+          "line": "migrate_handoff_v30_to_v31(conn)?;",
+          "locations": [],
+          "disposition": "Released1..31 unchanged exact; unpublished29..35\u219232..38 includes/verifiers/ranges/latest39; published main30 verification selects old/transformed exactDDL based actual cutpoint. Additive39 changes only4body bounds, restores FK flag and fullgraph verification. Digest arrays32 restored unchanged."
+        },
+        {
+          "line": "if version <= 31 {",
+          "locations": [],
+          "disposition": "Released1..31 unchanged exact; unpublished29..35\u219232..38 includes/verifiers/ranges/latest39; published main30 verification selects old/transformed exactDDL based actual cutpoint. Additive39 changes only4body bounds, restores FK flag and fullgraph verification. Digest arrays32 restored unchanged."
+        },
+        {
+          "line": ".execute_batch(V33)",
+          "locations": [],
+          "disposition": "Released1..31 unchanged exact; unpublished29..35\u219232..38 includes/verifiers/ranges/latest39; published main30 verification selects old/transformed exactDDL based actual cutpoint. Additive39 changes only4body bounds, restores FK flag and fullgraph verification. Digest arrays32 restored unchanged."
+        },
+        {
+          "line": ".execute_batch(V34)",
+          "locations": [],
+          "disposition": "Released1..31 unchanged exact; unpublished29..35\u219232..38 includes/verifiers/ranges/latest39; published main30 verification selects old/transformed exactDDL based actual cutpoint. Additive39 changes only4body bounds, restores FK flag and fullgraph verification. Digest arrays32 restored unchanged."
+        },
+        {
+          "line": "conn.pragma_update(None, \"user_version\", 35)",
+          "locations": [],
+          "disposition": "Released1..31 unchanged exact; unpublished29..35\u219232..38 includes/verifiers/ranges/latest39; published main30 verification selects old/transformed exactDDL based actual cutpoint. Additive39 changes only4body bounds, restores FK flag and fullgraph verification. Digest arrays32 restored unchanged."
+        },
+        {
+          "line": "verify_receipt_warning_origins_schema(conn)",
+          "locations": [],
+          "disposition": "Released1..31 unchanged exact; unpublished29..35\u219232..38 includes/verifiers/ranges/latest39; published main30 verification selects old/transformed exactDDL based actual cutpoint. Additive39 changes only4body bounds, restores FK flag and fullgraph verification. Digest arrays32 restored unchanged."
+        },
+        {
+          "line": "for line in V35.lines() {",
+          "locations": [],
+          "disposition": "Released1..31 unchanged exact; unpublished29..35\u219232..38 includes/verifiers/ranges/latest39; published main30 verification selects old/transformed exactDDL based actual cutpoint. Additive39 changes only4body bounds, restores FK flag and fullgraph verification. Digest arrays32 restored unchanged."
+        },
+        {
+          "line": "let index = V34",
+          "locations": [],
+          "disposition": "Released1..31 unchanged exact; unpublished29..35\u219232..38 includes/verifiers/ranges/latest39; published main30 verification selects old/transformed exactDDL based actual cutpoint. Additive39 changes only4body bounds, restores FK flag and fullgraph verification. Digest arrays32 restored unchanged."
+        },
+        {
+          "line": "let trigger = V34",
+          "locations": [],
+          "disposition": "Released1..31 unchanged exact; unpublished29..35\u219232..38 includes/verifiers/ranges/latest39; published main30 verification selects old/transformed exactDDL based actual cutpoint. Additive39 changes only4body bounds, restores FK flag and fullgraph verification. Digest arrays32 restored unchanged."
+        },
+        {
+          "line": "let expected = V32",
+          "locations": [],
+          "disposition": "Released1..31 unchanged exact; unpublished29..35\u219232..38 includes/verifiers/ranges/latest39; published main30 verification selects old/transformed exactDDL based actual cutpoint. Additive39 changes only4body bounds, restores FK flag and fullgraph verification. Digest arrays32 restored unchanged."
+        },
+        {
+          "line": "for statement in V29.split(\"\\n\\n\").filter(|sql| sql.starts_with(\"CREATE \")) {",
+          "locations": [],
+          "disposition": "Released1..31 unchanged exact; unpublished29..35\u219232..38 includes/verifiers/ranges/latest39; published main30 verification selects old/transformed exactDDL based actual cutpoint. Additive39 changes only4body bounds, restores FK flag and fullgraph verification. Digest arrays32 restored unchanged."
+        },
+        {
+          "line": "fn migrate_receipts_v29_to_v30(conn: &Connection) -> Result<(), ApiError> {",
+          "locations": [],
+          "disposition": "Released1..31 unchanged exact; unpublished29..35\u219232..38 includes/verifiers/ranges/latest39; published main30 verification selects old/transformed exactDDL based actual cutpoint. Additive39 changes only4body bounds, restores FK flag and fullgraph verification. Digest arrays32 restored unchanged."
+        },
+        {
+          "line": "conn.execute_batch(V30).map_err(store_error)?;",
+          "locations": [],
+          "disposition": "Released1..31 unchanged exact; unpublished29..35\u219232..38 includes/verifiers/ranges/latest39; published main30 verification selects old/transformed exactDDL based actual cutpoint. Additive39 changes only4body bounds, restores FK flag and fullgraph verification. Digest arrays32 restored unchanged."
+        },
+        {
+          "line": "fn migrate_handoff_v30_to_v31(conn: &Connection) -> Result<(), ApiError> {",
+          "locations": [],
+          "disposition": "Released1..31 unchanged exact; unpublished29..35\u219232..38 includes/verifiers/ranges/latest39; published main30 verification selects old/transformed exactDDL based actual cutpoint. Additive39 changes only4body bounds, restores FK flag and fullgraph verification. Digest arrays32 restored unchanged."
+        },
+        {
+          "line": "conn.execute_batch(V31).map_err(store_error)?;",
+          "locations": [],
+          "disposition": "Released1..31 unchanged exact; unpublished29..35\u219232..38 includes/verifiers/ranges/latest39; published main30 verification selects old/transformed exactDDL based actual cutpoint. Additive39 changes only4body bounds, restores FK flag and fullgraph verification. Digest arrays32 restored unchanged."
+        },
+        {
+          "line": "verify_bootstrap_ddl(conn, V28)",
+          "locations": [],
+          "disposition": "Released1..31 unchanged exact; unpublished29..35\u219232..38 includes/verifiers/ranges/latest39; published main30 verification selects old/transformed exactDDL based actual cutpoint. Additive39 changes only4body bounds, restores FK flag and fullgraph verification. Digest arrays32 restored unchanged."
+        },
+        {
+          "line": "verify_bootstrap_ddl(conn, &ddl)",
+          "locations": [],
+          "disposition": "Released1..31 unchanged exact; unpublished29..35\u219232..38 includes/verifiers/ranges/latest39; published main30 verification selects old/transformed exactDDL based actual cutpoint. Additive39 changes only4body bounds, restores FK flag and fullgraph verification. Digest arrays32 restored unchanged."
+        },
+        {
+          "line": "fn verify_bootstrap_ddl(conn: &Connection, source: &str) -> Result<(), ApiError> {",
+          "locations": [],
+          "disposition": "Released1..31 unchanged exact; unpublished29..35\u219232..38 includes/verifiers/ranges/latest39; published main30 verification selects old/transformed exactDDL based actual cutpoint. Additive39 changes only4body bounds, restores FK flag and fullgraph verification. Digest arrays32 restored unchanged."
+        }
+      ],
+      "semantic_disposition": "Released1..31 unchanged exact; unpublished29..35\u219232..38 includes/verifiers/ranges/latest39; published main30 verification selects old/transformed exactDDL based actual cutpoint. Additive39 changes only4body bounds, restores FK flag and fullgraph verification. Digest arrays32 restored unchanged."
+    },
+    {
+      "path": "src/store/seats.rs",
+      "approved_added_lines": 8,
+      "same_path_lines": 8,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "src/store/service_controls.rs",
+      "approved_added_lines": 11,
+      "same_path_lines": 11,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "src/store/topology_handoff.rs",
+      "approved_added_lines": 16,
+      "same_path_lines": 16,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "src/store/topology_handoff/attachment.rs",
+      "approved_added_lines": 22,
+      "same_path_lines": 22,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "src/store/topology_handoff/persistence.rs",
+      "approved_added_lines": 2,
+      "same_path_lines": 2,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "src/store/wake.rs",
+      "approved_added_lines": 8,
+      "same_path_lines": 8,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "src/test_support/history.rs",
+      "approved_added_lines": 1,
+      "same_path_lines": 1,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "src/test_support/mod.rs",
+      "approved_added_lines": 1,
+      "same_path_lines": 1,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "tests/cli/commands.rs",
+      "approved_added_lines": 73,
+      "same_path_lines": 73,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "tests/cli/cooperative.rs",
+      "approved_added_lines": 477,
+      "same_path_lines": 477,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "tests/cli/follow_retry.rs",
+      "approved_added_lines": 1,
+      "same_path_lines": 1,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "tests/cli/handoff.rs",
+      "approved_added_lines": 546,
+      "same_path_lines": 546,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "tests/cli/handoff_delivery.rs",
+      "approved_added_lines": 1039,
+      "same_path_lines": 1039,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "tests/cli/hook.rs",
+      "approved_added_lines": 161,
+      "same_path_lines": 160,
+      "moved_lines": [],
+      "unmatched_lines": [
+        {
+          "line": "let codex = crate::harness::setup::plan_codex_for_version(",
+          "locations": [],
+          "disposition": "Main moved plan_codex_for_version helper to adapter; fixture uses codex::setup::plan_codex with same native argv and stable assertions."
+        }
+      ],
+      "semantic_disposition": "Main moved plan_codex_for_version helper to adapter; fixture uses codex::setup::plan_codex with same native argv and stable assertions."
+    },
+    {
+      "path": "tests/cli/launch.rs",
+      "approved_added_lines": 162,
+      "same_path_lines": 159,
+      "moved_lines": [
+        {
+          "line": ".as_ref()",
+          "locations": [
+            "src/ports.rs",
+            "src/archival_legacy.rs",
+            "src/app.rs",
+            "src/host/native.rs",
+            "src/host/transport.rs",
+            "src/identity/repair.rs",
+            "src/notification/policy.rs",
+            "src/notification/dispatch.rs",
+            "src/scheduler/mod.rs",
+            "src/protocol/handoff.rs",
+            "src/protocol/attention.rs",
+            "src/protocol/commands.rs",
+            "src/protocol/output.rs",
+            "src/protocol/pagination.rs",
+            "src/cli/hook.rs",
+            "src/cli/handoff.rs",
+            "src/cli/panes.rs",
+            "src/cli/journal.rs",
+            "src/cli/follow.rs",
+            "src/cli/picker.rs",
+            "src/cli/commands.rs",
+            "src/cli/doctor.rs",
+            "src/cli/mod.rs",
+            "src/cli/topology_runtime.rs",
+            "src/cli/hook_evidence.rs",
+            "src/cli/handoff_delivery.rs",
+            "src/cli/peer_locations.rs",
+            "src/cli/watch.rs",
+            "src/cli/topology_handoff.rs",
+            "src/cli/direct_send.rs",
+            "src/cli/installer.rs",
+            "src/cli/retry.rs",
+            "src/cli/launch.rs",
+            "src/harness/cache.rs",
+            "src/harness/bridge.rs",
+            "src/harness/runtime.rs",
+            "src/harness/hermes.rs",
+            "src/harness/registry.rs",
+            "src/harness/discovery.rs",
+            "src/harness/manifest.rs",
+            "src/harness/claude_mod.rs",
+            "src/harness/codex_config.rs",
+            "src/harness/codex_evidence.rs",
+            "src/harness/context.rs",
+            "src/harness/attribution.rs",
+            "src/harness/setup.rs",
+            "src/daemon/harness_evidence.rs",
+            "src/daemon/harness_states.rs",
+            "src/daemon/health.rs",
+            "src/daemon/control.rs",
+            "src/daemon/lifecycle.rs",
+            "src/daemon/logs.rs",
+            "src/test_support/mod.rs",
+            "src/view/mod.rs",
+            "src/delivery/assemble.rs",
+            "src/service/dispatch.rs",
+            "src/service/pacer.rs",
+            "src/service/live_gate.rs",
+            "src/service/workers.rs",
+            "src/service/delivery_pull.rs",
+            "src/client/service.rs",
+            "src/summary/render.rs",
+            "src/store/seats.rs",
+            "src/store/handoff.rs",
+            "src/store/service_controls.rs",
+            "src/store/wake.rs",
+            "src/store/mod.rs",
+            "src/store/schema.rs",
+            "src/store/service_substrate.rs",
+            "src/store/materialization.rs",
+            "src/store/queries.rs",
+            "src/store/archival.rs",
+            "src/store/messages.rs",
+            "src/store/connection.rs",
+            "src/store/picker_directory.rs",
+            "src/store/handoff/automatic.rs",
+            "src/store/topology_handoff/automatic.rs",
+            "src/store/topology_handoff/persistence.rs",
+            "src/store/topology_handoff/attachment.rs",
+            "src/harness/claude/doctor.rs",
+            "src/harness/claude/prompt_suggestion.rs",
+            "src/harness/codex/permissions.rs",
+            "src/harness/codex/setup.rs",
+            "src/harness/agy/plugin.rs",
+            "src/harness/hermes/runtime.rs",
+            "src/harness/hermes/launch.rs",
+            "src/cli/setup/foreground.rs",
+            "src/cli/topology_handoff/automatic.rs",
+            "src/cli/topology_recover/automatic.rs",
+            "src/protocol/handoff/automatic.rs",
+            "tests/view.rs",
+            "tests/host/continuity.rs",
+            "tests/integration/topology_activation.rs",
+            "tests/integration/sweep_remaining.rs",
+            "tests/integration/mod_delivery.rs",
+            "tests/cli/doctor_json.rs",
+            "tests/cli/hook.rs",
+            "tests/cli/cooperative.rs",
+            "tests/cli/journal.rs",
+            "tests/cli/topology_handoff.rs",
+            "tests/harness/agy_launch.rs",
+            "tests/harness/adapter_smoke.rs",
+            "tests/harness/canary_payloads.rs",
+            "tests/harness/launch.rs",
+            "tests/harness/setup.rs",
+            "tests/daemon/harness_evidence.rs",
+            "tests/service/lanes.rs",
+            "tests/store/wake_on_wake.rs",
+            "tests/store/channel_archival.rs",
+            "tests/store/control.rs",
+            "tests/store/attention.rs",
+            "tests/store/queries.rs"
+          ]
+        }
+      ],
+      "unmatched_lines": [
+        {
+          "line": "s.env.claude_config_dir = Some(s.root.join(\"other config\"));",
+          "locations": [],
+          "disposition": "Main replaces dedicated claude_config_dir field with neutral config_roots keyed claude; wrong-profile fixture changes same path through map, preserving refusal/advisory assertion."
+        },
+        {
+          "line": ".claude_config_dir",
+          "locations": [],
+          "disposition": "Main replaces dedicated claude_config_dir field with neutral config_roots keyed claude; wrong-profile fixture changes same path through map, preserving refusal/advisory assertion."
+        }
+      ],
+      "semantic_disposition": "Main replaces dedicated claude_config_dir field with neutral config_roots keyed claude; wrong-profile fixture changes same path through map, preserving refusal/advisory assertion."
+    },
+    {
+      "path": "tests/cli/lazy_display.rs",
+      "approved_added_lines": 2,
+      "same_path_lines": 2,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "tests/cli/lazy_send.rs",
+      "approved_added_lines": 96,
+      "same_path_lines": 96,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "tests/cli/output.rs",
+      "approved_added_lines": 119,
+      "same_path_lines": 119,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "tests/cli/topology_handoff.rs",
+      "approved_added_lines": 181,
+      "same_path_lines": 181,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "tests/cli/watch.rs",
+      "approved_added_lines": 18,
+      "same_path_lines": 18,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "tests/contracts.rs",
+      "approved_added_lines": 17,
+      "same_path_lines": 17,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "tests/handoff_topology_authority.rs",
+      "approved_added_lines": 1,
+      "same_path_lines": 1,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "tests/handoff_topology_cli.rs",
+      "approved_added_lines": 16,
+      "same_path_lines": 16,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "tests/harness/adapter_smoke.rs",
+      "approved_added_lines": 6,
+      "same_path_lines": 6,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "tests/harness/canary_payloads.rs",
+      "approved_added_lines": 41,
+      "same_path_lines": 41,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "tests/harness/claude_mod.rs",
+      "approved_added_lines": 24,
+      "same_path_lines": 24,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "tests/harness/launch.rs",
+      "approved_added_lines": 31,
+      "same_path_lines": 31,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "tests/harness/setup.rs",
+      "approved_added_lines": 574,
+      "same_path_lines": 555,
+      "moved_lines": [
+        {
+          "line": "let first =",
+          "locations": [
+            "tests/identity/reconcile.rs",
+            "tests/harness/bridge.rs",
+            "tests/harness/codex.rs",
+            "tests/store/facade.rs"
+          ]
+        },
+        {
+          "line": "claude_config_dir: None,",
+          "locations": [
+            "tests/cli/launch.rs"
+          ]
+        }
+      ],
+      "unmatched_lines": [
+        {
+          "line": "(SettingsKind::ClaudeUser, \"claude\"),",
+          "locations": [],
+          "disposition": "Fixed SettingsKind variants replaced by adapter settings_kind() and moved codex planning helper. Existing assertions/bounds/order/trust digests stay unchanged."
+        },
+        {
+          "line": "(SettingsKind::CodexUser, \"codex\"),",
+          "locations": [],
+          "disposition": "Fixed SettingsKind variants replaced by adapter settings_kind() and moved codex planning helper. Existing assertions/bounds/order/trust digests stay unchanged."
+        },
+        {
+          "line": "(SettingsKind::ClaudeUser, \"claude\"),",
+          "locations": [],
+          "disposition": "Fixed SettingsKind variants replaced by adapter settings_kind() and moved codex planning helper. Existing assertions/bounds/order/trust digests stay unchanged."
+        },
+        {
+          "line": "(SettingsKind::CodexUser, \"codex\"),",
+          "locations": [],
+          "disposition": "Fixed SettingsKind variants replaced by adapter settings_kind() and moved codex planning helper. Existing assertions/bounds/order/trust digests stay unchanged."
+        },
+        {
+          "line": "for kind in [SettingsKind::ClaudeUser, SettingsKind::CodexUser] {",
+          "locations": [],
+          "disposition": "Fixed SettingsKind variants replaced by adapter settings_kind() and moved codex planning helper. Existing assertions/bounds/order/trust digests stay unchanged."
+        },
+        {
+          "line": "for kind in [SettingsKind::ClaudeUser, SettingsKind::CodexUser] {",
+          "locations": [],
+          "disposition": "Fixed SettingsKind variants replaced by adapter settings_kind() and moved codex planning helper. Existing assertions/bounds/order/trust digests stay unchanged."
+        },
+        {
+          "line": "for kind in [SettingsKind::ClaudeUser, SettingsKind::CodexUser] {",
+          "locations": [],
+          "disposition": "Fixed SettingsKind variants replaced by adapter settings_kind() and moved codex planning helper. Existing assertions/bounds/order/trust digests stay unchanged."
+        },
+        {
+          "line": "codex_home: Some(dir.clone()),",
+          "locations": [],
+          "disposition": "Fixed SettingsKind variants replaced by adapter settings_kind() and moved codex planning helper. Existing assertions/bounds/order/trust digests stay unchanged."
+        },
+        {
+          "line": "claude_config_dir: Some(dir.clone()),",
+          "locations": [],
+          "disposition": "Fixed SettingsKind variants replaced by adapter settings_kind() and moved codex planning helper. Existing assertions/bounds/order/trust digests stay unchanged."
+        },
+        {
+          "line": "install_user_settings(SettingsKind::ClaudeUser, &config, &manifest, &argv, b\"{}\").unwrap();",
+          "locations": [],
+          "disposition": "Fixed SettingsKind variants replaced by adapter settings_kind() and moved codex planning helper. Existing assertions/bounds/order/trust digests stay unchanged."
+        },
+        {
+          "line": "install_user_settings(SettingsKind::ClaudeUser, &config, &manifest, &argv, b\"{}\").unwrap();",
+          "locations": [],
+          "disposition": "Fixed SettingsKind variants replaced by adapter settings_kind() and moved codex planning helper. Existing assertions/bounds/order/trust digests stay unchanged."
+        },
+        {
+          "line": "remove_user_settings(SettingsKind::ClaudeUser, &config, &manifest).unwrap();",
+          "locations": [],
+          "disposition": "Fixed SettingsKind variants replaced by adapter settings_kind() and moved codex planning helper. Existing assertions/bounds/order/trust digests stay unchanged."
+        },
+        {
+          "line": "for kind in [SettingsKind::ClaudeUser, SettingsKind::CodexUser] {",
+          "locations": [],
+          "disposition": "Fixed SettingsKind variants replaced by adapter settings_kind() and moved codex planning helper. Existing assertions/bounds/order/trust digests stay unchanged."
+        },
+        {
+          "line": "codex_home: Some(dir.clone()),",
+          "locations": [],
+          "disposition": "Fixed SettingsKind variants replaced by adapter settings_kind() and moved codex planning helper. Existing assertions/bounds/order/trust digests stay unchanged."
+        },
+        {
+          "line": "SettingsKind::CodexUser,",
+          "locations": [],
+          "disposition": "Fixed SettingsKind variants replaced by adapter settings_kind() and moved codex planning helper. Existing assertions/bounds/order/trust digests stay unchanged."
+        },
+        {
+          "line": "SettingsKind::CodexUser,",
+          "locations": [],
+          "disposition": "Fixed SettingsKind variants replaced by adapter settings_kind() and moved codex planning helper. Existing assertions/bounds/order/trust digests stay unchanged."
+        },
+        {
+          "line": "remove_user_settings(SettingsKind::CodexUser, &config, &manifest_path).unwrap();",
+          "locations": [],
+          "disposition": "Fixed SettingsKind variants replaced by adapter settings_kind() and moved codex planning helper. Existing assertions/bounds/order/trust digests stay unchanged."
+        }
+      ],
+      "semantic_disposition": "Fixed SettingsKind variants replaced by adapter settings_kind() and moved codex planning helper. Existing assertions/bounds/order/trust digests stay unchanged."
+    },
+    {
+      "path": "tests/hook_entrypoint.rs",
+      "approved_added_lines": 113,
+      "same_path_lines": 113,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "tests/integration/channel_activation.rs",
+      "approved_added_lines": 4,
+      "same_path_lines": 2,
+      "moved_lines": [
+        {
+          "line": "35",
+          "locations": [
+            "tests/store/lazy_schema.rs",
+            "tests/store/invitation_due.rs"
+          ]
+        }
+      ],
+      "unmatched_lines": [
+        {
+          "line": "// The initializer upgrades each historical input to the current schema35.",
+          "locations": [],
+          "disposition": "Explicit current-schema identity/comment35\u219239, no behavioral/bound/cardinality substitution."
+        }
+      ],
+      "semantic_disposition": "Explicit current-schema identity/comment35\u219239, no behavioral/bound/cardinality substitution."
+    },
+    {
+      "path": "tests/integration/lazy_attention.rs",
+      "approved_added_lines": 1,
+      "same_path_lines": 1,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "tests/integration/notice_wake.rs",
+      "approved_added_lines": 25,
+      "same_path_lines": 25,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "tests/integration/topology_activation.rs",
+      "approved_added_lines": 37,
+      "same_path_lines": 37,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "tests/lifecycle_ux.rs",
+      "approved_added_lines": 1,
+      "same_path_lines": 1,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "tests/native/demo/test_demo_verify.py",
+      "approved_added_lines": 64,
+      "same_path_lines": 64,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "tests/protocol/capabilities.rs",
+      "approved_added_lines": 98,
+      "same_path_lines": 98,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "tests/scheduler/deadlines.rs",
+      "approved_added_lines": 1,
+      "same_path_lines": 1,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "tests/scheduler/dispatch.rs",
+      "approved_added_lines": 1,
+      "same_path_lines": 1,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "tests/scheduler/poke_flow.rs",
+      "approved_added_lines": 250,
+      "same_path_lines": 250,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "tests/service/cooperative.rs",
+      "approved_added_lines": 3,
+      "same_path_lines": 3,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "tests/service/crash_matrix.rs",
+      "approved_added_lines": 1,
+      "same_path_lines": 1,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "tests/service/lanes.rs",
+      "approved_added_lines": 3,
+      "same_path_lines": 3,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "tests/service/worker_health.rs",
+      "approved_added_lines": 1,
+      "same_path_lines": 1,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "tests/setup_cli.rs",
+      "approved_added_lines": 223,
+      "same_path_lines": 223,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "tests/store/archival_legacy.rs",
+      "approved_added_lines": 55,
+      "same_path_lines": 55,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "tests/store/catch_up.rs",
+      "approved_added_lines": 16,
+      "same_path_lines": 16,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "tests/store/commit_kicks.rs",
+      "approved_added_lines": 16,
+      "same_path_lines": 16,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "tests/store/control.rs",
+      "approved_added_lines": 1001,
+      "same_path_lines": 1001,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "tests/store/cooperative_checkin.rs",
+      "approved_added_lines": 1,
+      "same_path_lines": 1,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "tests/store/effective.rs",
+      "approved_added_lines": 1259,
+      "same_path_lines": 1238,
+      "moved_lines": [
+        {
+          "line": "31",
+          "locations": [
+            "src/cli/installer.rs",
+            "tests/store/schema.rs"
+          ]
+        },
+        {
+          "line": "31",
+          "locations": [
+            "src/cli/installer.rs",
+            "tests/store/schema.rs"
+          ]
+        },
+        {
+          "line": "31",
+          "locations": [
+            "src/cli/installer.rs",
+            "tests/store/schema.rs"
+          ]
+        },
+        {
+          "line": "catalog(&db),",
+          "locations": [
+            "tests/store/schema.rs"
+          ]
+        }
+      ],
+      "unmatched_lines": [
+        {
+          "line": "29,",
+          "locations": [],
+          "disposition": "Unpublished31\u219234 physical prefix nowincludes released29/30/31 before redesign32/33/34; expected rollback remains actual34. Exact V39 four rebuilt tables and their implicit indexes normalize only their rootpages and precisely three bound literals; allother catalog cells retained."
+        },
+        {
+          "line": "include_str!(\"../../migrations/0029_invitation_confirmation.sql\"),",
+          "locations": [],
+          "disposition": "Unpublished31\u219234 physical prefix nowincludes released29/30/31 before redesign32/33/34; expected rollback remains actual34. Exact V39 four rebuilt tables and their implicit indexes normalize only their rootpages and precisely three bound literals; allother catalog cells retained."
+        },
+        {
+          "line": "include_str!(\"../../migrations/0030_receipt_send_time.sql\"),",
+          "locations": [],
+          "disposition": "Unpublished31\u219234 physical prefix nowincludes released29/30/31 before redesign32/33/34; expected rollback remains actual34. Exact V39 four rebuilt tables and their implicit indexes normalize only their rootpages and precisely three bound literals; allother catalog cells retained."
+        },
+        {
+          "line": "31,",
+          "locations": [],
+          "disposition": "Unpublished31\u219234 physical prefix nowincludes released29/30/31 before redesign32/33/34; expected rollback remains actual34. Exact V39 four rebuilt tables and their implicit indexes normalize only their rootpages and precisely three bound literals; allother catalog cells retained."
+        },
+        {
+          "line": "include_str!(\"../../migrations/0031_handoff_body_bounds.sql\"),",
+          "locations": [],
+          "disposition": "Unpublished31\u219234 physical prefix nowincludes released29/30/31 before redesign32/33/34; expected rollback remains actual34. Exact V39 four rebuilt tables and their implicit indexes normalize only their rootpages and precisely three bound literals; allother catalog cells retained."
+        },
+        {
+          "line": "let additions = include_str!(\"../../migrations/0034_invitation_warning_origin.sql\")",
+          "locations": [],
+          "disposition": "Unpublished31\u219234 physical prefix nowincludes released29/30/31 before redesign32/33/34; expected rollback remains actual34. Exact V39 four rebuilt tables and their implicit indexes normalize only their rootpages and precisely three bound literals; allother catalog cells retained."
+        },
+        {
+          "line": "assert_eq!(catalog(&db), expected_catalog);",
+          "locations": [],
+          "disposition": "Unpublished31\u219234 physical prefix nowincludes released29/30/31 before redesign32/33/34; expected rollback remains actual34. Exact V39 four rebuilt tables and their implicit indexes normalize only their rootpages and precisely three bound literals; allother catalog cells retained."
+        },
+        {
+          "line": "for version in [28, 29] {",
+          "locations": [],
+          "disposition": "Unpublished31\u219234 physical prefix nowincludes released29/30/31 before redesign32/33/34; expected rollback remains actual34. Exact V39 four rebuilt tables and their implicit indexes normalize only their rootpages and precisely three bound literals; allother catalog cells retained."
+        },
+        {
+          "line": "if version == 29 {",
+          "locations": [],
+          "disposition": "Unpublished31\u219234 physical prefix nowincludes released29/30/31 before redesign32/33/34; expected rollback remains actual34. Exact V39 four rebuilt tables and their implicit indexes normalize only their rootpages and precisely three bound literals; allother catalog cells retained."
+        },
+        {
+          "line": "\"../../migrations/0029_invitation_confirmation.sql\"",
+          "locations": [],
+          "disposition": "Unpublished31\u219234 physical prefix nowincludes released29/30/31 before redesign32/33/34; expected rollback remains actual34. Exact V39 four rebuilt tables and their implicit indexes normalize only their rootpages and precisely three bound literals; allother catalog cells retained."
+        },
+        {
+          "line": "db.pragma_update(None, \"user_version\", 29).unwrap();",
+          "locations": [],
+          "disposition": "Unpublished31\u219234 physical prefix nowincludes released29/30/31 before redesign32/33/34; expected rollback remains actual34. Exact V39 four rebuilt tables and their implicit indexes normalize only their rootpages and precisely three bound literals; allother catalog cells retained."
+        },
+        {
+          "line": "if version == 29 {",
+          "locations": [],
+          "disposition": "Unpublished31\u219234 physical prefix nowincludes released29/30/31 before redesign32/33/34; expected rollback remains actual34. Exact V39 four rebuilt tables and their implicit indexes normalize only their rootpages and precisely three bound literals; allother catalog cells retained."
+        },
+        {
+          "line": "for version in [28, 29] {",
+          "locations": [],
+          "disposition": "Unpublished31\u219234 physical prefix nowincludes released29/30/31 before redesign32/33/34; expected rollback remains actual34. Exact V39 four rebuilt tables and their implicit indexes normalize only their rootpages and precisely three bound literals; allother catalog cells retained."
+        },
+        {
+          "line": "if version == 29 {",
+          "locations": [],
+          "disposition": "Unpublished31\u219234 physical prefix nowincludes released29/30/31 before redesign32/33/34; expected rollback remains actual34. Exact V39 four rebuilt tables and their implicit indexes normalize only their rootpages and precisely three bound literals; allother catalog cells retained."
+        },
+        {
+          "line": "\"../../migrations/0029_invitation_confirmation.sql\"",
+          "locations": [],
+          "disposition": "Unpublished31\u219234 physical prefix nowincludes released29/30/31 before redesign32/33/34; expected rollback remains actual34. Exact V39 four rebuilt tables and their implicit indexes normalize only their rootpages and precisely three bound literals; allother catalog cells retained."
+        },
+        {
+          "line": "db.pragma_update(None, \"user_version\", 29).unwrap();",
+          "locations": [],
+          "disposition": "Unpublished31\u219234 physical prefix nowincludes released29/30/31 before redesign32/33/34; expected rollback remains actual34. Exact V39 four rebuilt tables and their implicit indexes normalize only their rootpages and precisely three bound literals; allother catalog cells retained."
+        },
+        {
+          "line": "29",
+          "locations": [],
+          "disposition": "Unpublished31\u219234 physical prefix nowincludes released29/30/31 before redesign32/33/34; expected rollback remains actual34. Exact V39 four rebuilt tables and their implicit indexes normalize only their rootpages and precisely three bound literals; allother catalog cells retained."
+        }
+      ],
+      "semantic_disposition": "Unpublished31\u219234 physical prefix nowincludes released29/30/31 before redesign32/33/34; expected rollback remains actual34. Exact V39 four rebuilt tables and their implicit indexes normalize only their rootpages and precisely three bound literals; allother catalog cells retained."
+    },
+    {
+      "path": "tests/store/facade.rs",
+      "approved_added_lines": 2,
+      "same_path_lines": 2,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "tests/store/handoff_fences.rs",
+      "approved_added_lines": 2,
+      "same_path_lines": 0,
+      "moved_lines": [
+        {
+          "line": "35",
+          "locations": [
+            "tests/store/lazy_schema.rs",
+            "tests/store/invitation_due.rs"
+          ]
+        }
+      ],
+      "unmatched_lines": [
+        {
+          "line": "// The initializer upgrades the historical22 fixture to current schema35.",
+          "locations": [],
+          "disposition": "Explicit current-schema identity/comment35\u219239, no behavioral/bound/cardinality substitution."
+        }
+      ],
+      "semantic_disposition": "Explicit current-schema identity/comment35\u219239, no behavioral/bound/cardinality substitution."
+    },
+    {
+      "path": "tests/store/invitation_due.rs",
+      "approved_added_lines": 446,
+      "same_path_lines": 436,
+      "moved_lines": [
+        {
+          "line": "33",
+          "locations": [
+            "src/cli/installer.rs",
+            "tests/store/archival_legacy.rs"
+          ]
+        },
+        {
+          "line": "32",
+          "locations": [
+            "src/cli/installer.rs",
+            "tests/harness/bridge.rs",
+            "tests/store/effective.rs",
+            "tests/store/lazy_publication.rs"
+          ]
+        }
+      ],
+      "unmatched_lines": [
+        {
+          "line": ".is_ok_and(|version| version <= 33)",
+          "locations": [],
+          "disposition": "Original unpublished lifecycle33\u219236 and pre-lifecycle32\u219235; exact physical prefixes maintain same lifecycle/origin historical meaning; released old<=28 remains unchanged."
+        },
+        {
+          "line": "assert_eq!(migrations.len(), 33);",
+          "locations": [],
+          "disposition": "Original unpublished lifecycle33\u219236 and pre-lifecycle32\u219235; exact physical prefixes maintain same lifecycle/origin historical meaning; released old<=28 remains unchanged."
+        },
+        {
+          "line": "conn.pragma_update(None, \"user_version\", 33).unwrap();",
+          "locations": [],
+          "disposition": "Original unpublished lifecycle33\u219236 and pre-lifecycle32\u219235; exact physical prefixes maintain same lifecycle/origin historical meaning; released old<=28 remains unchanged."
+        },
+        {
+          "line": "(\"invitations_confirmation_pending_seat\", 32),",
+          "locations": [],
+          "disposition": "Original unpublished lifecycle33\u219236 and pre-lifecycle32\u219235; exact physical prefixes maintain same lifecycle/origin historical meaning; released old<=28 remains unchanged."
+        },
+        {
+          "line": "(\"warning_conditions_invitation_origin\", 33),",
+          "locations": [],
+          "disposition": "Original unpublished lifecycle33\u219236 and pre-lifecycle32\u219235; exact physical prefixes maintain same lifecycle/origin historical meaning; released old<=28 remains unchanged."
+        },
+        {
+          "line": "for (index, migration) in paths.iter().take(32).enumerate() {",
+          "locations": [],
+          "disposition": "Original unpublished lifecycle33\u219236 and pre-lifecycle32\u219235; exact physical prefixes maintain same lifecycle/origin historical meaning; released old<=28 remains unchanged."
+        },
+        {
+          "line": "if index == 28 {",
+          "locations": [],
+          "disposition": "Original unpublished lifecycle33\u219236 and pre-lifecycle32\u219235; exact physical prefixes maintain same lifecycle/origin historical meaning; released old<=28 remains unchanged."
+        },
+        {
+          "line": "if failed_version == 32 {",
+          "locations": [],
+          "disposition": "Original unpublished lifecycle33\u219236 and pre-lifecycle32\u219235; exact physical prefixes maintain same lifecycle/origin historical meaning; released old<=28 remains unchanged."
+        }
+      ],
+      "semantic_disposition": "Original unpublished lifecycle33\u219236 and pre-lifecycle32\u219235; exact physical prefixes maintain same lifecycle/origin historical meaning; released old<=28 remains unchanged."
+    },
+    {
+      "path": "tests/store/lazy26_prerequisite.rs",
+      "approved_added_lines": 4,
+      "same_path_lines": 1,
+      "moved_lines": [],
+      "unmatched_lines": [
+        {
+          "line": "assert_eq!(version(&db), 35);",
+          "locations": [],
+          "disposition": "Explicit current-schema identity/comment35\u219239, no behavioral/bound/cardinality substitution."
+        },
+        {
+          "line": "assert_eq!(version(&db), 35);",
+          "locations": [],
+          "disposition": "Explicit current-schema identity/comment35\u219239, no behavioral/bound/cardinality substitution."
+        },
+        {
+          "line": "assert_eq!(version(&database.connection()), 35);",
+          "locations": [],
+          "disposition": "Explicit current-schema identity/comment35\u219239, no behavioral/bound/cardinality substitution."
+        }
+      ],
+      "semantic_disposition": "Explicit current-schema identity/comment35\u219239, no behavioral/bound/cardinality substitution."
+    },
+    {
+      "path": "tests/store/lazy_inbox.rs",
+      "approved_added_lines": 41,
+      "same_path_lines": 41,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "tests/store/lazy_schema.rs",
+      "approved_added_lines": 1,
+      "same_path_lines": 1,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "tests/store/materialization.rs",
+      "approved_added_lines": 32,
+      "same_path_lines": 32,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "tests/store/receipts.rs",
+      "approved_added_lines": 1508,
+      "same_path_lines": 1501,
+      "moved_lines": [
+        {
+          "line": "34",
+          "locations": [
+            "tests/store/effective.rs"
+          ]
+        },
+        {
+          "line": "35",
+          "locations": [
+            "tests/store/lazy_schema.rs",
+            "tests/store/invitation_due.rs"
+          ]
+        }
+      ],
+      "unmatched_lines": [
+        {
+          "line": "let (context, mut db, _) = receipt_discovery_historical(34);",
+          "locations": [],
+          "disposition": "Original unpublished discovery34\u219237, four-stream31\u219234 and subsequent three migrations35..37; same genuine historical inputs/limits preserved."
+        },
+        {
+          "line": "let (context, db, clock) = receipt_discovery_historical(31);",
+          "locations": [],
+          "disposition": "Original unpublished discovery34\u219237, four-stream31\u219234 and subsequent three migrations35..37; same genuine historical inputs/limits preserved."
+        },
+        {
+          "line": "for (n, path) in migrations.into_iter().enumerate().skip(31).take(3) {",
+          "locations": [],
+          "disposition": "Original unpublished discovery34\u219237, four-stream31\u219234 and subsequent three migrations35..37; same genuine historical inputs/limits preserved."
+        },
+        {
+          "line": "let (context, mut db, _) = receipt_discovery_historical(34);",
+          "locations": [],
+          "disposition": "Original unpublished discovery34\u219237, four-stream31\u219234 and subsequent three migrations35..37; same genuine historical inputs/limits preserved."
+        },
+        {
+          "line": "let (context, mut db, _) = receipt_discovery_historical(34);",
+          "locations": [],
+          "disposition": "Original unpublished discovery34\u219237, four-stream31\u219234 and subsequent three migrations35..37; same genuine historical inputs/limits preserved."
+        }
+      ],
+      "semantic_disposition": "Original unpublished discovery34\u219237, four-stream31\u219234 and subsequent three migrations35..37; same genuine historical inputs/limits preserved."
+    },
+    {
+      "path": "tests/store/retention.rs",
+      "approved_added_lines": 1,
+      "same_path_lines": 1,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "tests/store/schema.rs",
+      "approved_added_lines": 66,
+      "same_path_lines": 62,
+      "moved_lines": [],
+      "unmatched_lines": [
+        {
+          "line": ".prepare(\"SELECT name,rootpage FROM sqlite_master WHERE type='table' AND name NOT IN ('archival_instances','channel_archival','seat_archival','channel_handoff_fences','harness_contract_diagnostics','lazy_recipients','bootstrap_handoffs','bootstrap_child_keys','bootstrap_attempts','bootstrap_recovery_decisions','bootstrap_attachments','bootstrap_reports','receipt_send_time_cutovers','receipt_deadline_backfill','receipt_discovery_backfill','receipt_due_sparse','receipt_warning_origins') ORDER BY name\")",
+          "locations": [],
+          "disposition": "Exact nine new released direct/automatic tables excluded only from older v21 rootpage projection (they did not exist); final full catalog explicitly88tables149indexes212triggers; all original row/rootpage assertions retained."
+        },
+        {
+          "line": "79",
+          "locations": [],
+          "disposition": "Exact nine new released direct/automatic tables excluded only from older v21 rootpage projection (they did not exist); final full catalog explicitly88tables149indexes212triggers; all original row/rootpage assertions retained."
+        },
+        {
+          "line": "148",
+          "locations": [],
+          "disposition": "Exact nine new released direct/automatic tables excluded only from older v21 rootpage projection (they did not exist); final full catalog explicitly88tables149indexes212triggers; all original row/rootpage assertions retained."
+        },
+        {
+          "line": "194",
+          "locations": [],
+          "disposition": "Exact nine new released direct/automatic tables excluded only from older v21 rootpage projection (they did not exist); final full catalog explicitly88tables149indexes212triggers; all original row/rootpage assertions retained."
+        }
+      ],
+      "semantic_disposition": "Exact nine new released direct/automatic tables excluded only from older v21 rootpage projection (they did not exist); final full catalog explicitly88tables149indexes212triggers; all original row/rootpage assertions retained."
+    },
+    {
+      "path": "tests/store/service_send.rs",
+      "approved_added_lines": 73,
+      "same_path_lines": 73,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "tests/store/topology_attachment_guard.rs",
+      "approved_added_lines": 173,
+      "same_path_lines": 173,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "tests/store/topology_attempts.rs",
+      "approved_added_lines": 2,
+      "same_path_lines": 2,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    },
+    {
+      "path": "tests/store/topology_handoff.rs",
+      "approved_added_lines": 47,
+      "same_path_lines": 45,
+      "moved_lines": [
+        {
+          "line": "35",
+          "locations": [
+            "tests/store/lazy_schema.rs",
+            "tests/store/invitation_due.rs"
+          ]
+        },
+        {
+          "line": "35",
+          "locations": [
+            "tests/store/lazy_schema.rs",
+            "tests/store/invitation_due.rs"
+          ]
+        }
+      ],
+      "unmatched_lines": [],
+      "semantic_disposition": "Exactly two guards assert latest schema35\u219239; historical canonical26 fixture and every non-version numeric unchanged."
+    },
+    {
+      "path": "tests/store/topology_handoff_schema.rs",
+      "approved_added_lines": 324,
+      "same_path_lines": 307,
+      "moved_lines": [],
+      "unmatched_lines": [
+        {
+          "line": ".chain(paths.into_iter().take(35).map(Some))",
+          "locations": [],
+          "disposition": "Current schema35\u219239; historical replay nowall genuine prefixes0..39 includingreleased29..31; old unpublished29/30\u219232/33 body cutpoints preserved; only fourcapacity-rebuilt table rootpages excluded, all unrelated roots retained."
+        },
+        {
+          "line": "for previous in [0, 1, 15, 22, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34] {",
+          "locations": [],
+          "disposition": "Current schema35\u219239; historical replay nowall genuine prefixes0..39 includingreleased29..31; old unpublished29/30\u219232/33 body cutpoints preserved; only fourcapacity-rebuilt table rootpages excluded, all unrelated roots retained."
+        },
+        {
+          "line": "assert_eq!(version(&db), 35, \"actual {previous}->35\");",
+          "locations": [],
+          "disposition": "Current schema35\u219239; historical replay nowall genuine prefixes0..39 includingreleased29..31; old unpublished29/30\u219232/33 body cutpoints preserved; only fourcapacity-rebuilt table rootpages excluded, all unrelated roots retained."
+        },
+        {
+          "line": "assert_eq!(objects(&db), objects(&historical(35)));",
+          "locations": [],
+          "disposition": "Current schema35\u219239; historical replay nowall genuine prefixes0..39 includingreleased29..31; old unpublished29/30\u219232/33 body cutpoints preserved; only fourcapacity-rebuilt table rootpages excluded, all unrelated roots retained."
+        },
+        {
+          "line": "assert_eq!(version(&db), 35);",
+          "locations": [],
+          "disposition": "Current schema35\u219239; historical replay nowall genuine prefixes0..39 includingreleased29..31; old unpublished29/30\u219232/33 body cutpoints preserved; only fourcapacity-rebuilt table rootpages excluded, all unrelated roots retained."
+        },
+        {
+          "line": "assert_eq!(version(&db), 35);",
+          "locations": [],
+          "disposition": "Current schema35\u219239; historical replay nowall genuine prefixes0..39 includingreleased29..31; old unpublished29/30\u219232/33 body cutpoints preserved; only fourcapacity-rebuilt table rootpages excluded, all unrelated roots retained."
+        },
+        {
+          "line": "for previous in [28, 29, 30] {",
+          "locations": [],
+          "disposition": "Current schema35\u219239; historical replay nowall genuine prefixes0..39 includingreleased29..31; old unpublished29/30\u219232/33 body cutpoints preserved; only fourcapacity-rebuilt table rootpages excluded, all unrelated roots retained."
+        },
+        {
+          "line": "assert_eq!(version(&db), 35);",
+          "locations": [],
+          "disposition": "Current schema35\u219239; historical replay nowall genuine prefixes0..39 includingreleased29..31; old unpublished29/30\u219232/33 body cutpoints preserved; only fourcapacity-rebuilt table rootpages excluded, all unrelated roots retained."
+        },
+        {
+          "line": "for previous in [28, 29, 30] {",
+          "locations": [],
+          "disposition": "Current schema35\u219239; historical replay nowall genuine prefixes0..39 includingreleased29..31; old unpublished29/30\u219232/33 body cutpoints preserved; only fourcapacity-rebuilt table rootpages excluded, all unrelated roots retained."
+        },
+        {
+          "line": "db.prepare(\"SELECT name,rootpage FROM sqlite_schema WHERE rootpage>0 AND name NOT LIKE 'bootstrap_%' AND name NOT LIKE 'sqlite_%' AND name NOT IN ('receipts','receipt_state') AND name NOT LIKE 'receipts_%' AND name NOT LIKE 'receipt_state_%' ORDER BY name\")",
+          "locations": [],
+          "disposition": "Current schema35\u219239; historical replay nowall genuine prefixes0..39 includingreleased29..31; old unpublished29/30\u219232/33 body cutpoints preserved; only fourcapacity-rebuilt table rootpages excluded, all unrelated roots retained."
+        },
+        {
+          "line": "let old_cutover: Option<i64> = if previous == 30 {",
+          "locations": [],
+          "disposition": "Current schema35\u219239; historical replay nowall genuine prefixes0..39 includingreleased29..31; old unpublished29/30\u219232/33 body cutpoints preserved; only fourcapacity-rebuilt table rootpages excluded, all unrelated roots retained."
+        },
+        {
+          "line": "assert_eq!(version(&db), 35);",
+          "locations": [],
+          "disposition": "Current schema35\u219239; historical replay nowall genuine prefixes0..39 includingreleased29..31; old unpublished29/30\u219232/33 body cutpoints preserved; only fourcapacity-rebuilt table rootpages excluded, all unrelated roots retained."
+        },
+        {
+          "line": "if previous == 30 {",
+          "locations": [],
+          "disposition": "Current schema35\u219239; historical replay nowall genuine prefixes0..39 includingreleased29..31; old unpublished29/30\u219232/33 body cutpoints preserved; only fourcapacity-rebuilt table rootpages excluded, all unrelated roots retained."
+        },
+        {
+          "line": "for previous in [28, 29, 30] {",
+          "locations": [],
+          "disposition": "Current schema35\u219239; historical replay nowall genuine prefixes0..39 includingreleased29..31; old unpublished29/30\u219232/33 body cutpoints preserved; only fourcapacity-rebuilt table rootpages excluded, all unrelated roots retained."
+        },
+        {
+          "line": "assert_eq!(version(&db), 30);",
+          "locations": [],
+          "disposition": "Current schema35\u219239; historical replay nowall genuine prefixes0..39 includingreleased29..31; old unpublished29/30\u219232/33 body cutpoints preserved; only fourcapacity-rebuilt table rootpages excluded, all unrelated roots retained."
+        },
+        {
+          "line": "objects(&historical(30)),",
+          "locations": [],
+          "disposition": "Current schema35\u219239; historical replay nowall genuine prefixes0..39 includingreleased29..31; old unpublished29/30\u219232/33 body cutpoints preserved; only fourcapacity-rebuilt table rootpages excluded, all unrelated roots retained."
+        },
+        {
+          "line": "assert_eq!(version(&db), 35);",
+          "locations": [],
+          "disposition": "Current schema35\u219239; historical replay nowall genuine prefixes0..39 includingreleased29..31; old unpublished29/30\u219232/33 body cutpoints preserved; only fourcapacity-rebuilt table rootpages excluded, all unrelated roots retained."
+        }
+      ],
+      "semantic_disposition": "Current schema35\u219239; historical replay nowall genuine prefixes0..39 includingreleased29..31; old unpublished29/30\u219232/33 body cutpoints preserved; only fourcapacity-rebuilt table rootpages excluded, all unrelated roots retained."
+    },
+    {
+      "path": "tests/store/wake_discovery_cost.rs",
+      "approved_added_lines": 3,
+      "same_path_lines": 3,
+      "moved_lines": [],
+      "unmatched_lines": [],
+      "semantic_disposition": "New typed capacity fixture uses exact serialized maxima and independent aggregate/transport controls; see task-12-capacity-inventory.json. Existing non-version numerics unchanged."
+    }
+  ],
+  "final_head": "e196ae1140499612d63bddc43a1624b70d004c62",
+  "final_tree": "6ab6831b7972af18ce600b553647db7185c31ccc"
+}

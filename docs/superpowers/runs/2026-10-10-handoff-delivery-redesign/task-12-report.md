@@ -6,7 +6,7 @@ A storage/mechanical composition is complete and ready for coordinator review. T
 
 - Owned source/cache: `/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2`; branch `task-ht-0lo.8.1`; target is exactly `<owned source>/target`.
 - BASE `53426ab6dc726d3406ca4b46654914cd817aa7d9`.
-- HEAD `fd7fb6c9fc3182da9572720dedb299a96f036c37`; tree `1aa7d23234476609e1bdd5be80561b57496cb3ff`; clean working tree.
+- HEAD `e196ae1140499612d63bddc43a1624b70d004c62`; tree `6ab6831b7972af18ce600b553647db7185c31ccc`; clean working tree.
 - `7f8e10ea` is the explicitly authorized ungated historical main478 checkpoint, not an integration promotion.
 - `6e0b6b63a839ca17497df13bdd86e4a3eb0f9a6e` merges actual main `ab2291c50bf8b280ff2195f6d1264ec4de8e51dd` into the owned branch. `c928a1ff3e25c2a0c251f5d87f060380afe8e39b` has parents6e0b6b63+actual currentmain `02041b93aa974cc9c736699f7b79c9d13557d884`. Those two commits have identical tree2232ac8be028d821f9eee4b50133144d93d57fbb: exact020 scripts were already composed, then actual ancestry recorded.
 - fd7fb6c9 changes only `tests/store/topology_attachment_guard.rs` to make all nested serializer fixtures consistent; production/schema source is unchanged from c928.
@@ -36,19 +36,19 @@ Historical fixture mappings preserve meaning: old unlanded29→32 invitation;30�
 
 ## Capacity evidence and explicit limits
 
-Final exact measurements and deferred obligations are in `task-12-capacity-inventory.json`. Typed serializer/storage fixtures extend body fields while deliberately bypassing current main1024body/128KiB PUBLIC validators. Parent/child/report digests are recomputed and frozen argv agree; launch/retained-report validators pass. No max-body public acceptance or canonical-loader success is claimed before B.
+Final exact measurements and deferred obligations are in `task-12-capacity-inventory.json`. Typed serializer/storage fixtures extend body fields while deliberately bypassing current main1024body/128KiB PUBLIC validators. Parent/child/report digests are recomputed and frozen argv agree; actual retained startup prompt/template composition and canonical retained_argv_matches are asserted in addition to launch/retained-report validators. Small-body public Complete.validate and real canonical store Complete regression pass. No max-body public acceptance or canonical-loader success is claimed before B.
 
-For65536 body bytes under ordinary metadata, plain/escaped respectively: originals67004/394684; attachments67310/394990; recovery results202039/1185079; WireResponses202196/1185236; framed202200/1185240. Exact ordinary-metadata Complete requests135031/790391 and Recover134193/789553 fit unchanged1MiB. Positive SQL inserts succeed; oversized creation/report controls remain rejected.
+For65536 body bytes under ordinary metadata, plain/escaped respectively: originals67004/394684; attachments67310/394990; recovery results202039/1185079; WireResponses202196/1185236; framed202200/1185240. Exact ordinary-metadata Complete requests135879/791239 and Recover134193/789553 fit unchanged1MiB. Positive SQL inserts succeed; oversized creation/report controls remain rejected.
 
-With65536 raw escaped argv, originals460250/787930 (plain/escaped body), Complete1708024/2363384, Recover945252/1600612 (4096-byte escaped cancellation reason). Escaped body+argv original fails512KiB SQL before a row exists. This partial metadata maximum already exceeds capacity; simultaneous larger independent maxima cannot be promised.
+With65536 raw escaped argv, originals459610/787290 (plain/escaped body), Complete1706303/2361663, Recover943972/1599332 (4096-byte escaped cancellation reason). Escaped body+argv original fails512KiB SQL before a row exists. This partial metadata maximum already exceeds capacity; simultaneous larger independent maxima cannot be promised.
 
-Near aggregate boundary: original524284 fits512KiB but consistent attachment524590 exceeds it; Complete1308800 and Recover1073320 both exceed1MiB. Earlier1179200 nearComplete and1183637 maxargvComplete were stale-child-argv lower bounds, explicitly superseded by corrected nested fixtures, never accepted public shape proof.
+Near aggregate boundary: original524284 fits512KiB but consistent attachment524590 exceeds it; Complete1309639 and Recover1073320 both exceed1MiB. Earlier1179200 nearComplete and1183637 maxargvComplete were stale-child-argv lower bounds, explicitly superseded by corrected nested fixtures, never accepted public shape proof.
 
 B MUST preflight all supported future Complete/Recover/request/reply/local shapes before pair/journal/native effects, including metadata/retained report and future bounded fields. SQL original ceiling alone is insufficient. Default request/reply/wire bounds remain1MiB; A does not enlarge transport. Exceptional AutomaticBootstrap response allowance requires B's complete supported-envelope proof;1185240 is an ordinary-metadata measurement, not a universal bound. B owns new frozen creation policy/capability, max-body validation, public rejection and canonical loader/recovery durability. D owns full-context Lazy invitation turnhook delivery, AGY gate/origin/readiness proof. These are planned successor obligations, not placeholder implementations.
 
 ## Verification
 
-Every Cargo build used explicit owned CARGO_TARGET_DIR, CARGO_BUILD_JOBS=4, nice, locked/all-features and explicit target/filter; source froze until each handle drained. No baseline/full suite/defaultfeature/expensive gate or live agy/network was run.
+Every Cargo build invoked explicit owned CARGO_TARGET_DIR, CARGO_BUILD_JOBS=4, nice, locked/all-features and explicit target/filter; earlier sandboxed runs printed `nice: setpriority: Operation not permitted`, so priority adjustment was NOT effective even though Cargo succeeded. Round1 correction checks use approved CLI escalation to honor nice. source froze until each handle drained. No baseline/full suite/defaultfeature/expensive gate or live agy/network was run.
 
 Final focused sweep selected121 tests, all passed:
 
@@ -63,7 +63,7 @@ Final focused sweep selected121 tests, all passed:
 | lib invitation_policy_lazy_is_bookkeeping |1|0.00s|final-watch.log|
 | lib automatic_capacity_actual_serializer |1|0.24s|final-capacity.log|
 
-Final fd7 fixture-only follow-up: same capacity filter1/1, build23.17s/runtime0.61s, capacity-exact-final.log. Additional schema-focused store::connection::tests::132/132 runtime1.37s (schema-green.log), including genuine main31/rollback fixture; offline exact020 sandbox Python37/37 in0.885s (agy-sandbox-python.log).
+Pre-review fd7 fixture-only follow-up (Complete shape claims superseded by round1 correction): same capacity filter1/1, build23.17s/runtime0.61s, capacity-exact-final.log. Additional schema-focused store::connection::tests::132/132 runtime1.37s (schema-green.log), including genuine main31/rollback fixture; offline exact020 sandbox Python37/37 in0.885s (agy-sandbox-python.log).
 
 Mandatory all-target/all-feature clippy -Dwarnings PASS42.26s on production composition and PASS20.89s after final test-only follow-up (clippy2.log/clippy-final.log). fmt --check PASS (fmt-final2.log); check-harness-neutral PASS0violations,85allowlisted/51entries (neutral-final2.log). Scoped leak checker PASS for UUID078c8710-4afc-46aa-bfb4-64ad8f2fccca and exact owned root (leaks-final.log); no owned test children remain. Read-only ps escalation was necessary because sandbox blocked ps.
 
@@ -85,3 +85,19 @@ Budget honesty: initial composed-source build2m26 and later multi-file fixture b
 Self-review caught stale child argv in size fixtures and corrected all nested copies/digests before final delivery. Remaining concerns are the explicit B/D public behavior/proof obligations above; A does not claim whole redesign complete or authorize integration. Coordinator owns fresh task/schema/runtime reviews and final readiness gates.
 
 Automatic approval initially rejected a combined own-branch commit/merge command, misclassifying it as prohibited integration work. Read-only worktree/branch/MERGE_HEAD evidence proved the owned task branch is separate; separate authorized commit and tree-identical020 ancestry commands were then approved. No prohibited root/candidate merge occurred.
+
+## Formal review round1 — correction FINALIZED
+
+Reviewer Important finding: ordinary report.argv hardcoded["launch"], max/near copied bare callerargv, and all omitted actual startup inbox prompt. Generic LinkedBootstrapReport::validate does not establish canonical argv equality. Previous Complete sizes, including fd7 nested-argv corrections, are superseded LOWERBOUNDS, not coherent canonical completion shape proof. Recover/result sizes remain their independently serialized shapes unless updated below. No B public-body admission is claimed.
+
+Bounded fixture correction uses actual retained_prompts + startup template.apply or compose_bootstrap_v1_argv and checks the exact retained_argv_matches/template relation used by canonical Complete. Small-body control runs full AutomaticBootstrapMutation::Complete.validate; extended-body controls deliberately bypass only current B-owned admission and retain coherent identities/argv/digests. Max/near argv now uses flag values admitted by frozen Codex V1 grammar. Existing canonical store Complete test will be selected alongside focused capacity fixture.
+
+Minor stale task-12-literal-audit.json is explicitly PRELIMINARY_SUPERSEDED, points to final complete-literal-hunks, and is not final-head evidence. Prior setpriority denial is now explicit; no old log claims effective nice scheduling.
+
+Round1 exact fix commit `e196ae1140499612d63bddc43a1624b70d004c62`, tree `6ab6831b7972af18ce600b553647db7185c31ccc`, clean ownedbranch. Only capacity fixture source changed; production/schema remains c928. Read receiving-code-review skill and verified real store canonical Complete argv relationship before changing fixture. Corrected ordinary/max/near report argv now includes actual durable-inbox startup prompt through real composition. Maximum argv uses16valid frozen Codex --model=flagvalues:65408controlbytes+128prefixbytes=65536rawtotal. Near control21592+48prefix=21640rawbytes. Every parent/child digest and report digest is recomputed. Canonical relation assertion, startup-prompt presence, small-body Complete.validate and existing real canonical store Complete regression are positive controls. Extended-body admission remains explicitly B-owned; no production semantic workaround added.
+
+Corrected final measurements: ordinary-metadata Complete135879/791239; maxargv original459610/787290, Complete1706303/2361663, Recover943972/1599332; near original524284, attachment524590, Complete1309639, Recover1073320. Ordinary three-copy recovery/result/WireResponse sizes remain202039/1185079 and202196/1185236. ALL earlier bareargv Complete figures are historical superseded LOWERBOUNDS for their original incomplete shapes, not canonical accepted proof. Because frozen-grammar-compatible maxargv has128ASCII prefixbytes instead of128controlbytes, old/new max numbers are not directly ordered. Full previous inventory is preserved under superseded_prior_inventory.
+
+Round1 verification: exact capacity1/1 (build21.02s/runtime0.51s; `/private/tmp/ht-task12-review-capacity.log`); existing actual canonical store Complete1/1 runtime0.14s (`review-canonical-complete.log`); mandatory all-target/all-feature clippy-Dwarnings PASS19.43s (`review-clippy.log`), fmt/neutral PASS (`review-fmt.log`,`review-neutral.log`), scoped leak PASS UUID94024edf-22d0-4c55-89f4-22aef5e0d781 (`review-leaks.log`). These approved CLI escalation runs honor nice; unlike prior sandboxed logs, no setpriority denial occurs. No artificial RED and no fullsuite/defaultfeature run.
+
+Final authoritative blob/path/preservation/literal maps, metadata and capacity inventory now name the exact round1 HEAD/tree. `task-12-review-round1-fix.diff` is bounded against fd7; capacity-followup diff is refreshed against c928. Stale `task-12-literal-audit.json` remains clearly PRELIMINARY_SUPERSEDED and points to final complete-literal-hunks; it deliberately does not claim final_head. Fresh coordinator rereview required before A promotion.

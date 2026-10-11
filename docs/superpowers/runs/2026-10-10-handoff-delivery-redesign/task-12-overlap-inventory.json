@@ -1,0 +1,342 @@
+{
+  "merge_base": "945107f6acd8b05ade7b5e2d9f8b293282aa06f4",
+  "upstream": "478ec4a9",
+  "overlaps": [
+    {
+      "path": "README.md",
+      "merge": "clean-auto-merge",
+      "approved_blob": "a6a9f2c1a94401d0049a3c4e4e933a634fd5ad78",
+      "released_blob": "cf6b3b05868a15cc7e9a41139397962c6347b952"
+    },
+    {
+      "path": "TRUST-POLICY.md",
+      "merge": "text-conflict",
+      "approved_blob": "6cacda7d1717c26f023924b063d940928e558423",
+      "released_blob": "6aa9ba32b4bef19d8bd86b3d642cb40471fffa37"
+    },
+    {
+      "path": "docs/superpowers/specs/INDEX.md",
+      "merge": "clean-auto-merge",
+      "approved_blob": "5f3578cac6fa5d9bbbfb3be186134cedaca56cec",
+      "released_blob": "d1b2a0f31bc034422e4ba3cd6cd95ef4ddaba8d0"
+    },
+    {
+      "path": "integrations/skill/SKILL.md",
+      "merge": "text-conflict",
+      "approved_blob": "72fc57f76da00a0fbea59919c4223a49bf4cf483",
+      "released_blob": "fa2b77524cdd14381daeeb7bdea62b8c178fd95b"
+    },
+    {
+      "path": "src/cli/commands.rs",
+      "merge": "text-conflict",
+      "approved_blob": "218293737129ee5c8bb04faddf11e39a6a49790d",
+      "released_blob": "96a8f533e6d151ee32f2649673eb2e66482b56cb"
+    },
+    {
+      "path": "src/cli/handoff.rs",
+      "merge": "text-conflict",
+      "approved_blob": "54db5a4fdc0fdc329f1848f91c24a306126c8e69",
+      "released_blob": "96bbf95d3f65464fb0a5ce8a5b051c6144118bea"
+    },
+    {
+      "path": "src/cli/handoff_delivery.rs",
+      "merge": "clean-auto-merge",
+      "approved_blob": "1755f989a7afdf0f44ef48be2c0fd29478f358ae",
+      "released_blob": "e7d4d6895132ee079d91231e8fa17b93a859b1ed"
+    },
+    {
+      "path": "src/cli/journal.rs",
+      "merge": "clean-auto-merge",
+      "approved_blob": "9a6f8bd02355e46ae232f3dc7a8ea9ee48ed6739",
+      "released_blob": "a98724db327e8661740a17e46a7e887eb154aebf"
+    },
+    {
+      "path": "src/cli/mod.rs",
+      "merge": "clean-auto-merge",
+      "approved_blob": "49d725d89bc0eb9de30c6289e822c183762e5813",
+      "released_blob": "7309720f32a1084b3f065f7aeb01fdc4043905b0"
+    },
+    {
+      "path": "src/cli/topology_handoff.rs",
+      "merge": "text-conflict",
+      "approved_blob": "37df52c11f01523ba4dd0f5deb48618767439b47",
+      "released_blob": "82c5ebb29e5d9a649a7d9b0afa0d1cf97a687905"
+    },
+    {
+      "path": "src/daemon/control.rs",
+      "merge": "clean-auto-merge",
+      "approved_blob": "e9f92c70f5411ff08a0a64d68f3c59ad6a67edba",
+      "released_blob": "1960011b27540a898ea12421f0d9c48c0b288d74"
+    },
+    {
+      "path": "src/ports.rs",
+      "merge": "clean-auto-merge",
+      "approved_blob": "bd22b8fa46ed6780cd5df55e206114f68562453d",
+      "released_blob": "9b5d958f1ff2b8c543d20734c43610d891b0cf9c"
+    },
+    {
+      "path": "src/protocol/capabilities.rs",
+      "merge": "clean-auto-merge",
+      "approved_blob": "7514f8f6828357e24d69624858755a5f7308b931",
+      "released_blob": "2f092f5d23b863f5546ecc78a4e0f703b962abcf"
+    },
+    {
+      "path": "src/protocol/commands.rs",
+      "merge": "clean-auto-merge",
+      "approved_blob": "2dc67d601f70e76825ea75d6a81b0372616e44ea",
+      "released_blob": "3492a0caa714f1e3fcac72c6e9cdac276e5ce5f3"
+    },
+    {
+      "path": "src/protocol/handoff.rs",
+      "merge": "text-conflict",
+      "approved_blob": "f6ffdd98a35b7c727ee63b7bc241c0d52c1b0660",
+      "released_blob": "cdcd7dde3cddacce52cf537f535beaad5008aa64"
+    },
+    {
+      "path": "src/protocol/results.rs",
+      "merge": "clean-auto-merge",
+      "approved_blob": "78c4148c8378ab2be7dc7d7a9ae8ed9a08fa4752",
+      "released_blob": "75929448c2506b3e96c5ca3cb4dee27f0055315f"
+    },
+    {
+      "path": "src/service/kicks.rs",
+      "merge": "clean-auto-merge",
+      "approved_blob": "f282ce908fcba3e786932fb33deb3ebb12b5d9ba",
+      "released_blob": "103d327de896a6f7928ddc51f275d06ff9065ca2"
+    },
+    {
+      "path": "src/store/control.rs",
+      "merge": "clean-auto-merge",
+      "approved_blob": "9431dfd496745e86764dcb0373efbbd21d52cd5d",
+      "released_blob": "af7178a711e110535692cf3a1305082b1b6842fc"
+    },
+    {
+      "path": "src/store/messages.rs",
+      "merge": "clean-auto-merge",
+      "approved_blob": "d65e8ba10b449991ae39feaf3eb2d37d52d445cc",
+      "released_blob": "52556c686bd154e157d9a19795b5d51b5cbb2358"
+    },
+    {
+      "path": "src/store/mod.rs",
+      "merge": "clean-auto-merge",
+      "approved_blob": "d7c5c1a1e742cff931fbaee9b657ccc5189bc4fa",
+      "released_blob": "2d1ea167b9512ac1ab12fb84f744c18fa93144d4"
+    },
+    {
+      "path": "src/store/schema.rs",
+      "merge": "text-conflict",
+      "approved_blob": "4818fe71cf7c7f6b9498380f8dcc66bfe30f4f4e",
+      "released_blob": "e6c47c879ae2bb80ac992abe9573500e7d3d6552"
+    },
+    {
+      "path": "src/store/seats.rs",
+      "merge": "clean-auto-merge",
+      "approved_blob": "83a56ebf0836dc28e5a0080f9d560d318f6954f4",
+      "released_blob": "eef2f484b4d2395388ea1775c54ca7eecc9ca25f"
+    },
+    {
+      "path": "src/store/service_controls.rs",
+      "merge": "clean-auto-merge",
+      "approved_blob": "79689ae7ddf420fc000c508d295ff025ec4db6c8",
+      "released_blob": "7a10b9cb8410ada5cd74b4eab60b00ee1110980a"
+    },
+    {
+      "path": "src/store/topology_handoff.rs",
+      "merge": "clean-auto-merge",
+      "approved_blob": "5b6a28632a53ad920532126089f5256c4bf94569",
+      "released_blob": "42deb48f24cd54f9daa51f29f16caffc9421df8e"
+    },
+    {
+      "path": "src/store/topology_handoff/attachment.rs",
+      "merge": "clean-auto-merge",
+      "approved_blob": "b6ab5dafda9da5706dc3c9b1ce3172700a913eef",
+      "released_blob": "b9154a107576681529f832587a0637c0e6b2182f"
+    },
+    {
+      "path": "src/test_support/history.rs",
+      "merge": "clean-auto-merge",
+      "approved_blob": "672e15f24ef5286a06767abaa4b20827f537c684",
+      "released_blob": "e09c00428560e04c33dcb38a6b811f7864c9eecf"
+    },
+    {
+      "path": "tests/cli/commands.rs",
+      "merge": "text-conflict",
+      "approved_blob": "cf5fd81f7671f2a43f32a6888fcd50b2f8cd55f6",
+      "released_blob": "774c3561fd4e8d43fbcb19631213e9b73f3bb845"
+    },
+    {
+      "path": "tests/cli/follow_retry.rs",
+      "merge": "text-conflict",
+      "approved_blob": "4be2c85379935f9100bcbb82f80b760a9f1149fd",
+      "released_blob": "c80c571f07107cc6d117512917e2aa63667d7afe"
+    },
+    {
+      "path": "tests/cli/handoff.rs",
+      "merge": "text-conflict",
+      "approved_blob": "f868750eb7e790acff5fd50b3e6f0b6be5780989",
+      "released_blob": "459137feb588919c0d4eb37c4018363942ed739f"
+    },
+    {
+      "path": "tests/cli/handoff_delivery.rs",
+      "merge": "text-conflict",
+      "approved_blob": "849d57198267382481ce8ef820a6e7ea74fa89db",
+      "released_blob": "c99a016ab172ac19846f04004a41be0d894c696e"
+    },
+    {
+      "path": "tests/cli/topology_handoff.rs",
+      "merge": "text-conflict",
+      "approved_blob": "745f71c25ed19134c821f424ead70c9264937fb2",
+      "released_blob": "ad0424ad04328597c30e8105094713ff38243dbe"
+    },
+    {
+      "path": "tests/contracts.rs",
+      "merge": "clean-auto-merge",
+      "approved_blob": "e114f54fcb60336036be0b76e00513a89fba0d21",
+      "released_blob": "7f5efa7a58be1cf93f33dd2dc4f2085de7a0efd3"
+    },
+    {
+      "path": "tests/handoff_topology_authority.rs",
+      "merge": "clean-auto-merge",
+      "approved_blob": "0705058d4d822d6b163b4cef7e06c2a0e7d33a87",
+      "released_blob": "1b24497bfd463f6171037dc0643ad04609b5bdd0"
+    },
+    {
+      "path": "tests/integration/channel_activation.rs",
+      "merge": "text-conflict",
+      "approved_blob": "52f08f8177168263d7ccbe4188b2860a405462e4",
+      "released_blob": "76cf7be0ae1aea6239ef5a91c76a0a9fbd42b35c"
+    },
+    {
+      "path": "tests/integration/lazy_attention.rs",
+      "merge": "clean-auto-merge",
+      "approved_blob": "8b6e6267737ceb43d59f2caf4df0af325206f26f",
+      "released_blob": "ca00f8685e4f60472a76c0300cfc4acd27a71916"
+    },
+    {
+      "path": "tests/integration/notice_wake.rs",
+      "merge": "clean-auto-merge",
+      "approved_blob": "323376b7064702826c7e692eb03f07779a1d511a",
+      "released_blob": "f95f17971aa47bf1ad64ae2858558cbd6643b4fc"
+    },
+    {
+      "path": "tests/integration/topology_activation.rs",
+      "merge": "clean-auto-merge",
+      "approved_blob": "cae06ee34148df8b72abb163a3542f9ae7a61634",
+      "released_blob": "1d196d47da710c9098dd52dd07bfadc8ea437dd9"
+    },
+    {
+      "path": "tests/lifecycle_ux.rs",
+      "merge": "text-conflict",
+      "approved_blob": "74935cc30ff090266d471c4b34538d4f074bae94",
+      "released_blob": "0e915b27b622f69b990a0d86d260b92c24f5af17"
+    },
+    {
+      "path": "tests/protocol/capabilities.rs",
+      "merge": "text-conflict",
+      "approved_blob": "00af52cd64215bc523e1875bd1301fee65a75bba",
+      "released_blob": "c66302eb08aaf766e7b13fa49e93baa0b280e503"
+    },
+    {
+      "path": "tests/service/cooperative.rs",
+      "merge": "clean-auto-merge",
+      "approved_blob": "4af2890aa8a4b28012b5c50637eb9e46bdffa9dd",
+      "released_blob": "dfca582f73d10e5d1cad2937002e60994af7bd36"
+    },
+    {
+      "path": "tests/service/crash_matrix.rs",
+      "merge": "clean-auto-merge",
+      "approved_blob": "5fa34b562b9ca0c650d3388890e640177c2a1850",
+      "released_blob": "ab78135d3f48d94af78fef4076df51186a80756d"
+    },
+    {
+      "path": "tests/store/archival_legacy.rs",
+      "merge": "text-conflict",
+      "approved_blob": "dd1b050b8654cfa9d1f7ea7640e8720d36818753",
+      "released_blob": "bb9ec853e542bb09a70a42da709505a883e4412a"
+    },
+    {
+      "path": "tests/store/commit_kicks.rs",
+      "merge": "clean-auto-merge",
+      "approved_blob": "fb579ecd52d644543e1680e980790e7ed6ccd403",
+      "released_blob": "7cc17c7001d1ffb06e4b4d05a0d055766e3fdc0b"
+    },
+    {
+      "path": "tests/store/control.rs",
+      "merge": "clean-auto-merge",
+      "approved_blob": "9ec13c271f8718e57f3698c70864475d03bf1193",
+      "released_blob": "a2e84312418d9546e6f68459ae6a904d89cb3540"
+    },
+    {
+      "path": "tests/store/cooperative_checkin.rs",
+      "merge": "clean-auto-merge",
+      "approved_blob": "10b02453d4f198c07e2b997aa2db1a9b3e502941",
+      "released_blob": "1dea0bbd317a6f0e827b26e6a1561eac443d2def"
+    },
+    {
+      "path": "tests/store/facade.rs",
+      "merge": "clean-auto-merge",
+      "approved_blob": "277fe0253a9f460ce3f120466dfae2ffcf6f9bde",
+      "released_blob": "1b2147bd60c48ef19d9bc7ffffdb185be8de863f"
+    },
+    {
+      "path": "tests/store/handoff_fences.rs",
+      "merge": "text-conflict",
+      "approved_blob": "626b14a885a8fd9feee9616fb022e0c690576823",
+      "released_blob": "2d4a4c88e14c2a184fae11df25b4ea129f453f8b"
+    },
+    {
+      "path": "tests/store/lazy26_prerequisite.rs",
+      "merge": "text-conflict",
+      "approved_blob": "b17c8aace9d7d98594dd41bd8293545e5b372e92",
+      "released_blob": "ecec70c324e0114612b8ce5cbddd9e9f98f2a26c"
+    },
+    {
+      "path": "tests/store/lazy_inbox.rs",
+      "merge": "clean-auto-merge",
+      "approved_blob": "8be4b46cbec4dc8bb908a85870681345e8aedc1d",
+      "released_blob": "65b7da6be60d81b25679a46a2669515299e28c87"
+    },
+    {
+      "path": "tests/store/lazy_schema.rs",
+      "merge": "text-conflict",
+      "approved_blob": "3d48e8d10b9c88cbb956a89076e2b2d651d16b52",
+      "released_blob": "f49e0fea85e78253d977c2a87e19351f8c32d7c4"
+    },
+    {
+      "path": "tests/store/receipts.rs",
+      "merge": "clean-auto-merge",
+      "approved_blob": "c8e03e4fe57e858486d534b20dcdc15daef48cc0",
+      "released_blob": "d43a4bfe2d1dd8e792ffac89f4be49797b9e93de"
+    },
+    {
+      "path": "tests/store/retention.rs",
+      "merge": "clean-auto-merge",
+      "approved_blob": "ea203bcc100fbcfcfa4d25e3024abad8caa44fad",
+      "released_blob": "730b90e48f28b536b301c5276d555afacf1f1ab9"
+    },
+    {
+      "path": "tests/store/schema.rs",
+      "merge": "text-conflict",
+      "approved_blob": "30dfd55dc543eb88b71a39ff944463ca0dbe5f96",
+      "released_blob": "10094411525031dfc92b926d670a7e771c6c892a"
+    },
+    {
+      "path": "tests/store/topology_attachment_guard.rs",
+      "merge": "text-conflict",
+      "approved_blob": "672d8a48b9f0e498470608845c540a320640efee",
+      "released_blob": "2aca261f86570d8bf78f9948a5ee46213ef1e311"
+    },
+    {
+      "path": "tests/store/topology_handoff.rs",
+      "merge": "text-conflict",
+      "approved_blob": "668b7febd70ac31151409c5e40d63010821d4a34",
+      "released_blob": "41e389b90755e27edd48f10867ec1fc229667d02"
+    },
+    {
+      "path": "tests/store/topology_handoff_schema.rs",
+      "merge": "text-conflict",
+      "approved_blob": "0dfdcf0432ab5cd06ead06fb4c9af2ed5116a5c9",
+      "released_blob": "356a6166ea5ed279b11691734c42bde603af4ebe"
+    }
+  ]
+}

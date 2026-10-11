@@ -1,0 +1,1847 @@
+{
+  "incoming": "02041b93aa974cc9c736699f7b79c9d13557d884",
+  "paths": [
+    {
+      "path": "README.md",
+      "upstream_blob": "f15980eb51eee16d0e488744962f687a34845fa4",
+      "working_blob": "f766ab59c16e285a8aa726bcb3cd45e3549fb995"
+    },
+    {
+      "path": "TRUST-POLICY.md",
+      "upstream_blob": "9b08850beb65955b49d3f0add291593bc1053423",
+      "working_blob": "a0912385fe0f9c4757817cd0d6359fe722592fa2"
+    },
+    {
+      "path": "docs/superpowers/specs/INDEX.md",
+      "upstream_blob": "8f136f8828258a71765e1cc15c4dabd65f479ead",
+      "working_blob": "1c518779953e5a27a0abdbadd5396658e8b2750b"
+    },
+    {
+      "path": "integrations/claude/README.md",
+      "upstream_blob": "9f048f6e39a7d51ef9ddb90dfa05e7fab11acaf7",
+      "working_blob": "78dcf9fd0b36a5235ddd067400d9e201eefcbe23"
+    },
+    {
+      "path": "integrations/codex/README.md",
+      "upstream_blob": "caaf62aa71338d7c62ecaaba8b138b09b1859de6",
+      "working_blob": "c7bff33e2e7b77704a61905c88cacdaf5edd8d8e"
+    },
+    {
+      "path": "integrations/skill/SKILL.md",
+      "upstream_blob": "b35fb9363e4d8a93d8d3e79770e22d4daa4da9f4",
+      "working_blob": "324f215a8f100ff083a34ab1487c228035e3f056"
+    },
+    {
+      "path": "scripts/canary/test_seam_integration.py",
+      "upstream_blob": "1301b7339ff7ad0d69cc04a232619661a6bd5d50",
+      "working_blob": "3c72aa784c98a3e82d86b01f46aafeb291578a3e"
+    },
+    {
+      "path": "scripts/canary/test_tier0_checks.py",
+      "upstream_blob": "887362d9409e72a0bb396f686e09f5886ce71a2f",
+      "working_blob": "da107eb5f8c6081008c172d18b55af28ae8d24b6"
+    },
+    {
+      "path": "scripts/harness-canary.sh",
+      "upstream_blob": "e307b97c30dd5f681843fd3442d415f57d060eb7",
+      "working_blob": "3c2c2cfe6ae86c0588cecb2b23f6677151949e01"
+    },
+    {
+      "path": "scripts/validate-native-demo.py",
+      "upstream_blob": "30fc4a3c05e4f08633c05b0f766468bd5d9f7189",
+      "working_blob": "a5edc96aeb2649ba6f863540187ddb73a8fc9e0a"
+    },
+    {
+      "path": "src/archival_legacy.rs",
+      "upstream_blob": "2740cba5e1b3925dd835d5994f7bb4c46ab0e54e",
+      "working_blob": "010f059c3d56b23503c4e16b3cc5d04be12ca3af"
+    },
+    {
+      "path": "src/cli/commands.rs",
+      "upstream_blob": "78a9f1a4737260b741c9e4f85b3139b3ba934334",
+      "working_blob": "93a41514370b1006d14e634acf6a0dc1499c7042"
+    },
+    {
+      "path": "src/cli/doctor.rs",
+      "upstream_blob": "3730df7df77e88826d63f45eca19edeb6641eea5",
+      "working_blob": "787ffe51a48d3210ea903ab16616fed9c8c3e947"
+    },
+    {
+      "path": "src/cli/handoff.rs",
+      "upstream_blob": "0084fff94d58e195834e901b1c49b33f24fde982",
+      "working_blob": "7a85552dcbe10e9a87f921c020e8f2555fa11b6a"
+    },
+    {
+      "path": "src/cli/handoff_delivery.rs",
+      "upstream_blob": "e7d4d6895132ee079d91231e8fa17b93a859b1ed",
+      "working_blob": "2703b8dc770622addd5bbefbd87900ae1ee3a987"
+    },
+    {
+      "path": "src/cli/help.rs",
+      "upstream_blob": "c6c59725d2b121a27157c5074b23f24166775a46",
+      "working_blob": "d2db19d08c25c35bc4a4abe505b8dbd7c314498b"
+    },
+    {
+      "path": "src/cli/hook.rs",
+      "upstream_blob": "bc38e7e354fb2e87a3592d2a3cdaf941a5514e85",
+      "working_blob": "8fe5615fb48bccd234a933aa9af4d0ab1cd25100"
+    },
+    {
+      "path": "src/cli/journal.rs",
+      "upstream_blob": "665ba90df57c9addf6abd66de65a4098d9a394e8",
+      "working_blob": "ec05fb391fbf7d140769bee4f84711c5209ced77"
+    },
+    {
+      "path": "src/cli/launch.rs",
+      "upstream_blob": "dc45200bb1425055730453e1fedb1d1cd27c240b",
+      "working_blob": "48d8228d03069433a480f0ac10108b40f0ae7f1a"
+    },
+    {
+      "path": "src/cli/mod.rs",
+      "upstream_blob": "7c2c8960baef46e2e70a58253a516b7f55bf2dd4",
+      "working_blob": "b2fe84267170117619d5223b2f9b66b316056948"
+    },
+    {
+      "path": "src/cli/setup.rs",
+      "upstream_blob": "12bdef0b8c05f374ae60c9bbd1a7651845c64a0e",
+      "working_blob": "e93b6a44609c732d9ea4ab63cf0c9089104c17f4"
+    },
+    {
+      "path": "src/cli/topology_handoff.rs",
+      "upstream_blob": "7a5d6077d7ea69e5a75dd840a192ee7be65c62f1",
+      "working_blob": "da2e6df215ad89f015ece9b761877f9124f1278f"
+    },
+    {
+      "path": "src/client/service.rs",
+      "upstream_blob": "45e6b1be570a58eed376d29dc2ebfc5f458a0826",
+      "working_blob": "f6340eb65bb93d387db76ca09d9a5d7f520bdb74"
+    },
+    {
+      "path": "src/daemon/control.rs",
+      "upstream_blob": "1960011b27540a898ea12421f0d9c48c0b288d74",
+      "working_blob": "ad3b6bcbc3805c30d70fbfe4ada9415df1fb3854"
+    },
+    {
+      "path": "src/delivery/assemble.rs",
+      "upstream_blob": "ae3743294b331f7d6ede125b47812f4d9118da7f",
+      "working_blob": "5cedb5b40d36378e274ed1b8371d449d9039f856"
+    },
+    {
+      "path": "src/harness/adapter.rs",
+      "upstream_blob": "9512181b88362342016e111ac3cf71100fcbc156",
+      "working_blob": "5fb0e995b8c5c9e4d56b743b6f5b3c95f7be0116"
+    },
+    {
+      "path": "src/harness/agy/launch.rs",
+      "upstream_blob": "fe8369da7d507831ffcfbeef6525885dfd4cef65",
+      "working_blob": "e258be38d33f300e5f43825c1889cdbdbffd7207"
+    },
+    {
+      "path": "src/harness/claude.rs",
+      "upstream_blob": "1257809382d6fdf57d05cc0356d79f088e994324",
+      "working_blob": "283cc745cf74d7b25935be8f227ee63f5528e9e1"
+    },
+    {
+      "path": "src/harness/claude/setup.rs",
+      "upstream_blob": "83fc00fa2729cdc77fc49fb1b97c4c7be6724ac7",
+      "working_blob": "6da3b4a1cbc3335a006bcaa531842e694734a0bb"
+    },
+    {
+      "path": "src/harness/claude_mod.rs",
+      "upstream_blob": "b96262bd5a178346d85bb6c08264fe43ceef9847",
+      "working_blob": "cb6a786863fe3cb7eb97f060f8520f8b94f324c9"
+    },
+    {
+      "path": "src/harness/codex.rs",
+      "upstream_blob": "0b30d514b70b981c27e4b1ba70f9039f08dc310f",
+      "working_blob": "c8f63aeeda5456aa66f13b526d0306cb21755c2d"
+    },
+    {
+      "path": "src/harness/codex/setup.rs",
+      "upstream_blob": "3e15f986a0cc1b5e1e2aa258643d67b2e65ca03d",
+      "working_blob": "51cd0c7d85c06087c18239fd034c0b19eed6ec68"
+    },
+    {
+      "path": "src/harness/hermes/launch.rs",
+      "upstream_blob": "08cfb4a186424d55e4150b2e050bf08fb6527454",
+      "working_blob": "3fcc060b5d60f4f26b6afb47a5016454efa685de"
+    },
+    {
+      "path": "src/harness/hermes/runtime.rs",
+      "upstream_blob": "50459c49b6703aa49a3bcdce4d37cb6db28018e1",
+      "working_blob": "f9e1a902ce9630eee0373e27688ae9c79aba2ed2"
+    },
+    {
+      "path": "src/harness/launch.rs",
+      "upstream_blob": "e0bcae00c36238aeceab8d1814a2246949ad5c8d",
+      "working_blob": "94e9d28bef5397dd0f768ea68666fb4410f71846"
+    },
+    {
+      "path": "src/harness/registry.rs",
+      "upstream_blob": "2e528dab58fcac813cbb23ef30aefd06079bf17c",
+      "working_blob": "5726ee32b36a71ec9cec2e27e1e7a8256b1a2f6e"
+    },
+    {
+      "path": "src/harness/setup.rs",
+      "upstream_blob": "d003df4e41f7ca350ee359726125dbb66e687b8e",
+      "working_blob": "69223fbf080790c5b37a1b5897a33cb8e318b57f"
+    },
+    {
+      "path": "src/host/native.rs",
+      "upstream_blob": "5d5c793bcf0bd7f5e367c90d571f41f9307815de",
+      "working_blob": "208ea5c8b56eba40062f380b90df2b196e58194f"
+    },
+    {
+      "path": "src/ports.rs",
+      "upstream_blob": "ae10692105b0b83b61b4f3a90778b60ecaf2190b",
+      "working_blob": "61425f9c07c153acc05ec439870feef8d4e17a1c"
+    },
+    {
+      "path": "src/protocol/capabilities.rs",
+      "upstream_blob": "af3bb0cd6f1f1b3d5a2964bab875488cd180d668",
+      "working_blob": "ae33a7407d71f9366306e5bf13161290525f2b3d"
+    },
+    {
+      "path": "src/protocol/commands.rs",
+      "upstream_blob": "01ac31cf5959d88255eb99ce056d6ae0d34d016e",
+      "working_blob": "a152dfd62a12b9d925d1d9dc71f4490c4b8ff659"
+    },
+    {
+      "path": "src/protocol/handoff.rs",
+      "upstream_blob": "2982e1f259d79f1242f0c4aaca2d16ce8f1af421",
+      "working_blob": "407fe2d16deb83ae4fa22eca6f6fb31790877fee"
+    },
+    {
+      "path": "src/protocol/output_compact.rs",
+      "upstream_blob": "60d6a3f9b00331708d9976b052ebba01d29e8cb1",
+      "working_blob": "cf4386ab422228ce794f63c33150092fcf18f98a"
+    },
+    {
+      "path": "src/protocol/results.rs",
+      "upstream_blob": "dcb68bce3cf3493394023353a3a8ea4f93e3dee6",
+      "working_blob": "f1321a60493912989fdd8367482cd52e8686a0e7"
+    },
+    {
+      "path": "src/scheduler/deadlines.rs",
+      "upstream_blob": "5447473bda2d55902432031cdfc3027552618f58",
+      "working_blob": "ddf3d6babb382d5efdf607bca511e41e67d9cb42"
+    },
+    {
+      "path": "src/service/kicks.rs",
+      "upstream_blob": "103d327de896a6f7928ddc51f275d06ff9065ca2",
+      "working_blob": "bb25c9c9fac5c56d65619196f277962730fa9eb1"
+    },
+    {
+      "path": "src/store/attention.rs",
+      "upstream_blob": "b60d9f3fca292bea4b9ac46d8225dec260e282d6",
+      "working_blob": "b74f2840b0ae5e2d1122d2c5b0c7da905f77ed5b"
+    },
+    {
+      "path": "src/store/control.rs",
+      "upstream_blob": "106109bfddfd41b116ec2cf0f20fbcd75d340603",
+      "working_blob": "9ee0abafd659de5688122f9cc4eaa8dd67629c82"
+    },
+    {
+      "path": "src/store/effective.rs",
+      "upstream_blob": "97715614a6d994650879695d6b61cf809a7cb9b7",
+      "working_blob": "421f571bf16a70ae10af49c82de560bcc7e34004"
+    },
+    {
+      "path": "src/store/invitation_due.rs",
+      "upstream_blob": "7752df19c5101afae9d3f1cf2af4ca5dc19e16b8",
+      "working_blob": "08c0ee73c4bf8e105328f590f9388f1d914ed115"
+    },
+    {
+      "path": "src/store/materialization.rs",
+      "upstream_blob": "c9d48d7f245e405af85d6420c7643858f5a1b820",
+      "working_blob": "60a1d3ae830a4b6f2ce0f9a733fd43e98b1b736f"
+    },
+    {
+      "path": "src/store/messages.rs",
+      "upstream_blob": "016da2016fe067942ca61f9c1d7e0875a7da34c5",
+      "working_blob": "0068d31af647b2f2f317089ebcde499c8e19e5b3"
+    },
+    {
+      "path": "src/store/mod.rs",
+      "upstream_blob": "b39dce66a92ea182a93102fd2fa17e00c6b967ea",
+      "working_blob": "776c48b4e9395b3797a8728be88fb1dd666d250a"
+    },
+    {
+      "path": "src/store/queries.rs",
+      "upstream_blob": "c2d5ad0de15813e1cf1c88d86759511600637528",
+      "working_blob": "c4d9eec099f1ec21cb5980b1801e1ab091f65f24"
+    },
+    {
+      "path": "src/store/receipts.rs",
+      "upstream_blob": "08f6617127b229429d38d7e82d9d4d3a9b24b471",
+      "working_blob": "123ee9faad3efb4b31836ef9c5ce323dfce9a02a"
+    },
+    {
+      "path": "src/store/schema.rs",
+      "upstream_blob": "8313e38c141b737553fb6aedfed250f08fbfb365",
+      "working_blob": "c358571824d04298b62bcbc6297aa66a084da31e"
+    },
+    {
+      "path": "src/store/seats.rs",
+      "upstream_blob": "9d1953316a400f7124fdc1953c39b9e6ad7172e4",
+      "working_blob": "d3b061bd5a26a66dff88cf0c9623e513c8316df2"
+    },
+    {
+      "path": "src/store/service_controls.rs",
+      "upstream_blob": "7a10b9cb8410ada5cd74b4eab60b00ee1110980a",
+      "working_blob": "6be01a78086cc7e6f83fc59b7383c1ba8a88fbb9"
+    },
+    {
+      "path": "src/store/topology_handoff.rs",
+      "upstream_blob": "42deb48f24cd54f9daa51f29f16caffc9421df8e",
+      "working_blob": "3fbb9e8b5fdac4e80bda26fdfa5a59884e8bc483"
+    },
+    {
+      "path": "src/store/topology_handoff/attachment.rs",
+      "upstream_blob": "06b059bea1cd7eb5db3cb998ecbc28023fa5cc0f",
+      "working_blob": "d79b5f2cfc8841e5af80cd6d7f872d5c72d96104"
+    },
+    {
+      "path": "src/store/topology_handoff/persistence.rs",
+      "upstream_blob": "d48534a6337cf258de407a3691ceb6807d918bff",
+      "working_blob": "93b92268a70507cd11a564c5cc5c70311a2dfe83"
+    },
+    {
+      "path": "src/store/wake.rs",
+      "upstream_blob": "dd627fe05b66510ada09cd3cb0e24268add8530e",
+      "working_blob": "48514c8f856d49313d640e2cd49e611fd8bf5053"
+    },
+    {
+      "path": "src/test_support/history.rs",
+      "upstream_blob": "e09c00428560e04c33dcb38a6b811f7864c9eecf",
+      "working_blob": "83eca7083b3409b0bba82dfac4a2b2b6b843b7c5"
+    },
+    {
+      "path": "src/test_support/mod.rs",
+      "upstream_blob": "688fc45fcc6349241b0a0fbc1865eedb08bcb5ee",
+      "working_blob": "c7b049cd95912eed2095667610b63a4b2da2bb5f"
+    },
+    {
+      "path": "tests/cli/commands.rs",
+      "upstream_blob": "683f1d131fcaf725f3ce309e1d4081c61a16f29f",
+      "working_blob": "b5f9e05e44871c8340bfa4677ce2c6cf6a6a7975"
+    },
+    {
+      "path": "tests/cli/cooperative.rs",
+      "upstream_blob": "d2b5b1b700cfdd3763502c85e5083398c757ad0e",
+      "working_blob": "59081110381c3dc03080d2b8e0fc60525c9d0406"
+    },
+    {
+      "path": "tests/cli/follow_retry.rs",
+      "upstream_blob": "7adef4a38396fee5601107f96f626ead074f665e",
+      "working_blob": "7d6178141bbae222637bc59462b9e1647e4c3436"
+    },
+    {
+      "path": "tests/cli/handoff.rs",
+      "upstream_blob": "818e829a37ce3c38724303ce15db0128b2312654",
+      "working_blob": "6fdd732ed202c14ce30cd0cce7366bcd2034f71d"
+    },
+    {
+      "path": "tests/cli/handoff_delivery.rs",
+      "upstream_blob": "c99a016ab172ac19846f04004a41be0d894c696e",
+      "working_blob": "68283c566068dc98d767f863ecf7b8a3f0dae151"
+    },
+    {
+      "path": "tests/cli/hook.rs",
+      "upstream_blob": "09c4227b90b411d1c92da9fecb9556fe3d33f91f",
+      "working_blob": "7a66fd66df3b0d6069444321746057daf983a7e0"
+    },
+    {
+      "path": "tests/cli/launch.rs",
+      "upstream_blob": "485fdb7af769b5f9a6af40cca2306f268de1c669",
+      "working_blob": "10a1e360c26a6f7207a172bcdd956fd742796b6a"
+    },
+    {
+      "path": "tests/cli/lazy_display.rs",
+      "upstream_blob": "d09fce061d6046addbaf891fbb9c41cc9b084d04",
+      "working_blob": "5086da445d96d0690cf4d0580775129d765ef0e3"
+    },
+    {
+      "path": "tests/cli/lazy_send.rs",
+      "upstream_blob": "5e8342558f26e38a3fa3e082b92c9207358e9a54",
+      "working_blob": "84b00f51ecf866106454cc2064fd664d7c7f9f35"
+    },
+    {
+      "path": "tests/cli/output.rs",
+      "upstream_blob": "ede549b6b965aa20568eefc494b587e5465346fd",
+      "working_blob": "f747603d418ff90000a3a33a443c826d4fd69856"
+    },
+    {
+      "path": "tests/cli/topology_handoff.rs",
+      "upstream_blob": "12837ed6508dbedee195d5072da6da8a3797c99c",
+      "working_blob": "0609b9f457ab941c16db2a372a8af9694a176198"
+    },
+    {
+      "path": "tests/cli/watch.rs",
+      "upstream_blob": "a6c3e974d3d81c0c1109d7d9d2a79e437c6913cb",
+      "working_blob": "d70b4ca21c5cc2325f2c04d8ff78b856ddbfdd8f"
+    },
+    {
+      "path": "tests/contracts.rs",
+      "upstream_blob": "7f5efa7a58be1cf93f33dd2dc4f2085de7a0efd3",
+      "working_blob": "a1830333fd0c30146df571181cb56447abcbe595"
+    },
+    {
+      "path": "tests/delivery/extraction.rs",
+      "upstream_blob": "c027d23c672970377b3964ca52e788e3781c0a27",
+      "working_blob": "bc5f5bf7a98a9abb0e51f3ec60616d66ec59895e"
+    },
+    {
+      "path": "tests/handoff_topology_authority.rs",
+      "upstream_blob": "1b24497bfd463f6171037dc0643ad04609b5bdd0",
+      "working_blob": "e11f66a0752e5fc7a2587b2903b3e79c20d49543"
+    },
+    {
+      "path": "tests/handoff_topology_cli.rs",
+      "upstream_blob": "11072da441e1b55406ecf7a90ee5a397aa91cb61",
+      "working_blob": "b4fd3f570f3408dc3ed2d890f061ff258dcc2945"
+    },
+    {
+      "path": "tests/harness/adapter_smoke.rs",
+      "upstream_blob": "8eec1dc3043f7d75e36c2c2f679b07b33f4cbaa2",
+      "working_blob": "b8413c1b55a2ed8b5dc036e7db65657eb125d6f4"
+    },
+    {
+      "path": "tests/harness/agy_launch.rs",
+      "upstream_blob": "cf13880de0752782f3b4689e63d2e5acf450ff11",
+      "working_blob": "aa7a6113c0cac549b195c363df8edc5ee2ba4295"
+    },
+    {
+      "path": "tests/harness/canary_payloads.rs",
+      "upstream_blob": "2583876d0060a89c8d0ad18a3cef2ff76a3b88a1",
+      "working_blob": "9cd325d770cad3d9301359a558b7bb25fd50984b"
+    },
+    {
+      "path": "tests/harness/claude_mod.rs",
+      "upstream_blob": "3ddd2889859a58f5bfe101894821f155cc07059a",
+      "working_blob": "677b02a8248b2e367ef8f3193e3c9f2c5314dd7d"
+    },
+    {
+      "path": "tests/harness/launch.rs",
+      "upstream_blob": "806a18ecd36870bfae10e52d1a0add0011c40f32",
+      "working_blob": "6d1f2f320db8e5c20876187aad9d1037b465f365"
+    },
+    {
+      "path": "tests/harness/setup.rs",
+      "upstream_blob": "a3ef66443c2fe5f37fbebc824704473ebb7b17f2",
+      "working_blob": "2f169fcf6427b04a9303e9c2c03818adf02291cd"
+    },
+    {
+      "path": "tests/hook_entrypoint.rs",
+      "upstream_blob": "b7cc2ab19d5b37fd51a343635856ca5cb7068b48",
+      "working_blob": "c42b07bef2f0e2d8d0ca2c3a84e88644033139b8"
+    },
+    {
+      "path": "tests/integration/channel_activation.rs",
+      "upstream_blob": "dfa861e30ef721dfb5cb6565b7743cec341a6175",
+      "working_blob": "adbda6fd4f38c88df9bb2c3571bd8f9d4650b76c"
+    },
+    {
+      "path": "tests/integration/lazy_attention.rs",
+      "upstream_blob": "ca00f8685e4f60472a76c0300cfc4acd27a71916",
+      "working_blob": "3be6ffcfcf741670fef66e96585217fa9d2ada0c"
+    },
+    {
+      "path": "tests/integration/notice_wake.rs",
+      "upstream_blob": "f95f17971aa47bf1ad64ae2858558cbd6643b4fc",
+      "working_blob": "c27c3518819acd1f7bbb2929e75be50509fc7192"
+    },
+    {
+      "path": "tests/integration/topology_activation.rs",
+      "upstream_blob": "c25f04a1a5af50b6454b61e8b58b6c0d2a84c495",
+      "working_blob": "151872bfa341ef7c91ea159e3f773e9cf4ae069d"
+    },
+    {
+      "path": "tests/lifecycle_ux.rs",
+      "upstream_blob": "08e573875fd8ee04837cf660d5e02d2e5d9169c8",
+      "working_blob": "afb876d69b12f8b1d5395aac55e4175cf3ee84c3"
+    },
+    {
+      "path": "tests/native/demo/test_demo_verify.py",
+      "upstream_blob": "8e8e8b434a73988878b1ada8fcfa436434ce12cc",
+      "working_blob": "aa1946fdee71eedb2e39e0d1e697b29ff33a7cf1"
+    },
+    {
+      "path": "tests/protocol/capabilities.rs",
+      "upstream_blob": "18187c2c4defdb5e26806b8757bb74f4b12acca0",
+      "working_blob": "d9e80922b1a24b1afedd0ba79eb7b26c73388c17"
+    },
+    {
+      "path": "tests/scheduler/deadlines.rs",
+      "upstream_blob": "54b8af815c5c190115658096af31501a042e85a7",
+      "working_blob": "ac267eb918a2a81311c8a2eeb15ae26142cb57fc"
+    },
+    {
+      "path": "tests/scheduler/dispatch.rs",
+      "upstream_blob": "9309197fc8ee31dca4aa9ba7216b27908e1d0f7d",
+      "working_blob": "4a41315381d2dc4e0ea622bcceeb83200682f2b0"
+    },
+    {
+      "path": "tests/scheduler/poke_flow.rs",
+      "upstream_blob": "7befaa840ece0b7f3e7b6ab3506ba60b6ac53f7c",
+      "working_blob": "0bf4854ad5cf1ccbb03d1437ecc4f2ecab6aefa4"
+    },
+    {
+      "path": "tests/service/cooperative.rs",
+      "upstream_blob": "dfca582f73d10e5d1cad2937002e60994af7bd36",
+      "working_blob": "435ef98c36fbb8feebc86e36d1ea51dfd1565cf2"
+    },
+    {
+      "path": "tests/service/crash_matrix.rs",
+      "upstream_blob": "e64956dc2cf473f14ccdd5bee2d1c5d74053eb0c",
+      "working_blob": "cdcc514938bf0867e28ebf6d013fb9d779b6312a"
+    },
+    {
+      "path": "tests/service/lanes.rs",
+      "upstream_blob": "345e0f70ddaf16e120c34592702451d5a3631de5",
+      "working_blob": "61203caacaa1dbcedfc7b28308b1af67930c692c"
+    },
+    {
+      "path": "tests/service/worker_health.rs",
+      "upstream_blob": "c41c6360c728fc4e894f3e98ba6f7eb3515ce57e",
+      "working_blob": "6141abeb650a723fcca1f00285a4986dc56d0cbf"
+    },
+    {
+      "path": "tests/setup_cli.rs",
+      "upstream_blob": "20ec555c7ceabc9e49a0365a597babe4dc11e03e",
+      "working_blob": "8556e51b5b61f0d03c67ee163fa92159eaefb427"
+    },
+    {
+      "path": "tests/store/archival_legacy.rs",
+      "upstream_blob": "1e354ddb7743eee4be63dda8e92f85971dd83359",
+      "working_blob": "0781ba72a5a03fe36ce511a9b5554bee42a547a7"
+    },
+    {
+      "path": "tests/store/catch_up.rs",
+      "upstream_blob": "da133b6dc9a7688d27baaf1a719f7f3114e2f108",
+      "working_blob": "0a4d1f1d7e4699f205b3efaab844ce239b93aae1"
+    },
+    {
+      "path": "tests/store/commit_kicks.rs",
+      "upstream_blob": "7cc17c7001d1ffb06e4b4d05a0d055766e3fdc0b",
+      "working_blob": "19bbe2768c5215ca4f1591978a65bff22f17d6bb"
+    },
+    {
+      "path": "tests/store/control.rs",
+      "upstream_blob": "a2e84312418d9546e6f68459ae6a904d89cb3540",
+      "working_blob": "e48cbdeb44181b3c57dfe9a4e797a300c9f7c60e"
+    },
+    {
+      "path": "tests/store/cooperative_checkin.rs",
+      "upstream_blob": "1dea0bbd317a6f0e827b26e6a1561eac443d2def",
+      "working_blob": "a8e1b2c26f745ad55f39c688c497cc9fa83b0202"
+    },
+    {
+      "path": "tests/store/direct_threads.rs",
+      "upstream_blob": "ae42c1180ab1665309a3e78bd437b0f21eddb548",
+      "working_blob": "19ca34d336db6f4879e8871b91c8cc073c0c37cc"
+    },
+    {
+      "path": "tests/store/effective.rs",
+      "upstream_blob": "96df874b8d3ea908f6d25b60a4c573e30f4d0881",
+      "working_blob": "0b4e5532e8392933b5433c53dad2a53bfd478fc2"
+    },
+    {
+      "path": "tests/store/facade.rs",
+      "upstream_blob": "1b2147bd60c48ef19d9bc7ffffdb185be8de863f",
+      "working_blob": "761945d1799d9ce01840284ad73c644d865fcbfa"
+    },
+    {
+      "path": "tests/store/handoff_fences.rs",
+      "upstream_blob": "4707d113eb549ca95c7613f945ed3b5d654287ed",
+      "working_blob": "934a53f518e487c0d361f150f0930ec843b85d67"
+    },
+    {
+      "path": "tests/store/invitation_due.rs",
+      "upstream_blob": "15612ba0bae06e29957b5e970213c44d624528a4",
+      "working_blob": "a03653e97f136a636185587a0ea3c235eabb167e"
+    },
+    {
+      "path": "tests/store/lazy26_prerequisite.rs",
+      "upstream_blob": "7a3883e6e300951696144dea911d84951af808e3",
+      "working_blob": "4d12410f10f7533370f24cb4c7e79d2221ad8ecd"
+    },
+    {
+      "path": "tests/store/lazy_inbox.rs",
+      "upstream_blob": "c01bdb4ea1964335c0c9dfc4a603ff807329408e",
+      "working_blob": "6f940c205392f09277aad38c4ab089d06c18ba00"
+    },
+    {
+      "path": "tests/store/lazy_schema.rs",
+      "upstream_blob": "00e18258a542828592d7ddcf959cbe02d4cb4c60",
+      "working_blob": "3d48e8d10b9c88cbb956a89076e2b2d651d16b52"
+    },
+    {
+      "path": "tests/store/materialization.rs",
+      "upstream_blob": "4fcc5c91c239f9addd089376438e230f7b389853",
+      "working_blob": "fdaa45164a18023342b02b43a53f7d9331e1832a"
+    },
+    {
+      "path": "tests/store/receipts.rs",
+      "upstream_blob": "d43a4bfe2d1dd8e792ffac89f4be49797b9e93de",
+      "working_blob": "f9da277b6e1fa524d0a88bfb1d7e34e0bbeca1da"
+    },
+    {
+      "path": "tests/store/retention.rs",
+      "upstream_blob": "730b90e48f28b536b301c5276d555afacf1f1ab9",
+      "working_blob": "f0d3e9dc0f3a8fde042e9e7e00745d037d95acc5"
+    },
+    {
+      "path": "tests/store/schema.rs",
+      "upstream_blob": "3012a131f01e1674082d6e1898a9e0a652cfa05d",
+      "working_blob": "37e287161857b69a4476623e7cdc442a275fe758"
+    },
+    {
+      "path": "tests/store/service_send.rs",
+      "upstream_blob": "3cb387a91112f4470af65cfb4bf1edd1b2f4e4e6",
+      "working_blob": "5f54d64ab5fd4ded09e3e6ef280a3748c87e0bea"
+    },
+    {
+      "path": "tests/store/topology_attachment_guard.rs",
+      "upstream_blob": "2aca261f86570d8bf78f9948a5ee46213ef1e311",
+      "working_blob": "82faf6c02ed811ee28383b5dd952244387561373"
+    },
+    {
+      "path": "tests/store/topology_attempts.rs",
+      "upstream_blob": "d306ff80cd0b9f0a093e013109dee905f0e86738",
+      "working_blob": "3fb14ca5e080fa0eb37de2b78ce6356bab1a18c7"
+    },
+    {
+      "path": "tests/store/topology_handoff.rs",
+      "upstream_blob": "27901e9063967cff9fb2281f2283a8c88718e005",
+      "working_blob": "3dd2cae47054b23f569f349a7d96e3da248af8c5"
+    },
+    {
+      "path": "tests/store/topology_handoff_schema.rs",
+      "upstream_blob": "fcb786209e357be195a12de0695d74c24752e884",
+      "working_blob": "53ca7dd24619e0cf826e91bd6712c4e26054ac09"
+    },
+    {
+      "path": "tests/store/wake_discovery_cost.rs",
+      "upstream_blob": "3943815504fd15d9694be3879fbf45986a700006",
+      "working_blob": "304f6cee65e9e8160aa7c0cc39c61f548e763c7a"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign--handoff-design.md",
+      "upstream_blob": null,
+      "working_blob": "da8697c106ff33d8f35132a49fe08cab4ed93821"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign--hooks-design.md",
+      "upstream_blob": null,
+      "working_blob": "7e00fdb57d6f00de28e61a95f9bba676659523dc"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign--invitations-design.md",
+      "upstream_blob": null,
+      "working_blob": "ee8fb0b58794c177dfa605dc5703418a3cdf62db"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign--receipts-design.md",
+      "upstream_blob": null,
+      "working_blob": "1cedd62eb4d26ef21ced7e613832e683cd4e0e03"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign-design.md",
+      "upstream_blob": null,
+      "working_blob": "554639e84d69f0223cc78f6342e40a1e25833c92"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign-roast-design-1.md",
+      "upstream_blob": null,
+      "working_blob": "4fb539374551f4204d8e5bed309536584e00b536"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign-roast-design-2.md",
+      "upstream_blob": null,
+      "working_blob": "8d9119e06d1fdca4974d459b2e55c9a0ccdd1405"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/author-refinements.md",
+      "upstream_blob": null,
+      "working_blob": "5e22e4f5b69eb176999025ca16814caad6c340ae"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/base-composition.md",
+      "upstream_blob": null,
+      "working_blob": "c06afdaf1fb926d4d497b8aa23e84929a3a6ef27"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/coordination.md",
+      "upstream_blob": null,
+      "working_blob": "5003b8272a01592f67544f4c65fdb78a3a033cca"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/coverage-changes.md",
+      "upstream_blob": null,
+      "working_blob": "cf6040399524e5c372a34cb5ec8fd0130026cb8f"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/coverage-ledger.md",
+      "upstream_blob": null,
+      "working_blob": "0581ba804ddd714611020d751167a8cbc3d4a656"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/coverage-round-1/assembler-input.md",
+      "upstream_blob": null,
+      "working_blob": "759aaf0bb9ccac610cb67096aa6f3102397884af"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/coverage-round-1/assembly-manifest.json",
+      "upstream_blob": null,
+      "working_blob": "6cf6b036451abf620bd23bc4ba3b0990508217e3"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/coverage-round-1/coverage-reviewer-prompt.md",
+      "upstream_blob": null,
+      "working_blob": "ddffb9127d09cbabc98fc92fa9c36e4c5196dd4e"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/coverage-round-1/initial-input-failure.md",
+      "upstream_blob": null,
+      "working_blob": "41575be21c307480c32bdd425b7ae37e6ee471e3"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/coverage-round-1/requirements.md",
+      "upstream_blob": null,
+      "working_blob": "f309c96436c7758435e00a442bf70d1c92a71e92"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/coverage-round-1/review-1.json",
+      "upstream_blob": null,
+      "working_blob": "84d853403bed7968a03939e89b74b3d87be784e2"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/coverage-round-1/review-2.json",
+      "upstream_blob": null,
+      "working_blob": "a0a90c8efac52260ab562b5a1fc4f66b802556d6"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/coverage-round-1/review-3.json",
+      "upstream_blob": null,
+      "working_blob": "8cacfab87b858bb9e1a749dc5cd3a3096bd49d85"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/coverage-round-1/summary.json",
+      "upstream_blob": null,
+      "working_blob": "685aec2145cbea1c513c5847baf1304e5cbf8613"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/coverage-round-1/summary.md",
+      "upstream_blob": null,
+      "working_blob": "16984f38e550bc21253b4b264476f8074201ffa0"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/coverage-round-1/task-tree.json",
+      "upstream_blob": null,
+      "working_blob": "3a5e7eaacc69882619b3b56af8b62d04a8c4e3aa"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/coverage-round-2/assembler-input.md",
+      "upstream_blob": null,
+      "working_blob": "2865bf75e608c7d00db740fdde64cfac453d0eff"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/coverage-round-2/assembly-manifest.json",
+      "upstream_blob": null,
+      "working_blob": "901077947f20eb674e0ed4ce594c5e6eeb18e481"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/coverage-round-2/coverage-reviewer-prompt.md",
+      "upstream_blob": null,
+      "working_blob": "ddffb9127d09cbabc98fc92fa9c36e4c5196dd4e"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/coverage-round-2/mechanical-input-check.json",
+      "upstream_blob": null,
+      "working_blob": "0909bef0a9ca8ee2ea49431ca442c0a1d19fcd56"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/coverage-round-2/requirements.md",
+      "upstream_blob": null,
+      "working_blob": "3aac9db21cd5c431dae5ca6512cb562c37fd00f2"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/coverage-round-2/review-1.json",
+      "upstream_blob": null,
+      "working_blob": "10f38dd2aeb9819317362cf9731f1447ebef817c"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/coverage-round-2/review-2.json",
+      "upstream_blob": null,
+      "working_blob": "859dad4118cd71c856e05ba74b6dc1ed4ad7849e"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/coverage-round-2/review-3.json",
+      "upstream_blob": null,
+      "working_blob": "54e744296115c46efad0346044e8c722101ae152"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/coverage-round-2/summary.json",
+      "upstream_blob": null,
+      "working_blob": "52b73e9749a5f1e8a76bac6428efe9379f882f12"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/coverage-round-2/summary.md",
+      "upstream_blob": null,
+      "working_blob": "c74a6d6cea95cb3362a8bd913d1428012b81cff3"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/coverage-round-2/task-tree.json",
+      "upstream_blob": null,
+      "working_blob": "a6e90c7b85842a3d90e6eddeb07b466b311916d9"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/design-handoff.md",
+      "upstream_blob": null,
+      "working_blob": "3167705ae847014b1a1cf52e0a1a4bd43dc099f5"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/edge-audit-1.md",
+      "upstream_blob": null,
+      "working_blob": "0615c15c14b55e0294de84d253a364a10ac28336"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/edge-audit-2.md",
+      "upstream_blob": null,
+      "working_blob": "9804f5dd08a87fc1c470102a5ea2298e2e963621"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/execution-seams.md",
+      "upstream_blob": null,
+      "working_blob": "dacc2cf5475e3024856312953c5aad92a5915247"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/fixture-preflight.md",
+      "upstream_blob": null,
+      "working_blob": "c3ced39e6f2ead8af5fa40ccac1c3cdf7fb9b642"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/friction.md",
+      "upstream_blob": null,
+      "working_blob": "5c445a9d5641f85dadebfd45f60423ddc8e931c0"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/ht-0lo-plan.md",
+      "upstream_blob": null,
+      "working_blob": "061245ed9936df403210cb9e95c1c8ff7a0d6fc4"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/leaf-ids.json",
+      "upstream_blob": null,
+      "working_blob": "c86b7e60cb715a75d59bbec2fd275f7f32f04227"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/multi-originator-warning-refinement.md",
+      "upstream_blob": null,
+      "working_blob": "3cbc4c6cd330e4185e357ca0248be3e4a35f33e8"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/plan-mapping.json",
+      "upstream_blob": null,
+      "working_blob": "d61e8070973c961f7fc92837e4669112269aad0c"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/preflight-table.md",
+      "upstream_blob": null,
+      "working_blob": "10c2ba6d4c0c1866dbb5b1c1b9bde5babb2d9572"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/progress.md",
+      "upstream_blob": null,
+      "working_blob": "e57f47cbaa31ba16ad19dd6591aaf36bfa3f3e8c"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/promotion-review.md",
+      "upstream_blob": null,
+      "working_blob": "c527be7f8e10ec5e758d2066a0650be9b7a32c99"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/review-1fe52281..d6f7ed94.diff",
+      "upstream_blob": null,
+      "working_blob": "4cdae59d6755142e343a9619ae2084b32d154fa4"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/review-217a47e2..9f23a224.diff",
+      "upstream_blob": null,
+      "working_blob": "dc2fab4e6b0bb846fc2359ee08943b761abaff73"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/review-37c894ab..70d8b778.diff",
+      "upstream_blob": null,
+      "working_blob": "fb96c3b5bdd2bb0effee6dc6039c8d5bb31bfa1a"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/review-50c397f4..19afa478.diff",
+      "upstream_blob": null,
+      "working_blob": "fee08b9ed25a043b2e5f4c9c356a6e9c5497ce36"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/review-58da51c1..82a62516.diff",
+      "upstream_blob": null,
+      "working_blob": "c1ceb083605b91038f97972b1ecf30df0226e03a"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/review-58da51c1..d23ecbf7.diff",
+      "upstream_blob": null,
+      "working_blob": "fa5959bff0342673c059d72a7c59e5dd6900386c"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/review-957544e8..1fe52281.diff",
+      "upstream_blob": null,
+      "working_blob": "18f186a48826dd8ffe41f68bf02126db1d0f51b7"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/review-957544e8..282d5461.diff",
+      "upstream_blob": null,
+      "working_blob": "b4515060148d063e4503f4eb0c67d6cae5335d2a"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/review-9f23a224..6d4d8449.diff",
+      "upstream_blob": null,
+      "working_blob": "7297dd571f8bffb261e9320b49bc36cbdd2ee9e2"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/review-a04d1a41..ae922aba.diff",
+      "upstream_blob": null,
+      "working_blob": "d6bc62c6fddbd10819fc1b271fb9f014ed2cd137"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/review-ae922aba..50c397f4.diff",
+      "upstream_blob": null,
+      "working_blob": "649957d16a0a264b6bb4cdf8e179d3355ca2b658"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/review-d23ecbf7..84706c6b.diff",
+      "upstream_blob": null,
+      "working_blob": "9fe1300263397844058838519d08ce0bb6b8abbf"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/review-d2f62e64..e70091bf.diff",
+      "upstream_blob": null,
+      "working_blob": "1729ca1748e68f7e572e32d5f45f5f7c282482d3"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-1-artifacts/coverage.json",
+      "upstream_blob": null,
+      "working_blob": "8ec71fa3e8f3c21e1d7ab4291a162b475d46af9c"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-1-artifacts/dedupe-template.txt",
+      "upstream_blob": null,
+      "working_blob": "bf65592c97a0a0c21148bbb7ecf7022cd48d219e"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-1-artifacts/deduped.json",
+      "upstream_blob": null,
+      "working_blob": "77afe634e8e952680d638fd889d930a5c674b411"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-1-artifacts/judged-packets.json",
+      "upstream_blob": null,
+      "working_blob": "bdddf34e6b0732e788b9d2b38daae7818f8dcdb8"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-1-artifacts/prompt-completeness.txt",
+      "upstream_blob": null,
+      "working_blob": "a53806b20eb811fdc57e61747153ceeea8577339"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-1-artifacts/prompt-dedupe.txt",
+      "upstream_blob": null,
+      "working_blob": "8d39977e62a49e5bafd2d1e785eff16401ea2537"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-1-artifacts/prompt-domain-durable-messaging.txt",
+      "upstream_blob": null,
+      "working_blob": "b5d9294e8547a6b527a68fd1423a6de311e3cd63"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-1-artifacts/prompt-domain-native-hook-configuration-ownership.txt",
+      "upstream_blob": null,
+      "working_blob": "6453419cde04f777ecf7073e2093cd9d655684ca"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-1-artifacts/prompt-domain-protocol-evolution-and-data-migrations.txt",
+      "upstream_blob": null,
+      "working_blob": "2c5d06bb79e669f97de9104d03bbe4b667d2b454"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-1-artifacts/prompt-failure-mode.txt",
+      "upstream_blob": null,
+      "working_blob": "424da86be548b5309afd636a2659159f36e5f2ae"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-1-artifacts/prompt-feasibility.txt",
+      "upstream_blob": null,
+      "working_blob": "7b0c64833f3a6bde4b829b2dd75230b14b02edbd"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-1-artifacts/prompt-judge-1-ground.txt",
+      "upstream_blob": null,
+      "working_blob": "9bff9780ce18e4994cb0950ea993cca3c6c9abef"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-1-artifacts/prompt-judge-1-refute.txt",
+      "upstream_blob": null,
+      "working_blob": "248b6ea18e14aee541456796e50cd55ae2e020a1"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-1-artifacts/prompt-judge-1-reproduce.txt",
+      "upstream_blob": null,
+      "working_blob": "0891cb44901be39ab40045c3ad33ac9ded04fc61"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-1-artifacts/prompt-judge-2-ground.txt",
+      "upstream_blob": null,
+      "working_blob": "0d7412acf5a8716edb602eff16251238f6a7aec8"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-1-artifacts/prompt-judge-2-refute.txt",
+      "upstream_blob": null,
+      "working_blob": "46495f83afa88099fb3a8e47cd092ed87fc6cf9c"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-1-artifacts/prompt-judge-2-reproduce.txt",
+      "upstream_blob": null,
+      "working_blob": "36240fcaff01e5e6a1b8f565518e8ecbae74d116"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-1-artifacts/prompt-judge-3-ground.txt",
+      "upstream_blob": null,
+      "working_blob": "1bae7128c8b2c0529a002efe5eb5b5efea88fcf6"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-1-artifacts/prompt-judge-3-refute.txt",
+      "upstream_blob": null,
+      "working_blob": "701f948d4762142fc9eb97dcc611ac6d7782b532"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-1-artifacts/prompt-judge-3-reproduce.txt",
+      "upstream_blob": null,
+      "working_blob": "4725a3f93410d04e5712cf52c304fbb16b6d0a5f"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-1-artifacts/prompt-judge-4-ground.txt",
+      "upstream_blob": null,
+      "working_blob": "7341561d6b7bbb88bfa6da6d3996908a2b69b8e7"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-1-artifacts/prompt-judge-4-refute.txt",
+      "upstream_blob": null,
+      "working_blob": "7f5116aee226a0e376b4d69dc59287897ea305e1"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-1-artifacts/prompt-judge-4-reproduce.txt",
+      "upstream_blob": null,
+      "working_blob": "a235557f21c7c172c55c9d924ead64ed35034223"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-1-artifacts/prompt-judge-5-ground.txt",
+      "upstream_blob": null,
+      "working_blob": "e7559d0cdf26692012ba87470d8ea79a9aa54d09"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-1-artifacts/prompt-judge-5-refute.txt",
+      "upstream_blob": null,
+      "working_blob": "ebef3202a7c7763df17bc902747be4f2c4fbb1f7"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-1-artifacts/prompt-judge-5-reproduce.txt",
+      "upstream_blob": null,
+      "working_blob": "52a8c5ab0341f8bba06eb9c103333d63e5b5d002"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-1-artifacts/prompt-premortem.txt",
+      "upstream_blob": null,
+      "working_blob": "e9e0a2d4d0131d8bcb5582e8629b416926be7201"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-1-artifacts/prompt-reporter.txt",
+      "upstream_blob": null,
+      "working_blob": "2b0bd93d3ad1ef851489c8199aea338bc550b1d8"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-1-artifacts/prompt-yagni.txt",
+      "upstream_blob": null,
+      "working_blob": "4a70426ddc7dc35d826292941fd99a57b512ca9c"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-1-artifacts/raw-findings.json",
+      "upstream_blob": null,
+      "working_blob": "f2e687adb5cadce0eda374f3eed68bd3c4ec16a3"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-1-artifacts/reporter-result.json",
+      "upstream_blob": null,
+      "working_blob": "cfe7085f6eb1822dd8097b62824e4d9d5f816497"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-1-artifacts/roster.json",
+      "upstream_blob": null,
+      "working_blob": "a1e4fe08b9b4881ef56d844344e6039a0b137bd2"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-1-artifacts/scout-completeness.json",
+      "upstream_blob": null,
+      "working_blob": "a94a7246e77c2fca1dfdeaebd6596bc5f4cb2fed"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-1-artifacts/scout-domain-durable-messaging.json",
+      "upstream_blob": null,
+      "working_blob": "37db1903c9f514ab4816600abaf83006d0534e67"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-1-artifacts/scout-domain-native-hook-configuration-ownership.json",
+      "upstream_blob": null,
+      "working_blob": "b0479f73727b12be87ebb4f762165385a268cbd9"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-1-artifacts/scout-domain-protocol-evolution-and-data-migrations.json",
+      "upstream_blob": null,
+      "working_blob": "db8189de2fd33d9c2c05be2dd8bd924a24f27237"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-1-artifacts/scout-failure-mode.json",
+      "upstream_blob": null,
+      "working_blob": "3cf5163de1442699dfd76c35db89bdb874ce660f"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-1-artifacts/scout-feasibility.json",
+      "upstream_blob": null,
+      "working_blob": "bd531081e6b781b9813148c4a35b7af67d9b9248"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-1-artifacts/scout-premortem.json",
+      "upstream_blob": null,
+      "working_blob": "1cd0b4fc4057a830dddb92bca8e4d31f9cdf6981"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-1-artifacts/scout-yagni.json",
+      "upstream_blob": null,
+      "working_blob": "6c9f421e745d693e110d653d4d07595cd0905ae1"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-1-artifacts/seat-template-ground.txt",
+      "upstream_blob": null,
+      "working_blob": "9c477dd40c754f6258724b494abb8af2174a316e"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-1-artifacts/seat-template-refute.txt",
+      "upstream_blob": null,
+      "working_blob": "33c8f465e724b5e9bd613530fca984fcda973506"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-1-artifacts/seat-template-reproduce.txt",
+      "upstream_blob": null,
+      "working_blob": "017c4276e8a0cd744219df27a8b53786ff17aec3"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-1-artifacts/settled-input.md",
+      "upstream_blob": null,
+      "working_blob": "97b3fb5da06dca524a0d9f6a325740d48f82193e"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-1-artifacts/triage.json",
+      "upstream_blob": null,
+      "working_blob": "d4323b2a5174a809bc3a7b6a407a44c70f972280"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-1-artifacts/vote-1-ground.json",
+      "upstream_blob": null,
+      "working_blob": "943e3184652a3f60ca454b16a1fd75cc9a080172"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-1-artifacts/vote-1-refute.json",
+      "upstream_blob": null,
+      "working_blob": "adbddb8b2176bbb3fae127a621711fabd2610bbe"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-1-artifacts/vote-1-reproduce.json",
+      "upstream_blob": null,
+      "working_blob": "b79486dca453e76d8eebc83c6b4f7c027e6087f2"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-1-artifacts/vote-2-ground.json",
+      "upstream_blob": null,
+      "working_blob": "b4804d452ee104e6e9316a4330a3479050487d02"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-1-artifacts/vote-2-refute.json",
+      "upstream_blob": null,
+      "working_blob": "61653939be7bb7358d166d1935f170d1b72021a2"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-1-artifacts/vote-2-reproduce.json",
+      "upstream_blob": null,
+      "working_blob": "262cc6f042f2a13f26767e6a0d81916f0b5950d4"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-1-artifacts/vote-3-ground.json",
+      "upstream_blob": null,
+      "working_blob": "ea13d575447f7c7f90c0c7a5fcb6f843c05dc4e6"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-1-artifacts/vote-3-refute.json",
+      "upstream_blob": null,
+      "working_blob": "5832bb78692d07f8682e98f69271e334828fa742"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-1-artifacts/vote-3-reproduce.json",
+      "upstream_blob": null,
+      "working_blob": "2730318e26b4be483ccd67a70a14d2c4ea0dbd2f"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-1-artifacts/vote-4-ground.json",
+      "upstream_blob": null,
+      "working_blob": "7c94700bc9d8cd27b44dc6177c8afdacacbc4f8c"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-1-artifacts/vote-4-refute.json",
+      "upstream_blob": null,
+      "working_blob": "fd31f33dd832beac130733b465684be41f3c3fe6"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-1-artifacts/vote-4-reproduce.json",
+      "upstream_blob": null,
+      "working_blob": "8de5bea59beb71497cb93ec11bbe6aa0eed3b70d"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-1-artifacts/vote-5-ground.json",
+      "upstream_blob": null,
+      "working_blob": "d110babd499950966fc1a6a39a53442aaf0b3639"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-1-artifacts/vote-5-refute.json",
+      "upstream_blob": null,
+      "working_blob": "a16d879bd681cd93b2fe235b08872716d524f20f"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-1-artifacts/vote-5-reproduce.json",
+      "upstream_blob": null,
+      "working_blob": "92abe3911d9666af370476b42828ad6e236025f7"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-2-artifacts/coverage.json",
+      "upstream_blob": null,
+      "working_blob": "95fcdf3553a81b933f962e7fc2424c6ef1cf74b5"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-2-artifacts/dedupe-template.txt",
+      "upstream_blob": null,
+      "working_blob": "bf65592c97a0a0c21148bbb7ecf7022cd48d219e"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-2-artifacts/deduped.json",
+      "upstream_blob": null,
+      "working_blob": "a58115769563584acd125bd91fb6a7680b4f59a0"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-2-artifacts/judged-packets.json",
+      "upstream_blob": null,
+      "working_blob": "fe51488c7066f6687ef680d6bfaa4f7768ef205c"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-2-artifacts/prior-assessments.json",
+      "upstream_blob": null,
+      "working_blob": "1c8a61dd1412f63a208eeeb3d69dcbf6c73db1bf"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-2-artifacts/prior-report.md",
+      "upstream_blob": null,
+      "working_blob": "4fb539374551f4204d8e5bed309536584e00b536"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-2-artifacts/prompt-completeness.txt",
+      "upstream_blob": null,
+      "working_blob": "714343114730ecb4cde01faf3492cd75904bdae1"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-2-artifacts/prompt-dedupe.txt",
+      "upstream_blob": null,
+      "working_blob": "fd6b1042058ccac40d8811e8211dffd65a670854"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-2-artifacts/prompt-domain-durable-messaging.txt",
+      "upstream_blob": null,
+      "working_blob": "1ea2789bdbf6d9217b98bc8e5d9818c65d23b8f9"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-2-artifacts/prompt-domain-native-hook-configuration-ownership.txt",
+      "upstream_blob": null,
+      "working_blob": "a2480f593abde6b00c88f9e67ce1a4787e660fca"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-2-artifacts/prompt-domain-protocol-evolution-and-data-migrations.txt",
+      "upstream_blob": null,
+      "working_blob": "854c19613df5f80b520e5f538aad1da58c06b4fa"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-2-artifacts/prompt-failure-mode.txt",
+      "upstream_blob": null,
+      "working_blob": "725bf8b445be2fa738fe68d0eb54c3237140e92b"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-2-artifacts/prompt-feasibility.txt",
+      "upstream_blob": null,
+      "working_blob": "a50c81e8362c4058bc846692b7cabbea66af375f"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-2-artifacts/prompt-premortem.txt",
+      "upstream_blob": null,
+      "working_blob": "27ca9b910a831ba69e4fc70a46d3cb789b3a6c81"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-2-artifacts/prompt-regression.txt",
+      "upstream_blob": null,
+      "working_blob": "eda645d7f908edea4b7c84a12f7237621e9b4992"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-2-artifacts/prompt-reporter.txt",
+      "upstream_blob": null,
+      "working_blob": "3dae5067a4dce72b2ac3f1ad9d87beae3350d38b"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-2-artifacts/prompt-yagni.txt",
+      "upstream_blob": null,
+      "working_blob": "23201ae2c8423250829f862f434c5211dc58f1b0"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-2-artifacts/raw-findings.json",
+      "upstream_blob": null,
+      "working_blob": "0637a088a01e8ddab3bf3fa98dbe804cbde1a0dc"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-2-artifacts/reporter-result.json",
+      "upstream_blob": null,
+      "working_blob": "1217e034710b952c3f7acf9ed606bf2f52b8e123"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-2-artifacts/roster.json",
+      "upstream_blob": null,
+      "working_blob": "22fc43ffa6d9ae976f8ed8828fe9bbbb7fe0b115"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-2-artifacts/scout-completeness.json",
+      "upstream_blob": null,
+      "working_blob": "e5cb1e371f20db909000b0c6fcd80734298f5d91"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-2-artifacts/scout-domain-durable-messaging.json",
+      "upstream_blob": null,
+      "working_blob": "031ceb2ad667e99e7e9fb850848ca8b45e38b393"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-2-artifacts/scout-domain-native-hook-configuration-ownership.json",
+      "upstream_blob": null,
+      "working_blob": "1f293c4d709702a740e5b8c0adcd0359bb859f8c"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-2-artifacts/scout-domain-protocol-evolution-and-data-migrations.json",
+      "upstream_blob": null,
+      "working_blob": "e49d41ebd76d3228cc971141cef5e9c29df9a795"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-2-artifacts/scout-failure-mode.json",
+      "upstream_blob": null,
+      "working_blob": "2283ab39dc89f1e435bc2ef303e466a790935da5"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-2-artifacts/scout-feasibility.json",
+      "upstream_blob": null,
+      "working_blob": "b35a0dd02782a8bf0ef2465b2bdeac6c3e7c4f8a"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-2-artifacts/scout-premortem.json",
+      "upstream_blob": null,
+      "working_blob": "5215f2123a05da6103a537bceadacaf15947f7aa"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-2-artifacts/scout-regression.json",
+      "upstream_blob": null,
+      "working_blob": "4ede588d25b5480499ab3872a21cff7d12dcbf96"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-2-artifacts/scout-yagni.json",
+      "upstream_blob": null,
+      "working_blob": "3684002dea06d43f227aebeac878d8ed30c93c1d"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-2-artifacts/settled-input.md",
+      "upstream_blob": null,
+      "working_blob": "09f19ab977d707e40d18c1186037efef412ecdaf"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-design-2-artifacts/triage.json",
+      "upstream_blob": null,
+      "working_blob": "d7a94d9e91ce9d72a0200172ca81710c0852eabe"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/roast-fix-ledger.md",
+      "upstream_blob": null,
+      "working_blob": "a21ce7e8c5e2a2f2a904482cef75369edb31bee2"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/run.md",
+      "upstream_blob": null,
+      "working_blob": "526fcf7ed9d1b33164424b7a9f9bd54fa5d61e22"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/source-provenance.md",
+      "upstream_blob": null,
+      "working_blob": "6f7bb7a4437e545b7cf52463c31ee23a09ed5869"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-1-brief.md",
+      "upstream_blob": null,
+      "working_blob": "862fa8f26afb8eb02654e087f005010f883e4676"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-1-report.md",
+      "upstream_blob": null,
+      "working_blob": "59eaf996d5c06e268951eb8c3b2eacfe440c6fe0"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-1-review.md",
+      "upstream_blob": null,
+      "working_blob": "5e8917174665c51fc1cba1f69cc3f17b223cb7a5"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-1-seam-review.md",
+      "upstream_blob": null,
+      "working_blob": "b93bd17a30b7d4ff51cac4a85f4008339edad18f"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-1-seamfix-report.md",
+      "upstream_blob": null,
+      "working_blob": "f4b86cbe209abfc405d0adcd7fb874dc70163bc2"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-10-brief.md",
+      "upstream_blob": null,
+      "working_blob": "eeaf0d87618077b66c015c0555195832b3b21ea1"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-10-origin-seam-review.md",
+      "upstream_blob": null,
+      "working_blob": "68d59480ac6207e68d5bb70e94e9854d27d8fb52"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-10-report.md",
+      "upstream_blob": null,
+      "working_blob": "3c8028413b836850f40d32d7228c2f4199ef499b"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-10-review-package.diff",
+      "upstream_blob": null,
+      "working_blob": "232153c00898dfb4e4ae9157ec3babeadd5d03ca"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-10-review.md",
+      "upstream_blob": null,
+      "working_blob": "9bfdda621a8f02f9d3fc8ce27fabe578e7ea7727"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-10-serial-evidence.md",
+      "upstream_blob": null,
+      "working_blob": "9a50bd89e8c76e134f9b9e91c726e411f5488cf2"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-11-brief.md",
+      "upstream_blob": null,
+      "working_blob": "54259636db7f50a1870db6587d7e6b53322cfd79"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-11-report.md",
+      "upstream_blob": null,
+      "working_blob": "11cecf5300e9529f0d23041fd743273e37bd0afc"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-11-review-package.diff",
+      "upstream_blob": null,
+      "working_blob": "6306a7c4ea061049a97c271c791d7a95959e42b5"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-11-review.md",
+      "upstream_blob": null,
+      "working_blob": "ffaca8ae330cb65b0f197bb0d08093ab0c32cd0c"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-11-serial-evidence.md",
+      "upstream_blob": null,
+      "working_blob": "fb331926264413fd601b1478f88282b9df790822"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-12-brief.md",
+      "upstream_blob": null,
+      "working_blob": "979f82ee7f492c56c7fd37c6e4e1695dc0ce6136"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-13-brief.md",
+      "upstream_blob": null,
+      "working_blob": "0241661a02e4c0e2ba98522a650c0f9df58ca3f7"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-14-brief.md",
+      "upstream_blob": null,
+      "working_blob": "7f740f45133b84ab6e79b31005ac5aa1c0ec14da"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-2-brief.md",
+      "upstream_blob": null,
+      "working_blob": "fd31aeeadb424a8e7f7449652fd77ce97f346f7b"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-2-report.md",
+      "upstream_blob": null,
+      "working_blob": "794d4a00ce16b28a9c4b138dc77ea4c589cff223"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-2-review-957544e8..30c1f07c.diff",
+      "upstream_blob": null,
+      "working_blob": "24414169d91044cf3aafb9acec8060f12f2c54cf"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-2-review.md",
+      "upstream_blob": null,
+      "working_blob": "31acac0a9385409f937f25056b83ff251efd0c36"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-3-brief.md",
+      "upstream_blob": null,
+      "working_blob": "db8799183ccaca03481d727c220decbdc409ee5b"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-3-report.md",
+      "upstream_blob": null,
+      "working_blob": "43318d7e3dc99d8256999f32f35383180e3899e8"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-3-review.md",
+      "upstream_blob": null,
+      "working_blob": "964775c71affcab95d40978fb27ba48b05c8cbf6"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-4-brief.md",
+      "upstream_blob": null,
+      "working_blob": "eedae67c2458631894d27b92ea0714a0297b0609"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-4-report.md",
+      "upstream_blob": null,
+      "working_blob": "07ba6087a594e91e3f100bfa44aba35216be6856"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-4-rereview-1.md",
+      "upstream_blob": null,
+      "working_blob": "77750cd911ad607cc407584c22045d97a51e8116"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-4-review.md",
+      "upstream_blob": null,
+      "working_blob": "ab2a4239c608da70d11207c2f069a1d35c405c95"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-4-seam-rereview-1.md",
+      "upstream_blob": null,
+      "working_blob": "6711b02b487a80a7e491f582b37514f5aaf4cb56"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-4-seam-review.md",
+      "upstream_blob": null,
+      "working_blob": "0f1ddd6866162f187c724e0efed8f424057492ce"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-4-seamfix-report.md",
+      "upstream_blob": null,
+      "working_blob": "279bab1ea54ce1fffe5c654a4fd3c4c15fc07a47"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-5-brief.md",
+      "upstream_blob": null,
+      "working_blob": "41bcfca3253045db8aa2bad1c64dcd0d196d452e"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-5-report.md",
+      "upstream_blob": null,
+      "working_blob": "a7b0bad8b69afb844613538b49209e1f6a412c7c"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-5-review.md",
+      "upstream_blob": null,
+      "working_blob": "34d7d614a0a2df5cd36811bf4d901d126eb3e517"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-5-seam-review-package.diff",
+      "upstream_blob": null,
+      "working_blob": "e42f8bebc72c2a441196eeb4da2a2dbcf54c3b8e"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-5-seam-review.md",
+      "upstream_blob": null,
+      "working_blob": "1deba2e86c72812220ec29020eae4d1158776ac8"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-5-seamfix-report.md",
+      "upstream_blob": null,
+      "working_blob": "5541c9a9ccc0662a297f11076ecafdefd632c5f3"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-6-brief.md",
+      "upstream_blob": null,
+      "working_blob": "472081996a0b670d232b8ca150439d3be7b4775b"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-6-report.md",
+      "upstream_blob": null,
+      "working_blob": "17b3edea277dd7a539129bcea62ce776eee771a5"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-6-rereview-1.md",
+      "upstream_blob": null,
+      "working_blob": "2233ffa252935f0ec23d38267b9a5983ae453d1b"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-6-rereview-2.md",
+      "upstream_blob": null,
+      "working_blob": "52a879939978c97dfc7fa4d98bcfbac96ce76c32"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-6-review.md",
+      "upstream_blob": null,
+      "working_blob": "281863a441417f757a8d5dcc11d5637fa115932b"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-6-seam-fix-review-package.diff",
+      "upstream_blob": null,
+      "working_blob": "cd990589877ca944e268ad55048ce637bd1a8b15"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-6-seam-rereview-1.md",
+      "upstream_blob": null,
+      "working_blob": "6ad11bf91527c37f9891054de8c27d2eab0c4bc7"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-6-seam-review-package-1.diff",
+      "upstream_blob": null,
+      "working_blob": "71590462ed245e03efadfbc3ae2fef649a11e77c"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-6-seam-review-package.diff",
+      "upstream_blob": null,
+      "working_blob": "35a95f17cbdcd356755a17f4e1dc6f7bc6d425f8"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-6-seam-review.md",
+      "upstream_blob": null,
+      "working_blob": "1a3d6d8adeb1ab62ac62cc62488be45cb156ffe0"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-6-seamfix-report.md",
+      "upstream_blob": null,
+      "working_blob": "51f8aee3cd5b7307e5aa6bd626c7a0c88165cafd"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-7-brief.md",
+      "upstream_blob": null,
+      "working_blob": "70429221ed18f2c5c2b1bf85955ec9810a7b0bf6"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-7-fix-1-package.diff",
+      "upstream_blob": null,
+      "working_blob": "111ec6e09918796c824ceb8552031e2087f0b569"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-7-report.md",
+      "upstream_blob": null,
+      "working_blob": "d5ddad984fa3c16df4075dbe1f811eae9db6b42f"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-7-rereview-1.md",
+      "upstream_blob": null,
+      "working_blob": "ded9060bd26130ea45729fe4630aa5bba7785a1e"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-7-review-package.diff",
+      "upstream_blob": null,
+      "working_blob": "6e327f1f62da2db3c2918a63622de924bd67ca77"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-7-review.md",
+      "upstream_blob": null,
+      "working_blob": "7f4825c5d256cd398444b584a7aa224e15d755ce"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-7-seam-context.md",
+      "upstream_blob": null,
+      "working_blob": "0b260049820496a4329cf2638bbfaf7ee48afb80"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-7-seam-review-package.diff",
+      "upstream_blob": null,
+      "working_blob": "44b68c1bcfa3c3c436849775c40d71a16c216ef9"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-7-seam-review.md",
+      "upstream_blob": null,
+      "working_blob": "45d2324db9990e8eb02f258794c297b2c7d6f5f7"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-8-brief.md",
+      "upstream_blob": null,
+      "working_blob": "cfabce6babbfa12c1caa527b173c82510301828e"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-8-report.md",
+      "upstream_blob": null,
+      "working_blob": "727687a818e3edae7daac2e44356623f7760719d"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-8-review-package.diff",
+      "upstream_blob": null,
+      "working_blob": "2450d1cdababc0e99835cf0cfb2205acfdfb6e86"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-8-review.md",
+      "upstream_blob": null,
+      "working_blob": "9f5d93f3aaf17f2313669f7e8e3b4627cf70dca9"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-8-seam-context.md",
+      "upstream_blob": null,
+      "working_blob": "8c6fab62cda81aaa83769215e7cdb10f2f21fec5"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-8-seam-review-package.diff",
+      "upstream_blob": null,
+      "working_blob": "de44623bd29eaf12ae61c0d6e3772f908d01d5ad"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-8-seam-review.md",
+      "upstream_blob": null,
+      "working_blob": "b357d8f456d2a94f4bd5dac9036f44d061ca333f"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-9-brief.md",
+      "upstream_blob": null,
+      "working_blob": "447940dca4b751be49d64f1ab4b4768710838f57"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-9-report.md",
+      "upstream_blob": null,
+      "working_blob": "c928fd1735bb4aa98a0632b6e67cbb8a31e230a1"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-9-rereview-1.md",
+      "upstream_blob": null,
+      "working_blob": "02fc92fbe1f5959db2d4b1002ffb96b8e0c9e9f8"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-9-review.md",
+      "upstream_blob": null,
+      "working_blob": "fb2ac9a74d45e17a320c6bbd83c94ea7280e8d96"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-9-seam-context.md",
+      "upstream_blob": null,
+      "working_blob": "df3141a5d561ecdc94aca6bd06ad8e5de8e32923"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-9-seam-review-package.diff",
+      "upstream_blob": null,
+      "working_blob": "9079dacdfde02e49b1916cd104ff258ba756eff8"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-9-seam-review.md",
+      "upstream_blob": null,
+      "working_blob": "f6d13cd2539088091caf4f37f77202fcecd67c46"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-ids.json",
+      "upstream_blob": null,
+      "working_blob": "3a8eef52fa91af637a37774a59b65d4c1fa5e405"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/task-tree.json",
+      "upstream_blob": null,
+      "working_blob": "a320fe36986ae4035fbacd3261fb77b74435123d"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/upgrade-discovery-refinement.md",
+      "upstream_blob": null,
+      "working_blob": "56859fdc1430048d89c3aa9b2133821d504d6691"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/upstream-478ec4a9-composition-plan.md",
+      "upstream_blob": null,
+      "working_blob": "bf73d23dd1c4426c57c4dc3015494ccc9cd44fee"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/upstream-945107f6-rereview.md",
+      "upstream_blob": null,
+      "working_blob": "85b11930b07ba3168e56c20ad9bb5a62ad57d528"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/upstream-945107f6-review.md",
+      "upstream_blob": null,
+      "working_blob": "55a4c4f674f6fa737a5316bdb901eccfe3749ecc"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/upstream-945107f6-seamfix-report.md",
+      "upstream_blob": null,
+      "working_blob": "47e37750d0f96599eacc83c5f114d5148bf07729"
+    },
+    {
+      "path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/upstream-composition-refinement.md",
+      "upstream_blob": null,
+      "working_blob": "548e8094dc64697e94a7cd2073ec7d998f2ad9ee"
+    },
+    {
+      "path": "migrations/0032_invitation_confirmation.sql",
+      "upstream_blob": null,
+      "working_blob": "0a462d353e6c64612560f855b83b04d92ebe0200"
+    },
+    {
+      "path": "migrations/0033_receipt_send_time.sql",
+      "upstream_blob": null,
+      "working_blob": "248b16e3404173d8b3e9f066d070b92164d71355"
+    },
+    {
+      "path": "migrations/0034_handoff_body_bounds.sql",
+      "upstream_blob": null,
+      "working_blob": "440ea81fabc92d6ac62e952d63f845ef24d92bd4"
+    },
+    {
+      "path": "migrations/0035_receipt_deadline_backfill.sql",
+      "upstream_blob": null,
+      "working_blob": "91f7979d78ff6ac5096d0f3304c201e3343bbce5"
+    },
+    {
+      "path": "migrations/0036_invitation_lifecycle.sql",
+      "upstream_blob": null,
+      "working_blob": "462d1122e4501d0894ada181a62721a3abb326dd"
+    },
+    {
+      "path": "migrations/0037_invitation_warning_origin.sql",
+      "upstream_blob": null,
+      "working_blob": "245725b3e3c6393f2f48d6124ae4a8c833268210"
+    },
+    {
+      "path": "migrations/0038_receipt_warning_origins.sql",
+      "upstream_blob": null,
+      "working_blob": "4bbe01db8557964dd21278ce0de3722e5a1a0661"
+    },
+    {
+      "path": "migrations/0039_automatic_handoff_body_bounds.sql",
+      "upstream_blob": null,
+      "working_blob": "aa193c6e5704d10c3c47075ad06971b312363b85"
+    }
+  ],
+  "final_head": "e196ae1140499612d63bddc43a1624b70d004c62",
+  "final_tree": "6ab6831b7972af18ce600b553647db7185c31ccc"
+}

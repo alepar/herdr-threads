@@ -1,0 +1,177 @@
+{
+  "original": "53426ab6dc726d3406ca4b46654914cd817aa7d9",
+  "base": "945107f6acd8b05ade7b5e2d9f8b293282aa06f4",
+  "moved": [
+    {
+      "original_path": "src/cli/watch.rs",
+      "line": "InboxBatchV2Item::Invitation {",
+      "locations": [
+        "src/protocol/output_compact.rs",
+        "src/cli/hook_inbox.rs",
+        "src/delivery/assemble.rs"
+      ]
+    },
+    {
+      "original_path": "src/cli/watch.rs",
+      "line": "} => {}",
+      "locations": [
+        "src/host/native.rs",
+        "src/test_support/history.rs",
+        "src/service/dispatch.rs",
+        "src/store/service_send.rs",
+        "src/store/service_events.rs",
+        "src/store/archival.rs"
+      ]
+    }
+  ],
+  "unmatched": [
+    {
+      "original_path": "src/cli/doctor.rs",
+      "line": "`herdr-threads setup {harness}` to migrate to stable hook-event commands{retrust}\\n\""
+    },
+    {
+      "original_path": "src/cli/handoff.rs",
+      "line": "Select exactly one instruction source: a quoted body after --, --file PATH, or --stdin."
+    },
+    {
+      "original_path": "src/cli/handoff.rs",
+      "line": "Instructions contain 1..65,536 UTF-8 bytes, preserved exactly as durable work, never native argv."
+    },
+    {
+      "original_path": "src/cli/handoff.rs",
+      "line": "Files and stdin are acquired once before publication; retries use the frozen content."
+    },
+    {
+      "original_path": "src/cli/handoff.rs",
+      "line": "Invitations default to lazy. --require-invite-ack requests timed acceptance;"
+    },
+    {
+      "original_path": "src/cli/handoff.rs",
+      "line": "--invite-deadline SECONDS also requests it with that duration. The addressed body"
+    },
+    {
+      "original_path": "src/cli/handoff.rs",
+      "line": "always requires its own ACK, with --deadline SECONDS or the configured default,"
+    },
+    {
+      "original_path": "src/cli/handoff.rs",
+      "line": "starting at send even without registration/join. Missed requested deadlines"
+    },
+    {
+      "original_path": "src/cli/handoff.rs",
+      "line": "notify the original sender. Explicit policy/durations freeze before staging;"
+    },
+    {
+      "original_path": "src/cli/handoff.rs",
+      "line": "omitted numeric defaults resolve once at canonical child creation, then replay."
+    },
+    {
+      "original_path": "src/cli/handoff.rs",
+      "line": "Missing/stale/wrong-profile owned hook readiness is diagnostic. Native execution"
+    },
+    {
+      "original_path": "src/cli/handoff.rs",
+      "line": "still respects selected harness approval and all structural safety checks."
+    },
+    {
+      "original_path": "src/cli/journal.rs",
+      "line": "file.write_all(&encoded_header)?;"
+    },
+    {
+      "original_path": "src/cli/setup.rs",
+      "line": "`<this executable> --state-dir <state> --host-endpoint <socket> hook-event <harness> <EVENT>`"
+    },
+    {
+      "original_path": "src/cli/setup.rs",
+      "line": "for each native event (legacy hook commands keep working;"
+    },
+    {
+      "original_path": "src/cli/setup.rs",
+      "line": "Each harness's ownership manifest lives in <state>/setup/. Native commands use the stable"
+    },
+    {
+      "original_path": "src/cli/setup.rs",
+      "line": "hook-event HARNESS EVENT entrypoint with canonical routing. Installation UUIDs remain in the"
+    },
+    {
+      "original_path": "src/cli/setup.rs",
+      "line": "manifest, outside shell commands. Equivalent setup retains exact owned groups in place; unrecorded"
+    },
+    {
+      "original_path": "src/cli/setup.rs",
+      "line": "identical stable groups are foreign and cause a safe refusal. Setup explicitly migrates recorded"
+    },
+    {
+      "original_path": "src/cli/setup.rs",
+      "line": "legacy hooks; status only inspects them. Changed native commands may require review again."
+    },
+    {
+      "original_path": "src/cli/watch.rs",
+      "line": "confirmation: Some(crate::protocol::commands::InvitationConfirmation::Lazy),"
+    },
+    {
+      "original_path": "src/harness/codex/setup.rs",
+      "line": "lib::native_entries(SettingsKind::CodexUser, &argv)"
+    },
+    {
+      "original_path": "src/harness/setup.rs",
+      "line": "if let Some(entries) = native_entries(SettingsKind::ClaudeUser, hook_argv)? {"
+    },
+    {
+      "original_path": "src/harness/setup.rs",
+      "line": "let native = native_entries(SettingsKind::CodexUser, hook_argv)?;"
+    },
+    {
+      "original_path": "src/harness/setup.rs",
+      "line": "let mut group = json!({\"hooks\":[{\"type\":\"command\",\"command\": native.as_ref().and_then(|entries| entries.iter().find(|e| e.event == name)).and_then(entry_command).map(str::to_owned).unwrap_or_else(|| event_command(&command, name))}]});"
+    },
+    {
+      "original_path": "src/harness/setup.rs",
+      "line": "&& [SettingsKind::ClaudeUser, SettingsKind::CodexUser]"
+    },
+    {
+      "original_path": "src/harness/setup.rs",
+      "line": ".any(|kind| native_entries(kind, &argv).is_ok_and(|entries| entries.is_some()))"
+    },
+    {
+      "original_path": "src/store/schema.rs",
+      "line": "pub(crate) const LATEST_VERSION: i64 = 35;"
+    },
+    {
+      "original_path": "src/store/schema.rs",
+      "line": ".and_then(|_| conn.pragma_update(None, \"user_version\", 29));"
+    },
+    {
+      "original_path": "src/store/schema.rs",
+      "line": "18..=35 => verify_existing(conn),"
+    },
+    {
+      "original_path": "src/store/schema.rs",
+      "line": "if version <= 30 {"
+    },
+    {
+      "original_path": "src/store/schema.rs",
+      "line": "if version <= 29 {"
+    },
+    {
+      "original_path": "src/store/schema.rs",
+      "line": "if version <= 30 {"
+    },
+    {
+      "original_path": "src/store/schema.rs",
+      "line": "if version <= 31 {"
+    },
+    {
+      "original_path": "src/store/schema.rs",
+      "line": "verify_bootstrap_ddl(conn, V28)"
+    },
+    {
+      "original_path": "src/store/schema.rs",
+      "line": "verify_bootstrap_ddl(conn, &ddl)"
+    },
+    {
+      "original_path": "src/store/schema.rs",
+      "line": "fn verify_bootstrap_ddl(conn: &Connection, source: &str) -> Result<(), ApiError> {"
+    }
+  ]
+}

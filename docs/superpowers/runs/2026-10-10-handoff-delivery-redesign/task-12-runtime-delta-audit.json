@@ -1,0 +1,17 @@
+[
+  {
+    "path": "src/store/schema.rs",
+    "approved_added_lines_not_verbatim_present": [
+      "pub(crate) const LATEST_VERSION: i64 = 35;",
+      ".and_then(|_| conn.pragma_update(None, \"user_version\", 29));",
+      "18..=35 => verify_existing(conn),",
+      "if version <= 30 {",
+      "if version <= 29 {",
+      "if version <= 30 {",
+      ".and_then(|_| conn.pragma_update(None, \"user_version\", 32));",
+      "verify_bootstrap_ddl(conn, V28)",
+      "verify_bootstrap_ddl(conn, &ddl)",
+      "fn verify_bootstrap_ddl(conn: &Connection, source: &str) -> Result<(), ApiError> {"
+    ]
+  }
+]
