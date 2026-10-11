@@ -834,7 +834,7 @@ fn cooperative_offer_failure_rolls_back_binding_anchor_frontier_and_operation() 
         None,
         permit,
         &budget(),
-        |_, _, _, _| {
+        |_, _, _, _, _| {
             Err(super::connection::api_error(
                 ErrorCode::InvalidBudget,
                 "bounded offer failed",

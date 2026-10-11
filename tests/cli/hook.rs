@@ -5560,6 +5560,8 @@ mod mod_channel_live {
                         warnings: empty(),
                         notices: Default::default(),
                         inbox: empty(),
+                        first_contact: None,
+                        fast_forward: None,
                     }))
                 }
                 other => panic!("unexpected hook call {other:?}"),

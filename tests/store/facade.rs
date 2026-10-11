@@ -1334,6 +1334,7 @@ fn lifecycle_check_in_resets_only_its_own_offer() {
             },
             claim,
             operation: OperationId::new(operation),
+            lineage_parent: None,
         };
         let permit = StorePort::issue_cooperative_permit(
             &store,
