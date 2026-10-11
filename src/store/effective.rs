@@ -1908,6 +1908,16 @@ pub fn effective_receipt(
                 } else {
                     false
                 };
+                let state = receipt_state(Some(&state), retired_at.is_some(), waived)?;
+                // Physical legacy receipts have no manifest timer worker. Their
+                // logical deadline agrees with the bounded upgrade projection,
+                // while terminal/waived evidence and stored running clocks win.
+                let deadline_at = match deadline_at {
+                    None if state == EffectiveReceiptState::Pending => {
+                        Some(checked_deadline(UtcMillis(decision_at), duration)?.0)
+                    }
+                    deadline => deadline,
+                };
                 Ok(EffectiveReceipt {
                     source: ReceiptSource::Physical,
                     message_id: message_id.to_owned(),
@@ -1918,7 +1928,7 @@ pub fn effective_receipt(
                     decision_seq,
                     decision_at,
                     frozen_duration_ms: duration,
-                    state: receipt_state(Some(&state), retired_at.is_some(), waived)?,
+                    state,
                     available_at,
                     deadline_at,
                     warning_message_id,
