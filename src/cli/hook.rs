@@ -62,6 +62,8 @@ use std::{
 };
 
 pub const SUBCOMMAND: &str = "hook";
+/// Stable per-event native callback surface.
+pub const EVENT_SUBCOMMAND: &str = "hook-event";
 /// Ordinary tool/turn check-in budget, end to end.
 pub const TOOL_BUDGET: Duration = Duration::from_millis(1500);
 /// Startup/resume/clear ensure plus check-in budget, end to end.
@@ -102,6 +104,25 @@ pub fn installed_argv(
     argv.push(SUBCOMMAND.to_owned());
     argv.push(harness.as_str().to_owned());
     argv
+}
+
+/// Complete stable native event argv. Routes must already be canonical, as
+/// supplied by setup's instance resolution. Executable spelling is preserved.
+/// No installation identity or shell ownership marker belongs in these bytes.
+pub fn installed_event_argv(
+    executable: &str,
+    state_dir: Option<&str>,
+    host_endpoint: Option<&str>,
+    harness: Harness,
+    event: &str,
+) -> Result<Vec<String>, String> {
+    let mut argv = installed_argv(executable, state_dir, host_endpoint, harness);
+    let command = argv.len() - 2;
+    argv[command] = EVENT_SUBCOMMAND.to_owned();
+    argv.push(event.to_owned());
+    let words = argv.iter().map(OsString::from).collect::<Vec<_>>();
+    parse_hook_argv(&words).ok_or_else(|| "invalid native event argv".to_owned())??;
+    Ok(argv)
 }
 
 /// `None` when argv does not select the hook subcommand (ordinary CLI parsing
@@ -160,17 +181,18 @@ pub(crate) fn parse_hook_argv_registered(
         }
         match text {
             Some("--json") => index += 1,
-            Some(SUBCOMMAND) => break,
+            Some(SUBCOMMAND | EVENT_SUBCOMMAND) => break,
             _ => return None,
         }
     }
     if let Some(conflict) = conflict {
         return Some(Err(conflict));
     }
+    let dedicated = args[index] == EVENT_SUBCOMMAND;
     let rest = &args[index + 1..];
     let usage = || {
         format!(
-            "usage: herdr-threads hook {} [--event NAME]",
+            "usage: herdr-threads hook-event {} EVENT (legacy: hook HARNESS [--event NAME])",
             registry
                 .registrations()
                 .iter()
@@ -181,19 +203,37 @@ pub(crate) fn parse_hook_argv_registered(
     };
     let words = rest.iter().map(|w| w.to_str()).collect::<Vec<_>>();
     let (id, event) = match words[..] {
-        [Some(id)] => (id, None),
+        [Some(id)] if !dedicated => (id, None),
+        [Some(id), Some(name)] if dedicated => (id, Some(name.to_owned())),
         [Some(id), Some("--event"), Some(name)]
-            if (1..=63).contains(&name.len())
+            if !dedicated
+                && (1..=63).contains(&name.len())
                 && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') =>
         {
             (id, Some(name.to_owned()))
         }
         _ => return Some(Err(usage())),
     };
-    let harness = match registry.agent(id) {
-        Ok(id) => crate::harness::registry::OccupantHarness::Agent(id).into(),
+    let agent = match registry.agent(id) {
+        Ok(agent) => agent,
         Err(_) => return Some(Err(usage())),
     };
+    let registered = match registry.by_id(agent) {
+        Ok(registered) => registered,
+        Err(_) => return Some(Err(usage())),
+    };
+    let harness = crate::harness::registry::OccupantHarness::Agent(agent).into();
+    if let Some(event) = &event
+        && !registered.contracts().iter().any(|descriptor| {
+            descriptor
+                .contract
+                .events
+                .iter()
+                .any(|declared| declared.event == event)
+        })
+    {
+        return Some(Err(format!("undeclared hook event {id}/{event}")));
+    }
     Some(Ok(HookArgs {
         state_dir,
         host_endpoint,

@@ -83,17 +83,31 @@ const LAUNCH_MARKER: &str = "const LAUNCH = null // herdr-threads:launch";
 const LAUNCH_PREFIX: &str = "const LAUNCH = ";
 const LAUNCH_SUFFIX: &str = " // herdr-threads:launch (written by setup claude)";
 
-/// The mod's launch prefix from the hooks' argv: the hooks' invocation minus
-/// the trailing `hook claude`. The mod appends `watch ...` / `watch ack ...`.
+/// Extract the canonical invocation route from a known Claude callback argv.
+/// Stable event and legacy event registrations must never pass their event to
+/// the mod's `watch` command. Parser validation rejects malformed routes/pairs.
 pub fn launch_prefix(hook_argv: &[String]) -> Result<Vec<String>, SetupError> {
-    match hook_argv {
-        [prefix @ .., hook, claude]
-            if hook == "hook" && claude == "claude" && !prefix.is_empty() =>
-        {
-            Ok(prefix.to_vec())
-        }
-        _ => Err(SetupError::Invalid),
+    let words = hook_argv
+        .iter()
+        .map(std::ffi::OsString::from)
+        .collect::<Vec<_>>();
+    let parsed = crate::cli::hook::parse_hook_argv(&words)
+        .ok_or(SetupError::Invalid)?
+        .map_err(|_| SetupError::Invalid)?;
+    if parsed.harness != super::context::Harness::Claude {
+        return Err(SetupError::Invalid);
     }
+    let tail = match hook_argv {
+        [.., command, harness, _event] if command == "hook-event" && harness == "claude" => 3,
+        [.., command, harness, flag, _event]
+            if command == "hook" && harness == "claude" && flag == "--event" =>
+        {
+            4
+        }
+        [.., command, harness] if command == "hook" && harness == "claude" => 2,
+        _ => return Err(SetupError::Invalid),
+    };
+    Ok(hook_argv[..hook_argv.len() - tail].to_vec())
 }
 
 /// The embedded bytes of `path`, with the launch line rendered into

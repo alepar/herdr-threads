@@ -6011,6 +6011,121 @@ fn clear_and_codex_compact_emit_recovery_text_but_startup_and_tool_calls_do_not(
     assert_recovery("codex compact", &context_of(&compact));
 }
 
+// Catches stable shell commands missing the actual native entrypoint/codec,
+// and undeclared pairs touching the daemon before being refused.
+#[test]
+fn native_event_entrypoints_dispatch_declared_codecs_and_refuse_invalid_pairs_before_effects() {
+    use herdr_threads::cli::hook::installed_event_argv;
+    use herdr_threads::harness::setup::native_event_command;
+    let fx = Fixture::start();
+    let command = |harness, event| {
+        native_event_command(
+            &installed_event_argv(
+                BIN,
+                Some(fx.state.to_str().unwrap()),
+                Some(fx.host.to_str().unwrap()),
+                harness,
+                event,
+            )
+            .unwrap(),
+        )
+        .unwrap()
+    };
+    for (harness, pane, session, payload) in [
+        (
+            Harness::Claude,
+            "w9:p1",
+            "stable-claude",
+            start("stable-claude"),
+        ),
+        (
+            Harness::Codex,
+            "w9:p3",
+            "stable-codex",
+            Payload::session_start("stable-codex", "startup")
+                .codex("turn")
+                .bytes(),
+        ),
+    ] {
+        let before = fx.check_ins.load(Ordering::SeqCst);
+        let started = run_hook(&command(harness, "SessionStart"), pane, &fx.host, &payload);
+        assert_eq!(started.code, Some(0), "{}", started.stderr);
+        assert!(!started.stdout.is_empty(), "{}", started.stderr);
+        assert!(fx.check_ins.load(Ordering::SeqCst) > before);
+        let payload = if harness == Harness::Claude {
+            tool(session)
+        } else {
+            Payload::pre_tool_use(session, "ls").codex("turn").bytes()
+        };
+        let before = fx.digests.load(Ordering::SeqCst);
+        let tool = run_hook(&command(harness, "PreToolUse"), pane, &fx.host, &payload);
+        assert_eq!(tool.code, Some(0), "{}", tool.stderr);
+        assert!(tool.stderr.is_empty(), "{}", tool.stderr);
+        assert!(fx.digests.load(Ordering::SeqCst) > before);
+    }
+    let child = serde_json::to_vec(&serde_json::json!({
+        "hook_event_name":"SubagentStart", "session_id":"stable-child", "turn_id":"child-turn",
+        "agent_id":"child", "agent_type":"worker", "transcript_path":null,
+        "cwd":"/tmp", "model":"gpt-test", "permission_mode":"default",
+    }))
+    .unwrap();
+    let child_command = command(Harness::Codex, "SubagentStart");
+    let child_result = run_hook(&child_command, "w9:p3", &fx.host, &child);
+    assert_eq!(child_result.code, Some(0));
+    assert!(child_result.stderr.is_empty(), "{}", child_result.stderr);
+    // Malforming a required child field proves this surface reaches the child
+    // codec, rather than quietly ignoring every payload for the event.
+    let mut malformed: serde_json::Value = serde_json::from_slice(&child).unwrap();
+    malformed.as_object_mut().unwrap().remove("agent_id");
+    let refused = run_hook(
+        &child_command,
+        "w9:p3",
+        &fx.host,
+        &serde_json::to_vec(&malformed).unwrap(),
+    );
+    assert!(
+        refused.stderr.contains("unsupported hook payload"),
+        "{}",
+        refused.stderr
+    );
+
+    let before = (
+        fx.check_ins.load(Ordering::SeqCst),
+        fx.digests.load(Ordering::SeqCst),
+        fx.parse_failures.load(Ordering::SeqCst),
+    );
+    for (harness, event) in [("claude", "SubagentStart"), ("codex", "Bogus")] {
+        let argv = [
+            BIN,
+            "--state-dir",
+            fx.state.to_str().unwrap(),
+            "--host-endpoint",
+            fx.host.to_str().unwrap(),
+            "hook-event",
+            harness,
+            event,
+        ]
+        .map(str::to_owned);
+        let raw = herdr_threads::harness::setup::shell_command(&argv).unwrap();
+        let refused = run_hook(&raw, "w9:p1", &fx.host, &start("invalid"));
+        assert_eq!(refused.code, Some(0));
+        assert!(refused.stdout.is_empty());
+        assert!(
+            refused.stderr.contains("undeclared hook event"),
+            "{}",
+            refused.stderr
+        );
+    }
+    assert_eq!(
+        before,
+        (
+            fx.check_ins.load(Ordering::SeqCst),
+            fx.digests.load(Ordering::SeqCst),
+            fx.parse_failures.load(Ordering::SeqCst)
+        )
+    );
+}
+
 // Catches PATH admission in real callbacks and routing mismatches that mutate executions.
 #[test]
 fn versionless_native_callbacks_without_path_refuse_registered_event_mismatch() {

@@ -77,6 +77,26 @@ pub fn shell_command(argv: &[String]) -> Result<String, SetupError> {
     }
     Ok(words.join(" "))
 }
+/// Quote one complete stable event argv produced by
+/// [`crate::cli::hook::installed_event_argv`]. This never appends an event,
+/// canonicalizes an executable spelling, or adds an installation owner marker.
+pub fn native_event_command(event_argv: &[String]) -> Result<String, SetupError> {
+    let words = event_argv
+        .iter()
+        .map(std::ffi::OsString::from)
+        .collect::<Vec<_>>();
+    let parsed = crate::cli::hook::parse_hook_argv(&words)
+        .ok_or(SetupError::Invalid)?
+        .map_err(|_| SetupError::Invalid)?;
+    if parsed.event.is_none()
+        || event_argv.len() < 4
+        || event_argv[event_argv.len() - 3] != crate::cli::hook::EVENT_SUBCOMMAND
+    {
+        return Err(SetupError::Invalid);
+    }
+    shell_command(event_argv)
+}
+
 /// The owner marker suffix a marked hook command carries.
 const OWNER_MARKER: &str = " # herdr-threads-owner:";
 
