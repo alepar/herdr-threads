@@ -42,3 +42,11 @@ Receipt semantic capability: advertise messages.send_time_receipts_v1 only when 
 ## Post-Implementation Notes
 
 *As this design is implemented and iterated on — bug fixes, adjustments, anything that diverged from the assumptions above — append a dated note here, whether or not a formal debugging skill was used.*
+
+### 2026-10-10 implementation refinements (Task1)
+
+A prerequisite transactional per-instance cutover snapshot distinguishes historical logical running receipts from new sends before advertising send-time semantics. Historical sparse deadlines retain original canonical first availability only when that decision predates the cutover; post-cutover registration cannot restart a dormant obligation. Stored deadlines remain authoritative. Task5 separately owns bounded physical dormant backfill and indexing.
+
+Modern non-lazy client sends conservatively require the capability when canonical recipient information cannot prove every recipient waived; the sender being human says nothing about recipient obligations. The deciding daemon retains human-recipient waiver. This creates a mixed-version preflight refusal limit without creating any new receipt obligation.
+
+The public ordinary OperationStatus route requires verified operation scope that ordinary CLI wire requests lack. Pending or commit-unknown ordinary CLI/service retries therefore conservatively refuse unsupported daemons while retaining exact local journal bytes/state for later recovery. Completed retained compound/local service records remain inspectable without further effects. No fixture-only operation-status success or new inspection protocol is introduced. These accepted limits are recorded in TRUST-POLICY and Task1 report; fresh task review must trace actual public entrypoints.
