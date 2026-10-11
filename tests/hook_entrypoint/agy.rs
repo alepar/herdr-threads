@@ -622,7 +622,9 @@ mod activation {
         protocol::{
             authority::CallerClaim,
             capabilities::DELIVERY_PRESENTATION_V2,
-            commands::{CreateThread, DeliveryMode, InvitationConfirmation, Invite, Join, SendMessage},
+            commands::{
+                CreateThread, DeliveryMode, InvitationConfirmation, Invite, Join, SendMessage,
+            },
             delivery::{
                 DeliveryPageV2, DeliveryPresentationConfirmationV2, DeliveryPullReplyV2,
                 PresentationControlStampV2, PresentationItemV2, PresentationRenderSelection,
@@ -634,7 +636,13 @@ mod activation {
     };
     use std::{
         io::Read,
-        os::{fd::OwnedFd, unix::{fs::{MetadataExt, PermissionsExt}, net::{UnixListener, UnixStream}}},
+        os::{
+            fd::OwnedFd,
+            unix::{
+                fs::{MetadataExt, PermissionsExt},
+                net::{UnixListener, UnixStream},
+            },
+        },
         sync::Mutex,
     };
 
@@ -711,37 +719,64 @@ mod activation {
                         }
                         Err(error) => panic!("observer accept: {error}"),
                     };
-                    client.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
-                    client.set_write_timeout(Some(Duration::from_secs(2))).unwrap();
-                    let Ok(request_bytes) = frame(&mut client) else { continue };
+                    client
+                        .set_read_timeout(Some(Duration::from_secs(2)))
+                        .unwrap();
+                    client
+                        .set_write_timeout(Some(Duration::from_secs(2)))
+                        .unwrap();
+                    let Ok(request_bytes) = frame(&mut client) else {
+                        continue;
+                    };
                     let request = WireRequest::decode(&request_bytes[4..]).unwrap();
-                    let confirm = matches!(request.command, Command::DeliveryPresentationConfirmV2(_));
+                    let confirm =
+                        matches!(request.command, Command::DeliveryPresentationConfirmV2(_));
                     if confirm && fault == Fault::DropConfirm && !dropped {
                         dropped = true;
-                        observed.lock().unwrap().push(Exchange { command: request.command, result: None });
+                        observed.lock().unwrap().push(Exchange {
+                            command: request.command,
+                            result: None,
+                        });
                         continue;
                     }
                     let mut server = UnixStream::connect(&target).unwrap();
-                    server.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-                    server.set_write_timeout(Some(Duration::from_secs(2))).unwrap();
+                    server
+                        .set_read_timeout(Some(Duration::from_secs(5)))
+                        .unwrap();
+                    server
+                        .set_write_timeout(Some(Duration::from_secs(2)))
+                        .unwrap();
                     server.write_all(&request_bytes).unwrap();
                     let mut response_bytes = frame(&mut server).unwrap();
-                    let mut response: WireResponse = serde_json::from_slice(&response_bytes[4..]).unwrap();
+                    let mut response: WireResponse =
+                        serde_json::from_slice(&response_bytes[4..]).unwrap();
                     if matches!(request.command, Command::Capabilities) {
                         match fault {
                             Fault::OmitCapability => {
-                                let Ok(CommandResult::Capabilities(capabilities)) = &mut response.result else { panic!("real capabilities") };
-                                capabilities.capabilities.retain(|name| name != DELIVERY_PRESENTATION_V2);
+                                let Ok(CommandResult::Capabilities(capabilities)) =
+                                    &mut response.result
+                                else {
+                                    panic!("real capabilities")
+                                };
+                                capabilities
+                                    .capabilities
+                                    .retain(|name| name != DELIVERY_PRESENTATION_V2);
                                 response_bytes = encode_wire_response(&response).unwrap();
                             }
                             Fault::RefuseCapabilities => {
-                                response.result = Err(ApiError::new(ErrorCode::Unsupported, "historical peer refuses capabilities"));
+                                response.result = Err(ApiError::new(
+                                    ErrorCode::Unsupported,
+                                    "historical peer refuses capabilities",
+                                ));
                                 response_bytes = encode_wire_response(&response).unwrap();
                             }
                             _ => {}
                         }
                     }
-                    observed.lock().unwrap().push(Exchange { command: request.command, result: Some(response.result) });
+                    observed.lock().unwrap().push(Exchange {
+                        command: request.command,
+                        result: Some(response.result),
+                    });
                     if confirm && fault == Fault::LoseConfirmReply && !dropped {
                         dropped = true;
                         continue;
@@ -750,7 +785,15 @@ mod activation {
                     let _ = client.write_all(&response_bytes);
                 }
             });
-            Self { stop, worker: Some(worker), exchanges, endpoint, upstream, descriptor_path, original_descriptor }
+            Self {
+                stop,
+                worker: Some(worker),
+                exchanges,
+                endpoint,
+                upstream,
+                descriptor_path,
+                original_descriptor,
+            }
         }
         fn take(&self) -> Vec<Exchange> {
             std::mem::take(&mut *self.exchanges.lock().unwrap())
@@ -776,7 +819,10 @@ mod activation {
     impl Elected {
         fn start() -> Self {
             let fx = continuity::Fixture::start(
-                &[(PANE, continuity::Agent::NoSession), ("w9:p2", continuity::Agent::NoSession)],
+                &[
+                    (PANE, continuity::Agent::NoSession),
+                    ("w9:p2", continuity::Agent::NoSession),
+                ],
                 |_, _| {},
             );
             fx.wait_reconciled();
@@ -784,7 +830,11 @@ mod activation {
             let home = root.join("agy-home");
             let brain = home.join(".gemini/antigravity-cli/brain").join(TOP);
             fs::create_dir_all(brain.join(".system_generated/logs")).unwrap();
-            fs::write(brain.join(".system_generated/logs/transcript_full.jsonl"), b"").unwrap();
+            fs::write(
+                brain.join(".system_generated/logs/transcript_full.jsonl"),
+                b"",
+            )
+            .unwrap();
             let presence = home.join(".gemini/antigravity-cli/presence");
             fs::create_dir_all(&presence).unwrap();
             fs::write(presence.join(format!("{TOP}.lock")), b"").unwrap();
@@ -793,18 +843,30 @@ mod activation {
             let agy = root.join("bin/agy");
             fs::write(&agy, b"#!/bin/sh\nexit 1\n").unwrap();
             fs::set_permissions(&agy, fs::Permissions::from_mode(0o700)).unwrap();
-            let identity = resolve_identity(None, Some(std::ffi::OsStr::new(&harness_path(&fx.host)))).unwrap();
+            let identity =
+                resolve_identity(None, Some(std::ffi::OsStr::new(&harness_path(&fx.host))))
+                    .unwrap();
             let state = root.join("state");
             let observer = Observer::start(&fx, Fault::None);
             let startup = Self::invoke(&fx, &home, &state, "SessionStart", false);
             assert_eq!(startup.code, Some(0), "{}", startup.stderr);
             assert!(!startup.stdout.is_empty(), "{}", startup.stderr);
-            let recipient = observer.take().into_iter().find_map(|exchange| match exchange.result {
-                Some(Ok(CommandResult::CheckedIn(checked))) => Some(checked.context),
-                _ => None,
-            }).expect("installed SessionStart reaches canonical CheckIn");
+            let recipient = observer
+                .take()
+                .into_iter()
+                .find_map(|exchange| match exchange.result {
+                    Some(Ok(CommandResult::CheckedIn(checked))) => Some(checked.context),
+                    _ => None,
+                })
+                .expect("installed SessionStart reaches canonical CheckIn");
             drop(observer);
-            Self { fx, home, state, identity, recipient }
+            Self {
+                fx,
+                home,
+                state,
+                identity,
+                recipient,
+            }
         }
         fn adapter_state(&self) -> PathBuf {
             self.fx.instance_dir.join("adapter-state/agy")
@@ -812,32 +874,72 @@ mod activation {
         fn downgrade(&self, age_ms: u64) {
             let state = self.adapter_state();
             fs::create_dir_all(&state).unwrap();
-            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64;
             let record = herdr_threads::harness::agy::delivery::DowngradeRecord {
-                v: 1, identity: self.identity.clone(), misses: vec![], downgraded_at: Some(now.saturating_sub(age_ms)),
-                reason: Some("abort".into()), probation: false, probation_at: None,
+                v: 1,
+                identity: self.identity.clone(),
+                misses: vec![],
+                downgraded_at: Some(now.saturating_sub(age_ms)),
+                reason: Some("abort".into()),
+                probation: false,
+                probation_at: None,
             };
-            fs::write(state.join("downgrade.json"), serde_json::to_vec(&record).unwrap()).unwrap();
+            fs::write(
+                state.join("downgrade.json"),
+                serde_json::to_vec(&record).unwrap(),
+            )
+            .unwrap();
         }
         fn run(&self, event: &str, broken_stdout: bool) -> Hook {
             Self::invoke(&self.fx, &self.home, &self.state, event, broken_stdout)
         }
-        fn invoke(fx: &continuity::Fixture, home: &Path, state: &Path, event: &str, broken_stdout: bool) -> Hook {
+        fn invoke(
+            fx: &continuity::Fixture,
+            home: &Path,
+            state: &Path,
+            event: &str,
+            broken_stdout: bool,
+        ) -> Hook {
             let harness: Harness = OccupantHarness::Agent(builtins().agent("agy").unwrap()).into();
             let argv = installed_argv(BIN, Some(state.to_str().unwrap()), None, harness);
             let base = herdr_threads::harness::setup::shell_command(&argv).unwrap();
             let brain = home.join(".gemini/antigravity-cli/brain").join(TOP);
             let input = json!({"conversationId":TOP,"artifactDirectoryPath":brain,"transcriptPath":brain.join(".system_generated/logs/transcript_full.jsonl"),"workspacePaths":[home],"invocationNum":0,"initialNumSteps":1});
-            Self::run_process(fx, home, &format!("{base} '--event' '{event}'"), PANE, &serde_json::to_vec(&input).unwrap(), broken_stdout)
+            Self::run_process(
+                fx,
+                home,
+                &format!("{base} '--event' '{event}'"),
+                PANE,
+                &serde_json::to_vec(&input).unwrap(),
+                broken_stdout,
+            )
         }
-        fn run_process(fx: &continuity::Fixture, home: &Path, registered: &str, pane: &str, input: &[u8], broken_stdout: bool) -> Hook {
+        fn run_process(
+            fx: &continuity::Fixture,
+            home: &Path,
+            registered: &str,
+            pane: &str,
+            input: &[u8],
+            broken_stdout: bool,
+        ) -> Hook {
             let mut command = scrubbed_command("/bin/sh");
-            command.arg("-c").arg(registered)
-                .env("HERDR_ENV", "1").env("HERDR_PANE_ID", pane)
-                .env("HERDR_SOCKET_PATH", &fx.host).env("PATH", harness_path(&fx.host))
-                .env("HOME", home).env("CLAUDE_CONFIG_DIR", home.join(".claude"))
-                .env_remove("ANTIGRAVITY_AGENT").env_remove("HERDR_PLUGIN_STATE_DIR").env_remove("HERDR_BIN_PATH")
-                .stdin(Stdio::piped()).stderr(Stdio::piped());
+            command
+                .arg("-c")
+                .arg(registered)
+                .env("HERDR_ENV", "1")
+                .env("HERDR_PANE_ID", pane)
+                .env("HERDR_SOCKET_PATH", &fx.host)
+                .env("PATH", harness_path(&fx.host))
+                .env("HOME", home)
+                .env("CLAUDE_CONFIG_DIR", home.join(".claude"))
+                .env_remove("ANTIGRAVITY_AGENT")
+                .env_remove("HERDR_PLUGIN_STATE_DIR")
+                .env_remove("HERDR_BIN_PATH")
+                .stdin(Stdio::piped())
+                .stderr(Stdio::piped());
             if broken_stdout {
                 let (reader, writer) = UnixStream::pair().unwrap();
                 drop(reader);
@@ -850,13 +952,31 @@ mod activation {
             let mut child = command.spawn_owned().unwrap();
             child.stdin.take().unwrap().write_all(input).unwrap();
             let output = child.wait_with_output().unwrap();
-            Hook { code: output.status.code(), stdout: output.stdout, stderr: String::from_utf8_lossy(&output.stderr).into_owned(), elapsed: started.elapsed(), timeout_scale: None }
+            Hook {
+                code: output.status.code(),
+                stdout: output.stdout,
+                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+                elapsed: started.elapsed(),
+                timeout_scale: None,
+            }
         }
         fn invite(&self) {
             // The sender is enrolled through its installed production hook too.
-            let argv = installed_argv(BIN, Some(self.state.to_str().unwrap()), None, Harness::Claude);
+            let argv = installed_argv(
+                BIN,
+                Some(self.state.to_str().unwrap()),
+                None,
+                Harness::Claude,
+            );
             let registered = herdr_threads::harness::setup::shell_command(&argv).unwrap();
-            let startup = Self::run_process(&self.fx, &self.home, &registered, "w9:p2", &continuity::session_start("claude", "origin-session", "startup"), false);
+            let startup = Self::run_process(
+                &self.fx,
+                &self.home,
+                &registered,
+                "w9:p2",
+                &continuity::session_start("claude", "origin-session", "startup"),
+                false,
+            );
             assert_eq!(startup.code, Some(0), "{}", startup.stderr);
             let db = self.fx.db();
             let origin: CallerClaim = db.query_row("SELECT seat_id,generation,execution_id FROM occupant_bindings WHERE target_id='w9:p2' AND ended_at IS NULL", [], |row| {
@@ -864,24 +984,83 @@ mod activation {
                     role: herdr_threads::protocol::authority::CallerRole::TopLevel, harness: herdr_threads::protocol::authority::Harness::Claude,
                     native_session: herdr_threads::protocol::ids::NativeSessionId::new("origin-session"), execution: herdr_threads::protocol::ids::ExecutionId::new(row.get::<_,String>(2)?), target: herdr_threads::protocol::ids::HostTargetId::new("w9:p2") })
             }).unwrap();
-            let CommandResult::ThreadCreated(thread) = self.fx.call(Command::CreateThread(CreateThread { name: None, topic: "registered hook activation".into(), goal: "exact emitted control".into(), operation: OperationId::new("activation-thread"), claim: origin.clone() })).unwrap() else { panic!("created thread") };
-            self.fx.call(Command::Invite(Invite { confirmation: Some(InvitationConfirmation::RequireAck), thread, seat: self.recipient.seat.clone(), deadline_millis: Some(300_000), operation: OperationId::new("activation-invite"), claim: origin.clone() })).unwrap();
-            let CommandResult::ThreadCreated(thread) = self.fx.call(Command::CreateThread(CreateThread { name: None, topic: "ordinary hook output".into(), goal: "pending receipt stays pending".into(), operation: OperationId::new("activation-message-thread"), claim: origin.clone() })).unwrap() else { panic!("message thread") };
-            self.fx.call(Command::Join(Join { thread: thread.clone(), operation: OperationId::new("activation-recipient-join"), claim: self.recipient.clone() })).unwrap();
-            self.fx.call(Command::SendMessage(SendMessage {
-                delivery_mode: DeliveryMode::Ordinary, user_intent: None, thread,
-                body: "ordinary body needs later receipt ACK".into(), direct_recipient: None,
-                invited_recipients: vec![], deadline_millis: Some(300_000),
-                operation: OperationId::new("activation-ordinary-send"), claim: origin, relays_user: false,
-            })).unwrap();
+            let CommandResult::ThreadCreated(thread) = self
+                .fx
+                .call(Command::CreateThread(CreateThread {
+                    name: None,
+                    topic: "registered hook activation".into(),
+                    goal: "exact emitted control".into(),
+                    operation: OperationId::new("activation-thread"),
+                    claim: origin.clone(),
+                }))
+                .unwrap()
+            else {
+                panic!("created thread")
+            };
+            self.fx
+                .call(Command::Invite(Invite {
+                    confirmation: Some(InvitationConfirmation::RequireAck),
+                    thread,
+                    seat: self.recipient.seat.clone(),
+                    deadline_millis: Some(300_000),
+                    operation: OperationId::new("activation-invite"),
+                    claim: origin.clone(),
+                }))
+                .unwrap();
+            let CommandResult::ThreadCreated(thread) = self
+                .fx
+                .call(Command::CreateThread(CreateThread {
+                    name: None,
+                    topic: "ordinary hook output".into(),
+                    goal: "pending receipt stays pending".into(),
+                    operation: OperationId::new("activation-message-thread"),
+                    claim: origin.clone(),
+                }))
+                .unwrap()
+            else {
+                panic!("message thread")
+            };
+            self.fx
+                .call(Command::Join(Join {
+                    thread: thread.clone(),
+                    operation: OperationId::new("activation-recipient-join"),
+                    claim: self.recipient.clone(),
+                }))
+                .unwrap();
+            self.fx
+                .call(Command::SendMessage(SendMessage {
+                    delivery_mode: DeliveryMode::Ordinary,
+                    user_intent: None,
+                    thread,
+                    body: "ordinary body needs later receipt ACK".into(),
+                    direct_recipient: None,
+                    invited_recipients: vec![],
+                    deadline_millis: Some(300_000),
+                    operation: OperationId::new("activation-ordinary-send"),
+                    claim: origin,
+                    relays_user: false,
+                }))
+                .unwrap();
         }
         fn conversation_bytes(&self) -> Option<Vec<u8>> {
-            fs::read(herdr_threads::harness::agy::paths::conversation_state(&self.adapter_state(), TOP)).ok()
+            fs::read(herdr_threads::harness::agy::paths::conversation_state(
+                &self.adapter_state(),
+                TOP,
+            ))
+            .ok()
         }
         fn assert_passive_side_effects(&self) {
-            assert_eq!(self.fx.count("SELECT count(*) FROM invitations WHERE state='pending'"), 1, "presentation never accepts the invitation");
+            assert_eq!(
+                self.fx
+                    .count("SELECT count(*) FROM invitations WHERE state='pending'"),
+                1,
+                "presentation never accepts the invitation"
+            );
             let pending: i64 = self.fx.db().query_row("SELECT count(*) FROM prepared_recipients pr JOIN send_manifests sm ON sm.preparation_id=pr.preparation_id LEFT JOIN receipt_state rs ON rs.message_id=sm.message_id AND rs.seat_id=pr.seat_id WHERE pr.seat_id=?1 AND COALESCE(rs.state,'pending')='pending' AND pr.ack_required=1", [self.recipient.seat.as_str()], |row| row.get(0)).unwrap();
-            assert_eq!(pending, 1, "actual ordinary obligation stays pending; presentation is not ACK");
+            assert_eq!(
+                pending, 1,
+                "actual ordinary obligation stays pending; presentation is not ACK"
+            );
         }
     }
 
@@ -893,83 +1072,160 @@ mod activation {
                 .map(|metadata| format!("{:04o}", metadata.mode() & 0o7777))
                 .unwrap_or_else(|error| format!("{:?}", error.kind()))
         };
-        let trace: Vec<_> = exchanges.iter().take(8).map(|exchange| {
-            let command = match &exchange.command {
-                Command::Capabilities => "Capabilities",
-                Command::DeliveryPull(_) => "PullV1",
-                Command::DeliveryPullV2(_) => "PullV2",
-                Command::DeliveryPresentationConfirmV2(_) => "ConfirmV2",
-                Command::CheckIn(_) => "CheckIn",
-                _ => "other",
-            };
-            let result = match &exchange.result {
-                None => "dropped".to_owned(),
-                Some(Err(error)) => format!("Err({:?})", error.code),
-                Some(Ok(CommandResult::Capabilities(caps))) => format!("Capabilities(v2={})", caps.capabilities.iter().any(|name| name == DELIVERY_PRESENTATION_V2)),
-                Some(Ok(CommandResult::DeliveryPulledV2(DeliveryPullReplyV2::Page(page)))) => format!("PageV2(items={},controls={})", page.items.len(), page.emitted_controls.len()),
-                Some(Ok(CommandResult::DeliveryPulledV2(DeliveryPullReplyV2::Refused { reason }))) => format!("RefusedV2({reason:?})"),
-                Some(Ok(CommandResult::DeliveryPulledV2(DeliveryPullReplyV2::Unchanged { .. }))) => "UnchangedV2".to_owned(),
-                Some(Ok(CommandResult::DeliveryPulled(_))) => "PullV1Reply".to_owned(),
-                Some(Ok(CommandResult::DeliveryPresentationConfirmedV2(reply))) => format!("ConfirmV2({:?},controls={})", reply.status, reply.acknowledged_controls.len()),
-                Some(Ok(_)) => "other".to_owned(),
-            };
-            format!("{command}->{result}")
-        }).collect();
+        let trace: Vec<_> = exchanges
+            .iter()
+            .take(8)
+            .map(|exchange| {
+                let command = match &exchange.command {
+                    Command::Capabilities => "Capabilities",
+                    Command::DeliveryPull(_) => "PullV1",
+                    Command::DeliveryPullV2(_) => "PullV2",
+                    Command::DeliveryPresentationConfirmV2(_) => "ConfirmV2",
+                    Command::CheckIn(_) => "CheckIn",
+                    _ => "other",
+                };
+                let result = match &exchange.result {
+                    None => "dropped".to_owned(),
+                    Some(Err(error)) => format!("Err({:?})", error.code),
+                    Some(Ok(CommandResult::Capabilities(caps))) => format!(
+                        "Capabilities(v2={})",
+                        caps.capabilities
+                            .iter()
+                            .any(|name| name == DELIVERY_PRESENTATION_V2)
+                    ),
+                    Some(Ok(CommandResult::DeliveryPulledV2(DeliveryPullReplyV2::Page(page)))) => {
+                        format!(
+                            "PageV2(items={},controls={})",
+                            page.items.len(),
+                            page.emitted_controls.len()
+                        )
+                    }
+                    Some(Ok(CommandResult::DeliveryPulledV2(DeliveryPullReplyV2::Refused {
+                        reason,
+                    }))) => format!("RefusedV2({reason:?})"),
+                    Some(Ok(CommandResult::DeliveryPulledV2(DeliveryPullReplyV2::Unchanged {
+                        ..
+                    }))) => "UnchangedV2".to_owned(),
+                    Some(Ok(CommandResult::DeliveryPulled(_))) => "PullV1Reply".to_owned(),
+                    Some(Ok(CommandResult::DeliveryPresentationConfirmedV2(reply))) => format!(
+                        "ConfirmV2({:?},controls={})",
+                        reply.status,
+                        reply.acknowledged_controls.len()
+                    ),
+                    Some(Ok(_)) => "other".to_owned(),
+                };
+                format!("{command}->{result}")
+            })
+            .collect();
         let stderr = hook.stderr.as_bytes();
         let tail = &stderr[stderr.len().saturating_sub(512)..];
         let mut evidence = format!(
             "adapter_modes(parent={},agy={}); child(status={:?},stdout_bytes={},elapsed={:?},stderr_tail={}); exchanges(total={},first8={trace:?})",
-            mode(state.parent().unwrap_or(state)), mode(state), hook.code, hook.stdout.len(), hook.elapsed,
-            String::from_utf8_lossy(tail), exchanges.len()
+            mode(state.parent().unwrap_or(state)),
+            mode(state),
+            hook.code,
+            hook.stdout.len(),
+            hook.elapsed,
+            String::from_utf8_lossy(tail),
+            exchanges.len()
         );
         let mut end = evidence.len().min(3 * 1024);
-        while !evidence.is_char_boundary(end) { end -= 1; }
+        while !evidence.is_char_boundary(end) {
+            end -= 1;
+        }
         evidence.truncate(end);
         evidence
     }
 
     fn actual_page(exchanges: &[Exchange], hook: &Hook, state: &Path) -> DeliveryPageV2 {
         assert!(exchanges.iter().any(|exchange| matches!(&exchange.result, Some(Ok(CommandResult::Capabilities(caps))) if caps.capabilities.iter().any(|name| name == DELIVERY_PRESENTATION_V2))), "elected daemon must actually advertise V2; {}", observation(exchanges, hook, state));
-        exchanges.iter().find_map(|exchange| match &exchange.result {
-            Some(Ok(CommandResult::DeliveryPulledV2(DeliveryPullReplyV2::Page(page)))) => Some(page.clone()),
-            _ => None,
-        }).expect("installed registered hook selects real V2 Pull")
+        exchanges
+            .iter()
+            .find_map(|exchange| match &exchange.result {
+                Some(Ok(CommandResult::DeliveryPulledV2(DeliveryPullReplyV2::Page(page)))) => {
+                    Some(page.clone())
+                }
+                _ => None,
+            })
+            .expect("installed registered hook selects real V2 Pull")
     }
 
     fn confirm(exchanges: &[Exchange]) -> &Exchange {
-        exchanges.iter().find(|exchange| matches!(exchange.command, Command::DeliveryPresentationConfirmV2(_))).expect("production HookStepCommit sends explicit Confirm")
+        exchanges
+            .iter()
+            .find(|exchange| matches!(exchange.command, Command::DeliveryPresentationConfirmV2(_)))
+            .expect("production HookStepCommit sends explicit Confirm")
     }
 
     fn round_trip(user: bool) {
         let elected = Elected::start();
-        if user { elected.downgrade(0); }
+        if user {
+            elected.downgrade(0);
+        }
         elected.invite();
         let observer = Observer::start(&elected.fx, Fault::None);
         let hook = elected.run("PreInvocation", false);
         assert_eq!(hook.code, Some(0), "{}", hook.stderr);
         let exchanges = observer.take();
         let page = actual_page(&exchanges, &hook, &elected.adapter_state());
-        assert_eq!(page.render, PresentationRenderSelection::Hook { selector: u8::from(user) });
+        assert_eq!(
+            page.render,
+            PresentationRenderSelection::Hook {
+                selector: u8::from(user)
+            }
+        );
         assert_eq!(page.output_bytes as usize, hook.stdout.len());
         assert!(!hook.stdout.is_empty() && hook.stdout.len() <= 65_536);
         let native: Value = serde_json::from_slice(&hook.stdout).unwrap();
-        let expected = if user { json!({"injectSteps":[{"userMessage":page.text}]}) } else { json!({"injectSteps":[{"systemMessage":{"systemMessage":page.text}}]}) };
+        let expected = if user {
+            json!({"injectSteps":[{"userMessage":page.text}]})
+        } else {
+            json!({"injectSteps":[{"systemMessage":{"systemMessage":page.text}}]})
+        };
         assert_eq!(native, expected, "registered native codec shape");
-        assert_eq!(hook.stdout, serde_json::to_vec(&expected).unwrap(), "exact registered native encoding, including escaping and framing");
-        assert!(page.items.iter().any(|item| matches!(item, PresentationItemV2::Invitation { .. })), "canonical invitation is physically emitted");
+        assert_eq!(
+            hook.stdout,
+            serde_json::to_vec(&expected).unwrap(),
+            "exact registered native encoding, including escaping and framing"
+        );
+        assert!(
+            page.items
+                .iter()
+                .any(|item| matches!(item, PresentationItemV2::Invitation { .. })),
+            "canonical invitation is physically emitted"
+        );
         assert!(page.items.iter().any(|item| matches!(item, PresentationItemV2::Message { lazy: false, content, .. } if content.body == "ordinary body needs later receipt ACK" && content.ack_required)), "ordinary nudge-class body also emits without receipt ACK");
-        assert!(page.emitted_controls.iter().any(|stamp| matches!(stamp, PresentationControlStampV2::Attention { .. })), "exercise a nonempty exact control confirmation");
+        assert!(
+            page.emitted_controls
+                .iter()
+                .any(|stamp| matches!(stamp, PresentationControlStampV2::Attention { .. })),
+            "exercise a nonempty exact control confirmation"
+        );
         let completed = confirm(&exchanges);
-        let Command::DeliveryPresentationConfirmV2(request) = &completed.command else { unreachable!() };
+        let Command::DeliveryPresentationConfirmV2(request) = &completed.command else {
+            unreachable!()
+        };
         assert_eq!(request.claim, elected.recipient);
         assert_eq!(Some(&request.token), page.presentation_token.as_ref());
         assert_eq!(request.emitted_controls, page.emitted_controls);
-        let Some(Ok(CommandResult::DeliveryPresentationConfirmedV2(reply))) = &completed.result else { panic!("canonical explicit confirmation: {completed:?}") };
+        let Some(Ok(CommandResult::DeliveryPresentationConfirmedV2(reply))) = &completed.result
+        else {
+            panic!("canonical explicit confirmation: {completed:?}")
+        };
         assert_eq!(reply.status, DeliveryPresentationConfirmationV2::Confirmed);
         assert_eq!(reply.acknowledged_controls, page.emitted_controls);
         assert_eq!(elected.fx.count("SELECT count(*) FROM invitation_presentation_consumers WHERE consumer='hook' AND outbox_token IS NULL AND last_token IS NOT NULL"), 1);
-        let state: herdr_threads::harness::agy::delivery::ConversationState = serde_json::from_slice(&elected.conversation_bytes().expect("successful HookStepCommit persists hints")).unwrap();
-        let PresentationControlStampV2::Attention { epoch, version } = &page.emitted_controls[0] else { panic!("captured Attention") };
+        let state: herdr_threads::harness::agy::delivery::ConversationState =
+            serde_json::from_slice(
+                &elected
+                    .conversation_bytes()
+                    .expect("successful HookStepCommit persists hints"),
+            )
+            .unwrap();
+        let PresentationControlStampV2::Attention { epoch, version } = &page.emitted_controls[0]
+        else {
+            panic!("captured Attention")
+        };
         assert_eq!(state.seen_attention_version, Some(*version));
         assert_eq!(state.seen_presentation_epoch.as_ref(), Some(epoch));
         elected.assert_passive_side_effects();
@@ -978,9 +1234,13 @@ mod activation {
     // Kills: advertisement omitted; registered bridge remains on V1; native
     // selector drift; or successful emission fails to execute HookStepCommit.
     #[test]
-    fn activation_v2_registered_agy_system_hook_round_trip() { round_trip(false); }
+    fn activation_v2_registered_agy_system_hook_round_trip() {
+        round_trip(false);
+    }
     #[test]
-    fn activation_v2_registered_agy_user_hook_round_trip() { round_trip(true); }
+    fn activation_v2_registered_agy_user_hook_round_trip() {
+        round_trip(true);
+    }
 
     // Kills: failed actual stdout emission still commits the canonical page.
     #[test]
@@ -994,23 +1254,53 @@ mod activation {
         let failed_hook = elected.run("PreInvocation", true);
         let failed = observer.take();
         let pending = actual_page(&failed, &failed_hook, &elected.adapter_state());
-        assert_eq!(elected.conversation_bytes(), before, "failed emission never advances seen/injected hints");
-        assert_eq!(fs::read(elected.adapter_state().join("downgrade.json")).unwrap(), downgrade_before, "failed emission never opens probation");
-        assert!(!failed.iter().any(|exchange| matches!(exchange.command, Command::DeliveryPresentationConfirmV2(_))));
+        assert_eq!(
+            elected.conversation_bytes(),
+            before,
+            "failed emission never advances seen/injected hints"
+        );
+        assert_eq!(
+            fs::read(elected.adapter_state().join("downgrade.json")).unwrap(),
+            downgrade_before,
+            "failed emission never opens probation"
+        );
+        assert!(
+            !failed.iter().any(|exchange| matches!(
+                exchange.command,
+                Command::DeliveryPresentationConfirmV2(_)
+            ))
+        );
         assert_eq!(elected.fx.count("SELECT count(*) FROM invitation_presentation_consumers WHERE consumer='hook' AND outbox_token IS NOT NULL AND last_token IS NULL"), 1);
         let hook = elected.run("PreInvocation", false);
         assert_eq!(hook.code, Some(0), "{}", hook.stderr);
         let replay = observer.take();
         let page = actual_page(&replay, &hook, &elected.adapter_state());
         assert_eq!(page.presentation_token, pending.presentation_token);
-        let nonordinary: Vec<_> = pending.items.iter().filter(|item| !matches!(item, PresentationItemV2::Message { .. })).cloned().collect();
-        assert_eq!(page.items, nonordinary, "the exact durable invitation/control descriptors physically replay");
+        let nonordinary: Vec<_> = pending
+            .items
+            .iter()
+            .filter(|item| !matches!(item, PresentationItemV2::Message { .. }))
+            .cloned()
+            .collect();
+        assert_eq!(
+            page.items, nonordinary,
+            "the exact durable invitation/control descriptors physically replay"
+        );
         assert_eq!(page.emitted_controls, pending.emitted_controls);
         assert_eq!(page.output_bytes as usize, hook.stdout.len());
         assert_eq!(system_message(&hook), page.text);
-        assert!(matches!(&confirm(&replay).result, Some(Ok(CommandResult::DeliveryPresentationConfirmedV2(reply))) if reply.status == DeliveryPresentationConfirmationV2::Confirmed));
-        let record: herdr_threads::harness::agy::delivery::DowngradeRecord = serde_json::from_slice(&fs::read(elected.adapter_state().join("downgrade.json")).unwrap()).unwrap();
-        assert!(!record.probation, "a passive descriptor replay has no offered ordinary frame and cannot spend probation");
+        assert!(
+            matches!(&confirm(&replay).result, Some(Ok(CommandResult::DeliveryPresentationConfirmedV2(reply))) if reply.status == DeliveryPresentationConfirmationV2::Confirmed)
+        );
+        let record: herdr_threads::harness::agy::delivery::DowngradeRecord =
+            serde_json::from_slice(
+                &fs::read(elected.adapter_state().join("downgrade.json")).unwrap(),
+            )
+            .unwrap();
+        assert!(
+            !record.probation,
+            "a passive descriptor replay has no offered ordinary frame and cannot spend probation"
+        );
         elected.assert_passive_side_effects();
     }
 
@@ -1028,7 +1318,11 @@ mod activation {
             let exchanges = observer.take();
             let page = actual_page(&exchanges, &hook, &elected.adapter_state());
             let completed = confirm(&exchanges);
-            assert_eq!(elected.conversation_bytes(), before, "missing actual completion response never advances local seen/injected hints");
+            assert_eq!(
+                elected.conversation_bytes(),
+                before,
+                "missing actual completion response never advances local seen/injected hints"
+            );
             if fault == Fault::DropConfirm {
                 assert!(completed.result.is_none());
                 assert_eq!(elected.fx.count("SELECT count(*) FROM invitation_presentation_consumers WHERE consumer='hook' AND outbox_token IS NOT NULL"), 1);
@@ -1040,11 +1334,22 @@ mod activation {
                 assert_eq!(replay_page.emitted_controls, page.emitted_controls);
                 assert_eq!(system_message(&replay), replay_page.text);
                 assert_eq!(replay_page.output_bytes as usize, replay.stdout.len());
-                assert!(matches!(&confirm(&replayed).result, Some(Ok(CommandResult::DeliveryPresentationConfirmedV2(reply))) if reply.status == DeliveryPresentationConfirmationV2::Confirmed));
+                assert!(
+                    matches!(&confirm(&replayed).result, Some(Ok(CommandResult::DeliveryPresentationConfirmedV2(reply))) if reply.status == DeliveryPresentationConfirmationV2::Confirmed)
+                );
             } else {
-                assert!(matches!(&completed.result, Some(Ok(CommandResult::DeliveryPresentationConfirmedV2(reply))) if reply.status == DeliveryPresentationConfirmationV2::Confirmed));
-                let CommandResult::DeliveryPresentationConfirmedV2(reply) = elected.fx.call(completed.command.clone()).unwrap() else { panic!("actual replay Confirm") };
-                assert_eq!(reply.status, DeliveryPresentationConfirmationV2::AlreadyConfirmed);
+                assert!(
+                    matches!(&completed.result, Some(Ok(CommandResult::DeliveryPresentationConfirmedV2(reply))) if reply.status == DeliveryPresentationConfirmationV2::Confirmed)
+                );
+                let CommandResult::DeliveryPresentationConfirmedV2(reply) =
+                    elected.fx.call(completed.command.clone()).unwrap()
+                else {
+                    panic!("actual replay Confirm")
+                };
+                assert_eq!(
+                    reply.status,
+                    DeliveryPresentationConfirmationV2::AlreadyConfirmed
+                );
                 assert_eq!(reply.acknowledged_controls, page.emitted_controls);
             }
             elected.assert_passive_side_effects();
@@ -1062,9 +1367,23 @@ mod activation {
             let hook = elected.run("PreInvocation", false);
             assert_eq!(hook.code, Some(0), "{}", hook.stderr);
             let exchanges = observer.take();
-            assert!(exchanges.iter().any(|exchange| matches!(exchange.command, Command::Capabilities)), "historical capability observation missing; fault={fault:?}; {}", observation(&exchanges, &hook, &elected.adapter_state()));
-            assert!(exchanges.iter().any(|exchange| matches!(exchange.command, Command::DeliveryPull(_))), "historical capability discovery selects real V1 bridge");
-            assert!(!exchanges.iter().any(|exchange| matches!(exchange.command, Command::DeliveryPullV2(_) | Command::DeliveryPresentationConfirmV2(_))));
+            assert!(
+                exchanges
+                    .iter()
+                    .any(|exchange| matches!(exchange.command, Command::Capabilities)),
+                "historical capability observation missing; fault={fault:?}; {}",
+                observation(&exchanges, &hook, &elected.adapter_state())
+            );
+            assert!(
+                exchanges
+                    .iter()
+                    .any(|exchange| matches!(exchange.command, Command::DeliveryPull(_))),
+                "historical capability discovery selects real V1 bridge"
+            );
+            assert!(!exchanges.iter().any(|exchange| matches!(
+                exchange.command,
+                Command::DeliveryPullV2(_) | Command::DeliveryPresentationConfirmV2(_)
+            )));
             assert!(system_message(&hook).contains("registered hook activation"));
             elected.assert_passive_side_effects();
         }
