@@ -4888,7 +4888,7 @@ fn registration_ignores_an_exhausted_binding_history_generation_and_rolls_back_w
         },
         // ht-54r.3: a check-in no longer computes a next generation, so a binding history at the
         // maximum is not an error and the offer is reached. Failing it rolls everything back.
-        |_tx, _seat, _seq, _history| {
+        |_tx, _seat, _seq, _history, _binding| {
             Err(crate::protocol::results::ApiError::new(
                 ErrorCode::Conflict,
                 "offer reached",
@@ -6870,7 +6870,8 @@ fn registration_requires_and_records_reconfirmation_evidence() {
     let offer = |_tx: &rusqlite::Transaction<'_>,
                  seat: &SeatId,
                  seq: u64,
-                 _history: crate::store::first_contact::OfferHistory| {
+                 _history: crate::store::first_contact::OfferHistory,
+                 _binding: &crate::protocol::ids::BindingId| {
         Ok(crate::protocol::results::CheckInResult {
             context_disposition: crate::protocol::results::CheckInContextDisposition::Current,
             context: claim(seat.as_str()),

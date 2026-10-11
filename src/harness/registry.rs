@@ -2304,6 +2304,7 @@ mod tests {
                 domain: ContractDomain::Native,
                 native_event: "event".into(),
                 shape_fields: vec![],
+                agent_id: None,
             },
             delivery: DeliveryEligibility::Context,
             runtime: RuntimeAttribution::Unavailable {
@@ -2488,6 +2489,7 @@ mod tests {
             role: super::super::context::Role::TopLevel,
             event_id: "fake".into(),
             capability: super::super::Capability::ObservedInput,
+            agent_id: None,
         };
 
         let mut decoded = event("codex");

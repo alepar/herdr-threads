@@ -917,6 +917,7 @@ impl HarnessAdapter for HermesAdapter {
                 skill_pointer: false,
                 capability: super::Capability::ObservedInput,
                 domain: ContractDomain::Bridge,
+                agent_id: None,
             },
             delivery: if observer {
                 DeliveryEligibility::ObserverOnly

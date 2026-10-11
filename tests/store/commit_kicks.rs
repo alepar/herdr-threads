@@ -172,7 +172,7 @@ const INSERTS: &[(&str, &str)] = &[
     ),
     (
         "warning_offer",
-        "INSERT INTO warning_offer(seat_id,binding_generation,execution_id) VALUES ('s1',0,'e')",
+        "INSERT INTO warning_offer(binding_id,seat_id) VALUES ('b1','s1')",
     ),
     (
         "work_jobs",

@@ -1080,7 +1080,7 @@ fn run_hook_event_reporting_inner<C: LocalClient + ?Sized, W: Write>(
 
 /// Lazy rows join the digest whenever the daemon can report them; the token's
 /// lazy key moves the hook marker only (never a wake).
-use crate::protocol::capabilities::LAZY_HOOK_DELIVERY;
+use crate::protocol::capabilities::{BINDING_DIGEST, LAZY_HOOK_DELIVERY};
 
 /// Read the seat's server-side attention digest (root adoption, wave-1 fix2
 /// (a)): one read-only, seat-scoped query whose token is complete by
@@ -1091,10 +1091,23 @@ pub fn read_digest<C: LocalClient + ?Sized>(
     seat: &SeatId,
     budget: &CallBudget,
 ) -> Result<AttentionDigest, ApiError> {
+    read_digest_as(client, seat, None, budget)
+}
+
+/// `read_digest` for one binding: with a claim, a daemon advertising `BINDING_DIGEST` computes
+/// the digest for the claim's binding (its own unread mail and notice frontier, and a token that
+/// carries the binding); otherwise the seat-level digest.
+pub fn read_digest_as<C: LocalClient + ?Sized>(
+    client: &C,
+    seat: &SeatId,
+    claim: Option<&CallerClaim>,
+    budget: &CallBudget,
+) -> Result<AttentionDigest, ApiError> {
     let result = client.call(
         Command::AttentionDigest(crate::protocol::commands::AttentionDigestQuery {
             seat: seat.clone(),
             lazy: client.supports_capability(LAZY_HOOK_DELIVERY, budget),
+            claim: binding_digest_claim(client, claim, budget),
         }),
         budget,
     )?;
@@ -1107,6 +1120,17 @@ pub fn read_digest<C: LocalClient + ?Sized>(
         return Err(invalid("attention digest for another seat"));
     }
     Ok(digest)
+}
+
+/// The claim to send with a digest query: only to a daemon that serves per-binding digests.
+fn binding_digest_claim<C: LocalClient + ?Sized>(
+    client: &C,
+    claim: Option<&CallerClaim>,
+    budget: &CallBudget,
+) -> Option<CallerClaim> {
+    claim
+        .filter(|_| client.supports_capability(BINDING_DIGEST, budget))
+        .cloned()
 }
 
 /// Read the seat's hot threads for the recovery hook text (spec §9): one
@@ -1146,10 +1170,17 @@ pub fn seeded_lifecycle<C: LocalClient + ?Sized, E>(
     seat: &SeatId,
     budget: &CallBudget,
     run: impl FnOnce() -> Result<(), E>,
-) -> Result<Option<(Uuid, AttentionDigest)>, E> {
+) -> Result<Option<(String, AttentionDigest)>, E> {
     let fresh = matches!(contexts.completed_for_event(event_id), Ok(None));
     let digest = if fresh {
-        read_digest(client, seat, budget).ok()
+        // The binding the CheckIn will open or refresh may not exist yet: the daemon then reads
+        // the digest that binding will start from, with the token it will carry.
+        let claim = contexts
+            .current()
+            .ok()
+            .flatten()
+            .and_then(|saved| contexts.claim(&saved).ok());
+        read_digest_as(client, seat, claim.as_ref(), budget).ok()
     } else {
         None
     };
@@ -1159,7 +1190,7 @@ pub fn seeded_lifecycle<C: LocalClient + ?Sized, E>(
         .ok()
         .flatten()
         .filter(|(_, response)| !response.historical)
-        .and_then(|(_, response)| Some((response.context.execution, digest?))))
+        .and_then(|(_, response)| Some((response.context.mark_key(), digest?))))
 }
 
 /// Result of a tool-boundary read. `mark` is committed by the caller only after
@@ -1172,7 +1203,7 @@ pub struct ToolBoundary {
     pub summary: Option<String>,
     /// The digest read before the offer, for the ready-to-run command block.
     pub digest: Option<AttentionDigest>,
-    pub mark: Option<(Uuid, AttentionToken)>,
+    pub mark: Option<(String, AttentionToken)>,
     /// A live mod channel delivers attention: the ready commands stay omitted.
     pub live: bool,
 }
@@ -1211,7 +1242,8 @@ pub fn tool_boundary_check_in<C: LocalClient + ?Sized>(
         return Err(ContextError::LifecycleRequired.into());
     }
     let claim = contexts.claim(&saved)?;
-    let stored = contexts.attention_mark(saved.execution);
+    let mark_key = saved.mark_key();
+    let stored = contexts.attention_mark(&mark_key);
     let last = if coalesce { stored } else { None };
     // Delivery readiness can advance when attribution finishes or a bounded
     // page remains, independently of the immutable logical publication token.
@@ -1224,6 +1256,7 @@ pub fn tool_boundary_check_in<C: LocalClient + ?Sized>(
             Command::AttentionDigestDelivery(crate::protocol::commands::AttentionDigestQuery {
                 seat: claim.seat.clone(),
                 lazy: client.supports_capability(LAZY_HOOK_DELIVERY, budget),
+                claim: binding_digest_claim(client, Some(&claim), budget),
             }),
             budget,
         ) {
@@ -1252,7 +1285,10 @@ pub fn tool_boundary_check_in<C: LocalClient + ?Sized>(
             Err(error) => (Err(error), false),
         }
     } else {
-        (read_digest(client, &claim.seat, budget), false)
+        (
+            read_digest_as(client, &claim.seat, Some(&claim), budget),
+            false,
+        )
     };
     let mut mark = None;
     // Spec D7: a live mod channel delivers attention itself, so the digest,
@@ -1278,11 +1314,11 @@ pub fn tool_boundary_check_in<C: LocalClient + ?Sized>(
                 text: Vec::new(),
                 summary: None,
                 digest: None,
-                mark: (stored != Some(next)).then_some((saved.execution, next)),
+                mark: (stored != Some(next)).then_some((mark_key, next)),
                 live: false,
             });
         }
-        mark = Some((saved.execution, next));
+        mark = Some((mark_key, next));
     }
     let command = Command::CheckIn(crate::protocol::commands::CheckIn {
         lineage_parent: None,
@@ -1327,6 +1363,107 @@ pub fn tool_boundary_check_in<C: LocalClient + ?Sized>(
         digest,
         mark,
         live,
+    })
+}
+
+/// Result of a subagent's tool-boundary read (`subagent_boundary`).
+#[derive(Debug, Default)]
+pub struct SubagentBoundary {
+    /// The notice to present, with the read-only wording. `None` when nothing is new for this
+    /// subagent.
+    pub summary: Option<String>,
+    /// The subagent's own attention mark (key, token), committed by the caller only after the
+    /// notice was delivered.
+    pub mark: Option<(String, AttentionToken)>,
+}
+
+/// The wording of a subagent's notice (spec §2): it may read and summarize, its parent session
+/// ACKs and replies.
+pub const SUBAGENT_NOTICE_WORDING: &str =
+    "read-only: you may read and summarize; your parent session ACKs and replies";
+
+/// Non-durable tool-boundary notice for a subagent binding (ht-54r.9). A subagent never checks in
+/// for the seat, so nothing is written and nothing is settled on the server: one read-only digest
+/// query for the subagent's own binding (`claim` carries its agent id), compared with the
+/// subagent's own mark. Only what is addressed to its own stream counts (unread mail, lazy rows,
+/// informational notices): the seat's invitations and receipts are its parent's to answer. The
+/// parent's frontiers and marks are never touched. A daemon without per-binding digests, or a
+/// failed read, is silent.
+pub fn subagent_boundary<C: LocalClient + ?Sized>(
+    contexts: &ContextJournal,
+    claim: &CallerClaim,
+    client: &C,
+    budget: &CallBudget,
+    coalesce: bool,
+) -> Result<SubagentBoundary, BridgeError> {
+    if !client.supports_capability(BINDING_DIGEST, budget) {
+        return Ok(SubagentBoundary::default());
+    }
+    let result = client
+        .call(
+            Command::AttentionDigest(crate::protocol::commands::AttentionDigestQuery {
+                seat: claim.seat.clone(),
+                lazy: client.supports_capability(LAZY_HOOK_DELIVERY, budget),
+                claim: Some(claim.clone()),
+            }),
+            budget,
+        )
+        .map_err(BridgeError::Api)?;
+    let CommandResult::AttentionDigest(mut digest) = result else {
+        return Err(BridgeError::Api(ApiError::store_corrupt(
+            "service returned no attention digest",
+        )));
+    };
+    digest
+        .validate()
+        .map_err(|detail| BridgeError::Api(ApiError::store_corrupt(detail)))?;
+    if digest.seat != claim.seat {
+        return Err(BridgeError::Api(ApiError::store_corrupt(
+            "attention digest for another seat",
+        )));
+    }
+    if digest.mod_channel_live {
+        return Ok(SubagentBoundary::default());
+    }
+    // The seat's own obligations are the parent's: this subagent's view is its stream.
+    digest.invitations = Default::default();
+    digest.receipts = Default::default();
+    digest.token.invitation = None;
+    digest.token.receipt = None;
+    let key = crate::harness::context::attention_mark_key(
+        claim.harness.as_str(),
+        claim.native_session.as_str(),
+        claim.agent_id.as_ref().map(|agent| agent.as_str()),
+    );
+    let stored = if coalesce {
+        contexts.attention_mark(&key)
+    } else {
+        None
+    };
+    let advanced = match &stored {
+        Some(last) => digest.token.advanced_beyond(last),
+        None => !digest.is_empty(),
+    };
+    let next = stored.map_or(digest.token, |stored| stored.join(&digest.token));
+    if !advanced {
+        return Ok(SubagentBoundary {
+            summary: None,
+            mark: (contexts.attention_mark(&key) != Some(next)).then_some((key, next)),
+        });
+    }
+    let stream = if digest.mail.as_ref().is_some_and(|mail| mail.count > 0)
+        || digest.lazy.as_ref().is_some_and(|lazy| lazy.count > 0)
+    {
+        "new mail"
+    } else {
+        "notices"
+    };
+    Ok(SubagentBoundary {
+        summary: Some(format!(
+            "{}\n{stream} ({SUBAGENT_NOTICE_WORDING})",
+            digest.summary()
+        )),
+        mark: Some((key, next)),
     })
 }
 

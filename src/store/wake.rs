@@ -163,8 +163,10 @@ pub fn load_candidate(
         addressed_receipt: last_key(last_receipt_seq, last_receipt_offset)?,
         actionable_warning: last_key(last_warning_seq, last_warning_offset)?,
     };
-    let offer:Option<(i64,String,i64)>=db.query_row("SELECT binding_generation,execution_id,offered_through_seq FROM warning_offer WHERE seat_id=?1",
-        [seat.as_str()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(store_error)?;
+    // The offer frontier of the candidate's own binding, else of the seat's newest open then
+    // newest overall binding that holds one (it then names another occupant and covers nothing).
+    let offer:Option<(i64,String,i64)>=db.query_row("SELECT b.generation,b.execution_id,o.offered_through_seq FROM warning_offer o JOIN occupant_bindings b ON b.binding_id=o.binding_id WHERE o.seat_id=?1 ORDER BY (b.generation=?2 AND b.execution_id=?3) DESC,(b.ended_at IS NULL) DESC,b.ordinal DESC LIMIT 1",
+        params![seat.as_str(),binding_generation.map_or(-1,|g|g as i64),binding_execution.as_ref().map_or("",|e|e.as_str())],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(store_error)?;
     let mut warning_offer = offer
         .map(|(generation, execution, seq)| {
             Ok(WarningOfferFrontier {

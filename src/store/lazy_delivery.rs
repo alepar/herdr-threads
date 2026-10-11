@@ -319,6 +319,43 @@ pub fn binding_lazy_unread(
     .collect()
 }
 
+/// A published lazy message unread by `binding`, with its publication decision sequence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PublishedLazyUnread {
+    pub ordinal: i64,
+    pub message: String,
+    pub thread: String,
+    pub decision_seq: i64,
+}
+
+/// The newest published lazy messages unread by one binding, newest ordinal first: one windowed
+/// walk of at most `limit` rows. Published means the manifest is published in `instance` up to
+/// the host decision sequence `through` (the same bound `pending_lazy` applies per seat).
+pub fn binding_lazy_window(
+    db: &Connection,
+    instance: &str,
+    binding: &BindingId,
+    through: i64,
+    limit: i64,
+) -> Result<Vec<PublishedLazyUnread>, ApiError> {
+    let mut stmt = db
+        .prepare_cached(&format!(
+            "SELECT r.ordinal,r.message_id,r.thread_id,sm.decision_seq {BINDING_UNREAD_FROM} WHERE {BINDING_UNREAD_WHERE} AND sm.instance_id=?3 AND sm.decision_seq<=?4 ORDER BY r.ordinal DESC LIMIT ?2"
+        ))
+        .map_err(store_error)?;
+    stmt.query_map(params![binding.as_str(), limit, instance, through], |r| {
+        Ok(PublishedLazyUnread {
+            ordinal: r.get(0)?,
+            message: r.get(1)?,
+            thread: r.get(2)?,
+            decision_seq: r.get(3)?,
+        })
+    })
+    .map_err(store_error)?
+    .collect::<rusqlite::Result<Vec<_>>>()
+    .map_err(store_error)
+}
+
 pub fn binding_has_unread_lazy(db: &Connection, binding: &BindingId) -> Result<bool, ApiError> {
     db.query_row(
         &format!("SELECT EXISTS(SELECT 1 {BINDING_UNREAD_FROM} WHERE {BINDING_UNREAD_WHERE})"),

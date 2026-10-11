@@ -12,6 +12,8 @@ fn token(
         receipt,
         warning,
         unavailability_episode: episode,
+        mail: None,
+        binding: None,
     }
 }
 
@@ -101,6 +103,7 @@ fn digest_bounds_are_explicit() {
         warnings: AttentionClass::default(),
         unavailability_open: false,
         mod_channel_live: false,
+        mail: None,
     };
     assert_eq!(digest.validate(), Ok(()));
     assert!(!digest.is_empty());
@@ -134,6 +137,7 @@ fn mod_channel_live_absent_when_false_and_round_trips_when_true() {
         warnings: AttentionClass::default(),
         unavailability_open: false,
         mod_channel_live: false,
+        mail: None,
     };
     let quiet = serde_json::to_value(&digest).unwrap();
     assert!(quiet.get("mod_channel_live").is_none(), "{quiet}");
@@ -207,6 +211,7 @@ fn digest_lazy_class_is_bounded_and_counted() {
         unavailability_open: false,
         lazy: None,
         mod_channel_live: false,
+        mail: None,
     };
     assert!(digest.validate().is_ok() && digest.is_empty());
     assert!(!digest.summary().contains("lazy"));
@@ -237,4 +242,65 @@ fn digest_lazy_class_is_bounded_and_counted() {
         json.get("lazy").is_none(),
         "absent on the wire when not asked"
     );
+}
+
+// Kills: a binding token that decodes to another spelling (the mail key or the binding lost on a
+// round trip), a v3 token that a v1/v2 reader would mistake for its own, a mark of another
+// binding that suppresses this binding's pending mail, and a join that merges two bindings'
+// frontiers.
+#[test]
+fn a_binding_token_round_trips_and_is_never_compared_with_another_bindings() {
+    let a = AttentionToken {
+        receipt: Some((9, 0)),
+        lazy: Some((11, 3)),
+        mail: Some((12, 4)),
+        unavailability_episode: 2,
+        binding: Some(binding_token_hash("s", "claude", "sess-A", "")),
+        ..Default::default()
+    };
+    let encoded = a.encode();
+    assert!(encoded.starts_with("v3."), "{encoded}");
+    assert_eq!(AttentionToken::decode(&encoded), Ok(a));
+    // The binding is part of the token even with nothing pending.
+    let bare = AttentionToken {
+        binding: a.binding,
+        ..Default::default()
+    };
+    assert_eq!(AttentionToken::decode(&bare.encode()), Ok(bare));
+    // Seat-level tokens keep their v1/v2 spelling.
+    assert!(
+        token(None, Some((1, 0)), None, 1)
+            .encode()
+            .starts_with("v1.")
+    );
+    for bad in [
+        "v3._._._._.1",
+        "v3._._._._._.1.zz",
+        "v3._._._._._.1.0123456789abcde",
+        "v3._._._._.1.0123456789abcdef",
+    ] {
+        assert!(AttentionToken::decode(bad).is_err(), "{bad}");
+    }
+    // A mark of the same binding covers what it was shown; another binding's covers nothing.
+    let b = AttentionToken {
+        binding: Some(binding_token_hash("s", "claude", "sess-B", "")),
+        ..a
+    };
+    assert_ne!(a.binding, b.binding);
+    assert!(!a.advanced_beyond(&a));
+    assert!(b.advanced_beyond(&a), "B's mail is new against A's mark");
+    let newer = AttentionToken {
+        mail: Some((13, 5)),
+        ..a
+    };
+    assert!(newer.advanced_beyond(&a));
+    // The subagent of the same session is its own binding.
+    assert_ne!(
+        binding_token_hash("s", "claude", "sess-A", ""),
+        binding_token_hash("s", "claude", "sess-A", "agent-1")
+    );
+    // The join keeps one binding's frontier: the newer read replaces the other binding's mark.
+    assert_eq!(a.join(&b), b);
+    assert_eq!(a.join(&newer).mail, Some((13, 5)));
+    assert_eq!(a.join(&AttentionToken::default()).binding, None);
 }

@@ -418,6 +418,7 @@ fn parse_hooks_2_1_283(
         role,
         event_id: event_id.into(),
         capability: Capability::ObservedInput,
+        agent_id: agent_id.cloned(),
     })
 }
 

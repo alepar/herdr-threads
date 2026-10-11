@@ -142,6 +142,10 @@ pub struct LifecycleEvent {
     /// Supplied by launch/lifecycle driver, never inferred from a native session ID.
     pub event_id: String,
     pub capability: Capability,
+    /// The hook payload's subagent id (Claude `agent_id`), the binding key's third part. Set only
+    /// for a subagent event whose payload carries one; it picks the subagent's own attention mark
+    /// and binding digest (ht-54r.9).
+    pub agent_id: Option<String>,
 }
 impl LifecycleEvent {
     pub fn can_check_in(&self) -> bool {

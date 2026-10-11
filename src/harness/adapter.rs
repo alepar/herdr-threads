@@ -362,6 +362,8 @@ pub struct EventMetadata {
     pub domain: ContractDomain,
     pub native_event: String,
     pub shape_fields: Vec<String>,
+    /// The subagent id a native event carried (see `LifecycleEvent::agent_id`).
+    pub agent_id: Option<String>,
 }
 #[derive(Clone)]
 pub enum DeliveryEligibility {
@@ -1227,6 +1229,7 @@ mod tests {
                 domain: ContractDomain::Native,
                 native_event: "Tool".into(),
                 shape_fields: vec![],
+                agent_id: None,
             },
             delivery: DeliveryEligibility::Context,
             runtime: RuntimeAttribution::Unavailable {
@@ -1265,6 +1268,7 @@ mod tests {
                 domain: ContractDomain::Native,
                 native_event: "SessionStart".into(),
                 shape_fields: vec![],
+                agent_id: None,
             },
             delivery: DeliveryEligibility::Context,
             runtime: RuntimeAttribution::Unavailable {
@@ -1522,6 +1526,7 @@ impl DecodedEvent {
                 domain: ContractDomain::Native,
                 native_event: native_event.into(),
                 shape_fields: vec![],
+                agent_id: event.agent_id,
             },
             delivery: if stop {
                 DeliveryEligibility::Ineligible
@@ -1573,6 +1578,7 @@ impl DecodedEvent {
             },
             event_id: self.event_id.clone(),
             capability: self.metadata.capability,
+            agent_id: self.metadata.agent_id.clone(),
         })
     }
 }

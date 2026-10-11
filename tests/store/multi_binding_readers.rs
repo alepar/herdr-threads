@@ -452,10 +452,11 @@ fn carry_binding_forward_carries_every_registered_binding() {
     );
 }
 
-fn insert_offer(db: &Connection, generation: i64, execution: &str, through: i64) {
+/// The warning offer frontier of the binding holding `session` (ht-54r.9: one row per binding).
+fn insert_offer(db: &Connection, session: &str, through: i64) {
     db.execute(
-        "INSERT INTO warning_offer(seat_id,binding_generation,execution_id,offered_through_seq) VALUES ('s',?1,?2,?3) ON CONFLICT(seat_id) DO UPDATE SET binding_generation=excluded.binding_generation,execution_id=excluded.execution_id,offered_through_seq=excluded.offered_through_seq",
-        params![generation, execution, through],
+        "INSERT INTO warning_offer(binding_id,seat_id,offered_through_seq) SELECT binding_id,'s',?2 FROM occupant_bindings WHERE seat_id='s' AND native_session=?1 AND ended_at IS NULL ON CONFLICT(binding_id) DO UPDATE SET offered_through_seq=excluded.offered_through_seq",
+        params![session, through],
     )
     .unwrap();
 }
@@ -465,24 +466,54 @@ fn materialization_and_summary_readers_see_the_seat() {
     let f = fixture();
     stale_binding_generations(&f.db);
 
-    // materialization::offered: the seat's offer counts while some open binding holds its
-    // execution and the seat has not been rebound.
-    insert_offer(&f.db, SEAT_GENERATION as i64, EXEC, 7);
+    // materialization::offered: the seat view follows the seat's newest connected open top-level
+    // binding (B: C is newer but disconnected), whatever the bindings' own generations say.
+    assert!(
+        !materialization::offered(&f.db, "s", 7).unwrap(),
+        "no offer yet"
+    );
+    insert_offer(&f.db, "sess-A", 7);
+    assert!(
+        !materialization::offered(&f.db, "s", 7).unwrap(),
+        "A's offer is not B's: each binding holds its own frontier"
+    );
+    insert_offer(&f.db, "sess-C", 7);
+    assert!(
+        !materialization::offered(&f.db, "s", 7).unwrap(),
+        "nor does a disconnected binding's"
+    );
+    insert_offer(&f.db, "sess-B", 7);
     assert!(materialization::offered(&f.db, "s", 7).unwrap());
     assert!(
         !materialization::offered(&f.db, "s", 8).unwrap(),
         "above the offer"
     );
-    insert_offer(&f.db, SEAT_GENERATION as i64 - 1, EXEC, 7);
+    // B disconnecting hands the seat view to A, which holds its own offer.
+    let b = bindings::get(
+        &f.db,
+        &BindingId::new(
+            f.db.query_row(
+                "SELECT binding_id FROM occupant_bindings WHERE native_session='sess-B'",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .unwrap(),
+        ),
+    )
+    .unwrap()
+    .unwrap();
     assert!(
-        !materialization::offered(&f.db, "s", 7).unwrap(),
-        "an offer from before a rebind does not count"
+        bindings::disconnect(
+            &f.db,
+            &b.binding_id,
+            bindings::DisconnectReason::ProcessExit,
+            UtcMillis(61)
+        )
+        .unwrap()
     );
-    insert_offer(&f.db, SEAT_GENERATION as i64, "gone-execution", 7);
-    assert!(
-        !materialization::offered(&f.db, "s", 7).unwrap(),
-        "no open binding holds the offer's execution"
-    );
+    f.db.execute("UPDATE warning_offer SET offered_through_seq=3 WHERE binding_id IN (SELECT binding_id FROM occupant_bindings WHERE native_session='sess-A')", []).unwrap();
+    assert!(materialization::offered(&f.db, "s", 3).unwrap());
+    assert!(!materialization::offered(&f.db, "s", 4).unwrap());
 
     // The inbox v2 snapshot fence is the seat generation and one open binding's execution; a
     // snapshot stays valid while another session enrolls and fails once nothing holds it.

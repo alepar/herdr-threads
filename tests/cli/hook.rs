@@ -405,6 +405,7 @@ fn digest(invitations: &[(&str, &str)], receipts: &[(&str, &str)]) -> AttentionD
         warnings: class(&[], 0),
         unavailability_open: false,
         mod_channel_live: false,
+        mail: None,
     }
 }
 fn prefix(state: &str) -> Vec<String> {
@@ -2830,6 +2831,7 @@ mod continuity_gate {
             role,
             event_id: uuid::Uuid::new_v4().to_string(),
             capability: Capability::ObservedInput,
+            agent_id: None,
         }
     }
     // Kills: choosing a lifecycle digest budget for matching Current, or
@@ -3777,6 +3779,7 @@ fn recovery_event_of(harness: Harness, kind: EventKind) -> LifecycleEvent {
         role: Role::TopLevel,
         event_id: uuid(),
         capability: crate::harness::Capability::ObservedInput,
+        agent_id: None,
     }
 }
 
@@ -4967,6 +4970,7 @@ mod mod_channel_live {
                     self.calls.lock().unwrap().push("digest");
                     Ok(CommandResult::AttentionDigest(AttentionDigest {
                         lazy: None,
+                        mail: None,
                         version: DIGEST_VERSION,
                         seat: query.seat,
                         token: AttentionToken {
@@ -5444,6 +5448,283 @@ mod mod_channel_live {
         assert!(done.text.is_empty());
         assert_eq!(daemon.calls(), Vec::<&str>::new(), "no digest, no CheckIn");
         assert!(daemon.check_ins().is_empty());
+    }
+
+    /// A daemon serving per-binding digests (`attention.binding_digest_v1`): every delivered
+    /// message is unread by each session until that session displays it, and a session's token
+    /// carries its own binding.
+    #[derive(Default)]
+    struct BindingDaemon {
+        /// Messages delivered so far (m1 ..= mN).
+        delivered: Mutex<u64>,
+        /// Per session key (`session:agent`), the highest message it displayed.
+        displayed: Mutex<std::collections::BTreeMap<String, u64>>,
+        digests: Mutex<Vec<crate::protocol::authority::CallerClaim>>,
+        check_ins: Mutex<usize>,
+    }
+    impl BindingDaemon {
+        fn deliver(&self) {
+            *self.delivered.lock().unwrap() += 1;
+        }
+        fn display(&self, key: &str) {
+            let n = *self.delivered.lock().unwrap();
+            self.displayed.lock().unwrap().insert(key.into(), n);
+        }
+    }
+    impl LocalClient for BindingDaemon {
+        fn supports_capability(&self, name: &str, _: &CallBudget) -> bool {
+            name == crate::protocol::capabilities::BINDING_DIGEST
+        }
+        fn call_with_output(
+            &self,
+            command: Command,
+            _: &crate::protocol::output::OutputSpec,
+            budget: &CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            self.call(command, budget)
+        }
+        fn call(&self, command: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
+            match command {
+                Command::AttentionDigest(query) => {
+                    let claim = query.claim.expect("a binding digest names its claim");
+                    let key = format!(
+                        "{}:{}",
+                        claim.native_session.as_str(),
+                        claim.agent_id.as_ref().map_or("", |a| a.as_str())
+                    );
+                    self.digests.lock().unwrap().push(claim.clone());
+                    let seen = self
+                        .displayed
+                        .lock()
+                        .unwrap()
+                        .get(&key)
+                        .copied()
+                        .unwrap_or(0);
+                    let delivered = *self.delivered.lock().unwrap();
+                    let unread: Vec<u64> = (seen + 1..=delivered).collect();
+                    let newest = unread.last().copied();
+                    Ok(CommandResult::AttentionDigest(AttentionDigest {
+                        lazy: None,
+                        mail: (!unread.is_empty()).then(|| AttentionClass {
+                            count: unread.len() as u64,
+                            items: unread
+                                .iter()
+                                .rev()
+                                .take(4)
+                                .map(|n| AttentionRef {
+                                    id: format!("m{n}"),
+                                    thread: ThreadId::new("t1"),
+                                    requirement: None,
+                                })
+                                .collect(),
+                            has_more: unread.len() > 4,
+                            count_has_more: false,
+                        }),
+                        version: DIGEST_VERSION,
+                        seat: query.seat,
+                        token: AttentionToken {
+                            mail: newest.map(|n| (10 + n, n)),
+                            unavailability_episode: 1,
+                            binding: Some(crate::protocol::attention::binding_token_hash(
+                                "seat-1",
+                                claim.harness.as_str(),
+                                claim.native_session.as_str(),
+                                claim.agent_id.as_ref().map_or("", |a| a.as_str()),
+                            )),
+                            ..Default::default()
+                        },
+                        invitations: AttentionClass::default(),
+                        receipts: AttentionClass::default(),
+                        warnings: AttentionClass::default(),
+                        unavailability_open: false,
+                        mod_channel_live: false,
+                    }))
+                }
+                Command::Directory(_) => Ok(CommandResult::Directory(empty())),
+                Command::CheckIn(check) => {
+                    *self.check_ins.lock().unwrap() += 1;
+                    let mut claim = check.claim;
+                    if let WireMode::Lifecycle {
+                        expected_binding_generation,
+                    } = check.mode
+                    {
+                        claim.binding_generation = expected_binding_generation + 1;
+                    }
+                    Ok(CommandResult::CheckedIn(CheckInResult {
+                        context: claim.clone(),
+                        context_disposition: CheckInContextDisposition::Current,
+                        seat: claim.seat,
+                        offered_through: Some("9".into()),
+                        warning_count: 0,
+                        warning_count_has_more: false,
+                        warnings: empty(),
+                        notices: Default::default(),
+                        inbox: empty(),
+                    }))
+                }
+                other => panic!("unexpected hook call {other:?}"),
+            }
+        }
+    }
+
+    /// One top-level tool call of `session`; its mark is committed the way the process boundary
+    /// does after the output was delivered. Returns the presented summary, if any.
+    fn tool_call_of(pane: &Pane, daemon: &BindingDaemon, session: &str) -> Option<String> {
+        let ev = in_session(tool(), session);
+        let done = pane
+            .call(daemon)
+            .check_in_seat(&ev, &seat(), 1)
+            .map_err(describe)
+            .expect("tool call");
+        let shown = done.summary.clone();
+        if let Some(attention) = done.attention {
+            attention.commit().unwrap();
+        }
+        shown
+    }
+
+    // Kills: a mark that is one value for the pane (the second session's commit would erase the
+    // first's, which then re-presents what it already showed), a digest that is not read for the
+    // calling session's own binding (the second session would see nothing of its own), and a
+    // display by one session that clears the other's notice. Two sessions of one pane, one new
+    // message each time: every PreToolUse shows the notice once.
+    #[test]
+    fn background_and_foreground_sessions_each_get_new_mail_notices() {
+        let pane = Pane::new();
+        let daemon = BindingDaemon::default();
+        daemon.deliver();
+        let a = tool_call_of(&pane, &daemon, "session-A");
+        let b = tool_call_of(&pane, &daemon, "session-B");
+        for (who, shown) in [("A", &a), ("B", &b)] {
+            assert!(
+                shown
+                    .as_deref()
+                    .is_some_and(|s| s.contains("mail=1 [m1@t1]")),
+                "{who} gets its own notice: {shown:?}"
+            );
+        }
+        // Once each: B's commit did not erase A's mark, nor A's B's.
+        assert_eq!(tool_call_of(&pane, &daemon, "session-A"), None);
+        assert_eq!(tool_call_of(&pane, &daemon, "session-B"), None);
+        let contexts = crate::cli::seat_contexts(&pane.paths, pane.instance, &seat()).unwrap();
+        for session in ["session-A", "session-B"] {
+            let key = crate::harness::context::attention_mark_key("claude", session, None);
+            assert!(
+                contexts
+                    .attention_mark(&key)
+                    .is_some_and(|mark| mark.mail == Some((11, 1)) && mark.binding.is_some()),
+                "{session} keeps its own mark"
+            );
+        }
+        // A second message reaches both. A is shown it and displays it; B has not, and A's
+        // display left B's notice standing.
+        daemon.deliver();
+        let a = tool_call_of(&pane, &daemon, "session-A");
+        assert!(a.as_deref().is_some_and(|s| s.contains("mail=2")), "{a:?}");
+        daemon.display("session-A:");
+        let b = tool_call_of(&pane, &daemon, "session-B");
+        assert!(
+            b.as_deref().is_some_and(|s| s.contains("mail=2")),
+            "A's display left B's notice: {b:?}"
+        );
+        assert_eq!(tool_call_of(&pane, &daemon, "session-B"), None);
+        // Every digest was read for the calling session's own binding.
+        let claims = daemon.digests.lock().unwrap().clone();
+        assert!(
+            claims
+                .iter()
+                .any(|c| c.native_session.as_str() == "session-A")
+        );
+        assert!(
+            claims
+                .iter()
+                .any(|c| c.native_session.as_str() == "session-B")
+        );
+    }
+
+    // Kills: a subagent whose tool call stays silent (it gets no notice for its own stream), one
+    // that checks in for the seat to get it, one that moves its parent's mark, and a notice
+    // without the read-only wording.
+    #[test]
+    fn subagent_tool_call_shows_read_only_notice_wording() {
+        let pane = Pane::new();
+        let daemon = BindingDaemon::default();
+        daemon.deliver();
+        let payload = serde_json::json!({
+            "hook_event_name": "PreToolUse",
+            "session_id": "session-A",
+            "agent_id": "agent-1",
+            "agent_type": "general-purpose",
+            "tool_name": "Bash",
+            "tool_use_id": "toolu_1",
+            "tool_input": {"command": "ls"},
+        });
+        let mut ev = event(&serde_json::to_vec(&payload).unwrap());
+        ev.event_id = uuid::Uuid::new_v4().to_string();
+        assert_eq!(ev.role, Role::Subagent);
+        assert_eq!(ev.agent_id.as_deref(), Some("agent-1"));
+        let call = |ev: &LifecycleEvent| {
+            pane.call(&daemon)
+                .check_in_seat(ev, &seat(), 1)
+                .map_err(describe)
+                .expect("a child's tool call")
+        };
+        let done = call(&ev);
+        let summary = done.summary.clone().expect("the subagent gets a notice");
+        assert!(summary.contains("mail=1 [m1@t1]"), "{summary}");
+        assert!(
+            summary.contains(
+                "new mail (read-only: you may read and summarize; your parent session ACKs and replies)"
+            ),
+            "{summary}"
+        );
+        assert!(
+            !done.text.is_empty(),
+            "the fixed child guidance rides with it"
+        );
+        // It reached the model through the hook output, and no check-in was made for the seat.
+        let context = stdout(&ev, &done);
+        assert!(
+            context.contains("read-only: you may read and summarize"),
+            "{context}"
+        );
+        assert_eq!(*daemon.check_ins.lock().unwrap(), 0);
+        // The digest was read for the subagent's own binding.
+        let claims = daemon.digests.lock().unwrap().clone();
+        let claim = claims.last().unwrap();
+        assert_eq!(claim.role, crate::protocol::authority::CallerRole::Subagent);
+        assert_eq!(claim.agent_id.as_ref().map(|a| a.as_str()), Some("agent-1"));
+        assert_eq!(claim.native_session.as_str(), "session-A");
+        // Once: its commit is its own mark, and the parent's is untouched.
+        done.attention.expect("a mark to commit").commit().unwrap();
+        let again = call(&ev);
+        assert!(
+            again.summary.is_none() && again.text.is_empty(),
+            "{:?}",
+            again.summary
+        );
+        let contexts = crate::cli::seat_contexts(&pane.paths, pane.instance, &seat()).unwrap();
+        let parent = crate::harness::context::attention_mark_key("claude", "session-A", None);
+        let child =
+            crate::harness::context::attention_mark_key("claude", "session-A", Some("agent-1"));
+        assert!(contexts.attention_mark(&child).is_some());
+        assert_eq!(
+            contexts.attention_mark(&parent),
+            None,
+            "the parent's mark is not the child's"
+        );
+        // The parent still gets its own notice for the same message.
+        let parent_shown = tool_call_of(&pane, &daemon, "session-A");
+        assert!(
+            parent_shown
+                .as_deref()
+                .is_some_and(|s| s.contains("mail=1 [m1@t1]") && !s.contains("read-only")),
+            "{parent_shown:?}"
+        );
+        // A newer message reaches the subagent again.
+        daemon.deliver();
+        let next = call(&ev);
+        assert!(next.summary.is_some_and(|s| s.contains("mail=2")));
     }
 
     // Kills: the quiet tool boundary outliving the channel: with it gone the
@@ -6379,6 +6660,7 @@ mod registered_resume {
                     domain: ContractDomain::Native,
                     native_event: p.event,
                     shape_fields: vec![],
+                    agent_id: None,
                 },
                 delivery: if observer {
                     DeliveryEligibility::ObserverOnly
@@ -7725,6 +8007,7 @@ mod registered_resume {
             event_id: uuid(),
             source: "resume".into(),
             capability: Capability::ObservedInput,
+            agent_id: None,
         };
         assert!(matches!(
             call.reattach_by_continuity(&ev, false),
@@ -8058,17 +8341,13 @@ mod registered_resume {
             contexts.prepared_kind_for_event("pre_llm_call-3").unwrap(),
             EventKind::Clear
         );
-        // A session's attention mark is keyed by its stable execution, whatever execution its
+        // A session's attention mark is keyed by its binding key, whatever execution its
         // lifecycle claim carried.
-        let key = crate::harness::context::session_execution(
-            f.instance,
-            saved.harness,
-            "task52-new",
-            None,
-        );
-        assert!(contexts.attention_mark(key).is_none());
+        let key =
+            crate::harness::context::attention_mark_key(saved.harness.as_str(), "task52-new", None);
+        assert!(contexts.attention_mark(&key).is_none());
         outcome.attention.unwrap().commit().unwrap();
-        assert!(contexts.attention_mark(key).is_some());
+        assert!(contexts.attention_mark(&key).is_some());
     }
     #[test]
     fn task52_accepted_kind_replay_and_refused_neighbors_preserve_original_eligibility() {
@@ -8086,7 +8365,7 @@ mod registered_resume {
         let contexts =
             crate::cli::seat_contexts(&f.paths, f.instance, &SeatId::new("registered-seat"))
                 .unwrap();
-        assert!(contexts.attention_mark(saved.execution).is_none());
+        assert!(contexts.attention_mark(&saved.mark_key()).is_none());
         assert!(
             contexts
                 .completed_for_event("pre_llm_call-3")

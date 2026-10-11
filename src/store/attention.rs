@@ -33,7 +33,7 @@
 //!     condition transitions) above the seat's current occupant's
 //!     offered notice frontier (`digest_programmatic_warnings` rows whose
 //!     projection ordinal exceeds `digest_notice_offer.offered_ordinal`, the
-//!     occupant-scoped monotone frontier; wave-2 fix2 root decision (a)). A
+//!     binding-scoped monotone frontier (ht-54r.9); wave-2 fix2 root decision (a)). A
 //!     check-in offer settles only the capped page of notices it actually
 //!     carries (`notice_offer_page`, `settle_offered_notices`): one O(1)
 //!     frontier write, never a delete of the backlog;
@@ -55,9 +55,9 @@ use crate::{
     protocol::{
         attention::{
             AttentionClass, AttentionDigest, AttentionRef, AttentionRequirement, AttentionToken,
-            DIGEST_VERSION, MAX_DIGEST_IDS,
+            DIGEST_VERSION, MAX_DIGEST_IDS, binding_token_hash,
         },
-        ids::{MessageId, SeatId, ThreadId},
+        ids::{BindingId, MessageId, SeatId, ThreadId},
         results::{ApiError, ErrorCode, MAX_PENDING_WARNING_COUNT, WarningRef},
     },
 };
@@ -315,6 +315,77 @@ pub fn seat_digest(
     seat: &SeatId,
     check_budget: &dyn Fn() -> Result<(), ApiError>,
 ) -> Result<DigestRun, ApiError> {
+    digest_for(db, instance, seat, Subject::Seat, check_budget)
+}
+
+/// The digest of one binding of `seat` (ht-54r.9, spec §2 Hook notifications): the seat's pending
+/// invitations, receipts and warnings, with the informational notices judged against the
+/// binding's own notice frontier, plus the binding's own unread mail past its cursor. The token
+/// carries the binding. Two bindings of one seat therefore each get a notice for one new message,
+/// and whatever one of them is shown never clears the other's. A subagent binding reads its own
+/// frontier (its parent's until it has one) and never writes the parent's.
+pub fn binding_digest(
+    db: &Connection,
+    instance: &str,
+    binding: &BindingId,
+    check_budget: &dyn Fn() -> Result<(), ApiError>,
+) -> Result<DigestRun, ApiError> {
+    let row: Option<(String, String, String, String)> = db
+        .query_row(
+            "SELECT seat_id,harness,native_session,agent_id FROM occupant_bindings WHERE binding_id=?1",
+            [binding.as_str()],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional()
+        .map_err(store_error)?;
+    let (seat, harness, session, agent) =
+        row.ok_or_else(|| api_error(ErrorCode::NotFound, "binding not found"))?;
+    let hash = binding_token_hash(&seat, &harness, &session, &agent);
+    digest_for(
+        db,
+        instance,
+        &SeatId::new(seat),
+        Subject::Bound(binding, hash),
+        check_budget,
+    )
+}
+
+/// The digest of a session that holds no binding yet (a lifecycle check-in about to create it, a
+/// subagent that has not run a command): the seat's pending items with informational notices
+/// judged above `frontier`, no unread mail (a new binding starts at the seat's current maximum),
+/// and the token the session's binding will carry once it exists.
+pub fn prospective_digest(
+    db: &Connection,
+    instance: &str,
+    seat: &SeatId,
+    token_hash: u64,
+    frontier: i64,
+    check_budget: &dyn Fn() -> Result<(), ApiError>,
+) -> Result<DigestRun, ApiError> {
+    digest_for(
+        db,
+        instance,
+        seat,
+        Subject::Prospective(token_hash, frontier),
+        check_budget,
+    )
+}
+
+/// Whose digest `digest_for` computes.
+#[derive(Clone, Copy)]
+enum Subject<'a> {
+    Seat,
+    Bound(&'a BindingId, u64),
+    Prospective(u64, i64),
+}
+
+fn digest_for(
+    db: &Connection,
+    instance: &str,
+    seat: &SeatId,
+    subject: Subject<'_>,
+    check_budget: &dyn Fn() -> Result<(), ApiError>,
+) -> Result<DigestRun, ApiError> {
     let seat_id = seat.as_str();
     let (decision_seq, episode, open): (i64, i64, i64) = db
         .query_row(
@@ -329,7 +400,24 @@ pub fn seat_digest(
     check_budget()?;
     let receipts = pending_receipts(db, seat_id, None)?;
     check_budget()?;
-    let warnings = seat_pending_warnings(db, seat_id, check_budget)?;
+    let warnings = match subject {
+        Subject::Bound(binding, _) => {
+            let frontier = binding_notice_frontier(db, binding.as_str())?;
+            seat_pending_warnings_above(db, seat_id, frontier, check_budget)?
+        }
+        Subject::Prospective(_, frontier) => {
+            seat_pending_warnings_above(db, seat_id, frontier, check_budget)?
+        }
+        Subject::Seat => seat_pending_warnings(db, seat_id, check_budget)?,
+    };
+    check_budget()?;
+    let mail = match subject {
+        Subject::Bound(binding, _) => {
+            Some(binding_mail(db, instance, seat_id, binding, decision_seq)?)
+        }
+        Subject::Prospective(..) => Some(PendingSet::default()),
+        Subject::Seat => None,
+    };
     check_budget()?;
     let receipt_class = class(&receipts)?;
     let (invitation_class, receipt_thread_steps) =
@@ -351,12 +439,24 @@ pub fn seat_digest(
             unavailability_episode: u64::try_from(episode)
                 .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative episode"))?,
             lazy: None,
+            mail: match &mail {
+                Some(mail) => pair(frontier_key(mail)?),
+                None => None,
+            },
+            binding: match subject {
+                Subject::Bound(_, hash) | Subject::Prospective(hash, _) => Some(hash),
+                Subject::Seat => None,
+            },
         },
         invitations: with_requirements(db, seat_id, invitation_class)?,
         receipts: receipt_class,
         warnings: class(&warnings)?,
         unavailability_open: open != 0,
         lazy: None,
+        mail: match &mail {
+            Some(mail) => Some(class(mail)?),
+            None => None,
+        },
         mod_channel_live: false,
     };
     Ok(DigestRun {
@@ -365,9 +465,116 @@ pub fn seat_digest(
         work_steps: invitations.work_steps
             + receipts.work_steps
             + warnings.work_steps
+            + mail.as_ref().map_or(0, |mail| mail.work_steps)
             + receipt_thread_steps,
         warnings,
     })
+}
+
+/// Ordinary rows of the seat's recipient history one binding-mail walk may probe (newest first)
+/// before it stops: unread mail older than that is not reported, so the read stays flat however
+/// much history the seat retains.
+const MAIL_VISIT: i64 = 4 * WINDOW_SQL;
+
+/// The binding's unread ordinary mail: messages the seat receives in its joined threads past this
+/// binding's own cursors (a missing cursor counts as 0), published in this instance up to the host
+/// decision sequence `through`. One `WINDOW` walk over the newest `MAIL_VISIT` recipient rows,
+/// newest first; the key is (publication decision sequence, recipient ordinal). Cursors are the
+/// binding's own, so one binding's display never clears another's unread mail.
+pub fn binding_mail(
+    db: &Connection,
+    instance: &str,
+    seat_id: &str,
+    binding: &BindingId,
+    through: i64,
+) -> Result<PendingSet, ApiError> {
+    use super::read_cursors::{RECEIVABLE_WHERE, UNREAD_EXTRA};
+    let window = rows(
+        db,
+        &format!(
+            "SELECT m.id,m.thread_id,sm.decision_seq,pr.ordinal,m.sequence FROM (SELECT ordinal,preparation_id,seat_id FROM prepared_recipients INDEXED BY prepared_recipients_seat_ordinal WHERE seat_id=?1 ORDER BY ordinal DESC LIMIT ?3) pr JOIN send_manifests sm ON sm.preparation_id=pr.preparation_id JOIN messages m ON m.id=sm.message_id WHERE {RECEIVABLE_WHERE} {UNREAD_EXTRA} AND sm.instance_id=?4 AND sm.decision_seq<=?5 ORDER BY pr.ordinal DESC LIMIT ?6"
+        ),
+        params![
+            seat_id,
+            binding.as_str(),
+            MAIL_VISIT,
+            instance,
+            through,
+            WINDOW_SQL
+        ],
+        |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, i64>(3)?,
+                r.get::<_, i64>(4)?,
+            ))
+        },
+    )?;
+    let mut gather = Gather::default();
+    gather.window(window.len());
+    // Catch-up hold (spec §7): ordinary messages above an active row's frontier are not pushed,
+    // and a released range takes the row's release key. Explicit reads never come through here.
+    let mut hold = catch_up::HoldCache::new(seat_id);
+    for (id, thread_id, decision, ordinal, sequence) in window {
+        if decision <= 0 || ordinal <= 0 {
+            return Err(api_error(
+                ErrorCode::StoreCorrupt,
+                "invalid mail publication key",
+            ));
+        }
+        gather.steps += 1;
+        let Some(key) = hold.attention_key(db, &thread_id, &id, sequence, (decision, ordinal))?
+        else {
+            continue;
+        };
+        gather.add(PendingItem { id, thread_id, key });
+    }
+    Ok(gather.finish())
+}
+
+/// The binding's published lazy rows unread past its own cursors (plus legacy pending rows for a
+/// top-level binding): one `WINDOW` walk, newest ordinal first; the key is (publication decision
+/// sequence, recipient ordinal), as in `pending_lazy`.
+pub fn binding_pending_lazy(
+    db: &Connection,
+    instance: &str,
+    binding: &BindingId,
+    through: i64,
+) -> Result<PendingSet, ApiError> {
+    let window =
+        super::lazy_delivery::binding_lazy_window(db, instance, binding, through, WINDOW_SQL)?;
+    let mut gather = Gather::default();
+    gather.window(window.len());
+    for row in window {
+        gather.add(PendingItem {
+            id: row.message,
+            thread_id: row.thread,
+            key: (row.decision_seq, row.ordinal),
+        });
+    }
+    Ok(gather.finish())
+}
+
+/// Add the binding's lazy class and the token's lazy key to a binding digest that asked for them.
+pub fn add_binding_lazy(
+    db: &Connection,
+    instance: &str,
+    binding: &BindingId,
+    digest: &mut AttentionDigest,
+) -> Result<(), ApiError> {
+    let through: i64 = db
+        .query_row(
+            "SELECT decision_seq FROM host_instances WHERE id=?1",
+            [instance],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    let lazy = binding_pending_lazy(db, instance, binding, through)?;
+    digest.token.lazy = frontier_key(&lazy)?.map(|k| (k.decision_seq, k.event_offset));
+    digest.lazy = Some(class(&lazy)?);
+    Ok(())
 }
 
 /// The seat's pending published lazy rows: one `WINDOW` walk of the pending
@@ -618,19 +825,46 @@ fn judged_warning(
     }))
 }
 
-/// The seat's current occupant's offered notice frontier: the projection
-/// ordinal of the last informational notice carried by a committed check-in
-/// offer to that exact occupant (binding generation and execution), else 0.
-/// A frontier recorded for another occupant (a predecessor) covers nothing.
-/// The seat holds one notice frontier, scoped to its latest open binding (a seat may hold
-/// several, ht-54r.3); per-binding frontiers arrive with the per-binding cursors (ht-54r.7).
-pub fn notice_frontier(db: &Connection, seat_id: &str) -> Result<i64, ApiError> {
+/// SQL for the id of the binding a seat-level reader follows (see [`seat_notice_binding`]); bind
+/// `?1` = the seat. Embed as a scalar subquery.
+pub const SEAT_NOTICE_BINDING_SQL: &str = "SELECT b.binding_id FROM occupant_bindings b WHERE b.seat_id=?1 AND b.ended_at IS NULL AND b.role='top_level' ORDER BY (b.liveness='connected') DESC, b.ordinal DESC LIMIT 1";
+
+/// The binding whose notice frontier a seat-level reader (wake, receipts, check-in counts, the
+/// mod channel) uses: the seat's newest open top-level binding, a connected one first. A seat
+/// holds several bindings (ht-54r.3) and each has its own frontier (`binding_notice_frontier`);
+/// the seat view follows the newest top-level session, never a subagent. The binding's own
+/// generation is informational (V29) and plays no part: a rebind ends every binding.
+pub fn seat_notice_binding(db: &Connection, seat_id: &str) -> Result<Option<String>, ApiError> {
+    db.query_row(SEAT_NOTICE_BINDING_SQL, [seat_id], |r| r.get(0))
+        .optional()
+        .map_err(store_error)
+}
+
+/// One binding's offered notice frontier: the projection ordinal of the last informational
+/// notice carried by a committed check-in offer to that exact binding, else 0. A subagent
+/// binding has no check-in of its own, so until it has a row it reads its parent's frontier
+/// (it never writes it). A frontier recorded for another binding covers nothing.
+pub fn binding_notice_frontier(db: &Connection, binding_id: &str) -> Result<i64, ApiError> {
     let frontier: Option<i64> = db
         .query_row(
-            "SELECT o.offered_ordinal FROM digest_notice_offer o JOIN seats s ON s.id=o.seat_id JOIN occupant_bindings b ON b.seat_id=s.id AND b.generation=s.generation AND b.ended_at IS NULL AND b.ordinal=(SELECT MAX(l.ordinal) FROM occupant_bindings l WHERE l.seat_id=s.id AND l.generation=s.generation AND l.ended_at IS NULL) WHERE o.seat_id=?1 AND o.binding_generation=s.generation AND o.execution_id=b.execution_id",
-            [seat_id],
+            "SELECT COALESCE((SELECT o.offered_ordinal FROM digest_notice_offer o WHERE o.binding_id=?1),(SELECT p.offered_ordinal FROM occupant_bindings b JOIN digest_notice_offer p ON p.binding_id=b.parent_binding WHERE b.binding_id=?1 AND b.role='subagent'))",
+            [binding_id],
             |r| r.get(0),
         )
+        .map_err(store_error)?;
+    Ok(frontier.unwrap_or(0))
+}
+
+/// The seat view of the notice frontier: that of `seat_notice_binding`, else 0.
+pub fn notice_frontier(db: &Connection, seat_id: &str) -> Result<i64, ApiError> {
+    // One cached statement: the materialization loop asks once per warning. A top-level binding
+    // has no parent to fall back to, so this is `binding_notice_frontier` without that branch.
+    let frontier: Option<i64> = db
+        .prepare_cached(&format!(
+            "SELECT o.offered_ordinal FROM digest_notice_offer o WHERE o.binding_id=({SEAT_NOTICE_BINDING_SQL})"
+        ))
+        .map_err(store_error)?
+        .query_row([seat_id], |r| r.get(0))
         .optional()
         .map_err(store_error)?;
     Ok(frontier.unwrap_or(0))
@@ -659,8 +893,12 @@ pub fn informational_notice_pending(
         )
         .optional()
         .map_err(store_error)?;
-    let frontier = notice_frontier(db, seat_id)?;
-    Ok(Some(ordinal.is_none_or(|ordinal| ordinal > frontier)))
+    // A notice not yet projected is pending whatever the frontier is: read the frontier only for
+    // a projected one.
+    let Some(ordinal) = ordinal else {
+        return Ok(Some(true));
+    };
+    Ok(Some(ordinal > notice_frontier(db, seat_id)?))
 }
 
 /// One seat-leading indexed probe of attributed notices above the exact
@@ -672,6 +910,28 @@ pub fn seat_has_pending_notices(db: &Connection, seat_id: &str) -> Result<bool, 
         "SELECT EXISTS(SELECT 1 FROM digest_programmatic_warnings INDEXED BY digest_programmatic_warnings_seat WHERE seat_id=?1 AND ordinal>?2)",
         params![seat_id,frontier], |r| r.get(0),
     ).map_err(store_error)
+}
+
+/// One probe of attributed notices above one binding's carried frontier.
+pub fn binding_has_pending_notices(db: &Connection, binding: &BindingId) -> Result<bool, ApiError> {
+    let seat: Option<String> = db
+        .query_row(
+            "SELECT seat_id FROM occupant_bindings WHERE binding_id=?1",
+            [binding.as_str()],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(store_error)?;
+    let Some(seat) = seat else {
+        return Ok(false);
+    };
+    let frontier = binding_notice_frontier(db, binding.as_str())?;
+    db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM digest_programmatic_warnings INDEXED BY digest_programmatic_warnings_seat WHERE seat_id=?1 AND ordinal>?2)",
+        params![seat, frontier],
+        |r| r.get(0),
+    )
+    .map_err(store_error)
 }
 
 /// Is any attributed notice above the current occupant's carried frontier
@@ -704,16 +964,36 @@ pub struct OfferedNotice {
 }
 
 /// The next page of informational notices not yet offered to the seat's
-/// current occupant: one indexed walk of at most `limit` rows above the
-/// occupant's frontier, oldest first by projection ordinal. Only a prefix of
-/// this page that a check-in actually carries may be settled.
+/// current top-level binding (`seat_notice_binding`): see `notice_offer_page_for`.
 pub fn notice_offer_page(
     db: &Connection,
     seat_id: &str,
     limit: usize,
 ) -> Result<Vec<OfferedNotice>, ApiError> {
-    const PAGE: &str = "SELECT w.ordinal,w.warning_id,w.thread_id,COALESCE(m.sequence,(SELECT sm.base_sequence+pw.warning_offset FROM prepared_unavailable_warnings pw JOIN send_manifests sm ON sm.preparation_id=pw.preparation_id WHERE pw.warning_id=w.warning_id)),w.event_seq FROM (SELECT ordinal,warning_id,thread_id,event_seq FROM digest_programmatic_warnings INDEXED BY digest_programmatic_warnings_seat WHERE seat_id=?1 AND ordinal>?2 ORDER BY ordinal LIMIT ?3) w LEFT JOIN messages m ON m.id=w.warning_id ORDER BY w.ordinal";
     let frontier = notice_frontier(db, seat_id)?;
+    notice_offer_page_above(db, seat_id, frontier, limit)
+}
+
+/// The next page of informational notices not yet offered to one binding: one indexed walk of at
+/// most `limit` rows above the binding's frontier, oldest first by projection ordinal. Only a
+/// prefix of this page that a check-in actually carries may be settled.
+pub fn notice_offer_page_for(
+    db: &Connection,
+    seat_id: &str,
+    binding: &BindingId,
+    limit: usize,
+) -> Result<Vec<OfferedNotice>, ApiError> {
+    let frontier = binding_notice_frontier(db, binding.as_str())?;
+    notice_offer_page_above(db, seat_id, frontier, limit)
+}
+
+fn notice_offer_page_above(
+    db: &Connection,
+    seat_id: &str,
+    frontier: i64,
+    limit: usize,
+) -> Result<Vec<OfferedNotice>, ApiError> {
+    const PAGE: &str = "SELECT w.ordinal,w.warning_id,w.thread_id,COALESCE(m.sequence,(SELECT sm.base_sequence+pw.warning_offset FROM prepared_unavailable_warnings pw JOIN send_manifests sm ON sm.preparation_id=pw.preparation_id WHERE pw.warning_id=w.warning_id)),w.event_seq FROM (SELECT ordinal,warning_id,thread_id,event_seq FROM digest_programmatic_warnings INDEXED BY digest_programmatic_warnings_seat WHERE seat_id=?1 AND ordinal>?2 ORDER BY ordinal LIMIT ?3) w LEFT JOIN messages m ON m.id=w.warning_id ORDER BY w.ordinal";
     let limit = i64::try_from(limit)
         .map_err(|_| api_error(ErrorCode::InvalidRequest, "invalid notice page limit"))?;
     let page = rows(db, PAGE, params![seat_id, frontier, limit], |r| {
@@ -742,47 +1022,43 @@ pub fn notice_offer_page(
 }
 
 /// Settle exactly the informational notices a committed check-in offer
-/// carried to the seat's occupant (`generation`, `execution`): advance that
-/// occupant's monotone frontier to the last carried notice's projection
-/// ordinal (wave-2 fix2 root decision (a)). `offered` must be the carried
-/// prefix of `notice_offer_page`, read in the same transaction. One frontier
-/// upsert: no projection row is deleted and nothing beyond the carried page
-/// is covered. A frontier left by another occupant is replaced, never
-/// inherited. Returns the rows written (0 when nothing was carried).
+/// carried to one binding: advance that binding's monotone frontier to the
+/// last carried notice's projection ordinal (wave-2 fix2 root decision (a)).
+/// `offered` must be the carried prefix of `notice_offer_page_for`, read in
+/// the same transaction. One frontier upsert: no projection row is deleted,
+/// nothing beyond the carried page is covered, and no other binding's
+/// frontier moves. Returns the rows written (0 when nothing was carried).
 pub fn settle_offered_notices(
     tx: &Connection,
     seat_id: &str,
-    generation: i64,
-    execution: &str,
+    binding: &BindingId,
     offered: &[OfferedNotice],
 ) -> Result<usize, ApiError> {
     let Some(last) = offered.last() else {
         return Ok(0);
     };
     tx.execute(
-        "INSERT INTO digest_notice_offer(seat_id,binding_generation,execution_id,offered_ordinal) VALUES (?1,?2,?3,?4) ON CONFLICT(seat_id) DO UPDATE SET offered_ordinal=CASE WHEN digest_notice_offer.binding_generation=excluded.binding_generation AND digest_notice_offer.execution_id=excluded.execution_id THEN MAX(digest_notice_offer.offered_ordinal,excluded.offered_ordinal) ELSE excluded.offered_ordinal END,binding_generation=excluded.binding_generation,execution_id=excluded.execution_id",
-        params![seat_id, generation, execution, last.ordinal],
+        "INSERT INTO digest_notice_offer(binding_id,seat_id,offered_ordinal) VALUES (?1,?2,?3) ON CONFLICT(binding_id) DO UPDATE SET offered_ordinal=MAX(digest_notice_offer.offered_ordinal,excluded.offered_ordinal)",
+        params![binding.as_str(), seat_id, last.ordinal],
     )
     .map_err(store_error)
 }
 
 /// Settle the notices a check-in offer carries (`carried`, the offer's
-/// `notices.items`) for the seat's current occupant (`generation`,
-/// `execution`), in the offering transaction. The carried notices must be
-/// exactly the oldest-first prefix of the occupant's unoffered page (one walk
-/// of `carried.len()` rows); anything else is refused, so an offer can never
-/// settle a notice it did not carry.
+/// `notices.items`) for the checking-in binding, in the offering transaction.
+/// The carried notices must be exactly the oldest-first prefix of the
+/// binding's unoffered page (one walk of `carried.len()` rows); anything else
+/// is refused, so an offer can never settle a notice it did not carry.
 pub fn settle_carried_notices(
     tx: &Connection,
     seat_id: &str,
-    generation: i64,
-    execution: &str,
+    binding: &BindingId,
     carried: &[WarningRef],
 ) -> Result<usize, ApiError> {
     if carried.is_empty() {
         return Ok(0);
     }
-    let page = notice_offer_page(tx, seat_id, carried.len())?;
+    let page = notice_offer_page_for(tx, seat_id, binding, carried.len())?;
     if page.len() != carried.len()
         || page
             .iter()
@@ -794,7 +1070,7 @@ pub fn settle_carried_notices(
             "offered notices differ from the unoffered notice page",
         ));
     }
-    settle_offered_notices(tx, seat_id, generation, execution, &page)
+    settle_offered_notices(tx, seat_id, binding, &page)
 }
 
 /// The seat's pending warnings still in the projection backlog, read once
@@ -897,6 +1173,19 @@ pub fn projected_pending_warnings(
     thread: Option<&str>,
     check_budget: &dyn Fn() -> Result<(), ApiError>,
 ) -> Result<PendingSet, ApiError> {
+    let frontier = notice_frontier(db, seat_id)?;
+    projected_pending_warnings_above(db, seat_id, thread, frontier, check_budget)
+}
+
+/// `projected_pending_warnings` with informational notices judged above an explicit notice
+/// frontier (a binding's own, see `binding_notice_frontier`).
+pub fn projected_pending_warnings_above(
+    db: &Connection,
+    seat_id: &str,
+    thread: Option<&str>,
+    frontier: i64,
+    check_budget: &dyn Fn() -> Result<(), ApiError>,
+) -> Result<PendingSet, ApiError> {
     const PROGRAMMATIC: &str = "SELECT warning_id,thread_id,event_seq,event_offset FROM digest_programmatic_warnings INDEXED BY digest_programmatic_warnings_seat WHERE seat_id=?1 AND ordinal>?4 ORDER BY ordinal DESC LIMIT ?2";
     const PROGRAMMATIC_THREAD: &str = "SELECT warning_id,thread_id,event_seq,event_offset FROM digest_programmatic_warnings INDEXED BY digest_programmatic_warnings_thread WHERE seat_id=?1 AND thread_id=?3 AND ordinal>?4 ORDER BY ordinal DESC LIMIT ?2";
     const RECIPIENT: &str = "SELECT warning_id FROM digest_open_warning_recipients INDEXED BY digest_open_warning_recipients_seat WHERE seat_id=?1 AND source=?4 ORDER BY source_ordinal DESC LIMIT ?2";
@@ -912,7 +1201,6 @@ pub fn projected_pending_warnings(
             r.get::<_, i64>(3)?,
         ))
     };
-    let frontier = notice_frontier(db, seat_id)?;
     let programmatic = match thread {
         None => rows(
             db,
@@ -985,7 +1273,19 @@ pub fn pending_warnings(
     backlog: &PendingSet,
     check_budget: &dyn Fn() -> Result<(), ApiError>,
 ) -> Result<PendingSet, ApiError> {
-    let projected = projected_pending_warnings(db, seat_id, thread, check_budget)?;
+    let frontier = notice_frontier(db, seat_id)?;
+    pending_warnings_above(db, seat_id, thread, frontier, backlog, check_budget)
+}
+
+fn pending_warnings_above(
+    db: &Connection,
+    seat_id: &str,
+    thread: Option<&str>,
+    frontier: i64,
+    backlog: &PendingSet,
+    check_budget: &dyn Fn() -> Result<(), ApiError>,
+) -> Result<PendingSet, ApiError> {
+    let projected = projected_pending_warnings_above(db, seat_id, thread, frontier, check_budget)?;
     let mut gather = Gather {
         steps: projected.work_steps,
         ..Gather::default()
@@ -1004,8 +1304,19 @@ pub fn seat_pending_warnings(
     seat_id: &str,
     check_budget: &dyn Fn() -> Result<(), ApiError>,
 ) -> Result<PendingSet, ApiError> {
+    let frontier = notice_frontier(db, seat_id)?;
+    seat_pending_warnings_above(db, seat_id, frontier, check_budget)
+}
+
+/// `seat_pending_warnings` with informational notices judged above an explicit notice frontier.
+pub fn seat_pending_warnings_above(
+    db: &Connection,
+    seat_id: &str,
+    frontier: i64,
+    check_budget: &dyn Fn() -> Result<(), ApiError>,
+) -> Result<PendingSet, ApiError> {
     let backlog = warning_backlog(db, seat_id, check_budget)?;
-    let mut set = pending_warnings(db, seat_id, None, &backlog, check_budget)?;
+    let mut set = pending_warnings_above(db, seat_id, None, frontier, &backlog, check_budget)?;
     set.work_steps += backlog.work_steps;
     Ok(set)
 }

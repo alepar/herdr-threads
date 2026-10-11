@@ -1276,6 +1276,7 @@ fn parse_shape(value: &Value, event_id: &str) -> Result<LifecycleEvent, ContextE
         role,
         event_id: event_id.into(),
         capability: Capability::SourceSupported,
+        agent_id: None,
     })
 }
 
