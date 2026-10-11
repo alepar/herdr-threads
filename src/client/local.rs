@@ -1,7 +1,7 @@
 //! Thin local Unix socket client. A request is sent once; transport never retries.
 
 use crate::{
-    daemon::transport::{MAX_FRAME_BYTES, encode_json, read_frame},
+    daemon::transport::{MAX_FRAME_BYTES, encode_json, read_frame_with_limit},
     ports::LocalClient,
     protocol::{
         capabilities::Capabilities,
@@ -188,7 +188,13 @@ impl LocalSocketClient {
             )
         })?;
         let deadline = tokio::time::Instant::now() + remaining;
-        let read = read_frame(&mut socket);
+        let automatic = crate::protocol::wire::automatic_response_request(&request.command);
+        let response_limit = if automatic {
+            crate::protocol::wire::MAX_AUTOMATIC_RESPONSE_FRAME_BYTES - 4
+        } else {
+            MAX_FRAME_BYTES
+        };
+        let read = read_frame_with_limit(&mut socket, response_limit);
         tokio::pin!(read);
         let response_bytes = tokio::select! {
             result = &mut read => result.map_err(|_| Self::error(ErrorCode::UnknownOutcome, "unknown outcome after request submission"))?,
@@ -201,6 +207,32 @@ impl LocalSocketClient {
                 "unknown outcome after request submission",
             )
         })?;
+        if automatic
+            && response.result.is_ok()
+            && !crate::protocol::wire::automatic_response_result(&response.result)
+            || response_bytes.len() > MAX_FRAME_BYTES
+                && !crate::protocol::wire::automatic_response_result(&response.result)
+        {
+            return Err(Self::error(
+                ErrorCode::UnknownOutcome,
+                "unknown outcome: response family mismatch",
+            ));
+        }
+        if let Command::AutomaticBootstrap(expected) = &request.command {
+            let actual = match &response.result {
+                Ok(CommandResult::AutomaticBootstrap(result)) => Some(&result.identity),
+                Ok(CommandResult::AutomaticBootstrapReserved(result)) => {
+                    Some(&result.status.identity)
+                }
+                _ => None,
+            };
+            if actual.is_some_and(|actual| actual != &expected.identity) {
+                return Err(Self::error(
+                    ErrorCode::UnknownOutcome,
+                    "unknown outcome: automatic original mismatch",
+                ));
+            }
+        }
         if let Err(error) = &response.result
             && error.code == ErrorCode::DaemonBootChanged
             && response.correlates_to(&request, None)

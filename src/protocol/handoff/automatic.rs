@@ -326,14 +326,89 @@ impl AutomaticDeliveryMutation {
         };
         request
     }
+    /// Prove every ordinary child continuation fits the unchanged wire cap.
+    /// The escaped identifiers are sizing witnesses, never retained selections.
+    pub(crate) fn validate_admission(&self) -> Result<(), &'static str> {
+        use crate::protocol::wire::{MAX_WIRE_FRAME_BYTES, PROTOCOL_VERSION, WireRequest};
+        if self.plan().payload.policy.is_none() {
+            return Ok(());
+        }
+        self.validate()?;
+        let thread = ThreadId::new("\\".repeat(128));
+        for request in [
+            self.clone(),
+            self.begin(),
+            self.ensure(),
+            self.send(thread.clone()),
+            self.complete(),
+        ] {
+            let wire = WireRequest {
+                version: PROTOCOL_VERSION,
+                request_id: "\\".repeat(128),
+                expected_instance: "f".repeat(36),
+                expected_boot: Some("f".repeat(36)),
+                output: Some(crate::protocol::output::OutputSpec::default()),
+                command: crate::protocol::commands::Command::AutomaticHandoffDelivery(Box::new(
+                    request,
+                )),
+            };
+            if serde_json::to_vec(&wire)
+                .map_err(|_| "automatic request encoding")?
+                .len()
+                + 4
+                > MAX_WIRE_FRAME_BYTES
+            {
+                return Err("automatic future request exceeds 1 MiB");
+            }
+        }
+        self.admission_summaries()?;
+        Ok(())
+    }
+    pub(crate) fn admission_summaries(&self) -> Result<Vec<serde_json::Value>, &'static str> {
+        let thread = ThreadId::new("\\".repeat(128));
+        let mut summaries = Vec::new();
+        if let AutomaticOriginal::Handoff(plan) = &self.original {
+            let template = plan
+                .startup_input
+                .as_ref()
+                .ok_or("modern automatic origin lacks startup template")?;
+            for prompt in crate::cli::handoff::bootstrap_v1::retained_prompts(
+                thread.as_str(),
+                &plan.context,
+                &self.claim.instance,
+            ) {
+                let (argv, _) = template
+                    .apply(&plan.launch.argv, &prompt)
+                    .map_err(|_| "automatic future startup input exceeds bounds")?;
+                let argv = crate::harness::launch::compose_native_argv(
+                    plan.launch.harness.into(),
+                    argv,
+                    vec![],
+                )
+                .map_err(|_| "automatic future native argv exceeds bounds")?;
+                crate::ports::NativeLaunchRequest::validate_argv(&argv)?;
+                let report = serde_json::json!({"outcome":"started","pane":"\\".repeat(128),"seat":plan.delivery.recipient,"harness":plan.launch.harness.as_str(),"argv":argv});
+                summaries.push(super::automatic_launch_summary(&report, &"f".repeat(64))?);
+            }
+        }
+        if summaries.is_empty() {
+            summaries.push(serde_json::Value::Null);
+        }
+        Ok(summaries)
+    }
     /// The canonical representation stores the entire normalized original,
     /// including its frozen caller and outer launch. Escaping counts toward the bound.
     pub(crate) fn canonical_original_bytes(&self) -> Result<Vec<u8>, &'static str> {
         let mut normalized = self.clone();
         normalized.action = AutomaticDeliveryAction::Prepare;
         let bytes = serde_json::to_vec(&normalized).map_err(|_| "invalid automatic original")?;
-        if bytes.len() > MAX_AUTOMATIC_ORIGINAL_BYTES {
-            return Err("automatic original exceeds 512 KiB storage bound");
+        let limit = if self.plan().payload.policy.is_some() {
+            MAX_AUTOMATIC_ORIGINAL_BYTES
+        } else {
+            128 * 1024
+        };
+        if bytes.len() > limit {
+            return Err("automatic original exceeds canonical storage bound");
         }
         Ok(bytes)
     }
@@ -386,6 +461,10 @@ impl AutomaticDeliveryMutation {
 pub fn automatic_selected_thread(result: &CommandResult) -> Result<&ThreadId, &'static str> {
     match result {
         CommandResult::ThreadCreated(thread) => Ok(thread),
+        CommandResult::DirectThreadEnsured(actual) => {
+            actual.validate()?;
+            Ok(&actual.thread)
+        }
         CommandResult::Handoff(status) => status
             .thread
             .as_ref()

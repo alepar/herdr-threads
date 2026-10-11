@@ -4222,7 +4222,17 @@ impl LocalClient for AutomaticPeerClient {
                             *lost = None;
                             return Err(ApiError::unknown_outcome("Ensure committed; reply lost"));
                         }
-                        Ok(CommandResult::ThreadCreated(ThreadId::new("t-pair")))
+                        if let Some(policy) = &q.creation_policy {
+                            use crate::protocol::results::{
+                                DirectThreadEnsureOutcome, DirectThreadEnsured,
+                                DirectThreadInvitation,
+                            };
+                            Ok(CommandResult::DirectThreadEnsured(DirectThreadEnsured {thread:ThreadId::new("t-pair"),recipient:SeatId::new("recipient"),outcome:DirectThreadEnsureOutcome::Created,
+                                invitation:Some(DirectThreadInvitation {id:crate::protocol::ids::InvitationId::new("iv-pair"),episode:1,confirmation:policy.confirmation,
+                                    effective_deadline_at:if policy.confirmation==crate::protocol::commands::InvitationConfirmation::RequireAck {Some(UtcMillis(11001))} else {None},inviter:Some(q.claim.seat.clone())})}))
+                        } else {
+                            Ok(CommandResult::ThreadCreated(ThreadId::new("t-pair")))
+                        }
                     }
                     AutomaticDeliveryAction::Send(q) => {
                         assert_eq!(q.operation, keys.send);

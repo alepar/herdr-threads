@@ -130,12 +130,22 @@ pub(crate) fn check_namespace(p: &Plan, context: &ContinuationContext) -> io::Re
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Progress {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    selection: Option<crate::protocol::results::DirectThreadEnsured>,
     thread: Option<ThreadId>,
     send: Option<SendMessage>,
     message: Option<MessageId>,
 }
 impl Progress {
     fn validate(&self, p: &Plan, claim: &CallerClaim) -> io::Result<()> {
+        if self.selection.as_ref().is_some_and(|actual| {
+            actual.validate().is_err()
+                || Some(&actual.thread) != self.thread.as_ref()
+                || actual.recipient != p.request.target
+                || p.creation_policy.is_none()
+        }) {
+            return Err(invalid("contradictory direct selection"));
+        }
         match (&self.thread, &self.send) {
             (None, None) if self.message.is_none() => Ok(()),
             (Some(t), Some(s)) if *s == p.send(claim, t.clone()) => Ok(()),
@@ -380,9 +390,27 @@ pub(crate) fn retry<C: LocalClient + ?Sized, W: Write>(
             }),
             &super::cooperative_budget(clock),
         )?;
-        let CommandResult::ThreadCreated(thread) = ensured else {
-            return Err(super::invalid_request("direct Ensure returned no thread"));
+        let (thread, selection) = match ensured {
+            CommandResult::ThreadCreated(thread) if p.creation_policy.is_none() => (thread, None),
+            CommandResult::DirectThreadEnsured(actual)
+                if p.creation_policy.is_some() && actual.recipient == p.request.target =>
+            {
+                (actual.thread.clone(), Some(actual))
+            }
+            _ => {
+                return Err(super::invalid_request(
+                    "direct Ensure returned no exact selection",
+                ));
+            }
         };
+        if progress
+            .selection
+            .as_ref()
+            .is_some_and(|saved| Some(saved) != selection.as_ref())
+        {
+            return Err(super::invalid_request("direct Ensure selection changed"));
+        }
+        progress.selection = selection;
         if progress
             .thread
             .as_ref()
@@ -416,14 +444,28 @@ pub(crate) fn retry<C: LocalClient + ?Sized, W: Write>(
         save(journal, reference, &progress)?;
         let bytes = match output.format {
             OutputFormat::Json => {
-                let mut b =
-                    serde_json::to_vec(&serde_json::json!({"thread":thread,"message":message}))
-                        .map_err(io::Error::other)?;
+                let mut report = serde_json::json!({"thread":thread,"message":message});
+                if let Some(selection) = &progress.selection {
+                    report["selection"] = selection.presentation();
+                }
+                let mut b = serde_json::to_vec(&report).map_err(io::Error::other)?;
                 b.push(b'\n');
                 b
             }
             OutputFormat::Text => {
-                format!("thread {} message {}\n", thread.as_str(), message.as_str()).into_bytes()
+                if let Some(selection) = &progress.selection {
+                    format!(
+                        "thread {} message {} selection {}\n",
+                        thread.as_str(),
+                        message.as_str(),
+                        serde_json::to_string(&selection.presentation())
+                            .map_err(io::Error::other)?
+                    )
+                    .into_bytes()
+                } else {
+                    format!("thread {} message {}\n", thread.as_str(), message.as_str())
+                        .into_bytes()
+                }
             }
         };
         if bytes.len() > crate::protocol::pagination::MAX_PAGE_BYTES as usize {

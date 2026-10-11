@@ -2369,3 +2369,61 @@ fn automatic_canonical_selected_runtime_keeps_active_unlinked_direct_send() {
         CommandResult::MessageSent(_)
     ));
 }
+
+#[test]
+fn automatic_canonical_first_begin_admits_future_startup_before_any_effect() {
+    use herdr_threads::{
+        cli::launch::LaunchRequest,
+        harness::{adapter::StartupInputTemplate, context::Harness as ContextHarness},
+        protocol::{handoff::HandoffPolicy, ids::HostTargetId, output::ContinuationContext},
+    };
+    let f = Fixture::new();
+    let request = automatic_request(&f);
+    let mut delivery = request.plan().clone();
+    delivery.payload.policy = Some(HandoffPolicy {
+        deadline_millis: None,
+        invitation_confirmation: herdr_threads::protocol::commands::InvitationConfirmation::Lazy,
+        invite_deadline_millis: None,
+    });
+    let mut template = StartupInputTemplate::positional(0);
+    template.max_arg_bytes = 1;
+    let original = AutomaticOriginal::Handoff(Box::new(AutomaticHandoffPlan {
+        version: 2,
+        delivery,
+        launch: LaunchRequest {
+            target: HostTargetId::new("peer-pane"),
+            harness: ContextHarness::Codex,
+            harness_binary: None,
+            argv: vec![],
+            name: None,
+            pane_label: None,
+        },
+        context: ContinuationContext {
+            state_dir: Some("/state".into()),
+            host: Some("/host.sock".into()),
+        },
+        startup_input: Some(template),
+    }));
+    let request = AutomaticDeliveryMutation::new(request.scope, request.claim, original).unwrap();
+    let counts = || {
+        [
+            "operations",
+            "channel_handoff_fences",
+            "automatic_handoff_companions",
+            "direct_threads",
+            "invitations",
+        ]
+        .map(|table| {
+            f.db.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .unwrap()
+        })
+    };
+    let before = counts();
+    assert_eq!(
+        automatic_call(&f, request.begin()).unwrap_err().code,
+        herdr_threads::protocol::results::ErrorCode::InvalidRequest
+    );
+    assert_eq!(counts(), before);
+}

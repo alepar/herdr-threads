@@ -26,8 +26,13 @@ always requires a separate message ACK, with `--deadline SECONDS` or the configu
 default, starting at send time even if the recipient never registers or joins. Each missed
 requested deadline records a notification for the original sender. Explicit policy and durations
 freeze with the handoff; omitted numeric defaults resolve once when each canonical child is
-created. Retry preserves those original decisions. Hook readiness is diagnostic; native safety
+created. Automatic Ensure reports whether it created a pair, reused a pending invitation or
+found a joined recipient, together with the actual retained policy. A different requested
+policy does not replace an existing invitation. Retry preserves those original decisions. Hook readiness is diagnostic; native safety
 checks and harness approval requirements still apply.
+Modern automatic handoffs retain a bounded canonical launch summary. Exact full launch diagnostics
+are optional local artifacts; missing diagnostics never trigger another launch. Aggregate metadata
+and future request sizes are checked before effects, so independent maximum-size inputs may be refused.
 
 ## Try it yourself
 

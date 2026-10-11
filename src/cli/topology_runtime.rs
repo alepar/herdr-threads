@@ -322,6 +322,9 @@ pub(crate) fn try_run_automatic_new_with_ports(
             clock,
         },
     )?;
+    identity
+        .validate_local_admission(journal.root())
+        .map_err(super::invalid_request)?;
     let witness = preflight(&identity)?;
     let context = HostCallContext {
         budget: super::cooperative_budget(clock),

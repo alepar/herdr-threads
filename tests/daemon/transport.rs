@@ -3499,3 +3499,306 @@ async fn local_client_sends_expected_boot_from_descriptor() {
         std::fs::remove_file(path).unwrap();
     }
 }
+
+fn maximum_automatic_recovery_result(
+    instance: &str,
+) -> crate::protocol::handoff::AutomaticBootstrapResult {
+    use crate::protocol::handoff::*;
+    use crate::protocol::ids::*;
+    let old = topology_contract_tests::payload();
+    let mut claim = topology_contract_tests::claim();
+    claim.instance = instance.into();
+    let mut ns = old.handoff.namespace.clone();
+    ns.instance = instance.into();
+    let startup_input =
+        crate::harness::launch::bootstrap_v2_startup_input(old.launch.harness, &old.launch.argv)
+            .unwrap();
+    let id = AutomaticBootstrapIdentity::new(
+        crate::cli::journal::IntentScope::Cooperative {
+            instance: instance.into(),
+            seat: claim.seat.clone(),
+        },
+        claim,
+        AutomaticBootstrapPlan {
+            version: 2,
+            payload: AutomaticBootstrapPayload {
+                handoff: AutomaticHandoffPayload::new(
+                    ns,
+                    OperationId::new("large-child"),
+                    "\0".repeat(65536),
+                )
+                .unwrap()
+                .with_policy(Some(crate::protocol::handoff::HandoffPolicy {
+                    deadline_millis: None,
+                    invitation_confirmation:
+                        crate::protocol::commands::InvitationConfirmation::Lazy,
+                    invite_deadline_millis: None,
+                }))
+                .unwrap(),
+                keys: AutomaticBootstrapKeys::new(OperationId::new("large-parent")),
+                workspace: old.workspace,
+                cwd: old.cwd,
+                label: old.label,
+                focus: false,
+                env: Default::default(),
+                launch: old.launch,
+                startup_input: Some(startup_input),
+            },
+        },
+    )
+    .unwrap();
+    id.validate_admission().unwrap();
+    let created = topology_contract_tests::created();
+    let attachment = AutomaticBootstrapAttachment::derive(
+        &id,
+        BootstrapAttempt::first(),
+        created.clone(),
+        SeatId::new("recipient"),
+    )
+    .unwrap();
+    AutomaticBootstrapResult {
+        identity: id,
+        state: BootstrapState::Cancelled,
+        attempt: BootstrapAttempt::first(),
+        attempt_state: BootstrapAttemptState::Created,
+        administrative_revision: 1,
+        creation: Some(created),
+        thread: None,
+        completed: None,
+        recovery: Some(AutomaticBootstrapRecoveryResult {
+            operation: OperationId::new("large-recovery"),
+            attempt: BootstrapAttempt::first(),
+            inspection: BootstrapRecoveryInspection {
+                version: 1,
+                digest: "a".repeat(64),
+            },
+            disposition: AutomaticBootstrapRecoveryDisposition::Cancelled {
+                quiescence: BootstrapQuiescenceAssertion::InspectedQuiescence,
+                reason: format!("x{}", "\u{1}".repeat(4095)),
+                attached_child: Some(Box::new(attachment.child.clone())),
+            },
+            operator_uid: 501,
+            operator_provenance: "operator:local-user:501".into(),
+            state: BootstrapState::Cancelled,
+            administrative_revision: 1,
+        }),
+        attachment: Some(attachment),
+    }
+}
+struct AutomaticLargeService(crate::protocol::handoff::AutomaticBootstrapResult);
+impl LocalService for AutomaticLargeService {
+    crate::unserved_local_service_routes!(
+        service_control,
+        audit_service_disconnect,
+        service_operation,
+        handle_with_output
+    );
+    fn handle(
+        &self,
+        _: Command,
+        _: PeerIdentity,
+        _: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        Ok(CommandResult::AutomaticBootstrap(Box::new(self.0.clone())))
+    }
+}
+#[tokio::test]
+async fn automatic_recovery_response_larger_than_one_mib_survives_actual_local_client_transport() {
+    use crate::protocol::handoff::{AutomaticBootstrapAction, AutomaticBootstrapMutation};
+    let (listener, path, root, paths) = guarded_listener();
+    let instance = instance_id(&paths);
+    let result = maximum_automatic_recovery_result(&instance.to_string());
+    let command = Command::AutomaticBootstrap(Box::new(AutomaticBootstrapMutation {
+        identity: result.identity.clone(),
+        action: AutomaticBootstrapAction::Status,
+    }));
+    let uid = UnixStream::pair().unwrap().0.peer_cred().unwrap().uid();
+    let shutdown = Cancellation::default();
+    let server = tokio::spawn(serve(
+        listener,
+        instance,
+        Arc::new(AutomaticLargeService(result.clone())),
+        Arc::new(TestClock),
+        uid,
+        shutdown.clone(),
+    ));
+    let clock = Arc::new(TestClock);
+    let client = crate::client::local::LocalSocketClient::new(path.clone(), clock, instance, None);
+    let reply = client
+        .call_async(
+            command,
+            &CallBudget {
+                deadline: crate::protocol::time::MonoInstant(10_000),
+                cancellation: Cancellation::default(),
+            },
+        )
+        .await;
+    shutdown.cancel();
+    let _ = server.await.unwrap().unwrap();
+    std::fs::remove_file(path).unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+    assert_eq!(
+        reply.unwrap(),
+        CommandResult::AutomaticBootstrap(Box::new(result))
+    );
+}
+
+#[tokio::test]
+async fn automatic_response_embedded_identity_must_match_exact_request() {
+    use crate::protocol::handoff::{AutomaticBootstrapAction, AutomaticBootstrapMutation};
+    let (listener, path, root, paths) = guarded_listener();
+    let instance = instance_id(&paths);
+    let result = maximum_automatic_recovery_result(&instance.to_string());
+    let mut requested = result.identity.clone();
+    requested.claim.execution =
+        crate::protocol::ids::ExecutionId::new("00000000-0000-4000-8000-000000000099");
+    requested.digest = requested.semantic_digest().unwrap();
+    requested.validate().unwrap();
+    let command = Command::AutomaticBootstrap(Box::new(AutomaticBootstrapMutation {
+        identity: requested,
+        action: AutomaticBootstrapAction::Status,
+    }));
+    let uid = UnixStream::pair().unwrap().0.peer_cred().unwrap().uid();
+    let shutdown = Cancellation::default();
+    let server = tokio::spawn(serve(
+        listener,
+        instance,
+        Arc::new(AutomaticLargeService(result)),
+        Arc::new(TestClock),
+        uid,
+        shutdown.clone(),
+    ));
+    let client = crate::client::local::LocalSocketClient::new(
+        path.clone(),
+        Arc::new(TestClock),
+        instance,
+        None,
+    );
+    let reply = client
+        .call_async(
+            command,
+            &CallBudget {
+                deadline: crate::protocol::time::MonoInstant(10_000),
+                cancellation: Cancellation::default(),
+            },
+        )
+        .await;
+    shutdown.cancel();
+    let _ = server.await.unwrap().unwrap();
+    std::fs::remove_file(path).unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+    assert!(
+        reply.is_err_and(|e| e.code == ErrorCode::UnknownOutcome),
+        "different embedded original was accepted"
+    );
+}
+
+#[test]
+fn unscoped_ordinary_encoder_keeps_one_mib_even_for_automatic_result() {
+    let response = crate::protocol::wire::WireResponse {
+        version: crate::protocol::wire::PROTOCOL_VERSION,
+        request_id: "request".into(),
+        instance: uuid::Uuid::from_u128(1).to_string(),
+        daemon_boot: uuid::Uuid::from_u128(2).to_string(),
+        result: Ok(CommandResult::AutomaticBootstrap(Box::new(
+            maximum_automatic_recovery_result(&uuid::Uuid::from_u128(1).to_string()),
+        ))),
+    };
+    assert_eq!(
+        crate::protocol::wire::encode_wire_response(&response)
+            .unwrap_err()
+            .code,
+        ErrorCode::InvalidBudget
+    );
+}
+#[tokio::test]
+async fn automatic_response_overlimit_length_refuses_before_body_read() {
+    struct PrefixOnly {
+        prefix: [u8; 4],
+        position: usize,
+    }
+    impl tokio::io::AsyncRead for PrefixOnly {
+        fn poll_read(
+            mut self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            buffer: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<io::Result<()>> {
+            assert!(
+                self.position < 4,
+                "oversized length triggered a body read/allocation"
+            );
+            let end = (self.position + buffer.remaining()).min(4);
+            buffer.put_slice(&self.prefix[self.position..end]);
+            self.position = end;
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+    let limit = crate::protocol::wire::MAX_AUTOMATIC_RESPONSE_FRAME_BYTES - 4;
+    let mut reader = PrefixOnly {
+        prefix: ((limit + 1) as u32).to_be_bytes(),
+        position: 0,
+    };
+    let error = read_frame_with_limit(&mut reader, limit).await.unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    assert_eq!(reader.position, 4);
+}
+struct UnexpectedAutomaticService;
+impl LocalService for UnexpectedAutomaticService {
+    crate::unserved_local_service_routes!(
+        service_control,
+        audit_service_disconnect,
+        service_operation,
+        handle_with_output
+    );
+    fn handle(
+        &self,
+        _: Command,
+        _: PeerIdentity,
+        _: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        Ok(CommandResult::MessageSent(
+            crate::protocol::ids::MessageId::new("unrelated"),
+        ))
+    }
+}
+#[tokio::test]
+async fn automatic_known_request_rejects_unrelated_success_result_family() {
+    use crate::protocol::handoff::{AutomaticBootstrapAction, AutomaticBootstrapMutation};
+    let (listener, path, root, paths) = guarded_listener();
+    let instance = instance_id(&paths);
+    let identity = maximum_automatic_recovery_result(&instance.to_string()).identity;
+    let command = Command::AutomaticBootstrap(Box::new(AutomaticBootstrapMutation {
+        identity,
+        action: AutomaticBootstrapAction::Status,
+    }));
+    let uid = UnixStream::pair().unwrap().0.peer_cred().unwrap().uid();
+    let shutdown = Cancellation::default();
+    let server = tokio::spawn(serve(
+        listener,
+        instance,
+        Arc::new(UnexpectedAutomaticService),
+        Arc::new(TestClock),
+        uid,
+        shutdown.clone(),
+    ));
+    let client = crate::client::local::LocalSocketClient::new(
+        path.clone(),
+        Arc::new(TestClock),
+        instance,
+        None,
+    );
+    let reply = client
+        .call_async(
+            command,
+            &CallBudget {
+                deadline: crate::protocol::time::MonoInstant(10000),
+                cancellation: Default::default(),
+            },
+        )
+        .await;
+    shutdown.cancel();
+    let _ = server.await.unwrap().unwrap();
+    std::fs::remove_file(path).unwrap();
+    std::fs::remove_dir_all(root).unwrap();
+    assert!(reply.is_err_and(|e| e.code == ErrorCode::UnknownOutcome));
+}

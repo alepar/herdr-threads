@@ -707,6 +707,7 @@ fn consistently_edited_selected_thread_is_refused_at_canonical_ensure() {
         serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     progress["thread"] = "edited-thread".into();
     progress["send"]["thread"] = "edited-thread".into();
+    progress["selection"]["thread"] = "edited-thread".into();
     std::fs::write(&path, serde_json::to_vec(&progress).unwrap()).unwrap();
     let before = [
         f.count("messages"),
@@ -1017,4 +1018,262 @@ fn modern_direct_send_creates_lazy_pending_invitation_without_invitation_wake() 
         .unwrap(),
         0
     );
+}
+
+fn ensure_command(
+    human: bool,
+    policy: Option<herdr_threads::protocol::commands::EnsureCreationPolicy>,
+    operation: &str,
+) -> Command {
+    use herdr_threads::protocol::{
+        authority::{CallerClaim, CallerRole, Harness},
+        commands::EnsureDirectThread,
+        ids::*,
+    };
+    Command::EnsureDirectThread(EnsureDirectThread {
+        creation_policy: policy,
+        recipient: SeatId::new("seat-b"),
+        operation: OperationId::new(operation),
+        claim: CallerClaim {
+            instance: uuid::Uuid::from_u128(1).to_string(),
+            seat: SeatId::new("seat-a"),
+            binding_generation: 1,
+            role: CallerRole::TopLevel,
+            harness: if human {
+                Harness::Human
+            } else {
+                Harness::Codex
+            },
+            native_session: NativeSessionId::new("session"),
+            execution: ExecutionId::new("00000000-0000-4000-8000-000000000002"),
+            target: HostTargetId::new("seat-a"),
+        },
+    })
+}
+fn initial_policy(timed: bool) -> herdr_threads::protocol::commands::EnsureCreationPolicy {
+    use herdr_threads::protocol::commands::{EnsureCreationPolicy, InvitationConfirmation};
+    EnsureCreationPolicy {
+        confirmation: if timed {
+            InvitationConfirmation::RequireAck
+        } else {
+            InvitationConfirmation::Lazy
+        },
+        deadline_millis: if timed { Some(11000) } else { None },
+    }
+}
+fn ensure_call(f: &Fixture, command: Command) -> Result<CommandResult, ApiError> {
+    f.client.call(
+        command,
+        &CallBudget {
+            deadline: herdr_threads::protocol::time::MonoInstant(u64::MAX),
+            cancellation: Default::default(),
+        },
+    )
+}
+#[test]
+fn human_initial_ensure_require_ack_refuses_before_pair_invitation_or_obligation_effects() {
+    let f = Fixture::new(true);
+    let obligations = f.count("seat_availability");
+    let operations = f.count("operations");
+    let result = ensure_call(
+        &f,
+        ensure_command(true, Some(initial_policy(true)), "human-timed"),
+    );
+    assert!(
+        result
+            .is_err_and(|e| e.code == herdr_threads::protocol::results::ErrorCode::InvalidRequest),
+        "Human issuer gained a new timed invitation mode"
+    );
+    assert_eq!(f.count("direct_threads"), 0);
+    assert_eq!(f.count("invitations"), 0);
+    assert_eq!(f.count("seat_availability"), obligations);
+    assert_eq!(f.count("operations"), operations);
+}
+#[test]
+fn explicit_initial_ensure_policy_applies_once_and_existing_episode_is_immutable() {
+    for timed in [false, true] {
+        let f = Fixture::new(false);
+        let first = ensure_call(
+            &f,
+            ensure_command(false, Some(initial_policy(timed)), "first-policy"),
+        )
+        .unwrap();
+        let row: (Option<String>,i64,i64,i64,Option<String>)=f.db.query_row("SELECT confirmation,frozen_duration_ms,created_at,deadline_at,inviter_seat_id FROM invitations",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).unwrap();
+        assert_eq!(
+            row.0.as_deref(),
+            Some(if timed { "require_ack" } else { "lazy" })
+        );
+        assert_eq!(row.4.as_deref(), Some("seat-a"));
+        if timed {
+            assert_eq!(row.1, 11000);
+            assert_eq!(row.3 - row.2, 11000);
+        }
+        let second = ensure_call(
+            &f,
+            ensure_command(false, Some(initial_policy(!timed)), "second-policy"),
+        )
+        .unwrap();
+        assert_eq!(ensured_thread(&first), ensured_thread(&second));
+        let after: (Option<String>,i64,i64,i64,Option<String>)=f.db.query_row("SELECT confirmation,frozen_duration_ms,created_at,deadline_at,inviter_seat_id FROM invitations",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).unwrap();
+        assert_eq!(row, after);
+        assert_eq!(f.count("invitations"), 1);
+    }
+}
+#[test]
+fn human_lazy_and_historical_ensure_and_existing_requested_policy_keep_old_episode() {
+    for policy in [None, Some(initial_policy(false))] {
+        let f = Fixture::new(true);
+        let first = ensure_call(&f, ensure_command(true, policy, "first-human")).unwrap();
+        let second = ensure_call(
+            &f,
+            ensure_command(true, Some(initial_policy(true)), "reuse-human"),
+        )
+        .unwrap();
+        assert_eq!(ensured_thread(&first), ensured_thread(&second));
+        assert_eq!(f.count("invitations"), 1);
+    }
+}
+
+#[test]
+fn modern_ensure_returns_actual_canonical_policy_and_selection_outcome() {
+    let f = Fixture::new(false);
+    let first = ensure_call(
+        &f,
+        ensure_command(false, Some(initial_policy(true)), "actual-first"),
+    )
+    .unwrap();
+    let first = serde_json::to_value(first).unwrap();
+    assert_eq!(first["kind"], "direct_thread_ensured");
+    assert_eq!(first["data"]["outcome"], "created");
+    assert_eq!(first["data"]["invitation"]["confirmation"], "require_ack");
+    let second = ensure_call(
+        &f,
+        ensure_command(false, Some(initial_policy(false)), "actual-reuse"),
+    )
+    .unwrap();
+    let second = serde_json::to_value(second).unwrap();
+    assert_eq!(second["kind"], "direct_thread_ensured");
+    assert_eq!(second["data"]["outcome"], "existing_pending");
+    assert_eq!(second["data"]["invitation"], first["data"]["invitation"]);
+    assert_eq!(second["data"]["thread"], first["data"]["thread"]);
+    let replay = ensure_call(
+        &f,
+        ensure_command(false, Some(initial_policy(false)), "actual-reuse"),
+    )
+    .unwrap();
+    assert_eq!(serde_json::to_value(replay).unwrap(), second);
+}
+
+fn ensured_thread(result: &CommandResult) -> herdr_threads::protocol::ids::ThreadId {
+    let value = serde_json::to_value(result).unwrap();
+    herdr_threads::protocol::ids::ThreadId::new(if value["kind"] == "thread_created" {
+        value["data"].as_str().unwrap()
+    } else {
+        value["data"]["thread"].as_str().unwrap()
+    })
+}
+#[test]
+fn modern_ensure_joined_rejected_and_left_use_actual_canonical_lifecycle() {
+    use herdr_threads::protocol::{
+        commands::{Accept, Leave, Reject},
+        ids::*,
+    };
+    for state in ["joined", "rejected", "left"] {
+        let f = Fixture::new(false);
+        let first = ensure_call(
+            &f,
+            ensure_command(false, Some(initial_policy(false)), "initial-lifecycle"),
+        )
+        .unwrap();
+        let thread = ensured_thread(&first);
+        let Command::EnsureDirectThread(initial) = ensure_command(false, None, "claim-only") else {
+            unreachable!()
+        };
+        let mut recipient = initial.claim;
+        recipient.seat = SeatId::new("seat-b");
+        recipient.target = HostTargetId::new("seat-b");
+        if state == "rejected" {
+            let invitation: String =
+                f.db.query_row("SELECT id FROM invitations", [], |r| r.get(0))
+                    .unwrap();
+            ensure_call(
+                &f,
+                Command::Reject(Reject {
+                    thread: thread.clone(),
+                    invitation: InvitationId::new(invitation),
+                    reason: "declined".into(),
+                    operation: OperationId::new("decline"),
+                    claim: recipient,
+                }),
+            )
+            .unwrap();
+        } else {
+            ensure_call(
+                &f,
+                Command::Accept(Accept {
+                    thread: thread.clone(),
+                    operation: OperationId::new("accept"),
+                    claim: recipient.clone(),
+                }),
+            )
+            .unwrap();
+            if state == "left" {
+                ensure_call(
+                    &f,
+                    Command::Leave(Leave {
+                        thread: thread.clone(),
+                        operation: OperationId::new("leave"),
+                        claim: recipient,
+                    }),
+                )
+                .unwrap();
+            }
+        }
+        let result = ensure_call(
+            &f,
+            ensure_command(false, Some(initial_policy(true)), "ensure-after-lifecycle"),
+        );
+        if state == "joined" {
+            let actual = serde_json::to_value(result.unwrap()).unwrap();
+            assert_eq!(actual["data"]["outcome"], "already_joined");
+            assert_eq!(actual["data"]["invitation"], serde_json::Value::Null);
+        } else {
+            assert!(result.is_err(), "{state} participant was resurrected");
+        }
+        assert_eq!(f.count("direct_threads"), 1);
+        assert_eq!(f.count("invitations"), 1);
+    }
+}
+
+#[test]
+fn historical_ensure_omits_new_result_and_modern_reuse_reports_old_timed_origin_honestly() {
+    let f = Fixture::new(false);
+    let historical = ensure_call(&f, ensure_command(false, None, "historical-initial")).unwrap();
+    let historical = serde_json::to_value(&historical).unwrap();
+    assert_eq!(historical["kind"], "thread_created");
+    assert!(historical["data"].is_string());
+    let row: (i64, Option<String>) =
+        f.db.query_row(
+            "SELECT deadline_at,inviter_seat_id FROM invitations",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    let modern = ensure_call(
+        &f,
+        ensure_command(false, Some(initial_policy(false)), "modern-old-pair"),
+    )
+    .unwrap();
+    let modern = serde_json::to_value(modern).unwrap();
+    assert_eq!(modern["kind"], "direct_thread_ensured");
+    assert_eq!(modern["data"]["outcome"], "existing_pending");
+    assert_eq!(modern["data"]["invitation"]["confirmation"], "require_ack");
+    assert_eq!(modern["data"]["invitation"]["effective_deadline_at"], row.0);
+    assert_eq!(
+        modern["data"]["invitation"]["inviter"],
+        serde_json::Value::Null
+    );
+    assert_eq!(row.1, None);
+    let replay = ensure_call(&f, ensure_command(false, None, "historical-initial")).unwrap();
+    assert_eq!(serde_json::to_value(replay).unwrap(), historical);
 }

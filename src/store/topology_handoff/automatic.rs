@@ -114,14 +114,14 @@ pub(crate) fn current(
         String,
         String,
     );
-    let row:Option<Row>=db.query_row("SELECT id,substr(original_json,1,131073),state,current_attempt,administrative_revision,thread_id,state_dir,host_endpoint FROM automatic_bootstrap_parents WHERE instance_id=?1 AND actor_scope=?2 AND compound=?3",params![id.claim.instance,actor(id),id.plan.payload.keys.compound.as_str()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?))).optional().map_err(store_error)?;
+    let row:Option<Row>=db.query_row("SELECT id,substr(original_json,1,524289),state,current_attempt,administrative_revision,thread_id,state_dir,host_endpoint FROM automatic_bootstrap_parents WHERE instance_id=?1 AND actor_scope=?2 AND compound=?3",params![id.claim.instance,actor(id),id.plan.payload.keys.compound.as_str()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?))).optional().map_err(store_error)?;
     let Some((parent, bytes, state, attempt, revision, thread, state_dir, endpoint)) = row else {
         return Ok(None);
     };
     let revision = u64::try_from(revision).map_err(|_| corrupt())?;
-    let saved: AutomaticBootstrapIdentity = decode(&bytes, LIMIT)?;
+    let saved: AutomaticBootstrapIdentity = decode(&bytes, 524288)?;
     saved.validate().map_err(|_| corrupt())?;
-    if encode(&saved, LIMIT)? != encode(id, LIMIT)? {
+    if encode(&saved, 524288)? != encode(id, 524288)? {
         return Err(mismatch());
     }
     if Some(state_dir.as_str()) != ns.state_dir.to_str()
@@ -136,10 +136,10 @@ pub(crate) fn current(
     if let Some(c) = &creation {
         creation_scope(ns, id, c)?;
     }
-    let attachment:Option<Vec<u8>>=db.query_row("SELECT substr(attachment_json,1,131073) FROM automatic_bootstrap_attachments WHERE parent_id=?1",[parent],|r|r.get(0)).optional().map_err(store_error)?;
+    let attachment:Option<Vec<u8>>=db.query_row("SELECT substr(attachment_json,1,524289) FROM automatic_bootstrap_attachments WHERE parent_id=?1",[parent],|r|r.get(0)).optional().map_err(store_error)?;
     let attachment: Option<AutomaticBootstrapAttachment> = attachment
         .as_deref()
-        .map(|b| decode(b, LIMIT))
+        .map(|b| decode(b, 524288))
         .transpose()?;
     if let Some(a) = &attachment {
         a.validate(id).map_err(|_| corrupt())?;
@@ -174,9 +174,9 @@ pub(crate) fn current(
             return Err(corrupt());
         }
     }
-    let recovery_bytes:Option<Vec<u8>>=db.query_row("SELECT substr(result_json,1,262145) FROM automatic_bootstrap_recoveries WHERE parent_id=?1 ORDER BY revision DESC LIMIT 1",[parent],|r|r.get(0)).optional().map_err(store_error)?;
+    let recovery_bytes:Option<Vec<u8>>=db.query_row("SELECT substr(result_json,1,2097153) FROM automatic_bootstrap_recoveries WHERE parent_id=?1 ORDER BY revision DESC LIMIT 1",[parent],|r|r.get(0)).optional().map_err(store_error)?;
     let recovery = if let Some(bytes) = recovery_bytes {
-        let CommandResult::AutomaticBootstrap(saved) = decode(&bytes, 262144)? else {
+        let CommandResult::AutomaticBootstrap(saved) = decode(&bytes, 2097152)? else {
             return Err(corrupt());
         };
         let recovery = saved.recovery.ok_or_else(corrupt)?;
@@ -342,6 +342,17 @@ fn validate_report(
     }
     .validate()
     .map_err(ApiError::invalid_request)?;
+    if id.plan.payload.handoff.policy.is_some() {
+        let full_digest = report.report["full_report_digest"]
+            .as_str()
+            .ok_or_else(mismatch)?;
+        let summary =
+            crate::protocol::handoff::automatic_launch_summary(&report.report, full_digest)
+                .map_err(ApiError::invalid_request)?;
+        if summary != report.report {
+            return Err(mismatch());
+        }
+    }
     let AutomaticOriginal::Handoff(child) = &a.child.original else {
         return Err(mismatch());
     };
@@ -408,7 +419,7 @@ pub(crate) fn guard_child(
     replay: bool,
 ) -> Result<bool, ApiError> {
     let k = &request.plan().payload.keys;
-    let mut query=db.prepare("SELECT DISTINCT p.id,substr(p.original_json,1,131073) FROM automatic_bootstrap_keys k JOIN automatic_bootstrap_parents p ON p.id=k.parent_id WHERE k.instance_id=?1 AND k.actor_scope=?2 AND k.operation_key IN (?3,?4,?5,?6,?7) LIMIT 2").map_err(store_error)?;
+    let mut query=db.prepare("SELECT DISTINCT p.id,substr(p.original_json,1,524289) FROM automatic_bootstrap_keys k JOIN automatic_bootstrap_parents p ON p.id=k.parent_id WHERE k.instance_id=?1 AND k.actor_scope=?2 AND k.operation_key IN (?3,?4,?5,?6,?7) LIMIT 2").map_err(store_error)?;
     let rows = query
         .query_map(
             params![
@@ -431,7 +442,7 @@ pub(crate) fn guard_child(
     if rows.len() != 1 {
         return Err(mismatch());
     }
-    let id: AutomaticBootstrapIdentity = decode(&rows[0].1, LIMIT)?;
+    let id: AutomaticBootstrapIdentity = decode(&rows[0].1, 524288)?;
     let ns = &id.plan.payload.handoff.namespace;
     handoff::automatic::validate_namespace(ns, request)?;
     let s = status(db, ns, &id)?;
@@ -613,8 +624,9 @@ fn apply(
             }
             return Ok(CommandResult::AutomaticBootstrap(Box::new(s)));
         }
+        id.validate_admission().map_err(ApiError::invalid_request)?;
         seats::cooperative_mapping(tx, &id.claim, None)?;
-        tx.execute("INSERT INTO automatic_bootstrap_parents(instance_id,actor_scope,compound,state_dir,host_endpoint,original_json,state,current_attempt) VALUES(?1,?2,?3,?4,?5,?6,'prepared',1)",params![ns.instance,actor(id),id.plan.payload.keys.compound.as_str(),ns.state_dir.to_str(),ns.host_endpoint.to_str(),encode(id,LIMIT)?]).map_err(store_error)?;
+        tx.execute("INSERT INTO automatic_bootstrap_parents(instance_id,actor_scope,compound,state_dir,host_endpoint,original_json,state,current_attempt) VALUES(?1,?2,?3,?4,?5,?6,'prepared',1)",params![ns.instance,actor(id),id.plan.payload.keys.compound.as_str(),ns.state_dir.to_str(),ns.host_endpoint.to_str(),encode(id,524288)?]).map_err(store_error)?;
         let p = tx.last_insert_rowid();
         for (role, key) in keys(id) {
             register_key(tx, id, p, role, key, 0)?;
@@ -841,7 +853,7 @@ fn apply(
                 return Err(mismatch());
             }
             if s.attachment.is_none() {
-                tx.execute("INSERT INTO automatic_bootstrap_attachments(parent_id,attempt,attachment_json) VALUES(?1,?2,?3)",params![p,a.attempt.get(),encode(a,LIMIT)?]).map_err(store_error)?;
+                tx.execute("INSERT INTO automatic_bootstrap_attachments(parent_id,attempt,attachment_json) VALUES(?1,?2,?3)",params![p,a.attempt.get(),encode(a,524288)?]).map_err(store_error)?;
                 tx.execute(
                     "UPDATE automatic_bootstrap_parents SET state='attached' WHERE id=?1",
                     [p],
@@ -941,9 +953,9 @@ pub(crate) fn recovery_replay(
     };
     let operation = request.operation().map_err(ApiError::invalid_request)?;
     let p = parent(db, id)?;
-    let bytes:Option<Vec<u8>>=db.query_row("SELECT substr(result_json,1,262145) FROM automatic_bootstrap_recoveries WHERE parent_id=?1 AND operation=?2",params![p,operation.as_str()],|r|r.get(0)).optional().map_err(store_error)?;
+    let bytes:Option<Vec<u8>>=db.query_row("SELECT substr(result_json,1,2097153) FROM automatic_bootstrap_recoveries WHERE parent_id=?1 AND operation=?2",params![p,operation.as_str()],|r|r.get(0)).optional().map_err(store_error)?;
     let Some(bytes) = bytes else { return Ok(None) };
-    let result: CommandResult = decode(&bytes, 262144)?;
+    let result: CommandResult = decode(&bytes, 2097152)?;
     let CommandResult::AutomaticBootstrap(saved) = &result else {
         return Err(corrupt());
     };
@@ -1068,7 +1080,7 @@ pub(crate) fn recover(
         administrative_revision: s.administrative_revision,
     });
     let result = CommandResult::AutomaticBootstrap(Box::new(s.clone()));
-    let bytes = encode(&result, 262144)?;
+    let bytes = encode(&result, 2097152)?;
     register_key(tx, id, p, kind, &operation, attempt.get())?;
     match s.state {
         BootstrapState::Prepared => {

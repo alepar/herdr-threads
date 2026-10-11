@@ -5699,6 +5699,65 @@ mod live {
             }));
         }
 
+        struct NoCreationPolicy;
+        impl LocalClient for NoCreationPolicy {
+            fn call_with_output(
+                &self,
+                command: Command,
+                _: &crate::protocol::output::OutputSpec,
+                budget: &CallBudget,
+            ) -> Result<CommandResult, ApiError> {
+                self.call(command, budget)
+            }
+            fn call(&self, command: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
+                assert!(
+                    matches!(command, Command::Capabilities),
+                    "old peer was called for an effect or selection"
+                );
+                Ok(CommandResult::Capabilities(
+                    crate::protocol::results::CapabilityList {
+                        capabilities: crate::protocol::capabilities::ADVERTISED
+                            .iter()
+                            .filter(|name| {
+                                **name != crate::protocol::capabilities::ENSURE_CREATION_POLICY_V1
+                            })
+                            .map(|name| (*name).to_owned())
+                            .collect(),
+                    },
+                ))
+            }
+        }
+        #[test]
+        fn automatic_old_peer_with_all_other_caps_refuses_before_selector_or_caller_allocation() {
+            let mut parsed = super::super::super::super::commands::parse_argv([
+                "ht",
+                "handoff",
+                "--new-tab",
+                "peer",
+                "--kind",
+                "codex",
+                "--",
+                "work",
+            ])
+            .unwrap();
+            let result = super::super::super::super::resolve_automatic_new_selectors(
+                &mut parsed,
+                &NoCreationPolicy,
+                &crate::app::SystemClock::new(),
+                || -> Result<HostTopology, ApiError> { panic!("old peer selected topology") },
+                || -> Result<Option<HostTargetId>, ApiError> {
+                    panic!("old peer allocated caller")
+                },
+            );
+            assert!(matches!(
+                result,
+                Err(RunError::Api(ApiError {
+                    code: crate::protocol::results::ErrorCode::Unsupported,
+                    ..
+                }))
+            ));
+        }
+
         struct AutoPeer {
             base: Fixture,
             identity: AutomaticBootstrapIdentity,
@@ -5715,6 +5774,9 @@ mod live {
                 Self::with_kind("codex")
             }
             fn with_kind(kind: &'static str) -> Self {
+                Self::with_body(kind, "literal work")
+            }
+            fn with_body(kind: &'static str, body: &str) -> Self {
                 let base = Fixture::aligned(Fault::None, None);
                 base.journal.complete(&base.peer.reference).unwrap();
                 let parsed = super::super::super::super::commands::parse_argv([
@@ -5725,7 +5787,7 @@ mod live {
                     "--kind",
                     kind,
                     "--",
-                    "literal work",
+                    body,
                 ])
                 .unwrap();
                 let super::super::super::super::commands::CliAction::TopologyHandoff(request) =
@@ -5775,6 +5837,52 @@ mod live {
             fn status(&self) -> AutomaticBootstrapResult {
                 self.status_for(&self.identity)
             }
+            fn print_supported_envelope_sizes(&self, label: &str) {
+                let status = self.status();
+                let attachment = status.attachment.as_ref().unwrap();
+                let retained = status.completed.as_ref().unwrap();
+                let request = |action| crate::protocol::wire::WireRequest {
+                    version: crate::protocol::wire::PROTOCOL_VERSION,
+                    request_id: "sizing".into(),
+                    expected_instance: self.identity.claim.instance.clone(),
+                    expected_boot: None,
+                    output: Some(Default::default()),
+                    command: Command::AutomaticBootstrap(Box::new(AutomaticBootstrapMutation {
+                        identity: self.identity.clone(),
+                        action,
+                    })),
+                };
+                let complete = request(AutomaticBootstrapAction::Complete {
+                    attachment: Box::new(attachment.clone()),
+                    retained: retained.clone(),
+                });
+                let recover = request(AutomaticBootstrapAction::Recover {
+                    attempt: status.attempt,
+                    inspection: status.recovery_inspection().unwrap(),
+                    disposition: AutomaticBootstrapRecoveryDisposition::Cancelled {
+                        reason: format!("x{}", "\u{1}".repeat(4095)),
+                        quiescence: BootstrapQuiescenceAssertion::InspectedQuiescence,
+                        attached_child: Some(Box::new(attachment.child.clone())),
+                    },
+                });
+                let response = crate::protocol::wire::WireResponse {
+                    version: crate::protocol::wire::PROTOCOL_VERSION,
+                    request_id: "sizing".into(),
+                    instance: self.identity.claim.instance.clone(),
+                    daemon_boot: "00000000-0000-4000-8000-000000000003".into(),
+                    result: Ok(CommandResult::AutomaticBootstrap(Box::new(status.clone()))),
+                };
+                eprintln!(
+                    "{label}: original={} attachment={} actual_summary={} framed_complete={} framed_recover_4096escapedreason={} framed_completed_response={}",
+                    serde_json::to_vec(&self.identity).unwrap().len(),
+                    serde_json::to_vec(attachment).unwrap().len(),
+                    serde_json::to_vec(&retained.report).unwrap().len(),
+                    serde_json::to_vec(&complete).unwrap().len() + 4,
+                    serde_json::to_vec(&recover).unwrap().len() + 4,
+                    serde_json::to_vec(&response).unwrap().len() + 4
+                );
+            }
+
             fn complete_child_with_lost_parent_reply(&self) -> DownstreamLauncher {
                 self.fail_outer_complete_once
                     .store(true, std::sync::atomic::Ordering::SeqCst);
@@ -6043,11 +6151,19 @@ mod live {
                                     "simulated outer completion delay",
                                 ));
                             }
-                            return self.store.automatic_bootstrap_complete(
+                            let result = self.store.automatic_bootstrap_complete(
                                 &request.identity.plan.payload.handoff.namespace,
                                 &request,
                                 budget,
-                            );
+                            )?;
+                            let mut loss = self.lost_parent_reply.lock().unwrap();
+                            if loss.as_ref() == Some(&role) {
+                                *loss = None;
+                                return Err(ApiError::unknown_outcome(
+                                    "committed completion reply lost",
+                                ));
+                            }
+                            return Ok(result);
                         }
                         let guard = if matches!(
                             request.action,
@@ -6072,7 +6188,8 @@ mod live {
                             permit,
                             guard,
                             budget,
-                        )?;
+                        );
+                        let result = result?;
                         let mut loss = self.lost_parent_reply.lock().unwrap();
                         if loss.as_ref() == Some(&role) {
                             *loss = None;
@@ -6142,7 +6259,8 @@ mod live {
                             &request,
                             permit,
                             budget,
-                        )?;
+                        );
+                        let result = result?;
                         let mut loss = self.lost_child_reply.lock().unwrap();
                         if loss.as_ref() == Some(&role) {
                             *loss = None;
@@ -6620,6 +6738,314 @@ mod live {
         }
 
         #[test]
+        fn modern_automatic_maximum_escaped_body_operator_decision_replays_exactly() {
+            let peer = AutoPeer::with_body("codex", &"\0".repeat(65536));
+            peer.seed_unknown_creation();
+            *peer.lost_parent_reply.lock().unwrap() = Some("auto_recover");
+            let parsed = super::super::super::super::commands::parse_argv(vec![
+                "ht".to_owned(),
+                "human".to_owned(),
+                "handoff".to_owned(),
+                "recover".to_owned(),
+                peer.reference.recovery_ref(),
+                "--attempt".to_owned(),
+                "1".to_owned(),
+                "--not-created".to_owned(),
+            ])
+            .unwrap();
+            let first = super::super::super::super::topology_runtime::run_automatic_operator_parsed(
+                &parsed,
+                &peer.base.journal,
+                peer.ns(),
+                &peer,
+                &peer.base.clock,
+                &mut Vec::new(),
+                |_, _| panic!("not-created has no host read"),
+            );
+            assert!(first.is_err());
+            assert_eq!(peer.status().attempt.get(), 2);
+            let operator_ref = format!("local:{}", peer.reference.ordinal + 1);
+            let retry = super::super::super::super::commands::parse_argv([
+                "ht",
+                "human",
+                "retry",
+                operator_ref.as_str(),
+            ])
+            .unwrap();
+            super::super::super::super::topology_runtime::run_automatic_operator_retry_parsed(
+                &retry,
+                &peer.base.journal,
+                peer.ns(),
+                &peer,
+                &peer.base.clock,
+                &mut Vec::new(),
+            )
+            .unwrap();
+            assert_eq!(peer.status().attempt.get(), 2);
+            assert_eq!(peer.base.peer.state.lock().unwrap().native_calls, 0);
+            assert_eq!(peer.identity.plan.payload.handoff.body, "\0".repeat(65536));
+        }
+
+        #[test]
+        fn modern_automatic_maximum_escaped_body_completes_and_recovers_exactly() {
+            let body = "\0".repeat(65536);
+            let peer = AutoPeer::with_body("codex", &body);
+            let mut launcher = DownstreamLauncher::default();
+            let result = resume_automatic_to_writer(
+                &peer.base.journal,
+                &peer.reference,
+                super::super::super::super::actor_route::InvocationActor::Agent,
+                peer.ns(),
+                &peer,
+                &peer,
+                &mut launcher,
+                &peer.base.clock,
+                BootstrapSubmissionInputs {
+                    witness: &peer.base.witness,
+                    context: &peer.base.context,
+                },
+                &crate::protocol::output::OutputSpec::default(),
+                &mut Vec::new(),
+            );
+            assert!(
+                result.is_ok(),
+                "maximum escaped body failed: {:?}",
+                result.err()
+            );
+            assert_eq!(launcher.starts, 1);
+            assert_eq!(peer.status().state, BootstrapState::Completed);
+            peer.print_supported_envelope_sizes("max-escaped-public");
+            let state = peer.base.peer.state.lock().unwrap();
+            let saved: String = state
+                .db
+                .query_row("SELECT body FROM messages WHERE kind='ordinary'", [], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            assert_eq!(saved, body);
+            drop(state);
+            assert!(peer.historical_retry(peer.ns()).unwrap().0);
+            assert_eq!(launcher.starts, 1);
+        }
+
+        #[test]
+        fn modern_automatic_canonical_completion_refuses_full_diagnostic_report() {
+            let peer = AutoPeer::new();
+            let launcher = peer.complete_child_with_lost_parent_reply();
+            assert_eq!(launcher.starts, 1);
+            let status = peer.status();
+            let attachment = status.attachment.unwrap();
+            let bytes = std::fs::read(peer.base.journal.root().join(format!(
+                "automatic-diagnostics-{}.json",
+                peer.reference.operation.as_str()
+            )))
+            .unwrap();
+            let report = serde_json::from_slice(&bytes).unwrap();
+            use sha2::{Digest, Sha256};
+            let retained = LinkedBootstrapReport {
+                thread: status.thread.unwrap(),
+                recipient: attachment.resolved_seat.clone(),
+                pane: attachment.created.root_pane.clone(),
+                kind: "launch".into(),
+                launch: peer.identity.plan.payload.launch.clone(),
+                report,
+                report_digest: format!("{:x}", Sha256::digest(&bytes)),
+                terminal: attachment.created.terminal.clone(),
+                host_incarnation: attachment.created.host_incarnation.clone(),
+            };
+            let request = Command::AutomaticBootstrap(Box::new(AutomaticBootstrapMutation {
+                identity: peer.identity.clone(),
+                action: AutomaticBootstrapAction::Complete {
+                    attachment: Box::new(attachment),
+                    retained,
+                },
+            }));
+            let reply = peer.call(
+                request,
+                &CallBudget {
+                    deadline: crate::protocol::time::MonoInstant(
+                        crate::protocol::time::Clock::monotonic_now(&peer.base.clock).0 + 10000,
+                    ),
+                    cancellation: Default::default(),
+                },
+            );
+            assert!(
+                reply.is_err(),
+                "modern canonical completion accepted unbounded full-report representation"
+            );
+            assert_eq!(peer.status().state, BootstrapState::Attached);
+        }
+
+        #[test]
+        fn modern_automatic_completed_terminal_rejects_mismatched_selection_hint() {
+            let peer = AutoPeer::new();
+            let mut launcher = DownstreamLauncher::default();
+            resume_automatic_to_writer(
+                &peer.base.journal,
+                &peer.reference,
+                super::super::super::super::actor_route::InvocationActor::Agent,
+                peer.ns(),
+                &peer,
+                &peer,
+                &mut launcher,
+                &peer.base.clock,
+                BootstrapSubmissionInputs {
+                    witness: &peer.base.witness,
+                    context: &peer.base.context,
+                },
+                &Default::default(),
+                &mut Vec::new(),
+            )
+            .unwrap();
+            let path = peer.base.journal.root().join(format!(
+                "automatic-bootstrap-{:020}-{}.terminal",
+                peer.reference.ordinal,
+                peer.reference.operation.as_str()
+            ));
+            let mut value: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            assert!(value["selection"].is_object());
+            value["selection"]["recipient"] = "foreign-seat".into();
+            std::fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
+            let before = serde_json::to_vec(&peer.status()).unwrap();
+            assert!(
+                peer.historical_retry(peer.ns()).is_err(),
+                "completed presentation accepted mismatched retained selection hint"
+            );
+            assert_eq!(serde_json::to_vec(&peer.status()).unwrap(), before);
+            assert_eq!(launcher.starts, 1);
+        }
+
+        #[test]
+        fn modern_automatic_completed_missing_child_and_artifact_is_readonly_and_truthful() {
+            for corrupt in [false, true] {
+                let peer = AutoPeer::new();
+                let launcher = peer.complete_child_with_lost_parent_reply();
+                let status = peer.status();
+                let attachment = status.attachment.unwrap();
+                let progress_path = peer.base.journal.root().join(format!(
+                    "automatic-child-{}.progress",
+                    peer.reference.operation.as_str()
+                ));
+                let progress: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(&progress_path).unwrap()).unwrap();
+                let report = progress["launch"].clone();
+                use sha2::{Digest, Sha256};
+                let retained = LinkedBootstrapReport {
+                    thread: status.thread.unwrap(),
+                    recipient: attachment.resolved_seat.clone(),
+                    pane: attachment.created.root_pane.clone(),
+                    kind: "launch".into(),
+                    launch: peer.identity.plan.payload.launch.clone(),
+                    report_digest: format!(
+                        "{:x}",
+                        Sha256::digest(serde_json::to_vec(&report).unwrap())
+                    ),
+                    report,
+                    terminal: attachment.created.terminal.clone(),
+                    host_incarnation: attachment.created.host_incarnation.clone(),
+                };
+                peer.call(
+                    Command::AutomaticBootstrap(Box::new(AutomaticBootstrapMutation {
+                        identity: peer.identity.clone(),
+                        action: AutomaticBootstrapAction::Complete {
+                            attachment: Box::new(attachment),
+                            retained,
+                        },
+                    })),
+                    &super::super::super::super::cooperative_budget(&peer.base.clock),
+                )
+                .unwrap();
+                let before = serde_json::to_vec(&peer.status()).unwrap();
+                if corrupt {
+                    std::fs::write(&progress_path, b"{invalid existing child}").unwrap();
+                } else {
+                    std::fs::remove_file(&progress_path).unwrap();
+                }
+                std::fs::remove_file(peer.base.journal.root().join(format!(
+                    "automatic-diagnostics-{}.json",
+                    peer.reference.operation.as_str()
+                )))
+                .unwrap();
+                struct ReadOnlyCompleted<'a>(&'a AutoPeer);
+                impl LocalClient for ReadOnlyCompleted<'_> {
+                    fn call_with_output(
+                        &self,
+                        c: Command,
+                        _: &crate::protocol::output::OutputSpec,
+                        b: &CallBudget,
+                    ) -> Result<CommandResult, ApiError> {
+                        self.call(c, b)
+                    }
+                    fn call(&self, c: Command, b: &CallBudget) -> Result<CommandResult, ApiError> {
+                        match &c {
+                            Command::Capabilities => Ok(CommandResult::Capabilities(
+                                crate::protocol::results::CapabilityList {
+                                    capabilities: vec![
+                                        crate::protocol::capabilities::AUTOMATIC_HANDOFF_V1.into(),
+                                    ],
+                                },
+                            )),
+                            Command::AutomaticBootstrap(q)
+                                if matches!(q.action, AutomaticBootstrapAction::Status)
+                                    && q.identity == self.0.identity =>
+                            {
+                                self.0.call(c, b)
+                            }
+                            other => panic!(
+                                "Completed missing-local inspection attempted effects/new admission: {other:?}"
+                            ),
+                        }
+                    }
+                }
+                let retry_readonly = || {
+                    let parsed = super::super::super::super::commands::parse_argv([
+                        "ht",
+                        "retry",
+                        peer.reference.recovery_ref().as_str(),
+                    ])
+                    .unwrap();
+                    let mut bytes = Vec::new();
+                    super::super::super::super::topology_runtime::try_completed_with_namespace(
+                        &parsed,
+                        &peer.base.journal,
+                        peer.ns(),
+                        &ReadOnlyCompleted(&peer),
+                        &peer.base.clock,
+                        &mut bytes,
+                    )
+                    .map(|done| (done, bytes))
+                };
+                let retried = retry_readonly();
+                if corrupt {
+                    assert!(
+                        retried.is_err(),
+                        "corrupt existing child was mistaken for missing optional progress"
+                    );
+                    assert_eq!(serde_json::to_vec(&peer.status()).unwrap(), before);
+                    assert_eq!(peer.base.peer.state.lock().unwrap().native_calls, 1);
+                    continue;
+                }
+                assert!(
+                    retried.is_ok(),
+                    "canonical Completed required missing optional child/artifact: {:?}",
+                    retried.err()
+                );
+                let (done, bytes) = retried.unwrap();
+                assert!(done);
+                let text = String::from_utf8(bytes).unwrap();
+                assert!(
+                    text.contains("unavailable"),
+                    "missing message id was not presented honestly: {text}"
+                );
+                assert_eq!(serde_json::to_vec(&peer.status()).unwrap(), before);
+                assert_eq!(launcher.starts, 1);
+                assert_eq!(peer.base.peer.state.lock().unwrap().native_calls, 1);
+                assert!(retry_readonly().unwrap().0);
+            }
+        }
+
+        #[test]
         fn modern_automatic_large_diagnostics_preserve_full_local_report_and_complete_summary() {
             let peer = AutoPeer::new();
             let mut launcher = DownstreamLauncher {
@@ -6674,6 +7100,311 @@ mod live {
                 peer.historical_retry(peer.ns()).unwrap().0,
                 "optional diagnostics must not gate canonical Completed replay"
             );
+        }
+
+        #[test]
+        fn modern_automatic_unknown_large_diagnostics_keep_bounded_truthful_progress() {
+            let peer = AutoPeer::new();
+            let mut launcher = DownstreamLauncher {
+                unknown: true,
+                report_padding: 3 * 1024 * 1024,
+                ..Default::default()
+            };
+            let run = |launcher: &mut DownstreamLauncher| {
+                resume_automatic_to_writer(
+                    &peer.base.journal,
+                    &peer.reference,
+                    super::super::super::super::actor_route::InvocationActor::Agent,
+                    peer.ns(),
+                    &peer,
+                    &peer,
+                    launcher,
+                    &peer.base.clock,
+                    BootstrapSubmissionInputs {
+                        witness: &peer.base.witness,
+                        context: &peer.base.context,
+                    },
+                    &crate::protocol::output::OutputSpec::default(),
+                    &mut Vec::new(),
+                )
+            };
+            assert!(run(&mut launcher).is_err());
+            let path = peer.base.journal.root().join(format!(
+                "automatic-child-{}.progress",
+                peer.reference.operation.as_str()
+            ));
+            let saved: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+            assert_eq!(
+                saved["launch"]["format"],
+                "automatic_launch_noncompletion_v1"
+            );
+            assert_eq!(saved["launch"]["observed_started"], false);
+            assert_ne!(saved["launch"]["outcome"], "started");
+            assert!(run(&mut launcher).is_err());
+            assert_eq!(launcher.starts, 1);
+            assert_ne!(peer.status().state, BootstrapState::Completed);
+        }
+
+        #[test]
+        fn modern_automatic_artifact_failure_keeps_synced_summary_and_reopened_retry_never_starts()
+        {
+            let peer = AutoPeer::new();
+            let artifact = peer.base.journal.root().join(format!(
+                "automatic-diagnostics-{}.json",
+                peer.reference.operation.as_str()
+            ));
+            // A deterministic failure after the critical started summary has been synced.
+            std::fs::create_dir(&artifact).unwrap();
+            let mut launcher = DownstreamLauncher {
+                report_padding: 3 * 1024 * 1024,
+                ..Default::default()
+            };
+            let run = |journal: &super::super::super::super::journal::Journal,
+                       launcher: &mut DownstreamLauncher| {
+                resume_automatic_to_writer(
+                    journal,
+                    &peer.reference,
+                    super::super::super::super::actor_route::InvocationActor::Agent,
+                    peer.ns(),
+                    &peer,
+                    &peer,
+                    launcher,
+                    &peer.base.clock,
+                    BootstrapSubmissionInputs {
+                        witness: &peer.base.witness,
+                        context: &peer.base.context,
+                    },
+                    &crate::protocol::output::OutputSpec::default(),
+                    &mut Vec::new(),
+                )
+            };
+            assert!(run(&peer.base.journal, &mut launcher).is_err());
+            assert_eq!(launcher.starts, 1);
+            assert_eq!(peer.status().state, BootstrapState::Attached);
+            let critical = peer.base.journal.root().join(format!(
+                "automatic-child-{}.progress",
+                peer.reference.operation.as_str()
+            ));
+            let bytes = std::fs::read(critical).unwrap();
+            assert!(bytes.len() < 2 * 1024 * 1024);
+            let saved: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(saved["possible_start"], true);
+            assert_eq!(saved["launch"]["format"], "automatic_launch_summary_v1");
+            assert!(saved["launch"].get("padding").is_none());
+            std::fs::remove_dir(&artifact).unwrap();
+            let reopened =
+                super::super::super::super::journal::Journal::open(peer.base.journal.root())
+                    .unwrap();
+            assert_eq!(
+                run(&reopened, &mut launcher).unwrap().state,
+                BootstrapState::Completed
+            );
+            assert_eq!(launcher.starts, 1);
+            assert!(!artifact.exists());
+            assert!(peer.historical_retry(peer.ns()).unwrap().0);
+            assert_eq!(peer.base.peer.state.lock().unwrap().native_calls, 1);
+        }
+
+        #[test]
+        fn modern_automatic_committed_completion_reply_loss_reopens_without_artifact_or_relaunch() {
+            let peer = AutoPeer::new();
+            *peer.lost_parent_reply.lock().unwrap() = Some("auto_complete");
+            let mut launcher = DownstreamLauncher::default();
+            let result = resume_automatic_to_writer(
+                &peer.base.journal,
+                &peer.reference,
+                super::super::super::super::actor_route::InvocationActor::Agent,
+                peer.ns(),
+                &peer,
+                &peer,
+                &mut launcher,
+                &peer.base.clock,
+                BootstrapSubmissionInputs {
+                    witness: &peer.base.witness,
+                    context: &peer.base.context,
+                },
+                &crate::protocol::output::OutputSpec::default(),
+                &mut Vec::new(),
+            );
+            assert_eq!(result.unwrap().state, BootstrapState::Completed);
+            assert!(peer.lost_parent_reply.lock().unwrap().is_none());
+            assert_eq!(peer.status().state, BootstrapState::Completed);
+            let artifact = peer.base.journal.root().join(format!(
+                "automatic-diagnostics-{}.json",
+                peer.reference.operation.as_str()
+            ));
+            std::fs::remove_file(artifact).unwrap();
+            let reopened =
+                super::super::super::super::journal::Journal::open(peer.base.journal.root())
+                    .unwrap();
+            let replay = resume_automatic_to_writer(
+                &reopened,
+                &peer.reference,
+                super::super::super::super::actor_route::InvocationActor::Agent,
+                peer.ns(),
+                &peer,
+                &peer,
+                &mut launcher,
+                &peer.base.clock,
+                BootstrapSubmissionInputs {
+                    witness: &peer.base.witness,
+                    context: &peer.base.context,
+                },
+                &crate::protocol::output::OutputSpec::default(),
+                &mut Vec::new(),
+            )
+            .unwrap();
+            assert_eq!(replay.state, BootstrapState::Completed);
+            assert_eq!(launcher.starts, 1);
+            assert_eq!(peer.base.peer.state.lock().unwrap().native_calls, 1);
+        }
+
+        #[test]
+        fn modern_automatic_rejects_future_request_overflow_before_publication_or_topology() {
+            let peer = AutoPeer::new();
+            let parsed = super::super::super::super::commands::parse_argv([
+                "ht",
+                "handoff",
+                "--new-tab",
+                "large",
+                "--kind",
+                "codex",
+                "--",
+                "work",
+            ])
+            .unwrap();
+            let super::super::super::super::commands::CliAction::TopologyHandoff(mut request) =
+                parsed.action
+            else {
+                panic!("route")
+            };
+            request.body = "\0".repeat(65536);
+            request.argv = vec![format!("--model={}", "\u{1}".repeat(3792)); 4];
+            let before = ordinary_and_invitation_counts(&peer);
+            let intents = intent_count(&peer.base.journal);
+            let result = prepare_automatic(
+                &request,
+                Preparation {
+                    claim: &peer.identity.claim,
+                    namespace: peer.ns(),
+                    topology: &topology(),
+                    invocation_cwd: peer.base._temp.path(),
+                    options: None,
+                    client: &ReadOnly,
+                    clock: &peer.base.clock,
+                },
+            );
+            assert!(
+                result.is_err(),
+                "initial admission accepted an origin whose future Complete request exceeds1MiB"
+            );
+            assert_eq!(ordinary_and_invitation_counts(&peer), before);
+            assert_eq!(intent_count(&peer.base.journal), intents);
+            assert_eq!(peer.base.peer.state.lock().unwrap().native_calls, 0);
+        }
+
+        #[test]
+        fn modern_automatic_actual_admission_boundary_completes_and_next_metadata_size_has_zero_effects()
+         {
+            let mut peer = AutoPeer::new();
+            let parsed = super::super::super::super::commands::parse_argv([
+                "ht",
+                "handoff",
+                "--new-tab",
+                "boundary",
+                "--kind",
+                "codex",
+                "--",
+                "work",
+            ])
+            .unwrap();
+            let super::super::super::super::commands::CliAction::TopologyHandoff(mut request) =
+                parsed.action
+            else {
+                panic!("route")
+            };
+            request.body = "\0".repeat(65536);
+            let mut lower = 0usize;
+            let mut upper = 4089usize;
+            let mut accepted = None;
+            while lower + 1 < upper {
+                let length = (lower + upper) / 2;
+                request.argv = vec![format!("--model={}", "\u{1}".repeat(length)); 4];
+                let result = prepare_automatic(
+                    &request,
+                    Preparation {
+                        claim: &peer.identity.claim,
+                        namespace: peer.ns(),
+                        topology: &topology(),
+                        invocation_cwd: peer.base._temp.path(),
+                        options: None,
+                        client: &ReadOnly,
+                        clock: &peer.base.clock,
+                    },
+                );
+                match result {
+                    Ok(identity) => {
+                        lower = length;
+                        accepted = Some(identity)
+                    }
+                    Err(_) => upper = length,
+                }
+            }
+            assert!(
+                lower > 0 && upper <= 4088,
+                "no real admission boundary within individually valid native metadata"
+            );
+            let before = ordinary_and_invitation_counts(&peer);
+            let intents = intent_count(&peer.base.journal);
+            request.argv = vec![format!("--model={}", "\u{1}".repeat(upper)); 4];
+            assert!(
+                prepare_automatic(
+                    &request,
+                    Preparation {
+                        claim: &peer.identity.claim,
+                        namespace: peer.ns(),
+                        topology: &topology(),
+                        invocation_cwd: peer.base._temp.path(),
+                        options: None,
+                        client: &ReadOnly,
+                        clock: &peer.base.clock
+                    }
+                )
+                .is_err()
+            );
+            assert_eq!(ordinary_and_invitation_counts(&peer), before);
+            assert_eq!(intent_count(&peer.base.journal), intents);
+            assert_eq!(peer.base.peer.state.lock().unwrap().native_calls, 0);
+            peer.base.journal.complete(&peer.reference).unwrap();
+            peer.identity = accepted.unwrap();
+            peer.reference = publish_automatic(&peer.base.journal, &peer.identity, 2).unwrap();
+            let mut launcher = DownstreamLauncher::default();
+            let result = resume_automatic_to_writer(
+                &peer.base.journal,
+                &peer.reference,
+                super::super::super::super::actor_route::InvocationActor::Agent,
+                peer.ns(),
+                &peer,
+                &peer,
+                &mut launcher,
+                &peer.base.clock,
+                BootstrapSubmissionInputs {
+                    witness: &peer.base.witness,
+                    context: &peer.base.context,
+                },
+                &crate::protocol::output::OutputSpec::default(),
+                &mut Vec::new(),
+            );
+            assert!(
+                result.is_ok(),
+                "near-admission-boundary public completion failed: {:?}",
+                result.err()
+            );
+            assert_eq!(launcher.starts, 1);
+            peer.print_supported_envelope_sizes("near-admission-public");
+            assert!(peer.historical_retry(peer.ns()).unwrap().0);
+            assert_eq!(peer.status().state, BootstrapState::Completed);
         }
 
         fn ordinary_and_invitation_counts(peer: &AutoPeer) -> (i64, i64) {
@@ -7515,7 +8246,10 @@ mod live {
             assert_eq!(after, before);
             let report: serde_json::Value = serde_json::from_slice(&replay).unwrap();
             assert_eq!(report["bootstrap"]["state"], "completed");
-            assert_eq!(report["bootstrap"]["launch"], saved_report);
+            assert_eq!(
+                report["bootstrap"]["launch"],
+                crate::cli::handoff::automatic_launch_presentation(&saved_report)
+            );
             let terminal = peer.base.journal.root().join(format!(
                 "automatic-bootstrap-{:020}-{}.terminal",
                 peer.reference.ordinal,
@@ -7524,6 +8258,7 @@ mod live {
             let saved: serde_json::Value =
                 serde_json::from_slice(&std::fs::read(terminal).unwrap()).unwrap();
             assert_eq!(saved["original"].as_str().unwrap().as_bytes(), original);
+            assert_eq!(saved["completed"]["completed"]["report"], saved_report);
             assert!(peer.base.journal.load(&peer.reference).is_err());
         }
 

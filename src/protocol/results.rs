@@ -78,6 +78,7 @@ pub enum CommandResult {
     CachedCheckInPage(crate::harness::cache::CachedCheckInPage),
     Handoff(crate::protocol::handoff::HandoffResult),
     ThreadCreated(ThreadId),
+    DirectThreadEnsured(DirectThreadEnsured),
     Invitation(InvitationId),
     AlreadyJoined(AlreadyJoined),
     Joined(ThreadId),
@@ -108,6 +109,72 @@ pub enum CommandResult {
     BootstrapRecovered(Box<crate::protocol::handoff::BootstrapRecoveryResult>),
     LinkedBootstrapCompleted(Box<crate::protocol::handoff::CompletedBootstrapResult>),
     HandoffDelivery(crate::protocol::handoff::DeliveryResult),
+}
+
+/// Canonical selection at Ensure time; replay never reinterprets the episode.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DirectThreadEnsured {
+    pub thread: ThreadId,
+    pub recipient: SeatId,
+    pub outcome: DirectThreadEnsureOutcome,
+    pub invitation: Option<DirectThreadInvitation>,
+}
+impl DirectThreadEnsured {
+    pub(crate) fn admission_witness(thread: ThreadId, recipient: SeatId) -> Self {
+        Self {
+            thread,
+            recipient,
+            outcome: DirectThreadEnsureOutcome::ExistingPending,
+            invitation: Some(DirectThreadInvitation {
+                id: InvitationId::new("\\".repeat(128)),
+                episode: u64::MAX,
+                confirmation: crate::protocol::commands::InvitationConfirmation::RequireAck,
+                effective_deadline_at: Some(UtcMillis(i64::MIN)),
+                inviter: Some(SeatId::new("\\".repeat(128))),
+            }),
+        }
+    }
+    pub(crate) fn validate(&self) -> Result<(), &'static str> {
+        use crate::protocol::commands::InvitationConfirmation;
+        match (&self.outcome, &self.invitation) {
+            (DirectThreadEnsureOutcome::AlreadyJoined, None) => Ok(()),
+            (
+                DirectThreadEnsureOutcome::Created | DirectThreadEnsureOutcome::ExistingPending,
+                Some(invitation),
+            ) if invitation.episode > 0
+                && match invitation.confirmation {
+                    InvitationConfirmation::Lazy => invitation.effective_deadline_at.is_none(),
+                    InvitationConfirmation::RequireAck => {
+                        invitation.effective_deadline_at.is_some()
+                    }
+                } =>
+            {
+                Ok(())
+            }
+            _ => Err("invalid direct invitation selection"),
+        }
+    }
+    /// Surrounding delivery output already identifies the selected pair.
+    pub(crate) fn presentation(&self) -> serde_json::Value {
+        serde_json::json!({"outcome":self.outcome,"invitation":self.invitation})
+    }
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DirectThreadEnsureOutcome {
+    Created,
+    ExistingPending,
+    AlreadyJoined,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DirectThreadInvitation {
+    pub id: InvitationId,
+    pub episode: u64,
+    pub confirmation: crate::protocol::commands::InvitationConfirmation,
+    pub effective_deadline_at: Option<UtcMillis>,
+    pub inviter: Option<SeatId>,
 }
 
 /// Retained recipient decision; reason is untrusted peer data.
