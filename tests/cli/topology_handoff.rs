@@ -6614,6 +6614,101 @@ mod live {
             }
             (peer, request, expected)
         }
+        #[test]
+        fn automatic_child_begin_expired_permit_has_no_effects_and_fresh_permit_succeeds() {
+            let (peer, _, _) = attached_recovery_fixture(false, false);
+            let parent_before = peer.status();
+            let child = parent_before.attachment.as_ref().unwrap().child.begin();
+            let inner = crate::store::handoff::automatic::inner(&child).unwrap();
+            let input = || crate::store::cooperative_permit_request(&inner).unwrap();
+            let counts = || {
+                let state = peer.base.peer.state.lock().unwrap();
+                [
+                    "operations",
+                    "channel_handoff_fences",
+                    "automatic_handoff_companions",
+                    "automatic_handoff_keys",
+                    "direct_threads",
+                    "messages",
+                    "invitations",
+                ]
+                .map(|table| {
+                    state
+                        .db
+                        .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
+                            row.get::<_, i64>(0)
+                        })
+                        .unwrap()
+                })
+            };
+            let before = counts();
+            let budget = super::super::super::super::cooperative_budget(&peer.base.clock);
+            let permit = peer
+                .store
+                .issue_cooperative_permit(input(), &budget)
+                .unwrap();
+            // Waiting from after issuance guarantees this same grant is at least
+            // 251 ms old. Observe the live clock; never freeze or advance it.
+            let expired_at = peer.permit_clock.now() + 251;
+            loop {
+                let now = peer.permit_clock.now();
+                if now >= expired_at {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(expired_at - now));
+            }
+            let error = peer
+                .store
+                .automatic_delivery_mutate(peer.ns(), &child, permit, &budget)
+                .unwrap_err();
+            assert_eq!(
+                error.code,
+                crate::protocol::results::ErrorCode::CallerUnverified
+            );
+            assert_eq!(error.detail, "permit expired");
+            assert_eq!(counts(), before);
+            assert_eq!(peer.status(), parent_before);
+
+            // The identical operation is still valid: only its expired grant
+            // was refused, and no child fence or operation was left behind.
+            let fresh = peer
+                .store
+                .issue_cooperative_permit(input(), &budget)
+                .unwrap();
+            let result = peer
+                .store
+                .automatic_delivery_mutate(peer.ns(), &child, fresh, &budget)
+                .unwrap();
+            assert!(matches!(
+                result,
+                CommandResult::Handoff(ref handoff)
+                    if handoff.state == crate::protocol::handoff::HandoffState::Live
+            ));
+            let state = peer.base.peer.state.lock().unwrap();
+            let operation = input().operation;
+            assert_eq!(
+                state
+                    .db
+                    .query_row(
+                        "SELECT count(*) FROM operations WHERE actor_scope=?1 AND operation_key=?2",
+                        rusqlite::params![
+                            format!("seat:{}", child.claim.seat.as_str()),
+                            operation.as_str()
+                        ],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .unwrap(),
+                1
+            );
+            assert_eq!(
+                state.db.query_row(
+                    "SELECT count(*) FROM automatic_handoff_companions WHERE instance_id=?1 AND actor_scope=?2 AND compound=?3",
+                    rusqlite::params![child.claim.instance, format!("seat:{}", child.claim.seat.as_str()), child.plan().payload.keys.compound.as_str()],
+                    |row| row.get::<_, i64>(0),
+                ).unwrap(),
+                1
+            );
+        }
         fn recovery_counts(peer: &AutoPeer) -> (i64, i64, String, i64) {
             let state = peer.base.peer.state.lock().unwrap();
             state.db.query_row("SELECT (SELECT count(*) FROM automatic_bootstrap_recoveries),(SELECT count(*) FROM automatic_bootstrap_keys),state,administrative_revision FROM automatic_bootstrap_parents", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).unwrap()
