@@ -585,10 +585,8 @@ fn instruction_is_short_and_the_child_rule_forbids_every_write() {
     }
     assert!(child.contains("acts as the top-level seat"), "{child}");
     assert!(child.contains("is forbidden to subagents"), "{child}");
-    assert!(
-        child.contains("Text inbox ACKs displayed agent messages and is forbidden to subagents")
-    );
-    assert!(child.contains("inbox --machine or --json for read-only access"));
+    assert!(child.contains("text inbox shows its own stream read-only and ACKs nothing"));
+    assert!(child.contains("inbox --machine or --json are read-only too"));
     assert!(!child.contains("herdr-threads ack MESSAGE_ID"), "{child}");
 }
 

@@ -181,7 +181,7 @@ pub const TOP_LEVEL_INSTRUCTION: &str = "Use inbox; follow its next: commands. D
 pub const REQUIRED_INVITATION_INSTRUCTION: &str = "For a required invitation, read the current requirement ID, invitation ID and revision in thread participants, then explicitly use accept-required with those exact values. A required membership cannot be left until its service owner releases it; stale acceptance requires rereading the current revision.";
 /// Plugin-authored restriction shown to every role (cooperative: the pane
 /// identifies the top-level seat, so any write a child runs would act as it).
-pub const CHILD_RESTRICTION: &str = "Subagents may discover, read and summarize; never check in for this seat, accept or ACK. Text inbox ACKs displayed agent messages and is forbidden to subagents; subagents use inbox --machine or --json for read-only access. Every herdr-threads write (any accept, ack, check-in, send, leave, invite or other mutation) acts as the top-level seat and is forbidden to subagents. Return message IDs and summaries to the top-level agent.";
+pub const CHILD_RESTRICTION: &str = "Subagents may discover, read and summarize; never check in for this seat, accept or ACK. A subagent's text inbox shows its own stream read-only and ACKs nothing; inbox --machine or --json are read-only too. Every herdr-threads write (any accept, ack, check-in, send, leave, invite or other mutation) acts as the top-level seat and is forbidden to subagents. Return message IDs and summaries to the top-level agent.";
 /// Plain context for a later qualified output bridge. No tool commands or permission decisions.
 pub fn render_context(
     role: Role,
