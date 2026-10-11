@@ -1986,3 +1986,27 @@ mod lineage {
         assert_eq!(cursor(&db, &successor), Some(2));
     }
 }
+
+/// ht-54r.25: the side-effect registries are wired. A hook that is written but not registered
+/// compiles and passes its own unit test, so the names and order are pinned here.
+mod registries {
+    use super::*;
+
+    // Kills: an enroll hook dropped from the registry, or the two reordered (the placeholder must
+    // go before the same-process supersede decides against the seat's remaining bindings).
+    #[test]
+    fn enroll_hooks_are_the_placeholder_replace_then_the_same_pid_supersede() {
+        let names: Vec<&str> = ENROLL_HOOKS.iter().map(|(name, _)| *name).collect();
+        assert_eq!(names, ["launch_placeholder_replace", "same_pid_supersede"]);
+    }
+
+    // Kills: a disconnect side effect (mod channel release, availability recompute) that exists but
+    // is not registered, so a disconnect leaves a stale channel or availability.
+    #[test]
+    fn disconnect_hooks_release_the_mod_channel_and_recompute_availability() {
+        let names: Vec<&str> = DISCONNECT_HOOKS.iter().map(|(name, _)| *name).collect();
+        assert!(names.contains(&"mod_channel_release"), "{names:?}");
+        assert!(names.contains(&"availability_recompute"), "{names:?}");
+        assert_eq!(names.len(), 2, "an unlisted hook needs a test: {names:?}");
+    }
+}

@@ -154,7 +154,7 @@ priority = 60
 test-group = "hermes-smoke"
 
 [[profile.default.overrides]]
-filter = "binary(integration) & test(/session_bindings_smoke::/)"
+filter = "binary(integration) & test(/session_bindings_(smoke|e2e)::/)"
 priority = 60
 test-group = "session-bindings-smoke"
 

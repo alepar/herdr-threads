@@ -23,12 +23,12 @@ use std::{
     time::{Duration, Instant},
 };
 
-const BIN: &str = env!("CARGO_BIN_EXE_herdr-threads");
+pub(super) const BIN: &str = env!("CARGO_BIN_EXE_herdr-threads");
 /// Exit status of a refused agent call (`EXIT_UNSUPPORTED`).
-const REFUSED: i32 = 4;
+pub(super) const REFUSED: i32 = 4;
 
 /// Polls `done` until it holds; the bound is a hang guard, never a wait.
-fn wait_until(what: &str, timeout: Duration, mut done: impl FnMut() -> bool) {
+pub(super) fn wait_until(what: &str, timeout: Duration, mut done: impl FnMut() -> bool) {
     let until = Instant::now() + timeout;
     while !done() {
         assert!(Instant::now() < until, "timed out waiting for {what}");
@@ -38,26 +38,26 @@ fn wait_until(what: &str, timeout: Duration, mut done: impl FnMut() -> bool) {
 
 /// One agent process of a configuration.
 #[derive(Clone)]
-struct Agent {
-    harness: &'static str,
-    session: String,
-    pane: String,
+pub(super) struct Agent {
+    pub(super) harness: &'static str,
+    pub(super) session: String,
+    pub(super) pane: String,
     /// `Some(thread)`: Codex's `CODEX_THREAD_ID` (a subagent when it differs from the session).
-    thread: Option<String>,
+    pub(super) thread: Option<String>,
     /// Real ancestry through a synthetic harness parent instead of a stand-in process.
-    shim: bool,
+    pub(super) shim: bool,
     /// Export no session variable (a pre-upgrade agent).
-    no_session: bool,
+    pub(super) no_session: bool,
     /// The shim's parent is `codex app-server --managed-daemon ...`.
-    managed_daemon: bool,
+    pub(super) managed_daemon: bool,
     /// The pid of an existing stand-in process this agent runs inside (a `/clear` or a resume is
     /// the same harness process under a new session id).
-    process: Option<i64>,
+    pub(super) process: Option<i64>,
     /// Variables inherited from an outer harness (the `hermes -z` from Claude's Bash tool case).
-    inherited: Vec<(&'static str, String)>,
+    pub(super) inherited: Vec<(&'static str, String)>,
 }
 impl Agent {
-    fn new(harness: &'static str, session: &str, pane: &str) -> Self {
+    pub(super) fn new(harness: &'static str, session: &str, pane: &str) -> Self {
         Self {
             harness,
             session: session.to_owned(),
@@ -70,45 +70,45 @@ impl Agent {
             inherited: Vec::new(),
         }
     }
-    fn claude(session: &str, pane: &str) -> Self {
+    pub(super) fn claude(session: &str, pane: &str) -> Self {
         Self::new("claude", session, pane)
     }
-    fn codex(session: &str, pane: &str) -> Self {
+    pub(super) fn codex(session: &str, pane: &str) -> Self {
         Self::new("codex", session, pane)
     }
-    fn hermes(session: &str, pane: &str) -> Self {
+    pub(super) fn hermes(session: &str, pane: &str) -> Self {
         Self::new("hermes", session, pane)
     }
-    fn shimmed(mut self) -> Self {
+    pub(super) fn shimmed(mut self) -> Self {
         self.shim = true;
         self
     }
-    fn without_session(mut self) -> Self {
+    pub(super) fn without_session(mut self) -> Self {
         self.no_session = true;
         self
     }
-    fn under_managed_daemon(mut self) -> Self {
+    pub(super) fn under_managed_daemon(mut self) -> Self {
         self.shim = true;
         self.managed_daemon = true;
         self
     }
-    fn in_process_of(mut self, binding: &Binding) -> Self {
+    pub(super) fn in_process_of(mut self, binding: &Binding) -> Self {
         self.process = Some(binding.pid.expect("the binding carries its harness pid"));
         self
     }
-    fn in_process(mut self, pid: i64) -> Self {
+    pub(super) fn in_process(mut self, pid: i64) -> Self {
         self.process = Some(pid);
         self
     }
-    fn thread(mut self, thread: &str) -> Self {
+    pub(super) fn thread(mut self, thread: &str) -> Self {
         self.thread = Some(thread.to_owned());
         self
     }
-    fn inheriting(mut self, variable: &'static str, value: &str) -> Self {
+    pub(super) fn inheriting(mut self, variable: &'static str, value: &str) -> Self {
         self.inherited.push((variable, value.to_owned()));
         self
     }
-    fn session_variable(&self) -> &'static str {
+    pub(super) fn session_variable(&self) -> &'static str {
         match self.harness {
             "claude" => "CLAUDE_CODE_SESSION_ID",
             "codex" => "CODEX_SESSION_ID",
@@ -118,67 +118,67 @@ impl Agent {
 }
 
 /// A finished command.
-struct Out {
-    code: i32,
-    stdout: String,
-    stderr: String,
+pub(super) struct Out {
+    pub(super) code: i32,
+    pub(super) stdout: String,
+    pub(super) stderr: String,
 }
 impl Out {
-    fn of(output: Output) -> Self {
+    pub(super) fn of(output: Output) -> Self {
         Self {
             code: output.status.code().unwrap_or(-1),
             stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
             stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
         }
     }
-    fn json(&self) -> Value {
+    pub(super) fn json(&self) -> Value {
         serde_json::from_str(&self.stdout)
             .unwrap_or_else(|e| panic!("stdout is not JSON ({e}): {}{}", self.stdout, self.stderr))
     }
     /// `result.data` of a successful `--json` call.
-    fn data(&self) -> Value {
+    pub(super) fn data(&self) -> Value {
         assert_eq!(self.code, 0, "{}{}", self.stdout, self.stderr);
         self.json()["result"]["data"].clone()
     }
-    fn text(&self) -> String {
+    pub(super) fn text(&self) -> String {
         format!("{}{}", self.stdout, self.stderr)
     }
 }
 
 /// An open or ended binding row.
 #[derive(Debug, Clone, PartialEq)]
-struct Binding {
-    id: String,
-    harness: String,
-    session: String,
-    role: String,
-    agent_id: String,
-    liveness: String,
-    reason: Option<String>,
-    provenance: String,
-    pid: Option<i64>,
-    ended: bool,
-    parent: Option<String>,
+pub(super) struct Binding {
+    pub(super) id: String,
+    pub(super) harness: String,
+    pub(super) session: String,
+    pub(super) role: String,
+    pub(super) agent_id: String,
+    pub(super) liveness: String,
+    pub(super) reason: Option<String>,
+    pub(super) provenance: String,
+    pub(super) pid: Option<i64>,
+    pub(super) ended: bool,
+    pub(super) parent: Option<String>,
 }
 
-struct Smoke {
-    herdr: IsolatedHerdr,
-    state: PathBuf,
-    cwd: PathBuf,
-    labels: usize,
+pub(super) struct Smoke {
+    pub(super) herdr: IsolatedHerdr,
+    pub(super) state: PathBuf,
+    pub(super) cwd: PathBuf,
+    pub(super) labels: usize,
     /// Stand-in harness processes started by `stand_in`, stopped with the fixture.
-    processes: Vec<spawn::OwnedChild>,
+    pub(super) processes: Vec<spawn::OwnedChild>,
 }
 
 impl Smoke {
     /// An isolated Herdr, state dir and daemon. `None` (after `IsolatedHerdr` prints
     /// `skipped: no herdr: <case>`) when herdr is absent and `HT_SKIP_HERDR_TESTS=1`.
-    fn new(case: &'static str) -> Option<Self> {
+    pub(super) fn new(case: &'static str) -> Option<Self> {
         Self::with_settings(case, "")
     }
 
     /// `extra` is spliced into the daemon's settings object (`"key":value,`).
-    fn with_settings(case: &'static str, extra: &str) -> Option<Self> {
+    pub(super) fn with_settings(case: &'static str, extra: &str) -> Option<Self> {
         let herdr = IsolatedHerdr::new(case)?;
         let root = herdr.root().to_path_buf();
         fs::create_dir_all(root.join("cfg")).unwrap();
@@ -199,7 +199,7 @@ impl Smoke {
 
     /// `{"harness_manifest":"off"}` before anything starts the daemon, so harness admission does
     /// not depend on the embedded manifest (as the Hermes smoke does).
-    fn write_settings(&self, extra: &str) {
+    pub(super) fn write_settings(&self, extra: &str) {
         let paths = self.paths();
         paths.prepare_instance_dir().unwrap();
         let settings = paths
@@ -209,7 +209,7 @@ impl Smoke {
         fs::set_permissions(&settings, fs::Permissions::from_mode(0o600)).unwrap();
     }
 
-    fn paths(&self) -> herdr_threads::daemon::paths::InstancePaths {
+    pub(super) fn paths(&self) -> herdr_threads::daemon::paths::InstancePaths {
         let runtime = herdr_threads::daemon::paths::RuntimeContext::explicit(
             self.state.clone(),
             self.herdr.socket_path(),
@@ -220,7 +220,7 @@ impl Smoke {
     }
 
     /// A new long-lived process to run an agent in: its pid is the agent's liveness fingerprint.
-    fn stand_in(&mut self) -> i64 {
+    pub(super) fn stand_in(&mut self) -> i64 {
         let child = Command::new("/bin/sleep")
             .arg("86400")
             .stdin(Stdio::null())
@@ -233,7 +233,7 @@ impl Smoke {
         pid
     }
 
-    fn routing(&self) -> Vec<String> {
+    pub(super) fn routing(&self) -> Vec<String> {
         [
             "--state-dir",
             self.state.to_str().unwrap(),
@@ -246,7 +246,7 @@ impl Smoke {
 
     /// The private environment every child gets: scrubbed, isolated HOME and config homes under
     /// the Herdr root, never the real ones.
-    fn private(&self, command: &mut Command, pane: Option<&str>) {
+    pub(super) fn private(&self, command: &mut Command, pane: Option<&str>) {
         let root = self.herdr.root();
         scrub_env(command);
         command.envs(self.herdr.env());
@@ -262,7 +262,7 @@ impl Smoke {
         }
     }
 
-    fn finish(mut command: Command, stdin: Option<&[u8]>) -> Out {
+    pub(super) fn finish(mut command: Command, stdin: Option<&[u8]>) -> Out {
         command
             .stdin(if stdin.is_some() {
                 Stdio::piped()
@@ -279,7 +279,7 @@ impl Smoke {
     }
 
     /// A person (no harness parent, no harness markers), `--json`, optionally in `pane`.
-    fn human(&self, pane: Option<&str>, args: &[&str]) -> Out {
+    pub(super) fn human(&self, pane: Option<&str>, args: &[&str]) -> Out {
         let mut command = spawn::command(BIN);
         self.private(&mut command, pane);
         // `human` goes right after the executable, before the routing flags.
@@ -296,7 +296,7 @@ impl Smoke {
     }
 
     /// The command line of an agent's call: `argv` is everything after the executable.
-    fn agent_command(&self, who: &Agent, argv: &[String]) -> Command {
+    pub(super) fn agent_command(&self, who: &Agent, argv: &[String]) -> Command {
         let mut command = if who.shim {
             let args: Vec<&str> = argv.iter().map(String::as_str).collect();
             if who.managed_daemon {
@@ -332,7 +332,7 @@ impl Smoke {
     }
 
     /// An agent's CLI call, `--json`.
-    fn cli(&self, who: &Agent, args: &[&str]) -> Out {
+    pub(super) fn cli(&self, who: &Agent, args: &[&str]) -> Out {
         let argv: Vec<String> = ["--json".to_owned()]
             .into_iter()
             .chain(self.routing())
@@ -343,7 +343,7 @@ impl Smoke {
 
     /// An agent's CLI call in the default text format: the route that records body display (and
     /// so advances the caller's own cursor); `--json` reads are passive.
-    fn text(&self, who: &Agent, args: &[&str]) -> Out {
+    pub(super) fn text(&self, who: &Agent, args: &[&str]) -> Out {
         let argv: Vec<String> = self
             .routing()
             .into_iter()
@@ -353,7 +353,7 @@ impl Smoke {
     }
 
     /// `herdr-threads hook <harness>` fed one native payload.
-    fn hook(&self, who: &Agent, payload: &Value) -> Out {
+    pub(super) fn hook(&self, who: &Agent, payload: &Value) -> Out {
         let argv: Vec<String> = self
             .routing()
             .into_iter()
@@ -364,7 +364,7 @@ impl Smoke {
     }
 
     /// A fresh `herdr workspace create` root pane (never a pane we did not make).
-    fn pane(&mut self) -> String {
+    pub(super) fn pane(&mut self) -> String {
         self.labels += 1;
         let label = format!("bindings-smoke-{}", self.labels);
         let out = self
@@ -389,14 +389,14 @@ impl Smoke {
             .to_owned()
     }
 
-    fn herdr_api(&self, args: &[&str]) -> Value {
+    pub(super) fn herdr_api(&self, args: &[&str]) -> Value {
         let output = self.herdr.command("herdr").args(args).output().unwrap();
         assert!(output.status.success(), "herdr {args:?} failed: {output:?}");
         let value: Value = serde_json::from_slice(&output.stdout).unwrap();
         value["result"].clone()
     }
 
-    fn seat(&self, pane: &str) -> String {
+    pub(super) fn seat(&self, pane: &str) -> String {
         self.human(None, &["seat", "resolve", "--pane", pane])
             .data()
             .as_str()
@@ -404,18 +404,18 @@ impl Smoke {
             .to_owned()
     }
 
-    fn db(&self) -> rusqlite::Connection {
+    pub(super) fn db(&self) -> rusqlite::Connection {
         let db = rusqlite::Connection::open(self.paths().database_path).unwrap();
         db.busy_timeout(Duration::from_secs(5)).unwrap();
         db
     }
 
-    fn count(&self, sql: &str, params: &[&dyn rusqlite::ToSql]) -> i64 {
+    pub(super) fn count(&self, sql: &str, params: &[&dyn rusqlite::ToSql]) -> i64 {
         self.db().query_row(sql, params, |row| row.get(0)).unwrap()
     }
 
     /// Every binding row of the seat, oldest first; ended rows included.
-    fn all_bindings(&self, seat: &str) -> Vec<Binding> {
+    pub(super) fn all_bindings(&self, seat: &str) -> Vec<Binding> {
         let db = self.db();
         let mut statement = db
             .prepare(
@@ -446,14 +446,14 @@ impl Smoke {
     }
 
     /// The seat's open (not ended) bindings.
-    fn bindings(&self, seat: &str) -> Vec<Binding> {
+    pub(super) fn bindings(&self, seat: &str) -> Vec<Binding> {
         self.all_bindings(seat)
             .into_iter()
             .filter(|b| !b.ended)
             .collect()
     }
 
-    fn binding(&self, seat: &str, harness: &str, session: &str, agent: &str) -> Binding {
+    pub(super) fn binding(&self, seat: &str, harness: &str, session: &str, agent: &str) -> Binding {
         let found: Vec<Binding> = self
             .bindings(seat)
             .into_iter()
@@ -468,7 +468,7 @@ impl Smoke {
         found[0].clone()
     }
 
-    fn cursor(&self, binding: &str, thread: &str) -> Option<i64> {
+    pub(super) fn cursor(&self, binding: &str, thread: &str) -> Option<i64> {
         self.db()
             .query_row(
                 "SELECT seq FROM binding_cursors WHERE binding_id=?1 AND thread_id=?2",
@@ -479,7 +479,7 @@ impl Smoke {
     }
 
     /// Every row of `table`, for a failure message.
-    fn dump(&self, table: &str) -> String {
+    pub(super) fn dump(&self, table: &str) -> String {
         let db = self.db();
         let mut statement = db.prepare(&format!("SELECT * FROM {table}")).unwrap();
         let columns: Vec<String> = statement
@@ -500,7 +500,7 @@ impl Smoke {
             .join(" | ")
     }
 
-    fn head(&self, thread: &str) -> i64 {
+    pub(super) fn head(&self, thread: &str) -> i64 {
         self.count(
             "SELECT COALESCE(MAX(sequence),0) FROM messages WHERE thread_id=?1",
             &[&thread],
@@ -523,21 +523,21 @@ impl Drop for Smoke {
 
 // ---- synthetic native payloads ---------------------------------------------------------------
 
-fn claude_start(session: &str, source: &str) -> Value {
+pub(super) fn claude_start(session: &str, source: &str) -> Value {
     json!({
         "hook_event_name": "SessionStart", "session_id": session,
         "transcript_path": "/tmp/t.jsonl", "cwd": "/tmp", "source": source,
     })
 }
 
-fn claude_subagent(event: &str, session: &str, agent: &str) -> Value {
+pub(super) fn claude_subagent(event: &str, session: &str, agent: &str) -> Value {
     json!({
         "hook_event_name": event, "session_id": session,
         "agent_id": agent, "agent_type": "worker",
     })
 }
 
-fn claude_tool(session: &str, command: &str, agent: Option<&str>) -> Value {
+pub(super) fn claude_tool(session: &str, command: &str, agent: Option<&str>) -> Value {
     let mut payload = json!({
         "hook_event_name": "PreToolUse", "session_id": session,
         "transcript_path": "/tmp/t.jsonl", "cwd": "/tmp", "permission_mode": "default",
@@ -602,7 +602,12 @@ fn hermes_envelope(row: &str, session: &str, event: &str) -> Value {
 
 /// A thread `owner` created and `member` joined, `member` already enrolled so every one of its
 /// bindings is seeded at the join point.
-fn joined_thread(smoke: &Smoke, owner: &Agent, member: &Agent, member_seat: &str) -> String {
+pub(super) fn joined_thread(
+    smoke: &Smoke,
+    owner: &Agent,
+    member: &Agent,
+    member_seat: &str,
+) -> String {
     let thread = smoke
         .cli(owner, &["thread", "create", "--topic", "smoke"])
         .data()
