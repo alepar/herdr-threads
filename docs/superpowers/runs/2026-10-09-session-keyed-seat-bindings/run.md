@@ -1,7 +1,7 @@
 # super-auto run — 2026-10-09-session-keyed-seat-bindings
 
 flags: planOneShot=f skipPlanRoast=f skipCodeRoast=f autonomous=t
-phase: finish
+phase: fix-loop
 codeMechanism: Workflow
 
 idea: Goal: implement the new herdr-threads seat-bindings model we designed in this session, absorbing the Hermes global-enrollment work (ht-4ne, branch super-auto/hermes-global-enrollment, unmerged) it sprang from. Flags: planOneShot=false (interactive Mode A design for remaining questions), skipPlanRoast=false, skipCodeRoast=false, autonomous=true from after the design. The Codex CODEX_EXEC_SERVER_URL pane-env installer step runs separately on branch codex-daemon-env and is out of scope here.
@@ -67,3 +67,4 @@ sweepFix-prefiled: scripts/check-harness-neutral 68 violations → ht-54r.71 (fi
 sweepFix: 4 failing → ht-54r.72 ht-54r.73 ht-54r.74 ht-54r.75 · re-run abe1bf03 — 5471 passed, 0 failed, 0 errors, 44 skipped; failing: none; command: nice cargo nextest run --locked --all-targets --all-features --no-fail-fast (+ scripts/check-harness-neutral exit 0, check-no-leaked-processes clean, wall 258s) @ abe1bf03
 friction: 12 events
 feedback: parked — docs/superpowers/runs/2026-10-09-session-keyed-seat-bindings/upstream-feedback-draft.md (not filed; deliver via Herdr superpowers tab on approval)
+- post-hand-back fix round · decision · "while the phase-7 menu awaits the human, one bounded fix round on punch-listed correctness defects (deviation from converged-exit rule): ht-54r.76 ht-54r.77 ht-54r.78 ht-54r.79 ht-54r.80; spec deviations needing sign-off (/clear wake, single-target composer, disconnected ACK) untouched; re-sweep and post-cap audit after."
