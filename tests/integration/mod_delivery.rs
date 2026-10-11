@@ -3765,8 +3765,8 @@ fn fresh_watch_after_accept_prints_no_attention() {
     watch.assert_no_line("attention", QUIET, |l| l["kind"] == "attention");
 }
 
-/// ht-j16.33: an attention line whose invitation was accepted, or whose
-/// notices a check-in offered, is retracted with `attention_cleared`.
+/// ht-j16.33: accepting a confirming invitation or carrying a notice on V2
+/// Watch clears the matching attention epoch. Keep the historical selector.
 #[test]
 fn stale_attention_is_retracted_after_accept_and_after_a_notice_offer() {
     use herdr_threads::{
@@ -3783,7 +3783,7 @@ fn stale_attention_is_retracted_after_accept_and_after_a_notice_offer() {
     };
 
     let rig = Rig::new();
-    // (a) an invitation, then B accepts it.
+    // (a) a confirming invitation, then B accepts it.
     let mut watch = rig.watch(SESSION_B);
     watch.wait_connected();
     let other = rig
@@ -3794,10 +3794,14 @@ fn stale_attention_is_retracted_after_accept_and_after_a_notice_offer() {
         .text("thread create");
     rig.cli(
         Some((&rig.a, PANE_A)),
-        &["invite", &other, "--seat", &rig.b],
+        &["invite", &other, "--seat", &rig.b, "--require-ack"],
     )
     .data("invite");
-    watch.wait_attention_marker();
+    let attention = watch.wait_attention_marker();
+    assert!(
+        attention["presentation_epoch"].as_str().is_some(),
+        "{attention}"
+    );
     rig.cli(Some((&rig.b, PANE_B)), &["accept", &other])
         .data("accept");
     let cleared = watch.wait_line("the retraction", STEP, |l| l["kind"] == "attention_cleared");
@@ -3809,9 +3813,13 @@ fn stale_attention_is_retracted_after_accept_and_after_a_notice_offer() {
         "{cleared}"
     );
     assert!(cleared["attention_version"].as_u64().is_some(), "{cleared}");
+    assert_eq!(
+        cleared["presentation_epoch"],
+        attention["presentation_epoch"]
+    );
 
-    // (b) a notice published with no live channel, a connect that shows it,
-    // then a check-in that offers (settles) it.
+    // (b) a notice published with no live channel, then carried and settled
+    // by the replacement Watch before any hook can offer it again.
     // The killed child leaves the channel in reconnect grace; the next watch
     // replaces it.
     rig.kill(&mut watch);
@@ -3878,20 +3886,83 @@ fn stale_attention_is_retracted_after_accept_and_after_a_notice_offer() {
                 .await
                 .unwrap();
         });
+    // Start the replacement only after the real worker has attributed Warn
+    // to B; its initial Pull then observes that open relevance condition.
+    wait_until("the stale notice projection", STEP, || {
+        let count: i64 = rig.db().query_row(
+            "SELECT count(*) FROM digest_programmatic_warnings WHERE seat_id=?1 AND thread_id=?2",
+            [&rig.b, managed.as_str()], |row| row.get(0),
+        ).unwrap();
+        (count > 0).then_some(())
+    });
     let mut watch = rig.watch(SESSION_B);
     watch.wait_connected();
-    watch.wait_attention_marker();
-    // The check-in offers the pending notice and settles it.
-    let shown = wait_until("the notice in the PreToolUse hook", STEP, || {
-        let out = rig.hook(PANE_B, &pre_tool_use(SESSION_B));
-        out.stdout.contains("offered notices").then_some(out)
-    });
+    let attention = watch.wait_attention_marker();
     assert!(
-        shown.stdout.contains("thread-notice-stale"),
-        "{:?}",
-        shown.stdout
+        attention["presentation_epoch"].as_str().is_some(),
+        "{attention}"
     );
-    watch.wait_line("the retraction", STEP, |l| l["kind"] == "attention_cleared");
+    // Notice can precede Attention in the same flushed page. Retain that
+    // actual stdout witness instead of waiting for a second offer.
+    let notice = watch
+        .seen
+        .iter()
+        .find(|line| line["kind"] == "notice" && line["thread"] == managed.as_str())
+        .cloned()
+        .unwrap_or_else(|| {
+            watch.wait_line("the stale Watch notice", STEP, |line| {
+                line["kind"] == "notice" && line["thread"] == managed.as_str()
+            })
+        });
+    let warning = notice["warning"]
+        .as_str()
+        .filter(|id| !id.is_empty())
+        .unwrap();
+    assert_eq!(notice["schema"], 1);
+    assert_eq!(notice["id"], format!("notice:{warning}"));
+    assert_eq!(
+        notice["body"],
+        format!(
+            "informational, no ACK; read: herdr-threads --state-dir {} body {warning}",
+            rig.state.display()
+        )
+    );
+    assert!(notice.get("ack_required").is_none(), "{notice}");
+    let (offered_generation, offered_execution, frontier, ordinal, generation, execution, thread):
+        (i64, String, i64, i64, i64, String, String) = rig.db().query_row(
+            "SELECT o.binding_generation,o.execution_id,o.offered_ordinal,d.ordinal,b.generation,b.execution_id,d.thread_id FROM digest_notice_offer o JOIN digest_programmatic_warnings d ON d.seat_id=o.seat_id JOIN seats s ON s.id=o.seat_id JOIN occupant_bindings b ON b.seat_id=s.id AND b.generation=s.generation AND b.ended_at IS NULL WHERE o.seat_id=?1 AND d.warning_id=?2",
+            [&rig.b, warning],
+            |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?)),
+        ).unwrap();
+    assert_eq!(thread, managed.as_str());
+    assert_eq!(offered_generation, generation);
+    assert_eq!(offered_execution, execution);
+    assert_ne!(execution, SESSION_B);
+    assert!(ordinal > 0 && frontier >= ordinal);
+    // The replacement may replay the earlier invitation's clear as well.
+    // Retraction of this notice must name its own emitted Attention epoch.
+    let is_notice_clear = |line: &Value| {
+        line["kind"] == "attention_cleared"
+            && line["presentation_epoch"] == attention["presentation_epoch"]
+    };
+    let cleared = watch
+        .seen
+        .iter()
+        .find(|line| is_notice_clear(line))
+        .cloned()
+        .unwrap_or_else(|| watch.wait_line("the scoped notice retraction", STEP, is_notice_clear));
+    assert_eq!(
+        cleared["presentation_epoch"],
+        attention["presentation_epoch"]
+    );
+    let hook = rig.hook(PANE_B, &pre_tool_use(SESSION_B));
+    assert_eq!(hook.code, 0, "{}{}", hook.stdout, hook.stderr);
+    assert!(
+        !hook.stdout.contains("offered notices"),
+        "{:?}",
+        hook.stdout
+    );
+    assert_eq!(rig.mod_ack_events(), 0);
     assert_eq!(rig.channel_state().as_deref(), Some("live"));
     assert!(watch.running(), "the watch child died");
 }
@@ -4179,9 +4250,8 @@ fn session_start_and_pre_tool_use_emit_no_digest_while_live() {
     );
 }
 
-/// ht-j16.21: a notice published while the channel is live is offered by the
-/// next PreToolUse hook, once; the digest stays suppressed and the channel
-/// stays live (spec D7: the live channel carries attention, not notices).
+/// ht-j16.21: live V2 Watch carries a notice once; subsequent PreToolUse
+/// hooks stay quiet. Keep the historical selector for the test inventory.
 #[test]
 fn notice_published_while_live_reaches_the_next_pre_tool_use_once() {
     use herdr_threads::{
@@ -4217,7 +4287,7 @@ fn notice_published_while_live_reaches_the_next_pre_tool_use_once() {
         cancellation: Cancellation::default(),
     };
     let managed = ThreadId::new("thread-notice-live");
-    tokio::runtime::Builder::new_current_thread()
+    let mark = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .unwrap()
@@ -4252,6 +4322,7 @@ fn notice_published_while_live_reaches_the_next_pre_tool_use_once() {
             // same connection (one runtime: the client is bound to it).
             rig.cli(Some((&rig.b, PANE_B)), &["accept", managed.as_str()])
                 .data("accept");
+            let mark = rig.host.mark();
             client
                 .submit(
                     ServiceOperation::Notify(ServiceNotify {
@@ -4264,33 +4335,70 @@ fn notice_published_while_live_reaches_the_next_pre_tool_use_once() {
                 )
                 .await
                 .unwrap();
+            mark
         });
-    // The notice projection runs on a worker: poll the hook until it shows.
-    let shown = wait_until("the notice in the PreToolUse hook", STEP, || {
-        let out = rig.hook(PANE_B, &pre_tool_use(SESSION_B));
-        out.stdout.contains("offered notices: 1").then_some(out)
+    // Establish the actual Watch delivery before invoking either hook.
+    let notice = watch.wait_line("the live Watch notice", STEP, |line| {
+        line["kind"] == "notice" && line["thread"] == managed.as_str()
     });
-    assert!(
-        !shown.stdout.contains(DIGEST_MARK),
-        "digest while live: {:?}",
-        shown.stdout
+    let warning = notice["warning"]
+        .as_str()
+        .filter(|id| !id.is_empty())
+        .unwrap();
+    assert_eq!(notice["schema"], 1);
+    assert_eq!(notice["id"], format!("notice:{warning}"));
+    assert_eq!(
+        notice["body"],
+        format!(
+            "informational, no ACK; read: herdr-threads --state-dir {} body {warning}",
+            rig.state.display()
+        )
     );
-    assert!(
-        !shown.stdout.contains("pending mail"),
-        "ready commands while live: {:?}",
-        shown.stdout
-    );
-    assert!(
-        shown.stdout.contains("thread-notice-live"),
-        "the offer names the notice's thread: {:?}",
-        shown.stdout
-    );
-    let again = rig.hook(PANE_B, &pre_tool_use(SESSION_B));
-    assert!(
-        !again.stdout.contains("offered notices"),
-        "the notice was offered twice: {:?}",
-        again.stdout
-    );
+    assert!(notice.get("ack_required").is_none(), "{notice}");
+    let (offered_generation, offered_execution, frontier, ordinal, generation, execution, thread):
+        (i64, String, i64, i64, i64, String, String) = rig.db().query_row(
+            "SELECT o.binding_generation,o.execution_id,o.offered_ordinal,d.ordinal,b.generation,b.execution_id,d.thread_id FROM digest_notice_offer o JOIN digest_programmatic_warnings d ON d.seat_id=o.seat_id JOIN seats s ON s.id=o.seat_id JOIN occupant_bindings b ON b.seat_id=s.id AND b.generation=s.generation AND b.ended_at IS NULL WHERE o.seat_id=?1 AND d.warning_id=?2",
+            [&rig.b, warning],
+            |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?)),
+        ).unwrap();
+    assert_eq!(thread, managed.as_str());
+    assert_eq!(offered_generation, generation);
+    assert_eq!(offered_execution, execution);
+    assert_ne!(execution, SESSION_B);
+    assert!(ordinal > 0 && frontier >= ordinal);
+    for _ in 0..2 {
+        let hook = rig.hook(PANE_B, &pre_tool_use(SESSION_B));
+        assert_eq!(hook.code, 0, "{}{}", hook.stdout, hook.stderr);
+        assert!(
+            !hook.stdout.contains(DIGEST_MARK),
+            "digest while live: {:?}",
+            hook.stdout
+        );
+        assert!(
+            !hook.stdout.contains("pending mail"),
+            "ready commands while live: {:?}",
+            hook.stdout
+        );
+        assert!(
+            !hook.stdout.contains("offered notices"),
+            "repeat notice offer: {:?}",
+            hook.stdout
+        );
+    }
+    // Scan prior and future real stdout, accepting exactly the one observed
+    // Notice while rejecting any repeat for this warning.
+    let occurrences = std::cell::Cell::new(0);
+    watch.assert_no_line("duplicate live Notice", QUIET, |line| {
+        if line["kind"] == "notice" && line["warning"] == warning {
+            occurrences.set(occurrences.get() + 1);
+            occurrences.get() > 1
+        } else {
+            false
+        }
+    });
+    assert_eq!(occurrences.get(), 1);
+    rig.assert_no_prompt(mark, Duration::ZERO);
+    assert_eq!(rig.mod_ack_events(), 0);
     assert_eq!(rig.channel_state().as_deref(), Some("live"));
     assert!(watch.running(), "the watch child died");
 }
