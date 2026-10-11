@@ -89,6 +89,15 @@ pub(crate) fn current(
 ) -> Result<Option<HandoffResult>, ApiError> {
     request.validate().map_err(ApiError::invalid_request)?;
     crate::store::topology_handoff::automatic::guard_child(db, request, true)?;
+    current_after_parent_guard(db, request)
+}
+// Both callers validate the request and its linked parent before entering this
+// unchanged child reader. Phase validation already uses the requested replay
+// mode (at least as strict as true), so it need not hydrate the parent twice.
+fn current_after_parent_guard(
+    db: &Connection,
+    request: &AutomaticDeliveryMutation,
+) -> Result<Option<HandoffResult>, ApiError> {
     let id = identity(request);
     let bytes: Option<Vec<u8>> = db.query_row("SELECT substr(original_json,1,?4) FROM automatic_handoff_companions WHERE instance_id=?1 AND actor_scope=?2 AND compound=?3",params![id.claim.instance,scope(&id),id.compound.as_str(),(MAX_ORIGINAL_BYTES+1) as u32],|r|r.get(0)).optional().map_err(store_error)?;
     let Some(bytes) = bytes else {
@@ -177,7 +186,8 @@ pub(crate) fn validate_phase(
     replay: bool,
 ) -> Result<(), ApiError> {
     crate::store::topology_handoff::automatic::guard_child(db, request, replay)?;
-    let saved = current(db, request)?;
+    request.validate().map_err(ApiError::invalid_request)?;
+    let saved = current_after_parent_guard(db, request)?;
     let Some(saved) = saved else {
         return if matches!(request.action, AutomaticDeliveryAction::Begin { .. }) {
             Ok(())
