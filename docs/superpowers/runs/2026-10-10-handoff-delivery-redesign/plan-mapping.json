@@ -1367,7 +1367,8 @@
       "tests/cli/skill.rs",
       "README.md",
       "integrations/skill/SKILL.md",
-      "TRUST-POLICY.md"
+      "TRUST-POLICY.md",
+      "tests/cli/lazy_recovery_context.rs"
     ]
   },
   {

@@ -1,6 +1,6 @@
 ## Task 14: Combined upstream composition focused integration proof
 
-filesTouched: ["tests/cli/direct_send.rs", "tests/cli/handoff.rs", "tests/cli/handoff_delivery.rs", "tests/cli/topology_handoff.rs", "tests/handoff_topology_authority.rs", "tests/handoff_topology_cli.rs", "tests/store/schema.rs", "tests/store/receipts.rs", "tests/integration/notice_wake.rs", "tests/integration/setup_canary_seam.rs", "tests/scheduler/deadlines.rs", "tests/cli/skill.rs", "README.md", "integrations/skill/SKILL.md", "TRUST-POLICY.md"]
+filesTouched: ["tests/cli/lazy_recovery_context.rs", "tests/cli/direct_send.rs", "tests/cli/handoff.rs", "tests/cli/handoff_delivery.rs", "tests/cli/topology_handoff.rs", "tests/handoff_topology_authority.rs", "tests/handoff_topology_cli.rs", "tests/store/schema.rs", "tests/store/receipts.rs", "tests/integration/notice_wake.rs", "tests/integration/setup_canary_seam.rs", "tests/scheduler/deadlines.rs", "tests/cli/skill.rs", "README.md", "integrations/skill/SKILL.md", "TRUST-POLICY.md"]
 
 bead: ht-0lo.8.3
 
@@ -59,3 +59,9 @@ Source registration confirms src/service/delivery_pull.rs paths tests/service/de
 ### Verification ownership and independent review
 
 Run focusedcombined selections on exact composedSHA, cargo fmt, nice cargo clippy --locked --all-targets --all-features -- -D warnings and scripts/check-harness-neutral, then ownfresh independentreview of combinedpublic/schema/wire/delivery interfaces INCLUDING cleanautomerge paths. Preserve Outside-adapter trailer accounting, token-efficientcontext and versionlessneutralcore constraints; no real ~/.gemini/otheruserconfig writes. Export uniqueHT_LEAK_RUN_ID BEFORE sweep, inherit in taggedownedchildren/privatefixtures, stopallownedchildren/servers/helpers and run scripts/check-no-leaked-processes --run-id "$HT_LEAK_RUN_ID" afterward. Record selected/pass/fail/ignored and exact artifact/sourceSHA; zero selected/setup failures are noevidence. Parent retains finalPRroast then finalexacttip defaultfeature/expensive readiness and notification; code coordinator closes the root only after all code-phase work and reviews clear. Report parent readiness deferred, notpassed. No routinefullsuite or additional production scope authorized here.
+
+### Latest main and composed producer follow-up
+
+Parent-approved final composition target is main `43cc19cd60c78306efc6c9cb16b7c46963c01355`, superseding020 only as final upstream ancestry. Exact020 A evidence remains unchanged. The sole020→43 change is tests/cli/lazy_recovery_context.rs: bounded30s/20ms wait for canonical send_attention projection before reading receipt rows; no runtime/schema delta. Coordinator composes43 serially before root promotion; retain the helper and all strong receipt assertions, review overlapping clean merges and run the actual registered combined lazy_recovery_context selection with nonzero count.
+
+C must also drive actual composed modern Lazy Ensure result→canonical invitation→AGY turn-hook/pull context, consuming B's actual policy result and D's final bounded frontiers/completeness implementation rather than fabricating metadata. Refresh the final D schema/API and finite-work/restart/revisit tests from its reviewed report before dispatch. Initial1025 automatic discovery and later adequate-budget full completion remain required; inspector-only saturation is not sufficient.
