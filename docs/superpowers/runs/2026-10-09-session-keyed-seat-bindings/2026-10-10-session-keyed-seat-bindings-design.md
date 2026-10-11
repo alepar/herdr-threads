@@ -438,3 +438,11 @@ one-shot disconnects when it exits.
 ## Post-Implementation Notes
 
 *As this design is implemented and iterated on — bug fixes, adjustments, anything that diverged from the assumptions above — append a dated note here, whether or not a formal debugging skill was used.*
+
+**Changes vs. original design (2026-10-11):**
+- Migrations land as 0032–0035 (not V29–V31): main v0.8.0 owns 0029 direct_threads, 0030 automatic_handoff, 0031 seat_wake_on.
+- agy (a fourth harness from main) is attributed through an adapter-owned `HarnessAdapter::caller_env()` / `CallerEnvShape` (`ANTIGRAVITY_CONVERSATION_ID`); claude/codex/hermes attribution moved behind the same adapter hook to satisfy `scripts/check-harness-neutral`.
+- `/clear` wake model (ht-ozo, decided autonomously): no rebind-grace suppression; `/clear` opens a new binding at seat-max cursors; composer wake only for mail that binding has not read; `/resume` keeps the binding.
+- Accepted deviations pending sign-off: a seat with a single wake target keeps the legacy composer rule (ht-54r.13); a disconnected binding is refused for explicit ACK/AckDisplayed (ht-54r.20); compact `participants` omits presence (ht-54r.16).
+- Read-only is decided from the resolved binding's role, and accountable top-level means role + connected liveness rather than `cooperative_top_level` provenance (receipts/archival; mod channel and hook-pull still provenance-gated — open).
+- Known open defects at hand-off are listed in docs/superpowers/runs/2026-10-09-session-keyed-seat-bindings/report.md (Remaining).
