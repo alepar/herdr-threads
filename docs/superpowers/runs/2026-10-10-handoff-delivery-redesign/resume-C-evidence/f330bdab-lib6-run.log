@@ -1,0 +1,53 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.05s
+────────────
+ Nextest run ID 651efb54-42dc-4df3-a7c2-c3d6e4b47a61 with nextest profile: default
+    Starting 6 tests across 1 binary (4399 tests skipped)
+        FAIL [   7.861s] (1/6) herdr-threads cli::topology_handoff::tests::live::automatic_live::modern_automatic_actual_admission_boundary_completes_and_next_metadata_size_has_zero_effects
+  stdout ───
+
+    running 1 test
+    test cli::topology_handoff::tests::live::automatic_live::modern_automatic_actual_admission_boundary_completes_and_next_metadata_size_has_zero_effects ... FAILED
+
+    failures:
+
+    failures:
+        cli::topology_handoff::tests::live::automatic_live::modern_automatic_actual_admission_boundary_completes_and_next_metadata_size_has_zero_effects
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4404 filtered out; finished in 7.83s
+
+  stderr ───
+    automatic-permit role=auto_child_begin operation=OperationId("automatic-d407aada3e49506f30930d5019efdb7dddd40dc1fc15a0e303ff22844af69530") stage=mutation start=6722 build_start=6845 issue_start=6874 issue_end=6874 mutate_start=6874 store_entry=Some(6884) first_decision_pair=Some(7185) decision_pairs=1 outcome=7463 observed_at=Some(6874) age_ms=Some(311) basis=first-UTC-mono-in-synchronous-accountable-path region=namespace-and-canonical-validation-combined code=CallerUnverified detail="permit expired" issued_metadata=MutationPermit { claim: CallerClaim { instance: "i", seat: SeatId("sender"), binding_generation: 1, role: TopLevel, harness: Agent(AgentHarnessId { id: "codex", context_spelling: "Codex" }), native_session: NativeSessionId("session"), execution: ExecutionId("00000000-0000-4000-8000-000000000001"), target: HostTargetId("w1:p1") }, mapping_revision: 0, invalidation_revision: 0, request: OperationId("automatic-d407aada3e49506f30930d5019efdb7dddd40dc1fc15a0e303ff22844af69530"), obligation: CheckIn(SeatId("sender")), payload_hash: [154, 215, 182, 106, 223, 241, 79, 149, 254, 109, 162, 155, 183, 236, 145, 57, 236, 41, 154, 83, 31, 174, 31, 200, 225, 198, 7, 67, 40, 215, 13, 245], observed_at: MonoInstant(6874), consumed: false, cooperative_budget: CallBudget { deadline: MonoInstant(11771), cancellation: Cancellation(false) }, handoff_requirement: None }
+
+    thread 'cli::topology_handoff::tests::live::automatic_live::modern_automatic_actual_admission_boundary_completes_and_next_metadata_size_has_zero_effects' (55072445) panicked at src/cli/../../tests/cli/topology_handoff.rs:7797:13:
+    near-admission-boundary public completion failed: Some(Api(ApiError { code: CallerUnverified, detail: "permit expired", restart_argv: None, required_minimum_bytes: None, class_override: None }))
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   3.444s] (2/6) herdr-threads cli::topology_handoff::tests::live::automatic_live::modern_automatic_maximum_escaped_body_completes_and_recovers_exactly
+  stdout ───
+
+    running 1 test
+    test cli::topology_handoff::tests::live::automatic_live::modern_automatic_maximum_escaped_body_completes_and_recovers_exactly ... FAILED
+
+    failures:
+
+    failures:
+        cli::topology_handoff::tests::live::automatic_live::modern_automatic_maximum_escaped_body_completes_and_recovers_exactly
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4404 filtered out; finished in 3.42s
+
+  stderr ───
+    automatic-permit role=auto_child_begin operation=OperationId("automatic-081e30913946fa889e288a0e2230d56515b8a8e4880132db3d8cc7d8c699c5e9") stage=mutation start=2059 build_start=2156 issue_start=2162 issue_end=2163 mutate_start=2163 store_entry=Some(2190) first_decision_pair=Some(2428) decision_pairs=1 outcome=2640 observed_at=Some(2163) age_ms=Some(265) basis=first-UTC-mono-in-synchronous-accountable-path region=namespace-and-canonical-validation-combined code=CallerUnverified detail="permit expired" issued_metadata=MutationPermit { claim: CallerClaim { instance: "i", seat: SeatId("sender"), binding_generation: 1, role: TopLevel, harness: Agent(AgentHarnessId { id: "codex", context_spelling: "Codex" }), native_session: NativeSessionId("session"), execution: ExecutionId("00000000-0000-4000-8000-000000000001"), target: HostTargetId("w1:p1") }, mapping_revision: 0, invalidation_revision: 0, request: OperationId("automatic-081e30913946fa889e288a0e2230d56515b8a8e4880132db3d8cc7d8c699c5e9"), obligation: CheckIn(SeatId("sender")), payload_hash: [236, 121, 53, 247, 142, 239, 222, 16, 38, 135, 36, 151, 238, 225, 159, 166, 31, 224, 255, 109, 56, 56, 227, 185, 148, 205, 251, 56, 3, 13, 6, 184], observed_at: MonoInstant(2163), consumed: false, cooperative_budget: CallBudget { deadline: MonoInstant(7732), cancellation: Cancellation(false) }, handoff_requirement: None }
+
+    thread 'cli::topology_handoff::tests::live::automatic_live::modern_automatic_maximum_escaped_body_completes_and_recovers_exactly' (55072612) panicked at src/cli/../../tests/cli/topology_handoff.rs:7208:13:
+    maximum escaped body failed: Some(Api(ApiError { code: CallerUnverified, detail: "permit expired", restart_argv: None, required_minimum_bytes: None, class_override: None }))
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.021s] (3/6) herdr-threads protocol::capabilities::tests::capability_constants_are_stable
+        PASS [   0.023s] (4/6) herdr-threads protocol::capabilities::tests::bare_daemon_advertises_legacy_capabilities_without_v2_recorder
+        PASS [   0.679s] (5/6) herdr-threads cli::topology_handoff::tests::live::automatic_live::historical_automatic_recovery_over_limit_replay_refuses
+        PASS [   0.735s] (6/6) herdr-threads store::effective::tests::dormant_upgrade_actual_v31_backfill32_reopens_and_rolls_back_without_recapture
+────────────
+     Summary [  12.063s] 6 tests run: 4 passed, 2 failed, 4399 skipped
+        FAIL [   7.861s] (1/6) herdr-threads cli::topology_handoff::tests::live::automatic_live::modern_automatic_actual_admission_boundary_completes_and_next_metadata_size_has_zero_effects
+        FAIL [   3.444s] (2/6) herdr-threads cli::topology_handoff::tests::live::automatic_live::modern_automatic_maximum_escaped_body_completes_and_recovers_exactly
+error: test run failed

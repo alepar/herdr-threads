@@ -1,0 +1,43 @@
+# C correction Quality review
+
+Verdict: **Quality PASS** for the scoped fixture/diagnostic changes at composition `95e7e3bf725c5bc771cbb55be7513e8e16fae563`, tree `682a9afda7568f3a127850367cba0befab76fd26`. No material quality finding. This is source review only; no successor runtime PASS or resolution of the two intermittent failures is inferred.
+
+Reviewed immutable commits `f970d6faabd0861521456e4422055bed35275ab6` (capability/schema expectations), `9ff4913a4bb5a10302c57c97fa6a526ee9f87ddd` (hook startup evidence), and `95e7e3bf725c5bc771cbb55be7513e8e16fae563` (capacity evidence). Their combined delta from `952decc4` changes only the four admitted test paths. Read all three complete triage documents, actual committed diffs and surrounding fixture/lock/teardown code, plus the actual failed 385-case execution manifest. No production or migration file is changed by these three commits.
+
+## Capability and schema expectations
+
+`tests/protocol/capabilities.rs:285` and `:576` add only the implemented `direct_threads.ensure_creation_policy_v1` literal in its actual advertised position. Exact full-list/order comparisons remain. The existing explicit-policy producer, canonical handler and capability are retained; no capability removal or wildcard expectation masks the composed addition.
+
+`tests/store/effective.rs:1189` derives the 40/41 expectation independently from the pre-initialization historical catalog, with the existing precise 37/39 transformations and the necessary excluded38 table declaration. It executes the declared 40/41 SQL in a separate in-memory connection, not against a copy of the freshly initialized actual catalog. The derived new-name set is required to contain exactly 118 objects with fixed type counts: six tables, 16 indexes and 96 triggers. Final equality still compares exact type/name/owning-table/SQL tuples and rejects unknown missing/extra objects within the existing catalog scope.
+
+Only rootpages belonging to that independently derived new-name set are normalized. Every old page witness remains compared apart from the preexisting four-table39 rebuild exception, which is unchanged. The invitation SQL expectation is taken from the independent scratch ADD COLUMN result; it retains the old invitation rootpage. Retained rows use the full `rowid,*` snapshots: only invitation rows gain exactly one `Value::Integer(0)` suffix. No historical fields are dropped or reinterpreted.
+
+The failed35 branch still runs before physical reopen, requires initialization failure, autocommit restored, user_version34, unchanged FK setting, no main marker and exact old catalog; it now additionally compares every retained table snapshot after rollback. Successful initialization checks latest version, exact transformed catalog and all expected retained rows. The second physical reopen preserves marker/cutover nonrecapture and all row snapshots. The sole actual-catalog-to-actual-catalog comparison is the additional unfiltered full-catalog equality across reopen, where checking all newly allocated pages as well is appropriate. No broad `invitation_*`/`presentation_*` exclusion or whole-catalog page normalization was introduced.
+
+The historical catalog's preexisting exclusion list remains a scope limit; this change neither enlarges that exclusion list nor claims it is a full migration semantic audit. Independent migration-byte preservation and other populated-upgrade tests remain separate evidence.
+
+## Hook startup diagnostic
+
+`tests/hook_entrypoint/agy.rs:853` preserves child exit/nonempty-stdout assertions, one `observer.take()` at the original point, and the requirement for a real successful CheckedIn result. It borrows the captured exchanges and clones the same canonical context instead of consuming the vector. Missing CheckIn still panics with the original assertion text. No retry, synthetic claim, changed fault placement, timeout, permission or observer synchronization was added. `track_caller` only supplies diagnostic source location.
+
+`startup_observation` is called only for isolated SessionStart failure. Its two output snippets redact the temporary root, escape per Unicode character through JSON, retain UTF-8 boundaries, explicitly count omitted redacted bytes, and reserve sufficient framing space inside each 1536-byte bound. Its test-name snippet is separately bounded. Exchange projection emits at most 12 first/last indexed command/result variant tags or ErrorCode, not payload Debug dumps, claims, bodies, tokens, argv, environment or transcript contents. The final record reserves 128 bytes for the original assertion prefix inside a 6 KiB cap, trimming at a UTF-8 boundary if necessary and retaining the decisive ending. This fits the inherited 8 KiB panic-tail mechanism. The stderr label correctly says captured UTF-8 bytes because the existing helper already performed lossy decoding.
+
+No mutex is held while this diagnostic constructs its panic. Original Observer-before-fixture unwind order and owned-child/private-daemon cleanup remain. The diagnostic does not claim which lost-completion fault iteration failed; its explicit `iteration=unrecorded` avoids inventing that evidence.
+
+## Capacity transport diagnostic
+
+`tests/integration/mod_delivery.rs:1769` records the result of the actual downstream frame write, distinguishing it from the release permit. The write occurs at the original position after `hold_reply`; its same error is then propagated with `written?`. The new flow-lock guard is released before propagation and before later socket/log work. At most 65 compact `(ordinal, optional ErrorKind)` outcomes are retained, matching existing Pull admission. Recording adds no wait/condition predicate, and it does not turn an unwritten response into a successful marker.
+
+The terminal observation now retains its existing ordinal/index and an Instant; the barrier and terminal release stay in their original order. The same `wait_item(sent[255])` uses the original timeout and failure predicate. Failure is caught only to append a separate compact diagnostic to `rig.panics`, then the original panic payload is resumed. All pending-receipt, no-ACK, real-Attention ordering, retained257th carry and strict resumed-page assertions remain.
+
+The diagnostic reads the actual retained terminal reply, real monotonic elapsed durations, actual child try_wait state, flow counters/write outcome, and bounded normalized seen/status tails. It does not dump message bodies. IDs/reasons/failure strings are shortened; stderr uses the existing UTF-8-safe bounded helper; the entire retained diagnostic is capped below 4096 bytes at a character boundary. The token/epoch/version values originate in bounded actual protocol output in this isolated fixture. The flow lock is explicitly released before Watch stderr access, and the final panic-vector lock is released before resume_unwind. Existing poison recovery remains in use. No new nested lock order, held lock across a diagnostic panic, I/O while holding the new reply-result lock, or changed worker stop behavior was found.
+
+The additional observations may help distinguish a held response exceeding the real Watch budget from other failures. They do not establish the transport-hold hypothesis or authorize moving the terminal release. The proposed causal ordering correction remains conditional on actual reproduced evidence.
+
+## Evidence and remaining work
+
+Independently read `/private/tmp/ht-C-composed-b046c123/execution.json`. It records source `b046c123be452957d3f7f10d8fbdc60b18a4533e`, tree `ecc9977a535a932b5514ab8820650d1c832691a5`, exact focused selection **385 executed / 377 PASS / 8 FAIL**, with no missing, extra or duplicate cases. The failed list includes both capability expectations, the retained-schema test, hook lost-completion startup and capacity output wait; three automatic-handoff failures are outside these corrections. The six mandatory recovery cases passed. All three recorded scoped leak stages exited zero under UUID `28b15c51-3941-483f-83b0-2ef768028f03`.
+
+Those failures remain historical actual evidence. Parent-owned successor compilation, focused cases and diagnostic reproduction have not been independently observed for `95e7e3bf`; static Quality PASS is not a test-result claim. Capability/schema corrections need execution, and the diagnostics need causal evidence before the hook/capacity failures can be called fixed. Other failure owners, combined matrix/gates and whole-epic readiness remain separate.
+
+This reviewer ran no Cargo, tests, Herdr actions, source/Git mutations or subagents. Only this review report was written. Review complete; quiescent.
