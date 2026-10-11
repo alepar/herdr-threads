@@ -319,6 +319,12 @@ fn presentation_v2_rejects_invalid_tokens_consumers_and_watch_without_lease() {
         "valid V2 request must decode before negative controls: {command:?}"
     );
     assert!(command.unwrap().validate().is_ok());
+    let confirmation = json!({"kind":"delivery_presentation_confirm_v2","args":{
+        "claim":claim(CallerRole::TopLevel),"consumer":"hook",
+        "token":"0123456789abcdef0123456789abcdef"
+    }});
+    let command = serde_json::from_value::<Command>(confirmation.clone()).unwrap();
+    assert!(command.validate().is_ok());
     for token in [
         "",
         "0",
@@ -326,11 +332,28 @@ fn presentation_v2_rejects_invalid_tokens_consumers_and_watch_without_lease() {
         "g123456789abcdef0123456789abcdef",
         "0123456789abcdef0123456789abcdef0",
     ] {
-        let mut bad = request.clone();
-        bad["args"]["confirmed_token"] = json!(token);
-        let rejected = serde_json::from_value::<Command>(bad).is_ok_and(|v| v.validate().is_ok());
-        assert!(!rejected, "invalid token accepted: {token}");
+        let mut bad = confirmation.clone();
+        bad["args"]["token"] = json!(token);
+        let command = serde_json::from_value::<Command>(bad)
+            .expect("malformed Confirm token must decode before validation");
+        assert!(command.validate().is_err(), "invalid token accepted: {token}");
     }
+    let mut watch_confirmation = confirmation;
+    watch_confirmation["args"]["consumer"] = json!("watch");
+    let command = serde_json::from_value::<Command>(watch_confirmation.clone()).unwrap();
+    assert!(
+        command.validate().is_err(),
+        "Watch confirmation requires a lease"
+    );
+    watch_confirmation["args"]["presentation_lease"] = json!("g123456789abcdef0123456789abcdef");
+    let command = serde_json::from_value::<Command>(watch_confirmation.clone()).unwrap();
+    assert!(
+        command.validate().is_err(),
+        "Watch confirmation rejects a malformed lease"
+    );
+    watch_confirmation["args"]["presentation_lease"] = json!("fedcba9876543210fedcba9876543210");
+    let command = serde_json::from_value::<Command>(watch_confirmation).unwrap();
+    assert!(command.validate().is_ok());
     let mut watch = request.clone();
     watch["args"]["consumer"] = json!("watch");
     watch["args"]["render"] = json!({"kind":"watch_json_lines_v1"});
