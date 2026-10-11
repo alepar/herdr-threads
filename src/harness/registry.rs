@@ -2309,6 +2309,7 @@ mod tests {
             runtime: RuntimeAttribution::Unavailable {
                 diagnostic: "test".into(),
             },
+            binding_event: None,
         }
     }
     fn request() -> AdmissionRequest {

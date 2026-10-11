@@ -4410,15 +4410,25 @@ fn child_lifecycle_context(harness: Harness, native_event: &str) -> String {
         clock(),
         None,
     );
-    assert_eq!(outcome.diagnostic, None);
+    // A subagent start enrolls its binding, so it asks the daemon for the pane's seat (this
+    // listener never answers: the report fails within its own sub-budget and the guidance still
+    // renders). Every other child event does no daemon work at all.
+    let reports_binding = native_event == "SubagentStart";
+    if reports_binding {
+        let diagnostic = outcome.diagnostic.as_deref().unwrap_or_default();
+        assert!(diagnostic.starts_with("seat lookup"), "{diagnostic}");
+    } else {
+        assert_eq!(outcome.diagnostic, None);
+    }
     assert!(outcome.attention.is_none(), "child must not own attention");
-    assert!(
-        runtime
-            .block_on(async {
-                tokio::time::timeout(Duration::from_millis(1), listener.accept()).await
-            })
-            .is_err(),
-        "child must not connect for canonical work"
+    let connected = runtime
+        .block_on(async {
+            tokio::time::timeout(Duration::from_millis(200), listener.accept()).await
+        })
+        .is_ok();
+    assert_eq!(
+        connected, reports_binding,
+        "child must connect for its binding report only, never for canonical work"
     );
     let value: serde_json::Value = serde_json::from_slice(&outcome.stdout).unwrap();
     assert_eq!(value["hookSpecificOutput"]["hookEventName"], native_event);
@@ -6378,6 +6388,7 @@ mod registered_resume {
                 runtime: RuntimeAttribution::Unavailable {
                     diagnostic: "synthetic fixture has no native runtime".into(),
                 },
+                binding_event: None,
             })
         }
         fn encode(
@@ -6671,6 +6682,7 @@ mod registered_resume {
                     Ok(CommandResult::HotThreads(hot))
                 }
                 Command::HookParseFailure(_) => Ok(CommandResult::HookParseFailureRecorded),
+                Command::BindingEvent(_) => Ok(CommandResult::BindingEventRecorded { changed: 1 }),
                 // Scripted only for the hook inbox page tests: the v2 inbox and
                 // hook lazy delivery are advertised and one page is served.
                 Command::Capabilities if self.control("inbox-v2.json") => Ok(
@@ -8431,6 +8443,18 @@ mod registered_resume {
             registered_event: Some(event.into()),
         }
     }
+    fn binding_events(f: &Fixture) -> Vec<crate::protocol::commands::BindingEvent> {
+        f.service
+            .seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|c| match c {
+                Command::BindingEvent(event) => Some(event.clone()),
+                _ => None,
+            })
+            .collect()
+    }
     // Kills: SubagentStop rendering child guidance or checking in (it is bookkeeping only), and
     // SubagentStop failing to decode (a stale-contract parse failure reported to the daemon).
     #[test]
@@ -8443,6 +8467,166 @@ mod registered_resume {
         assert!(outcome.stdout.is_empty(), "{:?}", outcome.stdout);
         assert_eq!(outcome.diagnostic, None);
         assert!(outcome.attention.is_none());
+        assert_eq!(task52_commands(&f), (0, 0), "no check-in, no hot threads");
+    }
+    // Kills: a Claude SubagentStop that stays silent without disconnecting the subagent binding, a
+    // stop attributed to the wrong session or agent, a stop sent as a subagent *write* (the
+    // claim must be the subagent's own), and a stop that checks in or reads hot threads.
+    #[test]
+    fn claude_subagent_stop_reports_a_stop_binding_event_for_its_agent() {
+        use crate::protocol::{authority::CallerRole, commands::BindingEventKind};
+        let f = Fixture::new(true);
+        f.run(
+            claude_registration(),
+            &claude_subagent_event("SubagentStop"),
+        );
+        let events = binding_events(&f);
+        assert_eq!(events.len(), 1, "{events:?}");
+        let event = &events[0];
+        assert_eq!(event.kind, BindingEventKind::SubagentStop);
+        assert_eq!(event.child_session, None);
+        assert_eq!(event.claim.role, CallerRole::Subagent);
+        assert_eq!(event.claim.native_session.as_str(), "claude-s");
+        assert_eq!(
+            event.claim.agent_id.as_ref().map(|agent| agent.as_str()),
+            Some("agent-7")
+        );
+        assert_eq!(event.claim.seat.as_str(), "registered-seat");
+        assert_eq!(task52_commands(&f), (0, 0));
+    }
+    // Kills: SubagentStart rendering guidance without enrolling the subagent binding, and the
+    // enrollment replacing the guidance.
+    #[test]
+    fn claude_subagent_start_enrolls_its_binding_and_still_renders_guidance() {
+        use crate::protocol::commands::BindingEventKind;
+        let f = Fixture::new(true);
+        let outcome = f.run(
+            claude_registration(),
+            &claude_subagent_event("SubagentStart"),
+        );
+        assert_eq!(outcome.diagnostic, None);
+        assert!(!outcome.stdout.is_empty());
+        let events = binding_events(&f);
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(events[0].kind, BindingEventKind::SubagentStart);
+        assert_eq!(
+            events[0].claim.agent_id.as_ref().map(|a| a.as_str()),
+            Some("agent-7")
+        );
+        // The subagent shares its parent's process, so the claim carries the fingerprint a
+        // first contact needs.
+        assert!(events[0].claim.liveness.is_some());
+    }
+    // Kills: an ordinary top-level hook (SessionStart) reporting a binding event of its own.
+    #[test]
+    fn claude_session_start_reports_no_binding_event() {
+        let f = Fixture::new(true);
+        f.run(claude_registration(), &claude_session_start("e1"));
+        assert!(binding_events(&f).is_empty());
+    }
+    fn codex_registration() -> &'static Registration {
+        builtins()
+            .by_id(builtins().agent("codex").unwrap())
+            .unwrap()
+    }
+    fn codex_end_event(event: &str, agent: Option<&str>) -> HookInput {
+        let mut payload = serde_json::json!({
+            "hook_event_name": event, "session_id": "codex-s", "turn_id": "turn-1",
+            "transcript_path": null, "cwd": "/tmp", "model": "test", "permission_mode": "default"
+        });
+        if let Some(agent) = agent {
+            payload["agent_id"] = agent.into();
+            payload["agent_type"] = "worker".into();
+        }
+        HookInput {
+            bytes: serde_json::to_vec(&payload).unwrap(),
+            registered_event: Some(event.into()),
+        }
+    }
+    // Kills: Codex SessionEnd and SubagentStop being dropped as unknown events (they would never
+    // disconnect), a SessionEnd claim carrying an agent id (it would name a subagent binding), a
+    // SubagentStop claim missing its (session, agent) key, and either rendering context.
+    #[test]
+    fn codex_session_end_and_subagent_stop_report_end_binding_events() {
+        use crate::protocol::{authority::CallerRole, commands::BindingEventKind};
+        let f = Fixture::new(true);
+        let outcome = f.run(codex_registration(), &codex_end_event("SessionEnd", None));
+        assert!(outcome.stdout.is_empty(), "{:?}", outcome.stdout);
+        assert_eq!(outcome.diagnostic, None);
+        let outcome = f.run(
+            codex_registration(),
+            &codex_end_event("SubagentStop", Some("thread-5")),
+        );
+        assert!(outcome.stdout.is_empty(), "{:?}", outcome.stdout);
+        assert_eq!(outcome.diagnostic, None);
+        let events = binding_events(&f);
+        assert_eq!(events.len(), 2, "{events:?}");
+        assert_eq!(events[0].kind, BindingEventKind::SessionEnd);
+        assert_eq!(events[0].claim.role, CallerRole::TopLevel);
+        assert_eq!(events[0].claim.agent_id, None);
+        assert_eq!(events[0].claim.native_session.as_str(), "codex-s");
+        assert_eq!(events[1].kind, BindingEventKind::SubagentStop);
+        assert_eq!(events[1].claim.role, CallerRole::Subagent);
+        assert_eq!(
+            events[1].claim.agent_id.as_ref().map(|a| a.as_str()),
+            Some("thread-5")
+        );
+        assert_eq!(events[1].claim.native_session.as_str(), "codex-s");
+        assert_eq!(task52_commands(&f), (0, 0));
+    }
+    fn hermes_end_event(callback: &str, edit: impl FnOnce(&mut serde_json::Value)) -> HookInput {
+        let mut input = hermes_input(callback, "hermes-top", "turn", 7, "unknown");
+        let mut p: serde_json::Value = serde_json::from_slice(&input.bytes).unwrap();
+        p["turn_id"] = serde_json::Value::Null;
+        p["shape"]["turn_id"] = serde_json::json!({"presence":"missing","type":"absent"});
+        edit(&mut p);
+        input.bytes = serde_json::to_vec(&p).unwrap();
+        input
+    }
+    // Kills: on_session_finalize not disconnecting (the session would stay connected after
+    // teardown), the Hermes delegate events claiming as the child instead of the parent, the child
+    // session being lost, and the bridge's JSON reply being empty (the Python side expects it).
+    #[test]
+    fn hermes_finalize_and_delegate_events_report_binding_events() {
+        use crate::protocol::{authority::CallerRole, commands::BindingEventKind};
+        let f = Fixture::new(true);
+        let r = task52_registration();
+        let reply = br#"{"context":null,"lifecycle_ack":null}"#;
+        let finalize = hermes_end_event("on_session_finalize", |_| {});
+        let outcome = f.run(r, &finalize);
+        assert_eq!(outcome.diagnostic, None);
+        assert_eq!(outcome.stdout, reply);
+        for callback in ["subagent_start", "subagent_stop"] {
+            let input = hermes_end_event(callback, |p| {
+                p["session_id"] = "hermes-child".into();
+                p["parent_session_id"] = "hermes-top".into();
+                p["platform"] = serde_json::Value::Null;
+                p["shape"]["platform"] = serde_json::json!({"presence":"missing","type":"absent"});
+                p["shape"]["parent_session_id"] =
+                    serde_json::json!({"presence":"present","type":"string"});
+            });
+            let outcome = f.run(r, &input);
+            assert_eq!(outcome.diagnostic, None, "{callback}");
+            assert_eq!(outcome.stdout, reply, "{callback}");
+        }
+        let events = binding_events(&f);
+        assert_eq!(events.len(), 3, "{events:?}");
+        assert_eq!(events[0].kind, BindingEventKind::SessionEnd);
+        assert_eq!(events[0].claim.native_session.as_str(), "hermes-top");
+        assert_eq!(events[0].child_session, None);
+        for (event, kind) in events[1..].iter().zip([
+            BindingEventKind::SubagentStart,
+            BindingEventKind::SubagentStop,
+        ]) {
+            assert_eq!(event.kind, kind);
+            assert_eq!(event.claim.role, CallerRole::TopLevel, "the parent's claim");
+            assert_eq!(event.claim.native_session.as_str(), "hermes-top");
+            assert_eq!(event.claim.agent_id, None);
+            assert_eq!(
+                event.child_session.as_ref().map(|s| s.as_str()),
+                Some("hermes-child")
+            );
+        }
         assert_eq!(task52_commands(&f), (0, 0), "no check-in, no hot threads");
     }
     // Kills: SubagentStart being refused as an unknown Claude event, or rendering under the

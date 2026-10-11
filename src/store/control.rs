@@ -2105,3 +2105,68 @@ pub fn advance_cursors(
         |_tx, result| Ok(result),
     )
 }
+
+/// Apply a harness lifecycle event to the caller's bindings (spec §2 Enrollment, §3 end events).
+/// A subagent start enrolls its binding (the parent first, if needed); a subagent stop or a
+/// session end disconnects with reason `liveness_end_event`. Nothing here ends a binding, moves a
+/// seat or touches a receipt, so declared subagent claims are accepted. Stop and end events
+/// resolve no mapping: an unknown binding is a no-op, and a pane that is already gone must still
+/// be able to report its end. Idempotent per operation key.
+pub fn binding_event(
+    context: &StoreContext,
+    conn: &mut Connection,
+    budget: &CallBudget,
+    request: &crate::protocol::commands::BindingEvent,
+) -> Result<CommandResult, ApiError> {
+    use crate::protocol::commands::BindingEventKind;
+    let claim = &request.claim;
+    let digest = cooperative_payload_hash("binding_event", request)?;
+    schema::execute_budgeted_idempotent_transaction(
+        context,
+        conn,
+        budget,
+        &format!("seat:{}", claim.seat.as_str()),
+        request.operation.as_str(),
+        digest,
+        |tx| super::seats::cooperative_instance(tx, &claim.instance, claim),
+        |tx| match request.kind {
+            BindingEventKind::SubagentStart => {
+                super::seats::cooperative_mapping(tx, claim, None).map(|_| ())
+            }
+            BindingEventKind::SubagentStop | BindingEventKind::SessionEnd => Ok(()),
+        },
+        |tx, at| {
+            let changed = match request.kind {
+                BindingEventKind::SubagentStart => {
+                    let mapping = super::seats::cooperative_mapping(tx, claim, None)?;
+                    let created = match &request.child_session {
+                        Some(child) => {
+                            super::seats::attach_registered_child(tx, at, claim, child, &mapping)?
+                        }
+                        None => matches!(
+                            super::seats::resolve_cooperative(tx, at, claim, None, &mapping)?,
+                            super::bindings::Resolution::Enrolled { .. }
+                        ),
+                    };
+                    u32::from(created)
+                }
+                BindingEventKind::SubagentStop => {
+                    let key = match &request.child_session {
+                        Some(child) => super::bindings::BindingKey::from_claim(
+                            &super::bindings::registered_child_claim(claim, child)?,
+                        ),
+                        None => super::bindings::BindingKey::from_claim(claim),
+                    };
+                    super::bindings::end_event_subagent(tx, &key, at.utc)?
+                }
+                BindingEventKind::SessionEnd => super::bindings::end_event_session(
+                    tx,
+                    &super::bindings::BindingKey::from_claim(claim),
+                    at.utc,
+                )?,
+            };
+            Ok(CommandResult::BindingEventRecorded { changed })
+        },
+        |_tx, result| Ok(result),
+    )
+}

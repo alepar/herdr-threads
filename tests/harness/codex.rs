@@ -43,6 +43,31 @@ fn subagent_start(session: &str, turn: &str, agent: &str, agent_type: &str) -> V
         "agent_type": agent_type,
     })
 }
+fn subagent_stop(session: &str, turn: &str, agent: &str, agent_type: &str) -> Value {
+    json!({
+        "session_id": session,
+        "turn_id": turn,
+        "transcript_path": "/private/tmp/work/transcript.jsonl",
+        "cwd": "/private/tmp/work",
+        "hook_event_name": "SubagentStop",
+        "model": "gpt-test",
+        "permission_mode": "default",
+        "agent_id": agent,
+        "agent_type": agent_type,
+        "stop_hook_active": false,
+        "last_assistant_message": "done",
+    })
+}
+fn session_end(session: &str) -> Value {
+    json!({
+        "session_id": session,
+        "transcript_path": null,
+        "cwd": "/private/tmp/work",
+        "hook_event_name": "SessionEnd",
+        "model": "gpt-test",
+        "permission_mode": "default",
+    })
+}
 fn pre_tool(session: &str, turn: &str, call: &str, command: &str) -> Value {
     json!({
         "session_id": session,
@@ -357,6 +382,8 @@ fn declaration_reports_native_transport_and_receipt_unsupported() {
                 Some("^Bash$"),
                 HookPurpose::ToolBoundaryContext
             ),
+            ("SubagentStop", None, HookPurpose::EndEvent),
+            ("SessionEnd", None, HookPurpose::EndEvent),
         ]
     );
     // Kills: dropping the Bash PreToolUse group from the declaration again.
@@ -805,6 +832,18 @@ fn every_declared_hook_is_installed_by_setup_and_encodes_context_only() {
             hook.event
         );
         let input = match hook.purpose {
+            // A bookkeeping event: it renders no context at all (the encoder refuses it), and
+            // decodes to a binding event instead (see `end_events_decode_to_binding_events`).
+            HookPurpose::EndEvent => {
+                let v = match hook.event {
+                    "SubagentStop" => subagent_stop("session-1", "turn-1", "c", "w"),
+                    "SessionEnd" => session_end("session-1"),
+                    other => panic!("undeclared end event {other}"),
+                };
+                let event = codex::parse_event_for_version(&bytes(&v), "event", &pinned()).unwrap();
+                assert!(codex::encode_event_context(&event, "context", true).is_err());
+                continue;
+            }
             HookPurpose::Lifecycle => session_start("startup", "session-1"),
             HookPurpose::ChildStart => bytes(&subagent_start("session-1", "turn-1", "c", "w")),
             HookPurpose::ToolBoundaryContext => {
@@ -1376,4 +1415,115 @@ fn versionless_codex_contract_preserves_strict_shape_and_child_suppression() {
     }
     assert!(codex::parse_event_for_contract(&bytes(&valid), "", &contract).is_err());
     assert!(codex::parse_event_for_contract(&vec![b'x'; 65537], "event", &contract).is_err());
+}
+
+/// Kills: SubagentStop / SessionEnd payloads being refused (their hooks would then never reach the
+/// daemon), a stop decoding without its `agent_id`, a session end decoding as a subagent event, and
+/// the subagent key not being the pair (`session_id`, `agent_id`) on the hook path.
+#[test]
+fn end_events_decode_to_binding_events() {
+    use crate::harness::adapter::{BindingEventDecode, DecodedEvent};
+    use crate::protocol::commands::BindingEventKind;
+    let stop = bytes(&subagent_stop("session-1", "turn-1", "agent-9", "worker"));
+    let event = codex::parse_event_for_version(&stop, "event", &pinned()).unwrap();
+    assert_eq!(event.source, "SubagentStop");
+    assert_eq!(event.role, Role::Subagent);
+    assert_eq!(event.native_session.as_deref(), Some("session-1"));
+    let decoded = DecodedEvent::from_native_payload(event, &stop);
+    assert_eq!(
+        decoded.binding_event,
+        Some(BindingEventDecode {
+            kind: BindingEventKind::SubagentStop,
+            agent_id: Some("agent-9".into()),
+            child_session: None,
+            claim_session: None,
+        })
+    );
+    let end = bytes(&session_end("session-1"));
+    let event = codex::parse_event_for_version(&end, "event", &pinned()).unwrap();
+    assert_eq!(event.source, "SessionEnd");
+    assert_eq!(event.role, Role::TopLevel);
+    let decoded = DecodedEvent::from_native_payload(event, &end);
+    assert_eq!(
+        decoded.binding_event,
+        Some(BindingEventDecode {
+            kind: BindingEventKind::SessionEnd,
+            agent_id: None,
+            child_session: None,
+            claim_session: None,
+        })
+    );
+    // Neither ends up rendering anything or checking in.
+    assert!(!decoded.can_check_in());
+    assert!(matches!(
+        decoded.delivery,
+        crate::harness::adapter::DeliveryEligibility::Ineligible
+    ));
+}
+
+/// Kills: a SubagentStop without an agent id, or a SessionEnd carrying one, being accepted (either
+/// would disconnect a binding the payload does not name).
+#[test]
+fn end_events_with_the_wrong_agent_shape_are_refused() {
+    let mut stop = subagent_stop("session-1", "turn-1", "agent-9", "worker");
+    stop.as_object_mut().unwrap().remove("agent_id");
+    assert!(codex::parse_event_for_version(&bytes(&stop), "event", &pinned()).is_err());
+    let mut end = session_end("session-1");
+    end["agent_id"] = json!("agent-9");
+    end["agent_type"] = json!("worker");
+    assert!(codex::parse_event_for_version(&bytes(&end), "event", &pinned()).is_err());
+    let mut end = session_end("session-1");
+    end.as_object_mut().unwrap().remove("session_id");
+    assert!(codex::parse_event_for_version(&bytes(&end), "event", &pinned()).is_err());
+}
+
+/// The Codex subagent key is (session, thread) on every path (r2): the hook decodes the payload's
+/// `session_id` and `agent_id`, the CLI path derives `CODEX_SESSION_ID` and `CODEX_THREAD_ID`, and
+/// both name the same binding key. Kills: the hook taking its agent id from anywhere but the
+/// payload's `agent_id`, or the two paths disagreeing on the key.
+#[test]
+fn codex_subagent_key_uses_session_and_thread_ids() {
+    use crate::harness::adapter::DecodedEvent;
+    use crate::harness::caller_env::{EnvInputs, derive};
+    use crate::ports::{ProcessInfo, ProcessRecord};
+    struct Table;
+    impl ProcessInfo for Table {
+        fn process(&self, pid: u32) -> Option<ProcessRecord> {
+            let (parent, argv): (u32, &[&str]) = match pid {
+                100 => (80, &["herdr-threads", "inbox"]),
+                80 => (1, &["/usr/local/bin/codex"]),
+                _ => return None,
+            };
+            Some(ProcessRecord {
+                pid,
+                parent: Some(parent),
+                start: u64::from(pid),
+                argv: argv.iter().map(|a| (*a).to_owned()).collect(),
+            })
+        }
+    }
+    let start = bytes(&subagent_start("sess-1", "turn-1", "thread-7", "worker"));
+    let event = codex::parse_event_for_version(&start, "event", &pinned()).unwrap();
+    let native = event.native_session.clone();
+    let hook = DecodedEvent::from_native_payload(event, &start)
+        .binding_event
+        .unwrap();
+    let env = |name: &str| match name {
+        "CODEX_SESSION_ID" => Some("sess-1".to_owned()),
+        "CODEX_THREAD_ID" => Some("thread-7".to_owned()),
+        _ => None,
+    };
+    let cli = derive(&EnvInputs {
+        env: &env,
+        self_pid: 100,
+        agent_id: None,
+        processes: &Table,
+    })
+    .unwrap();
+    assert_eq!(native.as_deref(), Some(cli.native_session.as_str()));
+    assert_eq!(
+        hook.agent_id.as_deref(),
+        cli.agent_id.as_ref().map(|agent| agent.as_str())
+    );
+    assert_eq!(hook.agent_id.as_deref(), Some("thread-7"));
 }

@@ -2769,6 +2769,19 @@ pub trait StorePort: ModStoreReads + Send + Sync {
             "per-binding cursors unsupported by this store",
         ))
     }
+    /// Apply a harness lifecycle event to the caller's bindings (spec §2, §3): a subagent start
+    /// enrolls, a subagent stop or session end disconnects. Decided in one idempotent
+    /// transaction against the canonical view (A2); allowed for subagent claims.
+    fn binding_event(
+        &self,
+        _request: &crate::protocol::commands::BindingEvent,
+        _budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        Err(ApiError::new(
+            crate::protocol::results::ErrorCode::Unsupported,
+            "binding events unsupported by this store",
+        ))
+    }
     /// Hidden bounded staging keyed by the request's durable operation identity.
     /// Caller authority is rechecked at final `mutate` publication.
     fn prepare_send_step(

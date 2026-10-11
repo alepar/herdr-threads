@@ -90,6 +90,28 @@ pub const CONTRACT: HarnessContract = HarnessContract {
                 f("agent_type", Str, false),
             ],
         },
+        // A subagent's end (ht-54r.11): disconnects the binding keyed by (session_id, agent_id).
+        EventContract {
+            event: "SubagentStop",
+            class: EventClass::Other,
+            fields: &[
+                f("hook_event_name", Str, true),
+                f("session_id", Str, true),
+                f("turn_id", Str, false),
+                f("agent_id", Str, true),
+                f("agent_type", Str, false),
+            ],
+        },
+        // The root session's end (ht-54r.11): disconnects the session's binding and its subagents.
+        EventContract {
+            event: "SessionEnd",
+            class: EventClass::Other,
+            fields: &[
+                f("hook_event_name", Str, true),
+                f("session_id", Str, true),
+                f("turn_id", Str, false),
+            ],
+        },
     ],
 };
 
@@ -189,7 +211,7 @@ pub fn recipe_for(installed: &str) -> Result<&'static CodexRecipe, LookupError> 
     recipe::lookup(RECIPES, installed)
 }
 
-/// Why setup owns a native hook group. Every purpose is context-only.
+/// Why setup owns a native hook group. Every purpose is context-only or bookkeeping-only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HookPurpose {
     /// `SessionStart` lifecycle check-in context.
@@ -201,6 +223,9 @@ pub enum HookPurpose {
     /// that shape without a decision (source-read), and a live 0.158.0 run
     /// delivered it to the model without blocking the tool call.
     ToolBoundaryContext,
+    /// `SubagentStop` / `SessionEnd`: a bookkeeping event that disconnects the binding it names
+    /// (spec §3). It renders no context.
+    EndEvent,
 }
 
 /// One hook group setup owns, exactly as it is installed.
@@ -240,6 +265,16 @@ pub const DECLARATION: Declaration = Declaration {
             event: "PreToolUse",
             matcher: Some("^Bash$"),
             purpose: HookPurpose::ToolBoundaryContext,
+        },
+        OwnedHook {
+            event: "SubagentStop",
+            matcher: None,
+            purpose: HookPurpose::EndEvent,
+        },
+        OwnedHook {
+            event: "SessionEnd",
+            matcher: None,
+            purpose: HookPurpose::EndEvent,
         },
     ],
     limitation: "codex invocation transport unsupported: approving updatedInput rewrite, \
@@ -1092,6 +1127,17 @@ fn check_hooks_v1(value: &Value) -> Result<(), ContextError> {
                 return Err(ContextError::Invalid);
             }
         }
+        "SubagentStop" => {
+            // The end of a spawned thread: the binding it disconnects is keyed by (session, agent).
+            required(value, "agent_id")?;
+            field(value, "agent_type")?;
+        }
+        "SessionEnd" => {
+            // The root session's end names no agent.
+            if field(value, "agent_id")?.is_some() || field(value, "agent_type")?.is_some() {
+                return Err(ContextError::Invalid);
+            }
+        }
         "SubagentStart" => {
             // Complete HooksV1 SubagentStartCommandInput.
             for key in [
@@ -1214,7 +1260,8 @@ fn parse_shape(value: &Value, event_id: &str) -> Result<LifecycleEvent, ContextE
             };
             (source, kind, role)
         }
-        "SubagentStart" => (name, EventKind::Startup, Role::Subagent),
+        "SubagentStart" | "SubagentStop" => (name, EventKind::Startup, Role::Subagent),
+        "SessionEnd" => (name, EventKind::Startup, Role::TopLevel),
         "PreToolUse" if field(value, "tool_name")?.as_deref() == Some("Bash") => {
             required(value, "tool_use_id")?;
             (name, EventKind::Tool, role)
@@ -1334,6 +1381,16 @@ impl HarnessAdapter for CodexAdapter {
                     milestone: None,
                     always_send: false,
                 },
+                super::evidence::EvidenceEvent {
+                    native_event: "SubagentStop",
+                    milestone: None,
+                    always_send: false,
+                },
+                super::evidence::EvidenceEvent {
+                    native_event: "SessionEnd",
+                    milestone: None,
+                    always_send: false,
+                },
             ],
             required_milestones: &["lifecycle", "tool"],
             qualifications: &[],
@@ -1408,7 +1465,7 @@ impl HarnessAdapter for CodexAdapter {
             }
         }
         parse_event_for_contract(&input.bytes, &uuid::Uuid::new_v4().to_string(), admitted)
-            .map(DecodedEvent::from_native)
+            .map(|event| DecodedEvent::from_native_payload(event, &input.bytes))
             .map_err(DecodeFailure::Native)
     }
     fn encode(

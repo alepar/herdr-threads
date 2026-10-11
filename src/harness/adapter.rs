@@ -374,6 +374,46 @@ pub enum RuntimeAttribution {
     Attributed(RuntimeIdentity),
     Unavailable { diagnostic: String },
 }
+/// A decoded harness start/stop/end event that enrolls or disconnects a binding (spec §2 Enrollment,
+/// §3 end events). Carried next to the event's ordinary intent: a Claude or Codex `SubagentStart`
+/// still renders its child guidance after the binding is enrolled.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BindingEventDecode {
+    pub kind: crate::protocol::commands::BindingEventKind,
+    /// The subagent's agent id (Claude and Codex `agent_id`); `None` for a session end and for a
+    /// Hermes delegate, which is known by its child session.
+    pub agent_id: Option<String>,
+    /// Hermes only: the delegate child's own session id.
+    pub child_session: Option<String>,
+    /// The session the claim names when it is not the event's own native session: a Hermes
+    /// delegate event is about the child session, its claim is the parent's.
+    pub claim_session: Option<String>,
+}
+impl BindingEventDecode {
+    /// The event a native Claude or Codex hook payload (`hook_event_name`, `agent_id`) carries,
+    /// if it is a start/stop/end event.
+    pub fn from_native_payload(payload: &serde_json::Value) -> Option<Self> {
+        use crate::protocol::commands::BindingEventKind as Kind;
+        let kind = match payload.get("hook_event_name")?.as_str()? {
+            "SubagentStart" => Kind::SubagentStart,
+            "SubagentStop" => Kind::SubagentStop,
+            "SessionEnd" => Kind::SessionEnd,
+            _ => return None,
+        };
+        let agent_id = payload
+            .get("agent_id")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned);
+        // A subagent event names its agent; a session end is the root's (an `agent_id` on one is
+        // a malformed payload and is not trusted to disconnect anything).
+        (agent_id.is_some() == (kind != Kind::SessionEnd)).then_some(Self {
+            kind,
+            agent_id,
+            child_session: None,
+            claim_session: None,
+        })
+    }
+}
 #[derive(Clone)]
 pub struct DecodedEvent {
     pub harness: crate::harness::registry::AgentHarnessId,
@@ -384,6 +424,8 @@ pub struct DecodedEvent {
     pub metadata: EventMetadata,
     pub delivery: DeliveryEligibility,
     pub runtime: RuntimeAttribution,
+    /// The binding enrollment or disconnect this event reports, if any.
+    pub binding_event: Option<BindingEventDecode>,
 }
 pub struct NeutralOffer {
     pub fixed_guidance: String,
@@ -1190,6 +1232,7 @@ mod tests {
             runtime: RuntimeAttribution::Unavailable {
                 diagnostic: "unavailable".into(),
             },
+            binding_event: None,
         };
         for role in [EventRole::TopLevel, EventRole::Subagent, EventRole::Unknown] {
             event.role = role;
@@ -1227,6 +1270,7 @@ mod tests {
             runtime: RuntimeAttribution::Unavailable {
                 diagnostic: "unavailable".into(),
             },
+            binding_event: None,
         };
         let turn = || {
             EventIntent::QualifiedTurn(QualifiedTurn {
@@ -1446,11 +1490,14 @@ impl DecodedEvent {
             "SubagentStart"
         } else if event.source == "SubagentStop" {
             "SubagentStop"
+        } else if event.source == "SessionEnd" {
+            "SessionEnd"
         } else {
             "SessionStart"
         };
-        // A subagent's end is a bookkeeping event: it never checks in and renders nothing.
-        let stop = native_event == "SubagentStop";
+        // A subagent's or session's end is a bookkeeping event: it never checks in and renders
+        // nothing.
+        let stop = matches!(native_event, "SubagentStop" | "SessionEnd");
         Self {
             harness,
             role: match event.role {
@@ -1484,7 +1531,16 @@ impl DecodedEvent {
             runtime: RuntimeAttribution::Unavailable {
                 diagnostic: "runtime attribution is separate".into(),
             },
+            binding_event: None,
         }
+    }
+    /// [`Self::from_native`] plus the binding enrollment or disconnect the raw hook payload reports.
+    pub fn from_native_payload(event: super::LifecycleEvent, payload: &[u8]) -> Self {
+        let mut decoded = Self::from_native(event);
+        decoded.binding_event = serde_json::from_slice(payload)
+            .ok()
+            .and_then(|value| BindingEventDecode::from_native_payload(&value));
+        decoded
     }
     pub fn context_event(&self) -> Option<super::LifecycleEvent> {
         Some(super::LifecycleEvent {

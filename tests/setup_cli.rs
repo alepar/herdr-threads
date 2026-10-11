@@ -483,6 +483,15 @@ fn installed_command_is_the_hook_entrypoint_argv() {
 }
 
 const SUBAGENT_EVENTS: [&str; 2] = ["SubagentStart", "SubagentStop"];
+/// Every hook group `setup codex` owns (spec §4): the session and subagent starts, the Bash
+/// tool boundary, and the two end events that disconnect a binding.
+const CODEX_OWNED_EVENTS: [&str; 5] = [
+    "SessionStart",
+    "SubagentStart",
+    "PreToolUse",
+    "SubagentStop",
+    "SessionEnd",
+];
 
 fn owned_event_groups(settings: &serde_json::Value, event: &str) -> usize {
     settings["hooks"][event].as_array().map_or(0, |groups| {
@@ -840,10 +849,7 @@ fn codex_setup_installs_user_hooks_and_unsetup_restores_bytes() {
     assert_eq!(report["scope"], "user");
     assert_eq!(report["action"], "installed");
     assert_eq!(report["harness_version"]["recipe"], "codex-hooks-v1");
-    assert_eq!(
-        report["events"],
-        serde_json::json!(["SessionStart", "SubagentStart", "PreToolUse"])
-    );
+    assert_eq!(report["events"], serde_json::json!(CODEX_OWNED_EVENTS));
     let hooks: serde_json::Value = serde_json::from_slice(&fs::read(s.hooks()).unwrap()).unwrap();
     let start = hooks["hooks"]["SessionStart"].as_array().unwrap();
     assert_eq!(start.len(), 2);
@@ -852,7 +858,7 @@ fn codex_setup_installs_user_hooks_and_unsetup_restores_bytes() {
         "bash '/h/herdr-agent-state.sh' session"
     );
     let command = owned_codex_command(&s);
-    for event in ["SessionStart", "SubagentStart", "PreToolUse"] {
+    for event in CODEX_OWNED_EVENTS {
         let groups = hooks["hooks"][event].as_array().unwrap();
         let owned = groups.last().unwrap()["hooks"][0]["command"]
             .as_str()
@@ -874,6 +880,8 @@ fn codex_setup_installs_user_hooks_and_unsetup_restores_bytes() {
             format!("{file}:session_start:1:0"),
             format!("{file}:subagent_start:0:0"),
             format!("{file}:pre_tool_use:0:0"),
+            format!("{file}:subagent_stop:0:0"),
+            format!("{file}:session_end:0:0"),
         ]
     );
     assert!(trust.iter().all(|k| k["trust_recorded"] == false));
@@ -922,6 +930,76 @@ fn codex_setup_installs_user_hooks_and_unsetup_restores_bytes() {
     assert_eq!(json(&twice)["action"], "not_installed");
     let status = json(&s.run(&["--json", "setup-status", "codex"]));
     assert_eq!(status["installed"], false);
+}
+
+/// Kills: `setup codex` leaving SubagentStop / SessionEnd out of `hooks.json` (a Codex subagent or
+/// session would then never disconnect its binding), registering them without the per-event
+/// `--event` command and ownership marker, or giving them a matcher or a different timeout.
+#[test]
+fn setup_codex_registers_subagent_stop_and_session_end() {
+    let s = Scratch::new();
+    s.harness("codex", "codex-cli 0.158.0");
+    fs::create_dir(&s.codex_home).unwrap();
+    let setup = s.run(&["setup", "codex", "--json"]);
+    assert_eq!(setup.status.code(), Some(0), "{}", text(&setup.stderr));
+    let hooks: serde_json::Value = serde_json::from_slice(&fs::read(s.hooks()).unwrap()).unwrap();
+    let command = owned_codex_command(&s);
+    for event in ["SubagentStop", "SessionEnd"] {
+        let groups = hooks["hooks"][event].as_array().unwrap();
+        assert_eq!(groups.len(), 1, "{event}");
+        let group = &groups[0];
+        let registered = group["hooks"][0]["command"].as_str().unwrap();
+        assert!(
+            registered.starts_with(&format!(
+                "{command} '--event' '{event}' # herdr-threads-owner:"
+            )),
+            "{event}: {registered}"
+        );
+        assert_eq!(group["hooks"][0]["type"], "command", "{event}");
+        assert!(group.get("matcher").is_none(), "{event}: no matcher");
+    }
+    let status = json(&s.run(&["--json", "setup-status", "codex"]));
+    assert_eq!(status["installed"], true, "{status}");
+    // Re-running setup keeps one group per event.
+    let again = s.run(&["setup", "codex", "--json"]);
+    assert_eq!(json(&again)["action"], "already_installed");
+    let hooks: serde_json::Value = serde_json::from_slice(&fs::read(s.hooks()).unwrap()).unwrap();
+    for event in CODEX_OWNED_EVENTS {
+        assert_eq!(
+            hooks["hooks"][event].as_array().unwrap().len(),
+            1,
+            "{event}"
+        );
+    }
+}
+
+/// Kills: an unsetup that leaves the end-event groups behind (a stray hook running a removed
+/// binary), including in a `hooks.json` that already held the user's own groups for them.
+#[test]
+fn unsetup_codex_removes_them() {
+    let s = Scratch::new();
+    s.harness("codex", "codex-cli 0.158.0");
+    fs::create_dir(&s.codex_home).unwrap();
+    let original = br#"{"hooks":{"SessionEnd":[{"hooks":[{"command":"user-end","timeout":10,"type":"command"}]}]}}"#;
+    fs::write(s.hooks(), original).unwrap();
+    let setup = s.run(&["setup", "codex", "--json"]);
+    assert_eq!(setup.status.code(), Some(0), "{}", text(&setup.stderr));
+    let installed: serde_json::Value =
+        serde_json::from_slice(&fs::read(s.hooks()).unwrap()).unwrap();
+    assert_eq!(
+        installed["hooks"]["SessionEnd"].as_array().unwrap().len(),
+        2
+    );
+    assert_eq!(
+        installed["hooks"]["SubagentStop"].as_array().unwrap().len(),
+        1
+    );
+    let unsetup = s.run(&["unsetup", "codex", "--json"]);
+    assert_eq!(unsetup.status.code(), Some(0), "{}", text(&unsetup.stderr));
+    assert_eq!(fs::read(s.hooks()).unwrap(), original);
+    let left = text(&fs::read(s.hooks()).unwrap());
+    assert!(!left.contains("SubagentStop"), "{left}");
+    assert!(!left.contains("herdr-threads-owner"), "{left}");
 }
 
 /// Snapshot of every file under `dir` (path and bytes) to prove no writes.
@@ -1031,7 +1109,7 @@ fn codex_setup_keeps_existing_user_hooks_in_their_own_layers() {
     assert_eq!(child[0]["hooks"][0]["command"], "hcom child");
     assert_eq!(hooks["hooks"]["Stop"][0]["hooks"][0]["command"], "x");
     let command = owned_codex_command(&s);
-    for event in ["SessionStart", "SubagentStart", "PreToolUse"] {
+    for event in CODEX_OWNED_EVENTS {
         let groups = hooks["hooks"][event].as_array().unwrap();
         let owned: Vec<_> = groups
             .iter()
@@ -1905,7 +1983,7 @@ fn versionless_setup_upgrades_owned_hooks_with_large_legacy_allowance_manifest()
     assert_eq!(fs::read(&manifest).unwrap(), manifest_before);
     assert_ne!(fs::read(s.hooks()).unwrap(), hooks_before);
     let hooks: serde_json::Value = serde_json::from_slice(&fs::read(s.hooks()).unwrap()).unwrap();
-    for event in ["SessionStart", "SubagentStart", "PreToolUse"] {
+    for event in CODEX_OWNED_EVENTS {
         let command = hooks["hooks"][event][0]["hooks"][0]["command"]
             .as_str()
             .unwrap();

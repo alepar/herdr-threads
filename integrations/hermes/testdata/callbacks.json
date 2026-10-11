@@ -64,10 +64,13 @@
     "harness": "hermes",
     "discriminator": "callback",
     "callbacks": [
+      "on_session_finalize",
       "on_session_reset",
       "on_session_start",
       "post_tool_call",
-      "pre_llm_call"
+      "pre_llm_call",
+      "subagent_start",
+      "subagent_stop"
     ],
     "fields": {
       "schema_version": "integer",
@@ -116,5 +119,5 @@
       "string"
     ]
   },
-  "bridge_schema_contract_id": "3f599002572f0efc"
+  "bridge_schema_contract_id": "78669955a7b170ed"
 }

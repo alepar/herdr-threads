@@ -103,6 +103,10 @@ pub enum Command {
     /// Advance the caller binding's own read cursors over messages it fully displayed. Allowed
     /// for subagent bindings: it changes only the caller's read position, never seat state.
     AdvanceCursors(AdvanceCursors),
+    /// A harness lifecycle event about a binding (spec §2 Enrollment, §3 end events): a subagent
+    /// start enrolls its binding, a subagent stop or session end disconnects. Not an accountable
+    /// seat write, so declared subagents may report it.
+    BindingEvent(BindingEvent),
     Leave(Leave),
     SetTopic(SetTopic),
     SetThreadName(SetThreadName),
@@ -816,6 +820,30 @@ pub struct AdvanceCursors {
     pub displayed: Vec<MessageId>,
 }
 
+/// What a [`BindingEvent`] reports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BindingEventKind {
+    SubagentStart,
+    SubagentStop,
+    SessionEnd,
+}
+
+/// A harness lifecycle event about a binding (spec §2 Enrollment, §3 end events). Not an
+/// accountable seat write: allowed for subagent claims.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BindingEvent {
+    /// Top-level ids for `SessionEnd`; the parent session plus the agent id (Claude, Codex) for
+    /// subagent events. For a Hermes delegate it is the parent's top-level claim.
+    pub claim: CallerClaim,
+    pub kind: BindingEventKind,
+    /// Hermes only: the delegate child's own session id (`subagent_start` / `subagent_stop`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_session: Option<NativeSessionId>,
+    pub operation: OperationId,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SendMessage {
@@ -1181,6 +1209,21 @@ impl Command {
                 if query.messages.is_empty() || query.messages.len() > MAX_BATCH_ITEMS =>
             {
                 Err("message delivery mode batch must contain 1..=100 messages")
+            }
+            Self::BindingEvent(event) => {
+                event.claim.validate_binding_fields()?;
+                let subagent_event = event.kind != BindingEventKind::SessionEnd;
+                match (&event.child_session, event.claim.agent_id.is_some()) {
+                    (Some(_), true) => Err("a delegate child event carries the parent's claim"),
+                    (Some(_), false) if !subagent_event => {
+                        Err("a session end names no child session")
+                    }
+                    (None, false) if subagent_event => {
+                        Err("a subagent event names an agent id or a child session")
+                    }
+                    (None, true) if !subagent_event => Err("a session end is top-level"),
+                    _ => Ok(()),
+                }
             }
             Self::AdvanceCursors(advance) => {
                 advance.claim.validate_binding_fields()?;

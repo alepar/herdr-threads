@@ -417,6 +417,36 @@ impl DomainService {
         self.store.advance_cursors(request, budget)
     }
 
+    /// A harness lifecycle event about a binding (spec §2, §3): authorised like a cooperative
+    /// call, open to declared subagents, since it changes no seat state. Decided by the store.
+    fn binding_event(
+        &self,
+        request: &crate::protocol::commands::BindingEvent,
+        peer: PeerIdentity,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        let (owner_uid, writer) = self.cooperative_runtime.as_ref().ok_or_else(|| {
+            error(
+                ErrorCode::CallerUnverified,
+                "cooperative elected runtime unavailable",
+            )
+        })?;
+        if peer.effective_uid() != *owner_uid {
+            return Err(error(
+                ErrorCode::Unauthorized,
+                "caller peer does not match elected owner",
+            ));
+        }
+        if request.claim.instance != self.instance {
+            return Err(error(
+                ErrorCode::CallerUnverified,
+                "caller instance does not match service",
+            ));
+        }
+        let _turn = writer.enter_foreground(budget, self.clock.as_ref())?;
+        self.store.binding_event(request, budget)
+    }
+
     fn cooperative_mutation(
         &self,
         mutation: PermitMutation,
@@ -855,6 +885,7 @@ impl LocalService for DomainService {
                 self.ack_mod_delivered(request, peer, budget, read)
             }
             Command::AdvanceCursors(request) => self.advance_cursors(&request, peer, budget),
+            Command::BindingEvent(request) => self.binding_event(&request, peer, budget),
             command @ (Command::BeginHandoff(_)
             | Command::CompleteHandoff(_)
             | Command::CheckIn(_)

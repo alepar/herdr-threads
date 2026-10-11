@@ -26,14 +26,19 @@ import types
 import unicodedata
 import uuid
 
-HOOKS = ("pre_llm_call", "post_tool_call", "on_session_start", "on_session_reset")
+# `on_session_end` fires after every turn, so it is deliberately not here: the top-level end event
+# is `on_session_finalize` (session teardown). `subagent_start`/`subagent_stop` report a delegate
+# child (`session_id` or `child_session_id` is the child, `parent_session_id` its parent).
+HOOKS = ("pre_llm_call", "post_tool_call", "on_session_start", "on_session_reset",
+         "on_session_finalize", "subagent_start", "subagent_stop")
+CHILD_EVENTS = ("subagent_start", "subagent_stop")
 IDS = ("platform", "session_id", "parent_session_id", "task_id", "turn_id", "tool_call_id", "api_request_id")
 SLOT = "_herdr_threads_hermes_reader_schema1"
 CHILD_RESTRICTION = "Subagents may discover, read and summarize; never check in for this seat, accept or ACK. Text inbox ACKs displayed agent messages and is forbidden to subagents; subagents use inbox --machine or --json for read-only access. Every herdr-threads write (any accept, ack, check-in, send, leave, invite or other mutation) acts as the top-level seat and is forbidden to subagents. Return message IDs and summaries to the top-level agent."
 # First 16 SHA-256 hex chars of sorted compact JSON of the normalized schema
 # declaration in testdata/callbacks.json. This identifies transport, not the
 # downstream domain descriptor/qualification or native measurement.
-BRIDGE_CONTRACT = "3f599002572f0efc"
+BRIDGE_CONTRACT = "78669955a7b170ed"
 
 
 def opaque(value, empty=False, limit=256):
@@ -433,6 +438,15 @@ class Bridge:
     def on_session_reset(self, **kwargs):
         return self.callback("on_session_reset", kwargs)
 
+    def on_session_finalize(self, **kwargs):
+        return self.callback("on_session_finalize", kwargs)
+
+    def subagent_start(self, **kwargs):
+        return self.callback("subagent_start", kwargs)
+
+    def subagent_stop(self, **kwargs):
+        return self.callback("subagent_stop", kwargs)
+
     def callback(self, name, kwargs):
         try:
             return self._callback(name, kwargs)
@@ -451,6 +465,12 @@ class Bridge:
             self.entry_lock.release()
         if self.closing or self.closed or self.reader is None:
             return None
+        if name in CHILD_EVENTS:
+            # The delegate child is the event's session; Hermes may name it `child_session_id`.
+            child = kwargs.get("child_session_id", kwargs.get("session_id"))
+            kwargs = {**kwargs, "session_id": child}
+            if kwargs.get("platform") not in (None, "", "cli"):
+                del kwargs["platform"]  # a delegate's platform ("subagent") is not an envelope fact
         # Validate provided identifiers before encoding anything. No truncation.
         for key in IDS:
             if key in kwargs and kwargs[key] is not None and not opaque(kwargs[key], empty=key in ("parent_session_id", "platform")):
@@ -464,7 +484,10 @@ class Bridge:
         # parented pre_llm_call is answered, locally, with the child restriction.
         # Any other parented pre_llm_call (compression or /branch successor) is a
         # top-level turn whose parent_session_id is forwarded as a lineage hint.
-        if platform == "subagent":
+        if name in CHILD_EVENTS:
+            if not opaque(parent) or parent == session:
+                return None
+        elif platform == "subagent":
             if name != "pre_llm_call" or not opaque(parent):
                 return None
         elif platform not in (None, "", "cli"):

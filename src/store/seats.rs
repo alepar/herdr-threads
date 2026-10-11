@@ -4265,6 +4265,41 @@ pub(crate) fn decide_cooperative_fence(
     Ok(mapping)
 }
 
+/// The placement a binding written by `claim` records, from the deciding mapping. Reconfirmation
+/// evidence is needed only to write a placement: a plain touch of an open binding writes none, so
+/// a missing observation does not refuse it.
+fn cooperative_placement(
+    tx: &Transaction<'_>,
+    at: DecisionInstant,
+    claim: &crate::protocol::authority::CallerClaim,
+    lifecycle: bool,
+    mapping: &CooperativeMapping,
+) -> Result<bindings::BindingPlacement, ApiError> {
+    let key = bindings::BindingKey::from_claim(claim);
+    let placement = match mapping.reconfirmation_evidence() {
+        Ok((terminal, incarnation)) => (terminal.to_owned(), incarnation.to_owned()),
+        Err(error) => {
+            if lifecycle || super::queries::open_binding_for(tx, &key)?.is_none() {
+                return Err(error);
+            }
+            (String::new(), String::new())
+        }
+    };
+    Ok(bindings::BindingPlacement {
+        generation: mapping.generation,
+        target_generation: mapping.revision,
+        target: claim.target.as_str().to_owned(),
+        terminal: placement.0,
+        incarnation: placement.1,
+        host_boot: mapping.boot.clone(),
+        host_epoch: mapping.epoch,
+        execution: claim.execution.as_str().to_owned(),
+        provenance: claim.harness.cooperative_provenance().to_owned(),
+        observed_at: at.utc,
+        registered_at: Some(at.utc),
+    })
+}
+
 /// Resolve the claim to its own binding (ht-54r.3): enroll, reconnect, reopen, attach or touch.
 /// Never ends another binding.
 pub(crate) fn resolve_cooperative(
@@ -4295,32 +4330,7 @@ pub(crate) fn resolve_cooperative_with_lineage(
         mode,
         Some(crate::protocol::commands::CheckInMode::Lifecycle { .. })
     );
-    let key = bindings::BindingKey::from_claim(claim);
-    // Reconfirmation evidence is needed only to write a placement: a plain touch of an open
-    // binding writes none, so a missing observation does not refuse it.
-    let evidence = mapping.reconfirmation_evidence();
-    let placement = match evidence {
-        Ok((terminal, incarnation)) => (terminal.to_owned(), incarnation.to_owned()),
-        Err(error) => {
-            if lifecycle || super::queries::open_binding_for(tx, &key)?.is_none() {
-                return Err(error);
-            }
-            (String::new(), String::new())
-        }
-    };
-    let placement = bindings::BindingPlacement {
-        generation: mapping.generation,
-        target_generation: mapping.revision,
-        target: claim.target.as_str().to_owned(),
-        terminal: placement.0,
-        incarnation: placement.1,
-        host_boot: mapping.boot.clone(),
-        host_epoch: mapping.epoch,
-        execution: claim.execution.as_str().to_owned(),
-        provenance: claim.harness.cooperative_provenance().to_owned(),
-        observed_at: at.utc,
-        registered_at: Some(at.utc),
-    };
+    let placement = cooperative_placement(tx, at, claim, lifecycle, mapping)?;
     let predecessor = match lineage_parent {
         Some(parent) if *parent != claim.native_session && !claim.is_subagent() => {
             bindings::match_claim(
@@ -4359,6 +4369,29 @@ pub(crate) fn resolve_cooperative_with_lineage(
         }
     }
     Ok(resolution)
+}
+
+/// The binding a Hermes delegate child's start event registers (ht-54r.11): the child session as
+/// a subagent binding of the parent's top-level binding (enrolled first if needed), keyed
+/// `(seat, hermes, child, agent_id = child)`. Returns whether the binding was created.
+pub(crate) fn attach_registered_child(
+    tx: &Transaction<'_>,
+    at: DecisionInstant,
+    parent_claim: &crate::protocol::authority::CallerClaim,
+    child: &crate::protocol::ids::NativeSessionId,
+    mapping: &CooperativeMapping,
+) -> Result<bool, ApiError> {
+    let parent = resolve_cooperative(tx, at, parent_claim, None, mapping)?
+        .binding()
+        .clone();
+    let child_claim = bindings::registered_child_claim(parent_claim, child)?;
+    let mut placement = cooperative_placement(tx, at, &child_claim, false, mapping)?;
+    placement.provenance =
+        crate::protocol::authority::COOPERATIVE_ENV_SESSION_PROVENANCE.to_owned();
+    Ok(matches!(
+        bindings::attach_subagent(tx, &child_claim, &parent, &placement, at.utc)?,
+        bindings::EnrollOutcome::Enrolled { .. }
+    ))
 }
 
 /// A cooperative check-in constructs its bounded offer inside the deciding SQLite

@@ -7,7 +7,7 @@ use super::{
     contract::{self, EventClass, EventContract, HarnessContract, JsonType, field},
     evidence::{AttributionHolding, EvidenceEvent, EvidenceOrigin},
 };
-use crate::protocol::time::CallBudget;
+use crate::protocol::{commands::BindingEventKind, time::CallBudget};
 use serde::Deserialize;
 use std::{
     collections::BTreeMap,
@@ -15,7 +15,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 pub struct HermesAdapter;
-pub const BRIDGE_SCHEMA: &str = "3f599002572f0efc";
+pub const BRIDGE_SCHEMA: &str = "78669955a7b170ed";
 static METADATA: AdapterMetadata = AdapterMetadata {
     id: "hermes",
     display_label: "Hermes",
@@ -57,6 +57,23 @@ const EVENTS: &[EvidenceEvent] = &[
     },
     EvidenceEvent {
         native_event: "on_session_reset",
+        milestone: None,
+        always_send: true,
+    },
+    // Session teardown and delegate-child lifecycle (ht-54r.11). `on_session_end` is per turn and
+    // is deliberately not a callback of this bridge.
+    EvidenceEvent {
+        native_event: "on_session_finalize",
+        milestone: None,
+        always_send: true,
+    },
+    EvidenceEvent {
+        native_event: "subagent_start",
+        milestone: None,
+        always_send: true,
+    },
+    EvidenceEvent {
+        native_event: "subagent_stop",
         milestone: None,
         always_send: true,
     },
@@ -122,6 +139,21 @@ macro_rules! events {
                 class: EventClass::Lifecycle,
                 fields: $fields,
             },
+            EventContract {
+                event: "on_session_finalize",
+                class: EventClass::Lifecycle,
+                fields: $fields,
+            },
+            EventContract {
+                event: "subagent_start",
+                class: EventClass::Lifecycle,
+                fields: $fields,
+            },
+            EventContract {
+                event: "subagent_stop",
+                class: EventClass::Lifecycle,
+                fields: $fields,
+            },
         ]
     };
 }
@@ -160,7 +192,7 @@ pub static CONTRACTS: &[ContractDescriptor] = &[
             "qualified_role_session",
             "startup_captured_identity",
             "observed_timeout",
-            "transport_3f599002572f0efc",
+            "transport_78669955a7b170ed",
         ],
         holding: AttributionHolding::Never,
         resumed_unavailable_reason: None,
@@ -589,6 +621,27 @@ fn parse(input: &HookInput) -> Result<Envelope, DecodeFailure> {
     } else if e.role_association.is_some() {
         return Err(invalid());
     }
+    // A delegate child's events are about the child session (`session_id`) and name their parent;
+    // the session teardown names no parent.
+    match e.callback.as_str() {
+        "subagent_start" | "subagent_stop" => {
+            let parent = e.parent_session_id.as_deref().ok_or_else(invalid)?;
+            if parent.is_empty()
+                || Some(parent) == e.session_id.as_deref()
+                || e.shape["parent_session_id"].presence != "present"
+            {
+                return Err(invalid());
+            }
+        }
+        "on_session_finalize"
+            if e.parent_session_id
+                .as_deref()
+                .is_some_and(|p| !p.is_empty()) =>
+        {
+            return Err(invalid());
+        }
+        _ => {}
+    }
     if (e.callback == "on_session_reset" && e.reset_reason.as_deref() != Some("new_session"))
         || (e.callback != "on_session_reset" && e.reset_reason.is_some())
     {
@@ -819,6 +872,34 @@ impl HarnessAdapter for HermesAdapter {
             EventIntent::Observer
         };
         let observer = e.callback != "pre_llm_call";
+        // A teardown ends the session's top-level binding; a delegate's start/stop registers and
+        // disconnects the child session as the parent's subagent binding. The claim is always
+        // the top-level session's: the child's own id travels as `child_session`.
+        let (role, binding_event) = match e.callback.as_str() {
+            "on_session_finalize" => (
+                EventRole::TopLevel,
+                Some(BindingEventDecode {
+                    kind: BindingEventKind::SessionEnd,
+                    agent_id: None,
+                    child_session: None,
+                    claim_session: None,
+                }),
+            ),
+            kind @ ("subagent_start" | "subagent_stop") => (
+                EventRole::Subagent,
+                Some(BindingEventDecode {
+                    kind: if kind == "subagent_start" {
+                        BindingEventKind::SubagentStart
+                    } else {
+                        BindingEventKind::SubagentStop
+                    },
+                    agent_id: None,
+                    child_session: Some(session.clone()),
+                    claim_session: e.parent_session_id.clone(),
+                }),
+            ),
+            _ => (role, None),
+        };
         Ok(DecodedEvent {
             harness: super::registry::builtins().agent("hermes").unwrap(),
             role,
@@ -843,6 +924,7 @@ impl HarnessAdapter for HermesAdapter {
                 DeliveryEligibility::Context
             },
             runtime: RuntimeAttribution::Attributed(e.runtime_identity),
+            binding_event,
         })
     }
     fn encode(
@@ -1403,6 +1485,9 @@ mod adapter_tests {
                 "empty_platform_start",
                 "post_tool",
                 "reset",
+                "session_finalize",
+                "subagent_start",
+                "subagent_stop",
                 "top_turn_cli",
                 "top_turn_empty_platform"
             ]
@@ -1441,6 +1526,42 @@ mod adapter_tests {
                     assert_eq!(witness, None, "{row}");
                 }
                 "post_tool" => assert_eq!(witness, None, "{row}"),
+                "session_finalize" => {
+                    assert!(matches!(e.intent, EventIntent::Observer), "{row}");
+                    assert_eq!(e.role, EventRole::TopLevel, "{row}");
+                    assert_eq!(witness, None, "{row}");
+                    assert_eq!(
+                        e.binding_event,
+                        Some(BindingEventDecode {
+                            kind: BindingEventKind::SessionEnd,
+                            agent_id: None,
+                            child_session: None,
+                            claim_session: None,
+                        }),
+                        "{row}"
+                    );
+                }
+                "subagent_start" | "subagent_stop" => {
+                    assert!(matches!(e.intent, EventIntent::Observer), "{row}");
+                    assert_eq!(e.role, EventRole::Subagent, "{row}");
+                    assert_eq!(witness, None, "{row}");
+                    // The child is the event's session; the claim is the parent's.
+                    assert_eq!(e.native_session.as_deref(), Some("fixture-child"), "{row}");
+                    assert_eq!(
+                        e.binding_event,
+                        Some(BindingEventDecode {
+                            kind: if row == "subagent_start" {
+                                BindingEventKind::SubagentStart
+                            } else {
+                                BindingEventKind::SubagentStop
+                            },
+                            agent_id: None,
+                            child_session: Some("fixture-child".into()),
+                            claim_session: Some("fixture-session".into()),
+                        }),
+                        "{row}"
+                    );
+                }
                 other => panic!("unlisted row {other}"),
             }
         }
@@ -1472,6 +1593,50 @@ mod adapter_tests {
             Some((EventRole::Subagent, None))
         );
         assert_eq!(decode("", "child"), None, "a child has a parent");
+    }
+    #[test]
+    fn session_teardown_and_delegate_callbacks_are_end_events_but_per_turn_end_is_not() {
+        let rows: serde_json::Map<String, serde_json::Value> = serde_json::from_slice(
+            include_bytes!("../../tests/fixtures/hermes/enrollment-envelopes.json"),
+        )
+        .unwrap();
+        let at = now();
+        let build = |row: &str, edit: &dyn Fn(&mut serde_json::Value)| {
+            let mut v = rows[row].clone();
+            v["started_at"] = at.into();
+            v["deadline_at"] = (at + 1200).into();
+            v["observation_order"]["observed_at_millis"] = at.into();
+            edit(&mut v);
+            rebuild(&v)
+        };
+        // `on_session_end` fires after every turn: the bridge never forwards it and the strict
+        // parser refuses it, so it can never disconnect a binding.
+        let per_turn = build("session_finalize", &|v| {
+            v["callback"] = "on_session_end".into()
+        });
+        assert!(parse(&per_turn).is_err());
+        // A delegate event without a parent, or whose parent is the child itself, is refused.
+        for parent in [serde_json::Value::Null, "".into(), "fixture-child".into()] {
+            let input = build("subagent_start", &|v| {
+                v["parent_session_id"] = parent.clone()
+            });
+            assert!(parse(&input).is_err(), "parent {parent}");
+        }
+        // The teardown names no parent.
+        let input = build("session_finalize", &|v| {
+            v["parent_session_id"] = "fixture-parent".into();
+            v["shape"]["parent_session_id"] =
+                serde_json::json!({"presence":"present","type":"string"});
+        });
+        assert!(parse(&input).is_err());
+        // None of the three carries a role association (they are bookkeeping, never turns).
+        for row in ["session_finalize", "subagent_start", "subagent_stop"] {
+            let input = build(row, &|v| {
+                v["role_association"] = serde_json::json!({"role":"top","provenance":"explicit_parent",
+                    "session_id":"fixture-child","turn_id":"t","enrollment_witness":null});
+            });
+            assert!(parse(&input).is_err(), "{row}");
+        }
     }
     #[test]
     fn hermes_enrollment_envelope_d2a_rows_round_trip_and_refusals() {

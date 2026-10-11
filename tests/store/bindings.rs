@@ -554,6 +554,86 @@ mod resolution {
         assert_eq!(count(&db, "SELECT count(*) FROM occupant_bindings"), 1);
     }
 
+    fn hermes_claim(session: &str) -> CallerClaim {
+        CallerClaim {
+            harness: Harness::Agent(
+                crate::harness::registry::builtins()
+                    .agent("hermes")
+                    .expect("hermes is a builtin adapter"),
+            ),
+            ..claim(session, None)
+        }
+    }
+
+    #[test]
+    fn hermes_cli_claim_of_a_registered_child_resolves_to_the_subagent_binding() {
+        let db = db();
+        let parent_claim = hermes_claim("hermes-parent");
+        let parent = resolve(&db, &parent_claim, true).unwrap().binding().clone();
+        let child_claim =
+            registered_child_claim(&parent_claim, &NativeSessionId::new("hermes-child")).unwrap();
+        let place = placement();
+        attach_subagent(&db, &child_claim, &parent, &place, UtcMillis(50)).unwrap();
+        // The child's CLI claim: its own session id, no agent id.
+        let cli = resolve(&db, &hermes_claim("hermes-child"), false).unwrap();
+        let Resolution::Existing {
+            binding,
+            reconnected: false,
+        } = cli
+        else {
+            panic!("expected the registered child, got {cli:?}");
+        };
+        assert_eq!(binding.role, BindingRole::Subagent);
+        assert_eq!(binding.agent_id, "hermes-child");
+        assert_eq!(binding.parent_binding, Some(parent.binding_id.clone()));
+        assert_eq!(count(&db, "SELECT count(*) FROM occupant_bindings"), 2);
+        // A lifecycle claim of the child session resolves the same way (it never enrolls a
+        // top-level binding for a delegate).
+        let lifecycle = resolve(&db, &hermes_claim("hermes-child"), true).unwrap();
+        assert_eq!(lifecycle.binding().binding_id, binding.binding_id);
+        assert_eq!(count(&db, "SELECT count(*) FROM occupant_bindings"), 2);
+        // An unrelated Hermes session still enrolls as top-level, and so does the same session id
+        // under another harness (the lookup is Hermes-only).
+        let other = resolve(&db, &other_process_of(hermes_claim("hermes-other")), false).unwrap();
+        assert_eq!(other.binding().role, BindingRole::TopLevel);
+        let claude = resolve(&db, &other_process("hermes-child"), false).unwrap();
+        assert_eq!(claude.binding().role, BindingRole::TopLevel);
+    }
+
+    fn other_process_of(mut claim: CallerClaim) -> CallerClaim {
+        claim.liveness = Some(LivenessFingerprint { pid: 9, start: 9 });
+        claim
+    }
+
+    #[test]
+    fn end_event_helpers_disconnect_without_ending_and_ignore_unknown_bindings() {
+        let db = db();
+        let top_claim = claim("sess-A", None);
+        let top = resolve(&db, &top_claim, true).unwrap().binding().clone();
+        let sub = resolve(&db, &claim("sess-A", Some("a1")), false)
+            .unwrap()
+            .binding()
+            .clone();
+        let top_key = key("sess-A", None);
+        let sub_key = key("sess-A", Some("a1"));
+        // A top-level key is no subagent target and vice versa.
+        assert_eq!(end_event_subagent(&db, &top_key, UtcMillis(60)).unwrap(), 0);
+        assert_eq!(end_event_session(&db, &sub_key, UtcMillis(60)).unwrap(), 0);
+        assert_eq!(
+            end_event_session(&db, &key("sess-Z", None), UtcMillis(60)).unwrap(),
+            0
+        );
+        assert_eq!(end_event_subagent(&db, &sub_key, UtcMillis(60)).unwrap(), 1);
+        assert_eq!(end_event_subagent(&db, &sub_key, UtcMillis(61)).unwrap(), 0);
+        assert_eq!(end_event_session(&db, &top_key, UtcMillis(62)).unwrap(), 1);
+        for binding in [top, sub] {
+            let row = get(&db, &binding.binding_id).unwrap().unwrap();
+            assert_eq!(row.liveness, Liveness::Disconnected);
+            assert_eq!(row.disconnect_reason.as_deref(), Some("liveness_end_event"));
+            assert_eq!(row.ended_at, None);
+        }
+    }
+
     #[test]
     fn lifecycle_enrollment_uses_the_harness_cooperative_provenance() {
         let db = db();

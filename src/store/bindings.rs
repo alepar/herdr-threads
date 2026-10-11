@@ -971,6 +971,94 @@ fn subagent_shape_error() -> ApiError {
     )
 }
 
+/// The claim of a Hermes delegate child (spec §1 Hermes row): the parent's claim retargeted at the
+/// child session, which is also its agent id, with the subagent role.
+pub fn registered_child_claim(
+    parent: &CallerClaim,
+    child: &NativeSessionId,
+) -> Result<CallerClaim, ApiError> {
+    let agent = AgentId::parse(child.as_str().to_owned()).map_err(|_| subagent_shape_error())?;
+    Ok(CallerClaim {
+        role: crate::protocol::authority::CallerRole::Subagent,
+        native_session: child.clone(),
+        agent_id: Some(agent),
+        ..parent.clone()
+    })
+}
+
+/// The open Hermes subagent binding registered for the child session `key` names
+/// (`(seat, hermes, X, agent_id = X)`), if any. Only Hermes registers children this way.
+fn registered_child(db: &Connection, key: &BindingKey) -> Result<Option<BindingRow>, ApiError> {
+    if key.harness != "hermes" || key.agent_id.is_some() {
+        return Ok(None);
+    }
+    Ok(match_claim(
+        db,
+        &BindingKey {
+            agent_id: AgentId::parse(key.native_session.as_str().to_owned()).ok(),
+            ..key.clone()
+        },
+    )?
+    .filter(|binding| binding.role == BindingRole::Subagent))
+}
+
+/// A subagent's stop event (spec §3): disconnects the open subagent binding `key` names. Returns
+/// whether a binding changed; an unknown, ended or already disconnected binding is a no-op. It
+/// never ends the binding (TRUST-POLICY).
+pub fn end_event_subagent(
+    tx: &Connection,
+    key: &BindingKey,
+    now: UtcMillis,
+) -> Result<u32, ApiError> {
+    match match_claim(tx, key)? {
+        Some(binding) if binding.role == BindingRole::Subagent => Ok(u32::from(disconnect(
+            tx,
+            &binding.binding_id,
+            DisconnectReason::EndEvent,
+            now,
+        )?)),
+        _ => Ok(0),
+    }
+}
+
+/// A top-level session's end event (spec §3): disconnects the open top-level binding `key` names
+/// and every open subagent binding attached to it. Returns how many changed; an unknown binding
+/// is a no-op. It never ends a binding (TRUST-POLICY).
+pub fn end_event_session(
+    tx: &Connection,
+    key: &BindingKey,
+    now: UtcMillis,
+) -> Result<u32, ApiError> {
+    let Some(root) = match_claim(tx, key)? else {
+        return Ok(0);
+    };
+    if root.role != BindingRole::TopLevel {
+        return Ok(0);
+    }
+    let mut changed = u32::from(disconnect(
+        tx,
+        &root.binding_id,
+        DisconnectReason::EndEvent,
+        now,
+    )?);
+    let children = query_rows(
+        tx,
+        &format!(
+            "SELECT {COLUMNS} FROM occupant_bindings WHERE parent_binding=?1 AND ended_at IS NULL AND liveness='connected' ORDER BY ordinal"
+        ),
+        &[&root.binding_id.as_str()],
+    )?;
+    for child in &children {
+        changed += u32::from(disconnect(
+            tx,
+            &child.binding_id,
+            DisconnectReason::EndEvent,
+            now,
+        )?);
+    }
+    Ok(changed)
+}
+
 /// Ends every open binding of the seat: connected ones go through `disconnect(reason)` first (so
 /// ht-54r.10's side-effect hooks run), then `ended_at` is set. Used by unresolve here, and by
 /// retirement (ht-54r.14). Human exclusivity uses `end_human_binding` / `end_agent_bindings`.
@@ -1108,6 +1196,21 @@ fn resolve_claim_inner(
         return Err(subagent_shape_error());
     }
     let key = BindingKey::from_claim(claim);
+    // A Hermes delegate child runs `herdr-threads` under its own session id and no agent id; its
+    // start event registered that session as a subagent binding of the parent (spec §1 Hermes
+    // row), so the claim resolves to it (role subagent) instead of enrolling a top-level one.
+    if !human
+        && !subagent
+        && let Some(child) = registered_child(tx, &key)?
+    {
+        touch(tx, &child.binding_id, claim.liveness, now)?;
+        let binding = get(tx, &child.binding_id)?
+            .ok_or_else(|| corrupt("touched registered child vanished"))?;
+        return Ok(Resolution::Existing {
+            binding,
+            reconnected: false,
+        });
+    }
     let found = match_claim(tx, &key)?;
     // A person's binding comes only from the person's own lifecycle check-in (`me init`, with
     // its A4 guards); a plain human call never enrolls one.

@@ -3015,6 +3015,98 @@ fn record_observer_reset(
             bridge::record_declared_reset(&journal, args.harness, target, reset, clock.utc_now().0);
     }
 }
+/// The most a subagent start may spend reporting its binding before it renders its child guidance.
+const BINDING_EVENT_BEFORE_GUIDANCE: Duration = Duration::from_millis(2000);
+
+/// Report a harness start/stop/end event to the daemon (spec §2 Enrollment, §3 end events): one
+/// `BindingEvent` for the pane's seat, acting as the session the payload names. A subagent start
+/// needs the harness process fingerprint (it may enroll); a stop or end event does not, so a
+/// harness already shutting down still reports.
+fn report_binding_event(
+    args: &HookArgs,
+    decoded: &DecodedEvent,
+    event: &BindingEventDecode,
+    env: &HookEnv,
+    deadline: Instant,
+    clock: &Arc<dyn Clock>,
+) -> Result<(), Failure> {
+    use crate::protocol::commands::{BindingEvent, BindingEventKind};
+    let Connected {
+        instance,
+        target,
+        client,
+        ..
+    } = connect_pane(args, env, deadline, clock, None)?;
+    let pane = env
+        .pane
+        .as_ref()
+        .ok_or_else(|| Failure::Quiet("HERDR_PANE_ID missing".into()))?;
+    let (seat, generation) = match find_seat(&client, &target, deadline, clock.as_ref())? {
+        PaneSeat::Resolved(seat, generation) => (seat, generation),
+        other => return Err(other.refusal(pane)),
+    };
+    let invalid = |what: &str| Failure::Quiet(format!("binding event: invalid {what}"));
+    let session = event
+        .claim_session
+        .as_deref()
+        .or(decoded.native_session.as_deref())
+        .ok_or_else(|| {
+            Failure::Quiet(format!(
+                "the {} hook payload carries no session id, so the call is not attributed",
+                args.harness.as_str()
+            ))
+        })?;
+    let context = OccupantContext {
+        format_version: 1,
+        instance,
+        seat: seat.as_str().into(),
+        target: target.as_str().into(),
+        harness: args.harness,
+        binding_generation: generation,
+        execution: crate::harness::context::session_execution(
+            instance,
+            args.harness,
+            session,
+            None,
+        ),
+        session: SessionReference::Native(session.to_owned()),
+        role: Role::TopLevel,
+    };
+    let mut claim = bridge::caller_claim(&context).map_err(|_| invalid("session"))?;
+    claim.liveness = match hook_fingerprint(args.harness) {
+        Ok(fingerprint) => Some(fingerprint),
+        Err(failure) if event.kind == BindingEventKind::SubagentStart => return Err(failure),
+        Err(_) => None,
+    };
+    if let Some(agent) = &event.agent_id {
+        claim.role = crate::protocol::authority::CallerRole::Subagent;
+        claim.agent_id = Some(
+            crate::protocol::ids::AgentId::parse(agent.clone()).map_err(|_| invalid("agent id"))?,
+        );
+    }
+    let child_session = event
+        .child_session
+        .as_deref()
+        .map(|child| crate::protocol::ids::NativeSessionId::parse(child.to_owned()))
+        .transpose()
+        .map_err(|_| invalid("child session"))?;
+    let operation = OperationId::parse(format!("binding-event:{}", decoded.event_id))
+        .or_else(|_| OperationId::parse(format!("binding-event:{}", uuid::Uuid::new_v4())))
+        .map_err(|_| invalid("event id"))?;
+    client
+        .call(
+            Command::BindingEvent(BindingEvent {
+                claim,
+                kind: event.kind,
+                child_session,
+                operation,
+            }),
+            &budget(deadline, clock.as_ref()),
+        )
+        .map_err(|e| api_failure("binding event", &e))?;
+    Ok(())
+}
+
 /// Executes adapter-normalized intent. Ineligible callbacks never reach seat resolution.
 #[allow(clippy::too_many_arguments)]
 pub fn run_admitted_hook(
@@ -3091,10 +3183,33 @@ fn run_admitted_hook_since(
         record_observer_reset(args, decoded, env, deadline, clock.as_ref());
         return HookOutcome::default();
     }
+    // A start/stop/end event enrolls or disconnects its binding before anything else. The report
+    // is best effort (an unreachable daemon never blocks the harness); a subagent start still
+    // renders its child guidance below.
+    let binding_diagnostic = decoded.binding_event.as_ref().and_then(|event| {
+        // Child guidance follows a start, so a slow daemon must not spend the whole budget the
+        // guidance (and the watchdog's margin) needs; a stop or end renders nothing.
+        let report_deadline = if matches!(decoded.intent, EventIntent::Lifecycle(_)) {
+            deadline.min(Instant::now() + BINDING_EVENT_BEFORE_GUIDANCE)
+        } else {
+            deadline
+        };
+        report_binding_event(args, decoded, event, env, report_deadline, &clock)
+            .err()
+            .map(|failure| match failure {
+                Failure::Quiet(detail) | Failure::Unavailable(detail) => detail,
+                Failure::UnavailableDetail(reason, detail) => {
+                    format!("{reason}: {}", detail.escape_debug())
+                }
+            })
+    });
     if matches!(decoded.role, EventRole::Unknown)
         || matches!(decoded.delivery, DeliveryEligibility::Ineligible)
     {
-        return HookOutcome::default();
+        return HookOutcome {
+            diagnostic: binding_diagnostic,
+            ..HookOutcome::default()
+        };
     }
     // Whether this event may enroll is the adapter's declared policy, not a
     // hard-coded intent. A qualified turn's normalized Startup/Clear is context
@@ -3150,7 +3265,7 @@ fn run_admitted_hook_since(
             output_bytes(registration.encode(admitted, decoded, &neutral_offer(guidance)));
         return HookOutcome {
             stdout,
-            diagnostic,
+            diagnostic: diagnostic.or(binding_diagnostic),
             attention: None,
             lazy: None,
         };
