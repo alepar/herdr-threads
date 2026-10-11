@@ -4935,12 +4935,15 @@ fn adapter_inbox_batch_candidates_require_canonical_registered_agent() {
         ("harness='human'", false),
         ("harness='future_agent'", false),
         ("registered_at=NULL", false),
-        ("observation_provenance='managed_launch'", false),
+        ("observation_provenance='managed_launch'", true),
+        ("observation_provenance='cooperative_env_session'", true),
+        ("liveness='disconnected',disconnected_at=1", false),
+        ("role='subagent'", false),
         ("native_session=''", false),
         ("execution_id=''", false),
     ] {
         db.execute(
-            "UPDATE occupant_bindings SET target_id='w:p1',harness='codex',registered_at=0,observation_provenance='cooperative_top_level',native_session='session',execution_id='exec' WHERE seat_id='s'",
+            "UPDATE occupant_bindings SET target_id='w:p1',harness='codex',registered_at=0,observation_provenance='cooperative_top_level',native_session='session',execution_id='exec',role='top_level',liveness='connected',disconnected_at=NULL,disconnect_reason=NULL WHERE seat_id='s'",
             [],
         )
         .unwrap();

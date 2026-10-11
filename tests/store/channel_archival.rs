@@ -315,6 +315,30 @@ fn archival_joined_agent_needs_repeated_composer_reads_then_preserves_membership
 }
 
 #[test]
+fn archival_idle_sampling_counts_a_plain_call_enrolled_binding() {
+    use herdr_threads::ports::HostUiState;
+    let mut db = fixture();
+    thread(&db);
+    joined_agent(&db);
+    db.execute_batch("UPDATE occupant_bindings SET observation_provenance='cooperative_env_session',liveness='connected' WHERE seat_id='s'").unwrap();
+    for at in (0..=3_600_000).step_by(60_000) {
+        archival::advance(&db, "i", &runtime(at)).unwrap();
+        let ticket = archival::observation_ticket(&db, "i", "s", &runtime(at))
+            .unwrap()
+            .expect("a connected top-level binding is sampled whatever its enrollment provenance");
+        archival::record_sample(
+            &mut db,
+            &ticket,
+            &runtime(at),
+            &sample(at, HostUiState::Idle),
+        )
+        .unwrap();
+        tick(&mut db, &runtime(at));
+    }
+    assert!(archived(&db));
+}
+
+#[test]
 fn archival_current_structure_change_after_member_scan_invalidates_final_decision() {
     use herdr_threads::ports::HostUiState;
     for race in ["current", "missing_snapshot", "matching_snapshot"] {

@@ -383,7 +383,7 @@ fn scan_members(
             .map_err(store_error)?;
             continue;
         }
-        let qualified:Option<(i64,String)>=tx.query_row("SELECT a.last_mono,b.harness FROM seat_archival a JOIN seats s ON s.id=a.seat_id JOIN occupant_bindings b ON b.seat_id=s.id AND b.ended_at IS NULL JOIN host_instances h ON h.id=s.instance_id WHERE a.seat_id=?1 AND s.instance_id=?2 AND s.state='resolved' AND s.generation=a.binding_generation AND s.target_generation=a.target_generation AND s.target_id=a.target_id AND b.generation=a.binding_generation AND b.registered_at IS NOT NULL AND b.harness=a.harness AND b.observation_provenance='cooperative_top_level' AND b.native_session=a.native_session AND b.execution_id=a.execution AND h.host_boot=a.host_boot AND h.host_epoch=a.host_epoch AND a.runtime_boot=?3 AND a.evidence_epoch=?4 AND a.samples>=2 AND a.idle_mono<=?5 AND a.last_mono>=?6 AND a.last_mono<=?7 AND NOT EXISTS(SELECT 1 FROM recovery_holds rh WHERE rh.instance_id=s.instance_id AND rh.target_id=s.target_id AND rh.released_at IS NULL)",params![seat,instance,rt.boot,epoch,rt.mono.saturating_sub(rt.after_ms),rt.mono.saturating_sub(MAX_GAP_MS),rt.mono],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(store_error)?;
+        let qualified:Option<(i64,String)>=tx.query_row("SELECT a.last_mono,b.harness FROM seat_archival a JOIN seats s ON s.id=a.seat_id JOIN occupant_bindings b ON b.seat_id=s.id AND b.ended_at IS NULL JOIN host_instances h ON h.id=s.instance_id WHERE a.seat_id=?1 AND s.instance_id=?2 AND s.state='resolved' AND s.generation=a.binding_generation AND s.target_generation=a.target_generation AND s.target_id=a.target_id AND b.generation=a.binding_generation AND b.registered_at IS NOT NULL AND b.harness=a.harness AND b.role='top_level' AND b.liveness='connected' AND b.native_session=a.native_session AND b.execution_id=a.execution AND h.host_boot=a.host_boot AND h.host_epoch=a.host_epoch AND a.runtime_boot=?3 AND a.evidence_epoch=?4 AND a.samples>=2 AND a.idle_mono<=?5 AND a.last_mono>=?6 AND a.last_mono<=?7 AND NOT EXISTS(SELECT 1 FROM recovery_holds rh WHERE rh.instance_id=s.instance_id AND rh.target_id=s.target_id AND rh.released_at IS NULL)",params![seat,instance,rt.boot,epoch,rt.mono.saturating_sub(rt.after_ms),rt.mono.saturating_sub(MAX_GAP_MS),rt.mono],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(store_error)?;
         let Some((last, harness)) = qualified else {
             return Ok((rows.len(), false, true));
         };
@@ -604,7 +604,7 @@ pub(crate) fn observation_ticket_with_registry(
         authority::{CallerClaim, CallerRole, Harness},
         ids::*,
     };
-    let row=db.query_row("SELECT s.target_id,b.generation,b.harness,b.native_session,b.execution_id,a.activity_revision,ai.runtime_boot,ai.evidence_epoch FROM seats s JOIN seat_archival a ON a.seat_id=s.id JOIN archival_instances ai ON ai.instance_id=s.instance_id JOIN occupant_bindings b ON b.seat_id=s.id AND b.ended_at IS NULL WHERE s.id=?1 AND s.instance_id=?2 AND s.state='resolved' AND b.registered_at IS NOT NULL AND b.observation_provenance='cooperative_top_level'",params![seat,instance],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,String>(4)?,r.get::<_,i64>(5)?,r.get::<_,String>(6)?,r.get::<_,i64>(7)?))).optional().map_err(store_error)?;
+    let row=db.query_row("SELECT s.target_id,b.generation,b.harness,b.native_session,b.execution_id,a.activity_revision,ai.runtime_boot,ai.evidence_epoch FROM seats s JOIN seat_archival a ON a.seat_id=s.id JOIN archival_instances ai ON ai.instance_id=s.instance_id JOIN occupant_bindings b ON b.seat_id=s.id AND b.ended_at IS NULL WHERE s.id=?1 AND s.instance_id=?2 AND s.state='resolved' AND b.registered_at IS NOT NULL AND b.role='top_level' AND b.liveness='connected'",params![seat,instance],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,String>(4)?,r.get::<_,i64>(5)?,r.get::<_,String>(6)?,r.get::<_,i64>(7)?))).optional().map_err(store_error)?;
     let Some((
         target,
         generation,
@@ -692,7 +692,7 @@ pub(crate) fn next_observation_in_with_registry(
             params![seat, rt.mono.saturating_add(CADENCE_MS)],
         )
         .map_err(store_error)?;
-        let active_harness:Option<String>=tx.query_row("SELECT b.harness FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id AND b.ended_at IS NULL WHERE s.id=?1 AND s.state='resolved' AND b.registered_at IS NOT NULL AND b.observation_provenance='cooperative_top_level' AND EXISTS(SELECT 1 FROM memberships INDEXED BY memberships_archival_joined_seat WHERE seat_id=s.id AND state='joined')",[&seat],|r|r.get(0)).optional().map_err(store_error)?;
+        let active_harness:Option<String>=tx.query_row("SELECT b.harness FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id AND b.ended_at IS NULL WHERE s.id=?1 AND s.state='resolved' AND b.registered_at IS NOT NULL AND b.role='top_level' AND b.liveness='connected' AND EXISTS(SELECT 1 FROM memberships INDEXED BY memberships_archival_joined_seat WHERE seat_id=s.id AND state='joined')",[&seat],|r|r.get(0)).optional().map_err(store_error)?;
         let active = active_harness
             .as_deref()
             .is_some_and(|h| eligible_composer(registry, h).is_some());
@@ -781,7 +781,7 @@ pub(crate) fn record_sample_in_with_registry(
             })
         })
         && observation.occupant.as_ref().is_none_or(|occupant|occupant.harness==claim.harness)
-        && tx.query_row("SELECT EXISTS(SELECT 1 FROM occupant_bindings WHERE seat_id=?1 AND generation=?2 AND ended_at IS NULL AND registered_at IS NOT NULL AND observation_provenance='cooperative_top_level')",params![claim.seat.as_str(),claim.binding_generation as i64],|r|r.get::<_,bool>(0)).map_err(store_error)?
+        && tx.query_row("SELECT EXISTS(SELECT 1 FROM occupant_bindings WHERE seat_id=?1 AND generation=?2 AND ended_at IS NULL AND registered_at IS NOT NULL AND role='top_level' AND liveness='connected')",params![claim.seat.as_str(),claim.binding_generation as i64],|r|r.get::<_,bool>(0)).map_err(store_error)?
         && observation.completed_at_mono.0 <= rt.mono as u64
         && observation.started_at_mono.0 >= rt.mono.saturating_sub(5_000).max(0) as u64
         && proof.as_ref().zip(mapping.as_ref()).is_some_and(|(p, m)| {

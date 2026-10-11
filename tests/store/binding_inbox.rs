@@ -613,7 +613,13 @@ fn v29_migration_scenario(strict: bool) {
         "the migrated binding starts at the thread head"
     );
     let want = vec![Row::Msg("m2".into(), true), Row::Msg("m3".into(), true)];
-    assert_eq!(page(&fx, Some(&claim("b", "nb1", EXEC_B1, None))), want);
+    // Until it is re-adopted the migrated binding is disconnected: it is not an accountable
+    // top-level binding, so it lists the same messages without offering to ACK them (ht-54r.59).
+    let before_readopt = vec![Row::Msg("m2".into(), false), Row::Msg("m3".into(), false)];
+    assert_eq!(
+        page(&fx, Some(&claim("b", "nb1", EXEC_B1, None))),
+        before_readopt
+    );
     let state = |conn: &Connection| {
         conn.query_row(
             "SELECT liveness, disconnect_reason, liveness_pid, liveness_start, migrated FROM occupant_bindings WHERE binding_id=?1",

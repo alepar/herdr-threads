@@ -106,7 +106,9 @@ association) enrolls through the same resolver without a check-in or context off
 top-level CLI `pre_llm_call` enrolls the same way only when the pane has no nonretired seat
 (`Unowned`), then checks in in the same callback. Both meet the same guards; a held or unresolved
 pane is refused.
-Enrollment itself grants no receipt authority; check-in retains `cooperative_top_level` provenance.
+Enrollment by a plain call records `cooperative_env_session` provenance on the binding. Receipt authority follows
+A5 (a connected top-level binding of the seat, whatever its enrollment provenance); a receipt's own provenance comes
+from the claim (A3), not from the binding's enrollment.
 Subagent callbacks, `PreToolUse` and Current/compact checks never allocate; the exact installed event
 registration must match the native payload before service or journal access.
 

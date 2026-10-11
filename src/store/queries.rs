@@ -5209,7 +5209,7 @@ fn inbox_batch(
         return Err(api_error(ErrorCode::NotFound, "seat not found"));
     }
     let current_harness: Option<String> = db.query_row(
-        "SELECT b.harness FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id WHERE s.id=?1 AND s.state='resolved' AND b.ended_at IS NULL AND b.registered_at IS NOT NULL AND b.observation_provenance='cooperative_top_level' AND b.target_id=s.target_id AND b.target_generation=s.target_generation AND b.native_session<>'' AND b.execution_id<>'' ORDER BY b.ordinal DESC LIMIT 1",
+        "SELECT b.harness FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id WHERE s.id=?1 AND s.state='resolved' AND b.ended_at IS NULL AND b.registered_at IS NOT NULL AND b.role='top_level' AND b.liveness='connected' AND b.target_id=s.target_id AND b.target_generation=s.target_generation AND b.native_session<>'' AND b.execution_id<>'' ORDER BY b.ordinal DESC LIMIT 1",
         [seat.as_str()], |r| r.get(0),
     ).optional().map_err(store_error)?;
     let current_agent = current_harness
@@ -6761,7 +6761,7 @@ mod inbox_v2 {
         // a Hermes binding's pending receipts are ACK candidates too.
         // A bound read judges its own binding (a subagent's is never an ACK candidate); a seat
         // read judges the seat's current binding.
-        let current_harness:Option<String>=db.query_row("SELECT b.harness FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id WHERE s.id=?1 AND s.state='resolved' AND b.ended_at IS NULL AND b.registered_at IS NOT NULL AND b.observation_provenance='cooperative_top_level' AND b.target_id=s.target_id AND b.target_generation=s.target_generation AND b.native_session<>'' AND b.execution_id<>'' AND (?2 IS NULL OR (b.binding_id=?2 AND b.role='top_level')) ORDER BY b.ordinal DESC LIMIT 1",params![seat.as_str(),reading.map(|b| b.as_str())],|r|r.get(0)).optional().map_err(store_error)?;
+        let current_harness:Option<String>=db.query_row("SELECT b.harness FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id WHERE s.id=?1 AND s.state='resolved' AND b.ended_at IS NULL AND b.registered_at IS NOT NULL AND b.role='top_level' AND b.liveness='connected' AND b.target_id=s.target_id AND b.target_generation=s.target_generation AND b.native_session<>'' AND b.execution_id<>'' AND (?2 IS NULL OR (b.binding_id=?2 AND b.role='top_level')) ORDER BY b.ordinal DESC LIMIT 1",params![seat.as_str(),reading.map(|b| b.as_str())],|r|r.get(0)).optional().map_err(store_error)?;
         let current_agent = current_harness
             .as_deref()
             .is_some_and(|harness| crate::harness::registry::builtins().agent(harness).is_ok());
