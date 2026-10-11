@@ -1612,8 +1612,10 @@ fn config7_herdr_restart_keeps_seats_in_restore_hold() {
     );
     // While held, nothing re-enrolls on the old pane id (the binding rows stay for a restore):
     // a resume is told the mapping is unresolved and opens no binding, and a new claim of the
-    // pane is refused.
-    let out = smoke.hook(&one, &claude_start("sess-one", "resume"));
+    // pane is refused. The resumed session is one the seat never held: a session the seat
+    // does hold matches C1 on the held pane and reattaches (ht-54r.78).
+    let stranger = Agent::claude("sess-stranger", &pane);
+    let out = smoke.hook(&stranger, &claude_start("sess-stranger", "resume"));
     assert_eq!(
         out.code,
         0,
