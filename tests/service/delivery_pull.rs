@@ -11090,3 +11090,180 @@ fn presentation_owner_replay_pruned_all_allows_real_logical_allocation_bookkeepi
         "legitimate logical allocation retains normal bookkeeping"
     );
 }
+
+// WR9: cancel only after a real exact-key statement completed. A subsequent
+// attempt observes the exhausted budget; neither capture nor partial progress
+// may install. The scoped trace observes work, without replacing store logic.
+#[test]
+fn presentation_owner_replay_mid_work_budget_keeps_first_capture_uninstalled() {
+    use crate::{
+        ports::ModChannels,
+        protocol::{commands::DeliveryMode, delivery::DeliveryPullReplyV2, time::Cancellation},
+        test_support::failpoints::Failpoint,
+    };
+    use std::sync::atomic::{AtomicPtr, AtomicUsize};
+
+    struct TraceState {
+        handle: AtomicPtr<rusqlite::ffi::sqlite3>,
+        completed: AtomicUsize,
+        cancellation: Cancellation,
+    }
+    struct TraceGuard(Arc<TraceState>);
+    impl Drop for TraceGuard {
+        fn drop(&mut self) {
+            let handle = self.0.handle.load(Ordering::SeqCst);
+            if !handle.is_null() {
+                // SAFETY: this fixture's SqliteStore retains its sole writer
+                // connection until after the guard. The synchronous call has
+                // returned and no other thread accesses this fixture's writer.
+                unsafe {
+                    rusqlite::ffi::sqlite3_trace_v2(handle, 0, None, std::ptr::null_mut());
+                }
+            }
+        }
+    }
+    unsafe extern "C" fn completed_key(
+        _: u32,
+        data: *mut std::ffi::c_void,
+        statement: *mut std::ffi::c_void,
+        _: *mut std::ffi::c_void,
+    ) -> i32 {
+        // SAFETY: SQLite provides a live statement for PROFILE and the guard
+        // retains the registered TraceState until after unregistration.
+        let state = unsafe { &*data.cast::<TraceState>() };
+        let sql = unsafe { rusqlite::ffi::sqlite3_sql(statement.cast()) };
+        if !sql.is_null()
+            && unsafe { std::ffi::CStr::from_ptr(sql) }
+                .to_bytes()
+                .starts_with(
+                b"SELECT delivery_mode,thread_id,COALESCE(decision_seq,0) FROM messages WHERE id=",
+            )
+        {
+            state.completed.fetch_add(1, Ordering::SeqCst);
+            state.cancellation.cancel();
+        }
+        0
+    }
+
+    let mut window = OfferWindowFixture::new(true);
+    let real = window.send(0, DeliveryMode::Ordinary, "budget retry body");
+    window.drain(1);
+    window.replace_watch();
+    let add_missing = |id: &MessageId| {
+        window
+            .f
+            .state
+            .lock()
+            .seat_mut(
+                &window.recipient.seat,
+                window.recipient.binding_generation,
+                window.recipient.native_session.as_str(),
+            )
+            .unwrap()
+            .record(id, window.f.clock.utc_now(), false);
+    };
+    add_missing(&MessageId::new("000-budget-first"));
+    add_missing(&MessageId::new("001-budget-second"));
+    let stamps = window.offers();
+    let normal = capacity_normal_state(&window);
+    let cancelled = budget();
+    let trace = TraceGuard(Arc::new(TraceState {
+        handle: AtomicPtr::new(std::ptr::null_mut()),
+        completed: AtomicUsize::new(0),
+        cancellation: cancelled.cancellation.clone(),
+    }));
+    let state = trace.0.clone();
+    let installed = Failpoint::connection(
+        "store.writer.acquired",
+        window.f.directory.join("store.db").to_string_lossy(),
+        move |db| {
+            // SAFETY: this hook owns the real writer; the guard's Arc keeps
+            // callback state alive, and Drop removes the callback first.
+            unsafe {
+                let handle = db.handle();
+                state.handle.store(handle, Ordering::SeqCst);
+                assert_eq!(
+                    rusqlite::ffi::sqlite3_trace_v2(
+                        handle,
+                        rusqlite::ffi::SQLITE_TRACE_PROFILE,
+                        Some(completed_key),
+                        Arc::as_ptr(&state).cast_mut().cast(),
+                    ),
+                    rusqlite::ffi::SQLITE_OK
+                );
+            }
+        },
+    );
+    assert!(
+        window
+            .f
+            .service
+            .handle(
+                Command::DeliveryPullV2(window.watch_request()),
+                peer(),
+                &cancelled,
+            )
+            .is_err()
+    );
+    assert_eq!(installed.fired(), 1);
+    assert_eq!(
+        trace.0.completed.load(Ordering::SeqCst),
+        1,
+        "one actual exact-key attempt completed before exhaustion"
+    );
+    drop(installed);
+    drop(trace);
+    assert_eq!(window.offers(), stamps);
+    assert_eq!(capacity_normal_state(&window), normal);
+    let later = MessageId::new("002-budget-added-after-error");
+    add_missing(&later);
+    let (registry, _, lease) = window.watch.as_ref().unwrap();
+    let snapshot = owner_store_input(&window.f, &window.recipient, registry.as_ref(), lease)
+        .owner_replay
+        .unwrap();
+    assert_eq!(
+        snapshot.remaining,
+        window.offers(),
+        "failed work did not initialize capture or consume first attempt"
+    );
+    assert!(
+        snapshot.remaining.contains_key(&later),
+        "first successful capture includes newly recorded work"
+    );
+    let DeliveryPullReplyV2::Page(page) = window.raw_watch_pull() else {
+        panic!("same-lease retry")
+    };
+    assert!(page.offered.contains(&real));
+    assert_eq!(window.offers()[&real].count, 1);
+    let work = window
+        .f
+        .service
+        .presentation
+        .last_work
+        .lock()
+        .unwrap()
+        .unwrap();
+    assert_eq!(work.rpc_passes, 1);
+    assert!(
+        work.rpc_bytes < 96 * 1024,
+        "bounded Watch typed output leaves final RPC headroom"
+    );
+    let current = window
+        .f
+        .state
+        .lock()
+        .seat_mut(
+            &window.recipient.seat,
+            window.recipient.binding_generation,
+            window.recipient.native_session.as_str(),
+        )
+        .unwrap()
+        .due_snapshot(crate::protocol::delivery::PresentationConsumer::Watch);
+    assert!(
+        registry
+            .presentation_replay_snapshot(&window.recipient, lease, &current)
+            .unwrap()
+            .remaining
+            .is_empty()
+    );
+}
