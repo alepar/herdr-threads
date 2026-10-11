@@ -4,6 +4,10 @@
 
 - **Session-keyed seat bindings: one-time upgrade cost.** Agent bindings migrated from the previous schema start disconnected (reason `migrated`): an idle agent waiting at its prompt gets no wake until its next turn, when its first herdr-threads call, or for a hook-pull harness (agy) its next turn's delivery pull, re-adopts the same binding with its cursors intact. Schema migrations 32 to 35 (after v0.8.0's 31) apply on the first daemon start; wire protocol 7 means the CLI and daemon upgrade together. Re-run `herdr-threads setup` to install the new hook groups; `doctor` and `setup-status` flag an install that lacks one (Claude SubagentStart/SubagentStop, Codex SubagentStop/SessionEnd, Hermes bridge callbacks) and `doctor fix` re-runs the owned setup. Agents started before the upgrade re-enroll on their next call; a long-lived pane whose harness does not export its session id is refused with the fix (restart the agent, or re-run setup) rather than attributed to the pane. An agy agent's own `herdr-threads` calls are attributed to its conversation through `ANTIGRAVITY_CONVERSATION_ID`.
 
+## v0.8.1
+
+- **Required invitation reuse.** Reattaching a released service requirement creates a fresh invitation when the original already has historical requirement linkage. Native acceptance still reaches a preserved pending ordinary invitation after a newer requirement was accepted. Timing, attribution, replay and join intervals are preserved; no schema change.
+
 ## v0.8.0
 
 - **Antigravity CLI (agy).** An owned plugin supports setup, discovery, managed launch and handoff. Turn-start hooks pull pending messages and passive notices; transcript evidence confirms eligible message receipts. Setup retains explicit permission consent and timestamped configuration backups.

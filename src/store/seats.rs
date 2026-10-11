@@ -4260,14 +4260,10 @@ pub(crate) fn issue_cooperative_permit(
         (0, 0)
     } else {
         if let ObligationRef::AcceptCurrent(thread) = &request.obligation {
-            let invitation:Option<String>=db.query_row("SELECT i.id FROM invitations i WHERE i.thread_id=?1 AND i.seat_id=?2 AND NOT EXISTS (SELECT 1 FROM invitation_cancellations c WHERE c.invitation_id=i.id) ORDER BY i.episode DESC LIMIT 1",
-                params![thread.as_str(),request.claim.seat.as_str()],|r|r.get(0)).optional().map_err(store_error)?;
-            request.obligation =
-                ObligationRef::Invitation(crate::protocol::ids::InvitationId::new(
-                    invitation.ok_or_else(|| {
-                        api_error(ErrorCode::NotFound, "current invitation missing")
-                    })?,
-                ));
+            let invitation =
+                super::control::current_invitation_for_accept(db, thread, &request.claim.seat)?
+                    .ok_or_else(|| api_error(ErrorCode::NotFound, "current invitation missing"))?;
+            request.obligation = ObligationRef::Invitation(invitation);
         }
         let mapping = cooperative_mapping(db, &request.claim, request.check_in_mode)?;
         (mapping.revision, mapping.invalidation_revision)

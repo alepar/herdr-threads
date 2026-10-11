@@ -508,6 +508,20 @@ immutable compound identity; absence or removal of a local file never completes 
 The operator never ACKs, accepts, rejects invitations, sends or advances a checkpoint.
 The service never ACKs, accepts or rejects invitations and is never a receipt recipient.
 
+A service-required attachment may reuse a pending ordinary invitation only if no
+requirement episode has ever referenced it. Once referenced, the invitation remains
+linked to that one immutable requirement, including after release. Reattachment creates
+a fresh requirement-owned invitation with its own timing; it preserves any independent
+ordinary invitation, its timing and attribution, and the released requirement history.
+Releasing the fresh pending requirement cancels only its requirement-owned invitation.
+Every new requirement still needs exact-revision acceptance by the addressed seat;
+reattachment never accepts membership or settles receipts. Exact operation replay returns
+its historical result without reactivating a released requirement. Native ordinary
+acceptance selects the newest pending, noncancelled, nonrejected invitation before any
+accepted historical invitation, consistently at permit preparation and acceptance.
+This lets the seat explicitly settle a preserved ordinary invitation after accepting
+a newer requirement without creating a second join interval.
+
 An ordinary invitation rejection is the addressed seat's explicit, accountable decision about one
 invitation episode, with a nonblank reason of at most 4096 UTF-8 bytes. It retains the actor seat, binding
 generation, timestamp and existing `cooperative_top_level` or `operator_human` observation in an immutable
