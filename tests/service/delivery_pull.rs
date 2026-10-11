@@ -7906,15 +7906,32 @@ fn presentation_capacity_last_slot_parks_unknown_carry_and_only_continues_for_du
     }
 }
 
-
-fn capacity_missing_input(f: &Fixture, recipient: &CallerClaim, count: usize) -> crate::ports::PresentationInput {
+fn capacity_missing_input(
+    f: &Fixture,
+    recipient: &CallerClaim,
+    count: usize,
+) -> crate::ports::PresentationInput {
     let mut ledger = crate::delivery::ledger::OfferedLedger::new();
-    let entry = ledger.seat_mut(&recipient.seat, recipient.binding_generation, recipient.native_session.as_str()).unwrap();
-    for n in 0..count { entry.record(&MessageId::new(format!("missing-{n:03}")), UtcMillis(0), false); }
-    let mut input = offer_reconciliation_input(f, recipient, entry.offers.keys().cloned().collect());
+    let entry = ledger
+        .seat_mut(
+            &recipient.seat,
+            recipient.binding_generation,
+            recipient.native_session.as_str(),
+        )
+        .unwrap();
+    for n in 0..count {
+        entry.record(
+            &MessageId::new(format!("missing-{n:03}")),
+            UtcMillis(0),
+            false,
+        );
+    }
+    let mut input =
+        offer_reconciliation_input(f, recipient, entry.offers.keys().cloned().collect());
     input.retry_messages = true;
     input.blocked_messages.clear();
-    input.ordinary_due_snapshot = Some(entry.due_snapshot(crate::protocol::delivery::PresentationConsumer::Watch));
+    input.ordinary_due_snapshot =
+        Some(entry.due_snapshot(crate::protocol::delivery::PresentationConsumer::Watch));
     input
 }
 
@@ -7922,15 +7939,23 @@ fn capacity_missing_input(f: &Fixture, recipient: &CallerClaim, count: usize) ->
 // or confirming passive context as acceptance/ACK. Tests both capacity predicates.
 #[test]
 fn presentation_capacity_replay_preserves_finite_due_progress_and_positive_slot_quiet() {
-    use crate::protocol::delivery::{DeliveryPullReplyV2, DeliveryPresentationConfirmV2, PresentationConsumer};
+    use crate::protocol::delivery::{
+        DeliveryPresentationConfirmV2, DeliveryPullReplyV2, PresentationConsumer,
+    };
     for count in [255, 256] {
         let f = fixture(0);
         let recipient = pull_seat(&f);
-        let inviter = check_in(&f, claim("x","px",fourth(),"capacity-replay-inviter",0), "capacity-replay-ci");
-        canonical_lazy_invitation_backlog(&f,&recipient,&inviter,1,"capacity-replay");
+        let inviter = check_in(
+            &f,
+            claim("x", "px", fourth(), "capacity-replay-inviter", 0),
+            "capacity-replay-ci",
+        );
+        canonical_lazy_invitation_backlog(&f, &recipient, &inviter, 1, "capacity-replay");
         let mut input = capacity_missing_input(&f, &recipient, count);
         let first = f.store.presentation_pull(input.clone(), &budget()).unwrap();
-        let DeliveryPullReplyV2::Page(page) = &first.reply else { panic!("passive context output"); };
+        let DeliveryPullReplyV2::Page(page) = &first.reply else {
+            panic!("passive context output");
+        };
         assert!(page.offered.is_empty() && page.truncated.is_empty());
         assert_eq!(page.more, count == 256);
         let token = page.presentation_token.clone().unwrap();
@@ -7939,25 +7964,56 @@ fn presentation_capacity_replay_preserves_finite_due_progress_and_positive_slot_
         let before = input.ordinary_due_snapshot.clone();
         let replay = f.store.presentation_pull(input.clone(), &budget()).unwrap();
         assert!(replay.work.replay > 0);
-        assert_eq!((replay.work.ordinary,replay.work.ordinary_due_key_probes,replay.work.ordinary_due_seeks), (0,0,0));
+        assert_eq!(
+            (
+                replay.work.ordinary,
+                replay.work.ordinary_due_key_probes,
+                replay.work.ordinary_due_seeks
+            ),
+            (0, 0, 0)
+        );
         assert_eq!(replay.ordinary_due_update, before);
-        assert!(matches!(replay.reply, DeliveryPullReplyV2::Page(ref page) if page.more == (count == 256)));
+        assert!(
+            matches!(replay.reply, DeliveryPullReplyV2::Page(ref page) if page.more == (count == 256))
+        );
         assert_eq!(f.db.query_row("SELECT outbox_more FROM invitation_presentation_consumers WHERE seat_id='s' AND consumer='watch'",[],|r|r.get::<_,i64>(0)).unwrap(),0);
-        f.store.presentation_confirm(&DeliveryPresentationConfirmV2 {
-            claim: recipient.clone(), consumer: PresentationConsumer::Watch, token,
-            presentation_lease: Some("0123456789abcdef0123456789abcdef".into()), emitted_controls: page.emitted_controls.clone(),
-        }, &budget()).unwrap();
+        f.store
+            .presentation_confirm(
+                &DeliveryPresentationConfirmV2 {
+                    claim: recipient.clone(),
+                    consumer: PresentationConsumer::Watch,
+                    token,
+                    presentation_lease: Some("0123456789abcdef0123456789abcdef".into()),
+                    emitted_controls: page.emitted_controls.clone(),
+                },
+                &budget(),
+            )
+            .unwrap();
         input.frozen_render = presentation_watch_frozen(&f, &recipient);
         let mut quiet = false;
         for _ in 0..3 {
             let output = f.store.presentation_pull(input.clone(), &budget()).unwrap();
-            quiet = match output.reply { DeliveryPullReplyV2::Unchanged {..} => true, DeliveryPullReplyV2::Page(page) => !page.more, other => panic!("{other:?}") };
+            quiet = match output.reply {
+                DeliveryPullReplyV2::Unchanged { .. } => true,
+                DeliveryPullReplyV2::Page(page) => !page.more,
+                other => panic!("{other:?}"),
+            };
             input.ordinary_due_snapshot = output.ordinary_due_update;
-            if quiet { break; }
+            if quiet {
+                break;
+            }
         }
         assert!(quiet);
-        assert_eq!(f.db.query_row("SELECT count(*) FROM invitations WHERE seat_id='s' AND state='pending'",[],|r|r.get::<_,i64>(0)).unwrap(),1);
-        assert_eq!(input.ordinary_due_snapshot.unwrap().stamps.len(),count);
+        assert_eq!(
+            f.db.query_row(
+                "SELECT count(*) FROM invitations WHERE seat_id='s' AND state='pending'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(input.ordinary_due_snapshot.unwrap().stamps.len(), count);
     }
 }
 
@@ -7968,95 +8024,188 @@ fn presentation_capacity_snapshot_validation_scope_and_failed_calls() {
     use crate::protocol::delivery::DeliveryPullReplyV2;
     let f = fixture(0);
     let recipient = pull_seat(&f);
-    let input = capacity_missing_input(&f,&recipient,256);
+    let input = capacity_missing_input(&f, &recipient, 256);
     for mutation in 0..6 {
         let mut bad = input.clone();
         match mutation {
             0 => bad.known_messages[1] = bad.known_messages[0].clone(),
             1 => bad.blocked_messages.push(MessageId::new("not-known")),
-            2 => { bad.ordinary_due_snapshot.as_mut().unwrap().stamps.pop_first(); },
+            2 => {
+                bad.ordinary_due_snapshot
+                    .as_mut()
+                    .unwrap()
+                    .stamps
+                    .pop_first();
+            }
             3 => bad.ordinary_due_snapshot.as_mut().unwrap().generation += 1,
             4 => bad.ordinary_due_snapshot.as_mut().unwrap().native_session = "other".into(),
-            _ => bad.ordinary_due_snapshot.as_mut().unwrap().cache.deferred = bad.ordinary_due_snapshot.as_ref().unwrap().stamps.clone(),
+            _ => {
+                bad.ordinary_due_snapshot.as_mut().unwrap().cache.deferred =
+                    bad.ordinary_due_snapshot.as_ref().unwrap().stamps.clone()
+            }
         }
-        assert_eq!(f.store.presentation_pull(bad,&budget()).unwrap_err().code, crate::protocol::results::ErrorCode::InvalidRequest);
+        assert_eq!(
+            f.store.presentation_pull(bad, &budget()).unwrap_err().code,
+            crate::protocol::results::ErrorCode::InvalidRequest
+        );
     }
-    assert_eq!(f.db.query_row("SELECT count(*) FROM invitation_presentation_consumers",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+    assert_eq!(
+        f.db.query_row(
+            "SELECT count(*) FROM invitation_presentation_consumers",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
     let mut input = input;
-    for expected in [100,200,256] {
-        let output = f.store.presentation_pull(input.clone(),&budget()).unwrap();
-        assert_eq!(output.ordinary_due_update.as_ref().unwrap().cache.deferred.len(),expected);
+    for expected in [100, 200, 256] {
+        let output = f.store.presentation_pull(input.clone(), &budget()).unwrap();
+        assert_eq!(
+            output
+                .ordinary_due_update
+                .as_ref()
+                .unwrap()
+                .cache
+                .deferred
+                .len(),
+            expected
+        );
         input.ordinary_due_snapshot = output.ordinary_due_update;
     }
     let before = input.ordinary_due_snapshot.clone();
     let mut refused = input.clone();
-    refused.pull.claim = fresh_execution(recipient.clone(),2);
-    let refused = f.store.presentation_pull(refused,&budget()).unwrap();
-    assert!(matches!(refused.reply,DeliveryPullReplyV2::Refused{..}));
+    refused.pull.claim = fresh_execution(recipient.clone(), 2);
+    let refused = f.store.presentation_pull(refused, &budget()).unwrap();
+    assert!(matches!(refused.reply, DeliveryPullReplyV2::Refused { .. }));
     assert!(refused.ordinary_due_update.is_none());
     input.pull.marker_prefix = vec!["different-render".into()];
-    let cancelled = budget(); cancelled.cancellation.cancel();
-    assert!(f.store.presentation_pull(input.clone(),&cancelled).is_err());
-    assert_eq!(input.ordinary_due_snapshot,before);
-    let retried = f.store.presentation_pull(input.clone(),&budget()).unwrap();
-    assert_eq!(retried.work.ordinary,100);
-    assert_eq!(retried.ordinary_due_update.as_ref().unwrap().cache.deferred.len(),100);
+    let cancelled = budget();
+    cancelled.cancellation.cancel();
+    assert!(
+        f.store
+            .presentation_pull(input.clone(), &cancelled)
+            .is_err()
+    );
+    assert_eq!(input.ordinary_due_snapshot, before);
+    let retried = f.store.presentation_pull(input.clone(), &budget()).unwrap();
+    assert_eq!(retried.work.ordinary, 100);
+    assert_eq!(
+        retried
+            .ordinary_due_update
+            .as_ref()
+            .unwrap()
+            .cache
+            .deferred
+            .len(),
+        100
+    );
     input.ordinary_due_snapshot = retried.ordinary_due_update;
     input.ordinary_version += 1;
-    let signal = f.store.presentation_pull(input,&budget()).unwrap();
-    assert_eq!(signal.work.ordinary,100);
-    assert_eq!(signal.ordinary_due_update.unwrap().cache.deferred.len(),100);
+    let signal = f.store.presentation_pull(input, &budget()).unwrap();
+    assert_eq!(signal.work.ordinary, 100);
+    assert_eq!(
+        signal.ordinary_due_update.unwrap().cache.deferred.len(),
+        100
+    );
 }
-
 
 // Kills: due hydration losing lazy promotion or marker provenance, and a
 // standalone unrenderable key endlessly requesting continuation at one render.
 #[test]
 fn presentation_capacity_due_promoted_lazy_defers_oversize_render_then_retries() {
-    use crate::protocol::{commands::DeliveryMode, delivery::{DeliveryPullReplyV2, PresentationItemV2}};
+    use crate::protocol::{
+        commands::DeliveryMode,
+        delivery::{DeliveryPullReplyV2, PresentationItemV2},
+    };
     let window = OfferWindowFixture::new(true);
-    window.f.db.execute("UPDATE seats SET wake_on='all' WHERE id='c'",[]).unwrap();
+    window
+        .f
+        .db
+        .execute("UPDATE seats SET wake_on='all' WHERE id='c'", [])
+        .unwrap();
     let body = format!("{}é", "\0".repeat(65534));
     let id = window.send(0, DeliveryMode::Lazy, &body);
-    assert_eq!(window.drain(1), std::collections::BTreeSet::from([id.clone()]));
+    assert_eq!(
+        window.drain(1),
+        std::collections::BTreeSet::from([id.clone()])
+    );
     let original_offer = window.offers()[&id];
     advance(&window.f, REOFFER_AFTER_MS);
-    let mut input = capacity_missing_input(&window.f,&window.recipient,256);
+    let mut input = capacity_missing_input(&window.f, &window.recipient, 256);
     input.known_messages.pop();
     input.known_messages.push(id.clone());
     let snapshot = input.ordinary_due_snapshot.as_mut().unwrap();
     snapshot.stamps.pop_last();
-    snapshot.stamps.insert(id.clone(),original_offer);
-    input.pull.marker_prefix = vec!["\0".repeat(512);8];
+    snapshot.stamps.insert(id.clone(), original_offer);
+    input.pull.marker_prefix = vec!["\0".repeat(512); 8];
     let mut deferred = false;
     for _ in 0..4 {
-        let output = window.f.store.presentation_pull(input.clone(),&budget()).unwrap();
+        let output = window
+            .f
+            .store
+            .presentation_pull(input.clone(), &budget())
+            .unwrap();
         if let DeliveryPullReplyV2::Page(page) = &output.reply {
             assert!(page.offered.is_empty() && page.truncated.is_empty());
             window.confirm_nonmessage_presentation(&output.reply);
         }
         input.ordinary_due_snapshot = output.ordinary_due_update;
-        input.frozen_render = presentation_watch_frozen(&window.f,&window.recipient);
-        if input.ordinary_due_snapshot.as_ref().unwrap().cache.deferred.len() == 256 { deferred = true; break; }
+        input.frozen_render = presentation_watch_frozen(&window.f, &window.recipient);
+        if input
+            .ordinary_due_snapshot
+            .as_ref()
+            .unwrap()
+            .cache
+            .deferred
+            .len()
+            == 256
+        {
+            deferred = true;
+            break;
+        }
     }
-    assert!(deferred, "standalone rendered >64KiB key must be finitely deferred");
-    let quiet = window.f.store.presentation_pull(input.clone(),&budget()).unwrap();
-    assert!(matches!(quiet.reply,DeliveryPullReplyV2::Unchanged{..}));
-    assert_eq!(quiet.work.ordinary,0);
-    assert_eq!(window.offers()[&id],original_offer);
+    assert!(
+        deferred,
+        "standalone rendered >64KiB key must be finitely deferred"
+    );
+    let quiet = window
+        .f
+        .store
+        .presentation_pull(input.clone(), &budget())
+        .unwrap();
+    assert!(matches!(quiet.reply, DeliveryPullReplyV2::Unchanged { .. }));
+    assert_eq!(quiet.work.ordinary, 0);
+    assert_eq!(window.offers()[&id], original_offer);
     input.pull.marker_prefix.clear();
     let mut shown = false;
     for _ in 0..4 {
-        let output = window.f.store.presentation_pull(input.clone(),&budget()).unwrap();
+        let output = window
+            .f
+            .store
+            .presentation_pull(input.clone(), &budget())
+            .unwrap();
         if let DeliveryPullReplyV2::Page(page) = &output.reply {
             for item in &page.items {
-                if let PresentationItemV2::Message { id: actual, lazy, content } = item {
-                    assert_eq!(actual,&id);
-                    assert!(!lazy,"wake-on-all promotion survives canonical due hydration");
-                    assert!(!content.ack_required,"promotion creates no receipt");
+                if let PresentationItemV2::Message {
+                    id: actual,
+                    lazy,
+                    content,
+                } = item
+                {
+                    assert_eq!(actual, &id);
+                    assert!(
+                        !lazy,
+                        "wake-on-all promotion survives canonical due hydration"
+                    );
+                    assert!(!content.ack_required, "promotion creates no receipt");
                     assert!(content.truncated);
-                    assert_eq!(content.body_len,65536);
-                    assert_eq!(content.body.matches("herdr-threads body").count(),1,"one producer marker");
+                    assert_eq!(content.body_len, 65536);
+                    assert_eq!(
+                        content.body.matches("herdr-threads body").count(),
+                        1,
+                        "one producer marker"
+                    );
                     assert!(!content.body.contains("herdr-threads ack"));
                     shown = true;
                 }
@@ -8064,14 +8213,30 @@ fn presentation_capacity_due_promoted_lazy_defers_oversize_render_then_retries()
             window.confirm_nonmessage_presentation(&output.reply);
         }
         input.ordinary_due_snapshot = output.ordinary_due_update;
-        input.frozen_render = presentation_watch_frozen(&window.f,&window.recipient);
-        if shown { break; }
+        input.frozen_render = presentation_watch_frozen(&window.f, &window.recipient);
+        if shown {
+            break;
+        }
     }
     assert!(shown);
-    assert_eq!(window.f.db.query_row("SELECT state FROM lazy_recipients WHERE message_id=?1 AND seat_id='c'",[id.as_str()],|r|r.get::<_,String>(0)).unwrap(),"pending");
-    assert_eq!(window.offers()[&id],original_offer,"direct store output cannot claim service recording or lazy completion");
+    assert_eq!(
+        window
+            .f
+            .db
+            .query_row(
+                "SELECT state FROM lazy_recipients WHERE message_id=?1 AND seat_id='c'",
+                [id.as_str()],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+        "pending"
+    );
+    assert_eq!(
+        window.offers()[&id],
+        original_offer,
+        "direct store output cannot claim service recording or lazy completion"
+    );
 }
-
 
 // Kills: zero-capacity due traversal resetting or reserializing a partial normal
 // body, or failing to resume that exact body in the call that reclaims a slot.
@@ -8079,143 +8244,318 @@ fn presentation_capacity_due_promoted_lazy_defers_oversize_render_then_retries()
 fn presentation_capacity_due_walk_preserves_partial_body_until_real_ack() {
     use crate::protocol::{commands::DeliveryMode, delivery::DeliveryPullReplyV2};
     let window = OfferWindowFixture::new(true);
-    for _ in 0..4 { window.pull(); }
+    for _ in 0..4 {
+        window.pull();
+    }
     {
         let mut ledger = window.f.state.lock();
-        let entry = ledger.seat_mut(&window.recipient.seat,window.recipient.binding_generation,window.recipient.native_session.as_str()).unwrap();
-        for n in 0..255 { entry.record(&MessageId::new(format!("absent-{n:03}")),window.f.clock.utc_now(),false); }
+        let entry = ledger
+            .seat_mut(
+                &window.recipient.seat,
+                window.recipient.binding_generation,
+                window.recipient.native_session.as_str(),
+            )
+            .unwrap();
+        for n in 0..255 {
+            entry.record(
+                &MessageId::new(format!("absent-{n:03}")),
+                window.f.clock.utc_now(),
+                false,
+            );
+        }
     }
-    let first = window.send(0,DeliveryMode::Ordinary,&"a".repeat(58000));
-    let second = window.send(1,DeliveryMode::Ordinary,&"é".repeat(32768));
+    let first = window.send(0, DeliveryMode::Ordinary, &"a".repeat(58000));
+    let second = window.send(1, DeliveryMode::Ordinary, &"é".repeat(32768));
     let mut allocated = false;
     for _ in 0..4 {
-        if let DeliveryPullReplyV2::Page(page) = window.pull() && page.truncated.contains(&first) { allocated = true; break; }
+        if let DeliveryPullReplyV2::Page(page) = window.pull()
+            && page.truncated.contains(&first)
+        {
+            allocated = true;
+            break;
+        }
     }
     assert!(allocated);
     let partial: String = window.f.db.query_row("SELECT ordinary_partial FROM invitation_presentation_consumers WHERE seat_id='c' AND consumer='watch'",[],|r|r.get(0)).unwrap();
-    let partial: std::collections::HashMap<String,String> = serde_json::from_str(&partial).unwrap();
-    assert!(partial.get(second.as_str()).is_some_and(|body| !body.is_empty()),"fixture must retain a real source-created partial body");
+    let partial: std::collections::HashMap<String, String> =
+        serde_json::from_str(&partial).unwrap();
+    assert!(
+        partial
+            .get(second.as_str())
+            .is_some_and(|body| !body.is_empty()),
+        "fixture must retain a real source-created partial body"
+    );
     let parked = capacity_normal_state(&window);
-    advance(&window.f,REOFFER_AFTER_MS);
+    advance(&window.f, REOFFER_AFTER_MS);
     let mut reoffered = false;
     for _ in 0..4 {
-        if let DeliveryPullReplyV2::Page(page) = window.pull() { reoffered |= page.truncated.contains(&first); }
-        assert_eq!(capacity_normal_state(&window),parked);
+        if let DeliveryPullReplyV2::Page(page) = window.pull() {
+            reoffered |= page.truncated.contains(&first);
+        }
+        assert_eq!(capacity_normal_state(&window), parked);
     }
     assert!(reoffered);
-    window.ack(std::slice::from_ref(&first),false,false,"partial-release");
-    let DeliveryPullReplyV2::Page(page) = window.pull() else { panic!("same-call partial resume"); };
+    window.ack(
+        std::slice::from_ref(&first),
+        false,
+        false,
+        "partial-release",
+    );
+    let DeliveryPullReplyV2::Page(page) = window.pull() else {
+        panic!("same-call partial resume");
+    };
     assert!(page.truncated.contains(&second));
-    let work = window.f.service.presentation.last_work.lock().unwrap().unwrap();
-    assert_eq!(work.ordinary_due_key_probes,0,"one ordinary source per call");
-    assert!(work.ordinary>0);
+    let work = window
+        .f
+        .service
+        .presentation
+        .last_work
+        .lock()
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        work.ordinary_due_key_probes, 0,
+        "one ordinary source per call"
+    );
+    assert!(work.ordinary > 0);
 }
-
 
 // Kills: globally suppressing continuation at capacity and starving independent
 // passive invitation/context/notice work, or treating confirmation as acceptance.
 #[test]
 fn presentation_capacity_parked_ordinary_still_drains_passive_context_and_notices() {
-    use crate::protocol::{commands::SetTopic, delivery::{DeliveryPullReplyV2,PresentationItemV2}};
+    use crate::protocol::{
+        commands::SetTopic,
+        delivery::{DeliveryPullReplyV2, PresentationItemV2},
+    };
     let window = OfferWindowFixture::new(false);
-    for _ in 0..4 { window.pull(); }
+    for _ in 0..4 {
+        window.pull();
+    }
     {
         let mut ledger = window.f.state.lock();
-        let entry = ledger.seat_mut(&window.recipient.seat,window.recipient.binding_generation,window.recipient.native_session.as_str()).unwrap();
-        for n in 0..256 { entry.record(&MessageId::new(format!("absent-{n:03}")),window.f.clock.utc_now(),false); }
+        let entry = ledger
+            .seat_mut(
+                &window.recipient.seat,
+                window.recipient.binding_generation,
+                window.recipient.native_session.as_str(),
+            )
+            .unwrap();
+        for n in 0..256 {
+            entry.record(
+                &MessageId::new(format!("absent-{n:03}")),
+                window.f.clock.utc_now(),
+                false,
+            );
+        }
     }
     let original = window.offers();
-    let thread = canonical_lazy_invitation_backlog(&window.f,&window.recipient,&window.sender,1,"parked-passive");
-    service_notice(&window.f,"capacity-notice");
-    let (mut invitation,mut notice,mut quiet) = (false,false,false);
+    let thread = canonical_lazy_invitation_backlog(
+        &window.f,
+        &window.recipient,
+        &window.sender,
+        1,
+        "parked-passive",
+    );
+    service_notice(&window.f, "capacity-notice");
+    let (mut invitation, mut notice, mut quiet) = (false, false, false);
     for _ in 0..8 {
         match window.pull() {
             DeliveryPullReplyV2::Page(page) => {
-                for item in &page.items { match item {
-                    PresentationItemV2::Invitation{..} => invitation=true,
-                    PresentationItemV2::Notice{warning,..} if warning.as_str()=="capacity-notice" => notice=true,
-                    _ => {},
-                }}
+                for item in &page.items {
+                    match item {
+                        PresentationItemV2::Invitation { .. } => invitation = true,
+                        PresentationItemV2::Notice { warning, .. }
+                            if warning.as_str() == "capacity-notice" =>
+                        {
+                            notice = true
+                        }
+                        _ => {}
+                    }
+                }
                 assert!(page.offered.is_empty() && page.truncated.is_empty());
                 quiet = !page.more;
             }
-            DeliveryPullReplyV2::Unchanged{..} => quiet=true,
+            DeliveryPullReplyV2::Unchanged { .. } => quiet = true,
             other => panic!("{other:?}"),
         }
-        assert_eq!(window.offers(),original);
-        if quiet { break; }
+        assert_eq!(window.offers(), original);
+        if quiet {
+            break;
+        }
     }
     assert!(invitation && notice && quiet);
-    window.f.service.handle(Command::SetTopic(SetTopic {
-        thread,topic:"updated capacity context".into(),operation:OperationId::new("capacity-context-update"),claim:window.sender.clone(),
-    }),peer(),&budget()).unwrap();
+    window
+        .f
+        .service
+        .handle(
+            Command::SetTopic(SetTopic {
+                thread,
+                topic: "updated capacity context".into(),
+                operation: OperationId::new("capacity-context-update"),
+                claim: window.sender.clone(),
+            }),
+            peer(),
+            &budget(),
+        )
+        .unwrap();
     let mut changed = false;
     for _ in 0..4 {
-        if let DeliveryPullReplyV2::Page(page)=window.pull() { changed |= page.text.contains("updated capacity context"); }
-        if changed { break; }
+        if let DeliveryPullReplyV2::Page(page) = window.pull() {
+            changed |= page.text.contains("updated capacity context");
+        }
+        if changed {
+            break;
+        }
     }
     assert!(changed);
-    assert_eq!(window.offers(),original);
-    assert_eq!(window.f.db.query_row("SELECT count(*) FROM invitations WHERE seat_id='s' AND state='pending'",[],|r|r.get::<_,i64>(0)).unwrap(),1);
+    assert_eq!(window.offers(), original);
+    assert_eq!(
+        window
+            .f
+            .db
+            .query_row(
+                "SELECT count(*) FROM invitations WHERE seat_id='s' AND state='pending'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        1
+    );
 }
-
 
 // Kills CIR-1: a valid concurrently accumulated count above the policy reoffer
 // threshold refusing every V2 pull, including independent passive work.
 #[test]
 fn presentation_capacity_retained_concurrent_offer_count_does_not_refuse_passive_work() {
-    use crate::protocol::delivery::{DeliveryPullReplyV2,PresentationItemV2};
-    let window=OfferWindowFixture::new(false);
-    for _ in 0..4 { window.pull(); }
-    let known=MessageId::new("concurrent-known");
-    {
-        let mut ledger=window.f.state.lock();
-        let entry=ledger.seat_mut(&window.recipient.seat,window.recipient.binding_generation,window.recipient.native_session.as_str()).unwrap();
-        // Both routes can snapshot count two, then finish their recordings.
-        for _ in 0..4 { entry.record(&known,window.f.clock.utc_now(),false); }
-    }
-    let original=window.offers();
-    service_notice(&window.f,"concurrent-count-notice");
-    let mut delivered=false;
+    use crate::protocol::delivery::{DeliveryPullReplyV2, PresentationItemV2};
+    let window = OfferWindowFixture::new(false);
     for _ in 0..4 {
-        if let DeliveryPullReplyV2::Page(page)=window.pull() {
+        window.pull();
+    }
+    let known = MessageId::new("concurrent-known");
+    {
+        let mut ledger = window.f.state.lock();
+        let entry = ledger
+            .seat_mut(
+                &window.recipient.seat,
+                window.recipient.binding_generation,
+                window.recipient.native_session.as_str(),
+            )
+            .unwrap();
+        // Both routes can snapshot count two, then finish their recordings.
+        for _ in 0..4 {
+            entry.record(&known, window.f.clock.utc_now(), false);
+        }
+    }
+    let original = window.offers();
+    service_notice(&window.f, "concurrent-count-notice");
+    let mut delivered = false;
+    for _ in 0..4 {
+        if let DeliveryPullReplyV2::Page(page) = window.pull() {
             delivered |= page.items.iter().any(|item|matches!(item,PresentationItemV2::Notice{warning,..} if warning.as_str()=="concurrent-count-notice"));
             assert!(page.offered.is_empty() && page.truncated.is_empty());
         }
-        assert_eq!(window.offers(),original);
-        if delivered { break; }
+        assert_eq!(window.offers(), original);
+        if delivered {
+            break;
+        }
     }
     assert!(delivered);
-    assert_eq!(original[&known].count,4);
+    assert_eq!(original[&known].count, 4);
 }
-
 
 // Kills: tying a negative cache to durable consumer state or waiting for client
 // acknowledgement before remembering a successful miss traversal.
 #[test]
 fn presentation_capacity_cache_progress_survives_lost_reply_but_not_ledger_restart() {
-    use crate::protocol::{commands::DeliveryMode,delivery::DeliveryPullReplyV2};
-    let mut window=OfferWindowFixture::new(false);
-    for _ in 0..4 { window.pull(); }
-    {
-        let mut ledger=window.f.state.lock();
-        let entry=ledger.seat_mut(&window.recipient.seat,window.recipient.binding_generation,window.recipient.native_session.as_str()).unwrap();
-        for n in 0..256 { entry.record(&MessageId::new(format!("absent-{n:03}")),window.f.clock.utc_now(),false); }
+    use crate::protocol::{commands::DeliveryMode, delivery::DeliveryPullReplyV2};
+    let mut window = OfferWindowFixture::new(false);
+    for _ in 0..4 {
+        window.pull();
     }
-    let parked=window.send(0,DeliveryMode::Lazy,"survives process-local cache");
-    for _ in 0..4 { window.pull(); }
-    advance(&window.f,REOFFER_AFTER_MS);
+    {
+        let mut ledger = window.f.state.lock();
+        let entry = ledger
+            .seat_mut(
+                &window.recipient.seat,
+                window.recipient.binding_generation,
+                window.recipient.native_session.as_str(),
+            )
+            .unwrap();
+        for n in 0..256 {
+            entry.record(
+                &MessageId::new(format!("absent-{n:03}")),
+                window.f.clock.utc_now(),
+                false,
+            );
+        }
+    }
+    let parked = window.send(0, DeliveryMode::Lazy, "survives process-local cache");
+    for _ in 0..4 {
+        window.pull();
+    }
+    advance(&window.f, REOFFER_AFTER_MS);
     // Model response loss after successful service completion: no client consumes
     // the first returned page, yet the next call must pass its100 attempted IDs.
     drop(window.pull());
-    assert_eq!(window.f.service.presentation.last_work.lock().unwrap().unwrap().ordinary,100);
+    assert_eq!(
+        window
+            .f
+            .service
+            .presentation
+            .last_work
+            .lock()
+            .unwrap()
+            .unwrap()
+            .ordinary,
+        100
+    );
     drop(window.pull());
-    assert_eq!(window.f.service.presentation.last_work.lock().unwrap().unwrap().ordinary,100);
-    assert!(matches!(window.pull(),DeliveryPullReplyV2::Unchanged{..}));
-    assert_eq!(window.f.service.presentation.last_work.lock().unwrap().unwrap().ordinary,56);
+    assert_eq!(
+        window
+            .f
+            .service
+            .presentation
+            .last_work
+            .lock()
+            .unwrap()
+            .unwrap()
+            .ordinary,
+        100
+    );
+    assert!(matches!(
+        window.pull(),
+        DeliveryPullReplyV2::Unchanged { .. }
+    ));
+    assert_eq!(
+        window
+            .f
+            .service
+            .presentation
+            .last_work
+            .lock()
+            .unwrap()
+            .unwrap()
+            .ordinary,
+        56
+    );
     restart(&mut window.f);
-    let DeliveryPullReplyV2::Page(page)=window.pull() else { panic!("new process has ordinary capacity"); };
+    let DeliveryPullReplyV2::Page(page) = window.pull() else {
+        panic!("new process has ordinary capacity");
+    };
     assert!(page.offered.contains(&parked));
-    assert_eq!(window.offers().len(),1);
-    assert_eq!(window.f.db.query_row("SELECT state FROM lazy_recipients WHERE message_id=?1 AND seat_id='s'",[parked.as_str()],|r|r.get::<_,String>(0)).unwrap(),"pending");
+    assert_eq!(window.offers().len(), 1);
+    assert_eq!(
+        window
+            .f
+            .db
+            .query_row(
+                "SELECT state FROM lazy_recipients WHERE message_id=?1 AND seat_id='s'",
+                [parked.as_str()],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+        "pending"
+    );
 }
