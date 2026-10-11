@@ -2856,6 +2856,35 @@ fn presentation_relevance_all_thirteen_physical_sources_progress_through_stale_c
 
 // Observe the actual advance() statements; no test copy of the walker's SQL.
 // A missing source, unbounded MAX/range scan, or sort must fail this matrix.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RelevanceStatementKind {
+    SourceHead,
+    SourceRange,
+    Representations,
+    Membership,
+    Coverage,
+}
+fn relevance_statement_kind(sql: &str) -> Option<RelevanceStatementKind> {
+    if sql.starts_with("SELECT COALESCE(MAX(") && sql.contains(" INDEXED BY ") {
+        Some(RelevanceStatementKind::SourceHead)
+    } else if sql.starts_with("SELECT ") && sql.contains(",rowid FROM ") {
+        Some(RelevanceStatementKind::SourceRange)
+    } else if sql.starts_with("SELECT ") && sql.ends_with(" LIMIT 1") {
+        // Recognize the actual emitted auxiliary range by its dedicated index;
+        // its SQL and parameters are still captured from SQLite, never copied.
+        if sql.contains(" INDEXED BY presentation_prepared_warning ") {
+            Some(RelevanceStatementKind::Representations)
+        } else if sql.contains(" INDEXED BY presentation_membership_history ") {
+            Some(RelevanceStatementKind::Membership)
+        } else if sql.contains(" INDEXED BY warning_close_sweeps_cover ") {
+            Some(RelevanceStatementKind::Coverage)
+        } else {
+            None
+        }
+    } else {
+        None
+    }
+}
 #[derive(Default)]
 struct RelevanceStatementWork {
     sql: String,
@@ -2923,9 +2952,7 @@ unsafe extern "C" fn relevance_statement_trace(
             return;
         }
         let sql = unsafe { std::ffi::CStr::from_ptr(raw) }.to_string_lossy();
-        let head = sql.starts_with("SELECT COALESCE(MAX(") && sql.contains(" INDEXED BY ");
-        let range = sql.starts_with("SELECT ") && sql.contains(",rowid FROM ");
-        if !head && !range {
+        if relevance_statement_kind(&sql).is_none() {
             return;
         }
         let mut state = state.borrow_mut();
@@ -2988,11 +3015,15 @@ fn presentation_relevance_all_thirteen_actual_source_heads_and_ranges_have_bound
         let trace = RelevanceTrace::install(&db);
         let mut absent = false;
         let mut charged_rows = 0u64;
+        let mut charged_fallback = 0u64;
         let mut charged_seeks = 0u64;
+        let mut charged_witness = 0u64;
         for _ in 0..count * 4 {
             let proof = relevance_pull(&db);
             charged_rows += u64::from(proof.work.sources);
+            charged_fallback += u64::from(proof.work.fallback);
             charged_seeks += u64::from(proof.work.highwater_seeks);
+            charged_witness += u64::from(proof.work.witness_probes);
             assert_ne!(proof.relevance, Relevance::Open, "stale candidates cannot confer authority");
             if proof.relevance == Relevance::Absent {
                 absent = true;
@@ -3001,14 +3032,35 @@ fn presentation_relevance_all_thirteen_actual_source_heads_and_ranges_have_bound
         }
         let work = trace.finish();
         assert!(absent, "finite retained source union must finish");
-        assert_eq!(work.len(), 26, "thirteen actual heads and thirteen actual ranges");
+        let source_work: Vec<_> = work.iter().filter(|entry| matches!(
+            relevance_statement_kind(&entry.sql),
+            Some(RelevanceStatementKind::SourceHead | RelevanceStatementKind::SourceRange)
+        )).collect();
+        assert_eq!(source_work.len(), 26, "thirteen actual heads and thirteen actual ranges");
         assert_eq!(charged_rows, 15 * u64::from(count));
+        // The two job projections each contain two stale candidates/group,
+        // and pending/failed jobs each contain one. These six candidates have
+        // an independent prepared-association alternative: an empty indexed
+        // representation seek still consumes the shared seek meter.
+        let representations: Vec<_> = work.iter().filter(|entry|
+            relevance_statement_kind(&entry.sql) == Some(RelevanceStatementKind::Representations)
+        ).collect();
+        assert_eq!(representations.len(), 1, "one emitted prepared-alternative range form");
+        let representations = representations[0];
+        assert_eq!(representations.executions, 6 * u64::from(count));
+        assert_eq!(representations.rows, 0, "no retained prepared row has a stale job warning id");
+        assert!(work.iter().all(|entry| !matches!(
+            relevance_statement_kind(&entry.sql),
+            Some(RelevanceStatementKind::Membership | RelevanceStatementKind::Coverage)
+        )), "ordinary stale identities need no canonical membership/coverage range");
+        assert_eq!(charged_fallback, 0, "empty representation seeks are not physical fallback rows");
+        assert_eq!(charged_witness, 0, "no stale candidate creates a witness");
         assert_eq!(work.iter().map(|entry| entry.executions).sum::<u64>(), charged_seeks,
-            "every source seek is observed; this stale fixture has no coverage seeks");
+            "all source and separately recognized auxiliary seeks share one meter");
         let mut matrix = Vec::new();
         for (table, predicate, multiplier) in sources {
             for head in [true, false] {
-                let entries: Vec<_> = work.iter().filter(|entry| {
+                let entries: Vec<_> = source_work.iter().copied().filter(|entry| {
                     entry.sql.contains(&format!(" FROM {table} INDEXED BY "))
                         && entry.sql.contains(predicate)
                         && entry.sql.starts_with("SELECT COALESCE(MAX(") == head
@@ -3038,6 +3090,21 @@ fn presentation_relevance_all_thirteen_actual_source_heads_and_ranges_have_bound
                 matrix.push((entry.sql.clone(), entry.max_vm));
             }
         }
+        assert_eq!(representations.max_scan, 0, "prepared-alternative full scan");
+        assert_eq!(representations.max_sort, 0, "prepared-alternative sort");
+        assert!(representations.max_vm <= 100, "bounded prepared-alternative VM work");
+        for expanded in [&representations.first_expanded, &representations.last_expanded] {
+            let plan: Vec<String> = db.prepare(&format!("EXPLAIN QUERY PLAN {expanded}"))
+                .unwrap().query_map([], |row| row.get(3)).unwrap()
+                .collect::<Result<_, _>>().unwrap();
+            assert!(plan.iter().any(|line| line.contains("SEARCH prepared_unavailable_warnings")),
+                "actual prepared alternative must seek source: {plan:?}");
+            assert!(plan.iter().all(|line| !line.contains("SCAN ") && !line.contains("TEMP B-TREE")),
+                "actual prepared alternative must not scan/sort: {plan:?}");
+            eprintln!("retained_groups={count} prepared-alternative executions={} rows={} max_vm={} plan={plan:?}",
+                representations.executions, representations.rows, representations.max_vm);
+        }
+        matrix.push((representations.sql.clone(), representations.max_vm));
         measurements.push(matrix);
     }
     for ((small_sql, small_vm), (large_sql, large_vm)) in measurements[0].iter().zip(&measurements[1]) {
