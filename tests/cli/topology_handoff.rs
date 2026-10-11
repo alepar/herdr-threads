@@ -5758,12 +5758,97 @@ mod live {
             ));
         }
 
+        #[derive(Default, Clone, Copy)]
+        struct AutomaticPermitSamples {
+            armed: bool,
+            utc_pending: bool,
+            store_entry: Option<u64>,
+            first_decision_pair: Option<u64>,
+            decision_pairs: usize,
+        }
+
+        #[derive(Default)]
+        struct AutomaticPermitClock {
+            real: crate::app::SystemClock,
+            samples: Mutex<AutomaticPermitSamples>,
+        }
+        impl AutomaticPermitClock {
+            fn now(&self) -> u64 {
+                crate::protocol::time::Clock::monotonic_now(&self.real).0
+            }
+            fn arm(&self) {
+                *self.samples.lock().unwrap() = AutomaticPermitSamples {
+                    armed: true,
+                    ..Default::default()
+                };
+            }
+            fn finish(&self) -> AutomaticPermitSamples {
+                let mut samples = self.samples.lock().unwrap();
+                samples.armed = false;
+                *samples
+            }
+            fn store_entry(&self) {
+                let mut samples = self.samples.lock().unwrap();
+                if samples.armed && samples.store_entry.is_none() {
+                    samples.store_entry = Some(self.now());
+                }
+            }
+        }
+        impl crate::protocol::time::Clock for AutomaticPermitClock {
+            fn utc_now(&self) -> UtcMillis {
+                let now = crate::protocol::time::Clock::utc_now(&self.real);
+                let mut samples = self.samples.lock().unwrap();
+                if samples.armed {
+                    samples.utc_pending = true;
+                }
+                now
+            }
+            fn monotonic_now(&self) -> crate::protocol::time::MonoInstant {
+                let now = crate::protocol::time::Clock::monotonic_now(&self.real);
+                let mut samples = self.samples.lock().unwrap();
+                if samples.armed && samples.utc_pending {
+                    samples.utc_pending = false;
+                    samples.decision_pairs += 1;
+                    samples.first_decision_pair.get_or_insert(now.0);
+                }
+                now
+            }
+        }
+
+        fn bounded_permit_diagnostic(args: std::fmt::Arguments<'_>, limit: usize) -> String {
+            struct Bounded {
+                text: String,
+                limit: usize,
+            }
+            impl std::fmt::Write for Bounded {
+                fn write_str(&mut self, text: &str) -> std::fmt::Result {
+                    let mut count = text.len().min(self.limit - self.text.len());
+                    while !text.is_char_boundary(count) {
+                        count -= 1;
+                    }
+                    self.text.push_str(&text[..count]);
+                    if count == text.len() {
+                        Ok(())
+                    } else {
+                        Err(std::fmt::Error)
+                    }
+                }
+            }
+            let mut output = Bounded {
+                text: String::new(),
+                limit,
+            };
+            let _ = std::fmt::write(&mut output, args);
+            output.text
+        }
+
         struct AutoPeer {
             base: Fixture,
             identity: AutomaticBootstrapIdentity,
             active_identity: std::sync::Mutex<Option<AutomaticBootstrapIdentity>>,
             reference: super::super::super::super::journal::IntentRef,
             store: crate::store::SqliteStore,
+            permit_clock: Arc<AutomaticPermitClock>,
             native_outcome_once: std::sync::Mutex<Option<&'static str>>,
             lost_child_reply: std::sync::Mutex<Option<&'static str>>,
             lost_parent_reply: std::sync::Mutex<Option<&'static str>>,
@@ -5818,21 +5903,25 @@ mod live {
                     identity.validate().unwrap();
                 }
                 let reference = publish_automatic(&base.journal, &identity, 1).unwrap();
-                let store = crate::store::SqliteStore::new(
-                    crate::store::connection::StoreContext::new(
-                        base.peer.database_path.clone(),
-                        Arc::new(crate::app::SystemClock::new()),
-                    ),
-                    "i",
-                    Default::default(),
-                )
-                .unwrap();
+                let permit_clock = Arc::new(AutomaticPermitClock::default());
+                let context = crate::store::connection::StoreContext::new(
+                    base.peer.database_path.clone(),
+                    permit_clock.clone(),
+                );
+                let entry_clock = permit_clock.clone();
+                context.set_lane_fault(Some(Arc::new(move |_| {
+                    entry_clock.store_entry();
+                    None
+                })));
+                let store =
+                    crate::store::SqliteStore::new(context, "i", Default::default()).unwrap();
                 Self {
                     base,
                     identity,
                     active_identity: std::sync::Mutex::new(None),
                     reference,
                     store,
+                    permit_clock,
                     native_outcome_once: std::sync::Mutex::new(None),
                     lost_child_reply: std::sync::Mutex::new(None),
                     lost_parent_reply: std::sync::Mutex::new(None),
@@ -5841,6 +5930,77 @@ mod live {
             }
             fn ns(&self) -> &HandoffNamespace {
                 &self.identity.plan.payload.handoff.namespace
+            }
+            fn diagnosed_permit_call(
+                &self,
+                role: &str,
+                started: u64,
+                build_started: u64,
+                input: crate::ports::CooperativePermitRequest,
+                budget: &CallBudget,
+                mutate: impl FnOnce(
+                    crate::protocol::authority::MutationPermit,
+                ) -> Result<CommandResult, ApiError>,
+            ) -> Result<CommandResult, ApiError> {
+                let operation = input.operation.clone();
+                let built = self.permit_clock.now();
+                let issued = self.store.issue_cooperative_permit(input, budget);
+                let issue_finished = self.permit_clock.now();
+                let permit = match issued {
+                    Ok(permit) => permit,
+                    Err(error) => {
+                        eprintln!(
+                            "{}",
+                            bounded_permit_diagnostic(
+                                format_args!(
+                                    "automatic-permit role={role} operation={operation:?} stage=issuance start={started} build_start={build_started} issue_start={built} issue_end={issue_finished} code={:?}",
+                                    error.code
+                                ),
+                                4095,
+                            )
+                        );
+                        return Err(error);
+                    }
+                };
+                // This fresh store-issued grant has no body-bearing requirement yet.
+                // Its existing Debug exposes the actual private observed_at field;
+                // a changed/truncated Debug shape yields None, never an invented age.
+                let issued_metadata = bounded_permit_diagnostic(format_args!("{permit:?}"), 2048);
+                let observed_at = issued_metadata
+                    .split_once("observed_at: MonoInstant(")
+                    .and_then(|(_, tail)| tail.split_once(')'))
+                    .and_then(|(number, _)| number.parse::<u64>().ok());
+                let mutate_started = self.permit_clock.now();
+                self.permit_clock.arm();
+                let result = mutate(permit);
+                let finished = self.permit_clock.now();
+                let samples = self.permit_clock.finish();
+                if let Err(error) = &result {
+                    // In these synchronous AutoPeer paths the first UTC->mono pair
+                    // after arm is execute_budgeted_decision_with_constraints's
+                    // actual DecisionInstant. Budget/prefix reads are mono-only;
+                    // later historical presentation can add another pair. This is
+                    // a source-dependent observation, not a production tracing API.
+                    let age = samples
+                        .first_decision_pair
+                        .zip(observed_at)
+                        .map(|(decision, observed)| i128::from(decision) - i128::from(observed));
+                    let detail: String = error.detail.chars().take(128).collect();
+                    eprintln!(
+                        "{}",
+                        bounded_permit_diagnostic(
+                            format_args!(
+                                "automatic-permit role={role} operation={operation:?} stage=mutation start={started} build_start={build_started} issue_start={built} issue_end={issue_finished} mutate_start={mutate_started} store_entry={:?} first_decision_pair={:?} decision_pairs={} outcome={finished} observed_at={observed_at:?} age_ms={age:?} basis=first-UTC-mono-in-synchronous-accountable-path region=namespace-and-canonical-validation-combined code={:?} detail={detail:?} issued_metadata={issued_metadata}",
+                                samples.store_entry,
+                                samples.first_decision_pair,
+                                samples.decision_pairs,
+                                error.code,
+                            ),
+                            4095,
+                        )
+                    );
+                }
+                result
             }
             fn status(&self) -> AutomaticBootstrapResult {
                 self.status_for(&self.identity)
@@ -6065,6 +6225,7 @@ mod live {
                 command: Command,
                 budget: &CallBudget,
             ) -> Result<CommandResult, ApiError> {
+                let started = self.permit_clock.now();
                 match command {
                     Command::Capabilities => Ok(CommandResult::Capabilities(
                         crate::protocol::results::CapabilityList {
@@ -6182,20 +6343,26 @@ mod live {
                         } else {
                             None
                         };
+                        let build_started = self.permit_clock.now();
                         let mutation =
                             crate::protocol::commands::PermitMutation::AutomaticBootstrap(
                                 request.clone(),
                             );
-                        let permit = self.store.issue_cooperative_permit(
+                        let result = self.diagnosed_permit_call(
+                            role,
+                            started,
+                            build_started,
                             crate::store::cooperative_permit_request(&mutation)?,
                             budget,
-                        )?;
-                        let result = self.store.automatic_bootstrap_mutate(
-                            &request.identity.plan.payload.handoff.namespace,
-                            &request,
-                            permit,
-                            guard,
-                            budget,
+                            |permit| {
+                                self.store.automatic_bootstrap_mutate(
+                                    &request.identity.plan.payload.handoff.namespace,
+                                    &request,
+                                    permit,
+                                    guard,
+                                    budget,
+                                )
+                            },
                         );
                         let result = result?;
                         let mut loss = self.lost_parent_reply.lock().unwrap();
@@ -6257,16 +6424,22 @@ mod live {
                                 }
                             }
                         }
+                        let build_started = self.permit_clock.now();
                         let inner = crate::store::handoff::automatic::inner(&request)?;
-                        let permit = self.store.issue_cooperative_permit(
+                        let result = self.diagnosed_permit_call(
+                            role,
+                            started,
+                            build_started,
                             crate::store::cooperative_permit_request(&inner)?,
                             budget,
-                        )?;
-                        let result = self.store.automatic_delivery_mutate(
-                            self.ns(),
-                            &request,
-                            permit,
-                            budget,
+                            |permit| {
+                                self.store.automatic_delivery_mutate(
+                                    self.ns(),
+                                    &request,
+                                    permit,
+                                    budget,
+                                )
+                            },
                         );
                         let result = result?;
                         let mut loss = self.lost_child_reply.lock().unwrap();
