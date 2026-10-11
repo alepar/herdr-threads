@@ -3309,7 +3309,14 @@ class Driver:
         seq = warning[0]["decision_seq"]
         rows = self.query("SELECT reason_bits, last_reserved_at_utc, last_receipt_seq, last_warning_seq, last_outcome, retry_step "
                           "FROM wake_work WHERE seat_id=?", (self.facts["agent_seat"],))
-        offer = self.query("SELECT offered_through_seq FROM warning_offer WHERE seat_id=?", (self.facts["agent_seat"],))
+        # warning_offer holds one frontier per binding (migration 0035). Decide on the agent's binding, as the
+        # daemon's wake candidate does: the top-level binding of the harness session this run launched, else the
+        # seat's newest open, then newest top-level binding (a subagent reads its parent's frontier). A frontier
+        # recorded for another binding of the seat covers nothing.
+        offer = self.query("SELECT b.binding_id, b.native_session, o.offered_through_seq FROM occupant_bindings b "
+                           "LEFT JOIN warning_offer o ON o.binding_id=b.binding_id WHERE b.seat_id=? AND b.role='top_level' "
+                           "ORDER BY (b.native_session=?) DESC, (b.ended_at IS NULL) DESC, b.ordinal DESC LIMIT 1",
+                           (self.facts["agent_seat"], self.facts.get("sessions", {}).get("initial")))
         markers = {p.name: p.read_text(errors="replace").count(WAKE_MARKER) for p in sorted(self.ev.glob("pane-*.txt"))}
         baseline = self.facts.get("warning_marker_baseline")
         record = {"warning_seq": seq, "wake_work": rows, "warning_offer": offer, "marker_counts": markers,
