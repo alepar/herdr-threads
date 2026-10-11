@@ -5934,7 +5934,7 @@ impl OfferWindowFixture {
         panic!("bounded V2 drain showed {} of {wanted} messages", shown.len());
     }
 
-    fn ack(&self, messages: &[MessageId], mod_ack: bool, operation: &str) {
+    fn ack(&self, messages: &[MessageId], mod_ack: bool, lazy: bool, operation: &str) {
         use crate::protocol::{
             commands::{Ack, AckModDelivered},
             watch::{ModAckOutcome, ModDeliveryVia},
@@ -5943,7 +5943,7 @@ impl OfferWindowFixture {
             let operation = OperationId::new(format!("{operation}-{n}"));
             let command = if mod_ack {
                 Command::AckModDelivered(AckModDelivered {
-                    via: ModDeliveryVia::Context,
+                    via: if lazy { ModDeliveryVia::Append } else { ModDeliveryVia::Context },
                     messages: batch.to_vec(),
                     operation,
                     claim: self.recipient.clone(),
@@ -5991,7 +5991,7 @@ fn assert_v2_offer_window_reclaimed(watch: bool, lazy: bool) {
         .collect::<Vec<_>>();
     assert_eq!(window.drain(256), sent.iter().cloned().collect());
     assert_eq!(window.offers().len(), 256, "real V2 issuance filled live capacity");
-    window.ack(&sent, watch, "offer-window-settle");
+    window.ack(&sent, watch, lazy, "offer-window-settle");
     for id in &sent {
         let state: String = window.f.db.query_row(
             if lazy {
@@ -6082,7 +6082,7 @@ fn presentation_reclamation_preserves_pending_truncated_and_reoffer_history() {
     assert!(second.values().all(|v| v.count == 2));
     // Manual ACK is allowed after the body continuation was read, including
     // the previously truncated identity. Keep one short offer canonically pending.
-    window.ack(&sent[..255], false, "offer-window-manual-settle");
+    window.ack(&sent[..255], false, false, "offer-window-manual-settle");
     let mut emitted = false;
     for _ in 0..16 {
         if let DeliveryPullReplyV2::Page(page) = window.pull() {
