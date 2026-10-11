@@ -1,7 +1,7 @@
 # super-auto run — 2026-10-10-automatic-one-to-one-threads
 
 flags: planOneShot=true skipPlanRoast=false skipCodeRoast=false autonomous=true
-phase: code
+phase: roast-code
 
 idea: Use $super-auto, fully autonomous end to end with both roasts on, to implement this feature in this repo: automatic 1:1 threads. An agent can send a message to another agent by giving only a target seat ID, without specifying a thread. The plugin automatically creates (or reuses an existing) "1:1" thread with exactly two participants, the sender and the recipient, which otherwise behaves like a normal thread. The handoff command gets the same treatment: if no thread is specified, the handoff goes through the 1:1 thread. When the integration branch is ready for merge, run `herdr-threads join dev-herdr-threads` (thread taQXwBH7X) and send a --nudge message there stating that this feature is ready for integration into main.
 branch: super-auto/automatic-one-to-one-threads
@@ -28,6 +28,10 @@ codeBuckets:
   pendingRetry:
   parked:
   stalled: false
-  review: PENDING
+  review: CLEAN
 
 Code phase started: ht-e99.6 is closed design-only repair at ce11790f, with no implementation merge.
+
+roastCodeRound: 1
+
+Whole-epic successor: `.superpowers/sdd/ht-e99-plan/whole-epic-review-2.md` is CLEAN at 75d6fb5f662d4f10ccdc540accd909fc935e6969 against main6107075f; original NEEDS_FIX review preserved. Task9 repair independently verified. Full suite remains unmeasured. PR roast round 1 begins at the checkpoint containing this state.
