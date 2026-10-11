@@ -4598,9 +4598,10 @@ pub fn register_available(
                 )
                 .map_err(store_error)?;
             } else {
-                // Restoring availability does not replace the occupant or its generation.
-                tx.execute("UPDATE occupant_bindings SET registered_at=?1,host_boot=?2,host_epoch=?3,target_generation=?4,observation_provenance=?8,terminal_id=?6,incarnation=?7 WHERE binding_id=?5",
-                    params![at.utc.0,mapping.boot,mapping.epoch as i64,mapping.revision as i64,binding_id.as_str(),terminal,incarnation,claim.harness.cooperative_provenance()]).map_err(store_error)?;
+                // Restoring availability does not replace the occupant or its generation, and a plain
+                // call never rewrites the recorded observation provenance (ht-54r.79).
+                tx.execute("UPDATE occupant_bindings SET registered_at=?1,host_boot=?2,host_epoch=?3,target_generation=?4,terminal_id=?6,incarnation=?7 WHERE binding_id=?5",
+                    params![at.utc.0,mapping.boot,mapping.epoch as i64,mapping.revision as i64,binding_id.as_str(),terminal,incarnation]).map_err(store_error)?;
             }
             let seq = schema::next_decision_seq(tx, &claim.instance)?;
             if lifecycle && claim.harness == crate::protocol::authority::Harness::Human {

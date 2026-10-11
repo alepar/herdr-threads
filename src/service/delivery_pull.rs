@@ -14,9 +14,7 @@ use crate::{
     harness::adapter::DeliveryMechanism,
     ports::{ModBindingView, ModFingerprint, ModSeatView, PulledNotice, ReadContext, StorePort},
     protocol::{
-        authority::{
-            COOPERATIVE_TOP_LEVEL_PROVENANCE, CallerClaim, CallerRole, Harness, PeerIdentity,
-        },
+        authority::{CallerClaim, CallerRole, Harness, PeerIdentity},
         commands::{Command, InboxQuery, PermitMutation},
         delivery::{
             DeliveryConfirm, DeliveryConfirmItem, DeliveryConfirmOutcome, DeliveryConfirmReason,
@@ -238,11 +236,11 @@ impl DomainService {
         let Some(binding) = view.binding.clone() else {
             return Err(Refusal::NoBinding);
         };
-        if binding.provenance != COOPERATIVE_TOP_LEVEL_PROVENANCE {
-            return Err(Refusal::NoBinding);
-        }
         if !delivery::declares(&binding.harness, DeliveryMechanism::HookPull) {
             return Err(Refusal::NoHookPull);
+        }
+        if binding.harness != claim.harness.as_str() {
+            return Err(Refusal::NoBinding);
         }
         // The claim's own binding no longer serves its session (superseded by a `/clear` in the
         // same process, ended or disconnected): a stale session, like a rotated generation.

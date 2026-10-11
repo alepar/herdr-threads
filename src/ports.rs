@@ -3698,6 +3698,8 @@ pub struct ModChannelRegistration {
 pub struct ModAckBinding {
     pub binding_id: BindingId,
     pub generation: u64,
+    /// The binding's liveness is `connected`.
+    pub connected: bool,
     pub provenance: String,
     pub harness: String,
     pub native_session: crate::protocol::ids::NativeSessionId,

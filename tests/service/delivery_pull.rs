@@ -533,6 +533,37 @@ fn a_truncated_id_is_listed_truncated_and_refused_on_confirm() {
 }
 
 #[test]
+fn a_plain_call_enrolled_hook_pull_binding_is_served() {
+    let f = fixture(1);
+    // A plain (non-lifecycle) check-in enrolls the session: its binding keeps the honest
+    // `cooperative_env_session` provenance and is still served (role + liveness + harness).
+    let command = Command::CheckIn(CheckIn {
+        mode: CheckInMode::Current,
+        claim: claim("s", "p", fourth(), "n1", 1),
+        operation: OperationId::new("plain-1"),
+        lineage_parent: None,
+    });
+    let context = match f.service.handle(command, peer(), &budget()).unwrap() {
+        CommandResult::CheckedIn(result) => result.context,
+        other => panic!("unexpected {other:?}"),
+    };
+    let provenance: String = f
+        .db
+        .query_row(
+            "SELECT observation_provenance FROM occupant_bindings WHERE seat_id='s' AND native_session='n1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(provenance, "cooperative_env_session");
+    let reply = pull(&f, &context, None);
+    assert!(
+        matches!(reply, DeliveryPullReply::Page(_)),
+        "expected a page, got {reply:?}"
+    );
+}
+
+#[test]
 fn claude_and_codex_bindings_are_refused_no_hook_pull() {
     let f = fixture(1);
     let codex = check_in(&f, claim("x", "px", Harness::Codex, "nx", 1), "ci-x");

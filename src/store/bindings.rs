@@ -144,6 +144,15 @@ pub struct BindingRow {
     pub ended_at: Option<UtcMillis>,
 }
 
+impl BindingRow {
+    /// True unless only plain calls have touched the binding (provenance
+    /// `cooperative_env_session`, which no tool-boundary check-in rewrites). A liveness-ranking
+    /// fact for the same-process rule, not a delivery or authority gate.
+    pub fn lifecycle_claimed(&self) -> bool {
+        self.provenance != crate::protocol::authority::COOPERATIVE_ENV_SESSION_PROVENANCE
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EnrollTrigger {
     Lifecycle,
@@ -683,9 +692,9 @@ pub fn apply_liveness(
     Ok(changed)
 }
 
-/// The winner key of a same-process group: the latest lifecycle claim, ties by ordinal. The
-/// liveness worker's `service::liveness::classify` must use the same ordering (it still carries
-/// its own copy of this key).
+/// The winner key of a same-process group of lifecycle-claimed bindings: the latest lifecycle
+/// claim, ties by ordinal. The liveness worker's `service::liveness::classify` must use the same
+/// ordering and the same membership filter (`lifecycle_claimed`); it carries its own copy.
 fn supersede_rank(candidate: &LivenessCandidate) -> (i64, i64) {
     (candidate.claimed_at, candidate.binding.ordinal)
 }
@@ -695,13 +704,17 @@ fn supersede_rank(candidate: &LivenessCandidate) -> (i64, i64) {
 /// since (spec §3: "the most recent lifecycle claimer wins"). True only while `candidate` shares
 /// its process with another top-level candidate that out-ranks it.
 fn is_superseded_now(current: &[LivenessCandidate], candidate: &LivenessCandidate) -> bool {
-    if candidate.binding.role != BindingRole::TopLevel || candidate.binding.fingerprint.is_none() {
+    if candidate.binding.role != BindingRole::TopLevel
+        || !candidate.binding.lifecycle_claimed()
+        || candidate.binding.fingerprint.is_none()
+    {
         return false;
     }
     let Some(winner) = current
         .iter()
         .filter(|c| {
             c.binding.role == BindingRole::TopLevel
+                && c.binding.lifecycle_claimed()
                 && c.instance == candidate.instance
                 && c.binding.harness == candidate.binding.harness
                 && c.binding.fingerprint == candidate.binding.fingerprint
@@ -713,11 +726,11 @@ fn is_superseded_now(current: &[LivenessCandidate], candidate: &LivenessCandidat
     winner.binding.binding_id != candidate.binding.binding_id
 }
 
-/// Enroll hook: an enrollment or lifecycle check-in by a top-level binding disconnects
+/// Enroll hook: an enrollment *by a lifecycle check-in*, or a lifecycle check-in, of a top-level binding disconnects
 /// (`Superseded`) every other open connected top-level binding of the same instance and harness
 /// with the same liveness fingerprint (pid AND start: structural evidence of one process, so pid
 /// reuse never matches). Most recent claimer wins. Subagents neither supersede nor are
-/// superseded; a plain call of an existing binding is not an event. Hooks run after cursor
+/// superseded; a plain-call enrollment or a plain touch is not an event. Hooks run after cursor
 /// seeding, so a lineage successor has copied its cursors before its predecessor is superseded.
 pub fn same_pid_supersede(
     tx: &Connection,
@@ -733,7 +746,7 @@ pub fn same_pid_supersede(
     if binding.role != BindingRole::TopLevel
         || binding.liveness != Liveness::Connected
         || binding.provenance == crate::protocol::authority::MANAGED_LAUNCH_PROVENANCE
-        || !(event.created || event.trigger == EnrollTrigger::Lifecycle)
+        || event.trigger != EnrollTrigger::Lifecycle
     {
         return Ok(());
     }

@@ -3458,7 +3458,7 @@ fn current_check_in_never_adopts_a_managed_launch_binding() {
     assert_eq!(rows[0].1, "managed_launch");
     assert_eq!(rows[0].4, None, "still not registered");
     assert_eq!(rows[0].5, None, "not ended");
-    assert_eq!(rows[1].1, "cooperative_top_level");
+    assert_eq!(rows[1].1, "cooperative_env_session");
     assert!(rows[1].4.is_some());
 }
 

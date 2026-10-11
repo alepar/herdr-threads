@@ -1576,6 +1576,24 @@ mod liveness {
     }
 
     #[test]
+    fn plain_call_enrollment_never_supersedes_a_same_process_binding() {
+        let db = db();
+        let a = enroll_top(&db, "sess-A", FP, 10);
+        let (k, p) = (key("sess-B", None), placement());
+        let mut req = request(&k, &p);
+        req.trigger = EnrollTrigger::PlainCall;
+        let (b, created) = enrolled(enroll(&db, &req, UtcMillis(11)).unwrap());
+        assert!(created);
+        assert_eq!(row(&db, &a).liveness, Liveness::Connected);
+        assert_eq!(row(&db, &b).liveness, Liveness::Connected);
+        // B's first lifecycle check-in is the claim: the most recent lifecycle claimer wins.
+        lifecycle_checkin(&db, &b, FP, 12);
+        assert_eq!(row(&db, &a).liveness, Liveness::Disconnected);
+        assert_eq!(reason(&db, &a).as_deref(), Some("superseded"));
+        assert_eq!(row(&db, &b).liveness, Liveness::Connected);
+    }
+
+    #[test]
     fn subagents_never_supersede_nor_are_superseded() {
         let db = db();
         let p = placement();

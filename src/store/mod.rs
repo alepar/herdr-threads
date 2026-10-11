@@ -1831,6 +1831,7 @@ impl StorePort for SqliteStore {
         Ok(Some(crate::ports::ModAckBinding {
             binding_id: row.binding_id,
             generation: row.generation,
+            connected: row.liveness == bindings::Liveness::Connected,
             provenance: row.provenance,
             harness: row.harness,
             native_session: NativeSessionId::new(row.native_session),
