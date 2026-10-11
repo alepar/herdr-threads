@@ -2399,7 +2399,7 @@ pub(super) fn pull(
             db,
             claim.seat.as_str(),
             state.generation,
-            claim.native_session.as_str(),
+            claim.execution.as_str(),
             &carried_notices,
         )?;
     }
