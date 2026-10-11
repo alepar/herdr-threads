@@ -1,0 +1,135 @@
+{
+  "aborted": null,
+  "ack_phase": "wake",
+  "agy_sha512": "2657939f20f386ffb68c03309a07f1895cdf18ff4bde89ff2a251c42ef5b7a8f2d0b1547e13c59e38374fa3d1eeed7e71abcbe5198f14dbf02968e5f762ab316",
+  "agy_version": "1.3.2",
+  "checks": [
+    {
+      "detail": "action: installed\nallow_entry.file: <root>/home/.gemini/antigravity-cli/settings.json\nallow_entry.rule: command(herdr-threads)\nallow_entry.state: owned\nfiles: {\"action\":\"created\",\"path",
+      "name": "setup agy succeeds",
+      "ok": true
+    },
+    {
+      "detail": "",
+      "name": "agy onboarding walked to the composer",
+      "ok": true
+    },
+    {
+      "detail": "binding={'seat_id': 'sbzz2nJn0', 'ordinal': 1, 'generation': 2, 'harness': 'agy', 'native_session': '16da58f0-a5c9-4fd3-81a6-cf5d63b6bc51', 'observation_provenance': 'cooperative_top_level'}",
+      "name": "the agy seat is enrolled",
+      "ok": true
+    },
+    {
+      "detail": "",
+      "name": "agy reached idle after the READY prompt",
+      "ok": true
+    },
+    {
+      "detail": "result=tOndlXeKe",
+      "name": "the sender created a thread",
+      "ok": true
+    },
+    {
+      "detail": "invitation\nvalue: \"i9Fl2bgam\"",
+      "name": "the sender invited the agy seat",
+      "ok": true
+    },
+    {
+      "detail": "accepted\nvalue: \"i9Fl2bgam\"",
+      "name": "the agy seat joined the thread (runner scaffolding)",
+      "ok": true
+    },
+    {
+      "detail": "{\"version\":6,\"result\":{\"kind\":\"message_sent\",\"data\":\"mrFqaQc8f\"}}",
+      "name": "the ACK-required message was sent",
+      "ok": true
+    },
+    {
+      "detail": "",
+      "name": "the message is stored",
+      "ok": true
+    },
+    {
+      "detail": "main requests before=1",
+      "name": "wake: a new model request carried the injected SYSTEM_MESSAGE with the message id (the runner typed no prompt)",
+      "ok": true
+    },
+    {
+      "detail": "injected=1",
+      "name": "the injected SYSTEM_MESSAGE holds the frame header with the message id",
+      "ok": true
+    },
+    {
+      "detail": "matches=0",
+      "name": "no USER_REQUEST of the wake turn is a runner prompt",
+      "ok": true
+    },
+    {
+      "detail": "tool calls=[{'name': 'run_command', 'args_trimmed': '{\"toolAction\": \"Acknowledging herdr-threads message\", \"Cwd\": \"<root>/ws\", \"toolSummary\": \"Herdr-threads Ack\", \"CommandLine\": \"herdr-threads ack mrFqaQc8f\", \"WaitMsBeforeAsync\": 500}', 'seq': 3}, {'name': 'run_command', 'args_trimmed': '{\"Cwd\": \"<root>/ws\", \"toolAction\": \"Replying to herdr-threads message\", \"WaitMsBeforeAsync\": 500, \"toolSummary\": \"Herdr-threads Send\", \"CommandLine\": \"herdr-threads send tOndlXeKe SMOKE-OK\"}', 'seq': 4}, {'name': 'run_command', 'args_trimmed': '{\"Cwd\": \"<root>/ws\", \"CommandLine\": \"herdr-threads send tOndlXeKe --message SMOKE-OK\", \"toolSummary\": \"Herdr-threads Send\", \"WaitMsBeforeAsync\": 500, \"toolAction\": \"Replying to herdr-threads message\"}', 'seq': 5}, {'name': 'run_command', 'args_trimmed': '{\"CommandLine\": \"herdr-threads send --help\", \"toolSummary\": \"Herdr-threads Send Help\", \"Cwd\": \"<root>/ws\", \"toolAction\": \"Getting help for herdr-threads send command\", \"WaitMsBeforeAsync\": 500}', 'seq': 6}, {'name': 'run_command', 'args_trimmed': '{\"CommandLine\": \"herdr-threads send tOndlXeKe --body SMOKE-OK\", \"WaitMsBeforeAsync\": 500, \"toolSummary\": \"Herdr-threads Send\", \"Cwd\": \"<root>/ws\", \"toolAction\": \"Replying to herdr-threads message\"}', 'seq': 7}]",
+      "name": "the agy seat ACKed through run_command",
+      "ok": true
+    },
+    {
+      "detail": "receipts=[('acked', '{\"binding_generation\":2,\"decided_at\":1791681508761,\"execution\":\"a9278795-8eee-4076-a63b-3a8bec1efde2\",\"harness\":\"agy\",\"host_boot\":\"herdr-server:pid=23536:start=1791681485.533536:uid=501\",\"observed_at\":1791681508761,\"provenance\":\"cooperative_top_level\",\"session\":\"16da58f0-a5c9-4fd3-81a6-cf5d63b6bc51\",\"target_generation\":1}')]",
+      "name": "the receipt is acked",
+      "ok": true
+    },
+    {
+      "detail": "blocked samples=0",
+      "name": "no permission prompt: the agent was never blocked",
+      "ok": true
+    },
+    {
+      "detail": "messages=[(None, ''), (None, ''), (None, ''), ('sXboojDoz', 'Smoke check: please acknowledge this mes'), (None, ''), ('sbzz2nJn0', 'SMOKE-OK')]",
+      "name": "the agy seat replied SMOKE-OK in the thread",
+      "ok": true
+    },
+    {
+      "detail": "ack_observation=['{\"binding_generation\":2,\"decided_at\":1791681508761,\"execution\":\"a9278795-8eee-4076-a63b-3a8bec1efde2\",\"harness\":\"agy\",\"host_boot\":\"herdr-server:pid=23536:start=1791681485.533536:uid=501\",\"observed_at\":1791681508761,\"provenance\":\"cooperative_top_level\",\"session\":\"16da58f0-a5c9-4fd3-81a6-cf5d63b6bc51\",\"target_generation\":1}']",
+      "name": "the delivery receipt is settled (cooperative_hook_delivery, or superseded by the ACK)",
+      "ok": true
+    },
+    {
+      "detail": "refusals=0",
+      "name": "no relay refusal",
+      "ok": true
+    }
+  ],
+  "cost_estimated": false,
+  "cost_usd": 0.02871939,
+  "dirty": false,
+  "duration_s": 35.3,
+  "herdr_version": "herdr 0.9.1",
+  "leak_check": {
+    "ok": true,
+    "output": "no leaked test processes\n"
+  },
+  "mode": "live",
+  "model": "google/gemini-2.5-flash",
+  "pass": true,
+  "phases": [
+    {
+      "name": "enroll",
+      "ok": true,
+      "seconds": 9.9
+    },
+    {
+      "name": "send",
+      "ok": true,
+      "seconds": 3.4
+    },
+    {
+      "name": "wake",
+      "ok": true,
+      "seconds": 3.2
+    },
+    {
+      "name": "act",
+      "ok": true,
+      "seconds": 8.5
+    }
+  ],
+  "refusals": 0,
+  "requests": 7,
+  "sha": "2bf61304750f9e1fef9ff23ca923ac3ea2bf5419"
+}
