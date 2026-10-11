@@ -307,7 +307,8 @@
       "src/harness/registry.rs",
       "migrations/0035_receipt_warning_origins.sql",
       "src/store/receipts.rs",
-      "tests/store/receipts.rs"
+      "tests/store/receipts.rs",
+      "tests/harness/adapter_smoke.rs"
     ]
   },
   {
