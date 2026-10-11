@@ -2302,11 +2302,11 @@ fn managed_required_upgrade_preserves_deadline_and_demands_native_revision() {
 }
 
 #[test]
-fn managed_release_preserves_upgraded_ordinary_invitation_and_its_deadline() {
+fn managed_required_reattach_preserves_upgraded_ordinary_invitation_and_history() {
     use crate::ports::ServiceAuthorityGate;
     use crate::protocol::service::*;
     use sha2::Digest;
-    let (context, mut conn, _, _) = fixture(100);
+    let (context, mut conn, path, clock) = bound_fixture(100);
     let budget = crate::protocol::time::CallBudget {
         deadline: MonoInstant(1000),
         cancellation: Default::default(),
@@ -2373,7 +2373,7 @@ fn managed_release_preserves_upgraded_ordinary_invitation_and_its_deadline() {
         ServiceOperation::ReleaseRequirement(ReleaseRequirement {
             thread: thread.clone(),
             seat: SeatId::new("s2"),
-            requirement: requirement.requirement,
+            requirement: requirement.requirement.clone(),
             operation: OperationId::new("release-upgrade"),
         }),
     );
@@ -2408,10 +2408,272 @@ fn managed_release_preserves_upgraded_ordinary_invitation_and_its_deadline() {
         .unwrap(),
         0
     );
+    // Capture every stored column, including timing, acceptance and provenance.
+    let snapshot = |conn: &Connection, table: &str, id: &str| {
+        conn.query_row(&format!("SELECT * FROM {table} WHERE id=?1"), [id], |row| {
+            (0..row.as_ref().column_count())
+                .map(|index| row.get::<_, rusqlite::types::Value>(index))
+                .collect::<rusqlite::Result<Vec<_>>>()
+        })
+        .unwrap()
+    };
+    let original_invitation = snapshot(&conn, "invitations", ordinary.invitation.as_str());
+    let released_requirement = snapshot(
+        &conn,
+        "requirement_episodes",
+        requirement.requirement.as_str(),
+    );
+    clock.0.store(200, Ordering::SeqCst);
+    let replacement_op = ServiceOperation::Invite(ServiceInvite {
+        thread: thread.clone(),
+        seat: SeatId::new("s2"),
+        constraint: InvitationConstraint::Required,
+        deadline_millis: Some(7000),
+        operation: OperationId::new("required-reattach"),
+    });
+    let ServiceResult::Invitation(replacement) = operate(&mut conn, replacement_op.clone()) else {
+        panic!("replacement requirement expected")
+    };
+    let replacement_requirement = replacement.requirement.as_ref().unwrap();
+    assert_ne!(replacement.invitation, ordinary.invitation);
+    assert_ne!(replacement_requirement.requirement, requirement.requirement);
+    assert_eq!(replacement_requirement.state, RequirementState::Pending);
+    assert_eq!(replacement_requirement.accepted_by, None);
+    assert_eq!(replacement_requirement.accepted_at, None);
+    assert_eq!(
+        conn.query_row(
+            "SELECT episode,created_at,frozen_duration_ms,deadline_at FROM invitations WHERE id=?1",
+            [replacement.invitation.as_str()],
+            |r| Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, i64>(3)?
+            )),
+        )
+        .unwrap(),
+        (2, 200, 7000, 7200)
+    );
+    assert_eq!(
+        operate(&mut conn, replacement_op.clone()),
+        ServiceResult::Invitation(replacement.clone())
+    );
+    let mut repeat = replacement_op.clone();
+    if let ServiceOperation::Invite(v) = &mut repeat {
+        v.operation = OperationId::new("required-reattach-noop");
+        v.deadline_millis = Some(99000);
+    }
+    assert_eq!(
+        operate(&mut conn, repeat),
+        ServiceResult::Invitation(replacement.clone())
+    );
+    // Ordinary requests must still select the independent original invitation.
+    assert_eq!(
+        operate(
+            &mut conn,
+            ServiceOperation::Invite(ServiceInvite {
+                thread: thread.clone(),
+                seat: SeatId::new("s2"),
+                constraint: InvitationConstraint::Ordinary,
+                deadline_millis: Some(10000),
+                operation: OperationId::new("ordinary-during-replacement"),
+            })
+        ),
+        ServiceResult::Invitation(ordinary.clone())
+    );
+    let stale = AcceptRequired {
+        thread: thread.clone(),
+        invitation: ordinary.invitation.clone(),
+        requirement: requirement.requirement.clone(),
+        expected_revision: requirement.revision,
+        operation: OperationId::new("stale-first-requirement"),
+        claim: claim("s2"),
+    };
+    let error = accept_required(
+        &context,
+        &mut conn,
+        &budget,
+        &stale,
+        permit(
+            "s2",
+            "stale-first-requirement",
+            ObligationRef::Invitation(stale.invitation.clone()),
+            cooperative_payload_hash("accept_required", &stale).unwrap(),
+            200,
+        ),
+    )
+    .unwrap_err();
+    assert_eq!(error.code, ErrorCode::StaleRequirementAcceptance);
+    // Releasing the fresh requirement cancels only its own invitation.
+    operate(
+        &mut conn,
+        ServiceOperation::ReleaseRequirement(ReleaseRequirement {
+            thread: thread.clone(),
+            seat: SeatId::new("s2"),
+            requirement: replacement_requirement.requirement.clone(),
+            operation: OperationId::new("release-replacement"),
+        }),
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM invitation_cancellations WHERE invitation_id=?1",
+            [replacement.invitation.as_str()],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        snapshot(&conn, "invitations", ordinary.invitation.as_str()),
+        original_invitation
+    );
+    assert_eq!(
+        snapshot(
+            &conn,
+            "requirement_episodes",
+            requirement.requirement.as_str()
+        ),
+        released_requirement
+    );
+    assert_eq!(
+        operate(&mut conn, replacement_op),
+        ServiceResult::Invitation(replacement)
+    );
+    assert!(
+        crate::store::service_substrate::current_requirement(&conn, &thread, &SeatId::new("s2"))
+            .unwrap()
+            .is_none()
+    );
     assert_eq!(
         operate(&mut conn, ordinary_op),
-        ServiceResult::Invitation(ordinary)
+        ServiceResult::Invitation(ordinary.clone())
     );
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM requirement_episodes WHERE thread_id=?1",
+            [thread.as_str()],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        2
+    );
+    // Another attach must also get a fresh episode and remain explicitly acceptable.
+    let ServiceResult::Invitation(third) = operate(
+        &mut conn,
+        ServiceOperation::Invite(ServiceInvite {
+            thread: thread.clone(),
+            seat: SeatId::new("s2"),
+            constraint: InvitationConstraint::Required,
+            deadline_millis: Some(3000),
+            operation: OperationId::new("required-third"),
+        }),
+    ) else {
+        panic!("third requirement expected")
+    };
+    assert_ne!(third.invitation, ordinary.invitation);
+    let third_requirement = third.requirement.unwrap();
+    let accept = AcceptRequired {
+        thread: thread.clone(),
+        invitation: third.invitation.clone(),
+        requirement: third_requirement.requirement,
+        expected_revision: third_requirement.revision,
+        operation: OperationId::new("accept-third"),
+        claim: claim("s2"),
+    };
+    let CommandResult::RequiredAccepted(accepted) = accept_required(
+        &context,
+        &mut conn,
+        &budget,
+        &accept,
+        permit(
+            "s2",
+            "accept-third",
+            ObligationRef::Invitation(third.invitation),
+            cooperative_payload_hash("accept_required", &accept).unwrap(),
+            200,
+        ),
+    )
+    .unwrap() else {
+        panic!("explicit required acceptance expected")
+    };
+    assert_eq!(accepted.state, RequirementState::Accepted);
+    assert_eq!(accepted.accepted_by, Some(SeatId::new("s2")));
+    assert_eq!(accepted.accepted_at, Some(UtcMillis(200)));
+    let observation: String = conn
+        .query_row(
+            "SELECT accepted_observation FROM requirement_episodes WHERE id=?1",
+            [accepted.requirement.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let observation: serde_json::Value = serde_json::from_str(&observation).unwrap();
+    assert_eq!(observation["provenance"], "cooperative_top_level");
+    assert_eq!(
+        snapshot(&conn, "invitations", ordinary.invitation.as_str()),
+        original_invitation
+    );
+    assert_eq!(
+        snapshot(
+            &conn,
+            "requirement_episodes",
+            requirement.requirement.as_str()
+        ),
+        released_requirement
+    );
+    let interval: (i64, i64) = conn.query_row(
+        "SELECT episode,joined_seq FROM membership_intervals WHERE thread_id=?1 AND seat_id='s2' AND left_seq IS NULL",
+        [thread.as_str()], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+    let ordinary_accept = Accept {
+        thread: thread.clone(),
+        operation: OperationId::new("accept-preserved-ordinary"),
+        claim: claim("s2"),
+    };
+    let request = crate::store::cooperative_permit_request(
+        &crate::protocol::commands::PermitMutation::Accept(ordinary_accept.clone()),
+    )
+    .unwrap();
+    let ordinary_permit =
+        crate::store::seats::issue_cooperative_permit(&context, &conn, "i", request, &budget)
+            .unwrap();
+    assert_eq!(
+        crate::store::control::accept(
+            &context,
+            &mut conn,
+            &budget,
+            &ordinary_accept,
+            ordinary_permit
+        )
+        .unwrap(),
+        CommandResult::Accepted(ordinary.invitation.clone().into())
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT state FROM invitations WHERE id=?1",
+            [ordinary.invitation.as_str()],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
+        "accepted"
+    );
+    assert_eq!(conn.query_row("SELECT episode,joined_seq FROM membership_intervals WHERE thread_id=?1 AND seat_id='s2' AND left_seq IS NULL",
+        [thread.as_str()], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))).unwrap(), interval);
+    let inbox = crate::protocol::commands::Command::Inbox(crate::protocol::commands::InboxQuery {
+        seat: Some(SeatId::new("s2")),
+        page: Default::default(),
+    });
+    let CommandResult::Inbox(page) =
+        crate::store::queries::query(&context, "i", &inbox, &budget).unwrap()
+    else {
+        panic!("inbox expected")
+    };
+    assert!(
+        page.items
+            .iter()
+            .filter(|item| item.thread == thread)
+            .all(|item| item.invitations == 0)
+    );
+    drop(conn);
+    let _ = std::fs::remove_file(path);
 }
 
 #[test]

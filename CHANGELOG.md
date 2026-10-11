@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v0.8.1
+
+- **Required invitation reuse.** Reattaching a released service requirement creates a fresh invitation when the original already has historical requirement linkage. Native acceptance still reaches a preserved pending ordinary invitation after a newer requirement was accepted. Timing, attribution, replay and join intervals are preserved; no schema change.
+
 ## v0.8.0
 
 - **Antigravity CLI (agy).** An owned plugin supports setup, discovery, managed launch and handoff. Turn-start hooks pull pending messages and passive notices; transcript evidence confirms eligible message receipts. Setup retains explicit permission consent and timestamped configuration backups.
