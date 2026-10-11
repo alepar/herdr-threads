@@ -669,3 +669,63 @@ fn actual_main_linked_phase_preserves_ordinary_and_rejects_lazy_mode() {
         "linked frozen Ordinary phase must reject a changed Lazy mode"
     );
 }
+
+#[test]
+fn actual_main_linked_phase_rejects_unfrozen_invitation_confirmation() {
+    use crate::protocol::commands::{InvitationConfirmation, Invite, PermitMutation};
+    let (context, mut db, path, id, child) = new_thread_fixture();
+    let create = create_for(&id);
+    let budget = CallBudget {
+        deadline: MonoInstant(u64::MAX),
+        cancellation: Cancellation::default(),
+    };
+    let CommandResult::ThreadCreated(thread) = create_thread_in_namespace(
+        &context,
+        &mut db,
+        &budget,
+        &create,
+        create_permit(&create),
+        &id.payload.handoff.namespace,
+    )
+    .unwrap() else {
+        panic!()
+    };
+    let before = db.total_changes();
+    let mut invite = Invite {
+        confirmation: None,
+        thread,
+        seat: child.recipient.clone(),
+        deadline_millis: None,
+        operation: id.payload.handoff.keys.invite.clone(),
+        claim: id.claim.clone(),
+    };
+    topology_handoff::validate_selected_child_phase(
+        &db,
+        &id.payload.handoff.namespace,
+        &PermitMutation::Invite(invite.clone()),
+        false,
+    )
+    .unwrap();
+    for mode in [
+        InvitationConfirmation::Lazy,
+        InvitationConfirmation::RequireAck,
+    ] {
+        invite.confirmation = Some(mode);
+        let error = topology_handoff::validate_selected_child_phase(
+            &db,
+            &id.payload.handoff.namespace,
+            &PermitMutation::Invite(invite.clone()),
+            false,
+        )
+        .unwrap_err();
+        assert_eq!(error.code, ErrorCode::OperationPayloadMismatch);
+    }
+    assert_eq!(
+        db.total_changes(),
+        before,
+        "policy refusal must precede effects"
+    );
+    drop(db);
+    drop(context);
+    std::fs::remove_file(path).unwrap();
+}

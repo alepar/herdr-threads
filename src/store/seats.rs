@@ -4649,7 +4649,14 @@ pub fn mod_seat_view(
             .map_or(0, |(seq, _)| i64::try_from(seq).unwrap_or(i64::MAX)),
         lazy_pending: u64::try_from(lazy_pending).unwrap_or(0),
         max_lazy_rowid,
-        other_pending: digest.invitations.count + waking_warnings,
+        other_pending: super::attention::pending_confirming_invitations(
+            db,
+            seat.as_str(),
+            None,
+            i64::MAX,
+        )?
+        .count()
+        .0 + waking_warnings,
         binding_generation: binding.as_ref().map(|b| b.generation),
     };
     Ok(Some(ModSeatView {

@@ -200,7 +200,7 @@ fn wake_discovery_scales_with_live_seats_only() {
     );
 }
 
-// Kills: any of the seven access paths losing its INDEXED BY pin (a silent fall
+// Kills: any of the nine access paths losing its INDEXED BY pin (a silent fall
 // back to a scan) or the pinned index no longer serving the query.
 #[test]
 fn every_access_path_prepares_indexed_by() {
@@ -225,8 +225,8 @@ fn every_access_path_prepares_indexed_by() {
     paths.push(("occupant_bindings_current", WAKE_SEAT_WALK));
     assert_eq!(
         paths.len(),
-        8,
-        "six pending probes, the live seat walk and the human exclusion"
+        9,
+        "seven pending probes, the live seat walk and the human exclusion"
     );
     for (index, sql) in paths {
         assert!(

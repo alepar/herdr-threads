@@ -505,7 +505,8 @@ fn bare_daemon_advertises_legacy_capabilities_without_v2_recorder() {
             "send.lazy_v1",
             "inbox.batch_v2",
             "mod.watch_v1",
-            "hook.lazy_delivery_v1"
+            "hook.lazy_delivery_v1",
+            "invitation.confirmation_v1"
         ]
     );
     let caps = Capabilities::from_list(advertised.capabilities);
@@ -1232,6 +1233,7 @@ fn v2_capability_is_negotiated_only_with_recorder() {
             .iter()
             .filter(|name| **name != HARNESS_HEALTH_V2)
             .copied()
+            .chain(std::iter::once(INVITATION_CONFIRMATION_V1))
             .collect::<Vec<_>>()
     );
     let d = crate::harness::claude::ClaudeAdapter.contracts()[0];
@@ -1732,4 +1734,25 @@ fn public_operation_status_cannot_bypass_send_time_capability_guard() {
         .unwrap_err();
     assert_eq!(error.code, ErrorCode::Unauthorized);
     assert_eq!(error.detail, "verified operation scope required");
+}
+
+#[test]
+fn invitation_confirmation_capability_is_advertised_with_active_lifecycle() {
+    let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
+    let CommandResult::Capabilities(reply) = handler
+        .handle(
+            Command::Capabilities,
+            PeerIdentity::from_kernel(501),
+            &budget(),
+        )
+        .unwrap()
+    else {
+        panic!()
+    };
+    assert!(
+        reply
+            .capabilities
+            .iter()
+            .any(|value| value == INVITATION_CONFIRMATION_V1)
+    );
 }

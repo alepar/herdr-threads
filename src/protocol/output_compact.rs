@@ -70,12 +70,16 @@ pub(super) fn render(result: &CommandResult, spec: &OutputSpec) -> Option<String
                         thread,
                         topic_data,
                         invitation,
+                        confirmation,
+                        deadline_at,
                         required_service,
                     } => InboxBatchItem::Invitation {
                         thread: thread.clone(),
                         topic_data: topic_data.clone(),
                         goal_data: None,
                         invitation: invitation.clone(),
+                        confirmation: *confirmation,
+                        deadline_at: *deadline_at,
                         required_service: required_service.clone(),
                     },
                     InboxBatchV2Item::Message {
@@ -169,6 +173,7 @@ pub(super) fn render(result: &CommandResult, spec: &OutputSpec) -> Option<String
                             goal_data,
                             invitation,
                             required_service,
+                            ..
                         } => {
                             out.push_str(&format!(
                                 "invitation {} {}: {}\n",

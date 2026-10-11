@@ -1585,6 +1585,18 @@ pub fn effective_warning_by_id(
     ).optional().map_err(store_error)
 }
 
+/// Original canonical invitation episode evidence only. Old records with no
+/// recorded native inviter remain unattributed; current membership is no hint.
+pub(crate) fn invitation_originator(
+    db: &Connection,
+    invitation: &str,
+) -> Result<Option<String>, ApiError> {
+    db.query_row(
+        "SELECT coalesce(i.inviter_seat_id,(SELECT json_extract(m.event_json,'$.actor_seat') FROM messages m JOIN seats origin ON origin.id=json_extract(m.event_json,'$.actor_seat') AND origin.instance_id=t.instance_id WHERE m.event_key='invite:'||i.id AND m.source_invitation_id=i.id AND m.thread_id=i.thread_id AND m.kind='info' AND json_extract(m.event_json,'$.action')='invite' AND json_extract(m.event_json,'$.invitation')=i.id AND json_extract(m.event_json,'$.seat')=i.seat_id)) FROM invitations i JOIN threads t ON t.id=i.thread_id WHERE i.id=?1",
+        [invitation],|r|r.get(0),
+    ).optional().map(|row|row.flatten()).map_err(store_error)
+}
+
 pub fn is_warning_recipient(db: &Connection, id: &str, seat_id: &str) -> Result<bool, ApiError> {
     let Some(warning) = effective_warning_by_id(db, id)? else {
         return Ok(false);

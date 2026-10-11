@@ -250,6 +250,8 @@ fn invitation() -> InboxBatchV2Item {
         thread: ThreadId::new("t1"),
         topic_data: "topic".into(),
         invitation: InvitationId::new("invitation-1"),
+        confirmation: None,
+        deadline_at: None,
         required_service: None,
     }
 }

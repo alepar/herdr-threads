@@ -17,7 +17,7 @@ impl Database {
     }
 
     /// An independent store whose file is a byte copy of this closed one.
-    /// Creating a Store replays every migration (schema 32), far more than
+    /// Creating a Store replays every migration (schema 34), far more than
     /// one tamper case costs, so each test creates its fresh store once and
     /// gives every case its own copy.
     fn copy(&self) -> Self {
@@ -107,7 +107,7 @@ fn fresh_store_installs26_and_reopens() {
     let database = Database::new();
     drop(database.store().unwrap());
     let db = database.connection();
-    assert_eq!(version(&db), 32);
+    assert_eq!(version(&db), 34);
     for table in ["messages", "send_preparations"] {
         let default: String = db
             .query_row(
@@ -133,7 +133,7 @@ fn historical25_store_upgrade_preserves_evidence_and_defaults_modes() {
     drop(db);
     drop(database.store().unwrap());
     let db = database.connection();
-    assert_eq!(version(&db), 32);
+    assert_eq!(version(&db), 34);
     assert_eq!(evidence(&db), before);
     for table in ["messages", "send_preparations"] {
         let mode: String = db
@@ -199,7 +199,7 @@ fn rejected_on_reopen(database: &Database, description: &str) {
         herdr_threads::protocol::results::ErrorCode::IncompatibleSchema,
         "{description}: {error:?}"
     );
-    assert_eq!(version(&database.connection()), 32);
+    assert_eq!(version(&database.connection()), 34);
 }
 
 // Omitting the v26 startup audit accepts a removed or weakened immutable guard.

@@ -806,6 +806,8 @@ fn continuation_mixed_sources_preserve_invocation() {
             thread: ThreadId::new("invite-thread"),
             topic_data: "invite".into(),
             invitation: InvitationId::new("invitation"),
+            confirmation: None,
+            deadline_at: None,
             required_service: None,
         },
         InboxBatchV2Item::Warning {

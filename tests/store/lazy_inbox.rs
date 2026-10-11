@@ -1194,3 +1194,45 @@ fn lazy_inbox_fix_partial_concurrent_ack() {
     assert!(found);
     assert!(cursor.is_none());
 }
+
+#[test]
+fn invitation_confirmation_inbox_metadata_distinguishes_lazy_timed_and_legacy() {
+    let (_iso, context, conn) = fixture("invitation-metadata");
+    for (index, mode) in [Some("lazy"), Some("require_ack"), None]
+        .into_iter()
+        .enumerate()
+    {
+        conn.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at,confirmation,inviter_seat_id) VALUES (?1,'t','b',?2,'pending',0,1,300,300,?3,CASE WHEN ?3 IS NOT NULL THEN 'a' END)",rusqlite::params![format!("policy-{index}"),index as i64+1,mode]).unwrap();
+    }
+    for command in [
+        Command::InboxBatch(InboxQuery {
+            seat: Some(SeatId::new("b")),
+            page: PageRequest::default(),
+        }),
+        Command::InboxBatchV2(InboxQuery {
+            seat: Some(SeatId::new("b")),
+            page: PageRequest::default(),
+        }),
+    ] {
+        let result = herdr_threads::store::queries::query_with_output(
+            &context,
+            "i",
+            &command,
+            &OutputSpec::default(),
+            &budget(),
+        )
+        .unwrap();
+        let value = serde_json::to_value(&result).unwrap();
+        let items = value["data"]["items"].as_array().unwrap();
+        let find = |id: &str| items.iter().find(|v| v["invitation"] == id).unwrap();
+        assert_eq!(find("policy-0")["confirmation"], "lazy");
+        assert!(find("policy-0").get("deadline_at").is_none());
+        assert_eq!(find("policy-1")["confirmation"], "require_ack");
+        assert_eq!(find("policy-1")["deadline_at"], 300);
+        assert!(find("policy-2").get("confirmation").is_none());
+        assert!(
+            find("policy-2").get("deadline_at").is_none(),
+            "legacy item bytes stay unchanged"
+        );
+    }
+}

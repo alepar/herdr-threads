@@ -69,7 +69,9 @@ const V29: &str = include_str!("../../migrations/0029_invitation_confirmation.sq
 const V30: &str = include_str!("../../migrations/0030_receipt_send_time.sql");
 const V31: &str = include_str!("../../migrations/0031_handoff_body_bounds.sql");
 const V32: &str = include_str!("../../migrations/0032_receipt_deadline_backfill.sql");
-pub(crate) const LATEST_VERSION: i64 = 32;
+const V33: &str = include_str!("../../migrations/0033_invitation_lifecycle.sql");
+const V34: &str = include_str!("../../migrations/0034_invitation_warning_origin.sql");
+pub(crate) const LATEST_VERSION: i64 = 34;
 
 /// Decode only persisted results, after the caller's digest has matched. Live
 /// protocol responses still require disposition. Missing original context
@@ -412,7 +414,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             verify_existing(conn)
         }
         17 => verify_existing(conn),
-        18..=32 => verify_existing(conn),
+        18..=34 => verify_existing(conn),
         _ => Err(api_error(
             ErrorCode::IncompatibleSchema,
             format!("unsupported schema version {version}"),
@@ -625,7 +627,126 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             }
         }
     }
-    verify_receipt_deadline_backfill_schema(conn)
+    verify_receipt_deadline_backfill_schema(conn)?;
+    if version <= 32 {
+        conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
+        let result = conn
+            .execute_batch(V33)
+            .map_err(store_error)
+            .and_then(|_| verify_invitation_lifecycle_schema(conn))
+            .and_then(|_| {
+                conn.pragma_update(None, "user_version", 33)
+                    .map_err(store_error)
+            });
+        match result {
+            Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(error);
+            }
+        }
+    }
+    verify_invitation_lifecycle_schema(conn)?;
+    if version <= 33 {
+        conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
+        let result = conn
+            .execute_batch(V34)
+            .map_err(store_error)
+            .and_then(|_| verify_invitation_warning_origin_schema(conn))
+            .and_then(|_| {
+                conn.pragma_update(None, "user_version", 34)
+                    .map_err(store_error)
+            });
+        match result {
+            Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(error);
+            }
+        }
+    }
+    verify_invitation_warning_origin_schema(conn)
+}
+
+fn verify_invitation_warning_origin_schema(conn: &Connection) -> Result<(), ApiError> {
+    let table: String = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='warning_conditions'",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    for column in [
+        "invitation_originator_instance_id TEXT REFERENCES host_instances(id)",
+        "invitation_originator_seat_id TEXT REFERENCES seats(id)",
+    ] {
+        if !table.contains(column) {
+            return Err(api_error(
+                ErrorCode::IncompatibleSchema,
+                "missing invitation warning origin column",
+            ));
+        }
+    }
+    let index = V34
+        .split("CREATE INDEX ")
+        .nth(1)
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap();
+    let trigger = V34
+        .split("CREATE TRIGGER ")
+        .nth(1)
+        .unwrap()
+        .trim()
+        .trim_end_matches(';');
+    for (kind, sql) in [
+        ("index", format!("CREATE INDEX {index}")),
+        ("trigger", format!("CREATE TRIGGER {trigger}")),
+    ] {
+        let name = sql.split_whitespace().nth(2).unwrap();
+        let actual: Option<String> = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type=?1 AND name=?2",
+                params![kind, name],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(store_error)?;
+        if actual.as_deref().map(str::trim) != Some(sql.trim()) {
+            return Err(api_error(
+                ErrorCode::IncompatibleSchema,
+                format!("missing or altered invitation warning origin {kind} {name}"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn verify_invitation_lifecycle_schema(conn: &Connection) -> Result<(), ApiError> {
+    let ddl = V33
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("--"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    for statement in ddl.split(';').map(str::trim).filter(|sql| !sql.is_empty()) {
+        let name = statement.split_whitespace().nth(2).unwrap_or_default();
+        let actual: Option<String> = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='index' AND name=?1",
+                [name],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(store_error)?;
+        if actual.as_deref().map(str::trim) != Some(statement) {
+            return Err(api_error(
+                ErrorCode::IncompatibleSchema,
+                format!("missing or altered invitation lifecycle index {name}"),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn verify_receipt_deadline_backfill_schema(conn: &Connection) -> Result<(), ApiError> {
@@ -3513,9 +3634,9 @@ pub(crate) fn clear_warning_condition_at_snapshot(
     decision_at: UtcMillis,
     snapshot: Option<(i64, i64)>,
 ) -> Result<(), ApiError> {
-    let (kind,thread,affected,open): (String,String,String,String) = tx.query_row(
-        "SELECT condition_kind,thread_id,affected_seat_id,open_warning_id FROM warning_conditions WHERE ordinal=?1 AND clear_warning_id IS NULL",
-        [ordinal], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)),
+    let (kind,thread,affected,open,condition_id): (String,String,String,String,String) = tx.query_row(
+        "SELECT condition_kind,thread_id,affected_seat_id,open_warning_id,condition_id FROM warning_conditions WHERE ordinal=?1 AND clear_warning_id IS NULL",
+        [ordinal], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)),
     ).map_err(store_error)?;
     let thread_id = ThreadId::new(&thread);
     let key = format!("warning-clear:{open}");
@@ -3567,6 +3688,13 @@ pub(crate) fn clear_warning_condition_at_snapshot(
         &kind,
         snapshot.map(|(cutoff, _)| cutoff),
     )?;
+    // The original inviter retains the informational clear even after leaving.
+    // Unlike an open condition this projection does not enqueue wake work.
+    if kind == "invitation"
+        && let Some(origin) = super::effective::invitation_originator(tx, &condition_id)?
+    {
+        tx.execute("INSERT OR IGNORE INTO warning_recipients(warning_id,seat_id,generation) SELECT ?1,id,?3 FROM seats WHERE id=?2 AND state!='retired'",params![clear.as_str(),origin,seq]).map_err(store_error)?;
+    }
     Ok(())
 }
 
@@ -3694,9 +3822,9 @@ fn record_overdue_inner(
     let (thread, seat, deadline, state, source_message, source_invitation, key, manifest_receipt) =
         match obligation {
             ObligationRef::Invitation(id) => {
-                let row: (String, String, i64, String) = tx
+                let row: (String, String, Option<i64>, String) = tx
                 .query_row(
-                    "SELECT i.thread_id, i.seat_id, i.deadline_at, CASE WHEN EXISTS(SELECT 1 FROM invitation_rejections rejection WHERE rejection.invitation_id=i.id) THEN 'rejected' WHEN c.invitation_id IS NOT NULL THEN 'cancelled' ELSE i.state END FROM invitations i LEFT JOIN invitation_cancellations c ON c.invitation_id=i.id WHERE i.id=?1",
+                    "SELECT i.thread_id, i.seat_id, CASE WHEN i.confirmation='lazy' THEN NULL ELSE i.deadline_at END, CASE WHEN EXISTS(SELECT 1 FROM invitation_rejections rejection WHERE rejection.invitation_id=i.id) THEN 'rejected' WHEN c.invitation_id IS NOT NULL THEN 'cancelled' ELSE i.state END FROM invitations i LEFT JOIN invitation_cancellations c ON c.invitation_id=i.id WHERE i.id=?1",
                     [id.as_str()],
                     |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
                 )
@@ -3704,7 +3832,7 @@ fn record_overdue_inner(
                 (
                     ThreadId::new(row.0),
                     SeatId::new(row.1),
-                    Some(row.2),
+                    row.2,
                     row.3,
                     None,
                     Some(id.clone()),
@@ -3939,8 +4067,13 @@ fn record_overdue_inner(
                 |r| r.get(0),
             )
             .map_err(store_error)?;
-        tx.execute("INSERT INTO warning_conditions(condition_kind,thread_id,condition_id,affected_seat_id,open_warning_id,opened_seq) VALUES (?1,?2,?3,?4,?5,?6)",
-            params![condition.0,thread.as_str(),condition.1,seat.as_str(),warning.as_str(),event_seq]).map_err(store_error)?;
+        let origin = source_invitation
+            .as_ref()
+            .map(|id| super::effective::invitation_originator(tx, id.as_str()))
+            .transpose()?
+            .flatten();
+        tx.execute("INSERT INTO warning_conditions(condition_kind,thread_id,condition_id,affected_seat_id,open_warning_id,opened_seq,invitation_originator_instance_id,invitation_originator_seat_id) VALUES (?1,?2,?3,?4,?5,?6,CASE WHEN ?7 IS NOT NULL THEN (SELECT instance_id FROM threads WHERE id=?2) END,?7)",
+            params![condition.0,thread.as_str(),condition.1,seat.as_str(),warning.as_str(),event_seq,origin]).map_err(store_error)?;
         enqueue_transition_warning(
             tx,
             warning.as_str(),
@@ -3951,6 +4084,10 @@ fn record_overdue_inner(
             condition.0,
             None,
         )?;
+        if let Some(origin) = origin {
+            tx.execute("INSERT OR IGNORE INTO warning_recipients(warning_id,seat_id,generation) SELECT ?1,id,?3 FROM seats WHERE id=?2 AND state!='retired'",params![warning.as_str(),origin,event_seq]).map_err(store_error)?;
+            tx.execute("INSERT INTO wake_work(seat_id,reason_bits,attention_version) SELECT id,4,1 FROM seats WHERE id=?1 AND state!='retired' ON CONFLICT(seat_id) DO UPDATE SET reason_bits=reason_bits|4,attention_version=attention_version+1",[origin]).map_err(store_error)?;
+        }
     }
     Ok(OverdueOutcome {
         warning: Some(warning),
