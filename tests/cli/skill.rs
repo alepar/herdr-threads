@@ -164,7 +164,7 @@ fn skill_file_is_a_well_formed_concise_guide() {
         "send THREAD --body",
         "herdr-threads <command> --help",
         "Ready commands (run exactly as written, in this pane):",
-        "Delegated children (platform `subagent`) never enroll",
+        "Delegated children (platform `subagent`) register as read-only subagent bindings",
         "## Sessions and the shared seat",
         "`subagent_read_only`",
         "applies to every session in the pane",
