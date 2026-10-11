@@ -5380,7 +5380,7 @@ mod live {
 
         #[test]
         fn parsed_new_tab_unsupported_refuses_before_topology_or_journal() {
-            let parsed = super::super::super::super::commands::parse_argv([
+            let mut parsed = super::super::super::super::commands::parse_argv([
                 "ht",
                 "handoff",
                 "--new-tab",
@@ -5392,7 +5392,7 @@ mod live {
             ])
             .unwrap();
             let super::super::super::super::commands::CliAction::TopologyHandoff(request) =
-                parsed.action
+                &parsed.action
             else {
                 panic!("new-tab route")
             };
@@ -5401,11 +5401,15 @@ mod live {
             let journal =
                 super::super::super::super::journal::Journal::open(temp.path().join("intents"))
                     .unwrap();
-            let result = super::super::super::super::topology_runtime::automatic_before_topology(
+            let result = super::super::super::super::resolve_automatic_new_selectors(
+                &mut parsed,
                 &NoAutomaticCapability,
                 &crate::app::SystemClock::new(),
-                || -> Result<HostTopology, RunError> {
-                    panic!("unsupported daemon must not read topology")
+                || -> Result<HostTopology, ApiError> {
+                    panic!("unsupported selector must not read topology")
+                },
+                || -> Result<Option<HostTargetId>, ApiError> {
+                    panic!("unsupported selector must not read caller pane")
                 },
             );
             assert!(matches!(
@@ -5415,6 +5419,36 @@ mod live {
                     ..
                 }))
             ));
+            let peer = AutoPeer::new();
+            let mut launcher = DownstreamLauncher::default();
+            let result =
+                super::super::super::super::topology_runtime::try_run_automatic_new_with_ports(
+                    &parsed,
+                    &peer.base.peer.identity.claim,
+                    &journal,
+                    peer.ns(),
+                    &NoAutomaticCapability,
+                    &peer,
+                    &mut launcher,
+                    &peer.base.clock,
+                    peer.base._temp.path(),
+                    None,
+                    &mut || -> Result<HostTopology, RunError> {
+                        panic!("unsupported runtime must not read topology")
+                    },
+                    &mut |_| panic!("unsupported runtime must not preflight"),
+                    &crate::protocol::output::OutputSpec::default(),
+                    &mut Vec::new(),
+                );
+            assert!(matches!(
+                result,
+                Err(RunError::Api(ApiError {
+                    code: crate::protocol::results::ErrorCode::Unsupported,
+                    ..
+                }))
+            ));
+            assert_eq!(peer.base.peer.state.lock().unwrap().native_calls, 0);
+            assert_eq!(launcher.starts, 0);
             assert!(!std::fs::read_dir(journal.root()).unwrap().any(|entry| {
                 entry
                     .unwrap()
@@ -5427,8 +5461,10 @@ mod live {
         struct AutoPeer {
             base: Fixture,
             identity: AutomaticBootstrapIdentity,
+            active_identity: std::sync::Mutex<Option<AutomaticBootstrapIdentity>>,
             reference: super::super::super::super::journal::IntentRef,
             store: crate::store::SqliteStore,
+            native_outcome_once: std::sync::Mutex<Option<&'static str>>,
             lost_child_reply: std::sync::Mutex<Option<&'static str>>,
             lost_parent_reply: std::sync::Mutex<Option<&'static str>>,
             fail_outer_complete_once: std::sync::atomic::AtomicBool,
@@ -5480,8 +5516,10 @@ mod live {
                 Self {
                     base,
                     identity,
+                    active_identity: std::sync::Mutex::new(None),
                     reference,
                     store,
+                    native_outcome_once: std::sync::Mutex::new(None),
                     lost_child_reply: std::sync::Mutex::new(None),
                     lost_parent_reply: std::sync::Mutex::new(None),
                     fail_outer_complete_once: std::sync::atomic::AtomicBool::new(false),
@@ -5491,14 +5529,20 @@ mod live {
                 &self.identity.plan.payload.handoff.namespace
             }
             fn status(&self) -> AutomaticBootstrapResult {
+                self.status_for(&self.identity)
+            }
+            fn status_for(
+                &self,
+                identity: &AutomaticBootstrapIdentity,
+            ) -> AutomaticBootstrapResult {
                 let request = AutomaticBootstrapMutation {
-                    identity: self.identity.clone(),
+                    identity: identity.clone(),
                     action: AutomaticBootstrapAction::Status,
                 };
                 let CommandResult::AutomaticBootstrap(status) = self
                     .store
                     .automatic_bootstrap_query(
-                        self.ns(),
+                        &identity.plan.payload.handoff.namespace,
                         &request,
                         &super::super::super::super::cooperative_budget(&self.base.clock),
                     )
@@ -5508,13 +5552,13 @@ mod live {
                 };
                 *status
             }
-            fn guard(&self) -> BootstrapAttachmentGuard {
+            fn guard_for(&self, identity: &AutomaticBootstrapIdentity) -> BootstrapAttachmentGuard {
                 let (_context, observation, admission, _budget) =
                     scoped_peer_current(&self.base.peer);
                 BootstrapAttachmentGuard::try_new(
                     &crate::protocol::commands::ResolveSeat {
                         target: observation.target.clone(),
-                        operation: self.identity.plan.payload.keys.resolve.clone(),
+                        operation: identity.plan.payload.keys.resolve.clone(),
                     },
                     BootstrapPaneObservation::try_new(
                         observation,
@@ -5571,7 +5615,13 @@ mod live {
                         },
                     )),
                     Command::AutomaticBootstrap(request) => {
-                        assert_eq!(request.identity, self.identity);
+                        {
+                            let mut active = self.active_identity.lock().unwrap();
+                            assert_eq!(
+                                active.get_or_insert_with(|| request.identity.clone()),
+                                &request.identity
+                            );
+                        }
                         let role = match &request.action {
                             AutomaticBootstrapAction::Status => "auto_status",
                             AutomaticBootstrapAction::Begin => "auto_begin",
@@ -5591,7 +5641,7 @@ mod live {
                         self.base.peer.state.lock().unwrap().calls.push(role);
                         if matches!(request.action, AutomaticBootstrapAction::Status) {
                             return self.store.automatic_bootstrap_query(
-                                self.ns(),
+                                &request.identity.plan.payload.handoff.namespace,
                                 &request,
                                 budget,
                             );
@@ -5604,7 +5654,7 @@ mod live {
                             )
                             .unwrap();
                             let result = self.store.automatic_bootstrap_recover(
-                                self.ns(),
+                                &request.identity.plan.payload.handoff.namespace,
                                 &request,
                                 &actor,
                                 if matches!(
@@ -5615,7 +5665,7 @@ mod live {
                                         ..
                                     }
                                 ) {
-                                    Some(self.guard())
+                                    Some(self.guard_for(&request.identity))
                                 } else {
                                     None
                                 },
@@ -5632,9 +5682,9 @@ mod live {
                         }
                         if matches!(request.action, AutomaticBootstrapAction::CheckStart) {
                             return self.store.automatic_bootstrap_check_start(
-                                self.ns(),
+                                &request.identity.plan.payload.handoff.namespace,
                                 &request,
-                                self.guard(),
+                                self.guard_for(&request.identity),
                                 budget,
                             );
                         }
@@ -5648,7 +5698,7 @@ mod live {
                                 ));
                             }
                             return self.store.automatic_bootstrap_complete(
-                                self.ns(),
+                                &request.identity.plan.payload.handoff.namespace,
                                 &request,
                                 budget,
                             );
@@ -5658,7 +5708,7 @@ mod live {
                             AutomaticBootstrapAction::Resolve { .. }
                                 | AutomaticBootstrapAction::Attach(_)
                         ) {
-                            Some(self.guard())
+                            Some(self.guard_for(&request.identity))
                         } else {
                             None
                         };
@@ -5671,7 +5721,7 @@ mod live {
                             budget,
                         )?;
                         let result = self.store.automatic_bootstrap_mutate(
-                            self.ns(),
+                            &request.identity.plan.payload.handoff.namespace,
                             &request,
                             permit,
                             guard,
@@ -5687,7 +5737,13 @@ mod live {
                         Ok(result)
                     }
                     Command::AutomaticHandoffDelivery(request) => {
-                        let status = self.status();
+                        let identity = self
+                            .active_identity
+                            .lock()
+                            .unwrap()
+                            .clone()
+                            .expect("active parent");
+                        let status = self.status_for(&identity);
                         let attachment = status
                             .attachment
                             .as_ref()
@@ -5756,6 +5812,35 @@ mod live {
                 }
             }
         }
+        enum OperatorTestClient<'a> {
+            Peer(&'a AutoPeer),
+            Unsupported,
+        }
+        impl LocalClient for OperatorTestClient<'_> {
+            fn call_with_output(
+                &self,
+                command: Command,
+                output: &crate::protocol::output::OutputSpec,
+                budget: &CallBudget,
+            ) -> Result<CommandResult, ApiError> {
+                match self {
+                    Self::Peer(peer) => peer.call_with_output(command, output, budget),
+                    Self::Unsupported => {
+                        NoAutomaticCapability.call_with_output(command, output, budget)
+                    }
+                }
+            }
+            fn call(
+                &self,
+                command: Command,
+                budget: &CallBudget,
+            ) -> Result<CommandResult, ApiError> {
+                match self {
+                    Self::Peer(peer) => peer.call(command, budget),
+                    Self::Unsupported => NoAutomaticCapability.call(command, budget),
+                }
+            }
+        }
         impl CreateTabPort for AutoPeer {
             fn create_tab(
                 &self,
@@ -5765,9 +5850,29 @@ mod live {
                 let mut state = self.base.peer.state.lock().unwrap();
                 state.calls.push("auto_native_create");
                 state.native_calls += 1;
-                assert_eq!(request.workspace, self.identity.plan.payload.workspace);
+                let identity = self
+                    .active_identity
+                    .lock()
+                    .unwrap()
+                    .clone()
+                    .expect("active parent");
+                assert_eq!(request.workspace, identity.plan.payload.workspace);
                 assert_eq!(request.expected_witness, self.base.witness);
                 drop(state);
+                match self.native_outcome_once.lock().unwrap().take() {
+                    Some("zero") => {
+                        return CreateTabOutcome::NotSubmitted(ApiError::host_unavailable(
+                            "typed zero submission",
+                        ));
+                    }
+                    Some("unknown") => {
+                        return CreateTabOutcome::OutcomeUnknown(ApiError::unknown_outcome(
+                            "typed unknown submission",
+                        ));
+                    }
+                    None => {}
+                    _ => panic!("invalid native outcome fixture"),
+                }
                 let mut created = crate::protocol::handoff::topology_contract_tests::created();
                 created.correlation = request.correlation.clone();
                 created.witness = request.expected_witness.clone();
@@ -5931,6 +6036,162 @@ mod live {
         }
 
         #[test]
+        fn parsed_operator_dispatch_classifies_before_connect_and_replays_frozen_decision() {
+            let peer = AutoPeer::new();
+            peer.seed_unknown_creation();
+            let selected = crate::daemon::paths::RuntimeContext::explicit(
+                peer.ns().state_dir.clone(),
+                peer.ns().host_endpoint.clone(),
+                None,
+            )
+            .unwrap();
+            let argv = vec![
+                "ht".to_owned(),
+                "human".to_owned(),
+                "handoff".to_owned(),
+                "recover".to_owned(),
+                peer.reference.recovery_ref(),
+                "--attempt".to_owned(),
+                "1".to_owned(),
+                "--not-created".to_owned(),
+            ];
+            let parsed = super::super::super::super::commands::parse_argv(argv).unwrap();
+            use super::super::super::super::topology_runtime::try_run_automatic_operator_with_ports as dispatch;
+            let mut wrong_actor = parsed.clone();
+            wrong_actor.actor = super::super::super::super::actor_route::InvocationActor::Agent;
+            assert!(
+                dispatch(
+                    &wrong_actor,
+                    &selected,
+                    &peer.base.journal,
+                    &peer.base.clock,
+                    &mut Vec::new(),
+                    &mut || -> Result<(HandoffNamespace, Box<dyn LocalClient>), RunError> {
+                        panic!("actor check before connect")
+                    },
+                    &mut |_, _| panic!("no host observation"),
+                )
+                .is_err()
+            );
+            let mut wrong_host = selected.clone();
+            wrong_host.host_endpoint = peer.base._temp.path().join("wrong-host");
+            assert!(
+                dispatch(
+                    &parsed,
+                    &wrong_host,
+                    &peer.base.journal,
+                    &peer.base.clock,
+                    &mut Vec::new(),
+                    &mut || -> Result<(HandoffNamespace, Box<dyn LocalClient>), RunError> {
+                        panic!("origin host check before connect")
+                    },
+                    &mut |_, _| panic!("no host observation"),
+                )
+                .is_err()
+            );
+            let intent_count = || {
+                std::fs::read_dir(peer.base.journal.root())
+                    .unwrap()
+                    .filter(|entry| {
+                        entry
+                            .as_ref()
+                            .unwrap()
+                            .path()
+                            .extension()
+                            .is_some_and(|ext| ext == "intent")
+                    })
+                    .count()
+            };
+            let before = intent_count();
+            assert!(
+                dispatch(
+                    &parsed,
+                    &selected,
+                    &peer.base.journal,
+                    &peer.base.clock,
+                    &mut Vec::new(),
+                    &mut || Ok((
+                        peer.ns().clone(),
+                        Box::new(OperatorTestClient::Unsupported) as Box<dyn LocalClient>
+                    )),
+                    &mut |_, _| panic!("unsupported before native observation"),
+                )
+                .is_err()
+            );
+            assert_eq!(intent_count(), before);
+            *peer.lost_parent_reply.lock().unwrap() = Some("auto_recover");
+            let mut output = Vec::new();
+            assert!(
+                dispatch(
+                    &parsed,
+                    &selected,
+                    &peer.base.journal,
+                    &peer.base.clock,
+                    &mut output,
+                    &mut || Ok((
+                        peer.ns().clone(),
+                        Box::new(OperatorTestClient::Peer(&peer)) as Box<dyn LocalClient + '_>
+                    )),
+                    &mut |_, _| panic!("not-created assertion needs no host observation"),
+                )
+                .is_err()
+            );
+            assert_eq!(peer.status().attempt.get(), 2);
+            assert_eq!(intent_count(), before + 1);
+            let operator_ref = format!("local:{}", peer.reference.ordinal + 1);
+            let wrong_original = super::super::super::super::commands::parse_argv([
+                "ht",
+                "human",
+                "handoff",
+                "recover",
+                operator_ref.as_str(),
+                "--attempt",
+                "1",
+                "--not-created",
+            ])
+            .unwrap();
+            assert!(
+                dispatch(
+                    &wrong_original,
+                    &selected,
+                    &peer.base.journal,
+                    &peer.base.clock,
+                    &mut Vec::new(),
+                    &mut || -> Result<(HandoffNamespace, Box<dyn LocalClient>), RunError> {
+                        panic!("operator original must refuse before connection")
+                    },
+                    &mut |_, _| panic!("operator original has no pane observation"),
+                )
+                .is_err()
+            );
+            let retry = super::super::super::super::commands::parse_argv([
+                "ht",
+                "human",
+                "retry",
+                operator_ref.as_str(),
+            ])
+            .unwrap();
+            assert!(
+                dispatch(
+                    &retry,
+                    &selected,
+                    &peer.base.journal,
+                    &peer.base.clock,
+                    &mut output,
+                    &mut || Ok((
+                        peer.ns().clone(),
+                        Box::new(OperatorTestClient::Peer(&peer)) as Box<dyn LocalClient + '_>
+                    )),
+                    &mut |_, _| panic!("frozen retry never re-observes pane"),
+                )
+                .unwrap()
+            );
+            assert_eq!(peer.status().attempt.get(), 2);
+            assert_eq!(intent_count(), before);
+            assert!(!output.is_empty());
+        }
+
+        #[test]
         fn parsed_new_tab_automatic_route_creates_one_pair_and_starts_once() {
             let peer = AutoPeer::new();
             let (messages_before, invitations_before) = {
@@ -6010,6 +6271,207 @@ mod live {
                     .unwrap(),
                 invitations_before + 1
             );
+        }
+
+        #[test]
+        fn parsed_new_tab_selector_enters_public_runtime_dispatch() {
+            let peer = AutoPeer::new();
+            let mut parsed = super::super::super::super::commands::parse_argv([
+                "ht",
+                "handoff",
+                "--new-tab",
+                "new peer",
+                "--space",
+                "work",
+                "--kind",
+                "codex",
+                "--",
+                "literal work",
+            ])
+            .unwrap();
+            let before = {
+                let state = peer.base.peer.state.lock().unwrap();
+                (
+                    state
+                        .db
+                        .query_row(
+                            "SELECT count(*) FROM messages WHERE kind='ordinary'",
+                            [],
+                            |r| r.get::<_, i64>(0),
+                        )
+                        .unwrap(),
+                    state
+                        .db
+                        .query_row("SELECT count(*) FROM invitations", [], |r| {
+                            r.get::<_, i64>(0)
+                        })
+                        .unwrap(),
+                )
+            };
+            super::super::super::super::resolve_automatic_new_selectors(
+                &mut parsed,
+                &peer,
+                &peer.base.clock,
+                || Ok(topology()),
+                || -> Result<Option<HostTargetId>, ApiError> {
+                    panic!("explicit workspace needs no caller pane")
+                },
+            )
+            .unwrap();
+            let super::super::super::super::commands::CliAction::TopologyHandoff(request) =
+                &parsed.action
+            else {
+                panic!("parsed route")
+            };
+            assert!(request.automatic && !request.existing);
+            assert_eq!(request.selector.space.as_deref(), Some("work"));
+            let mut launcher = DownstreamLauncher::default();
+            let mut output = Vec::new();
+            assert!(
+                super::super::super::super::topology_runtime::try_run_automatic_new_with_ports(
+                    &parsed,
+                    &peer.base.peer.identity.claim,
+                    &peer.base.journal,
+                    peer.ns(),
+                    &peer,
+                    &peer,
+                    &mut launcher,
+                    &peer.base.clock,
+                    peer.base._temp.path(),
+                    None,
+                    &mut || Ok(topology()),
+                    &mut |_| Ok(peer.base.witness.clone()),
+                    &crate::protocol::output::OutputSpec {
+                        format: crate::protocol::output::OutputFormat::Json,
+                        ..Default::default()
+                    },
+                    &mut output,
+                )
+                .unwrap()
+            );
+            let active = peer
+                .active_identity
+                .lock()
+                .unwrap()
+                .clone()
+                .expect("new parent");
+            assert_ne!(active, peer.identity);
+            assert_eq!(active.plan.payload.workspace.as_str(), "w1");
+            assert_eq!(peer.status_for(&active).state, BootstrapState::Completed);
+            assert_eq!(peer.base.peer.state.lock().unwrap().native_calls, 1);
+            assert_eq!(launcher.starts, 1);
+            let state = peer.base.peer.state.lock().unwrap();
+            assert_eq!(
+                state
+                    .db
+                    .query_row(
+                        "SELECT count(*) FROM messages WHERE kind='ordinary'",
+                        [],
+                        |r| r.get::<_, i64>(0)
+                    )
+                    .unwrap(),
+                before.0 + 1
+            );
+            assert_eq!(
+                state
+                    .db
+                    .query_row("SELECT count(*) FROM invitations", [], |r| r
+                        .get::<_, i64>(0))
+                    .unwrap(),
+                before.1 + 1
+            );
+            let selected = peer.status_for(&active).thread.expect("paired thread");
+            assert_eq!(
+                state
+                    .db
+                    .query_row(
+                        "SELECT count(*) FROM direct_threads WHERE thread_id=?1",
+                        [selected.as_str()],
+                        |r| r.get::<_, i64>(0)
+                    )
+                    .unwrap(),
+                1
+            );
+            assert!(!output.is_empty());
+        }
+
+        #[test]
+        fn typed_native_zero_advances_attempt_but_unknown_stays_fenced() {
+            let zero = AutoPeer::new();
+            *zero.native_outcome_once.lock().unwrap() = Some("zero");
+            let mut launcher = DownstreamLauncher::default();
+            let output = crate::protocol::output::OutputSpec {
+                format: crate::protocol::output::OutputFormat::Json,
+                ..Default::default()
+            };
+            let run_zero = |launcher: &mut DownstreamLauncher| {
+                resume_automatic_to_writer(
+                    &zero.base.journal,
+                    &zero.reference,
+                    super::super::super::super::actor_route::InvocationActor::Agent,
+                    zero.ns(),
+                    &zero,
+                    &zero,
+                    launcher,
+                    &zero.base.clock,
+                    BootstrapSubmissionInputs {
+                        witness: &zero.base.witness,
+                        context: &zero.base.context,
+                    },
+                    &output,
+                    &mut Vec::new(),
+                )
+            };
+            assert!(run_zero(&mut launcher).is_err());
+            assert_eq!(zero.status().attempt.get(), 2);
+            assert_eq!(zero.status().state, BootstrapState::Prepared);
+            assert_eq!(zero.base.peer.state.lock().unwrap().native_calls, 1);
+            assert_eq!(launcher.starts, 0);
+            assert_eq!(
+                run_zero(&mut launcher).unwrap().state,
+                BootstrapState::Completed
+            );
+            assert_eq!(zero.base.peer.state.lock().unwrap().native_calls, 2);
+            assert_eq!(launcher.starts, 1);
+
+            let unknown = AutoPeer::new();
+            *unknown.native_outcome_once.lock().unwrap() = Some("unknown");
+            let mut launcher = DownstreamLauncher::default();
+            let mut pending = Vec::new();
+            for _ in 0..2 {
+                let error = resume_automatic_to_writer(
+                    &unknown.base.journal,
+                    &unknown.reference,
+                    super::super::super::super::actor_route::InvocationActor::Agent,
+                    unknown.ns(),
+                    &unknown,
+                    &unknown,
+                    &mut launcher,
+                    &unknown.base.clock,
+                    BootstrapSubmissionInputs {
+                        witness: &unknown.base.witness,
+                        context: &unknown.base.context,
+                    },
+                    &output,
+                    &mut pending,
+                )
+                .unwrap_err();
+                assert!(matches!(
+                    error,
+                    RunError::Api(ApiError {
+                        code: crate::protocol::results::ErrorCode::UnknownOutcome,
+                        ..
+                    })
+                ));
+            }
+            assert_eq!(unknown.status().attempt.get(), 1);
+            assert_eq!(unknown.status().state, BootstrapState::PossibleCreation);
+            assert_eq!(unknown.base.peer.state.lock().unwrap().native_calls, 1);
+            assert_eq!(launcher.starts, 0);
+            let report: serde_json::Value =
+                serde_json::from_slice(pending.split(|byte| *byte == b'\n').next().unwrap())
+                    .unwrap();
+            assert_eq!(report["bootstrap"]["outcome"], "creation_unknown");
         }
 
         #[test]
@@ -6377,6 +6839,7 @@ mod live {
                 unknown: true,
                 ..Default::default()
             };
+            let mut pending = Vec::new();
             {
                 let mut run = || {
                     resume_automatic_to_writer(
@@ -6396,7 +6859,7 @@ mod live {
                             format: crate::protocol::output::OutputFormat::Json,
                             ..Default::default()
                         },
-                        &mut Vec::new(),
+                        &mut pending,
                     )
                 };
                 assert!(matches!(
@@ -6414,6 +6877,21 @@ mod live {
                     }))
                 ));
             }
+            let report: serde_json::Value =
+                serde_json::from_slice(pending.split(|byte| *byte == b'\n').next().unwrap())
+                    .unwrap();
+            assert_eq!(report["bootstrap"]["outcome"], "possible_start");
+            assert_eq!(report["bootstrap"]["possible_start"], true);
+            assert_eq!(
+                report["bootstrap"]["recovery_ref"],
+                peer.reference.recovery_ref()
+            );
+            assert!(
+                report["bootstrap"]["guidance"]
+                    .as_str()
+                    .unwrap()
+                    .contains("No topology cleanup")
+            );
             assert_eq!(peer.status().state, BootstrapState::Attached);
             assert_eq!(peer.base.peer.state.lock().unwrap().native_calls, 1);
             assert_eq!(launcher.starts, 1);

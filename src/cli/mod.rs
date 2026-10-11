@@ -364,7 +364,7 @@ where
     })
 }
 
-fn resolve_automatic_new_selectors<C: LocalClient + ?Sized>(
+pub(crate) fn resolve_automatic_new_selectors<C: LocalClient + ?Sized>(
     parsed: &mut commands::ParsedCli,
     client: &C,
     clock: &dyn Clock,
