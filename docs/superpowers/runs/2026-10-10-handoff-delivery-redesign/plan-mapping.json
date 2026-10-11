@@ -301,7 +301,13 @@
       "src/host/native.rs",
       "tests/contracts.rs",
       "TRUST-POLICY.md",
-      "src/harness/hermes/runtime.rs"
+      "src/harness/hermes/runtime.rs",
+      "tests/cli/cooperative.rs",
+      "tests/store/topology_attachment_guard.rs",
+      "src/harness/registry.rs",
+      "migrations/0035_receipt_warning_origins.sql",
+      "src/store/receipts.rs",
+      "tests/store/receipts.rs"
     ]
   },
   {
