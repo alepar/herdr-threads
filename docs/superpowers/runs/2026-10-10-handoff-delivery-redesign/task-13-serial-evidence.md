@@ -385,3 +385,19 @@ All39 SQL blobs equal precompositionA, candidate after main43, and rebasedB. No 
 ## Gate and completion pending
 
 Await coordinator lease/validated warm source transfer and fresh scoped composition approval as needed. Full combined B gate, merge and closure will be appended only after execution. Root integration/main untouched; no worker reports/progress/run fields staged or modified.
+
+## Executed combined B gate and candidate promotion
+
+The preparation-only sections above are historical. Fresh main43 seam review returned Spec CLEAN / Quality CLEAN at cdbf3c37e873a2cb571c098450602a53f81a6185. Coordinator then restored exact B into the warm checkout and granted the sole Cargo lease.
+
+- Gate source: `/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2`, branch `task-ht-0lo.8.2`, clean HEAD `cdbf3c37e873a2cb571c098450602a53f81a6185`, tree `099a07fa165aab751eaea8ce246d755421368439`.
+- Provenance7 records source-content SHA256 `da2cbb3f87a266939eacba036fd14e9f649ba71840e11b2264fa397dc9839bdd`, 487 source-preserving freshness invalidations and all seven targets resolving to this checkout. Gate log actually reports Checking herdr-threads v0.8.0 in this exact warm checkout.
+- Exact command environment: `CARGO_BUILD_JOBS=4 CARGO_TARGET_DIR=/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target`.
+- `nice cargo clippy --locked --all-targets --all-features -- -D warnings`: session49443, exit0, no diagnostics; Cargo profile37.80s, measured real37.95s/user34.66s/sys2.85s. Full timed log `/private/tmp/task-13-serial-clippy.log`.
+- `cargo fmt --check`: exit0, real5.42s/user4.66s/sys0.16s. Full timed log `/private/tmp/task-13-serial-fmt.log`.
+- `scripts/check-harness-neutral`: exit0, zero violations,85 allowlisted(frozen-wire49/history2/registration34),51 entries; real1.98s/user1.32s/sys0.09s. Full timed log `/private/tmp/task-13-serial-neutral.log`.
+- No tests, default-feature check or full suite. All gates ran with frozen exact B source; no new target or source edits. Cargo lane released once all gate commands completed.
+
+After rechecking expected clean candidate5a518f and frozen clean sourcecdbf, no-ff merge `3ad07776ca21b5a8aea0cd624447142e536e0d40` promoted B into the separate candidate ONLY. Parents `5a518fafea1bf66fa39819c21ebf7f00e2bd40a3` and `cdbf3c37e873a2cb571c098450602a53f81a6185`; merge tree `099a07fa165aab751eaea8ce246d755421368439` equals exact gated source. Truthful `Outside-adapter: *` trailer covers the33-path composition. Candidate clean afterward.
+
+Fresh scoped ps found zero warm-source-checkout processes; all gate sessions drained. Coordinator notified immediately that D may reclaim the quiescent warm lease before this evidence append. Source workspace/cache retained; no source branch switch or cleanup performed by this operator. No bead closure: explicitly held for coordinator accounting confirmation. Root integration, actual main and coordinator progress/run fields untouched.
