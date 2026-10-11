@@ -292,6 +292,64 @@ fn a_plain_call_only_binding_neither_supersedes_nor_is_superseded() {
     assert!(fx.connected(&newer));
 }
 
+/// What a plain call carrying `fingerprint` does to a disconnected binding (the store's
+/// plain-call reconnect primitive; the rig has no resolver).
+fn plain_reconnect(fx: &Fx, binding: &str, fingerprint: (u32, u64)) {
+    let reconnected = crate::store::bindings::connect(
+        &fx.raw(),
+        &crate::protocol::ids::BindingId::new(binding),
+        Some(crate::protocol::authority::LivenessFingerprint {
+            pid: fingerprint.0,
+            start: fingerprint.1,
+        }),
+        crate::store::bindings::ConnectTrigger::PlainCall,
+        UtcMillis(6_000),
+    )
+    .unwrap();
+    assert!(reconnected, "the binding was disconnected");
+}
+
+#[test]
+fn a_stale_callers_reconnect_of_a_superseded_binding_is_superseded_again() {
+    let fx = Fx::new("liveness-stale-reconnect");
+    fx.table.set(100, 5);
+    let older = fx.bind("s", "claude", "A", Some((100, 5)), 10);
+    let newer = fx.bind("s", "claude", "B", Some((100, 5)), 20);
+    fx.worker.pass(&budget()).unwrap();
+    assert_eq!(
+        fx.state(&older),
+        ("disconnected".into(), Some("superseded".into()))
+    );
+    plain_reconnect(&fx, &older, (100, 5));
+    assert!(fx.connected(&older) && fx.connected(&newer));
+    // The next pass keeps the most recent lifecycle claimer and supersedes the stale one again.
+    fx.worker.pass(&budget()).unwrap();
+    assert_eq!(
+        fx.state(&older),
+        ("disconnected".into(), Some("superseded".into()))
+    );
+    assert!(fx.connected(&newer), "the supersessor never flaps");
+}
+
+#[test]
+fn a_dead_fingerprint_reconnect_is_disconnected_on_the_next_pass() {
+    let fx = Fx::new("liveness-dead-reconnect");
+    // The fingerprint's process is absent from the table.
+    let b = fx.bind("s", "claude", "A", Some((100, 5)), 10);
+    fx.worker.pass(&budget()).unwrap();
+    assert_eq!(
+        fx.state(&b),
+        ("disconnected".into(), Some("liveness_process_exit".into()))
+    );
+    plain_reconnect(&fx, &b, (100, 5));
+    assert!(fx.connected(&b));
+    fx.worker.pass(&budget()).unwrap();
+    assert_eq!(
+        fx.state(&b),
+        ("disconnected".into(), Some("liveness_process_exit".into()))
+    );
+}
+
 #[test]
 fn same_fingerprint_tie_goes_to_the_later_enrolled_binding() {
     let fx = Fx::new("liveness-tie");

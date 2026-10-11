@@ -432,7 +432,7 @@ fn ack_impl(
                     ));
                 }
                 let exact: bool = tx.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id AND b.generation=s.generation WHERE s.id=?1 AND b.generation=?2 AND b.harness=?3 AND b.native_session=?4 AND b.execution_id=?5 AND b.target_id=?6 AND b.ended_at IS NULL AND b.role='top_level' AND b.agent_id='' AND b.liveness='connected')",
+                    "SELECT EXISTS(SELECT 1 FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id AND b.generation=s.generation WHERE s.id=?1 AND b.generation=?2 AND b.harness=?3 AND b.native_session=?4 AND b.execution_id=?5 AND b.target_id=?6 AND b.ended_at IS NULL AND b.role='top_level' AND b.agent_id='')",
                     params![seat.as_str(),i64::try_from(request.claim.binding_generation).map_err(|_| api_error(ErrorCode::CallerUnverified,"binding generation exceeds storage range"))?,request.claim.harness.as_str(),request.claim.native_session.as_str(),request.claim.execution.as_str(),request.claim.target.as_str()],|r|r.get(0)
                 ).map_err(store_error)?;
                 if !exact {
@@ -482,12 +482,14 @@ fn ack_impl(
                 &ObligationRef::CheckIn(seat.clone()),
                 &digest,
             )?;
-            // Any connected top-level binding of the seat may settle (spec §2 ACK); a
-            // disconnected one is refused like any stale-context ACK.
+            // Any connected top-level binding of the seat may settle (spec §2 ACK). A call with
+            // its fingerprint has already reconnected its binding in the resolver; a
+            // disconnected binding that this call could not reconnect (no liveness fingerprint)
+            // is refused like a stale-context ACK.
             if !actor.binding_connected {
                 return Err(api_error(
                     ErrorCode::CallerUnverified,
-                    "cooperative occupant context changed",
+                    "a disconnected binding reconnects only on a call that carries its liveness fingerprint",
                 ));
             }
             let mut newly = Vec::new();

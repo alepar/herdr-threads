@@ -758,8 +758,9 @@ fn config1_claude_main_and_two_subagents() {
     let _ = peer_seat;
 
     // /clear in the main pane: the new session's SessionStart supersedes the old binding (same
-    // harness process). A stale caller that still carries the pre-/clear session id is served as
-    // the old, disconnected binding and never reconnects it.
+    // harness process). A stale caller that still carries the pre-/clear session id reconnects
+    // the old binding (any call the binding makes) without disconnecting the live one; the
+    // liveness worker's same-process rule then disconnects the old binding `superseded` again.
     let process = smoke.binding(&seat, "claude", "sess-main", "");
     let cleared = Agent::claude("sess-clear", &pane).in_process_of(&process);
     let out = smoke.hook(&cleared, &claude_start("sess-clear", "clear"));
@@ -773,19 +774,21 @@ fn config1_claude_main_and_two_subagents() {
     let live = smoke.binding(&seat, "claude", "sess-clear", "");
     assert_eq!(live.liveness, "connected", "{live:?}");
     let stale = Agent::claude("sess-main", &pane).in_process_of(&process);
-    let served = smoke.cli(&stale, &["thread", "list"]);
+    let served = smoke.cli(&stale, &["thread", "create", "--topic", "stale caller"]);
     assert_eq!(served.code, 0, "{}", served.text());
-    let after = smoke.all_bindings(&seat);
-    let old_after = after.iter().find(|b| b.id == top.id).unwrap();
-    assert_eq!(
-        old_after.liveness, "disconnected",
-        "never reconnected by a touch"
-    );
-    assert_eq!(old_after.reason, old.reason);
-    assert_eq!(
-        after.iter().find(|b| b.id == live.id).unwrap().liveness,
-        "connected",
-        "the live binding does not flap"
+    wait_until(
+        "the stale binding to be superseded again",
+        Duration::from_secs(30),
+        || {
+            let after = smoke.all_bindings(&seat);
+            assert_eq!(
+                after.iter().find(|b| b.id == live.id).unwrap().liveness,
+                "connected",
+                "the live binding does not flap"
+            );
+            let old_after = after.iter().find(|b| b.id == top.id).unwrap();
+            old_after.liveness == "disconnected" && old_after.reason == old.reason
+        },
     );
 }
 

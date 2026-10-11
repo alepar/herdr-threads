@@ -3592,8 +3592,9 @@ fn ack_after_frozen_deadline_during_extension_records_no_late_warning() {
 // noncooperative or unknown canonical binding. Refusal leaves history open.
 #[test]
 fn adapter_display_ack_rechecks_exact_binding_and_cooperative_provenance() {
+    // A disconnected binding is not here: a fingerprinted display ACK reconnects it (ht-54r.81;
+    // see `display_ack_reconnects_a_disconnected_plain_call_enrolled_binding`).
     for change in [
-        "liveness='disconnected',disconnected_at=1",
         "role='subagent',agent_id='x'",
         "harness='future_agent'",
         "native_session='different'",
@@ -3810,12 +3811,40 @@ mod binding_attribution {
     }
 
     #[test]
-    fn disconnected_binding_ack_is_refused_and_leaves_the_obligation_pending() {
+    fn disconnected_binding_ack_reconnects_and_settles() {
+        let (context, mut conn, _) = setup();
+        let (_first, second) = two_bindings_on_b(&conn);
+        conn.execute("UPDATE occupant_bindings SET liveness='disconnected',disconnected_at=5,disconnect_reason='liveness_process_exit' WHERE native_session='nb2'", []).unwrap();
+        let id = publish_to_b(&context, &mut conn, "send-1");
+        // `claim_of` carries a liveness fingerprint, so the ACK reconnects the binding first.
+        let b = claim_of("nb2", B2_EXECUTION);
+        ack_as(&context, &mut conn, b, vec![id.clone()], "ack-b", false).unwrap();
+        assert_eq!(
+            crate::store::effective::effective_receipt(&conn, id.as_str(), "b")
+                .unwrap()
+                .unwrap()
+                .state,
+            crate::store::effective::EffectiveReceiptState::Acknowledged
+        );
+        assert_eq!(ack_binding(&conn, &id), Some(second));
+        let liveness: String = conn
+            .query_row(
+                "SELECT liveness FROM occupant_bindings WHERE native_session='nb2'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(liveness, "connected");
+    }
+
+    #[test]
+    fn fingerprintless_ack_of_a_disconnected_binding_is_refused() {
         let (context, mut conn, _) = setup();
         let (_first, _second) = two_bindings_on_b(&conn);
-        conn.execute("UPDATE occupant_bindings SET liveness='disconnected',disconnected_at=5,disconnect_reason='process_exit' WHERE native_session='nb2'", []).unwrap();
+        conn.execute("UPDATE occupant_bindings SET liveness='disconnected',disconnected_at=5,disconnect_reason='liveness_process_exit' WHERE native_session='nb2'", []).unwrap();
         let id = publish_to_b(&context, &mut conn, "send-1");
-        let b = claim_of("nb2", B2_EXECUTION);
+        let mut b = claim_of("nb2", B2_EXECUTION);
+        b.liveness = None;
         let error = ack_as(&context, &mut conn, b, vec![id.clone()], "ack-b", false).unwrap_err();
         assert_eq!(error.code, ErrorCode::CallerUnverified);
         assert_eq!(
@@ -3834,13 +3863,26 @@ fn display_ack_for_b(
     context: &StoreContext,
     conn: &mut Connection,
 ) -> Result<crate::protocol::results::CommandResult, crate::protocol::results::ApiError> {
+    display_ack_for_b_with(
+        context,
+        conn,
+        Some(crate::protocol::authority::LivenessFingerprint::TEST),
+    )
+}
+
+fn display_ack_for_b_with(
+    context: &StoreContext,
+    conn: &mut Connection,
+    liveness: Option<crate::protocol::authority::LivenessFingerprint>,
+) -> Result<crate::protocol::results::CommandResult, crate::protocol::results::ApiError> {
     conn.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq) VALUES ('displayed','i','t',1,'ordinary','a','read body',0,2)", []).unwrap();
     conn.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('displayed','t','b','pending',300000)", []).unwrap();
     conn.execute("UPDATE threads SET next_sequence=2 WHERE id='t'", [])
         .unwrap();
     conn.execute("UPDATE host_instances SET decision_seq=2 WHERE id='i'", [])
         .unwrap();
-    let request = ack_request(vec![MessageId::new("displayed")]);
+    let mut request = ack_request(vec![MessageId::new("displayed")]);
+    request.claim.liveness = liveness;
     let digest =
         crate::store::schema::canonical_digest(&receipts::ack_displayed_payload(&request)).unwrap();
     let mut grant = cooperative_permit(
@@ -3888,10 +3930,26 @@ fn display_ack_settles_for_a_plain_call_enrolled_binding() {
 }
 
 #[test]
-fn display_ack_refused_for_a_disconnected_plain_call_enrolled_binding() {
+fn display_ack_reconnects_a_disconnected_plain_call_enrolled_binding() {
     let (context, mut conn, _) = setup();
     conn.execute("UPDATE occupant_bindings SET observation_provenance='cooperative_env_session',liveness='disconnected',disconnected_at=1,registered_at=0 WHERE seat_id='b'", []).unwrap();
-    let error = display_ack_for_b(&context, &mut conn).unwrap_err();
+    display_ack_for_b(&context, &mut conn).unwrap();
+    assert_eq!(receipt_state_b(&conn), "acked");
+    let liveness: String = conn
+        .query_row(
+            "SELECT liveness FROM occupant_bindings WHERE seat_id='b'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(liveness, "connected");
+}
+
+#[test]
+fn fingerprintless_display_ack_of_a_disconnected_binding_is_refused() {
+    let (context, mut conn, _) = setup();
+    conn.execute("UPDATE occupant_bindings SET observation_provenance='cooperative_env_session',liveness='disconnected',disconnected_at=1,registered_at=0 WHERE seat_id='b'", []).unwrap();
+    let error = display_ack_for_b_with(&context, &mut conn, None).unwrap_err();
     assert_eq!(
         error.code,
         crate::protocol::results::ErrorCode::CallerUnverified

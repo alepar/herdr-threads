@@ -127,10 +127,11 @@ fn two_agents_in_one_pane_settle_one_obligation_once_and_a_subagent_reads_only()
 }
 
 // Kills: a one-shot that is disconnected with another reason or provenance, a disconnect that ends
-// the binding, a plain call from the finished one-shot's session that reconnects it, a send whose
-// binding is lost with the process, and a one-shot exit that disturbs the pane's live session.
+// the binding, a later call of the finished one-shot's session that does not reconnect it (or one
+// that leaves it connected after its own process is gone), a send whose binding is lost with the
+// process, and a one-shot exit that disturbs the pane's live session.
 #[test]
-fn a_one_shot_adds_sends_exits_and_stays_disconnected() {
+fn a_one_shot_adds_sends_exits_and_a_later_call_reconnects_until_its_process_exits() {
     let Some(mut smoke) = Smoke::new("e2e_one_shot_exits") else {
         return;
     };
@@ -166,6 +167,17 @@ fn a_one_shot_adds_sends_exits_and_stays_disconnected() {
         || smoke.binding(&seat, "claude", "sess-p", "").liveness == "disconnected",
     );
     let gone = smoke.binding(&seat, "claude", "sess-p", "");
+    let disconnected_at = |smoke: &Smoke| -> Option<i64> {
+        smoke
+            .db()
+            .query_row(
+                "SELECT disconnected_at FROM occupant_bindings WHERE binding_id=?1",
+                [&binding.id],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    let first_disconnect = disconnected_at(&smoke).expect("a disconnected row has a time");
     assert_eq!(gone.reason.as_deref(), Some("liveness_process_exit"));
     assert!(!gone.ended, "disconnection never ends a binding: {gone:?}");
     assert_eq!(
@@ -182,13 +194,21 @@ fn a_one_shot_adds_sends_exits_and_stays_disconnected() {
         .unwrap();
     assert_eq!(sender.as_deref(), Some(binding.id.as_str()));
 
-    // A plain call from the same session id in a new process touches the binding; only a
-    // lifecycle check-in reconnects, so it stays disconnected.
-    let touch = smoke.cli(&one_shot, &["thread", "list"]);
+    // A call (a write, which resolves the caller's claim) from the same session id in a new
+    // process carries a fingerprint and reconnects the binding (spec 3: any call the binding
+    // makes). That process exits too, so the worker disconnects it again; a later
+    // `disconnected_at` proves it reconnected between.
+    let touch = smoke.cli(&one_shot, &["send", &thread, "--body", "a later call"]);
     assert_eq!(touch.code, 0, "{}", touch.text());
-    assert_eq!(
-        smoke.binding(&seat, "claude", "sess-p", "").liveness,
-        "disconnected",
-        "a plain call never reconnects"
+    wait_until(
+        "the reconnected one-shot to disconnect again",
+        Duration::from_secs(30),
+        || {
+            smoke.binding(&seat, "claude", "sess-p", "").liveness == "disconnected"
+                && disconnected_at(&smoke).is_some_and(|at| at > first_disconnect)
+        },
     );
+    let again = smoke.binding(&seat, "claude", "sess-p", "");
+    assert_eq!(again.reason.as_deref(), Some("liveness_process_exit"));
+    assert_eq!(again.id, binding.id, "the same binding, not a new one");
 }
