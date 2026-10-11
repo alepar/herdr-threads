@@ -451,9 +451,11 @@ impl Rig {
         let mark = rig.host.mark();
         rig.cli(
             Some((&rig.a, PANE_A)),
-            &["invite", &rig.thread, "--seat", &rig.b],
+            &["invite", &rig.thread, "--seat", &rig.b, "--require-ack"],
         )
         .data("invite");
+        // Setup deliberately requires a native wake: ordinary invitations
+        // are lazy by default, so only this bootstrap requests timed acceptance.
         // The invitation wakes idle B natively. Waiting for that prompt
         // before the accept makes the setup's wake deterministic (accepted
         // first, the wake may or may not still go out), so no quiet window
