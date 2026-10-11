@@ -6842,23 +6842,40 @@ fn presentation_retained_tables(db: &Connection) -> Vec<PresentationRetainedTabl
         .unwrap()
         .collect::<Result<_, _>>()
         .unwrap();
-    names.into_iter().map(|name| {
-        let quoted = format!("\"{}\"", name.replace('"', "\"\""));
-        let statement = db.prepare(&format!("SELECT * FROM {quoted}")).unwrap();
-        let columns = statement.column_names().into_iter()
-            .map(|column| format!("\"{}\"", column.replace('"', "\"\"")))
-            .collect::<Vec<_>>().join(",");
-        let sql = format!("SELECT {columns} FROM {quoted} ORDER BY {columns}");
-        PresentationRetainedTable { rows: presentation_query_rows(db, &sql), sql }
-    }).collect()
+    names
+        .into_iter()
+        .map(|name| {
+            let quoted = format!("\"{}\"", name.replace('"', "\"\""));
+            let statement = db.prepare(&format!("SELECT * FROM {quoted}")).unwrap();
+            let columns = statement
+                .column_names()
+                .into_iter()
+                .map(|column| format!("\"{}\"", column.replace('"', "\"\"")))
+                .collect::<Vec<_>>()
+                .join(",");
+            let sql = format!("SELECT {columns} FROM {quoted} ORDER BY {columns}");
+            PresentationRetainedTable {
+                rows: presentation_query_rows(db, &sql),
+                sql,
+            }
+        })
+        .collect()
 }
 fn presentation_assert_retained_tables(db: &Connection, tables: &[PresentationRetainedTable]) {
     for table in tables {
-        assert_eq!(presentation_query_rows(db, &table.sql), table.rows, "{}", table.sql);
+        assert_eq!(
+            presentation_query_rows(db, &table.sql),
+            table.rows,
+            "{}",
+            table.sql
+        );
     }
 }
 fn presentation_assert_foreign_keys(db: &Connection) {
-    assert!(db.pragma_query_value(None, "foreign_keys", |row| row.get::<_, bool>(0)).unwrap());
+    assert!(
+        db.pragma_query_value(None, "foreign_keys", |row| row.get::<_, bool>(0))
+            .unwrap()
+    );
     assert!(presentation_query_rows(db, "PRAGMA foreign_key_check").is_empty());
 }
 fn presentation_reopen(path: &std::path::Path) -> Connection {
@@ -6969,7 +6986,11 @@ fn presentation_schema_populated_v39_upgrade_is_additive_and_reopens() {
     let upgraded = presentation_retained_tables(&db);
     db.close().unwrap();
     let db = presentation_reopen(file.path());
-    assert_eq!(db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 41);
+    assert_eq!(
+        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        41
+    );
     schema::initialize(&db, || UtcMillis(20000)).unwrap();
     assert_eq!(presentation_retained_rows(&db), after);
     assert_eq!(presentation_schema_catalog(&db), after_catalog);
@@ -7095,13 +7116,18 @@ fn presentation_schema_populated_v40_failed_v41_rolls_back_bootstrap_and_catalog
     presentation_assert_retained_tables(&db, &retained);
     db.close().unwrap();
     let db = presentation_reopen(file.path());
-    assert_eq!(db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 40);
+    assert_eq!(
+        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        40
+    );
     assert_eq!(presentation_schema_catalog(&db), catalog);
     presentation_assert_retained_tables(&db, &retained);
     presentation_assert_foreign_keys(&db);
     // The injected collision remains durable, and no41 bootstrap survived.
     // Removing only that test obstruction permits the real40 ->41 retry.
-    db.execute_batch("DROP TRIGGER presentation_fence_warning_close_sweeps_delete").unwrap();
+    db.execute_batch("DROP TRIGGER presentation_fence_warning_close_sweeps_delete")
+        .unwrap();
     schema::initialize(&db, || UtcMillis(10001)).unwrap();
     presentation_assert_retained_tables(&db, &retained);
     let upgraded = presentation_retained_tables(&db);
@@ -7109,7 +7135,11 @@ fn presentation_schema_populated_v40_failed_v41_rolls_back_bootstrap_and_catalog
     db.close().unwrap();
     let db = presentation_reopen(file.path());
     schema::initialize(&db, || UtcMillis(10002)).unwrap();
-    assert_eq!(db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 41);
+    assert_eq!(
+        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        41
+    );
     assert_eq!(presentation_schema_catalog(&db), upgraded_catalog);
     presentation_assert_retained_tables(&db, &upgraded);
     presentation_assert_foreign_keys(&db);
@@ -7187,15 +7217,26 @@ fn presentation_schema_populated_v40_consumers_upgrade_revised_v41_and_reopen() 
     let upgraded = presentation_retained_tables(&db);
     let upgraded_catalog = presentation_schema_catalog(&db);
     for (kind, name, table, root, sql) in &catalog {
-        let new = upgraded_catalog.iter().find(|row| &row.0 == kind && &row.1 == name).unwrap();
-        assert_eq!((&new.2, new.3), (table, *root), "old40 object/rootpage {name}");
+        let new = upgraded_catalog
+            .iter()
+            .find(|row| &row.0 == kind && &row.1 == name)
+            .unwrap();
+        assert_eq!(
+            (&new.2, new.3),
+            (table, *root),
+            "old40 object/rootpage {name}"
+        );
         if name != "invitation_presentation_consumers" {
             assert_eq!(&new.4, sql, "old40 object DDL {name}");
         }
     }
     db.close().unwrap();
     let db = presentation_reopen(file.path());
-    assert_eq!(db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 41);
+    assert_eq!(
+        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        41
+    );
     schema::initialize(&db, || UtcMillis(10001)).unwrap();
     assert_eq!(read_old(&db), before);
     assert_eq!(presentation_schema_catalog(&db), upgraded_catalog);

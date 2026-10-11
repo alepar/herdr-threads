@@ -5889,15 +5889,24 @@ impl OfferWindowFixture {
         if let DeliveryPullReplyV2::Page(page) = reply
             && let Some(token) = &page.presentation_token
         {
-            self.f.service.handle(
-                Command::DeliveryPresentationConfirmV2(DeliveryPresentationConfirmV2 {
-                    claim: self.recipient.clone(),
-                    consumer: if self.watch.is_some() { PresentationConsumer::Watch } else { PresentationConsumer::Hook },
-                    token: token.clone(),
-                    presentation_lease: self.watch.as_ref().map(|(_, _, lease)| lease.clone()),
-                    emitted_controls: page.emitted_controls.clone(),
-                }), peer(), &budget(),
-            ).unwrap();
+            self.f
+                .service
+                .handle(
+                    Command::DeliveryPresentationConfirmV2(DeliveryPresentationConfirmV2 {
+                        claim: self.recipient.clone(),
+                        consumer: if self.watch.is_some() {
+                            PresentationConsumer::Watch
+                        } else {
+                            PresentationConsumer::Hook
+                        },
+                        token: token.clone(),
+                        presentation_lease: self.watch.as_ref().map(|(_, _, lease)| lease.clone()),
+                        emitted_controls: page.emitted_controls.clone(),
+                    }),
+                    peer(),
+                    &budget(),
+                )
+                .unwrap();
         }
     }
 
@@ -5924,7 +5933,14 @@ impl OfferWindowFixture {
                 DeliveryPullReplyV2::Unchanged { .. } => {}
                 other => panic!("admitted V2 drain refused: {other:?}"),
             }
-            let work = self.f.service.presentation.last_work.lock().unwrap().unwrap();
+            let work = self
+                .f
+                .service
+                .presentation
+                .last_work
+                .lock()
+                .unwrap()
+                .unwrap();
             assert!(
                 work.initial + work.context + work.revisit + work.ordinary + work.notices <= 433,
                 "fresh discovery bound stays independent of ledger reconciliation: {work:?}"
@@ -5933,7 +5949,10 @@ impl OfferWindowFixture {
                 return shown;
             }
         }
-        panic!("bounded V2 drain showed {} of {wanted} messages", shown.len());
+        panic!(
+            "bounded V2 drain showed {} of {wanted} messages",
+            shown.len()
+        );
     }
 
     fn ack(&self, messages: &[MessageId], mod_ack: bool, lazy: bool, operation: &str) {
@@ -5945,7 +5964,11 @@ impl OfferWindowFixture {
             let operation = OperationId::new(format!("{operation}-{n}"));
             let command = if mod_ack {
                 Command::AckModDelivered(AckModDelivered {
-                    via: if lazy { ModDeliveryVia::Append } else { ModDeliveryVia::Context },
+                    via: if lazy {
+                        ModDeliveryVia::Append
+                    } else {
+                        ModDeliveryVia::Context
+                    },
                     messages: batch.to_vec(),
                     operation,
                     claim: self.recipient.clone(),
@@ -5964,7 +5987,10 @@ impl OfferWindowFixture {
                 };
                 assert_eq!(report.results.len(), batch.len());
                 assert!(
-                    report.results.iter().all(|v| v.result == ModAckOutcome::Settled),
+                    report
+                        .results
+                        .iter()
+                        .all(|v| v.result == ModAckOutcome::Settled),
                     "real canonical delivery settlement: {report:?}"
                 );
             }
@@ -5987,23 +6013,35 @@ fn assert_v2_offer_window_reclaimed(watch: bool, lazy: bool) {
         protocol::{commands::DeliveryMode, delivery::DeliveryPullReplyV2},
     };
     let window = OfferWindowFixture::new(watch);
-    let mode = if lazy { DeliveryMode::Lazy } else { DeliveryMode::Ordinary };
+    let mode = if lazy {
+        DeliveryMode::Lazy
+    } else {
+        DeliveryMode::Ordinary
+    };
     let sent = (0..MAX_OFFERS_PER_SEAT)
         .map(|n| window.send(n, mode, "complete canonical offer window"))
         .collect::<Vec<_>>();
     assert_eq!(window.drain(256), sent.iter().cloned().collect());
-    assert_eq!(window.offers().len(), 256, "real V2 issuance filled live capacity");
+    assert_eq!(
+        window.offers().len(),
+        256,
+        "real V2 issuance filled live capacity"
+    );
     window.ack(&sent, watch, lazy, "offer-window-settle");
     for id in &sent {
-        let state: String = window.f.db.query_row(
-            if lazy {
-                "SELECT state FROM lazy_recipients WHERE message_id=?1 AND seat_id=?2"
-            } else {
-                "SELECT state FROM receipt_state WHERE message_id=?1 AND seat_id=?2"
-            },
-            params![id.as_str(), window.recipient.seat.as_str()],
-            |r| r.get(0),
-        ).unwrap();
+        let state: String = window
+            .f
+            .db
+            .query_row(
+                if lazy {
+                    "SELECT state FROM lazy_recipients WHERE message_id=?1 AND seat_id=?2"
+                } else {
+                    "SELECT state FROM receipt_state WHERE message_id=?1 AND seat_id=?2"
+                },
+                params![id.as_str(), window.recipient.seat.as_str()],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(state, if lazy { "displayed" } else { "acked" });
     }
     let successor = window.send(256, mode, "new identity after cumulative capacity");
@@ -6014,14 +6052,25 @@ fn assert_v2_offer_window_reclaimed(watch: bool, lazy: bool) {
             assert!(page.offered.iter().all(|id| id == &successor));
             emitted |= page.offered.contains(&successor);
         }
-        if emitted { break; }
+        if emitted {
+            break;
+        }
     }
-    assert!(emitted, "canonical terminal offers must free capacity in the same V2 binding");
-    assert_eq!(window.offers().keys().cloned().collect::<Vec<_>>(), vec![successor]);
+    assert!(
+        emitted,
+        "canonical terminal offers must free capacity in the same V2 binding"
+    );
+    assert_eq!(
+        window.offers().keys().cloned().collect::<Vec<_>>(),
+        vec![successor]
+    );
     let ledger = window.f.state.lock();
     let entry = ledger.get(&window.recipient.seat).unwrap();
     assert_eq!(entry.generation, window.recipient.binding_generation);
-    assert_eq!(entry.native_session, window.recipient.native_session.as_str());
+    assert_eq!(
+        entry.native_session,
+        window.recipient.native_session.as_str()
+    );
 }
 
 // Kills: treating MAX_OFFERS_PER_SEAT as cumulative lifetime throughput when
@@ -6049,35 +6098,60 @@ fn presentation_watch_completed_lazy_rows_reclaim_live_offer_capacity() {
 // success, and resetting an unsettled id's count/timestamps during reclamation.
 #[test]
 fn presentation_reclamation_preserves_pending_truncated_and_reoffer_history() {
-    use crate::{
-        protocol::{
-            commands::{AckModDelivered, DeliveryMode},
-            delivery::{DeliveryPullReplyV2, DeliveryPullV2, PresentationConsumer, PresentationRenderRequest},
-            watch::{ModAckOutcome, ModAckReason, ModDeliveryVia},
+    use crate::protocol::{
+        commands::{AckModDelivered, DeliveryMode},
+        delivery::{
+            DeliveryPullReplyV2, DeliveryPullV2, PresentationConsumer, PresentationRenderRequest,
         },
+        watch::{ModAckOutcome, ModAckReason, ModDeliveryVia},
     };
     let window = OfferWindowFixture::new(true);
     let big = "x".repeat(WATCH_BODY_LIMIT_BYTES + 1);
     let sent = (0..257)
-        .map(|n| window.send(n, DeliveryMode::Ordinary, if n == 0 { &big } else { "pending" }))
+        .map(|n| {
+            window.send(
+                n,
+                DeliveryMode::Ordinary,
+                if n == 0 { &big } else { "pending" },
+            )
+        })
         .collect::<Vec<_>>();
     assert_eq!(window.drain(256), sent[..256].iter().cloned().collect());
     let first = window.offers();
     assert!(first[&sent[0]].truncated);
-    for _ in 0..4 { window.pull(); }
-    assert_eq!(window.offers(), first, "pending offers neither evict nor reoffer early");
-    let CommandResult::ModDeliveryAcked(report) = window.f.service.handle(
-        Command::AckModDelivered(AckModDelivered {
-            via: ModDeliveryVia::Context,
-            messages: vec![sent[0].clone()],
-            operation: OperationId::new("offer-window-truncated-refusal"),
-            claim: window.recipient.clone(),
-        }), peer(), &budget(),
-    ).unwrap() else { panic!("truncated ACK result") };
+    for _ in 0..4 {
+        window.pull();
+    }
+    assert_eq!(
+        window.offers(),
+        first,
+        "pending offers neither evict nor reoffer early"
+    );
+    let CommandResult::ModDeliveryAcked(report) = window
+        .f
+        .service
+        .handle(
+            Command::AckModDelivered(AckModDelivered {
+                via: ModDeliveryVia::Context,
+                messages: vec![sent[0].clone()],
+                operation: OperationId::new("offer-window-truncated-refusal"),
+                claim: window.recipient.clone(),
+            }),
+            peer(),
+            &budget(),
+        )
+        .unwrap()
+    else {
+        panic!("truncated ACK result")
+    };
     assert_eq!(report.results[0].result, ModAckOutcome::RefusedTerminal);
     assert_eq!(report.results[0].reason, Some(ModAckReason::Truncated));
     window.pull();
-    assert_eq!(window.offers(), first, "refused delivery ACK is not settlement");
+    assert_eq!(
+        window.offers(),
+        first,
+        "refused delivery ACK is not settlement"
+    );
     advance(&window.f, REOFFER_AFTER_MS);
     assert_eq!(window.drain(256), sent[..256].iter().cloned().collect());
     let second = window.offers();
@@ -6089,48 +6163,97 @@ fn presentation_reclamation_preserves_pending_truncated_and_reoffer_history() {
     for _ in 0..16 {
         if let DeliveryPullReplyV2::Page(page) = window.pull() {
             emitted |= page.offered.contains(&sent[256]);
-            assert!(!page.offered.contains(&sent[255]), "surviving pending offer is not due");
+            assert!(
+                !page.offered.contains(&sent[255]),
+                "surviving pending offer is not due"
+            );
         }
-        if emitted { break; }
+        if emitted {
+            break;
+        }
     }
-    assert!(emitted, "manual ACK of a truncated offer must reclaim its slot");
+    assert!(
+        emitted,
+        "manual ACK of a truncated offer must reclaim its slot"
+    );
     let retained = window.offers();
     assert_eq!(retained.len(), 2);
-    assert_eq!(retained[&sent[255]], second[&sent[255]], "reconciliation preserves live reoffer history");
-    let CommandResult::DeliveryPulledV2(DeliveryPullReplyV2::Refused { reason: Refusal::SessionMismatch }) = window.f.service.handle(
-        Command::DeliveryPullV2(DeliveryPullV2 {
-            claim: window.recipient.clone(),
-            consumer: PresentationConsumer::Watch,
-            render: PresentationRenderRequest::WatchJsonLinesV1,
-            presentation_lease: Some("ffffffffffffffffffffffffffffffff".into()),
-            marker_prefix: vec![],
-        }), peer(), &budget(),
-    ).unwrap() else { panic!("stale owner must refuse") };
-    assert_eq!(window.offers(), retained, "refused owner cannot reconcile another owner's ledger");
+    assert_eq!(
+        retained[&sent[255]], second[&sent[255]],
+        "reconciliation preserves live reoffer history"
+    );
+    let CommandResult::DeliveryPulledV2(DeliveryPullReplyV2::Refused {
+        reason: Refusal::SessionMismatch,
+    }) = window
+        .f
+        .service
+        .handle(
+            Command::DeliveryPullV2(DeliveryPullV2 {
+                claim: window.recipient.clone(),
+                consumer: PresentationConsumer::Watch,
+                render: PresentationRenderRequest::WatchJsonLinesV1,
+                presentation_lease: Some("ffffffffffffffffffffffffffffffff".into()),
+                marker_prefix: vec![],
+            }),
+            peer(),
+            &budget(),
+        )
+        .unwrap()
+    else {
+        panic!("stale owner must refuse")
+    };
+    assert_eq!(
+        window.offers(),
+        retained,
+        "refused owner cannot reconcile another owner's ledger"
+    );
     advance(&window.f, REOFFER_AFTER_MS);
-    assert_eq!(window.drain(2), [sent[255].clone(), sent[256].clone()].into_iter().collect());
+    assert_eq!(
+        window.drain(2),
+        [sent[255].clone(), sent[256].clone()].into_iter().collect()
+    );
     assert_eq!(window.offers()[&sent[255]].count, MAX_OFFERS_PER_GENERATION);
     advance(&window.f, REOFFER_AFTER_MS);
     assert_eq!(window.drain(1), [sent[256].clone()].into_iter().collect());
     let parked = window.offers();
-    assert!(parked.values().all(|v| v.count == MAX_OFFERS_PER_GENERATION));
+    assert!(
+        parked
+            .values()
+            .all(|v| v.count == MAX_OFFERS_PER_GENERATION)
+    );
     advance(&window.f, REOFFER_AFTER_MS);
-    for _ in 0..4 { window.pull(); }
-    assert_eq!(window.offers(), parked, "pending offers remain parked at the original generation limit");
+    for _ in 0..4 {
+        window.pull();
+    }
+    assert_eq!(
+        window.offers(),
+        parked,
+        "pending offers remain parked at the original generation limit"
+    );
 
     // A real canonical check-in rotates the binding. The old owner/claim must
     // refuse before it can drop the prior generation's retained offers.
     let next = check_in(
         &window.f,
         fresh_execution(
-            claim("c", "pc", Harness::Claude, "offer-window-next", window.recipient.binding_generation),
+            claim(
+                "c",
+                "pc",
+                Harness::Claude,
+                "offer-window-next",
+                window.recipient.binding_generation,
+            ),
             2,
         ),
         "offer-window-next-ci",
     );
     assert!(next.binding_generation > window.recipient.binding_generation);
     assert!(matches!(window.pull(), DeliveryPullReplyV2::Refused { .. }));
-    assert_eq!(window.offers(), parked, "stale generation cannot reconcile ledger state");
+    assert_eq!(
+        window.offers(),
+        parked,
+        "stale generation cannot reconcile ledger state"
+    );
 }
 
 #[test]
@@ -6611,12 +6734,16 @@ fn private_invitation_id_fixture(branch: &str) -> (Fixture, CallerClaim, i64) {
         "SELECT (SELECT COUNT(*) FROM invitation_presentation_items i WHERE i.seat_id=s.seat_id AND i.consumer=s.consumer AND i.revisit_ordinal>s.cleanup_after),(SELECT COUNT(*) FROM invitation_presentation_items i WHERE i.seat_id=s.seat_id AND i.consumer=s.consumer AND i.revisit_ordinal>s.dirty_after AND i.revisit_ordinal<=s.dirty_high),(SELECT COUNT(*) FROM invitation_presentation_items i WHERE i.seat_id=s.seat_id AND i.consumer=s.consumer AND i.generation=s.generation AND (i.required_render_bytes,i.revisit_ordinal)>(s.revisit_after_bytes,s.revisit_after_ordinal) AND (i.required_render_bytes,i.revisit_ordinal)<=(s.revisit_high_bytes,s.revisit_high_ordinal) AND i.required_render_bytes<=65536) FROM invitation_presentation_consumers s WHERE s.seat_id='s' AND s.consumer='hook'",
         [], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)),
     ).unwrap();
-    assert_eq!(selected, match branch {
-        "cleanup" => (1, 0, 0),
-        "dirty" => (0, 1, 0),
-        "revisit" => (0, 0, 1),
-        _ => panic!("unknown branch"),
-    }, "one private reader is independently reachable");
+    assert_eq!(
+        selected,
+        match branch {
+            "cleanup" => (1, 0, 0),
+            "dirty" => (0, 1, 0),
+            "revisit" => (0, 0, 1),
+            _ => panic!("unknown branch"),
+        },
+        "one private reader is independently reachable"
+    );
     (f, recipient, ordinal)
 }
 
@@ -6628,44 +6755,71 @@ fn private_invitation_id_snapshot(db: &Connection) -> Vec<(String, Vec<Vec<u8>>)
     let mut tables = db.prepare(
         "SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
     ).unwrap();
-    let names = tables.query_map([], |r| r.get::<_, String>(0)).unwrap()
-        .collect::<Result<Vec<_>, _>>().unwrap();
-    names.into_iter().map(|name| {
-        let mut query = db.prepare(&format!("SELECT * FROM \"{}\"", name.replace('"', "\"\""))).unwrap();
-        let columns = query.column_count();
-        let mut rows = query.query_map([], |row| {
-            let mut bytes = Vec::new();
-            for column in 0..columns {
-                let (tag, raw) = match row.get_ref(column)? {
-                    ValueRef::Null => (0, Vec::new()),
-                    ValueRef::Integer(v) => (1, v.to_le_bytes().to_vec()),
-                    ValueRef::Real(v) => (2, v.to_bits().to_le_bytes().to_vec()),
-                    ValueRef::Text(v) => (3, v.to_vec()),
-                    ValueRef::Blob(v) => (4, v.to_vec()),
-                };
-                bytes.push(tag);
-                bytes.extend_from_slice(&(raw.len() as u64).to_le_bytes());
-                bytes.extend_from_slice(&raw);
-            }
-            Ok(bytes)
-        }).unwrap().collect::<Result<Vec<_>, _>>().unwrap();
-        rows.sort();
-        (name, rows)
-    }).collect()
+    let names = tables
+        .query_map([], |r| r.get::<_, String>(0))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    names
+        .into_iter()
+        .map(|name| {
+            let mut query = db
+                .prepare(&format!("SELECT * FROM \"{}\"", name.replace('"', "\"\"")))
+                .unwrap();
+            let columns = query.column_count();
+            let mut rows = query
+                .query_map([], |row| {
+                    let mut bytes = Vec::new();
+                    for column in 0..columns {
+                        let (tag, raw) = match row.get_ref(column)? {
+                            ValueRef::Null => (0, Vec::new()),
+                            ValueRef::Integer(v) => (1, v.to_le_bytes().to_vec()),
+                            ValueRef::Real(v) => (2, v.to_bits().to_le_bytes().to_vec()),
+                            ValueRef::Text(v) => (3, v.to_vec()),
+                            ValueRef::Blob(v) => (4, v.to_vec()),
+                        };
+                        bytes.push(tag);
+                        bytes.extend_from_slice(&(raw.len() as u64).to_le_bytes());
+                        bytes.extend_from_slice(&raw);
+                    }
+                    Ok(bytes)
+                })
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            rows.sort();
+            (name, rows)
+        })
+        .collect()
 }
 
-fn repair_private_invitation_id(f: &Fixture, value: rusqlite::types::Value, cast_text: bool) -> rusqlite::Result<usize> {
+fn repair_private_invitation_id(
+    f: &Fixture,
+    value: rusqlite::types::Value,
+    cast_text: bool,
+) -> rusqlite::Result<usize> {
     repair_private_invitation_id_for_consumer(f, "hook", value, cast_text)
 }
 
-fn repair_private_invitation_id_for_consumer(f: &Fixture, consumer: &str, value: rusqlite::types::Value, cast_text: bool) -> rusqlite::Result<usize> {
+fn repair_private_invitation_id_for_consumer(
+    f: &Fixture,
+    consumer: &str,
+    value: rusqlite::types::Value,
+    cast_text: bool,
+) -> rusqlite::Result<usize> {
     // Deliberately corrupt only the private ID through a short-lived repair
     // connection. Never relax the service/writer connection's foreign keys.
     let repair = Connection::open(f.directory.join("store.db")).unwrap();
     repair.pragma_update(None, "foreign_keys", true).unwrap();
-    let before = repair.pragma_query_value(None, "foreign_keys", |r| r.get::<_, bool>(0)).unwrap();
+    let before = repair
+        .pragma_query_value(None, "foreign_keys", |r| r.get::<_, bool>(0))
+        .unwrap();
     repair.pragma_update(None, "foreign_keys", false).unwrap();
-    assert!(!repair.pragma_query_value(None, "foreign_keys", |r| r.get::<_, bool>(0)).unwrap());
+    assert!(
+        !repair
+            .pragma_query_value(None, "foreign_keys", |r| r.get::<_, bool>(0))
+            .unwrap()
+    );
     let sql = if cast_text {
         "UPDATE invitation_presentation_items SET invitation_id=CAST(?1 AS TEXT) WHERE seat_id='s' AND consumer=?2"
     } else {
@@ -6673,35 +6827,69 @@ fn repair_private_invitation_id_for_consumer(f: &Fixture, consumer: &str, value:
     };
     let result = repair.execute(sql, params![value, consumer]);
     repair.pragma_update(None, "foreign_keys", before).unwrap();
-    assert!(repair.pragma_query_value(None, "foreign_keys", |r| r.get::<_, bool>(0)).unwrap());
-    assert!(f.db.pragma_query_value(None, "foreign_keys", |r| r.get::<_, bool>(0)).unwrap());
+    assert!(
+        repair
+            .pragma_query_value(None, "foreign_keys", |r| r.get::<_, bool>(0))
+            .unwrap()
+    );
+    assert!(
+        f.db.pragma_query_value(None, "foreign_keys", |r| r.get::<_, bool>(0))
+            .unwrap()
+    );
     result
 }
 
-fn pull_private_invitation_id(f: &Fixture, recipient: &CallerClaim) -> Result<crate::ports::PresentationOutput, crate::protocol::results::ApiError> {
+fn pull_private_invitation_id(
+    f: &Fixture,
+    recipient: &CallerClaim,
+) -> Result<crate::ports::PresentationOutput, crate::protocol::results::ApiError> {
     use crate::{
         delivery::presentation::{FrozenPresentationRender, PresentationRenderProfile},
         ports::PresentationInput,
         protocol::delivery::{DeliveryPullV2, PresentationConsumer, PresentationRenderRequest},
     };
     let registry = crate::harness::registry::builtins();
-    let adapter = registry.by_id(registry.agent(recipient.harness.as_str()).unwrap()).unwrap();
+    let adapter = registry
+        .by_id(registry.agent(recipient.harness.as_str()).unwrap())
+        .unwrap();
     let codec = adapter.presentation_codec(0).unwrap();
-    let frozen_render = f.store.presentation_render_selection(recipient, PresentationConsumer::Hook, &budget()).unwrap()
-        .map(|identity| FrozenPresentationRender { identity, codec: Some(codec) });
-    f.store.presentation_pull(PresentationInput {
-        frozen_render,
-        render_profile: PresentationRenderProfile::Hook {
-            confirmable_selector: 0, passive_selector: 0, confirmable: codec, passive: codec,
+    let frozen_render = f
+        .store
+        .presentation_render_selection(recipient, PresentationConsumer::Hook, &budget())
+        .unwrap()
+        .map(|identity| FrozenPresentationRender {
+            identity,
+            codec: Some(codec),
+        });
+    f.store.presentation_pull(
+        PresentationInput {
+            frozen_render,
+            render_profile: PresentationRenderProfile::Hook {
+                confirmable_selector: 0,
+                passive_selector: 0,
+                confirmable: codec,
+                passive: codec,
+            },
+            pull: DeliveryPullV2 {
+                claim: recipient.clone(),
+                consumer: PresentationConsumer::Hook,
+                render: PresentationRenderRequest::Hook {
+                    confirmable_selector: 0,
+                    passive_selector: 0,
+                },
+                presentation_lease: None,
+                marker_prefix: vec![],
+            },
+            attention_version: 0,
+            ordinary_version: 0,
+            with_attention: false,
+            retry_messages: false,
+            blocked_messages: vec![],
+            known_messages: vec![],
+            new_message_slots: 256,
         },
-        pull: DeliveryPullV2 {
-            claim: recipient.clone(), consumer: PresentationConsumer::Hook,
-            render: PresentationRenderRequest::Hook { confirmable_selector: 0, passive_selector: 0 },
-            presentation_lease: None, marker_prefix: vec![],
-        },
-        attention_version: 0, ordinary_version: 0, with_attention: false,
-        retry_messages: false, blocked_messages: vec![], known_messages: vec![], new_message_slots: 256,
-    }, &budget())
+        &budget(),
+    )
 }
 
 #[test]
@@ -6725,11 +6913,21 @@ fn presentation_private_invitation_ids_refuse_corruption_in_each_reader_without_
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 pull_private_invitation_id(&f, &recipient)
             }));
-            if !matches!(result, Ok(Err(ApiError { code: ErrorCode::StoreCorrupt, .. }))) {
-                failures.push(format!("{branch}/{kind}: expected StoreCorrupt without panic, got {result:?}"));
+            if !matches!(
+                result,
+                Ok(Err(ApiError {
+                    code: ErrorCode::StoreCorrupt,
+                    ..
+                }))
+            ) {
+                failures.push(format!(
+                    "{branch}/{kind}: expected StoreCorrupt without panic, got {result:?}"
+                ));
             }
             if private_invitation_id_snapshot(&f.db) != before {
-                failures.push(format!("{branch}/{kind}: private or canonical rows changed after refusal"));
+                failures.push(format!(
+                    "{branch}/{kind}: private or canonical rows changed after refusal"
+                ));
             }
         }
     }
@@ -6740,34 +6938,64 @@ fn presentation_private_invitation_ids_refuse_corruption_in_each_reader_without_
 fn presentation_private_invitation_ids_allow_exact_128_byte_ids_in_each_reader() {
     for branch in ["cleanup", "dirty", "revisit"] {
         let (f, recipient, _) = private_invitation_id_fixture(branch);
-        assert_eq!(repair_private_invitation_id(&f, rusqlite::types::Value::Text("x".repeat(128)), true).unwrap(), 1);
+        assert_eq!(
+            repair_private_invitation_id(&f, rusqlite::types::Value::Text("x".repeat(128)), true)
+                .unwrap(),
+            1
+        );
         let output = pull_private_invitation_id(&f, &recipient).unwrap();
         assert_eq!(output.work.initial, 0);
         assert_eq!(output.work.context, 0);
-        assert_eq!(output.work.revisit, 1, "{branch}: valid boundary ID reaches its private reader");
-        assert_eq!(f.db.query_row("SELECT COUNT(*) FROM invitations WHERE seat_id='s' AND state='pending'", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
-        assert_eq!(f.db.query_row("SELECT COUNT(*) FROM receipts", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+        assert_eq!(
+            output.work.revisit, 1,
+            "{branch}: valid boundary ID reaches its private reader"
+        );
+        assert_eq!(
+            f.db.query_row(
+                "SELECT COUNT(*) FROM invitations WHERE seat_id='s' AND state='pending'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            f.db.query_row("SELECT COUNT(*) FROM receipts", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
     }
 }
 
 #[test]
 fn presentation_private_invitation_id_wrong_types_refuse_at_strict_storage_boundary() {
-    for value in [rusqlite::types::Value::Blob(vec![0x80]), rusqlite::types::Value::Null] {
+    for value in [
+        rusqlite::types::Value::Blob(vec![0x80]),
+        rusqlite::types::Value::Null,
+    ] {
         let (f, _, _) = private_invitation_id_fixture("cleanup");
         let before = private_invitation_id_snapshot(&f.db);
-        assert!(repair_private_invitation_id(&f, value, false).is_err(), "STRICT TEXT NOT NULL blocks constructing wrong-type corruption");
+        assert!(
+            repair_private_invitation_id(&f, value, false).is_err(),
+            "STRICT TEXT NOT NULL blocks constructing wrong-type corruption"
+        );
         assert_eq!(private_invitation_id_snapshot(&f.db), before);
     }
 }
-
 
 fn private_watch_cleanup_id_fixture() -> (Fixture, CallerClaim) {
     // Keep a genuine Hook allocation/owner alongside independently initialized
     // passive Watch state; the corruption fixture must not manufacture a binding.
     let (f, recipient, ordinal) = private_invitation_id_fixture("cleanup");
-    f.store.presentation_refresh(
-        &recipient.seat, recipient.binding_generation, recipient.native_session.as_str(), &budget(),
-    ).unwrap().unwrap();
+    f.store
+        .presentation_refresh(
+            &recipient.seat,
+            recipient.binding_generation,
+            recipient.native_session.as_str(),
+            &budget(),
+        )
+        .unwrap()
+        .unwrap();
     f.db.execute(
         "UPDATE invitation_presentation_consumers SET mod_initial_after=?1,mod_initial_high=?1,mod_context_after_seq=COALESCE((SELECT MAX(last_change_seq) FROM invitation_context_latest),0),mod_context_high=COALESCE((SELECT MAX(last_change_seq) FROM invitation_context_latest),0),mod_context_after_thread=?2,mod_context_thread='',mod_context_selected_seq=0,mod_context_invitation_after=0,mod_context_invitation_high=0,mod_cleanup_after=0,mod_cleanup_high=?1 WHERE seat_id='s' AND consumer='watch'",
         params![ordinal, "\u{10ffff}"],
@@ -6776,7 +7004,11 @@ fn private_watch_cleanup_id_fixture() -> (Fixture, CallerClaim) {
         "SELECT (SELECT COUNT(*) FROM digest_pending_invitations d WHERE d.seat_id=s.seat_id AND d.ordinal>s.mod_initial_after AND d.ordinal<=s.mod_initial_high),(SELECT COUNT(*) FROM invitation_context_latest c WHERE c.instance_id=s.instance_id AND (c.last_change_seq,c.thread_id)>(s.mod_context_after_seq,s.mod_context_after_thread) AND c.last_change_seq<=s.mod_context_high),(SELECT COUNT(*) FROM invitation_presentation_items i WHERE i.seat_id=s.seat_id AND i.consumer='watch' AND i.revisit_ordinal>s.mod_cleanup_after AND i.revisit_ordinal<=s.mod_cleanup_high AND i.mod_key!='' AND i.mod_generation=s.mod_generation AND i.mod_execution=s.mod_execution) FROM invitation_presentation_consumers s WHERE s.seat_id='s' AND s.consumer='watch'",
         [], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)),
     ).unwrap();
-    assert_eq!(selected, (0, 0, 1), "only the owned passive Watch cleanup row is reachable");
+    assert_eq!(
+        selected,
+        (0, 0, 1),
+        "only the owned passive Watch cleanup row is reachable"
+    );
     assert!(f.db.query_row(
         "SELECT s.mod_generation=b.generation AND s.mod_execution=b.execution_id AND b.native_session=?1 FROM invitation_presentation_consumers s JOIN occupant_bindings b ON b.seat_id=s.seat_id AND b.ended_at IS NULL WHERE s.seat_id='s' AND s.consumer='watch'",
         [recipient.native_session.as_str()], |r| r.get::<_, bool>(0),
@@ -6789,24 +7021,47 @@ fn presentation_private_watch_cleanup_ids_refuse_malformed_identity_without_effe
     use crate::protocol::results::{ApiError, ErrorCode};
     let mut failures = Vec::new();
     for (kind, id) in [
-        ("empty", ""), ("space", "bad id"), ("tab", "bad\tid"),
-        ("control", "bad\0id"), ("non_ascii", "λ"),
+        ("empty", ""),
+        ("space", "bad id"),
+        ("tab", "bad\tid"),
+        ("control", "bad\0id"),
+        ("non_ascii", "λ"),
     ] {
         let (f, recipient) = private_watch_cleanup_id_fixture();
-        assert_eq!(repair_private_invitation_id_for_consumer(
-            &f, "watch", rusqlite::types::Value::Text(id.into()), true,
-        ).unwrap(), 1);
+        assert_eq!(
+            repair_private_invitation_id_for_consumer(
+                &f,
+                "watch",
+                rusqlite::types::Value::Text(id.into()),
+                true,
+            )
+            .unwrap(),
+            1
+        );
         let before = private_invitation_id_snapshot(&f.db);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             f.store.presentation_refresh(
-                &recipient.seat, recipient.binding_generation, recipient.native_session.as_str(), &budget(),
+                &recipient.seat,
+                recipient.binding_generation,
+                recipient.native_session.as_str(),
+                &budget(),
             )
         }));
-        if !matches!(result, Ok(Err(ApiError { code: ErrorCode::StoreCorrupt, .. }))) {
-            failures.push(format!("passive_watch_cleanup/{kind}: expected StoreCorrupt without panic, got {result:?}"));
+        if !matches!(
+            result,
+            Ok(Err(ApiError {
+                code: ErrorCode::StoreCorrupt,
+                ..
+            }))
+        ) {
+            failures.push(format!(
+                "passive_watch_cleanup/{kind}: expected StoreCorrupt without panic, got {result:?}"
+            ));
         }
         if private_invitation_id_snapshot(&f.db) != before {
-            failures.push(format!("passive_watch_cleanup/{kind}: private or canonical rows changed after refusal"));
+            failures.push(format!(
+                "passive_watch_cleanup/{kind}: private or canonical rows changed after refusal"
+            ));
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
@@ -6820,12 +7075,27 @@ fn presentation_private_watch_cleanup_ids_enforce_borrowed_text_bounds_without_e
         ("invalid_utf8", rusqlite::types::Value::Blob(vec![0x80])),
     ] {
         let (f, recipient) = private_watch_cleanup_id_fixture();
-        assert_eq!(repair_private_invitation_id_for_consumer(&f, "watch", value, true).unwrap(), 1);
+        assert_eq!(
+            repair_private_invitation_id_for_consumer(&f, "watch", value, true).unwrap(),
+            1
+        );
         let before = private_invitation_id_snapshot(&f.db);
         let result = f.store.presentation_refresh(
-            &recipient.seat, recipient.binding_generation, recipient.native_session.as_str(), &budget(),
+            &recipient.seat,
+            recipient.binding_generation,
+            recipient.native_session.as_str(),
+            &budget(),
         );
-        assert!(matches!(result, Err(ApiError { code: ErrorCode::StoreCorrupt, .. })), "{kind}: {result:?}");
+        assert!(
+            matches!(
+                result,
+                Err(ApiError {
+                    code: ErrorCode::StoreCorrupt,
+                    ..
+                })
+            ),
+            "{kind}: {result:?}"
+        );
         assert_eq!(private_invitation_id_snapshot(&f.db), before);
     }
 }
@@ -6833,23 +7103,54 @@ fn presentation_private_watch_cleanup_ids_enforce_borrowed_text_bounds_without_e
 #[test]
 fn presentation_private_watch_cleanup_ids_allow_128_byte_id_without_canonical_owner_changes() {
     let (f, recipient) = private_watch_cleanup_id_fixture();
-    let owner = || f.db.query_row(
+    let owner = || {
+        f.db.query_row(
         "SELECT generation,native_session,execution_id,observation_provenance FROM occupant_bindings WHERE seat_id='s' AND ended_at IS NULL",
         [], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?)),
-    ).unwrap();
+    ).unwrap()
+    };
     let before_owner = owner();
-    assert_eq!(repair_private_invitation_id_for_consumer(
-        &f, "watch", rusqlite::types::Value::Text("x".repeat(128)), true,
-    ).unwrap(), 1);
-    let output = f.store.presentation_refresh(
-        &recipient.seat, recipient.binding_generation, recipient.native_session.as_str(), &budget(),
-    ).unwrap().unwrap();
+    assert_eq!(
+        repair_private_invitation_id_for_consumer(
+            &f,
+            "watch",
+            rusqlite::types::Value::Text("x".repeat(128)),
+            true,
+        )
+        .unwrap(),
+        1
+    );
+    let output = f
+        .store
+        .presentation_refresh(
+            &recipient.seat,
+            recipient.binding_generation,
+            recipient.native_session.as_str(),
+            &budget(),
+        )
+        .unwrap()
+        .unwrap();
     assert_eq!(output.context_visits, 0);
-    assert_eq!(output.lifecycle_visits, 1, "only passive cleanup is visited");
+    assert_eq!(
+        output.lifecycle_visits, 1,
+        "only passive cleanup is visited"
+    );
     assert_eq!(output.ordinary_publication_visits, 0);
     assert_eq!(owner(), before_owner);
     assert_eq!(f.db.query_row("SELECT COUNT(*) FROM invitation_presentation_items WHERE seat_id='s' AND consumer='watch'", [], |r| r.get::<_, i64>(0)).unwrap(), 0, "valid orphan private row is reclaimed");
     assert_eq!(f.db.query_row("SELECT COUNT(*) FROM invitation_presentation_items WHERE seat_id='s' AND consumer='hook'", [], |r| r.get::<_, i64>(0)).unwrap(), 1, "Hook owner state remains intact");
-    assert_eq!(f.db.query_row("SELECT COUNT(*) FROM invitations WHERE seat_id='s' AND state='pending'", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
-    assert_eq!(f.db.query_row("SELECT COUNT(*) FROM receipts", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+    assert_eq!(
+        f.db.query_row(
+            "SELECT COUNT(*) FROM invitations WHERE seat_id='s' AND state='pending'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        f.db.query_row("SELECT COUNT(*) FROM receipts", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
 }

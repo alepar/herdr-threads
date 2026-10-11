@@ -2910,14 +2910,21 @@ impl<'a> RelevanceTrace<'a> {
     fn install(db: &'a Connection) -> Self {
         let state = Box::new(std::cell::RefCell::new(RelevanceTraceState::default()));
         // The box stays at this address until the callback is unregistered.
-        assert_eq!(unsafe {
-            rusqlite::ffi::sqlite3_trace_v2(
-                db.handle(),
-                rusqlite::ffi::SQLITE_TRACE_STMT | rusqlite::ffi::SQLITE_TRACE_ROW | rusqlite::ffi::SQLITE_TRACE_PROFILE,
-                Some(relevance_statement_trace),
-                (&*state as *const std::cell::RefCell<RelevanceTraceState>).cast_mut().cast(),
-            )
-        }, rusqlite::ffi::SQLITE_OK);
+        assert_eq!(
+            unsafe {
+                rusqlite::ffi::sqlite3_trace_v2(
+                    db.handle(),
+                    rusqlite::ffi::SQLITE_TRACE_STMT
+                        | rusqlite::ffi::SQLITE_TRACE_ROW
+                        | rusqlite::ffi::SQLITE_TRACE_PROFILE,
+                    Some(relevance_statement_trace),
+                    (&*state as *const std::cell::RefCell<RelevanceTraceState>)
+                        .cast_mut()
+                        .cast(),
+                )
+            },
+            rusqlite::ffi::SQLITE_OK
+        );
         Self { db, state }
     }
     fn finish(self) -> Vec<RelevanceStatementWork> {
@@ -2958,28 +2965,46 @@ unsafe extern "C" fn relevance_statement_trace(
         let mut state = state.borrow_mut();
         if event == ffi::SQLITE_TRACE_STMT {
             state.rows = 0;
-            for metric in [ffi::SQLITE_STMTSTATUS_VM_STEP, ffi::SQLITE_STMTSTATUS_FULLSCAN_STEP, ffi::SQLITE_STMTSTATUS_SORT] {
-                unsafe { ffi::sqlite3_stmt_status(stmt, metric, 1); }
+            for metric in [
+                ffi::SQLITE_STMTSTATUS_VM_STEP,
+                ffi::SQLITE_STMTSTATUS_FULLSCAN_STEP,
+                ffi::SQLITE_STMTSTATUS_SORT,
+            ] {
+                unsafe {
+                    ffi::sqlite3_stmt_status(stmt, metric, 1);
+                }
             }
         } else if event == ffi::SQLITE_TRACE_ROW {
             state.rows += 1;
         } else if event == ffi::SQLITE_TRACE_PROFILE {
             let expanded = unsafe { ffi::sqlite3_expanded_sql(stmt) };
             assert!(!expanded.is_null(), "expanded production SQL unavailable");
-            let expanded_sql = unsafe { std::ffi::CStr::from_ptr(expanded) }.to_string_lossy().into_owned();
-            unsafe { ffi::sqlite3_free(expanded.cast()); }
+            let expanded_sql = unsafe { std::ffi::CStr::from_ptr(expanded) }
+                .to_string_lossy()
+                .into_owned();
+            unsafe {
+                ffi::sqlite3_free(expanded.cast());
+            }
             let rows = state.rows;
             let entry = state.work.entry(sql.into_owned()).or_default();
             if entry.executions == 0 {
-                entry.sql = unsafe { std::ffi::CStr::from_ptr(raw) }.to_string_lossy().into_owned();
+                entry.sql = unsafe { std::ffi::CStr::from_ptr(raw) }
+                    .to_string_lossy()
+                    .into_owned();
                 entry.first_expanded = expanded_sql.clone();
             }
             entry.last_expanded = expanded_sql;
             entry.executions += 1;
             entry.rows += rows;
-            entry.max_vm = entry.max_vm.max(unsafe { ffi::sqlite3_stmt_status(stmt, ffi::SQLITE_STMTSTATUS_VM_STEP, 0) });
-            entry.max_scan = entry.max_scan.max(unsafe { ffi::sqlite3_stmt_status(stmt, ffi::SQLITE_STMTSTATUS_FULLSCAN_STEP, 0) });
-            entry.max_sort = entry.max_sort.max(unsafe { ffi::sqlite3_stmt_status(stmt, ffi::SQLITE_STMTSTATUS_SORT, 0) });
+            entry.max_vm = entry
+                .max_vm
+                .max(unsafe { ffi::sqlite3_stmt_status(stmt, ffi::SQLITE_STMTSTATUS_VM_STEP, 0) });
+            entry.max_scan = entry.max_scan.max(unsafe {
+                ffi::sqlite3_stmt_status(stmt, ffi::SQLITE_STMTSTATUS_FULLSCAN_STEP, 0)
+            });
+            entry.max_sort = entry
+                .max_sort
+                .max(unsafe { ffi::sqlite3_stmt_status(stmt, ffi::SQLITE_STMTSTATUS_SORT, 0) });
         }
     }));
     if result.is_err() {
@@ -2995,8 +3020,16 @@ fn presentation_relevance_all_thirteen_actual_source_heads_and_ranges_have_bound
     // rows feed each job projection; every other source contributes one row.
     let sources = [
         ("warning_conditions", "affected_seat_id=?1", 1),
-        ("warning_conditions", "invitation_originator_instance_id=?2", 1),
-        ("receipt_warning_origins", "instance_id=?2 AND seat_id=?1", 1),
+        (
+            "warning_conditions",
+            "invitation_originator_instance_id=?2",
+            1,
+        ),
+        (
+            "receipt_warning_origins",
+            "instance_id=?2 AND seat_id=?1",
+            1,
+        ),
         ("digest_open_warning_recipients", "source='job'", 2),
         ("digest_open_warning_recipients", "source='prepared'", 1),
         ("digest_open_warnings", "source='job'", 2),
@@ -3024,7 +3057,11 @@ fn presentation_relevance_all_thirteen_actual_source_heads_and_ranges_have_bound
             charged_fallback += u64::from(proof.work.fallback);
             charged_seeks += u64::from(proof.work.highwater_seeks);
             charged_witness += u64::from(proof.work.witness_probes);
-            assert_ne!(proof.relevance, Relevance::Open, "stale candidates cannot confer authority");
+            assert_ne!(
+                proof.relevance,
+                Relevance::Open,
+                "stale candidates cannot confer authority"
+            );
             if proof.relevance == Relevance::Absent {
                 absent = true;
                 break;
@@ -3032,84 +3069,178 @@ fn presentation_relevance_all_thirteen_actual_source_heads_and_ranges_have_bound
         }
         let work = trace.finish();
         assert!(absent, "finite retained source union must finish");
-        let source_work: Vec<_> = work.iter().filter(|entry| matches!(
-            relevance_statement_kind(&entry.sql),
-            Some(RelevanceStatementKind::SourceHead | RelevanceStatementKind::SourceRange)
-        )).collect();
-        assert_eq!(source_work.len(), 26, "thirteen actual heads and thirteen actual ranges");
+        let source_work: Vec<_> = work
+            .iter()
+            .filter(|entry| {
+                matches!(
+                    relevance_statement_kind(&entry.sql),
+                    Some(RelevanceStatementKind::SourceHead | RelevanceStatementKind::SourceRange)
+                )
+            })
+            .collect();
+        assert_eq!(
+            source_work.len(),
+            26,
+            "thirteen actual heads and thirteen actual ranges"
+        );
         assert_eq!(charged_rows, 15 * u64::from(count));
         // The two job projections each contain two stale candidates/group,
         // and pending/failed jobs each contain one. These six candidates have
         // an independent prepared-association alternative: an empty indexed
         // representation seek still consumes the shared seek meter.
-        let representations: Vec<_> = work.iter().filter(|entry|
-            relevance_statement_kind(&entry.sql) == Some(RelevanceStatementKind::Representations)
-        ).collect();
-        assert_eq!(representations.len(), 1, "one emitted prepared-alternative range form");
+        let representations: Vec<_> = work
+            .iter()
+            .filter(|entry| {
+                relevance_statement_kind(&entry.sql)
+                    == Some(RelevanceStatementKind::Representations)
+            })
+            .collect();
+        assert_eq!(
+            representations.len(),
+            1,
+            "one emitted prepared-alternative range form"
+        );
         let representations = representations[0];
         assert_eq!(representations.executions, 6 * u64::from(count));
-        assert_eq!(representations.rows, 0, "no retained prepared row has a stale job warning id");
-        assert!(work.iter().all(|entry| !matches!(
-            relevance_statement_kind(&entry.sql),
-            Some(RelevanceStatementKind::Membership | RelevanceStatementKind::Coverage)
-        )), "ordinary stale identities need no canonical membership/coverage range");
-        assert_eq!(charged_fallback, 0, "empty representation seeks are not physical fallback rows");
+        assert_eq!(
+            representations.rows, 0,
+            "no retained prepared row has a stale job warning id"
+        );
+        assert!(
+            work.iter().all(|entry| !matches!(
+                relevance_statement_kind(&entry.sql),
+                Some(RelevanceStatementKind::Membership | RelevanceStatementKind::Coverage)
+            )),
+            "ordinary stale identities need no canonical membership/coverage range"
+        );
+        assert_eq!(
+            charged_fallback, 0,
+            "empty representation seeks are not physical fallback rows"
+        );
         assert_eq!(charged_witness, 0, "no stale candidate creates a witness");
-        assert_eq!(work.iter().map(|entry| entry.executions).sum::<u64>(), charged_seeks,
-            "all source and separately recognized auxiliary seeks share one meter");
+        assert_eq!(
+            work.iter().map(|entry| entry.executions).sum::<u64>(),
+            charged_seeks,
+            "all source and separately recognized auxiliary seeks share one meter"
+        );
         let mut matrix = Vec::new();
         for (table, predicate, multiplier) in sources {
             for head in [true, false] {
-                let entries: Vec<_> = source_work.iter().copied().filter(|entry| {
-                    entry.sql.contains(&format!(" FROM {table} INDEXED BY "))
-                        && entry.sql.contains(predicate)
-                        && entry.sql.starts_with("SELECT COALESCE(MAX(") == head
-                }).collect();
-                assert_eq!(entries.len(), 1, "one actual query form: {table}/{predicate}, head={head}");
+                let entries: Vec<_> = source_work
+                    .iter()
+                    .copied()
+                    .filter(|entry| {
+                        entry.sql.contains(&format!(" FROM {table} INDEXED BY "))
+                            && entry.sql.contains(predicate)
+                            && entry.sql.starts_with("SELECT COALESCE(MAX(") == head
+                    })
+                    .collect();
+                assert_eq!(
+                    entries.len(),
+                    1,
+                    "one actual query form: {table}/{predicate}, head={head}"
+                );
                 let entry = entries[0];
                 if head {
-                    assert_eq!((entry.executions, entry.rows), (1, 1), "one captured highwater");
+                    assert_eq!(
+                        (entry.executions, entry.rows),
+                        (1, 1),
+                        "one captured highwater"
+                    );
                 } else {
-                    assert_eq!(entry.rows, multiplier * u64::from(count), "physical rows: {table}/{predicate}");
-                    assert!(entry.executions <= entry.rows + 1, "at most one terminal empty seek");
+                    assert_eq!(
+                        entry.rows,
+                        multiplier * u64::from(count),
+                        "physical rows: {table}/{predicate}"
+                    );
+                    assert!(
+                        entry.executions <= entry.rows + 1,
+                        "at most one terminal empty seek"
+                    );
                 }
                 assert_eq!(entry.max_scan, 0, "full scan: {}", entry.sql);
                 assert_eq!(entry.max_sort, 0, "sort: {}", entry.sql);
-                assert!(entry.max_vm <= 100, "bounded statement work: {} VM={}", entry.sql, entry.max_vm);
+                assert!(
+                    entry.max_vm <= 100,
+                    "bounded statement work: {} VM={}",
+                    entry.sql,
+                    entry.max_vm
+                );
                 for expanded in [&entry.first_expanded, &entry.last_expanded] {
-                    let plan: Vec<String> = db.prepare(&format!("EXPLAIN QUERY PLAN {expanded}"))
-                        .unwrap().query_map([], |row| row.get(3)).unwrap()
-                        .collect::<Result<_, _>>().unwrap();
-                    assert!(plan.iter().any(|line| line.contains("SEARCH ") && line.contains(table)),
-                        "actual head/range must seek source: {plan:?}");
-                    assert!(plan.iter().all(|line| !line.contains("SCAN ") && !line.contains("TEMP B-TREE")),
-                        "actual head/range must not scan/sort: {plan:?}");
-                    eprintln!("retained_groups={count} {table}/{predicate} head={head} executions={} rows={} max_vm={} plan={plan:?}",
-                        entry.executions, entry.rows, entry.max_vm);
+                    let plan: Vec<String> = db
+                        .prepare(&format!("EXPLAIN QUERY PLAN {expanded}"))
+                        .unwrap()
+                        .query_map([], |row| row.get(3))
+                        .unwrap()
+                        .collect::<Result<_, _>>()
+                        .unwrap();
+                    assert!(
+                        plan.iter()
+                            .any(|line| line.contains("SEARCH ") && line.contains(table)),
+                        "actual head/range must seek source: {plan:?}"
+                    );
+                    assert!(
+                        plan.iter()
+                            .all(|line| !line.contains("SCAN ") && !line.contains("TEMP B-TREE")),
+                        "actual head/range must not scan/sort: {plan:?}"
+                    );
+                    eprintln!(
+                        "retained_groups={count} {table}/{predicate} head={head} executions={} rows={} max_vm={} plan={plan:?}",
+                        entry.executions, entry.rows, entry.max_vm
+                    );
                 }
                 matrix.push((entry.sql.clone(), entry.max_vm));
             }
         }
-        assert_eq!(representations.max_scan, 0, "prepared-alternative full scan");
+        assert_eq!(
+            representations.max_scan, 0,
+            "prepared-alternative full scan"
+        );
         assert_eq!(representations.max_sort, 0, "prepared-alternative sort");
-        assert!(representations.max_vm <= 100, "bounded prepared-alternative VM work");
-        for expanded in [&representations.first_expanded, &representations.last_expanded] {
-            let plan: Vec<String> = db.prepare(&format!("EXPLAIN QUERY PLAN {expanded}"))
-                .unwrap().query_map([], |row| row.get(3)).unwrap()
-                .collect::<Result<_, _>>().unwrap();
-            assert!(plan.iter().any(|line| line.contains("SEARCH prepared_unavailable_warnings")),
-                "actual prepared alternative must seek source: {plan:?}");
-            assert!(plan.iter().all(|line| !line.contains("SCAN ") && !line.contains("TEMP B-TREE")),
-                "actual prepared alternative must not scan/sort: {plan:?}");
-            eprintln!("retained_groups={count} prepared-alternative executions={} rows={} max_vm={} plan={plan:?}",
-                representations.executions, representations.rows, representations.max_vm);
+        assert!(
+            representations.max_vm <= 100,
+            "bounded prepared-alternative VM work"
+        );
+        for expanded in [
+            &representations.first_expanded,
+            &representations.last_expanded,
+        ] {
+            let plan: Vec<String> = db
+                .prepare(&format!("EXPLAIN QUERY PLAN {expanded}"))
+                .unwrap()
+                .query_map([], |row| row.get(3))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            assert!(
+                plan.iter()
+                    .any(|line| line.contains("SEARCH prepared_unavailable_warnings")),
+                "actual prepared alternative must seek source: {plan:?}"
+            );
+            assert!(
+                plan.iter()
+                    .all(|line| !line.contains("SCAN ") && !line.contains("TEMP B-TREE")),
+                "actual prepared alternative must not scan/sort: {plan:?}"
+            );
+            eprintln!(
+                "retained_groups={count} prepared-alternative executions={} rows={} max_vm={} plan={plan:?}",
+                representations.executions, representations.rows, representations.max_vm
+            );
         }
         matrix.push((representations.sql.clone(), representations.max_vm));
         measurements.push(matrix);
     }
-    for ((small_sql, small_vm), (large_sql, large_vm)) in measurements[0].iter().zip(&measurements[1]) {
-        assert_eq!(small_sql, large_sql, "same observed statement form at both scales");
-        assert!(large_vm <= &(small_vm + 8), "source statement work must stay flat across 16x history: {small_sql} VM={small_vm}/{large_vm}");
+    for ((small_sql, small_vm), (large_sql, large_vm)) in
+        measurements[0].iter().zip(&measurements[1])
+    {
+        assert_eq!(
+            small_sql, large_sql,
+            "same observed statement form at both scales"
+        );
+        assert!(
+            large_vm <= &(small_vm + 8),
+            "source statement work must stay flat across 16x history: {small_sql} VM={small_vm}/{large_vm}"
+        );
     }
 }
 

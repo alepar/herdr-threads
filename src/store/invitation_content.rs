@@ -1151,8 +1151,8 @@ fn revisit_candidates(
         .collect::<Result<Vec<_>, _>>()
         .map_err(private_read_error)?;
     for (id, ordinal) in &rows {
-        let id = InvitationId::parse(id)
-            .map_err(|_| corrupt("invalid private invitation identity"))?;
+        let id =
+            InvitationId::parse(id).map_err(|_| corrupt("invalid private invitation identity"))?;
         visited += 1;
         state.cleanup_after = *ordinal;
         let pending:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM digest_pending_invitations WHERE seat_id=?1 AND invitation_id=?2)",params![claim.seat.as_str(),id.as_str()],|r|r.get(0)).map_err(store_error)?;
@@ -1236,8 +1236,8 @@ fn revisit_candidates(
         .collect::<Result<Vec<_>, _>>()
         .map_err(private_read_error)?;
     for (id, bytes, ordinal) in rows {
-        let id = InvitationId::parse(id)
-            .map_err(|_| corrupt("invalid private invitation identity"))?;
+        let id =
+            InvitationId::parse(id).map_err(|_| corrupt("invalid private invitation identity"))?;
         visited += 1;
         state.revisit_after_bytes = bytes;
         state.revisit_after_ordinal = ordinal;
@@ -2348,8 +2348,8 @@ pub(super) fn refresh(
         .collect::<Result<Vec<_>, _>>()
         .map_err(private_read_error)?;
     for (id, ordinal, key, g, e) in &cleanup {
-        let id = InvitationId::parse(id)
-            .map_err(|_| corrupt("invalid private invitation identity"))?;
+        let id =
+            InvitationId::parse(id).map_err(|_| corrupt("invalid private invitation identity"))?;
         state.mod_cleanup_after = *ordinal;
         let pending:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM digest_pending_invitations WHERE seat_id=?1 AND invitation_id=?2)",params![seat.as_str(),id.as_str()],|r|r.get(0)).map_err(store_error)?;
         if !pending {
