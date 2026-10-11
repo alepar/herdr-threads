@@ -616,7 +616,9 @@ mod binding_presentation {
             }
         }
         fn input(&self, name: &str) -> PresentationInput {
-            let claim = self.claim(name);
+            self.input_for_claim(name, self.claim(name))
+        }
+        fn input_for_claim(&self, name: &str, claim: CallerClaim) -> PresentationInput {
             let frozen_render = self
                 .store
                 .presentation_render_selection(&claim, PresentationConsumer::Watch, &budget())
@@ -681,8 +683,11 @@ mod binding_presentation {
                 .status
         }
         fn ordinary(&self) {
-            self.db.execute_batch("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES('m','i','t',1,'ordinary','unread by b',0,3);
-                INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES('prep','i','actor','op',zeroblob(32),'t',0,0,0,0,0,0,1,'sealed');
+            self.ordinary_body("unread by b");
+        }
+        fn ordinary_body(&self, body: &str) {
+            self.db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES('m','i','t',1,'ordinary',?1,0,3)", [body]).unwrap();
+            self.db.execute_batch("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES('prep','i','actor','op',zeroblob(32),'t',0,0,0,0,0,0,1,'sealed');
                 INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES('prep','t','s',1,300000,1);
                 INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('i','prep','m','t',3,0,1,0,1,0);
                 INSERT INTO receipt_state(message_id,seat_id,state,acked_at,ack_binding_id,ack_actor_seat_id,ack_generation,ack_observation) VALUES('m','s','acked',7,'a','s',1,'original');
@@ -987,7 +992,8 @@ mod binding_presentation {
             },
         };
         let f = Fixture::new();
-        f.ordinary();
+        let body = "z".repeat(65_536);
+        f.ordinary_body(&body);
         // The public post-display mutation checks canonical A2 mapping and a
         // canonical execution UUID, unlike the smaller presentation-only fixture.
         let execution = "11111111-1111-4111-8111-111111111111";
@@ -998,22 +1004,7 @@ mod binding_presentation {
         .unwrap();
         let mut claim = f.claim("b");
         claim.execution = ExecutionId::new(execution);
-        let input = || {
-            let mut input = f.input("b");
-            input.pull.claim = claim.clone();
-            input.frozen_render = f
-                .store
-                .presentation_render_selection(&claim, PresentationConsumer::Watch, &budget())
-                .unwrap()
-                .map(|identity| FrozenPresentationRender {
-                    identity,
-                    codec: None,
-                });
-            input
-        };
-        let body = "z".repeat(65_536);
-        f.db.execute("UPDATE messages SET body=?1 WHERE id='m'", [&body])
-            .unwrap();
+        let input = || f.input_for_claim("b", claim.clone());
         // A real second published recipient follows the long unread message.
         f.db.execute_batch("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES('later','i','t',2,'ordinary','later mail',0,4);
             INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) SELECT 'later-prep',instance_id,operation_scope,'later-op',digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status FROM send_preparations WHERE id='prep';

@@ -7153,7 +7153,7 @@ impl OfferWindowFixture {
         let recipient = if watch {
             check_in(
                 &f,
-                claim("c", "pc", Harness::Claude, "offer-window-recipient", 0),
+                claim("c", "pc", Harness::Claude, "offer-window-recipient", 1),
                 "offer-window-recipient-ci",
             )
         } else {
@@ -7161,7 +7161,7 @@ impl OfferWindowFixture {
         };
         let sender = check_in(
             &f,
-            claim("x", "px", fourth(), "offer-window-sender", 0),
+            claim("x", "px", fourth(), "offer-window-sender", 1),
             "offer-window-sender-ci",
         );
         let watch = watch.then(|| {
@@ -8055,7 +8055,7 @@ fn presentation_reclamation_legacy_terminal_delta_has_exact_bounded_work_on_unch
         known.into_iter().collect()
     );
     assert_eq!(output.work.offer_reconciliation_visits, 256);
-    assert_eq!(output.work.offer_reconciliation_probes, 1280);
+    assert_eq!(output.work.offer_reconciliation_probes, 2560);
     assert_eq!(output.work.ordinary_publication_visits, 0);
 }
 
@@ -8079,7 +8079,7 @@ fn presentation_reclamation_keeps_pending_missing_and_deduplicates_snapshot_work
         .unwrap();
     assert_eq!(output.reclaimed_messages, ids(&["m2"]));
     assert_eq!(output.work.offer_reconciliation_visits, 3);
-    assert_eq!(output.work.offer_reconciliation_probes, 11);
+    assert_eq!(output.work.offer_reconciliation_probes, 16);
     assert_eq!(receipt_state(&f, "m1"), "pending");
 }
 
@@ -8147,11 +8147,18 @@ fn presentation_reclamation_preserves_logical_precedence_and_explicit_waiver_fla
 // displayed progress. Migration26 introduced only manifest-published lazy mail.
 #[test]
 fn presentation_reclamation_requires_published_addressed_lazy_completion() {
+    use crate::protocol::{
+        commands::{BodyReadRequest, CompleteInboxDelivery, MessageQuery},
+        results::MessageContent,
+    };
     let f = fixture(0);
     let recipient = pull_seat(&f);
+    let sibling = second_binding(&f);
+    // Complete the first row only; the still-unread later row remains a contiguous
+    // cursor barrier. Both bindings existed before any of these publications.
     for id in [
-        "msg-old-pending",
         "msg-old-displayed",
+        "msg-old-pending",
         "msg-unpublished-displayed",
     ] {
         lazy_message(&f, id, "retained lazy body");
@@ -8162,25 +8169,93 @@ fn presentation_reclamation_requires_published_addressed_lazy_completion() {
         [],
     )
     .unwrap();
-    let output = f
-        .store
-        .presentation_pull(
-            offer_reconciliation_input(
-                &f,
-                &recipient,
-                ids(&[
-                    "msg-old-pending",
-                    "msg-old-displayed",
-                    "msg-unpublished-displayed",
-                ]),
-            ),
+    let reconcile = |claim: &CallerClaim| {
+        f.store
+            .presentation_pull(
+                offer_reconciliation_input(
+                    &f,
+                    claim,
+                    ids(&[
+                        "msg-old-pending",
+                        "msg-old-displayed",
+                        "msg-unpublished-displayed",
+                    ]),
+                ),
+                &budget(),
+            )
+            .unwrap()
+    };
+    for claim in [&recipient, &sibling] {
+        let output = reconcile(claim);
+        assert!(
+            output.reclaimed_messages.is_empty(),
+            "historical seat display is not this binding's completion"
+        );
+        assert_eq!(output.work.offer_reconciliation_visits, 3);
+        assert_eq!(output.work.offer_reconciliation_probes, 24);
+    }
+    let CommandResult::Message(read) = f
+        .service
+        .handle(
+            Command::Message(MessageQuery {
+                message: MessageId::new("msg-old-displayed"),
+                body: BodyReadRequest {
+                    cursor: None,
+                    offset: None,
+                    max_bytes: 4096,
+                },
+            }),
+            peer(),
             &budget(),
         )
-        .unwrap();
-    assert_eq!(output.reclaimed_messages, ids(&["msg-old-displayed"]));
+        .unwrap()
+    else {
+        panic!("public full body read")
+    };
+    let MessageContent::Ordinary {
+        body_data,
+        body_complete,
+        body_next_cursor,
+        ..
+    } = read.content
+    else {
+        panic!("lazy message carries ordinary body content")
+    };
+    assert_eq!(body_data, "retained lazy body");
+    assert!(body_complete);
+    assert!(body_next_cursor.is_none());
+    let shown = ids(&["msg-old-displayed"]);
+    let CommandResult::InboxDeliveryCompleted(completed) = f
+        .service
+        .handle(
+            Command::CompleteInboxDelivery(CompleteInboxDelivery {
+                messages: shown.clone(),
+                operation: OperationId::new("reclamation-full-lazy-display"),
+                claim: recipient.clone(),
+                via: None,
+            }),
+            peer(),
+            &budget(),
+        )
+        .unwrap()
+    else {
+        panic!("public text-inbox completion")
+    };
+    assert_eq!(completed, shown);
+    let output = reconcile(&recipient);
+    assert_eq!(output.reclaimed_messages, shown);
     assert_eq!(output.work.offer_reconciliation_visits, 3);
-    assert_eq!(output.work.offer_reconciliation_probes, 9);
+    assert_eq!(output.work.offer_reconciliation_probes, 24);
+    let other = reconcile(&sibling);
+    assert!(
+        other.reclaimed_messages.is_empty(),
+        "the sibling still has unread published mail despite the seat display state"
+    );
+    assert_eq!(other.work.offer_reconciliation_visits, 3);
+    assert_eq!(other.work.offer_reconciliation_probes, 24);
     assert_eq!(lazy_state(&f, "msg-old-pending"), "pending");
+    assert_eq!(lazy_state(&f, "msg-old-displayed"), "displayed");
+    assert_eq!(lazy_state(&f, "msg-unpublished-displayed"), "displayed");
 }
 
 // Kills: suppressing the terminal delta on recovery replay, or running its
@@ -8192,7 +8267,7 @@ fn presentation_reclamation_replay_returns_delta_and_refusals_do_no_reconciliati
     let recipient = pull_seat(&f);
     let inviter = check_in(
         &f,
-        claim("x", "px", fourth(), "reclamation-inviter", 0),
+        claim("x", "px", fourth(), "reclamation-inviter", 1),
         "reclamation-inviter-ci",
     );
     canonical_lazy_invitation_backlog(&f, &recipient, &inviter, 1, "reclamation-replay");

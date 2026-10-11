@@ -6292,7 +6292,7 @@ fn v28_upgrade_migrates_bindings_to_session_keyed_v32() {
             .unwrap(),
         schema::LATEST_VERSION
     );
-    assert_eq!(schema::LATEST_VERSION, 35);
+    assert_eq!(schema::LATEST_VERSION, 45);
     // ordinals, sequence and archival guards survive the rebuild
     assert_eq!(
         db.query_row(
@@ -8138,14 +8138,12 @@ fn published_v35_upgrade_preserves_exact_ack_bindings_and_delivery_history() {
         source.execute_batch("COMMIT").unwrap();
         let first = binding_id_of(&source, 1);
         let second = binding_id_of(&source, 2);
-        source.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at,ack_actor_seat_id,ack_generation,ack_observation,acked_at,ack_binding_id) VALUES('m1','t','agent','acked',50,10,60,'agent',1,'cooperative_top_level',20,?1)", [&first]).unwrap();
-        source.execute("INSERT INTO receipt_state(message_id,seat_id,state,available_at,deadline_at,ack_actor_seat_id,ack_generation,ack_observation,acked_at,ack_binding_id) VALUES('m2','agent','acked',11,61,'agent',2,'cooperative_top_level',30,?1)", [&second]).unwrap();
-        source
-            .execute(
-                "UPDATE messages SET sender_binding_id=?1 WHERE id='m1'",
-                [&first],
-            )
-            .unwrap();
+        // Attribution belongs to original publication: existing message history is immutable.
+        // These retained sends/ACKs lie inside the first two historical binding intervals.
+        source.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq,actor_seat_id,author_kind,author_role,sender_binding_id) VALUES('i','published35-physical','t',5,'ordinary','retained physical attribution',10,6,'agent','native','agent',?1),('i','published35-sparse','t',6,'ordinary','retained sparse attribution',21,7,'agent','native','agent',?2)", rusqlite::params![first,second]).unwrap();
+        source.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at,ack_actor_seat_id,ack_generation,ack_observation,acked_at,ack_binding_id) VALUES('published35-physical','t','agent','acked',50,10,60,'agent',1,'cooperative_top_level',15,?1)", [&first]).unwrap();
+        source.execute_batch("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES('published35-sparse-prep','i','seat:agent','published35-sparse-send',zeroblob(32),'t',0,0,0,0,0,0,1,'sealed'); INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES('published35-sparse-prep','t','agent',1,50,1); INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('i','published35-sparse-prep','published35-sparse','t',7,21,6,0,1,0)").unwrap();
+        source.execute("INSERT INTO receipt_state(message_id,seat_id,state,available_at,deadline_at,ack_actor_seat_id,ack_generation,ack_observation,acked_at,ack_binding_id) VALUES('published35-sparse','agent','acked',21,71,'agent',2,'cooperative_top_level',25,?1)", [&second]).unwrap();
         let file = ScratchStore::new("published35-ack-binding-upgrade");
         source
             .execute("VACUUM INTO ?1", [file.path().to_str().unwrap()])
@@ -8222,7 +8220,7 @@ fn published_v35_upgrade_preserves_exact_ack_bindings_and_delivery_history() {
         schema::initialize(&db, || UtcMillis(901)).unwrap();
         assert_eq!(
             db.query_row(
-                "SELECT ack_binding_id FROM receipts WHERE message_id='m1'",
+                "SELECT ack_binding_id FROM receipts WHERE message_id='published35-physical'",
                 [],
                 |r| r.get::<_, String>(0)
             )
@@ -8231,7 +8229,7 @@ fn published_v35_upgrade_preserves_exact_ack_bindings_and_delivery_history() {
         );
         assert_eq!(
             db.query_row(
-                "SELECT ack_binding_id FROM receipt_state WHERE message_id='m2'",
+                "SELECT ack_binding_id FROM receipt_state WHERE message_id='published35-sparse'",
                 [],
                 |r| r.get::<_, String>(0)
             )
