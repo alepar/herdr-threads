@@ -2181,6 +2181,453 @@ fn presentation_test_confirm(
     }
 }
 
+// Kills stale command hydration after real attach/release, historical-link reuse,
+// and borrowing another invitation's current requirement when both remain pending.
+// This is the canonical service/render boundary, not a registered native hook.
+#[test]
+fn presentation_v2_service_requirement_attach_release_fresh_replacement_keeps_exact_commands() {
+    use crate::{
+        ports::{
+            ServiceAuthorityGate, ServiceConnectionAuthority, ServiceDecisionGuard,
+            ServiceWriteTransactionProof,
+        },
+        protocol::{
+            delivery::{
+                DeliveryPresentationConfirmV2, DeliveryPresentationConfirmationV2,
+                DeliveryPullReplyV2, PresentationConsumer, PresentationItemV2,
+            },
+            results::ApiError,
+            service::{
+                EnsureManagedThread, InvitationConstraint, ReleaseRequirement, RequiredMembership,
+                RequirementState, ServiceInvite, ServiceOperation, ServiceResult,
+            },
+        },
+    };
+    struct Gate(ServiceAuthorId);
+    struct Guard(ServiceAuthorId);
+    impl ServiceDecisionGuard for Guard {
+        fn author(&self) -> &ServiceAuthorId {
+            &self.0
+        }
+    }
+    impl ServiceAuthorityGate for Gate {
+        fn register(
+            &self,
+            instance: &str,
+            boot: &str,
+            author: ServiceAuthorId,
+        ) -> Result<ServiceConnectionAuthority, ApiError> {
+            Ok(ServiceConnectionAuthority::new(
+                instance.into(),
+                boot.into(),
+                1,
+                author,
+            ))
+        }
+        fn decision_guard<'a>(
+            &'a self,
+            _: &ServiceWriteTransactionProof,
+            connection: &ServiceConnectionAuthority,
+        ) -> Result<Box<dyn ServiceDecisionGuard + 'a>, ApiError> {
+            assert_eq!(connection.author(), &self.0);
+            Ok(Box::new(Guard(self.0.clone())))
+        }
+        fn revoke_exact(&self, _: &ServiceConnectionAuthority) -> bool {
+            true
+        }
+    }
+
+    let f = fixture(0);
+    let recipient = pull_seat(&f);
+    let tx = f.db.unchecked_transaction().unwrap();
+    let author =
+        crate::store::service_substrate::ensure_reserved_author(&tx, "i", UtcMillis(0)).unwrap();
+    tx.commit().unwrap();
+    let gate = Gate(author.clone());
+    let connection = gate.register("i", "boot", author).unwrap();
+    let operate = |operation| {
+        f.service
+            .service_operation(operation, &connection, &gate, &budget())
+            .unwrap()
+    };
+    let thread = ThreadId::new("required-command-context");
+    const TOPIC: &str = "Review every retained invitation command";
+    const GOAL: &str =
+        "Preserve ordinary timing and require the exact current participation revision";
+    assert!(matches!(
+        operate(ServiceOperation::EnsureThread(EnsureManagedThread {
+            thread: thread.clone(),
+            topic: TOPIC.into(),
+            goal: GOAL.into(),
+            operation: OperationId::new("required-command-thread"),
+        })),
+        ServiceResult::ThreadEnsured(_)
+    ));
+    let invite = |constraint, duration, operation: &str| {
+        let ServiceResult::Invitation(invitation) =
+            operate(ServiceOperation::Invite(ServiceInvite {
+                thread: thread.clone(),
+                seat: recipient.seat.clone(),
+                constraint,
+                deadline_millis: Some(duration),
+                operation: OperationId::new(operation),
+            }))
+        else {
+            panic!("real service invitation")
+        };
+        invitation
+    };
+    // Full rows are independent witnesses; Pull/Confirm may change presentation
+    // bookkeeping, but may not accept, ACK, cancel, or complete an obligation.
+    let rows = |table: &str| {
+        let mut statement =
+            f.db.prepare(&format!(
+                "SELECT * FROM {table} WHERE thread_id=?1 ORDER BY rowid"
+            ))
+            .unwrap();
+        statement
+            .query_map([thread.as_str()], |row| {
+                (0..row.as_ref().column_count())
+                    .map(|column| row.get::<_, rusqlite::types::Value>(column))
+                    .collect::<rusqlite::Result<Vec<_>>>()
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+    };
+    let obligations = || {
+        [
+            "invitations",
+            "requirement_episodes",
+            "memberships",
+            "membership_intervals",
+            "receipts",
+            "lazy_recipients",
+        ]
+        .into_iter()
+        .map(&rows)
+        .collect::<Vec<_>>()
+    };
+    let epoch = |id: &InvitationId| {
+        f.db.query_row("SELECT i.command_context_epoch,coalesce(c.context_revision,0),coalesce(c.last_change_seq,0) FROM invitations i LEFT JOIN invitation_context_latest c ON c.thread_id=i.thread_id WHERE i.id=?1",
+            [id.as_str()], |r| Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?))).unwrap()
+    };
+    let timing = |id: &InvitationId| {
+        f.db.query_row(
+            "SELECT episode,created_at,frozen_duration_ms,deadline_at FROM invitations WHERE id=?1",
+            [id.as_str()],
+            |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, i64>(3)?,
+                ))
+            },
+        )
+        .unwrap()
+    };
+    let assert_pending = |invitations: i64, requirements: i64| {
+        let counts = f.db.query_row("SELECT (SELECT count(*) FROM invitations WHERE thread_id=?1 AND state='pending'),(SELECT count(*) FROM requirement_episodes WHERE thread_id=?1 AND state='pending'),(SELECT count(*) FROM membership_intervals WHERE thread_id=?1),(SELECT count(*) FROM receipts WHERE thread_id=?1),(SELECT count(*) FROM lazy_recipients WHERE thread_id=?1),(SELECT count(*) FROM invitation_cancellations c JOIN invitations i ON i.id=c.invitation_id WHERE i.thread_id=?1)",
+            [thread.as_str()], |r| Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?,r.get::<_,i64>(4)?,r.get::<_,i64>(5)?))).unwrap();
+        assert_eq!(counts, (invitations, requirements, 0, 0, 0, 0));
+        let membership =
+            f.db.query_row(
+                "SELECT state,voluntary_state FROM memberships WHERE thread_id=?1 AND seat_id=?2",
+                params![thread.as_str(), recipient.seat.as_str()],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+            )
+            .unwrap();
+        assert_eq!(membership, ("invited".into(), "invited".into()));
+    };
+    let present =
+        |claim: &CallerClaim, expected: &[(&InvitationId, Option<&RequiredMembership>, i64)]| {
+            let before = obligations();
+            let wake_before = wake_attention(&f);
+            assert!(
+                wake_before > 0,
+                "timed/required invitations create real wake work"
+            );
+            let mut seen = std::collections::HashSet::new();
+            // At most two invitations, no ordinary backlog, no elapsed-time retry.
+            for _ in 0..8 {
+                let DeliveryPullReplyV2::Page(page) = presentation_test_pull(&f, claim) else {
+                    panic!("current command context must have a canonical V2 page")
+                };
+                assert!(page.items.len() <= 32 && page.output_bytes <= 65_536);
+                for item in &page.items {
+                    let PresentationItemV2::Invitation { id, content } = item else {
+                        continue;
+                    };
+                    let (_, required, deadline) = expected
+                        .iter()
+                        .find(|(wanted, _, _)| *wanted == id)
+                        .expect("only this phase's pending invitations are offered");
+                    assert_eq!(content.thread, thread);
+                    assert!(!content.truncated);
+                    assert!(content.wakes);
+                    let (topic, goal, revision): (String, String, i64) =
+                        f.db.query_row(
+                            "SELECT topic,goal,topic_revision FROM threads WHERE id=?1",
+                            [thread.as_str()],
+                            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                        )
+                        .unwrap();
+                    assert_eq!((topic.as_str(), goal.as_str()), (TOPIC, GOAL));
+                    assert_eq!(content.topic_revision, Some(revision.to_string()));
+                    assert_eq!(content.command_context_epoch, Some(epoch(id).0.to_string()));
+                    let command = if let Some(required) = required {
+                        let canonical: (String,i64,String) = f.db.query_row("SELECT invitation_id,revision,state FROM requirement_episodes WHERE id=?1 AND thread_id=?2 AND seat_id=?3",
+                        params![required.requirement.as_str(),thread.as_str(),claim.seat.as_str()], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
+                        assert_eq!(
+                            canonical,
+                            (
+                                id.as_str().into(),
+                                required.revision as i64,
+                                "pending".into()
+                            )
+                        );
+                        assert_eq!(&required.invitation, id);
+                        assert_eq!(required.state, RequirementState::Pending);
+                        assert_eq!(required.accepted_by, None);
+                        assert_eq!(required.accepted_at, None);
+                        format!(
+                            "herdr-threads accept-required {} --invitation {} --requirement {} --revision {}",
+                            thread, id, required.requirement, required.revision
+                        )
+                    } else {
+                        format!("herdr-threads accept {thread}")
+                    };
+                    let expected_body =
+                        format!("{TOPIC}\ngoal: {GOAL}\ndeadline: {deadline}\nnext: {command}");
+                    assert_eq!(content.body, expected_body);
+                    let actual_command = content
+                        .body
+                        .lines()
+                        .find_map(|line| line.strip_prefix("next: "))
+                        .unwrap();
+                    let argv =
+                        shlex::split(actual_command).expect("rendered command is shell argv");
+                    assert_eq!(
+                        argv,
+                        command
+                            .split_whitespace()
+                            .map(str::to_owned)
+                            .collect::<Vec<_>>()
+                    );
+                    crate::cli::commands::parse_argv(argv)
+                        .expect("rendered argv parses without executing acceptance");
+                    assert!(
+                        page.text
+                            .contains(&format!("[herdr-threads] invitation {id} in {thread}"))
+                    );
+                    assert!(
+                        page.text
+                            .contains(&format!("  {}", expected_body.replace('\n', "\n  ")))
+                    );
+                    assert!(
+                        seen.insert(id.clone()),
+                        "one complete current command offer per invitation"
+                    );
+                }
+                if let Some(token) = &page.presentation_token {
+                    // Explicitly confirm this rendered page and its current controls;
+                    // no acceptance, receipt ACK, or transcript completion is issued.
+                    let CommandResult::DeliveryPresentationConfirmedV2(confirmed) = f
+                        .service
+                        .handle(
+                            Command::DeliveryPresentationConfirmV2(DeliveryPresentationConfirmV2 {
+                                claim: claim.clone(),
+                                consumer: PresentationConsumer::Hook,
+                                token: token.clone(),
+                                emitted_controls: page.emitted_controls.clone(),
+                                presentation_lease: None,
+                            }),
+                            peer(),
+                            &budget(),
+                        )
+                        .unwrap()
+                    else {
+                        panic!("structured V2 confirmation")
+                    };
+                    assert_eq!(
+                        confirmed.status,
+                        DeliveryPresentationConfirmationV2::Confirmed
+                    );
+                    assert_eq!(confirmed.acknowledged_controls, page.emitted_controls);
+                    let consumer: (Option<String>,String,i64,String) = f.db.query_row("SELECT outbox_token,last_token,generation,execution FROM invitation_presentation_consumers WHERE seat_id=?1 AND consumer='hook'",
+                    [claim.seat.as_str()], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).unwrap();
+                    assert_eq!(
+                        consumer,
+                        (
+                            None,
+                            token.clone(),
+                            claim.binding_generation as i64,
+                            claim.execution.as_str().into()
+                        )
+                    );
+                } else {
+                    assert!(
+                        page.items.is_empty(),
+                        "rendered invitations require an explicit token"
+                    );
+                }
+                assert_eq!(
+                    obligations(),
+                    before,
+                    "presentation never settles participation or messages"
+                );
+                assert_eq!(
+                    wake_attention(&f),
+                    wake_before,
+                    "presentation does not erase pending wake work"
+                );
+                if seen.len() == expected.len() {
+                    for (id, _, _) in expected {
+                        let complete: i64 = f.db.query_row("SELECT complete_count FROM invitation_presentation_items WHERE seat_id=?1 AND consumer='hook' AND invitation_id=?2 AND generation=?3 AND execution=?4",
+                        params![claim.seat.as_str(),id.as_str(),claim.binding_generation as i64,claim.execution.as_str()], |r| r.get(0)).unwrap();
+                        assert_eq!(complete, 1, "current execution records a complete offer");
+                    }
+                    return;
+                }
+            }
+            panic!("finite canonical command context did not drain: {seen:?}");
+        };
+
+    let ordinary = invite(
+        InvitationConstraint::Ordinary,
+        60_000,
+        "required-command-ordinary",
+    );
+    assert_eq!(ordinary.requirement, None);
+    let original_timing = timing(&ordinary.invitation);
+    assert_eq!(original_timing, (1, 1_000_000, 60_000, 1_060_000));
+    let initial = epoch(&ordinary.invitation);
+    assert_eq!(initial.0, 0);
+    assert_pending(1, 0);
+    present(&recipient, &[(&ordinary.invitation, None, 1_060_000)]);
+
+    let attached = invite(
+        InvitationConstraint::Required,
+        90_000,
+        "required-command-attach",
+    );
+    assert_eq!(
+        attached.invitation, ordinary.invitation,
+        "first attachment reuses the unreferenced timed invitation"
+    );
+    let requirement = attached.requirement.as_ref().unwrap();
+    assert_eq!(requirement.revision, 1);
+    assert_eq!(timing(&ordinary.invitation), original_timing);
+    let attached_epoch = epoch(&ordinary.invitation);
+    assert_eq!(attached_epoch.0, initial.0 + 1);
+    assert_eq!(attached_epoch.1, initial.1 + 1);
+    assert!(attached_epoch.2 > initial.2);
+    assert_pending(1, 1);
+    present(
+        &recipient,
+        &[(&ordinary.invitation, Some(requirement), 1_060_000)],
+    );
+
+    let ServiceResult::RequirementReleased(released) =
+        operate(ServiceOperation::ReleaseRequirement(ReleaseRequirement {
+            thread: thread.clone(),
+            seat: recipient.seat.clone(),
+            requirement: requirement.requirement.clone(),
+            operation: OperationId::new("required-command-release"),
+        }))
+    else {
+        panic!("real release result")
+    };
+    assert_eq!(released.state, RequirementState::Released);
+    assert_eq!(released.revision, 2);
+    assert_eq!(released.invitation, ordinary.invitation);
+    let released_row: (String, i64, String) =
+        f.db.query_row(
+            "SELECT state,revision,invitation_id FROM requirement_episodes WHERE id=?1",
+            [requirement.requirement.as_str()],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        released_row,
+        ("released".into(), 2, ordinary.invitation.as_str().into())
+    );
+    assert_eq!(timing(&ordinary.invitation), original_timing);
+    let released_epoch = epoch(&ordinary.invitation);
+    assert_eq!(released_epoch.0, attached_epoch.0 + 1);
+    assert_eq!(released_epoch.1, attached_epoch.1 + 1);
+    assert!(released_epoch.2 > attached_epoch.2);
+    assert_pending(1, 0);
+    present(&recipient, &[(&ordinary.invitation, None, 1_060_000)]);
+    let old_invitation = rows("invitations");
+    let old_requirement = rows("requirement_episodes");
+
+    let replacement = invite(
+        InvitationConstraint::Required,
+        90_000,
+        "required-command-replacement",
+    );
+    let replacement_requirement = replacement.requirement.as_ref().unwrap();
+    assert_ne!(replacement.invitation, ordinary.invitation);
+    assert_ne!(replacement_requirement.requirement, requirement.requirement);
+    assert_eq!(replacement_requirement.revision, 1);
+    assert_eq!(
+        timing(&replacement.invitation),
+        (2, 1_000_000, 90_000, 1_090_000)
+    );
+    assert_eq!(epoch(&replacement.invitation).0, 1);
+    let replaced_epoch = epoch(&ordinary.invitation);
+    assert_eq!(
+        replaced_epoch.0, released_epoch.0,
+        "old command stays ordinary"
+    );
+    assert_eq!(replaced_epoch.1, released_epoch.1 + 1);
+    assert!(replaced_epoch.2 > released_epoch.2);
+    assert_eq!(&rows("invitations")[..1], old_invitation.as_slice());
+    assert_eq!(
+        &rows("requirement_episodes")[..1],
+        old_requirement.as_slice()
+    );
+    assert_pending(2, 1);
+    present(
+        &recipient,
+        &[(
+            &replacement.invitation,
+            Some(replacement_requirement),
+            1_090_000,
+        )],
+    );
+
+    // A confirmed unchanged old command is not duplicated in that execution.
+    // Real CheckIn rotation makes both pending items newly visible together.
+    let before_rotation = obligations();
+    let rotated = rotate(&f, &recipient, "required-command-fresh-session", 2);
+    assert_ne!(rotated.execution, recipient.execution);
+    assert_eq!(rotated.seat, recipient.seat);
+    assert_eq!(obligations(), before_rotation);
+    present(
+        &rotated,
+        &[
+            (&ordinary.invitation, None, 1_060_000),
+            (
+                &replacement.invitation,
+                Some(replacement_requirement),
+                1_090_000,
+            ),
+        ],
+    );
+    // Parsing the ordinary command is not a claim that native acceptance may
+    // bypass the still-pending required invitation; neither command is run.
+    assert_eq!(&rows("invitations")[..1], old_invitation.as_slice());
+    assert_eq!(
+        &rows("requirement_episodes")[..1],
+        old_requirement.as_slice()
+    );
+    assert_eq!(epoch(&ordinary.invitation), replaced_epoch);
+    assert_pending(2, 1);
+}
+
 #[test]
 fn an_old_visible_invitation_topic_change_survives_a_saturated_newest_window() {
     use crate::protocol::commands::SetTopic;
