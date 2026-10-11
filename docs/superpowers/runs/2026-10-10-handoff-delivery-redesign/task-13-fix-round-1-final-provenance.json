@@ -1,0 +1,11 @@
+{
+  "head": "f36ffaa5a51fd5e115e73b05e2daef7e8bf17dbd",
+  "tree": "efa6e0431960a056312fbe2c822b3f84912671d9",
+  "whole_review_base": "ee1e598c3ee96566ddc9b397185cdc97c8bf6218",
+  "whole_diff_sha256": "34f55f20beb397efe6d0eec1d9778101fd659ec8739a70cfd213638dd4c3094f",
+  "fix_review_base": "7d432fe0f4ad3de85c96a029aedfb6e5b5ff5845",
+  "fix_diff_sha256": "abfc54b4a7c4a0e43605c2f53eb453b4cc1af883f65ef2f0014d4e15145279af",
+  "workspace_at_freeze": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2",
+  "clean": true,
+  "status": "fix round1 complete; independent rereview pending; no active commands/children"
+}

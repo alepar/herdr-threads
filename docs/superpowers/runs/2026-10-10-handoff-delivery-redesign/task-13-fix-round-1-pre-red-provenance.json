@@ -1,0 +1,16 @@
+{
+  "head": "7d432fe0f4ad3de85c96a029aedfb6e5b5ff5845",
+  "workspace": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/parked--task-ht-0lo.8.2",
+  "status": "test fixtures frozen; no production changes; awaiting Cargo lease for meaningful RED",
+  "dirty_diff_sha256": "74f17d54052bf663ca9f4146e48476cb63c097e587d9434b5a42ac0c375ea0d2",
+  "changed_paths": [
+    "tests/cli/topology_handoff.rs",
+    "tests/daemon/transport.rs"
+  ],
+  "tests": {
+    "recovery": 5,
+    "socket": 1,
+    "socket_subcases": 4
+  },
+  "cargo_used": false
+}

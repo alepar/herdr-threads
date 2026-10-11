@@ -1,0 +1,31 @@
+{
+  "purpose": "Conservative model-visible field accounting only; actual typed public byte inventory emitted by focused tests. Not acceptance/RED evidence.",
+  "selection_max_ascii_json_bytes": 1222,
+  "selection_command_result_max_ascii_json_bytes": 1262,
+  "summary_conservative_max_native32KiB_256args_encoded_bytes": 198124,
+  "marker_at_current_source_path_encoded_bytes": 317,
+  "marker_path_source": "Illustrative exact current source path only; producer preflight must use actual Journal::root, not this source path.",
+  "fixed_marker_string_bytes": {
+    "automatic_launch_summary_v1": 27,
+    "automatic_launch_noncompletion_v1": 33,
+    "optional_local_artifact": 23,
+    "local_file": 10,
+    "missing": 7,
+    "unavailable": 11,
+    "local_hint": 10,
+    "existing_pending": 16,
+    "already_joined": 14,
+    "created": 7
+  },
+  "actual_enforced_fields": {
+    "opaque_ids": "protocol/ids.rs parse <=128 ASCII graphic => JSON at most256 contentbytes (backslash/quote).",
+    "summary_argv": "actual producer native argv total<=32768, count<=256; canonical LinkedBootstrapReport eacharg<=4096; generated prompt/template applied then compose_native_argv and NativeLaunchRequest validation before effects.",
+    "full_report_digest": "SHA256 exact generated serde serialization,64 lowerhexbytes; distinct canonical summary SHA256.",
+    "reason": "4096bytes, controls escape6x; supported future cancellation embeds actual exact child.",
+    "artifact": "actual Journal::root + /automatic-diagnostics- + generated UUID36 + .json; fixed state <=11bytes/authority10; no IOerror text; no decoding critical retry/recovery.",
+    "creation": "CreatedTab typed correlated IDs<=128 ASCIIgraphic; witness knownplatform/schema1/endpointfrozen<=4096bytes; u32/u64/i64 primitives; derivedincarnation compared exact.",
+    "selection": "created/existingpending/joined, optional invID/origin opaque<=128, episodeu64, effective deadline optionali64; historical None resultexact ThreadCreated."
+  },
+  "compact_cli_selection_max_ascii_json_bytes": 683,
+  "retention": "Canonical Ensure result/full local typedselection retains thread+recipient; nested CLI selection omits those repeated pair IDs, retainingoutcome+invitation."
+}

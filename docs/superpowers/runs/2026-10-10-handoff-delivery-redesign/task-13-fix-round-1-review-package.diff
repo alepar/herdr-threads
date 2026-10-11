@@ -1,0 +1,845 @@
+# Review package: 7d432fe0f4ad3de85c96a029aedfb6e5b5ff5845..f36ffaa5a51fd5e115e73b05e2daef7e8bf17dbd
+
+## Commits
+f36ffaa5 Preserve historical recovery limits and exact automatic response identity
+
+## Files changed
+ TRUST-POLICY.md                         |   8 +-
+ src/client/local.rs                     |  12 +-
+ src/protocol/wire.rs                    |   4 +-
+ src/store/topology_handoff/automatic.rs |  19 ++-
+ tests/cli/topology_handoff.rs           | 227 +++++++++++++++++++++++++-
+ tests/daemon/transport.rs               | 272 ++++++++++++++++++++++++++++++++
+ 6 files changed, 530 insertions(+), 12 deletions(-)
+
+## Diff
+diff --git a/TRUST-POLICY.md b/TRUST-POLICY.md
+index 19013971..6accb1e0 100644
+--- a/TRUST-POLICY.md
++++ b/TRUST-POLICY.md
+@@ -646,22 +646,26 @@ cancellation are retained per attempt. Recovery never replaces the original agen
+ claim, allocates a seat, proves quiescence or authorizes native submission. An
+ unknown attempt cannot become transport-proven not-submitted; an inspected
+ noncreation decision starts a distinct attempt while retaining the unknown record.
+ Modern automatic public admission checks the aggregate future envelope before local
+ publication and the canonical first Begin repeats that check before inserting a
+ parent. It derives supported generated startup prompts, frozen template/native argv,
+ 128-byte escaped opaque identifiers, bounded creation/witness fields, the 4096-byte
+ operator reason and every request/result/reservation/recovery/local envelope. Independent
+ metadata maxima may therefore be refused even when the body itself is within 65,536
+ UTF-8 bytes. No retained identity, body or history is clipped. The framed response
+-exception is exactly 2 MiB for the AutomaticBootstrap request/result family; every
+-other request, response, watch, service and error keeps its existing 1 MiB ceiling.
++exception is exactly 2 MiB only for a known AutomaticBootstrap request with a frozen
++modern policy (Some) and its matching result family. Historical absent-policy (None)
++requests retain their preexisting 1 MiB response ceiling, as do every other request,
++response, watch, service and error. The historical 256 KiB canonical recovery-result
++limit is separate: transport does not add a semantic validator for handcrafted
++historical results between 256 KiB and 1 MiB.
+ The client chooses its allocation limit from the known request before reading the
+ frame body and checks result family plus request/instance/boot and embedded original
+ identity correlation.
+ 
+ A modern successful automatic launch canonically retains the explicitly versioned
+ `automatic_launch_summary_v1`: truthful started outcome, exact pane/seat/harness and
+ composed argv, and a separately named `full_report_digest`. Optional generated
+ diagnostics are omitted from this summary. Their exact generated JSON bytes are
+ streamed to a private deterministic local artifact after bounded critical started
+ progress is synced; the full-report digest hashes those exact bytes, independently
+diff --git a/src/client/local.rs b/src/client/local.rs
+index 9e2e9617..43cf2e58 100644
+--- a/src/client/local.rs
++++ b/src/client/local.rs
+@@ -200,40 +200,48 @@ impl LocalSocketClient {
+             result = &mut read => result.map_err(|_| Self::error(ErrorCode::UnknownOutcome, "unknown outcome after request submission"))?,
+             _ = tokio::time::sleep_until(deadline) => return Err(Self::error(ErrorCode::UnknownOutcome, "unknown outcome after request submission")),
+             _ = budget.cancellation.cancelled() => return Err(Self::error(ErrorCode::UnknownOutcome, "unknown outcome after request submission")),
+         };
+         let response: WireResponse = serde_json::from_slice(&response_bytes).map_err(|_| {
+             Self::error(
+                 ErrorCode::UnknownOutcome,
+                 "unknown outcome after request submission",
+             )
+         })?;
+-        if automatic
++        if matches!(&request.command, Command::AutomaticBootstrap(_))
+             && response.result.is_ok()
+             && !crate::protocol::wire::automatic_response_result(&response.result)
+             || response_bytes.len() > MAX_FRAME_BYTES
+                 && !crate::protocol::wire::automatic_response_result(&response.result)
+         {
+             return Err(Self::error(
+                 ErrorCode::UnknownOutcome,
+                 "unknown outcome: response family mismatch",
+             ));
+         }
+         if let Command::AutomaticBootstrap(expected) = &request.command {
+             let actual = match &response.result {
+                 Ok(CommandResult::AutomaticBootstrap(result)) => Some(&result.identity),
+                 Ok(CommandResult::AutomaticBootstrapReserved(result)) => {
+                     Some(&result.status.identity)
+                 }
+                 _ => None,
+             };
+-            if actual.is_some_and(|actual| actual != &expected.identity) {
++            if actual.is_some_and(|actual| {
++                match (
++                    serde_json::to_vec(actual),
++                    serde_json::to_vec(&expected.identity),
++                ) {
++                    (Ok(actual), Ok(expected)) => actual != expected,
++                    _ => true,
++                }
++            }) {
+                 return Err(Self::error(
+                     ErrorCode::UnknownOutcome,
+                     "unknown outcome: automatic original mismatch",
+                 ));
+             }
+         }
+         if let Err(error) = &response.result
+             && error.code == ErrorCode::DaemonBootChanged
+             && response.correlates_to(&request, None)
+         {
+diff --git a/src/protocol/wire.rs b/src/protocol/wire.rs
+index 9ac8b675..37291f52 100644
+--- a/src/protocol/wire.rs
++++ b/src/protocol/wire.rs
+@@ -28,25 +28,25 @@ use std::io::{self, Write};
+ ///    Shipped v0.2.1 result structs deny unknown fields: descriptor/version
+ ///    fences refuse older peers before dispatch. Stored results remain readable.
+ /// 5: optional recorded user intent and rule-change evidence in messages and summaries.
+ /// 6: canonical compound handoff fences and the quiet-channel lifecycle lane.
+ ///    The mod watch connection (`protocol::watch`) rides version 6 behind
+ ///    capability `mod.watch_v1`.
+ ///    Canonical pair resolution and direct_recipient use thread.direct_v1;
+ ///    automatic handoff uses handoff.automatic_v1 within version 6.
+ pub const PROTOCOL_VERSION: u16 = 6;
+ pub const MAX_WIRE_FRAME_BYTES: usize = 1_048_576;
+-/// Only replies to the automatic topology request family may use this envelope.
++/// Only replies to modern explicitly frozen-policy automatic topology requests use this envelope.
+ pub const MAX_AUTOMATIC_RESPONSE_FRAME_BYTES: usize = 2 * MAX_WIRE_FRAME_BYTES;
+ 
+ pub fn automatic_response_request(command: &Command) -> bool {
+-    matches!(command, Command::AutomaticBootstrap(_))
++    matches!(command, Command::AutomaticBootstrap(request) if request.identity.plan.payload.handoff.policy.is_some())
+ }
+ pub fn automatic_response_result(result: &Result<CommandResult, ApiError>) -> bool {
+     matches!(
+         result,
+         Ok(CommandResult::AutomaticBootstrap(_) | CommandResult::AutomaticBootstrapReserved(_))
+     )
+ }
+ 
+ #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+ pub struct WireRequest {
+diff --git a/src/store/topology_handoff/automatic.rs b/src/store/topology_handoff/automatic.rs
+index e45ae21e..54794429 100644
+--- a/src/store/topology_handoff/automatic.rs
++++ b/src/store/topology_handoff/automatic.rs
+@@ -51,20 +51,27 @@ fn decode<T: DeserializeOwned + Serialize>(b: &[u8], limit: usize) -> Result<T,
+     if b.len() > limit {
+         return Err(corrupt());
+     }
+     let value: serde_json::Value = serde_json::from_slice(b).map_err(|_| corrupt())?;
+     let decoded: T = serde_json::from_value(value.clone()).map_err(|_| corrupt())?;
+     if value != serde_json::to_value(&decoded).map_err(|_| corrupt())? {
+         return Err(corrupt());
+     }
+     Ok(decoded)
+ }
++fn recovery_result_limit(id: &AutomaticBootstrapIdentity) -> usize {
++    if id.plan.payload.handoff.policy.is_some() {
++        2097152
++    } else {
++        262144
++    }
++}
+ fn same<T: Serialize>(a: &T, b: &T) -> Result<bool, ApiError> {
+     Ok(encode(a, 2097152)? == encode(b, 2097152)?)
+ }
+ pub(crate) fn namespace(
+     ns: &HandoffNamespace,
+     id: &AutomaticBootstrapIdentity,
+ ) -> Result<(), ApiError> {
+     id.validate().map_err(ApiError::invalid_request)?;
+     let frozen = &id.plan.payload.handoff.namespace;
+     if ns.instance != frozen.instance
+@@ -167,23 +174,24 @@ pub(crate) fn current(
+             return Err(corrupt());
+         }
+     }
+     for role in ["reserve", "record", "check", "not_submitted", "unknown"] {
+         let key = attempt_key(id, attempt, role)?;
+         let valid:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM automatic_bootstrap_keys WHERE instance_id=?1 AND actor_scope=?2 AND operation_key=?3 AND parent_id=?4 AND role=?5 AND attempt=?6)",params![id.claim.instance,actor(id),key.as_str(),parent,role,attempt.get()],|r|r.get(0)).map_err(store_error)?;
+         if !valid {
+             return Err(corrupt());
+         }
+     }
+-    let recovery_bytes:Option<Vec<u8>>=db.query_row("SELECT substr(result_json,1,2097153) FROM automatic_bootstrap_recoveries WHERE parent_id=?1 ORDER BY revision DESC LIMIT 1",[parent],|r|r.get(0)).optional().map_err(store_error)?;
++    let recovery_limit = recovery_result_limit(id);
++    let recovery_bytes:Option<Vec<u8>>=db.query_row("SELECT substr(result_json,1,?2) FROM automatic_bootstrap_recoveries WHERE parent_id=?1 ORDER BY revision DESC LIMIT 1",params![parent,(recovery_limit+1) as u32],|r|r.get(0)).optional().map_err(store_error)?;
+     let recovery = if let Some(bytes) = recovery_bytes {
+-        let CommandResult::AutomaticBootstrap(saved) = decode(&bytes, 2097152)? else {
++        let CommandResult::AutomaticBootstrap(saved) = decode(&bytes, recovery_limit)? else {
+             return Err(corrupt());
+         };
+         let recovery = saved.recovery.ok_or_else(corrupt)?;
+         if !same(&saved.identity, id)?
+             || recovery.administrative_revision != revision
+             || recovery.operator_provenance
+                 != format!("operator:local-user:{}", recovery.operator_uid)
+         {
+             return Err(corrupt());
+         }
+@@ -946,23 +954,24 @@ pub(crate) fn recovery_replay(
+     let AutomaticBootstrapAction::Recover {
+         attempt,
+         inspection,
+         disposition,
+     } = &request.action
+     else {
+         return Err(ApiError::invalid_request("not automatic recovery"));
+     };
+     let operation = request.operation().map_err(ApiError::invalid_request)?;
+     let p = parent(db, id)?;
+-    let bytes:Option<Vec<u8>>=db.query_row("SELECT substr(result_json,1,2097153) FROM automatic_bootstrap_recoveries WHERE parent_id=?1 AND operation=?2",params![p,operation.as_str()],|r|r.get(0)).optional().map_err(store_error)?;
++    let recovery_limit = recovery_result_limit(id);
++    let bytes:Option<Vec<u8>>=db.query_row("SELECT substr(result_json,1,?3) FROM automatic_bootstrap_recoveries WHERE parent_id=?1 AND operation=?2",params![p,operation.as_str(),(recovery_limit+1) as u32],|r|r.get(0)).optional().map_err(store_error)?;
+     let Some(bytes) = bytes else { return Ok(None) };
+-    let result: CommandResult = decode(&bytes, 2097152)?;
++    let result: CommandResult = decode(&bytes, recovery_limit)?;
+     let CommandResult::AutomaticBootstrap(saved) = &result else {
+         return Err(corrupt());
+     };
+     let r = saved.recovery.as_ref().ok_or_else(corrupt)?;
+     if !same(&saved.identity, id)?
+         || r.operation != operation
+         || r.attempt != *attempt
+         || &r.inspection != inspection
+         || !same(&r.disposition, disposition)?
+     {
+@@ -1073,21 +1082,21 @@ pub(crate) fn recover(
+         operation: operation.clone(),
+         attempt: *attempt,
+         inspection: inspection.clone(),
+         disposition: disposition.clone(),
+         operator_uid: actor.effective_uid(),
+         operator_provenance: actor.audit_label(),
+         state: s.state,
+         administrative_revision: s.administrative_revision,
+     });
+     let result = CommandResult::AutomaticBootstrap(Box::new(s.clone()));
+-    let bytes = encode(&result, 2097152)?;
++    let bytes = encode(&result, recovery_result_limit(id))?;
+     register_key(tx, id, p, kind, &operation, attempt.get())?;
+     match s.state {
+         BootstrapState::Prepared => {
+             insert_attempt(tx, id, p, s.attempt)?;
+         }
+         BootstrapState::Created => {
+             tx.execute("UPDATE automatic_bootstrap_attempts SET state='created',creation_json=?3 WHERE parent_id=?1 AND attempt=?2",params![p,attempt.get(),encode(s.creation.as_ref().ok_or_else(corrupt)?,LIMIT)?]).map_err(store_error)?;
+         }
+         BootstrapState::Cancelled => {}
+         _ => return Err(corrupt()),
+diff --git a/tests/cli/topology_handoff.rs b/tests/cli/topology_handoff.rs
+index a144d831..9ac63c44 100644
+--- a/tests/cli/topology_handoff.rs
++++ b/tests/cli/topology_handoff.rs
+@@ -5770,52 +5770,60 @@ mod live {
+             fail_outer_complete_once: std::sync::atomic::AtomicBool,
+         }
+         impl AutoPeer {
+             fn new() -> Self {
+                 Self::with_kind("codex")
+             }
+             fn with_kind(kind: &'static str) -> Self {
+                 Self::with_body(kind, "literal work")
+             }
+             fn with_body(kind: &'static str, body: &str) -> Self {
++                Self::with_body_policy(kind, body, false)
++            }
++            fn with_body_policy(kind: &'static str, body: &str, historical: bool) -> Self {
+                 let base = Fixture::aligned(Fault::None, None);
+                 base.journal.complete(&base.peer.reference).unwrap();
+                 let parsed = super::super::super::super::commands::parse_argv([
+                     "ht",
+                     "handoff",
+                     "--new-tab",
+                     "new peer",
+                     "--kind",
+                     kind,
+                     "--",
+                     body,
+                 ])
+                 .unwrap();
+                 let super::super::super::super::commands::CliAction::TopologyHandoff(request) =
+                     parsed.action
+                 else {
+                     panic!("parsed new-tab route")
+                 };
+                 assert!(request.automatic);
+-                let identity = prepare_automatic(
++                let mut identity = prepare_automatic(
+                     &request,
+                     Preparation {
+                         claim: &base.peer.identity.claim,
+                         namespace: &base.peer.identity.payload.handoff.namespace,
+                         topology: &topology(),
+                         invocation_cwd: base._temp.path(),
+                         options: None,
+                         client: &ReadOnly,
+                         clock: &base.clock,
+                     },
+                 )
+                 .unwrap();
++                if historical {
++                    identity.plan.payload.handoff.policy = None;
++                    identity.digest = identity.semantic_digest().unwrap();
++                    identity.validate().unwrap();
++                }
+                 let reference = publish_automatic(&base.journal, &identity, 1).unwrap();
+                 let store = crate::store::SqliteStore::new(
+                     crate::store::connection::StoreContext::new(
+                         base.peer.database_path.clone(),
+                         Arc::new(crate::app::SystemClock::new()),
+                     ),
+                     "i",
+                     Default::default(),
+                 )
+                 .unwrap();
+@@ -6337,20 +6345,237 @@ mod live {
+                     None => {}
+                     _ => panic!("invalid native outcome fixture"),
+                 }
+                 let mut created = crate::protocol::handoff::topology_contract_tests::created();
+                 created.correlation = request.correlation.clone();
+                 created.witness = request.expected_witness.clone();
+                 CreateTabOutcome::Created(Box::new(created))
+             }
+         }
+ 
++        fn attached_recovery_fixture(
++            historical: bool,
++            large: bool,
++        ) -> (
++            AutoPeer,
++            AutomaticBootstrapMutation,
++            AutomaticBootstrapResult,
++        ) {
++            let body = if large {
++                "\0".repeat(16000)
++            } else {
++                "work".into()
++            };
++            let peer = AutoPeer::with_body_policy("codex", &body, historical);
++            let attempt = BootstrapAttempt::first();
++            let call = |action| {
++                peer.call(
++                    Command::AutomaticBootstrap(Box::new(AutomaticBootstrapMutation {
++                        identity: peer.identity.clone(),
++                        action,
++                    })),
++                    &super::super::super::super::cooperative_budget(&peer.base.clock),
++                )
++            };
++            call(AutomaticBootstrapAction::Begin).unwrap();
++            call(AutomaticBootstrapAction::Reserve { attempt }).unwrap();
++            let mut created = crate::protocol::handoff::topology_contract_tests::created();
++            created.witness = peer.base.witness.clone();
++            call(AutomaticBootstrapAction::RecordCreated {
++                attempt,
++                evidence: created.clone(),
++            })
++            .unwrap();
++            let CommandResult::SeatResolved(recipient) =
++                call(AutomaticBootstrapAction::Resolve { attempt }).unwrap()
++            else {
++                panic!("resolved")
++            };
++            let attachment =
++                AutomaticBootstrapAttachment::derive(&peer.identity, attempt, created, recipient)
++                    .unwrap();
++            call(AutomaticBootstrapAction::Attach(Box::new(
++                attachment.clone(),
++            )))
++            .unwrap();
++            let mut expected = peer.status();
++            let inspection = expected.recovery_inspection().unwrap();
++            let disposition = AutomaticBootstrapRecoveryDisposition::Cancelled {
++                reason: "inspected cancellation".into(),
++                quiescence: BootstrapQuiescenceAssertion::InspectedQuiescence,
++                attached_child: Some(Box::new(attachment.child)),
++            };
++            let request = AutomaticBootstrapMutation {
++                identity: peer.identity.clone(),
++                action: AutomaticBootstrapAction::Recover {
++                    attempt,
++                    inspection: inspection.clone(),
++                    disposition: disposition.clone(),
++                },
++            };
++            request.validate().unwrap();
++            let uid = unsafe { libc::geteuid() };
++            expected.state = BootstrapState::Cancelled;
++            expected.administrative_revision = 1;
++            expected.recovery = Some(AutomaticBootstrapRecoveryResult {
++                operation: request.operation().unwrap(),
++                attempt,
++                inspection,
++                disposition,
++                operator_uid: uid,
++                operator_provenance: format!("operator:local-user:{uid}"),
++                state: BootstrapState::Cancelled,
++                administrative_revision: 1,
++            });
++            let bytes = serde_json::to_vec(&CommandResult::AutomaticBootstrap(Box::new(
++                expected.clone(),
++            )))
++            .unwrap();
++            if large {
++                assert!(bytes.len() > 262144 && bytes.len() < 2097152);
++                assert!(serde_json::to_vec(&request).unwrap().len() <= 262144);
++            } else {
++                assert!(bytes.len() <= 262144);
++            }
++            (peer, request, expected)
++        }
++        fn recovery_counts(peer: &AutoPeer) -> (i64, i64, String, i64) {
++            let state = peer.base.peer.state.lock().unwrap();
++            state.db.query_row("SELECT (SELECT count(*) FROM automatic_bootstrap_recoveries),(SELECT count(*) FROM automatic_bootstrap_keys),state,administrative_revision FROM automatic_bootstrap_parents", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).unwrap()
++        }
++        fn install_oversized_historical_recovery(
++            peer: &AutoPeer,
++            expected: &AutomaticBootstrapResult,
++        ) {
++            let bytes = serde_json::to_vec(&CommandResult::AutomaticBootstrap(Box::new(
++                expected.clone(),
++            )))
++            .unwrap();
++            let recovery = expected.recovery.as_ref().unwrap();
++            let state = peer.base.peer.state.lock().unwrap();
++            // A coherent typed row models retained historical corruption; no malformed JSON.
++            state.db.execute("UPDATE automatic_bootstrap_parents SET state='cancelled',administrative_revision=1", []).unwrap();
++            state.db.execute("INSERT INTO automatic_bootstrap_recoveries(parent_id,attempt,decision_kind,operation,revision,result_json) SELECT id,1,'cancellation',?1,1,?2 FROM automatic_bootstrap_parents", rusqlite::params![recovery.operation.as_str(), bytes]).unwrap();
++        }
++        #[test]
++        fn historical_automatic_recovery_over_limit_write_refuses_atomically() {
++            let (peer, request, _) = attached_recovery_fixture(true, true);
++            let before = recovery_counts(&peer);
++            let status = peer.status();
++            let result = peer.call(
++                Command::AutomaticBootstrap(Box::new(request)),
++                &super::super::super::super::cooperative_budget(&peer.base.clock),
++            );
++            assert!(
++                result
++                    .is_err_and(|e| e.code == crate::protocol::results::ErrorCode::InvalidRequest),
++                "historical oversized result was retained"
++            );
++            assert_eq!(recovery_counts(&peer), before);
++            assert_eq!(peer.status(), status);
++        }
++        #[test]
++        fn historical_automatic_recovery_over_limit_read_refuses() {
++            let (peer, request, expected) = attached_recovery_fixture(true, true);
++            install_oversized_historical_recovery(&peer, &expected);
++            let result = peer.call(
++                Command::AutomaticBootstrap(Box::new(AutomaticBootstrapMutation {
++                    identity: request.identity,
++                    action: AutomaticBootstrapAction::Status,
++                })),
++                &super::super::super::super::cooperative_budget(&peer.base.clock),
++            );
++            assert!(
++                result.is_err_and(|e| e.code == crate::protocol::results::ErrorCode::StoreCorrupt),
++                "oversized historical recovery was readable"
++            );
++        }
++        #[test]
++        fn historical_automatic_recovery_over_limit_replay_refuses() {
++            let (peer, request, expected) = attached_recovery_fixture(true, true);
++            install_oversized_historical_recovery(&peer, &expected);
++            let result = peer.call(
++                Command::AutomaticBootstrap(Box::new(request)),
++                &super::super::super::super::cooperative_budget(&peer.base.clock),
++            );
++            assert!(
++                result.is_err_and(|e| e.code == crate::protocol::results::ErrorCode::StoreCorrupt),
++                "oversized historical recovery replayed"
++            );
++        }
++        #[test]
++        fn historical_automatic_recovery_below_limit_replays_exact_bytes() {
++            let (peer, request, expected) = attached_recovery_fixture(true, false);
++            let budget = super::super::super::super::cooperative_budget(&peer.base.clock);
++            let expected = CommandResult::AutomaticBootstrap(Box::new(expected));
++            assert_eq!(
++                peer.call(
++                    Command::AutomaticBootstrap(Box::new(request.clone())),
++                    &budget
++                )
++                .unwrap(),
++                expected
++            );
++            let saved: Vec<u8> = peer
++                .base
++                .peer
++                .state
++                .lock()
++                .unwrap()
++                .db
++                .query_row(
++                    "SELECT result_json FROM automatic_bootstrap_recoveries",
++                    [],
++                    |r| r.get(0),
++                )
++                .unwrap();
++            assert_eq!(saved, serde_json::to_vec(&expected).unwrap());
++            assert_eq!(
++                peer.call(Command::AutomaticBootstrap(Box::new(request)), &budget)
++                    .unwrap(),
++                expected
++            );
++            let after: Vec<u8> = peer
++                .base
++                .peer
++                .state
++                .lock()
++                .unwrap()
++                .db
++                .query_row(
++                    "SELECT result_json FROM automatic_bootstrap_recoveries",
++                    [],
++                    |r| r.get(0),
++                )
++                .unwrap();
++            assert_eq!(after, saved);
++        }
++        #[test]
++        fn modern_automatic_recovery_above_historical_limit_succeeds_and_replays() {
++            let (peer, request, expected) = attached_recovery_fixture(false, true);
++            let budget = super::super::super::super::cooperative_budget(&peer.base.clock);
++            let expected = CommandResult::AutomaticBootstrap(Box::new(expected));
++            assert_eq!(
++                peer.call(
++                    Command::AutomaticBootstrap(Box::new(request.clone())),
++                    &budget
++                )
++                .unwrap(),
++                expected
++            );
++            assert_eq!(
++                peer.call(Command::AutomaticBootstrap(Box::new(request)), &budget)
++                    .unwrap(),
++                expected
++            );
++        }
++
+         #[test]
+         fn parsed_human_recovery_of_automatic_unknown_creation_is_durable() {
+             let peer = AutoPeer::new();
+             peer.seed_unknown_creation();
+             let argv = vec![
+                 "ht".to_owned(),
+                 "human".to_owned(),
+                 "handoff".to_owned(),
+                 "recover".to_owned(),
+                 peer.reference.recovery_ref(),
+diff --git a/tests/daemon/transport.rs b/tests/daemon/transport.rs
+index d58b2ebf..9fc0be2c 100644
+--- a/tests/daemon/transport.rs
++++ b/tests/daemon/transport.rs
+@@ -3686,20 +3686,292 @@ async fn automatic_response_embedded_identity_must_match_exact_request() {
+     shutdown.cancel();
+     let _ = server.await.unwrap().unwrap();
+     std::fs::remove_file(path).unwrap();
+     std::fs::remove_dir_all(root).unwrap();
+     assert!(
+         reply.is_err_and(|e| e.code == ErrorCode::UnknownOutcome),
+         "different embedded original was accepted"
+     );
+ }
+ 
++struct AutomaticIdentityService(CommandResult);
++impl LocalService for AutomaticIdentityService {
++    crate::unserved_local_service_routes!(
++        service_control,
++        audit_service_disconnect,
++        service_operation,
++        handle_with_output
++    );
++    fn handle(
++        &self,
++        _: Command,
++        _: PeerIdentity,
++        _: &CallBudget,
++    ) -> Result<CommandResult, ApiError> {
++        Ok(self.0.clone())
++    }
++}
++#[tokio::test]
++async fn automatic_response_path_alias_is_not_exact_identity_in_either_family() {
++    use crate::protocol::handoff::{
++        AutomaticBootstrapAction, AutomaticBootstrapMutation, AutomaticBootstrapReserved,
++    };
++    for reserved in [false, true] {
++        for alias in [false, true] {
++            let (listener, path, root, paths) = guarded_listener();
++            let instance = instance_id(&paths);
++            let mut result = maximum_automatic_recovery_result(&instance.to_string());
++            let expected = result.identity.clone();
++            if alias {
++                let cwd = result.identity.plan.payload.cwd.to_str().unwrap();
++                result.identity.plan.payload.cwd = format!("{cwd}/").into();
++                let state_dir = result
++                    .identity
++                    .plan
++                    .payload
++                    .handoff
++                    .namespace
++                    .state_dir
++                    .to_str()
++                    .unwrap();
++                result.identity.plan.payload.handoff.namespace.state_dir =
++                    format!("{state_dir}/").into();
++                assert_eq!(
++                    result.identity, expected,
++                    "fixture isolates normalized path equality"
++                );
++                assert_eq!(result.identity.digest, expected.digest);
++                assert_ne!(
++                    serde_json::to_vec(&result.identity).unwrap(),
++                    serde_json::to_vec(&expected).unwrap()
++                );
++            }
++            let reply_result = if reserved {
++                CommandResult::AutomaticBootstrapReserved(Box::new(AutomaticBootstrapReserved {
++                    status: result,
++                    authorization: None,
++                }))
++            } else {
++                CommandResult::AutomaticBootstrap(Box::new(result))
++            };
++            let command = Command::AutomaticBootstrap(Box::new(AutomaticBootstrapMutation {
++                identity: expected,
++                action: AutomaticBootstrapAction::Status,
++            }));
++            let uid = UnixStream::pair().unwrap().0.peer_cred().unwrap().uid();
++            let shutdown = Cancellation::default();
++            let server = tokio::spawn(serve(
++                listener,
++                instance,
++                Arc::new(AutomaticIdentityService(reply_result.clone())),
++                Arc::new(TestClock),
++                uid,
++                shutdown.clone(),
++            ));
++            let client = crate::client::local::LocalSocketClient::new(
++                path.clone(),
++                Arc::new(TestClock),
++                instance,
++                None,
++            );
++            let reply = client
++                .call_async(
++                    command,
++                    &CallBudget {
++                        deadline: MonoInstant(10_000),
++                        cancellation: Cancellation::default(),
++                    },
++                )
++                .await;
++            shutdown.cancel();
++            let _ = server.await.unwrap().unwrap();
++            std::fs::remove_file(path).unwrap();
++            std::fs::remove_dir_all(root).unwrap();
++            if alias {
++                assert!(
++                    reply.is_err_and(|e| e.code == ErrorCode::UnknownOutcome),
++                    "path alias accepted in reserved={reserved}"
++                );
++            } else {
++                assert_eq!(reply.unwrap(), reply_result);
++            }
++        }
++    }
++}
++
++fn historical_completed_transport_result(
++    instance: &str,
++    diagnostics: usize,
++) -> crate::protocol::handoff::AutomaticBootstrapResult {
++    use crate::protocol::handoff::*;
++    use crate::protocol::ids::ThreadId;
++    use sha2::{Digest, Sha256};
++    let mut result = maximum_automatic_recovery_result(instance);
++    result.identity.plan.payload.handoff.body = "work".into();
++    result.identity.plan.payload.handoff.policy = None;
++    result.identity.digest = result.identity.semantic_digest().unwrap();
++    result.identity.validate().unwrap();
++    let attachment = AutomaticBootstrapAttachment::derive(
++        &result.identity,
++        result.attempt,
++        result.creation.clone().unwrap(),
++        result.attachment.as_ref().unwrap().resolved_seat.clone(),
++    )
++    .unwrap();
++    let thread = ThreadId::new("historical-completed");
++    let AutomaticOriginal::Handoff(child) = &attachment.child.original else {
++        panic!("handoff")
++    };
++    let prompt = crate::cli::handoff::bootstrap_v1::retained_prompts(
++        thread.as_str(),
++        &child.context,
++        instance,
++    )
++    .remove(0);
++    let argv = result
++        .identity
++        .plan
++        .payload
++        .startup_input
++        .as_ref()
++        .unwrap()
++        .apply(&result.identity.plan.payload.launch.argv, &prompt)
++        .unwrap()
++        .0;
++    let mut report = serde_json::json!({"outcome":"started", "pane":attachment.created.root_pane, "seat":attachment.resolved_seat, "harness":result.identity.plan.payload.launch.harness.as_str(), "argv":argv, "diagnostics":""});
++    let diagnostics = if diagnostics == usize::MAX {
++        1_048_576 - 512 - serde_json::to_vec(&report).unwrap().len()
++    } else {
++        diagnostics
++    };
++    report["diagnostics"] = serde_json::Value::String("x".repeat(diagnostics));
++    let retained = LinkedBootstrapReport {
++        thread: thread.clone(),
++        recipient: attachment.resolved_seat.clone(),
++        pane: attachment.created.root_pane.clone(),
++        kind: "launch".into(),
++        launch: result.identity.plan.payload.launch.clone(),
++        report_digest: format!("{:x}", Sha256::digest(serde_json::to_vec(&report).unwrap())),
++        report,
++        terminal: attachment.created.terminal.clone(),
++        host_incarnation: attachment.created.host_incarnation.clone(),
++    };
++    AutomaticBootstrapMutation {
++        identity: result.identity.clone(),
++        action: AutomaticBootstrapAction::Complete {
++            attachment: Box::new(attachment.clone()),
++            retained: retained.clone(),
++        },
++    }
++    .validate()
++    .unwrap();
++    result.state = BootstrapState::Completed;
++    result.thread = Some(thread);
++    result.recovery = None;
++    result.completed = Some(retained);
++    result.attachment = Some(attachment);
++    result
++}
++#[tokio::test]
++async fn automatic_historical_response_keeps_one_mib_client_allocation_limit() {
++    use crate::protocol::handoff::{AutomaticBootstrapAction, AutomaticBootstrapMutation};
++    for large in [false, true] {
++        let path = std::env::temp_dir().join(format!("ht-h-{}.sock", uuid::Uuid::new_v4()));
++        let listener = UnixListener::bind(&path).unwrap();
++        let instance = uuid::Uuid::new_v4();
++        let result = historical_completed_transport_result(
++            &instance.to_string(),
++            if large { usize::MAX } else { 300_000 },
++        );
++        let command = Command::AutomaticBootstrap(Box::new(AutomaticBootstrapMutation {
++            identity: result.identity.clone(),
++            action: AutomaticBootstrapAction::Status,
++        }));
++        let accepted = tokio::spawn(async move {
++            let (mut stream, _) = listener.accept().await.unwrap();
++            let request = WireRequest::decode(&read_frame(&mut stream).await.unwrap()).unwrap();
++            let response = WireResponse {
++                version: PROTOCOL_VERSION,
++                request_id: request.request_id,
++                instance: instance.to_string(),
++                daemon_boot: uuid::Uuid::new_v4().to_string(),
++                result: Ok(CommandResult::AutomaticBootstrap(Box::new(result))),
++            };
++            let bytes = serde_json::to_vec(&response).unwrap();
++            assert_eq!(
++                bytes.len() + 4 > crate::protocol::wire::MAX_WIRE_FRAME_BYTES,
++                large
++            );
++            assert!(bytes.len() + 4 < crate::protocol::wire::MAX_AUTOMATIC_RESPONSE_FRAME_BYTES);
++            stream
++                .write_all(&(bytes.len() as u32).to_be_bytes())
++                .await
++                .unwrap();
++            // A corrected client may close immediately after the oversized prefix.
++            let _ = stream.write_all(&bytes).await;
++        });
++        let client = crate::client::local::LocalSocketClient::new(
++            path.clone(),
++            Arc::new(TestClock),
++            instance,
++            None,
++        );
++        let reply = client
++            .call_async(
++                command,
++                &CallBudget {
++                    deadline: MonoInstant(10_000),
++                    cancellation: Cancellation::default(),
++                },
++            )
++            .await;
++        accepted.await.unwrap();
++        std::fs::remove_file(path).unwrap();
++        if large {
++            assert!(
++                reply.is_err_and(|e| e.code == ErrorCode::UnknownOutcome),
++                "historical >1MiB response was accepted"
++            );
++        } else {
++            assert!(
++                matches!(reply, Ok(CommandResult::AutomaticBootstrap(_))),
++                "inherited historical256KiB..1MiB transport acceptance changed"
++            );
++        }
++    }
++}
++#[test]
++fn automatic_historical_response_keeps_one_mib_scoped_encoder_limit() {
++    use crate::protocol::handoff::{AutomaticBootstrapAction, AutomaticBootstrapMutation};
++    let instance = uuid::Uuid::new_v4().to_string();
++    let result = historical_completed_transport_result(&instance, usize::MAX);
++    let command = Command::AutomaticBootstrap(Box::new(AutomaticBootstrapMutation {
++        identity: result.identity.clone(),
++        action: AutomaticBootstrapAction::Status,
++    }));
++    let response = WireResponse {
++        version: PROTOCOL_VERSION,
++        request_id: "historical".into(),
++        instance,
++        daemon_boot: uuid::Uuid::new_v4().to_string(),
++        result: Ok(CommandResult::AutomaticBootstrap(Box::new(result))),
++    };
++    let result = crate::protocol::wire::encode_wire_response_scoped(
++        &response,
++        crate::protocol::wire::automatic_response_request(&command),
++    );
++    assert!(
++        result.is_err_and(|e| e.code == ErrorCode::InvalidBudget),
++        "historical >1MiB response was encoded"
++    );
++}
++
+ #[test]
+ fn unscoped_ordinary_encoder_keeps_one_mib_even_for_automatic_result() {
+     let response = crate::protocol::wire::WireResponse {
+         version: crate::protocol::wire::PROTOCOL_VERSION,
+         request_id: "request".into(),
+         instance: uuid::Uuid::from_u128(1).to_string(),
+         daemon_boot: uuid::Uuid::from_u128(2).to_string(),
+         result: Ok(CommandResult::AutomaticBootstrap(Box::new(
+             maximum_automatic_recovery_result(&uuid::Uuid::from_u128(1).to_string()),
+         ))),
