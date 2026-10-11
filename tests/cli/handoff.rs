@@ -4055,3 +4055,103 @@ fn acquired_stdin_survives_retry_after_reader_is_unavailable() {
     assert_eq!(sends[0].body, body);
     assert_eq!(launcher.starts, 1);
 }
+
+#[test]
+fn legacy_handoff_origin_overflow_refuses_before_publication_or_effects() {
+    let (_temp, journal) = journal();
+    let body = "\u{1}".repeat(65_536);
+    let model = format!("--model={}", "\u{1}".repeat(12_000));
+    let parsed = crate::cli::commands::parse_argv([
+        "ht",
+        "handoff",
+        "--pane",
+        "w1:p2",
+        "--kind",
+        "codex",
+        "--new-thread",
+        "--topic",
+        "review",
+        "--goal",
+        "review changes",
+        "--agent-arg=-a",
+        "--agent-arg=on-request",
+        &format!("--agent-arg={model}"),
+        &format!("--agent-arg={model}"),
+        "--",
+        &body,
+    ])
+    .unwrap();
+    let crate::cli::commands::CliAction::Handoff(request) = parsed.action else {
+        panic!("wrong action")
+    };
+    request.validate().unwrap();
+    crate::ports::validate_native_argv(&request.launch.argv).unwrap();
+    let registry = crate::harness::registry::builtins();
+    let codex = registry.agent("codex").unwrap();
+    registry
+        .by_id(codex)
+        .unwrap()
+        .launch_policy()
+        .unwrap()
+        .validate_native_argv(&request.launch.argv)
+        .unwrap();
+    let semantic = SemanticMutation::freeze(
+        SemanticMutation::Handoff(Box::new(HandoffPlan {
+            startup_input: Some(crate::harness::adapter::StartupInputTemplate::positional(
+                request.launch.argv.len(),
+            )),
+            request: request.clone(),
+            context: OutputSpec::default().context,
+            recipient: SeatId::new("recipient"),
+            create_key: OperationId::new("create"),
+            invite_key: OperationId::new("invite"),
+            send_key: OperationId::new("send"),
+        })),
+        claim(),
+    )
+    .unwrap();
+    let encoded = serde_json::to_vec(&semantic).unwrap();
+    eprintln!(
+        "legacy handoff semantic={} cap={}",
+        encoded.len(),
+        super::super::journal::MAX_DELIVERY_ORIGIN_BYTES
+    );
+    assert!(
+        encoded.len() > super::super::journal::MAX_DELIVERY_ORIGIN_BYTES,
+        "semantic alone exceeds the origin cap even before its header/newlines"
+    );
+    let ordinal_before = std::fs::read(journal.root().join("next-ordinal")).unwrap();
+    let mut client = Client::new(Some("send"));
+    client.expected_body = body;
+    let mut launcher = Launcher::default();
+    let result = start(
+        &journal,
+        request,
+        claim(),
+        "bob",
+        &client,
+        &mut launcher,
+        &TestClock,
+        &OutputSpec::default(),
+        &mut Vec::new(),
+    );
+    assert!(result.is_err());
+    assert!(
+        journal.page(&Default::default()).unwrap().items.is_empty(),
+        "oversized legacy origin must never become a published intent"
+    );
+    assert_eq!(
+        std::fs::read(journal.root().join("next-ordinal")).unwrap(),
+        ordinal_before
+    );
+    assert!(
+        client.calls.lock().unwrap().is_empty(),
+        "no downstream canonical commands"
+    );
+    assert_eq!(launcher.starts, 0, "no native launch");
+    assert_eq!(
+        frozen(&journal).ordinal,
+        1,
+        "overflow must not consume an ordinal"
+    );
+}

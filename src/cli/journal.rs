@@ -1352,7 +1352,7 @@ impl Journal {
         };
         let encoded_header = serde_json::to_vec(&header)?;
         let origin_limit = match header.kind {
-            IntentKind::HandoffDelivery => Some(MAX_DELIVERY_ORIGIN_BYTES),
+            IntentKind::Handoff | IntentKind::HandoffDelivery => Some(MAX_DELIVERY_ORIGIN_BYTES),
             IntentKind::HandoffBootstrap => Some(MAX_BOOTSTRAP_ORIGIN_BYTES),
             _ => None,
         };
