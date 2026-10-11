@@ -191,8 +191,7 @@ pub(crate) fn seat_of(db: &Connection, binding: &BindingId) -> Result<Option<Sea
 
 /// Whether `binding` has unread mail (spec §2 Inbox per binding). Serves wake and the mod channel.
 /// The ordinary part: receivable messages in joined threads past the binding's cursor.
-/// The lazy part is the seat's pending lazy rows (today's rule); ht-54r.22 replaces it with
-/// `lazy_delivery::binding_lazy_unread`, keeping this ordinary side.
+/// The lazy part is this binding's own lazy-unread predicate (`lazy_delivery::binding_has_unread_lazy`).
 pub fn has_unread(db: &Connection, binding: &BindingId) -> Result<bool, ApiError> {
     let Some(seat) = seat_of(db, binding)? else {
         return Ok(false);

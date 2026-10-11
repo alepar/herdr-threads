@@ -294,3 +294,71 @@ fn completion_state_follows_the_binding() {
         LazyCompletion::NotAddressed
     );
 }
+
+fn leave_thread(db: &Connection) {
+    assert_eq!(
+        db.execute(
+            "UPDATE memberships SET state='left' WHERE thread_id='t' AND seat_id='s'",
+            []
+        )
+        .unwrap(),
+        1,
+        "the fixture seat was a member of the thread"
+    );
+}
+
+/// A binding enrolled after the seat left the thread owns no cursor row for it: a missing row must
+/// not read as "everything unread" for any lazy reader built from the predicate.
+#[test]
+fn left_threads_are_not_lazy_unread_for_a_binding_without_a_cursor() {
+    let db = db();
+    let early = enroll_binding(&db, "sess-A", None);
+    lazy(&db, 3);
+    leave_thread(&db);
+    let a = enroll_binding(&db, "sess-B", None);
+    assert!(
+        read_cursors::cursor_for(&db, &a, &ThreadId::new("t"))
+            .unwrap()
+            .is_none(),
+        "a binding enrolled after the leave seeds no cursor for the thread"
+    );
+    assert!(unread(&db, &a).is_empty(), "binding_lazy_unread");
+    assert!(!binding_has_unread_lazy(&db, &a).unwrap());
+    assert!(!read_cursors::has_unread(&db, &a).unwrap());
+    assert!(
+        binding_lazy_window(&db, "i", &a, i64::MAX, 10)
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        lazy_completion_state(&db, "i", &SeatId::new("s"), Some(&a), &msg(3)).unwrap(),
+        LazyCompletion::Completed,
+        "a message in a left thread is not pending for the new binding"
+    );
+    // The earlier binding addressed the message before the leave: leaving does not erase it.
+    assert_eq!(unread(&db, &early), [msg(3)]);
+    assert_eq!(seat_lazy_pending(&db, &SeatId::new("s"), 100).unwrap().0, 1);
+    assert_eq!(
+        lazy_completion_state(&db, "i", &SeatId::new("s"), Some(&early), &msg(3)).unwrap(),
+        LazyCompletion::Pending
+    );
+}
+
+#[test]
+fn legacy_pending_survives_leaving_the_thread() {
+    let db = db();
+    lazy(&db, 3);
+    db.execute("UPDATE lazy_recipients SET legacy_pending=1", [])
+        .unwrap();
+    leave_thread(&db);
+    // Enrolled after the leave: no cursor row, yet the pre-upgrade pending row stays unread.
+    let a = enroll_binding(&db, "sess-A", None);
+    let sub = enroll_binding(&db, "sess-A", Some(&a));
+    assert_eq!(unread(&db, &a), [msg(3)], "legacy rows are not gated");
+    assert!(unread(&db, &sub).is_empty(), "never for a subagent");
+    assert_eq!(seat_lazy_pending(&db, &SeatId::new("s"), 100).unwrap().0, 1);
+    assert_eq!(
+        lazy_completion_state(&db, "i", &SeatId::new("s"), Some(&a), &msg(3)).unwrap(),
+        LazyCompletion::Pending
+    );
+}

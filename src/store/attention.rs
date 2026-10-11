@@ -577,8 +577,8 @@ pub fn add_binding_lazy(
     Ok(())
 }
 
-/// The seat's pending published lazy rows: one `WINDOW` walk of the pending
-/// seat/ordinal index, newest ordinal first, taken before any publication
+/// The seat's pending published lazy rows (the seat form of the per-binding predicate): one
+/// `WINDOW` walk of `lazy_recipients_seat_ordinal`, newest ordinal first, taken before any publication
 /// filter so an unpublished backlog cannot stretch it. Each windowed row
 /// counts only when its manifest is published in this instance up to the
 /// host decision sequence `through`; its key is (publication decision
