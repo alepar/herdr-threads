@@ -1,0 +1,32 @@
+{
+  "head": "c18f3cea60af3824b059459e6233127c91cbc71c",
+  "artifacts": {
+    "confirm-scope-fix": {
+      "base": "cfe7989ae2ae443d5457f2ebbd0ffd6354e7648b",
+      "path": "task-15-emit-helper-confirm-scope-fix.diff",
+      "sha256": "9c6bc54bfe8b2647a79f27ae1587859dc0a6f59c01fc91162b2dd76e842fddc1",
+      "bytes": 13439
+    },
+    "confirm-final-cumulative": {
+      "base": "ee1e598c3ee96566ddc9b397185cdc97c8bf6218",
+      "path": "task-15-emit-helper-confirm-final-cumulative.diff",
+      "sha256": "689ab7f2cd4f9e85d7668c8397b1daa818ab77f14cf64601ded17a2cd6e585eb",
+      "bytes": 97706
+    }
+  },
+  "paths": [
+    "src/cli/hook.rs",
+    "src/harness/adapter.rs",
+    "src/harness/agy/decode.rs",
+    "src/harness/agy/delivery.rs",
+    "src/harness/agy/mod.rs",
+    "src/harness/registry.rs",
+    "tests/cli/hook.rs",
+    "tests/cli/hook_neutral.rs",
+    "tests/harness/agy_decode.rs",
+    "tests/harness/agy_delivery.rs"
+  ],
+  "cargo_run_by_helper": false,
+  "applied_to_D": false,
+  "review_status": "fresh exact delta and cumulative helper/interface review pending"
+}

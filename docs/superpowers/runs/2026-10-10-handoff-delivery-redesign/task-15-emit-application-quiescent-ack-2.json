@@ -1,0 +1,19 @@
+{
+  "full_source_hash": "58151e3dba459ed10639b59e3a2de7cc281a4e78a5b243daa9c4d9b0328b24af",
+  "dirty_diff_sha256": "0332b7840f0e5056abcecb39f14945f74a2f125e1f35e3facb804c26ad226b20",
+  "manifest_algorithm": "sha256 canonical compact sorted JSON path:sha256 for git ls-files plus untracked nonignored regular files",
+  "file_count": 3531,
+  "ten_files": {
+    "src/harness/adapter.rs": "7817222baa599c700eac688ad7bc66238f9a62f3ce0224409dafae7ec518620c",
+    "src/cli/hook.rs": "b09a91337c38a98d9c27f1d3583f9813fcb5a1e6ac4a7d2c3cab01f46a7b48a7",
+    "src/harness/agy/delivery.rs": "670ecbc800f5251ec9e33dcf863f3dd0426d73ec95f2538b92885519bc794032",
+    "tests/cli/hook_neutral.rs": "c8e1093028b0a4fd7a60212f51dd4ef9ed65a8239394ed5f19169ce770af60cf",
+    "tests/harness/agy_delivery.rs": "5e11d71234b3232034346d61165532074a8226f1c50321b15d5e821b1c2f4e98",
+    "tests/cli/hook.rs": "2bcdcab3e5dad58a13f8bcaa2b70f3da6c3d6df79e87ec0d3b8d8491cd591660",
+    "src/harness/agy/mod.rs": "779987f1c3612aa63a19c6aa49a1bfed42e899ae71b1614ee18bd3fc3b50f375",
+    "src/harness/agy/decode.rs": "0e8f8d4c270d624b2d26fcd1f1422d93ea62da0ff834d3357bbc49d15dccb9fd",
+    "tests/harness/agy_decode.rs": "d407a4b5d57ef348028d0b84ec2a3f77e1194adc6f3af5506c49ce930030ae94",
+    "src/harness/registry.rs": "6bf1f8b62fcff8f03a0da70e74538c8311ce69c8f5fc61c78c1f0d9ff5653f61"
+  },
+  "no_active_owned_processes": true
+}
