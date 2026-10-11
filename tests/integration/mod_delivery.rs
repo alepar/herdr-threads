@@ -2088,24 +2088,6 @@ fn stale_attention_is_retracted_after_accept_and_after_a_notice_offer() {
     assert!(watch.running(), "the watch child died");
 }
 
-/// Snapshot of every file below `dir` (the seat's local context hints).
-fn snapshot(dir: &std::path::Path) -> Vec<(PathBuf, Vec<u8>)> {
-    fn walk(dir: &std::path::Path, out: &mut Vec<(PathBuf, Vec<u8>)>) {
-        for entry in fs::read_dir(dir).into_iter().flatten().flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                walk(&path, out);
-            } else if let Ok(bytes) = fs::read(&path) {
-                out.push((path, bytes));
-            }
-        }
-    }
-    let mut out = Vec::new();
-    walk(dir, &mut out);
-    out.sort();
-    out
-}
-
 /// Spec D2/D6 `/clear`: the new session supersedes the cleared session's binding
 /// (session-keyed bindings: the generation no longer rotates) and closes its channel
 /// (`binding_changed`); the new session's watch registers and gets the still-pending item
@@ -2138,31 +2120,110 @@ fn clear_rebind_pending_item_restreamed_to_new_session() {
     assert_eq!(settled["result"], "settled", "{settled}");
 }
 
-/// Spec D7 rebind grace: the SessionStart check-in that rotated the
-/// generation omits its digest (the seat still counts as live), no native
-/// prompt follows, and only when the grace lapses without a registration is
-/// the wake lane kicked.
+/// The open binding of native session `session` on B's seat: `(binding_id, liveness,
+/// disconnect_reason)`. `None` when the seat has no such open binding.
+fn open_binding_of(rig: &Rig, session: &str) -> Option<(String, String, Option<String>)> {
+    use rusqlite::OptionalExtension;
+    rig.db()
+        .query_row(
+            "SELECT binding_id,liveness,disconnect_reason FROM occupant_bindings \
+             WHERE seat_id=?1 AND native_session=?2 AND ended_at IS NULL",
+            [rig.b.as_str(), session],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()
+        .unwrap()
+}
+
+/// The binding's read cursor in the rig's thread.
+fn cursor_of(rig: &Rig, binding: &str) -> Option<i64> {
+    use rusqlite::OptionalExtension;
+    rig.db()
+        .query_row(
+            "SELECT seq FROM binding_cursors WHERE binding_id=?1 AND thread_id=?2",
+            [binding, rig.thread.as_str()],
+            |row| row.get(0),
+        )
+        .optional()
+        .unwrap()
+}
+
+fn sequence_of(rig: &Rig, message: &str) -> i64 {
+    rig.db()
+        .query_row(
+            "SELECT sequence FROM messages WHERE id=?1",
+            [message],
+            |row| row.get(0),
+        )
+        .unwrap()
+}
+
+/// `/clear` is a new binding (run.md parked escalation, codeBuckets.review; spec 1.3 and 1.5:
+/// the cleared session's binding is superseded by the new session's), and its cursors start at
+/// the seat maximum (spec 2 Cursors). Mail the old binding already displayed is therefore
+/// unread for nobody: the new binding's SessionStart carries no digest, no composer wake fires
+/// (spec 3 Wake: only mail unread by that binding wakes it), and the old binding's rebind grace
+/// expiring changes nothing.
 #[test]
-fn clear_within_rebind_grace_emits_no_session_start_digest_and_no_native_kick() {
+fn clear_new_binding_gets_no_digest_or_wake_for_mail_already_read() {
     let rig = Rig::new();
     let mut watch = rig.watch(SESSION_B);
     watch.wait_connected();
-    let id = rig.send_ordinary("pending across /clear");
+    let id = rig.send_ordinary("read before /clear");
     watch.wait_item(&id);
+    let inbox = rig.cli_text_b(&["inbox"]);
+    assert_eq!(inbox.code, 0, "{}{}", inbox.stdout, inbox.stderr);
+    assert!(
+        inbox.stdout.contains("read before /clear"),
+        "{}",
+        inbox.stdout
+    );
+    let (old_binding, _, _) = open_binding_of(&rig, SESSION_B).expect("SB binding");
+    assert_eq!(
+        cursor_of(&rig, &old_binding),
+        Some(sequence_of(&rig, &id)),
+        "SB displayed the message, so its cursor is at that sequence"
+    );
     let mark = rig.host.mark();
     rig.set_session_b("SB2");
     let started = rig.session_start_hook_in_process_of(PANE_B, "SB2", "clear", SESSION_B);
     assert!(
         !started.stdout.contains(DIGEST_MARK),
-        "digest during rebind grace: {}",
+        "digest for mail the old binding already read: {}",
         started.stdout
     );
-    rig.wait_channel(Some("rebind_grace"));
+    let (_, old_liveness, old_reason) = open_binding_of(&rig, SESSION_B).expect("SB binding");
+    assert_eq!(old_liveness, "disconnected");
+    assert_eq!(old_reason.as_deref(), Some("superseded"));
+    let (new_binding, new_liveness, _) = open_binding_of(&rig, "SB2").expect("SB2 binding");
+    assert_eq!(new_liveness, "connected");
+    assert_ne!(new_binding, old_binding, "/clear opens a new binding");
     rig.assert_no_prompt(mark, QUIET);
-    // The quiet window just observed already gave what was in flight time
-    // to finish (it is longer than `Rig::advance`'s pause), so jump at once.
+    // The quiet window gave what was in flight time to finish, so jump at once.
     rig.clock.advance(31_000);
     rig.wait_channel(None);
+    rig.assert_no_prompt(mark, QUIET);
+}
+
+/// The other half of the `/clear` model (same sources as above): mail no binding displayed is
+/// unread for the new binding too, since its seat-maximum cursor is short of it. The new
+/// binding's SessionStart digests it and the composer wake fires at once, with no rebind-grace
+/// suppression (the clock never passes `MOD_REBIND_GRACE_MS`).
+#[test]
+fn clear_new_binding_digests_and_wakes_for_its_unread_mail_without_grace() {
+    let rig = Rig::new();
+    let mut watch = rig.watch(SESSION_B);
+    watch.wait_connected();
+    let id = rig.send_ordinary("only the watch saw this");
+    watch.wait_item(&id);
+    let mark = rig.host.mark();
+    rig.set_session_b("SB2");
+    let started = rig.session_start_hook_in_process_of(PANE_B, "SB2", "clear", SESSION_B);
+    assert!(
+        started.stdout.contains(DIGEST_MARK),
+        "no digest for mail unread by the new binding: {}",
+        started.stdout
+    );
     rig.wait_prompt(mark, PANE_B);
     assert_eq!(rig.receipt_state(&id), "pending");
 }
@@ -2196,46 +2257,41 @@ fn reload_reack_same_generation_settles() {
     assert_eq!(result["result"], "settled", "{result}");
 }
 
-/// Spec D6 resume: `/resume` keeps the native session id but rotates the
-/// generation. An ack that still carries the previous generation (the local
-/// hint is stale) is accepted for the same native session and settles; the
-/// daemon decides against its canonical binding, not the client's claim.
+/// `/resume` keeps the native session, so it is a lifecycle check-in of the same binding
+/// (spec 1.3, `Resolution::Existing`): no `binding_changed` close, the channel and its binding
+/// generation stay as they were, and the re-ACK settles on that binding.
 #[test]
-fn resume_reack_settles() {
+fn resume_keeps_binding_and_reack_settles() {
     let rig = Rig::new();
     let mut old = rig.watch(SESSION_B);
     old.wait_connected();
     let id = rig.send_ordinary("delivered before the resume");
     old.wait_item(&id);
-    let contexts = rig.paths.instance_dir.join("contexts");
-    let before = snapshot(&contexts);
-    let generation = rig.channels()["channels"][0]["binding_generation"]
-        .as_u64()
-        .unwrap();
+    let (binding, _, _) = open_binding_of(&rig, SESSION_B).expect("SB binding");
+    let channel = rig.channels()["channels"][0].clone();
+    assert_eq!(channel["state"], "live", "{channel}");
     rig.session_start_hook(PANE_B, SESSION_B, "resume");
-    let closing = old.wait_line("the binding_changed close", STEP, |line| {
+    old.assert_no_line("a closing status", QUIET, |line| {
         line["kind"] == "status" && line["state"] == "closing"
     });
-    assert_eq!(closing["reason"], "binding_changed", "{closing}");
-    let mut new = rig.watch(SESSION_B);
-    new.wait_connected();
-    new.wait_item(&id);
-    rig.wait_channel(Some("live"));
-    let rotated = rig.channels()["channels"][0]["binding_generation"]
-        .as_u64()
+    let after = rig.channels()["channels"][0].clone();
+    assert_eq!(after["state"], "live", "{after}");
+    assert_eq!(
+        after["binding_generation"], channel["binding_generation"],
+        "resume does not change the binding generation"
+    );
+    let open: i64 = rig
+        .db()
+        .query_row(
+            "SELECT count(*) FROM occupant_bindings WHERE seat_id=?1 AND native_session=?2 AND ended_at IS NULL",
+            [rig.b.as_str(), SESSION_B],
+            |row| row.get(0),
+        )
         .unwrap();
-    assert!(rotated > generation, "resume rotates the generation");
-    // The ack process still sees the pre-resume context (previous generation).
-    let after = snapshot(&contexts);
-    assert_ne!(before, after, "the resume hook updated the local context");
-    for (path, _) in &after {
-        if !before.iter().any(|(old, _)| old == path) {
-            fs::remove_file(path).unwrap();
-        }
-    }
-    for (path, bytes) in &before {
-        fs::write(path, bytes).unwrap();
-    }
+    assert_eq!(open, 1, "exactly one open SB binding");
+    let (same, liveness, _) = open_binding_of(&rig, SESSION_B).expect("SB binding");
+    assert_eq!(same, binding, "resume keeps the same binding");
+    assert_eq!(liveness, "connected");
     let result = rig.ack_result(SESSION_B, "context", &id);
     assert_eq!(result["result"], "settled", "{result}");
     assert_eq!(rig.receipt_state(&id), "acked");

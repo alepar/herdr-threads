@@ -126,14 +126,18 @@ fn domain_sets_mod_channel_live_from_registry() {
 }
 
 #[test]
-fn domain_sets_mod_channel_live_in_either_grace_state() {
-    for state in [
-        ModChannelState::RebindGrace,
+fn domain_sets_mod_channel_live_in_reconnect_grace_but_not_rebind_grace() {
+    let (reconnect, _dir) = service(Arc::new(Fake(vec![entry(
+        "s",
         ModChannelState::ReconnectGrace,
-    ] {
-        let (service, _dir) = service(Arc::new(Fake(vec![entry("s", state)])));
-        assert_eq!(flags(&service, "s"), (true, true), "{state:?}");
-    }
+    )])));
+    assert_eq!(flags(&reconnect, "s"), (true, true));
+    // A rebind grace entry is a superseded binding: the new binding gets its digest.
+    let (rebind, _dir2) = service(Arc::new(Fake(vec![entry(
+        "s",
+        ModChannelState::RebindGrace,
+    )])));
+    assert_eq!(flags(&rebind, "s"), (false, false));
 }
 
 #[test]
