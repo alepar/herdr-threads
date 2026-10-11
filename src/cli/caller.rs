@@ -107,7 +107,9 @@ pub(super) fn refusal_error(refusal: &EnvRefusal) -> RunError {
              is among this process's ancestors, so the call cannot be attributed to a harness \
              session; run herdr-threads from the agent's own shell tool",
         ),
-        EnvRefusal::MissingSession { .. } => ApiError::session_claim_required(refusal.message()),
+        EnvRefusal::MissingSession { .. } | EnvRefusal::MalformedSubagentMarker { .. } => {
+            ApiError::session_claim_required(refusal.message())
+        }
         EnvRefusal::NoFingerprint { .. } => {
             ApiError::liveness_fingerprint_required(refusal.message())
         }

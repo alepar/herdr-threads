@@ -278,14 +278,19 @@ model open work, and summary closure never changes receipt state or installs glo
   (`liveness_fingerprint_required`), or that runs under `codex app-server --managed-daemon`
   (`managed_daemon_refused`, client-local). A process with no harness ancestor and no harness marker is a
   person and keeps the pane-context path; a person's shell cannot act through an agent seat.
-- *Subagent read-only* (ht-54r.20): a subagent claim (the declared subagent role, or any agent id) is
-  refused `subagent_read_only` before dispatch for every accountable command: check-in, handoff, create
-  thread, invite, join, accept, reject, send, ACK, display ACK, mod-delivery ACK, completion of an inbox
-  delivery, leave, topic and name changes, archive and reopen. A claim that resolves to a `subagent`
-  binding row is refused the same way in the deciding transaction. Subagents may read, summarize and
-  advance their own binding's cursor. This is cooperative, on the recognized claim: a Claude shape the
-  hook cannot recognize stays attributed to the parent session (the accepted limit from ht-54r.6) and is
-  not refused.
+- *Subagent read-only* (ht-54r.20, ht-54r.58): the daemon decides read-only from the role on the binding
+  row it resolves (A2), at every accountable entry point: check-in, handoff, create thread, invite, join,
+  accept, reject, send, ACK, display ACK, mod-delivery ACK, completion of an inbox delivery, leave, topic
+  and name changes, archive and reopen. A claim that resolves to a `subagent` binding row (a Hermes
+  registered child whose CLI claim is top-level-shaped, say) is refused `subagent_read_only` in the
+  deciding transaction. A subagent-shaped claim (the declared subagent role, or any agent id) is
+  additionally refused before dispatch: an early refusal with the stable code, never the authority.
+  Subagents read, summarize and advance their own binding's cursor: a subagent's text `inbox` displays
+  its own stream and sends only `AdvanceCursors` (never a display ACK or a delivery completion).
+  Client-side role derivation fails closed: a malformed subagent marker (a `CODEX_THREAD_ID` that is not
+  a valid id) is refused, never read as the top-level session. This is cooperative, on the recognized
+  claim: a Claude shape the hook cannot recognize stays attributed to the parent session (the accepted
+  limit from ht-54r.6) and is not refused.
 - *Receipt settlement by a top-level binding* (ht-54r.20): receipt obligations stay per seat. The first
   connected top-level binding of the seat to ACK or fully display a message settles the obligation, once;
   the receipt records that binding as `ack_binding_id` (beside the historical `ack_generation`, which is
@@ -426,6 +431,7 @@ model open work, and summary closure never changes receipt state or installs glo
 | Action | Who |
 |---|---|
 | ACK, accept, reject an ordinary invitation, send, leave, archive, reopen | a connected top-level binding of the seat (top-level agent or declared human); never a subagent binding |
+| advance one's own binding's read cursors (`AdvanceCursors`, a display of its own stream) | any binding of the seat, subagent bindings included; it moves only the caller's own binding cursors and settles nothing |
 | display ACK after text inbox output | any connected top-level agent binding of the seat, for exact canonical pending agent receipts fully displayed on the page; the daemon decides eligibility again before settlement |
 | open a mod delivery channel (`watch`) | the pane's top-level Claude session through its mod, for its own connected top-level `cooperative_top_level` binding (the claim's native session); several bindings of one seat each hold their own; recorded as `cooperative_mod_channel`; it grants no other row |
 | mod delivery ACK (`watch ack`) | the current top-level Claude binding with a live channel (grace included) for its binding generation, or, on resume, for ids delivered under the immediately previous generation of the same native session; the daemon decides each id again before settlement and refuses unknown, unaddressed and truncated ids |

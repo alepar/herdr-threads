@@ -15,21 +15,21 @@ use std::{
     time::Duration,
 };
 
-const BIN: &str = env!("CARGO_BIN_EXE_herdr-threads");
+pub(super) const BIN: &str = env!("CARGO_BIN_EXE_herdr-threads");
 /// Exit status of a refused agent call (`EXIT_UNSUPPORTED`).
 const REFUSED: i32 = 4;
 
-struct World {
+pub(super) struct World {
     root: PathBuf,
     state: PathBuf,
     socket: PathBuf,
-    paths: InstancePaths,
+    pub(super) paths: InstancePaths,
     _host: FakeHost,
     _scratch: Scratch,
 }
 impl World {
     /// Two plain shell panes (w1:p1, w1:p2) and, when `daemon`, a running daemon.
-    fn new(daemon: bool) -> Self {
+    pub(super) fn new(daemon: bool) -> Self {
         let root = PathBuf::from(format!(
             "{}/htsc-{}",
             herdr_threads::test_support::SHORT_TMP,
@@ -62,7 +62,7 @@ impl World {
         world
     }
 
-    fn routing(&self) -> Vec<String> {
+    pub(super) fn routing(&self) -> Vec<String> {
         [
             "--json",
             "--state-dir",
@@ -74,7 +74,7 @@ impl World {
         .to_vec()
     }
 
-    fn env(&self) -> Vec<(String, String)> {
+    pub(super) fn env(&self) -> Vec<(String, String)> {
         let home = |name: &str| self.root.join(name).to_string_lossy().into_owned();
         vec![
             ("HOME".into(), home("home")),
@@ -97,7 +97,7 @@ impl World {
     }
 
     /// A person: no harness parent, no harness markers.
-    fn human(&self, args: &[&str]) -> Output {
+    pub(super) fn human(&self, args: &[&str]) -> Output {
         let mut command = crate::scrubbed_command(BIN);
         command.args(self.person_argv(args));
         for (key, value) in self.env() {
@@ -120,7 +120,13 @@ impl World {
 
     /// An agent: the command runs as a child of a synthetic `harness` process, in `pane`, with
     /// the harness's session variable set to `session` when one is given.
-    fn agent(&self, harness: &str, session: Option<&str>, pane: &str, args: &[&str]) -> Output {
+    pub(super) fn agent(
+        &self,
+        harness: &str,
+        session: Option<&str>,
+        pane: &str,
+        args: &[&str],
+    ) -> Output {
         self.agent_with(harness, session, pane, args, false)
     }
 
@@ -173,12 +179,12 @@ impl World {
         run(command)
     }
 
-    fn data(out: &Output) -> Value {
+    pub(super) fn data(out: &Output) -> Value {
         assert!(out.status.success(), "{out:?}");
         serde_json::from_slice::<Value>(&out.stdout).unwrap()["result"]["data"].clone()
     }
 
-    fn seat(&self, pane: &str) -> String {
+    pub(super) fn seat(&self, pane: &str) -> String {
         Self::data(&self.human(&["seat", "resolve", "--pane", pane]))
             .as_str()
             .unwrap()
@@ -186,7 +192,10 @@ impl World {
     }
 
     /// (native session, role, liveness, provenance, fingerprint pid) of the seat's open bindings.
-    fn bindings(&self, seat: &str) -> Vec<(String, String, String, String, Option<i64>)> {
+    pub(super) fn bindings(
+        &self,
+        seat: &str,
+    ) -> Vec<(String, String, String, String, Option<i64>)> {
         let db = rusqlite::Connection::open(&self.paths.database_path).unwrap();
         db.busy_timeout(Duration::from_secs(3)).unwrap();
         let mut statement = db
@@ -216,7 +225,7 @@ impl Drop for World {
 }
 
 /// Run an owned command to completion with its output captured.
-fn run(mut command: std::process::Command) -> Output {
+pub(super) fn run(mut command: std::process::Command) -> Output {
     command
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
@@ -227,7 +236,7 @@ fn run(mut command: std::process::Command) -> Output {
         .unwrap()
 }
 
-fn stderr(out: &Output) -> String {
+pub(super) fn stderr(out: &Output) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
 }
 

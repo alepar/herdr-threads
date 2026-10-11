@@ -4485,6 +4485,9 @@ pub fn register_available(
                 &mapping,
                 command.lineage_parent.as_ref(),
             )?;
+            // Read-only is decided from the resolved binding's role (a Hermes registered child
+            // resolves to its subagent row); the transaction rolls back on Err.
+            super::control::require_top_level_binding(resolution.binding())?;
             let binding_id = resolution.binding().binding_id.clone();
             // Spec §2: a new binding's first response carries its history stats (once: only the
             // check-in that enrolls it); a resumed or reconnected one whose unread backlog

@@ -577,7 +577,14 @@ fn cli_inbox_prints_first_contact_once() {
     let show = |daemon: &Unenrolled, spec: &OutputSpec| {
         let mut out = Vec::new();
         crate::cli::run_display_inbox(
-            &query, spec, &journal, &contexts, daemon, &StepClock, &mut out,
+            &query,
+            spec,
+            &journal,
+            &contexts,
+            daemon,
+            &StepClock,
+            &mut out,
+            crate::harness::context::Role::TopLevel,
         )
         .unwrap();
         String::from_utf8(out).unwrap()

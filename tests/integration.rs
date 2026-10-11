@@ -109,6 +109,8 @@ mod operator_ux;
 #[cfg(feature = "test-support")]
 #[path = "integration/pane_close_retirement.rs"]
 mod pane_close_retirement;
+#[path = "integration/session_bindings_subagent.rs"]
+mod session_bindings_subagent;
 /// ht-54r.5: agent callers are attributed from the harness environment, the real
 /// binary under a synthetic harness parent.
 #[cfg(feature = "test-support")]

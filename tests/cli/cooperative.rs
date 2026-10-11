@@ -5194,3 +5194,192 @@ fn frozen_human_ordinary_retry_pending_canonical_refuses() {
         "refusal must come from canonical replay, after frozen dispatch"
     );
 }
+
+/// Kills: a subagent's text inbox falling to the unclaimed wire read (ht-6v2), a subagent display
+/// settling (display ACK / delivery completion), and an agent's `inbox --machine` omitting its
+/// claim so the daemon served the seat page instead of the binding's own stream.
+#[test]
+fn subagent_own_inbox_displays_advances_only_its_cursor_and_machine_read_carries_the_claim() {
+    use crate::harness::context::{
+        ContextJournal, Harness as ContextHarness, OccupantContext, Role, SessionReference,
+    };
+    use crate::protocol::{
+        authority::{CallerRole, LivenessFingerprint},
+        commands::InboxQuery,
+        pagination::{Consistency, Page, StopReason},
+        results::{ApiError, CapabilityList, InboxBatchV2Item},
+        time::CallBudget,
+    };
+    use std::sync::Mutex;
+    struct Client(Mutex<Vec<Command>>);
+    impl crate::ports::LocalClient for Client {
+        fn call_with_output(
+            &self,
+            command: Command,
+            _: &crate::protocol::output::OutputSpec,
+            budget: &CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            self.call(command, budget)
+        }
+        fn supports_capability(&self, name: &str, _: &CallBudget) -> bool {
+            [
+                crate::protocol::capabilities::INBOX_BATCH_V2,
+                crate::protocol::capabilities::BINDING_CURSORS,
+            ]
+            .contains(&name)
+        }
+        fn call(&self, command: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
+            self.0.lock().unwrap().push(command.clone());
+            match command {
+                Command::Capabilities => Ok(CommandResult::Capabilities(CapabilityList {
+                    capabilities: vec![
+                        crate::protocol::capabilities::INBOX_BATCH_V2.into(),
+                        crate::protocol::capabilities::BINDING_CURSORS.into(),
+                    ],
+                })),
+                Command::InboxBatchV2(_) => Ok(CommandResult::InboxBatchV2(Page {
+                    items: vec![InboxBatchV2Item::Message {
+                        thread: ThreadId::new("thread"),
+                        message: MessageId::new("message-1"),
+                        sequence: 1,
+                        topic_data: "topic".into(),
+                        sender: Some(SeatId::new("peer")),
+                        author_role: None,
+                        relays_user: false,
+                        user_intent: None,
+                        author_role_backfilled: false,
+                        body: "hello".into(),
+                        body_start: 0,
+                        body_end: 5,
+                        body_len: 5,
+                        ack_candidate: Some(MessageId::new("message-1")),
+                    }],
+                    next_cursor: None,
+                    next_argv: None,
+                    high_water_ordinal: 1,
+                    scope_revision: None,
+                    has_more: false,
+                    stop_reason: StopReason::Complete,
+                    consistency: Consistency::BoundedLive,
+                })),
+                Command::AdvanceCursors(_) => {
+                    Ok(CommandResult::CursorsAdvanced(Default::default()))
+                }
+                other => panic!("a subagent read sent {other:?}"),
+            }
+        }
+    }
+    let root = std::env::temp_dir()
+        .canonicalize()
+        .unwrap()
+        .join(format!("subagent-inbox-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&root).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let instance = uuid::Uuid::from_u128(1);
+    let context = OccupantContext {
+        format_version: 1,
+        instance,
+        seat: "seat-test".into(),
+        target: "w1:p1".into(),
+        harness: ContextHarness::Claude,
+        binding_generation: 1,
+        execution: uuid::Uuid::from_u128(2),
+        session: SessionReference::Native("sess-1".into()),
+        role: Role::TopLevel,
+    };
+    let contexts = ContextJournal::open(
+        &root,
+        instance,
+        "seat-test",
+        std::time::Duration::from_millis(20),
+    )
+    .unwrap()
+    .with_agent_caller(context, LivenessFingerprint::TEST)
+    .unwrap();
+    let journal = Journal::open(root.join("intents")).unwrap();
+    let env = crate::harness::caller_env::EnvClaim {
+        harness: crate::protocol::authority::Harness::Claude,
+        native_session: crate::protocol::ids::NativeSessionId::new("sess-1"),
+        agent_id: Some(crate::protocol::ids::AgentId::new("agent-1")),
+        role: CallerRole::Subagent,
+        fingerprint: LivenessFingerprint::TEST,
+        provenance: "cooperative_hook_agent",
+    };
+    let _active =
+        crate::cli::caller::ActiveGuard::enter(Some(crate::cli::caller::CallerOrigin::Agent(env)));
+    let client = Client(Mutex::new(vec![]));
+    let run = |argv: &[&str]| {
+        let parsed = crate::cli::commands::parse_argv(argv.iter().copied()).unwrap();
+        let mut out = vec![];
+        crate::cli::run_cooperative(
+            parsed,
+            &journal,
+            &contexts,
+            None,
+            Role::Subagent,
+            &client,
+            &crate::app::SystemClock::new(),
+            &mut out,
+        )
+        .unwrap();
+        String::from_utf8(out).unwrap()
+    };
+    let subagent_claim = |claim: &crate::protocol::authority::CallerClaim| {
+        assert_eq!(claim.role, CallerRole::Subagent);
+        assert_eq!(claim.agent_id.as_ref().map(|a| a.as_str()), Some("agent-1"));
+        assert_eq!(claim.native_session.as_str(), "sess-1");
+    };
+
+    let text = run(&["herdr-threads", "inbox"]);
+    assert!(
+        text.contains("hello"),
+        "the subagent sees its own mail: {text}"
+    );
+    let calls = client.0.lock().unwrap().clone();
+    let mut reads = 0;
+    let mut advances = 0;
+    for call in &calls {
+        match call {
+            Command::InboxBatchV2(InboxQuery { claim, .. }) => {
+                subagent_claim(claim.as_ref().expect("the read carries the claim"));
+                reads += 1;
+            }
+            Command::AdvanceCursors(advance) => {
+                subagent_claim(&advance.claim);
+                assert_eq!(advance.displayed, vec![MessageId::new("message-1")]);
+                advances += 1;
+            }
+            Command::Capabilities => {}
+            other => panic!("a subagent display settled or wrote: {other:?}"),
+        }
+    }
+    assert_eq!((reads, advances), (1, 1));
+
+    client.0.lock().unwrap().clear();
+    run(&["herdr-threads", "inbox", "--machine"]);
+    let calls = client.0.lock().unwrap().clone();
+    let query = calls
+        .iter()
+        .find_map(|call| match call {
+            Command::InboxBatchV2(query) | Command::Inbox(query) => Some(query),
+            _ => None,
+        })
+        .expect("the machine read reached the daemon");
+    subagent_claim(
+        query
+            .claim
+            .as_ref()
+            .expect("machine read carries the claim"),
+    );
+    assert!(
+        calls
+            .iter()
+            .all(|call| !matches!(call, Command::AdvanceCursors(_))),
+        "a machine read moves no cursor"
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}

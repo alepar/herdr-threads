@@ -1369,6 +1369,45 @@ fn select_display_inbox_page<C: LocalClient + ?Sized>(
     Ok((command, result))
 }
 
+/// The caller's claim for `context`: top-level as built, or, for a subagent, in the shape the
+/// hook builds (agent id, per-agent execution), never the parent's.
+fn role_claim(
+    contexts: &crate::harness::context::ContextJournal,
+    context: &crate::harness::context::OccupantContext,
+    role: crate::harness::context::Role,
+) -> Result<crate::protocol::authority::CallerClaim, RunError> {
+    let mut claim = contexts.claim(context).map_err(context_run_error)?;
+    if role == crate::harness::context::Role::TopLevel {
+        return Ok(claim);
+    }
+    let refused = || {
+        unsupported(
+            "subagents may read and summarize; only top-level agents check in, accept or ACK",
+        )
+    };
+    let Some(caller::CallerOrigin::Agent(env)) = caller::active() else {
+        return Err(refused());
+    };
+    let (Some(agent), crate::harness::context::SessionReference::Native(native)) =
+        (env.agent_id, &context.session)
+    else {
+        return Err(refused());
+    };
+    claim.role = crate::protocol::authority::CallerRole::Subagent;
+    claim.execution = crate::protocol::ids::ExecutionId::parse(
+        crate::harness::context::session_execution(
+            context.instance,
+            context.harness,
+            native,
+            Some(agent.as_str()),
+        )
+        .to_string(),
+    )
+    .map_err(|_| RunError::Api(ApiError::invalid_request("subagent execution id")))?;
+    claim.agent_id = Some(agent);
+    Ok(claim)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_display_inbox<C: LocalClient + ?Sized, W: Write>(
     query: &crate::protocol::commands::InboxQuery,
@@ -1378,6 +1417,7 @@ fn run_display_inbox<C: LocalClient + ?Sized, W: Write>(
     client: &C,
     clock: &dyn Clock,
     writer: &mut W,
+    role: crate::harness::context::Role,
 ) -> Result<(), RunError> {
     use crate::protocol::{ids::MessageId, results::InboxBatchItem};
     let context = contexts
@@ -1386,7 +1426,8 @@ fn run_display_inbox<C: LocalClient + ?Sized, W: Write>(
         .ok_or_else(|| {
             caller_not_located("context missing; explicit lifecycle check-in required")
         })?;
-    let claim = contexts.claim(&context).map_err(context_run_error)?;
+    let claim = role_claim(contexts, &context, role)?;
+    let subagent = role != crate::harness::context::Role::TopLevel;
     let mut request = query.clone();
     request.seat = Some(claim.seat.clone());
     let capabilities = match client.call(Command::Capabilities, &cooperative_budget(clock)) {
@@ -1417,6 +1458,12 @@ fn run_display_inbox<C: LocalClient + ?Sized, W: Write>(
         && capabilities
             .iter()
             .any(|name| name == crate::protocol::capabilities::BINDING_CURSORS);
+    if subagent && !binding_cursors {
+        // Without per-binding cursors a subagent cannot display without settling: read-only.
+        return Err(unsupported(
+            "subagents may read and summarize; only top-level agents check in, accept or ACK",
+        ));
+    }
     if binding_cursors {
         request.claim = Some(claim.clone());
     }
@@ -1479,6 +1526,10 @@ fn run_display_inbox<C: LocalClient + ?Sized, W: Write>(
                     &cooperative_budget(clock),
                 );
             }
+        }
+        if subagent {
+            // A subagent's display settles nothing: no display ACK, no delivery completion.
+            return Ok(());
         }
         return lazy_display::settle(
             candidates,
@@ -2796,7 +2847,6 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
     });
     if let CliAction::Wire(Command::Inbox(query)) = &parsed.action
         && own_text_inbox
-        && role == Role::TopLevel
     {
         return run_display_inbox(
             query,
@@ -2806,9 +2856,26 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
             client,
             clock,
             writer,
+            role,
         );
     }
-    if let CliAction::Wire(command) = parsed.action {
+    if let CliAction::Wire(mut command) = parsed.action {
+        // An agent's machine read of its own inbox carries its claim so the daemon serves that
+        // binding's stream (every role); machine reads move no cursor.
+        if let Command::Inbox(query) = &mut command
+            && parsed.caller_read_default
+            && query.claim.is_none()
+            && contexts.is_agent_caller()
+            && client.supports_capability(
+                crate::protocol::capabilities::BINDING_CURSORS,
+                &cooperative_budget(clock),
+            )
+            && let Some(context) = contexts.current().map_err(context_run_error)?
+        {
+            let claim = role_claim(contexts, &context, role)?;
+            query.seat = Some(claim.seat.clone());
+            query.claim = Some(claim);
+        }
         return run_wire(
             command,
             &parsed.output,

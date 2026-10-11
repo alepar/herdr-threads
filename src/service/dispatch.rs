@@ -805,8 +805,9 @@ impl LocalService for DomainService {
             output: output.clone(),
             operation_scope: None,
         };
-        // Subagent bindings are read-only (ht-54r.20). Checked here, before `validate()` would
-        // turn it into a generic invalid-request string, so the code is stable.
+        // Subagent bindings are read-only (ht-54r.20). This claim-shape check is only the cheap
+        // early refusal (stable code before `validate()`); the authority is the role on the
+        // binding row the store resolves (`control::require_top_level_binding`, TRUST-POLICY A2).
         if command
             .accountable_claim()
             .is_some_and(crate::protocol::authority::CallerClaim::is_subagent)
