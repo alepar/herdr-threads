@@ -35,3 +35,11 @@ Code phase started: ht-e99.6 is closed design-only repair at ce11790f, with no i
 roastCodeRound: 1
 
 Whole-epic successor: `.superpowers/sdd/ht-e99-plan/whole-epic-review-2.md` is CLEAN at 75d6fb5f662d4f10ccdc540accd909fc935e6969 against main6107075f; original NEEDS_FIX review preserved. Task9 repair independently verified. Full suite remains unmeasured. PR roast round 1 begins at the checkpoint containing this state.
+
+roast-code: 2026-10-10-automatic-one-to-one-threads-roast-pr-1.md
+
+scopeFilter-round-1:
+- [Nit] src/store/archival.rs:222 · punch-list — Indexed pair selection and archival-fence semantics are required; optimizing retained-parent archival scans is an unstated improvement, with no measured stated-budget violation.
+scope-filter: 0 in-scope · 1 punch-listed
+
+PR roast disposition: clean (1 nits), 12/12 scouts, 5 raw → 4 deduped → 3 panels/1 spot, 10/10 judge seats, no escalation or caps. Fresh scope filter routes the Nit to the final out-of-scope punch list; no fix bead or second round required. Full-suite verification is next; phase remains roast-code until its gate completes.
