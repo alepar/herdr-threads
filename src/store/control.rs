@@ -1705,10 +1705,16 @@ pub fn set_topic(
                 )
                 .map_err(store_error)?;
             if old != command.topic {
-                tx.execute("UPDATE threads SET topic=?1,topic_revision=topic_revision+1,updated_at=?2 WHERE id=?3 AND topic_revision<?4",
+                let changed = tx.execute("UPDATE threads SET topic=?1,topic_revision=topic_revision+1,updated_at=?2 WHERE id=?3 AND topic_revision<?4",
                     params![command.topic,at.utc.0,command.thread.as_str(),i64::MAX]).map_err(store_error)?;
+                if changed != 1 {
+                    return Err(api_error(
+                        ErrorCode::SequenceExhausted,
+                        "topic revision exhausted",
+                    ));
+                }
                 let payload=serde_json::json!({"action":"set_topic","actor_seat":caller.as_str(),"topic":command.topic}).to_string();
-                schema::append_event_once(
+                let (event, _) = schema::append_event_once(
                     tx,
                     EventInput {
                         thread: &command.thread,
@@ -1727,6 +1733,24 @@ pub fn set_topic(
                         |r| r.get(0),
                     )
                     .map_err(store_error)?;
+                let seq: i64 = tx
+                    .query_row(
+                        "SELECT decision_seq FROM messages WHERE id=?1",
+                        [event.as_str()],
+                        |r| r.get(0),
+                    )
+                    .map_err(store_error)?;
+                super::invitation_content::record_context_change(
+                    tx,
+                    &instance,
+                    &command.thread,
+                    u64::try_from(seq).map_err(|_| {
+                        api_error(
+                            ErrorCode::StoreCorrupt,
+                            "negative context decision sequence",
+                        )
+                    })?,
+                )?;
                 schema::bump_filter_revision(tx, &instance, "topic", command.thread.as_str())?;
                 schema::bump_filter_revision(tx, &instance, "topic", "all")?;
                 schema::bump_filter_revision(tx, &instance, "directory", "all")?;

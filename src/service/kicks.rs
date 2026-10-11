@@ -149,6 +149,14 @@ pub const KNOWN_UNMAPPED: &[&str] = &[
     "allocation_decisions",
     "delivery_observations",
     "digest_notice_offer",
+    // Current presentation progress/outbox never schedules its own work.
+    "invitation_presentation_consumers",
+    "invitation_presentation_items",
+    "presentation_confirming_invitations",
+    "presentation_warning_fence",
+    "presentation_warning_proofs",
+    // Producer context refresh is notification-only, never native attention.
+    "invitation_context_latest",
     "digest_open_warning_recipients",
     "digest_open_warnings",
     "digest_pending_invitations",
@@ -269,6 +277,7 @@ pub const MOD_NOTIFY_TABLES: &[&str] = &[
     "seats",
     "recovery_holds",
     "service_notification_recipients",
+    "invitation_context_latest",
 ];
 
 /// True when a commit touching `table` must wake the mod worker.

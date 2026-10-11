@@ -94,6 +94,7 @@ pub const ADVERTISED: &[&str] = &[
     SEAT_WAKE_ON_V1,
     DELIVERY_PULL,
     LAZY_HOOK_DELIVERY,
+    DELIVERY_PRESENTATION_V2,
 ];
 
 /// The capability set a daemon advertised to this client session. The empty set
@@ -122,3 +123,7 @@ impl Capabilities {
 #[cfg(test)]
 #[path = "../../tests/protocol/capabilities.rs"]
 mod tests;
+
+/// Bounded ordered delivery through registered codecs and explicit presentation confirmation.
+/// Consumers retain historical delivery when capability discovery omits this name.
+pub const DELIVERY_PRESENTATION_V2: &str = "delivery.presentation_v2";

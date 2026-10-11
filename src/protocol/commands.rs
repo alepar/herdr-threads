@@ -103,6 +103,8 @@ pub enum Command {
     AckModDelivered(AckModDelivered),
     /// Hook-pull read (delivery-policy DP4); gated by `delivery.pull_v1`.
     DeliveryPull(crate::protocol::delivery::DeliveryPull),
+    DeliveryPullV2(crate::protocol::delivery::DeliveryPullV2),
+    DeliveryPresentationConfirmV2(crate::protocol::delivery::DeliveryPresentationConfirmV2),
     /// Hook-pull settlement (DP4); gated by `delivery.pull_v1`.
     DeliveryConfirm(crate::protocol::delivery::DeliveryConfirm),
     /// Presentation bookkeeping only; never an ACK or adoption.
@@ -1137,6 +1139,8 @@ impl Command {
             Self::Ack(v) | Self::AckDisplayed(v) => Some(&v.claim),
             Self::AckModDelivered(v) => Some(&v.claim),
             Self::DeliveryPull(v) => Some(&v.claim),
+            Self::DeliveryPullV2(v) => Some(&v.claim),
+            Self::DeliveryPresentationConfirmV2(v) => Some(&v.claim),
             Self::DeliveryConfirm(v) => Some(&v.claim),
             Self::CompleteInboxDelivery(v) => Some(&v.claim),
             Self::SetWakeOn(v) => Some(&v.claim),
@@ -1286,6 +1290,8 @@ impl Command {
                 Err("invalid mod delivery ack batch")
             }
             Self::DeliveryPull(pull) => pull.validate(),
+            Self::DeliveryPullV2(pull) => pull.validate(),
+            Self::DeliveryPresentationConfirmV2(confirm) => confirm.validate(),
             Self::DeliveryConfirm(confirm) => confirm.validate(),
             _ => Ok(()),
         }

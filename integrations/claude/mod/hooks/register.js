@@ -21,6 +21,8 @@ const CONNECTED_RESET_MS = 60000
 const LEDGER_CAP = 2000
 
 const INTENTS = new Set(['query', 'request', 'rule'])
+const canonicalEpoch = (v) => typeof v === 'string' && /^(0|[1-9][0-9]{0,19})$/.test(v)
+  && (v.length < 20 || v <= '18446744073709551615')
 const oneLine = (s) => String(s).replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, ' ')
 const LINE_BREAK = /\r\n|[\n\r\u000b\u000c\u0085\u2028\u2029]/
 /** Every non-empty body line indented two spaces (src/protocol/output_compact.rs), so a body never starts a line at column 0. */
@@ -58,7 +60,7 @@ export function frame(items) {
   return `${HEADER}\n\n${blocks.join('\n\n')}`
 }
 
-const emptyRec = () => ({ delivered: {}, unacked: {}, attentionVersions: [] })
+const emptyRec = () => ({ delivered: {}, unacked: {}, attentionVersions: [], invitationVersions: {} })
 
 // Esc at a permission dialog (ht-j16.30, live stress D3): the engine ends that turn with a
 // non-aborted turn.complete, so the hold cannot key on isAborted alone. The exact tool.call
@@ -235,19 +237,25 @@ export function createCore(io) {
       }
       return
     }
+    const hasEpoch = Object.prototype.hasOwnProperty.call(o, 'presentation_epoch')
+    if ((o.kind === 'attention' || o.kind === 'attention_cleared') && hasEpoch
+        && !canonicalEpoch(o.presentation_epoch)) return
     if (o.kind === 'attention_cleared') {
       // The watch found nothing pending that an earlier attention line pointed at (ht-j16.33): an unsent
       // attention item is stale. One already in a submit or attached as context is not recalled.
-      const gone = S.queue.filter((q) => q.kind === 'attention' && !q.inflight).map((q) => q.id)
-      S.queue = S.queue.filter((q) => q.kind !== 'attention' || q.inflight)
-      S.runAttention = new Set()
+      const retract = (q) => q.kind === 'attention' && !q.inflight
+        && (!hasEpoch || q.presentationEpoch === o.presentation_epoch)
+      const gone = S.queue.filter(retract).map((q) => q.id)
+      S.queue = S.queue.filter((q) => !retract(q))
+      if (hasEpoch) S.runAttention.delete(`attention:${o.presentation_epoch}`)
+      else S.runAttention = new Set()
       if (gone.length) {
         S.lastHeld = ''
         ledger('refused', { ids: gone, reason: 'attention_cleared' })
       }
       return
     }
-    if (o.kind !== 'message' && o.kind !== 'lazy' && o.kind !== 'attention') return
+    if (o.kind !== 'message' && o.kind !== 'lazy' && o.kind !== 'invitation' && o.kind !== 'attention' && o.kind !== 'notice') return
     ledger('received', { ids: [o.id] })
     if (o.kind === 'attention') {
       const v = o.attention_version
@@ -262,20 +270,29 @@ export function createCore(io) {
         kind: 'attention',
         body: String(o.text ?? ''),
         version: v,
+        presentationEpoch: hasEpoch ? o.presentation_epoch : null,
         run: S.run,
         ackable: false,
       })
     } else {
-      if (S.rec.delivered[o.id] !== undefined) {
+      const revision = o.topic_revision == null ? null : String(o.topic_revision)
+      // Retain historical scalar keys; modern contexts include exact decimal epochs.
+      const contextVersion = o.command_context_epoch == null
+        ? revision : JSON.stringify([revision, String(o.command_context_epoch)])
+      if (o.kind === 'invitation') {
+        if (Object.prototype.hasOwnProperty.call(S.rec.invitationVersions, o.id)
+            && S.rec.invitationVersions[o.id] === contextVersion) return
+      } else if (S.rec.delivered[o.id] !== undefined) {
         if (S.rec.unacked[o.id] !== undefined) retryAcks()
         return
       }
-      const dup = S.queue.find((q) => q.id === o.id)
+      const dup = S.queue.find((q) => q.id === o.id && (o.kind !== 'invitation'
+        || (q.contextVersion === contextVersion && (!q.truncated || o.truncated === true))))
       if (dup) {
         dup.run = S.run
         return
       }
-      const truncated = o.truncated === true
+      const truncated = o.kind !== 'notice' && o.truncated === true
       S.queue.push({
         id: o.id,
         kind: o.kind,
@@ -288,8 +305,10 @@ export function createCore(io) {
         user_intent: o.user_intent ?? null,
         body: String(o.body ?? ''),
         truncated,
+        wakes: o.kind !== 'notice' && o.wakes === true,
+        contextVersion,
         run: S.run,
-        ackable: !truncated && (o.kind === 'lazy' || o.ack_required === true),
+        ackable: !truncated && (o.kind === 'lazy' || (o.kind === 'message' && o.ack_required === true)),
       })
     }
     retryAcks()
@@ -303,12 +322,18 @@ export function createCore(io) {
   function complete(items, via) {
     const ids = items.map((i) => i.id)
     for (const it of items) {
-      S.queue = S.queue.filter((q) => q.id !== it.id)
+      S.queue = S.queue.filter((q) => it.kind === 'invitation' ? q !== it : q.id !== it.id)
       if (it.kind === 'attention') {
         S.runAttention.add(it.id)
         if (it.version !== undefined && !S.rec.attentionVersions.includes(it.version)) {
           S.rec.attentionVersions.push(it.version)
           if (S.rec.attentionVersions.length > 64) S.rec.attentionVersions.shift()
+        }
+      } else if (it.kind === 'invitation') {
+        if (!it.truncated) {
+          S.rec.invitationVersions[it.id] = it.contextVersion
+          const ids = Object.keys(S.rec.invitationVersions)
+          if (ids.length > 1024) delete S.rec.invitationVersions[ids[0]]
         }
       } else {
         S.rec.delivered[it.id] = via
@@ -410,7 +435,7 @@ export function createCore(io) {
         S.turns.wake = null
         persistTurns()
       }
-      const items = S.queue.filter((q) => q.kind !== 'lazy' && !q.inflight && q.run === S.run && !predHas(q.id))
+      const items = S.queue.filter((q) => !passive(q) && !q.inflight && q.run === S.run && !predHas(q.id))
       if (!(items.length || S.turns.wake) || S.submitInflight) return
       if (busy()) return
       const ids = items.map((i) => i.id)
@@ -427,7 +452,7 @@ export function createCore(io) {
         if (io.now() - S.draftSince < DRAFT_WAIT_MS) return held('draft', ids)
       }
       S.draftSince = null
-      const batch = S.queue.filter((q) => q.kind !== 'lazy' && !q.inflight && q.run === S.run && !predHas(q.id))
+      const batch = S.queue.filter((q) => !passive(q) && !q.inflight && q.run === S.run && !predHas(q.id))
       if (!batch.length && !S.turns.wake) return
       const gen = S.gen
       for (const it of batch) it.inflight = true
@@ -510,11 +535,13 @@ export function createCore(io) {
     void pump()
   }
 
-  /** Lazy rows are appended at once, busy or idle. */
+  const passive = (item) => item.kind === 'lazy' || item.kind === 'notice' || (item.kind === 'invitation' && !item.wakes)
+
+  /** Passive items are appended at once, busy or idle, without a wake. */
   async function pumpLazy() {
     if (S.inert || S.disposed || S.appendInflight || !S.live) return
     if (io.now() < S.appendBackoffUntil) return
-    const batch = S.queue.filter((q) => q.kind === 'lazy' && !q.inflight && q.run === S.run)
+    const batch = S.queue.filter((q) => passive(q) && !q.inflight && q.run === S.run)
     if (!batch.length) return
     const gen = S.gen
     for (const it of batch) it.inflight = true
@@ -708,7 +735,7 @@ export function createCore(io) {
     const answered =
       result && result.result !== undefined && result.deny === undefined && result.isError !== true
     if (!answered || !S.live) return result
-    const batch = S.queue.filter((q) => q.kind !== 'lazy' && !q.inflight && q.run === S.run && !predHas(q.id))
+    const batch = S.queue.filter((q) => !passive(q) && !q.inflight && q.run === S.run && !predHas(q.id))
     if (!batch.length) return result
     void complete(batch, 'context')
     return { ...result, context: [...(result.context ?? []), frame(batch)] }

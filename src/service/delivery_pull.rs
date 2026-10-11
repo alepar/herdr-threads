@@ -9,7 +9,7 @@ use crate::{
     delivery::{
         self, Assembler, DeliveryItem, DeliveryKind, DrainEvent, FrameItem, MAX_DRAIN_PAGES,
         PAGE_MAX_BYTES, PAGE_MAX_ITEMS, PageError, PageSource, Stop, drain_pages, frame,
-        ledger::{MAX_OFFERS_PER_SEAT, Offer, OfferedLedger},
+        ledger::{MAX_INVITATION_DISPLAYS_PER_SEAT, MAX_OFFERS_PER_SEAT, Offer, OfferedLedger},
     },
     harness::adapter::DeliveryMechanism,
     ports::{ModBindingView, ModFingerprint, ModSeatView, PulledNotice, ReadContext, StorePort},
@@ -23,7 +23,7 @@ use crate::{
             DeliveryConfirmReport, DeliveryPage, DeliveryPull, DeliveryPullReply,
             DeliveryRefusalReason,
         },
-        ids::MessageId,
+        ids::{InvitationId, MessageId},
         pagination::{Page, PageRequest},
         results::{ApiError, CommandResult, ErrorCode, InboxBatchV2Item, MAX_NOTICE_PAGE_ITEMS},
         time::CallBudget,
@@ -81,6 +81,19 @@ pub fn attention_version(fingerprint: &ModFingerprint, newest_notice: Option<i64
     hash
 }
 
+/// Passive invitation content participates in pull caching, never the wake fingerprint.
+fn content_version(fingerprint: &ModFingerprint, notice: Option<i64>, invitations: u64) -> u64 {
+    let mut version = attention_version(fingerprint, notice);
+    if invitations == 0 {
+        return version;
+    }
+    for byte in invitations.to_le_bytes() {
+        version ^= u64::from(byte);
+        version = version.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    version
+}
+
 /// The process-local offered ledger behind its lock. The lock is taken only
 /// for short in-memory steps, never across a store read.
 #[derive(Default)]
@@ -104,7 +117,7 @@ struct PullProbe {
 }
 
 impl DeliveryPullState {
-    fn lock(&self) -> std::sync::MutexGuard<'_, OfferedLedger> {
+    pub(super) fn lock(&self) -> std::sync::MutexGuard<'_, OfferedLedger> {
         self.ledger
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
@@ -207,19 +220,44 @@ fn refused(reason: DeliveryRefusalReason) -> Result<CommandResult, ApiError> {
 impl DomainService {
     /// The A2 decision shared by pull and confirm (delivery-policy DP6): one
     /// store read through `mod_seat_view`, refused in the table's order.
-    fn hook_pull_view(
+    pub(super) fn hook_pull_view(
         &self,
         claim: &CallerClaim,
         budget: &CallBudget,
+    ) -> Result<(ModSeatView, ModBindingView), DeliveryRefusalReason> {
+        self.hook_pull_view_mode(claim, budget, false, DeliveryMechanism::HookPull)
+    }
+    pub(super) fn hook_presentation_view(
+        &self,
+        claim: &CallerClaim,
+        budget: &CallBudget,
+    ) -> Result<(ModSeatView, ModBindingView), DeliveryRefusalReason> {
+        self.hook_pull_view_mode(claim, budget, true, DeliveryMechanism::HookPull)
+    }
+    pub(super) fn watch_presentation_view(
+        &self,
+        claim: &CallerClaim,
+        budget: &CallBudget,
+    ) -> Result<(ModSeatView, ModBindingView), DeliveryRefusalReason> {
+        self.hook_pull_view_mode(claim, budget, true, DeliveryMechanism::PushChannel)
+    }
+    fn hook_pull_view_mode(
+        &self,
+        claim: &CallerClaim,
+        budget: &CallBudget,
+        presentation: bool,
+        mechanism: DeliveryMechanism,
     ) -> Result<(ModSeatView, ModBindingView), DeliveryRefusalReason> {
         use DeliveryRefusalReason as Refusal;
         if claim.role != CallerRole::TopLevel || claim.instance != self.instance {
             return Err(Refusal::SessionMismatch);
         }
-        let view = self
-            .store
-            .mod_seat_view(&claim.seat, budget)
-            .map_err(|_| Refusal::Busy)?;
+        let view = if presentation {
+            self.store.presentation_seat_view(&claim.seat, budget)
+        } else {
+            self.store.mod_seat_view(&claim.seat, budget)
+        }
+        .map_err(|_| Refusal::Busy)?;
         let Some(view) = view else {
             return Err(Refusal::Unresolved);
         };
@@ -235,7 +273,7 @@ impl DomainService {
         if binding.provenance != COOPERATIVE_TOP_LEVEL_PROVENANCE {
             return Err(Refusal::NoBinding);
         }
-        if !delivery::declares(&binding.harness, DeliveryMechanism::HookPull) {
+        if !delivery::declares(&binding.harness, mechanism) {
             return Err(Refusal::NoHookPull);
         }
         if binding.native_session != claim.native_session.as_str() {
@@ -260,11 +298,16 @@ impl DomainService {
         };
         let seat = &pull.claim.seat;
         let now = self.clock.utc_now();
-        let version = attention_version(&view.fingerprint, view.newest_pending_notice);
+        let version = content_version(
+            &view.fingerprint,
+            view.newest_pending_notice,
+            view.pending_invitation_version,
+        );
         let seen_current = pull.seen_attention_version == Some(version);
         // The pending set this pull reads; notices are read on their own and are not part of it.
-        let pending_version = attention_version(&view.fingerprint, None);
-        let (known, whole_read_current): (HashMap<MessageId, Offer>, bool) = {
+        let pending_version =
+            content_version(&view.fingerprint, None, view.pending_invitation_version);
+        let (known, whole_invitations, truncated_invitations, whole_read_current) = {
             let mut ledger = self.delivery_pull.lock();
             // A newer generation's entry: this request read the binding before a rotation.
             let Some(entry) = ledger.seat_mut(seat, binding.generation, &binding.native_session)
@@ -275,6 +318,11 @@ impl DomainService {
                 && entry.read_attention.is_some()
                 && !entry.more_pending
                 && !entry.notices_pending
+                && !entry.invitations_pending
+                && !entry
+                    .truncated_invitations
+                    .values()
+                    .any(|(_, offer)| offer.is_due(now))
                 && !entry.any_due(now)
             {
                 return Ok(CommandResult::DeliveryPulled(
@@ -288,7 +336,9 @@ impl DomainService {
                     .offers
                     .iter()
                     .map(|(id, offer)| (id.clone(), *offer))
-                    .collect(),
+                    .collect::<HashMap<MessageId, Offer>>(),
+                entry.whole_invitations.clone(),
+                entry.truncated_invitations.clone(),
                 entry.whole_read == Some(pending_version),
             )
         };
@@ -303,6 +353,10 @@ impl DomainService {
         let mut blocks: Vec<FrameItem> = Vec::new();
         let mut shown: Vec<(MessageId, bool)> = Vec::new();
         let mut pending: BTreeSet<MessageId> = BTreeSet::new();
+        let mut pending_invitations = BTreeSet::new();
+        let mut shown_invitations: Vec<(InvitationId, Option<u64>, bool)> = Vec::new();
+        let mut invitation_capacity = MAX_INVITATION_DISPLAYS_PER_SEAT
+            .saturating_sub(whole_invitations.len() + truncated_invitations.len());
         let mut text_bytes = delivery::HEADER.len();
         let mut more = false;
         // Step 5: one attention block when the version moved and something that
@@ -344,7 +398,12 @@ impl DomainService {
         // once it has met them all (or never starts), so it does not walk the backlog. A moved pending set (an
         // arrival, a settle elsewhere) reads the whole set, and `retain_pending` frees slots.
         let mut due_left = known.values().filter(|offer| offer.is_due(now)).count();
-        let skip_drain = whole_read_current && room_for_new == 0 && due_left == 0;
+        let mut invitation_due = truncated_invitations
+            .values()
+            .filter(|(_, offer)| offer.is_due(now))
+            .count();
+        let skip_drain =
+            whole_read_current && room_for_new == 0 && due_left == 0 && invitation_due == 0;
         let mut short = skip_drain;
         let drained = if skip_drain {
             Ok(())
@@ -355,8 +414,56 @@ impl DomainService {
                 version,
                 MAX_DRAIN_PAGES,
                 |event| -> Result<Stop, std::convert::Infallible> {
-                    let DrainEvent::Item(item) = event else {
-                        return Ok(Stop::Continue);
+                    let item = match event {
+                        DrainEvent::Invitation(item) => {
+                            pending_invitations.insert(item.id.clone());
+                            let attempt = truncated_invitations
+                                .get(&item.id)
+                                .filter(|(revision, _)| *revision == item.topic_revision)
+                                .map(|(_, offer)| offer);
+                            if attempt.is_some_and(|offer| offer.is_due(now)) {
+                                invitation_due = invitation_due.saturating_sub(1);
+                            }
+                            if whole_invitations.get(&item.id) == Some(&item.topic_revision)
+                                || attempt.is_some_and(|offer| !offer.is_due(now))
+                            {
+                                return Ok(Stop::Continue);
+                            }
+                            let new_id = !whole_invitations.contains_key(&item.id)
+                                && !truncated_invitations.contains_key(&item.id);
+                            if new_id && invitation_capacity == 0 {
+                                return Ok(Stop::Continue);
+                            }
+                            let block = FrameItem {
+                                kind: "invitation".to_owned(),
+                                id: item.id.as_str().to_owned(),
+                                thread: Some(item.content.thread.as_str().to_owned()),
+                                thread_name: item.content.thread_name,
+                                body: item.content.body,
+                                ..FrameItem::default()
+                            };
+                            let bytes = block_bytes(&block);
+                            if !blocks.is_empty()
+                                && (blocks.len() + reserved_blocks >= PAGE_MAX_BLOCKS
+                                    || text_bytes + bytes + reserved_bytes > PAGE_MAX_TEXT_BYTES)
+                            {
+                                more = true;
+                                return Ok(Stop::Halt);
+                            }
+                            if new_id {
+                                invitation_capacity -= 1;
+                            }
+                            shown_invitations.push((
+                                item.id,
+                                item.topic_revision,
+                                item.content.truncated,
+                            ));
+                            text_bytes += bytes;
+                            blocks.push(block);
+                            return Ok(Stop::Continue);
+                        }
+                        DrainEvent::Item(item) => item,
+                        _ => return Ok(Stop::Continue),
                     };
                     pending.insert(item.id.clone());
                     let offered = known.get(&item.id);
@@ -385,7 +492,11 @@ impl DomainService {
                         shown.push((item.id.clone(), item.message.truncated));
                         blocks.push(block);
                     }
-                    if whole_read_current && room_for_new == 0 && due_left == 0 {
+                    if whole_read_current
+                        && room_for_new == 0
+                        && due_left == 0
+                        && invitation_due == 0
+                    {
                         short = true;
                         return Ok(Stop::Halt);
                     }
@@ -462,13 +573,14 @@ impl DomainService {
         }
         let carried_all = notices_settled && !notices_has_more;
         let notices_left = view.newest_pending_notice.is_some() && !carried_all;
-        let reply_version = attention_version(
+        let reply_version = content_version(
             &view.fingerprint,
             if carried_all {
                 None
             } else {
                 view.newest_pending_notice
             },
+            view.pending_invitation_version,
         );
         if with_attention {
             blocks.push(FrameItem {
@@ -515,9 +627,55 @@ impl DomainService {
                 // id was shown once unrecorded (at most one extra showing).
                 entry.record(id, now, *truncated);
             }
+            for (id, revision, truncated) in shown_invitations {
+                if entry.whole_invitations.len() + entry.truncated_invitations.len()
+                    >= MAX_INVITATION_DISPLAYS_PER_SEAT
+                    && !entry.whole_invitations.contains_key(&id)
+                    && !entry.truncated_invitations.contains_key(&id)
+                {
+                    // A racing pull filled the independent display cache.
+                    // The item stays canonically pending, never accepted/ACKed.
+                    continue;
+                }
+                if truncated {
+                    entry.whole_invitations.remove(&id);
+                    let attempt = entry.truncated_invitations.entry(id).or_insert((
+                        revision,
+                        Offer {
+                            first_at: now,
+                            last_at: now,
+                            count: 0,
+                            truncated: true,
+                        },
+                    ));
+                    if attempt.0 != revision {
+                        *attempt = (
+                            revision,
+                            Offer {
+                                first_at: now,
+                                last_at: now,
+                                count: 0,
+                                truncated: true,
+                            },
+                        );
+                    }
+                    attempt.1.last_at = now;
+                    attempt.1.count = attempt.1.count.saturating_add(1);
+                } else {
+                    entry.truncated_invitations.remove(&id);
+                    entry.whole_invitations.insert(id, revision);
+                }
+            }
+            entry.invitations_pending = more;
             if !more && !short {
                 // The whole pending set was read: what is no longer in it left.
                 entry.retain_pending(&pending);
+                entry
+                    .whole_invitations
+                    .retain(|id, _| pending_invitations.contains(id));
+                entry
+                    .truncated_invitations
+                    .retain(|id, _| pending_invitations.contains(id));
                 entry.whole_read = Some(pending_version);
             }
             // An id withheld at capacity while this whole read freed slots is shown by the next pull instead of

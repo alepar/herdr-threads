@@ -3105,3 +3105,48 @@ fn uncovered_metadata_still_requires_owned_hooks() {
     );
     assert!(host.submitted().is_empty());
 }
+
+// Kills: an adapter readiness veto in the guarded public launch composition.
+#[test]
+fn agy_guarded_launch_keeps_plugin_readiness_advisory_and_native_guards() {
+    for readiness in ["missing", "disabled", "stale", "unknown"] {
+        let mut s = Scratch::new();
+        s.harness("agy", "1.3.2", b"");
+        let config = s.root.join("agy-config");
+        s.env.config_roots.insert("agy".into(), config.clone());
+        let kind = ContextHarness::from(crate::harness::registry::OccupantHarness::Agent(
+            crate::harness::registry::builtins().agent("agy").unwrap(),
+        ));
+        if readiness != "missing" {
+            s.setup(kind);
+            let roots = crate::harness::agy::paths::AgyRoots::from_config_root(config);
+            match readiness {
+                "disabled" => fs::write(
+                    &roots.plugins_config,
+                    r#"{"plugins":{"herdr-threads":{"enabled":false}}}"#,
+                )
+                .unwrap(),
+                "unknown" => fs::write(&roots.plugins_config, "invalid json").unwrap(),
+                "stale" => fs::write(roots.plugin_dir.join("hooks.json"), "{}\n").unwrap(),
+                _ => unreachable!(),
+            }
+        }
+        let (host, seats, handoff) = (FakeHost::new(), seats(), handoff());
+        let result = s.launch(&host, &seats, &handoff, request(kind, &["--model", "m"]));
+        assert!(result.is_ok(), "{readiness}: {result:?}");
+        let submitted = host.submitted();
+        assert_eq!(submitted.len(), 1, "{readiness}");
+        assert_eq!(submitted[0].argv, ["--model", "m"]);
+        assert!(submitted[0].configured_hook.is_none(), "{readiness}");
+        assert_eq!(
+            code(s.launch(
+                &host,
+                &seats,
+                &handoff,
+                request(kind, &["--dangerously-skip-permissions"])
+            )),
+            ErrorCode::UnsupportedHarness
+        );
+        assert_eq!(host.submitted().len(), 1, "unsafe argv never submits");
+    }
+}

@@ -4567,6 +4567,21 @@ pub fn mod_seat_view(
     instance: &str,
     seat: &SeatId,
 ) -> Result<Option<crate::ports::ModSeatView>, ApiError> {
+    mod_seat_view_mode(db, instance, seat, true)
+}
+pub fn presentation_seat_view(
+    db: &Connection,
+    instance: &str,
+    seat: &SeatId,
+) -> Result<Option<crate::ports::ModSeatView>, ApiError> {
+    mod_seat_view_mode(db, instance, seat, false)
+}
+fn mod_seat_view_mode(
+    db: &Connection,
+    instance: &str,
+    seat: &SeatId,
+    legacy_digest: bool,
+) -> Result<Option<crate::ports::ModSeatView>, ApiError> {
     use crate::ports::{ModBindingView, ModFingerprint, ModSeatView};
     let row: Option<(String, Option<String>)> = db
         .query_row(
@@ -4620,6 +4635,28 @@ pub fn mod_seat_view(
         .unwrap_or(0);
     let attention_version = u64::try_from(attention_version)
         .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative attention version"))?;
+    if !legacy_digest {
+        return Ok(Some(ModSeatView {
+            seat: seat.clone(),
+            retired: state == "retired",
+            continuity_resolved: state == "resolved",
+            state,
+            held,
+            attention_version,
+            fingerprint: ModFingerprint {
+                attention_version,
+                binding_generation: binding.as_ref().map(|b| b.generation),
+                pending_receipts: 0,
+                max_pending_ordinal: 0,
+                lazy_pending: 0,
+                max_lazy_rowid: 0,
+                other_pending: 0,
+            },
+            binding,
+            newest_pending_notice: None,
+            pending_invitation_version: 0,
+        }));
+    }
     let run = super::attention::seat_digest(db, instance, seat, &|| Ok(()))?;
     let (lazy_pending, max_lazy_rowid) = super::lazy_delivery::pending_summary(db, seat)?;
     let digest = &run.digest;
@@ -4658,6 +4695,7 @@ pub fn mod_seat_view(
         attention_version,
         fingerprint,
         newest_pending_notice: super::attention::newest_pending_notice(db, seat.as_str())?,
+        pending_invitation_version: run.invitations.content_version(),
     }))
 }
 

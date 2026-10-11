@@ -1,7 +1,9 @@
 // Rule tests for the herdr-threads Claude mod (spec D5, D6): each test drives
-// createCore with fakes. `claude plugin test` runs this file.
+// createCore with fakes or production register handlers in the plugin engine.
+// `claude plugin test` runs this file.
 import { test, expect, mock } from 'claude-code/testing'
 import { createCore, frame, markers, register } from '../hooks/register.js'
+import activationCapture from './fixtures/watch-activation.js'
 
 type Any = any
 
@@ -1347,6 +1349,193 @@ test('register wires session.start to the core and the serialized ledger', async
   expect(last).toContain('exit:3')
 })
 
+// Actual elected Watch stdout is replayed unchanged through buildIo's production
+// JSONLines parser. Only the external process and engine API outcomes are mocked;
+// register() and its session/turn/tool handlers are loaded by the plugin engine.
+const engineEventually = async (ready: () => boolean) => {
+  for (let i = 0; i < 100 && !ready(); i++) await new Promise<void>((r) => setTimeout(r, 5))
+  expect(ready()).toBe(true)
+}
+
+function capturedWatchLines() {
+  if (!activationCapture.raw) throw new Error('NEEDS_CONTEXT: actual elected Watch capture is not installed')
+  const lines = activationCapture.raw.match(/[^\n]*\n/g) ?? []
+  expect(lines.join('')).toBe(activationCapture.raw)
+  const parsed = lines.map((raw) => ({ raw, item: JSON.parse(raw) }))
+  expect(parsed[0].item.kind).toBe('status')
+  expect(parsed[0].item.state).toBe('connected')
+  const capturedLazy = parsed.find(({ item }) => item.id === activationCapture.ids.lazy)?.item
+  expect(capturedLazy.kind).toBe('lazy')
+  expect(capturedLazy.body).toBe('activation passive lazy')
+  expect(capturedLazy.ack_required).toBe(false)
+  expect(capturedLazy.truncated).toBe(false)
+  const capturedMessage = parsed.find(({ item }) => item.id === activationCapture.ids.message)?.item
+  expect(capturedMessage.kind).toBe('message')
+  expect(capturedMessage.body).toBe('activation ordinary ACK candidate')
+  expect(capturedMessage.ack_required).toBe(true)
+  expect(capturedMessage.truncated).toBe(false)
+  expect(parsed.find(({ item }) => item.kind === 'invitation')?.item.wakes).toBe(false)
+  const firstClear = parsed.findIndex(({ item }) => item.kind === 'attention_cleared')
+  expect(firstClear >= 0).toBe(true)
+  const capturedAttention = parsed.slice(0, firstClear).find(({ item }) => item.kind === 'attention')
+  expect(capturedAttention?.item.id).toBe(activationCapture.ids.attention)
+  expect(typeof capturedAttention?.item.presentation_epoch).toBe('string')
+  // A scoped clear is evidence only for the attention actually emitted before
+  // it. Keep the complete stream, including any successor pages, in the fixture.
+  expect(parsed[firstClear].item.presentation_epoch).toBe(capturedAttention?.item.presentation_epoch)
+  return parsed
+}
+
+async function capturedWatchEngine($: Any, on: Any, state = busyState('capture-turn')) {
+  mock.clock(on, { now: 5_000 })
+  mock.store(on)
+  mock.env(on, { HERDR_THREADS_MOD_LEDGER: '/ledger/capture.jsonl', HERDR_THREADS_BIN: 'ht-captured-watch' })
+  const appends: string[] = []
+  const submits: string[] = []
+  const runs: string[][] = []
+  let entries: Any[] = []
+  let closed = false
+  let ended = false
+  let release: ((text: string | null) => void) | null = null
+  const chunks: string[] = []
+  on('session.start', async (_$: Any, e: Any) => ({ cwd: e.cwd }) as Any)
+  on('session.id', async () => ({ value: 'capture-session' }) as Any)
+  on('state.get', async () => ({ value: { value: state, version: 0 } }) as Any)
+  on('state.set', async () => ({ value: { isSet: true, version: 1 } }) as Any)
+  on('fs.write', async (_$: Any, e: Any) => {
+    entries = String(e.content ?? e.text).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line))
+    return { value: undefined } as Any
+  })
+  on('session.append', async (_$: Any, e: Any, next: Any) => {
+    expect(e.message.type).toBe('user')
+    expect(e.message.content.map((block: Any) => block.type)).toEqual(['text'])
+    appends.push(e.message.content[0].text)
+    return next(e)
+  })
+  on('prompt.read', async () => ({ text: '' }) as Any)
+  on('prompt.submit', async (_$: Any, e: Any) => {
+    submits.push(e.text)
+    return {} as Any
+  })
+  on('ui.log', async () => ({ value: undefined }) as Any)
+  on('process.run', async (_$: Any, e: Any) => {
+    const argv = e.argv
+    runs.push(argv)
+    // Refuse unexpected commands rather than silently treating acceptance or
+    // another mutation as a successful receipt.
+    expect(argv.slice(0, 5)).toEqual(['ht-captured-watch', 'watch', 'ack', '--session', 'capture-session'])
+    expect(argv[5]).toBe('--via')
+    // This external reply is a test double. The assertions prove the real mod's
+    // ACK IDs/via and ledger handling, not an actual daemon receipt transition.
+    return { value: { exitCode: 0, stdout: argv.slice(7).map((id: string) => JSON.stringify({ id, result: 'settled' })).join('\n'), stderr: '' } } as Any
+  })
+  on('tool.call', async () => ({ ...answered, context: ['existing tool context'] }) as Any)
+  on('process.spawn', async function* (_$: Any, e: Any) {
+    expect(e.argv).toEqual(['ht-captured-watch', 'watch', '--harness', 'claude', '--session', 'capture-session'])
+    try {
+      while (!closed || chunks.length) {
+        const text = chunks.length ? chunks.shift()! : await new Promise<string | null>((resolve) => { release = resolve })
+        release = null
+        if (text === null) break
+        yield { stream: 'stdout', text } as Any
+      }
+      return { value: { code: 3, signal: null } } as Any
+    } finally {
+      ended = true
+    }
+  })
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  return {
+    appends, submits, runs,
+    entries: () => entries,
+    async feed(raw: string) {
+      // Deliberately split one JSON line across process chunks. No capture byte
+      // or JSON object is rewritten before the production parser consumes it.
+      const split = Math.min(17, raw.length)
+      for (const text of [raw.slice(0, split), raw.slice(split)].filter(Boolean)) {
+        if (release) { const resolve = release; release = null; resolve(text) }
+        else chunks.push(text)
+      }
+      await flush()
+    },
+    async stop() {
+      closed = true
+      if (release) { const resolve = release; release = null; resolve(null) }
+      await engineEventually(() => ended)
+    },
+  }
+}
+
+const captureHeaders = (text: string) => text.split('\n').filter((line) => /^\[herdr-threads\] (?:lazy|message|invitation|notice|attention) /.test(line))
+
+test('register consumes captured active Watch order through passive append and tool context with only eligible ACKs', async ($, on) => {
+  const lines = capturedWatchLines()
+  const h = await capturedWatchEngine($, on)
+  try {
+    const firstClear = lines.findIndex(({ item }) => item.kind === 'attention_cleared')
+    await h.feed(lines.slice(0, firstClear).map(({ raw }) => raw).join(''))
+    await engineEventually(() => h.entries().some((entry) => entry.kind === 'received' && entry.ids.includes(activationCapture.ids.attention)))
+    await engineEventually(() => h.entries().filter((entry) => entry.kind === 'delivered' && entry.via === 'append').flatMap((entry) => entry.ids).length === 3)
+    expect(h.appends.flatMap(captureHeaders)).toEqual(activationCapture.passiveHeaders)
+    for (const body of activationCapture.passiveBodies) expect(h.appends.join('\n')).toContain(body)
+    expect(h.submits).toEqual([])
+    expect(h.runs.flatMap((argv) => argv.slice(7))).toEqual([activationCapture.ids.lazy])
+    const result = await $.tool.call({ tool: 'Bash', command: 'true' })
+    expect(result.context[0]).toBe('existing tool context')
+    expect(captureHeaders(result.context[1])).toEqual(activationCapture.activeHeaders)
+    expect(result.context[1]).toContain('  activation ordinary ACK candidate')
+    expect(result.context[1]).toContain(activationCapture.attentionBody)
+    await engineEventually(() => h.entries().some((entry) => entry.kind === 'acked' && entry.ids.includes(activationCapture.ids.message)))
+    expect(h.runs.map((argv) => [argv[6], ...argv.slice(7)])).toEqual([
+      ['append', activationCapture.ids.lazy], ['context', activationCapture.ids.message],
+    ])
+    expect(h.submits).toEqual([])
+    // Replay of the same captured page cannot duplicate passive rows or context.
+    await h.feed(lines.slice(0, firstClear).map(({ raw }) => raw).join(''))
+    const again = await $.tool.call({ tool: 'Bash', command: 'true' })
+    expect(again.context).toEqual(['existing tool context'])
+    expect(h.appends.flatMap(captureHeaders)).toEqual(activationCapture.passiveHeaders)
+    expect(h.runs.length).toBe(2)
+  } finally {
+    await h.stop()
+  }
+})
+
+test('register appends captured invitation and notice while idle without waking accepting or ACKing them', async ($, on) => {
+  const lines = capturedWatchLines()
+  const h = await capturedWatchEngine($, on, IDLE)
+  try {
+    // A byte-preserving subsequence isolates passive nonmessage scheduling from
+    // the ordinary/attention items that legitimately request a turn.
+    await h.feed(lines.filter(({ item }) => item.kind === 'status' || item.kind === 'invitation' || item.kind === 'notice').map(({ raw }) => raw).join(''))
+    await engineEventually(() => h.entries().filter((entry) => entry.kind === 'delivered' && entry.via === 'append').flatMap((entry) => entry.ids).length === 2)
+    expect(h.appends.flatMap(captureHeaders)).toEqual(activationCapture.nonmessageHeaders)
+    for (const body of activationCapture.passiveBodies.slice(1)) expect(h.appends.join('\n')).toContain(body)
+    expect(h.submits).toEqual([])
+    expect(h.runs).toEqual([])
+  } finally {
+    await h.stop()
+  }
+})
+
+test('register consumes captured scoped clear without retracting the queued ordinary message', async ($, on) => {
+  const lines = capturedWatchLines()
+  const h = await capturedWatchEngine($, on)
+  try {
+    await h.feed(lines.map(({ raw }) => raw).join(''))
+    await engineEventually(() => h.entries().some((entry) => entry.reason === 'attention_cleared'))
+    expect(h.entries().filter((entry) => entry.reason === 'attention_cleared').flatMap((entry) => entry.ids)).toEqual([activationCapture.ids.attention])
+    const result = await $.tool.call({ tool: 'Bash', command: 'true' })
+    expect(captureHeaders(result.context[1])).toEqual(activationCapture.messageHeaders)
+    expect(result.context[1]).toContain('  activation ordinary ACK candidate')
+    await engineEventually(() => h.entries().some((entry) => entry.kind === 'acked' && entry.ids.includes(activationCapture.ids.message)))
+    expect(h.runs.flatMap((argv) => argv.slice(7))).toEqual([activationCapture.ids.lazy, activationCapture.ids.message])
+    expect(h.submits).toEqual([])
+  } finally {
+    await h.stop()
+  }
+})
+
 // ---- reload (ht-j16.29, R18) ----------------------------------------------
 // Idle delivery no longer writes a `turns.submitting` record: a reload that upgrades the mod can still find one
 // written by an older instance, so these tests seed it through $.state.
@@ -1642,4 +1831,367 @@ test('a submitting record from before this fix still settles by rule (b)', async
   expect(h.submits.length).toBe(0)
   expect(h.ackRuns().length).toBe(1)
   expect(h.ackRuns()[0].slice(5)).toEqual(['--via', 'submit', 'm1'])
+})
+
+
+test('passive invitation enters context without an ACK or an idle wake', async () => {
+  for (const state of [IDLE, busyState()]) {
+    const h = await harness({ state }).boot()
+    h.line({ schema: 1, id: 'invitation:inv-1', kind: 'invitation',
+      thread: 'T1', thread_name: 'review', body: 'review the handoff\nnext: herdr-threads accept T1',
+      wakes: false, truncated: false })
+    await flush()
+    expect(h.appends.length).toBe(1)
+    expect(h.appends[0]).toContain('invitation invitation:inv-1 in T1 "review"')
+    expect(h.appends[0]).toContain('next: herdr-threads accept T1')
+    expect(h.submits.length).toBe(0)
+    expect(h.ackRuns()).toEqual([])
+    h.line({ schema: 1, id: 'invitation:inv-1', kind: 'invitation',
+      thread: 'T1', body: 'review the handoff', wakes: false, truncated: false })
+    await flush()
+    expect(h.appends.length).toBe(1)
+    expect(h.ackRuns()).toEqual([])
+  }
+})
+
+
+test('a truncated invitation never records a whole display or ACK', async () => {
+  const h = await harness({ state: IDLE }).boot()
+  h.line({ schema: 1, id: 'invitation:cut', kind: 'invitation', thread: 'T1',
+    body: 'partial topic\nnext: herdr-threads thread info T1', wakes: false, truncated: true })
+  await flush()
+  expect(h.appends.length).toBe(1)
+  expect(h.core.snapshot().rec.delivered['invitation:cut']).toBeUndefined()
+  expect(h.ackRuns()).toEqual([])
+  expect(h.submits.length).toBe(0)
+})
+
+test('a timed invitation may wake but never ACKs as a message', async () => {
+  const h = await harness({ state: IDLE }).boot()
+  h.line({ schema: 1, id: 'invitation:timed', kind: 'invitation', thread: 'T1',
+    body: 'accept the invitation', wakes: true, truncated: false })
+  await flush()
+  expect(h.appends.length).toBe(1)
+  expect(h.submits.length).toBe(1)
+  expect(h.submits[0]).toBe(WAKE)
+  expect(h.ackRuns()).toEqual([])
+})
+
+test('a canonical invitation revision redisplays once under the original identity', async () => {
+  const h = await harness({ state: IDLE }).boot()
+  const invitation = { schema: 1, id: 'invitation:original', kind: 'invitation', thread: 'T1', wakes: false, truncated: false }
+  h.line({ ...invitation, topic_revision: 1, body: 'first context\nnext: herdr-threads accept T1' })
+  await flush()
+  h.line({ ...invitation, topic_revision: 2, body: 'updated context\nnext: herdr-threads accept T1' })
+  await flush()
+  expect(h.appends.length).toBe(2)
+  expect(h.appends[1]).toContain('invitation:original')
+  expect(h.appends[1]).toContain('updated context')
+  h.line({ ...invitation, topic_revision: 2, body: 'updated context\nnext: herdr-threads accept T1' })
+  await flush()
+  expect(h.appends.length).toBe(2)
+  expect(h.submits.length).toBe(0)
+  expect(h.ackRuns()).toEqual([])
+})
+
+test('decimal invitation revisions preserve every bit through u64 maximum', async () => {
+  const h = await harness({ state: IDLE }).boot()
+  const invitation = { schema: 1, id: 'invitation:precise', kind: 'invitation', thread: 'T1', wakes: false, truncated: false }
+  const revisions = ['9007199254740992', '9007199254740993', '18446744073709551615']
+  for (const revision of revisions) {
+    h.line({ ...invitation, topic_revision: revision, body: `context ${revision}` })
+    await flush()
+    h.line({ ...invitation, topic_revision: revision, body: `context ${revision}` })
+    await flush()
+  }
+  expect(h.appends.length).toBe(3)
+  revisions.forEach((revision, index) => expect(h.appends[index]).toContain(revision))
+  expect(h.core.snapshot().rec.invitationVersions['invitation:precise']).toBe(revisions[2])
+  expect(h.submits.length).toBe(0)
+  expect(h.ackRuns()).toEqual([])
+})
+
+test('an omitted goal permits a later whole goal at the same invitation revision', async () => {
+  const h = await harness({ state: IDLE }).boot()
+  const invitation = { schema: 1, id: 'invitation:goal', kind: 'invitation', thread: 'T1', topic_revision: '7', command_context_epoch: '9007199254740993', wakes: false }
+  h.line({ ...invitation, truncated: true, body: 'topic\ngoal: omitted\nnext: herdr-threads thread show T1\nnext: herdr-threads accept T1' })
+  await flush()
+  expect(h.core.snapshot().rec.invitationVersions['invitation:goal']).toBeUndefined()
+  h.line({ ...invitation, truncated: false, body: 'topic\ngoal: review recipient remit\nnext: herdr-threads accept T1' })
+  await flush()
+  expect(h.appends.length).toBe(2)
+  expect(h.appends[1]).toContain('goal: review recipient remit')
+  h.line({ ...invitation, truncated: false, body: 'topic\ngoal: review recipient remit\nnext: herdr-threads accept T1' })
+  await flush()
+  expect(h.appends.length).toBe(2)
+  expect(h.submits.length).toBe(0)
+  expect(h.ackRuns()).toEqual([])
+})
+
+test('a whole same-revision goal arriving during partial append is retained', async () => {
+  const h = await harness({ state: IDLE, appendMode: 'manual' }).boot()
+  const invitation = { schema: 1, id: 'invitation:inflight-goal', kind: 'invitation', thread: 'T1', topic_revision: '7', command_context_epoch: '9007199254740993', wakes: false }
+  h.line({ ...invitation, truncated: true, body: 'goal: omitted\nnext: herdr-threads thread show T1' })
+  await flush()
+  expect(h.appends.length).toBe(1)
+  h.line({ ...invitation, truncated: false, body: 'goal: newly available complete remit' })
+  await flush()
+  expect(h.core.snapshot().queue).toEqual(['invitation:inflight-goal', 'invitation:inflight-goal'])
+  h.pendingAppends[0].res({})
+  await flush()
+  await h.advance(1)
+  expect(h.appends.length).toBe(2)
+  expect(h.appends[1]).toContain('newly available complete remit')
+  expect(h.core.snapshot().queue).toEqual(['invitation:inflight-goal'])
+  h.pendingAppends[1].res({})
+  await flush()
+  expect(h.core.snapshot().queue).toEqual([])
+  expect(h.core.snapshot().rec.invitationVersions['invitation:inflight-goal']).toBeDefined()
+  h.line({ ...invitation, truncated: false, body: 'goal: newly available complete remit' })
+  await flush()
+  expect(h.appends.length).toBe(2)
+  expect(h.core.snapshot().queue).toEqual([])
+  expect(h.submits.length).toBe(0)
+  expect(h.ackRuns()).toEqual([])
+})
+
+
+test('command context epochs preserve adjacent large decimals and suppress only unchanged complete context', async () => {
+  const h = await harness({ state: IDLE }).boot()
+  const invitation = { schema: 1, id: 'invitation:epoch', kind: 'invitation', thread: 'T1', topic_revision: '18446744073709551615', wakes: false, truncated: false }
+  const epochs = ['9007199254740992', '9007199254740993', '18446744073709551615']
+  for (const epoch of epochs) {
+    h.line({ ...invitation, command_context_epoch: epoch, body: `goal ${epoch}` })
+    await flush()
+    h.line({ ...invitation, command_context_epoch: epoch, body: `goal ${epoch}` })
+    await flush()
+  }
+  expect(h.appends.length).toBe(3)
+  epochs.forEach((epoch, index) => expect(h.appends[index]).toContain(epoch))
+  h.line({ ...invitation, topic_revision: '18446744073709551614', command_context_epoch: epochs[2], body: 'new topic, same goal' })
+  await flush()
+  expect(h.appends.length).toBe(4)
+  expect(h.submits.length).toBe(0)
+  expect(h.ackRuns()).toEqual([])
+})
+
+test('historical missing command context epoch differs from explicit zero', async () => {
+  const h = await harness({ state: IDLE }).boot()
+  const invitation = { schema: 1, id: 'invitation:historical-epoch', kind: 'invitation', thread: 'T1', wakes: false, truncated: false }
+  h.line({ ...invitation, body: 'historical context' })
+  await flush()
+  h.line({ ...invitation, body: 'historical context' })
+  await flush()
+  expect(h.appends.length).toBe(1)
+  h.line({ ...invitation, command_context_epoch: '0', body: 'modern context zero' })
+  await flush()
+  h.line({ ...invitation, command_context_epoch: '0', body: 'modern context zero' })
+  await flush()
+  expect(h.appends.length).toBe(2)
+  expect(h.appends[1]).toContain('modern context zero')
+  expect(h.submits.length).toBe(0)
+  expect(h.ackRuns()).toEqual([])
+})
+
+test('a changed command context arriving during complete append remains queued', async () => {
+  const h = await harness({ state: IDLE, appendMode: 'manual' }).boot()
+  const invitation = { schema: 1, id: 'invitation:inflight-epoch', kind: 'invitation', thread: 'T1', topic_revision: '7', wakes: false, truncated: false }
+  h.line({ ...invitation, command_context_epoch: '9007199254740992', body: 'old goal' })
+  await flush()
+  h.line({ ...invitation, command_context_epoch: '9007199254740993', body: 'new goal' })
+  await flush()
+  expect(h.core.snapshot().queue).toEqual(['invitation:inflight-epoch', 'invitation:inflight-epoch'])
+  h.pendingAppends[0].res({})
+  await flush()
+  await h.advance(1)
+  expect(h.appends.length).toBe(2)
+  expect(h.appends[1]).toContain('new goal')
+  h.pendingAppends[1].res({})
+  await flush()
+  h.line({ ...invitation, command_context_epoch: '9007199254740993', body: 'new goal' })
+  await flush()
+  expect(h.appends.length).toBe(2)
+  expect(h.core.snapshot().queue).toEqual([])
+  expect(h.submits.length).toBe(0)
+  expect(h.ackRuns()).toEqual([])
+})
+
+const notice = (warning: string) => ({ schema: 1, id: `notice:${warning}`, kind: 'notice', warning, thread: 'T1', body: `inspect ${warning}` })
+const epochAttention = (epoch: string) => ({ ...attention(7), id: `attention:${epoch}`, presentation_epoch: epoch, text: `episode ${epoch}` })
+const epochCleared = (epoch: string) => ({ ...cleared(7), id: `attention_cleared:${epoch}`, presentation_epoch: epoch })
+
+test('a notice is visible once, passive and never grants ACK or wake authority', async () => {
+  const h = await harness({ state: IDLE }).boot()
+  h.line({ ...notice('warning-1'), ack_required: true, wakes: true, truncated: true })
+  await flush()
+  expect(h.appends.length).toBe(1)
+  expect(h.appends[0]).toContain('notice notice:warning-1 in T1')
+  expect(h.appends[0]).toContain('inspect warning-1')
+  h.line(notice('warning-1'))
+  await flush()
+  expect(h.appends.length).toBe(1)
+  expect(h.submits).toEqual([])
+  expect(h.ackRuns()).toEqual([])
+  expect(h.core.snapshot().rec.unacked).toEqual({})
+  expect(h.core.snapshot().rec.attentionVersions).toEqual([])
+  expect(h.core.snapshot().rec.invitationVersions).toEqual({})
+})
+
+test('notice preserves passive mixed order with lazy rows and invitations', async () => {
+  const h = await harness({ state: busyState(), appendMode: 'manual' }).boot()
+  h.line(lazy('first'))
+  h.line(notice('middle'))
+  h.line({ schema: 1, id: 'invitation:last', kind: 'invitation', thread: 'T1', body: 'last remit', wakes: false, truncated: false })
+  await flush()
+  expect(h.appends.length).toBe(1)
+  h.pendingAppends[0].res({})
+  await flush()
+  expect(h.appends.length).toBe(2)
+  expect(h.appends[1]).toContain('inspect middle')
+  expect(h.appends[1]).toContain('last remit')
+  expect(h.appends[1].indexOf('notice notice:middle')).toBeLessThan(h.appends[1].indexOf('invitation invitation:last'))
+  h.pendingAppends[1].res({})
+  await flush()
+  expect(h.submits).toEqual([])
+  expect(h.ackRuns().flat()).not.toContain('notice:middle')
+})
+
+test('scoped clear removes only its queued epoch and preserves newer attention and unrelated messages', async () => {
+  const h = await harness({ state: busyState() }).boot()
+  h.line(epochAttention('9007199254740992'))
+  h.line(msg('between'))
+  h.line(epochAttention('9007199254740993'))
+  h.line(epochCleared('9007199254740992'))
+  h.line(epochCleared('9007199254740992'))
+  const r = await h.core.onToolCall({ tool: 'Bash' }, answered)
+  expect(r.context[0]).not.toContain('episode 9007199254740992')
+  expect(r.context[0]).toContain('episode 9007199254740993')
+  expect(r.context[0]).toContain('body of between')
+  expect(r.context[0].indexOf('message between')).toBeLessThan(r.context[0].indexOf('attention attention:9007199254740993'))
+})
+
+test('old scoped clear after lost confirmation preserves newer delivered dedupe', async () => {
+  const h = await harness({ state: busyState() }).boot()
+  h.line(epochAttention('9007199254740992'))
+  await h.core.onToolCall({ tool: 'Bash' }, answered)
+  h.line(epochAttention('9007199254740993'))
+  await h.core.onToolCall({ tool: 'Bash' }, answered)
+  // Upstream lost its confirmation; replay still arrives through the actual watch callback.
+  h.line(epochAttention('9007199254740993'))
+  expect(await h.core.onToolCall({ tool: 'Bash' }, answered)).toBe(answered)
+  h.line(epochCleared('9007199254740992'))
+  h.line(epochAttention('9007199254740993'))
+  expect(await h.core.onToolCall({ tool: 'Bash' }, answered)).toBe(answered)
+  // Only the retired epoch's run key was removed, while delivered version history remains.
+  h.line(epochAttention('9007199254740992'))
+  const oldReplay = await h.core.onToolCall({ tool: 'Bash' }, answered)
+  expect(oldReplay.context[0]).toContain('episode 9007199254740992')
+  expect(h.core.snapshot().rec.attentionVersions).toEqual([7])
+  expect(h.ackRuns()).toEqual([])
+})
+
+test('scoped clear cannot recall newer attention already in flight', async () => {
+  const h = await harness({ state: IDLE, appendMode: 'manual' }).boot()
+  h.line(epochAttention('18446744073709551615'))
+  await flush()
+  expect(h.appends.length).toBe(1)
+  h.line(epochCleared('9007199254740993'))
+  h.line(epochCleared('18446744073709551615'))
+  h.pendingAppends[0].res({})
+  await flush()
+  h.line(epochAttention('18446744073709551615'))
+  await flush()
+  expect(h.appends.length).toBe(1)
+  expect(h.entries.filter((e: Any) => e.kind === 'delivered').map((e: Any) => e.ids)).toEqual([['attention:18446744073709551615']])
+  expect(h.ackRuns()).toEqual([])
+})
+
+test('present malformed presentation epochs are ignored without global-clear fallback', async () => {
+  const malformed = [null, undefined, '', '00', '01', '-1', '+1', '1.0', ' 1', '1\n', '18446744073709551616', '999999999999999999999', 1]
+  for (const epoch of malformed) {
+    const h = await harness({ state: busyState() }).boot()
+    h.line(epochAttention('0'))
+    h.line({ ...cleared(7), presentation_epoch: epoch })
+    h.line({ ...attention(8), presentation_epoch: epoch })
+    const r = await h.core.onToolCall({ tool: 'Bash' }, answered)
+    expect(r.context[0]).toContain('episode 0')
+    expect(r.context[0]).not.toContain('attention marker 8')
+    expect(h.ackRuns()).toEqual([])
+  }
+})
+
+test('legacy omitted epoch retains global clear semantics across modern queued attention', async () => {
+  const h = await harness({ state: busyState() }).boot()
+  h.line(epochAttention('18446744073709551615'))
+  h.line(attention(8))
+  h.line(cleared(9))
+  expect(await h.core.onToolCall({ tool: 'Bash' }, answered)).toBe(answered)
+  h.line(attention(8))
+  const replay = await h.core.onToolCall({ tool: 'Bash' }, answered)
+  expect(replay.context[0]).toContain('attention marker 8')
+})
+
+test('observed stream close drops queued controls and notices while preserving successful in-flight output', async () => {
+  const h = await harness({ state: IDLE, appendMode: 'manual' }).boot()
+  const oldChild = h.child()
+  h.line(epochAttention('9007199254740993'))
+  await flush()
+  h.line(epochAttention('9007199254740992'))
+  h.line(notice('old-queued'))
+  await flush()
+  h.pendingAppends[1].res({ deny: 'busy' })
+  await flush()
+  h.line(status('closing', 'binding_changed', 2))
+  expect(h.core.snapshot().queue).toEqual(['attention:9007199254740993'])
+  h.pendingAppends[0].res({})
+  await flush()
+  expect(h.entries.filter((e: Any) => e.kind === 'delivered').map((e: Any) => e.ids)).toEqual([['attention:9007199254740993']])
+  h.exit(2)
+  await h.advance(1000)
+  await h.connect()
+  h.line(epochAttention('18446744073709551615'))
+  await flush()
+  oldChild.cb.line(epochCleared('18446744073709551615'))
+  expect(h.core.snapshot().queue).toEqual(['attention:18446744073709551615'])
+  h.pendingAppends[2].res({})
+  await flush()
+  expect(h.appends.length).toBe(3)
+  expect(h.entries.filter((e: Any) => e.kind === 'delivered').flatMap((e: Any) => e.ids)).not.toContain('notice:old-queued')
+  expect(h.ackRuns()).toEqual([])
+})
+
+test('a denied notice append remains passive on later idle retries', async () => {
+  const h = await harness({ state: IDLE }).boot()
+  h.appendResult = () => ({ deny: 'busy' })
+  h.line(notice('retry'))
+  await flush()
+  expect(h.appends.length).toBe(1)
+  await h.advance(1000)
+  expect(h.submits).toEqual([])
+  h.appendResult = () => ({})
+  await h.advance(29_000)
+  expect(h.appends.length).toBe(2)
+  expect(h.submits).toEqual([])
+  expect(h.ackRuns()).toEqual([])
+})
+
+test('a queued notice retains passive scheduling while busy tool context preserves active order', async () => {
+  const h = await harness({ state: busyState() }).boot()
+  h.line(epochAttention('0'))
+  h.appendResult = () => ({ deny: 'busy' })
+  h.line(notice('tool'))
+  await flush()
+  h.line(msg('after-notice'))
+  const r = await h.core.onToolCall({ tool: 'Bash' }, answered)
+  expect(h.appends[0]).toContain('inspect tool')
+  expect(r.context[0]).not.toContain('inspect tool')
+  expect(r.context[0].indexOf('attention attention:0')).toBeLessThan(r.context[0].indexOf('message after-notice'))
+  expect(h.core.snapshot().queue).toEqual(['notice:tool'])
+  h.appendResult = () => ({})
+  await h.advance(30_000)
+  expect(h.appends.length).toBe(2)
+  expect(h.appends[1]).toContain('inspect tool')
+  await flush()
+  expect(h.ackRuns().flat()).not.toContain('notice:tool')
+  expect(h.submits).toEqual([])
 })

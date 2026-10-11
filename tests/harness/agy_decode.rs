@@ -629,3 +629,55 @@ fn stubbed_surfaces_refuse_or_read_unreadable() {
             .is_empty()
     );
 }
+
+#[test]
+fn registered_presentation_codecs_equal_actual_native_shapes() {
+    use crate::harness::adapter::PresentationCodec;
+    for (selector, step, overhead) in [
+        (0, InjectionStep::SystemMessage, 54),
+        (1, InjectionStep::UserMessage, 34),
+    ] {
+        assert_eq!(step.presentation_selector(), selector);
+        let codec = AgyAdapter.presentation_codec(selector).unwrap();
+        assert_eq!(codec, step.presentation_codec());
+        assert_eq!(
+            builtins()
+                .by_id(builtins().agent("agy").unwrap())
+                .unwrap()
+                .presentation_codec(selector),
+            Some(codec)
+        );
+        let PresentationCodec::JsonStringEnvelope { prefix, suffix } = codec;
+        assert_eq!(prefix.len() + suffix.len(), overhead);
+        for text in ["", "plain", "\0\u{1}\t\r\n\"\\/", "é🙂\u{2028}"] {
+            let actual = serde_json::to_vec(&step.render(text)).unwrap();
+            let mut descriptor = prefix.as_bytes().to_vec();
+            descriptor.extend(serde_json::to_vec(text).unwrap());
+            descriptor.extend(suffix.as_bytes());
+            assert_eq!(descriptor, actual);
+            assert_eq!(step.encode_presentation(text).unwrap(), actual);
+        }
+    }
+    assert!(AgyAdapter.presentation_codec(2).is_none());
+    assert!(AgyAdapter.presentation_codec(u8::MAX).is_none());
+}
+
+#[test]
+fn native_presentation_encoder_caps_actual_final_bytes() {
+    for step in [InjectionStep::SystemMessage, InjectionStep::UserMessage] {
+        let crate::harness::adapter::PresentationCodec::JsonStringEnvelope { prefix, suffix } =
+            step.presentation_codec();
+        let available = 65_536 - prefix.len() - suffix.len() - 2;
+        assert_eq!(
+            step.encode_presentation(&"x".repeat(available))
+                .unwrap()
+                .len(),
+            65_536
+        );
+        assert!(
+            step.encode_presentation(&"x".repeat(available + 1))
+                .is_none()
+        );
+        assert!(step.encode_presentation(&"\0".repeat(available)).is_none());
+    }
+}

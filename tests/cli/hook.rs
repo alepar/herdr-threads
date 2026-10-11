@@ -1825,6 +1825,7 @@ fn hook_parse_error_outside_herdr_is_quiet() {
             diagnostic: Some("bad argv".into()),
             attention: None,
             lazy: None,
+            step_completion: None,
         }
     );
 }

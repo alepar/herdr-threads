@@ -76,7 +76,9 @@ const V36: &str = include_str!("../../migrations/0036_invitation_lifecycle.sql")
 const V37: &str = include_str!("../../migrations/0037_invitation_warning_origin.sql");
 const V38: &str = include_str!("../../migrations/0038_receipt_warning_origins.sql");
 const V39: &str = include_str!("../../migrations/0039_automatic_handoff_body_bounds.sql");
-pub(crate) const LATEST_VERSION: i64 = 39;
+const V40: &str = include_str!("../../migrations/0040_invitation_presentation.sql");
+const V41: &str = include_str!("../../migrations/0041_presentation_relevance.sql");
+pub(crate) const LATEST_VERSION: i64 = 41;
 
 /// Decode only persisted results, after the caller's digest has matched. Live
 /// protocol responses still require disposition. Missing original context
@@ -422,7 +424,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             verify_existing(conn)
         }
         17 => verify_existing(conn),
-        18..=39 => verify_existing(conn),
+        18..=LATEST_VERSION => verify_existing(conn),
         _ => Err(api_error(
             ErrorCode::IncompatibleSchema,
             format!("unsupported schema version {version}"),
@@ -757,7 +759,46 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
     if version <= 38 {
         migrate_automatic_v38_to_v39(conn)?;
     }
-    verify_automatic_body_bounds_schema(conn)
+    verify_automatic_body_bounds_schema(conn)?;
+    if version <= 39 {
+        conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
+        let result = conn
+            .execute_batch(V40)
+            .map_err(store_error)
+            .and_then(|_| verify_invitation_presentation_schema(conn, false))
+            .and_then(|_| {
+                conn.pragma_update(None, "user_version", 40)
+                    .map_err(store_error)
+            });
+        match result {
+            Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(error);
+            }
+        }
+    }
+    verify_invitation_presentation_schema(conn, version >= 41)?;
+    if version <= 40 {
+        conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
+        let result = conn
+            .execute_batch(V41)
+            .map_err(store_error)
+            .and_then(|_| verify_presentation_relevance_schema(conn))
+            .and_then(|_| {
+                conn.pragma_update(None, "user_version", 41)
+                    .map_err(store_error)
+            });
+        match result {
+            Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(error);
+            }
+        }
+    }
+    verify_invitation_presentation_schema(conn, true)?;
+    verify_presentation_relevance_schema(conn)
 }
 
 fn verify_receipt_warning_origins_schema(conn: &Connection) -> Result<(), ApiError> {
@@ -4615,6 +4656,128 @@ fn verify_ddl(conn: &Connection, source: &str, label: &str) -> Result<(), ApiErr
                 format!("missing or altered {label} {kind} {name}"),
             ));
         }
+    }
+    Ok(())
+}
+
+fn verify_presentation_relevance_schema(conn: &Connection) -> Result<(), ApiError> {
+    let expected = Connection::open_in_memory().map_err(store_error)?;
+    // Only DDL dependency stubs: no retained content or historical migration
+    // replay is needed to reconstruct the exact new catalog objects.
+    expected.execute_batch("CREATE TABLE digest_pending_invitations(seat_id TEXT,invitation_id TEXT,ordinal INTEGER); CREATE TABLE invitations(id TEXT,seat_id TEXT,confirmation TEXT); CREATE TABLE requirement_episodes(invitation_id TEXT,state TEXT); CREATE TABLE warning_conditions(affected_seat_id TEXT,ordinal INTEGER,clear_warning_id TEXT); CREATE TABLE membership_intervals(thread_id TEXT,seat_id TEXT,ordinal INTEGER); CREATE TABLE prepared_unavailable_warnings(warning_id TEXT,ordinal INTEGER); CREATE TABLE seats(id TEXT); CREATE TABLE invitation_presentation_consumers(seat_id TEXT,consumer TEXT);").map_err(store_error)?;
+    let mut dependencies = std::collections::BTreeSet::from([
+        "digest_pending_invitations",
+        "invitations",
+        "requirement_episodes",
+        "warning_conditions",
+        "membership_intervals",
+        "prepared_unavailable_warnings",
+        "seats",
+        "invitation_presentation_consumers",
+    ]);
+    for line in V41
+        .lines()
+        .filter(|line| line.starts_with("CREATE TRIGGER "))
+    {
+        let table = line
+            .rsplit_once(" ON ")
+            .ok_or_else(|| {
+                api_error(
+                    ErrorCode::IncompatibleSchema,
+                    "invalid relevance trigger dependency",
+                )
+            })?
+            .1
+            .trim();
+        if dependencies.insert(table) {
+            expected
+                .execute_batch(&format!("CREATE TABLE {table}(id TEXT)"))
+                .map_err(store_error)?;
+        }
+    }
+    expected.execute_batch(V41).map_err(store_error)?;
+    let mut statement = expected
+        .prepare("SELECT type,name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'")
+        .map_err(store_error)?;
+    for row in statement
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(store_error)?
+    {
+        let (kind, name, sql) = row.map_err(store_error)?;
+        if dependencies.contains(name.as_str()) {
+            continue;
+        }
+        let installed: Option<String> = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type=?1 AND name=?2",
+                params![kind, name],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(store_error)?;
+        if installed.as_deref() != Some(sql.as_str()) {
+            return Err(api_error(
+                ErrorCode::IncompatibleSchema,
+                format!("missing or altered presentation relevance {kind} {name}"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn verify_invitation_presentation_schema(conn: &Connection, revised: bool) -> Result<(), ApiError> {
+    let expected = Connection::open_in_memory().map_err(store_error)?;
+    expected.execute_batch("CREATE TABLE invitations(id TEXT); CREATE TABLE digest_pending_invitations(seat_id TEXT,thread_id TEXT,ordinal INTEGER); CREATE TABLE threads(id TEXT,instance_id TEXT); CREATE TABLE host_instances(id TEXT);").map_err(store_error)?;
+    expected.execute_batch(V40).map_err(store_error)?;
+    if revised {
+        // Reconstruct the final catalog using the exact released-in-this-change
+        // ALTER statements. Keep the pre41 check exact during the upgrade.
+        for statement in V41
+            .lines()
+            .filter(|line| line.starts_with("ALTER TABLE invitation_presentation_consumers "))
+        {
+            expected.execute_batch(statement).map_err(store_error)?;
+        }
+    }
+    let mut objects=expected.prepare("SELECT type,name,sql FROM sqlite_master WHERE name NOT IN ('invitations','digest_pending_invitations','threads','host_instances') AND name NOT LIKE 'sqlite_%'").map_err(store_error)?;
+    for row in objects
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(store_error)?
+    {
+        let (kind, name, sql) = row.map_err(store_error)?;
+        let actual: Option<String> = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type=?1 AND name=?2",
+                params![kind, name],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(store_error)?;
+        if actual.as_deref() != Some(sql.as_str()) {
+            return Err(api_error(
+                ErrorCode::IncompatibleSchema,
+                format!("incompatible invitation presentation object {name}"),
+            ));
+        }
+    }
+    let column:Option<(String,i64,Option<String>)>=conn.query_row("SELECT type,\"notnull\",dflt_value FROM pragma_table_info('invitations') WHERE name='command_context_epoch'",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(store_error)?;
+    if column != Some(("INTEGER".into(), 1, Some("0".into()))) {
+        return Err(api_error(
+            ErrorCode::IncompatibleSchema,
+            "invalid invitation command epoch column",
+        ));
     }
     Ok(())
 }

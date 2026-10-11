@@ -2,8 +2,23 @@
 use crate::protocol::time::CallBudget;
 use std::ffi::OsString;
 
+/// Registered static representation of one JSON string; never caller-supplied
+/// native bytes, a callback, or an authority/admission decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PresentationCodec {
+    JsonStringEnvelope {
+        prefix: &'static str,
+        suffix: &'static str,
+    },
+}
+
 pub trait HarnessAdapter: Send + Sync + 'static {
     type Admission: Send + Sync + 'static;
+    /// Pure static presentation descriptor. Unsupported selectors grant no V2
+    /// Hook representation; callers may retain historical delivery instead.
+    fn presentation_codec(&self, _selector: u8) -> Option<PresentationCodec> {
+        None
+    }
     fn metadata(&self) -> &'static AdapterMetadata;
     fn receipt_admission_summary(&self) -> Option<String> {
         None
@@ -604,6 +619,38 @@ pub trait HookStep: Send + Sync {
     /// Complete native stdout for one top-level `Observer` event; empty means none.
     /// Fails open: every internal error returns empty bytes. Must finish by `context.deadline`.
     fn run(&self, context: &HookStepContext<'_>) -> Vec<u8>;
+    /// Prepare stdout plus adapter-owned completion, without claiming it was emitted.
+    fn run_with_completion(&self, context: &HookStepContext<'_>) -> HookStepOutput {
+        HookStepOutput {
+            stdout: self.run(context),
+            completion: None,
+            diagnostic: None,
+        }
+    }
+    /// Invoked only after all prepared stdout was written and flushed. The daemon
+    /// remains pinned to the original instance and boot; failure leaves work replayable.
+    fn complete(
+        &self,
+        _payload: &[u8],
+        _daemon: &dyn HookStepDaemon,
+        _state_dir: &std::path::Path,
+        _deadline: std::time::Instant,
+    ) {
+    }
+}
+/// Private adapter protocol bytes, bounded before any output is emitted.
+#[derive(Debug, PartialEq, Eq)]
+pub struct HookStepCompletionPayload(pub(crate) Vec<u8>);
+impl HookStepCompletionPayload {
+    pub fn new(bytes: Vec<u8>) -> Option<Self> {
+        (bytes.len() <= 65_536).then_some(Self(bytes))
+    }
+}
+pub struct HookStepOutput {
+    pub stdout: Vec<u8>,
+    pub completion: Option<HookStepCompletionPayload>,
+    /// Bounded adapter failure detail for stderr, never model context.
+    pub diagnostic: Option<String>,
 }
 pub struct HookStepContext<'a> {
     pub input: &'a HookInput,
@@ -620,6 +667,9 @@ pub struct HookStepContext<'a> {
     pub deadline: std::time::Instant,
 }
 pub trait HookStepDaemon {
+    fn supports_capability(&self, _name: &str) -> bool {
+        false
+    }
     fn call(
         &self,
         command: crate::protocol::commands::Command,

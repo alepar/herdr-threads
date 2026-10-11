@@ -5987,7 +5987,12 @@ mod inbox_v2 {
     fn binding(db: &Connection, seat: &SeatId) -> Result<Option<(u64, ExecutionId)>, ApiError> {
         db.query_row("SELECT b.generation,b.execution_id FROM occupant_bindings b JOIN seats s ON s.id=b.seat_id AND s.generation=b.generation WHERE b.seat_id=?1 AND b.ended_at IS NULL",[seat.as_str()],|r|Ok((r.get::<_,i64>(0)? as u64,ExecutionId::new(r.get::<_,String>(1)?)))).optional().map_err(store_error)
     }
-    fn capture(db: &Connection, instance: &str, seat: &SeatId) -> Result<State, ApiError> {
+    fn capture(
+        db: &Connection,
+        instance: &str,
+        seat: &SeatId,
+        ordinary_only: bool,
+    ) -> Result<State, ApiError> {
         let high = super::super::lazy_delivery::capture_high_water(db, instance, seat)?;
         let (generation, execution) =
             binding(db, seat)?.map_or((None, None), |(g, e)| (Some(g), Some(e)));
@@ -6012,9 +6017,16 @@ mod inbox_v2 {
             attention: SeatAttentionCursorState {
                 invitation_after_seq: 0,
                 invitation_after_ordinal: 0,
-                invitations_done: false,
+                invitations_done: ordinary_only,
                 has_pending_invitation: false,
-                invitation_frontier: Some((0, max("invitations")?)),
+                invitation_frontier: Some((
+                    0,
+                    if ordinary_only {
+                        0
+                    } else {
+                        max("invitations")?
+                    },
+                )),
                 receipts: Some(ReceiptAttentionCursorState {
                     physical_after: 0,
                     manifest_after: 0,
@@ -6113,6 +6125,23 @@ mod inbox_v2 {
         current_agent: bool,
         state: &State,
     ) -> Result<Option<Item>, ApiError> {
+        hydrate_message(
+            db,
+            id,
+            lazy,
+            current_agent,
+            &state.seat,
+            state.body.as_ref(),
+        )
+    }
+    pub(super) fn hydrate_message(
+        db: &Connection,
+        id: &str,
+        lazy: bool,
+        current_agent: bool,
+        seat: &SeatId,
+        position: Option<&crate::protocol::pagination::InboxBatchV2BodyPosition>,
+    ) -> Result<Option<Item>, ApiError> {
         let row=db.query_row("SELECT thread_id,sequence,actor_seat_id,body,author_role,relays_user,user_intent,author_role_backfilled FROM messages WHERE id=?1 AND kind='ordinary'",[id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)? as u64,r.get::<_,Option<String>>(2)?,r.get::<_,String>(3)?,r.get::<_,Option<String>>(4)?,r.get::<_,bool>(5)?,r.get::<_,Option<String>>(6)?,r.get::<_,bool>(7)?))).optional().map_err(store_error)?;
         let Some((
             thread,
@@ -6127,12 +6156,9 @@ mod inbox_v2 {
         else {
             return Ok(None);
         };
-        let offset = state.body.as_ref().map_or(0, |b| b.offset);
+        let offset = position.map_or(0, |b| b.offset);
         let body_len = body.len() as u64;
-        if state
-            .body
-            .as_ref()
-            .is_some_and(|b| b.message.as_str() != id || b.body_len != body_len)
+        if position.is_some_and(|b| b.message.as_str() != id || b.body_len != body_len)
             || offset > body_len
             || !body.is_char_boundary(offset as usize)
         {
@@ -6153,8 +6179,7 @@ mod inbox_v2 {
             .transpose()?;
         let body = body[offset as usize..].to_owned();
         let wakes = lazy
-            && super::super::seats::wake_on(db, &state.seat)?
-                == crate::protocol::commands::WakeOn::All;
+            && super::super::seats::wake_on(db, seat)? == crate::protocol::commands::WakeOn::All;
         Ok(Some(if lazy {
             Item::LazyMessage {
                 thread: thread_id,
@@ -6239,8 +6264,8 @@ mod inbox_v2 {
             }
             Source::Invitations => {
                 let a = &state.attention;
-                let row:Option<(i64,String,String)>=db.query_row("SELECT ordinal,id,thread_id FROM invitations WHERE seat_id=?1 AND ordinal>?2 AND ordinal<=?3 AND created_decision_seq<=?4 ORDER BY ordinal LIMIT 1",params![seat.as_str(),a.invitation_after_ordinal,a.invitation_frontier.unwrap().1,state.publication_decision_high_water as i64],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(store_error)?;
-                let Some((ordinal, id, thread)) = row else {
+                let row:Option<(i64,String,String,String,String,i64)>=db.query_row("SELECT i.ordinal,i.id,i.thread_id,t.topic,t.goal,t.topic_revision FROM invitations i JOIN threads t ON t.id=i.thread_id WHERE i.seat_id=?1 AND i.ordinal>?2 AND i.ordinal<=?3 AND i.created_decision_seq<=?4 ORDER BY i.ordinal LIMIT 1",params![seat.as_str(),a.invitation_after_ordinal,a.invitation_frontier.unwrap().1,state.publication_decision_high_water as i64],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).optional().map_err(store_error)?;
+                let Some((ordinal, id, thread, topic, goal, revision)) = row else {
                     state.attention.invitations_done = true;
                     return Ok((None, 0));
                 };
@@ -6260,7 +6285,11 @@ mod inbox_v2 {
                     let (confirmation, deadline_at) = invitation_confirmation_metadata(db, &id)?;
                     Some(Item::Invitation {
                         thread: ThreadId::new(&thread),
-                        topic_data: batch_topic(db, &thread)?,
+                        topic_data: topic,
+                        goal_data: Some(goal),
+                        topic_revision: Some(u64::try_from(revision).map_err(|_| {
+                            api_error(ErrorCode::StoreCorrupt, "negative topic revision")
+                        })?),
                         invitation: crate::protocol::ids::InvitationId::new(id),
                         confirmation,
                         deadline_at,
@@ -6392,13 +6421,31 @@ mod inbox_v2 {
         position.map(|p| (chunk, p))
     }
     pub(super) fn query(
-        db: &QueryConnection,
+        db: &Connection,
         store: &StoreContext,
         instance: &str,
         q: &InboxQuery,
         output: &OutputSpec,
         budget: &CallBudget,
     ) -> Result<CommandResult, ApiError> {
+        query_mode(db, store, instance, q, output, budget, false).map(|(result, _)| result)
+    }
+
+    pub(super) fn current_agent(db: &Connection, seat: &SeatId) -> Result<bool, ApiError> {
+        let current_harness:Option<String>=db.query_row("SELECT b.harness FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id AND b.generation=s.generation WHERE s.id=?1 AND s.state='resolved' AND b.ended_at IS NULL AND b.registered_at IS NOT NULL AND b.observation_provenance='cooperative_top_level' AND b.target_id=s.target_id AND b.target_generation=s.target_generation AND b.native_session<>'' AND b.execution_id<>''",[seat.as_str()],|r|r.get(0)).optional().map_err(store_error)?;
+        Ok(current_harness
+            .as_deref()
+            .is_some_and(|harness| crate::harness::registry::builtins().agent(harness).is_ok()))
+    }
+    pub(super) fn query_mode(
+        db: &Connection,
+        store: &StoreContext,
+        instance: &str,
+        q: &InboxQuery,
+        output: &OutputSpec,
+        budget: &CallBudget,
+        ordinary_only: bool,
+    ) -> Result<(CommandResult, usize), ApiError> {
         let seat = q.seat.as_ref().ok_or_else(|| {
             api_error(
                 ErrorCode::InvalidRequest,
@@ -6411,8 +6458,12 @@ mod inbox_v2 {
         }
         let mut state = match q.page.cursor.as_ref() {
             Some(raw) => State::decode_for(raw, instance, seat).map_err(invalid)?,
-            None => capture(db, instance, seat)?,
+            None => capture(db, instance, seat, ordinary_only)?,
         };
+        if ordinary_only {
+            state.attention.invitations_done = true;
+            state.attention.invitation_frontier = Some((0, 0));
+        }
         let current = binding(db, seat)?;
         if current != state.binding_generation.zip(state.execution.clone()) {
             return Err(invalid("inbox binding changed"));
@@ -6431,10 +6482,7 @@ mod inbox_v2 {
         // in inbox v1, with its exact current-binding predicate, and display-ACK
         // settlement), never a fixed harness list:
         // a Hermes binding's pending receipts are ACK candidates too.
-        let current_harness:Option<String>=db.query_row("SELECT b.harness FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id AND b.generation=s.generation WHERE s.id=?1 AND s.state='resolved' AND b.ended_at IS NULL AND b.registered_at IS NOT NULL AND b.observation_provenance='cooperative_top_level' AND b.target_id=s.target_id AND b.target_generation=s.target_generation AND b.native_session<>'' AND b.execution_id<>''",[seat.as_str()],|r|r.get(0)).optional().map_err(store_error)?;
-        let current_agent = current_harness
-            .as_deref()
-            .is_some_and(|harness| crate::harness::registry::builtins().agent(harness).is_ok());
+        let current_agent = current_agent(db, seat)?;
         if let Some(body) = &state.body {
             let lazy = state.source == Source::Lazy;
             if message(db, body.message.as_str(), lazy, current_agent, &state)?.is_none() {
@@ -6486,7 +6534,23 @@ mod inbox_v2 {
             visited += work;
             state.body = None;
             rotate(&mut state);
-            if let Some(item) = item {
+            if let Some(mut item) = item {
+                if matches!(
+                    &item,
+                    Item::Invitation {
+                        goal_data: Some(_),
+                        ..
+                    }
+                ) && !fits(
+                    std::slice::from_ref(&item),
+                    &state,
+                    instance,
+                    &q.page,
+                    output,
+                )? && let Item::Invitation { goal_data, .. } = &mut item
+                {
+                    *goal_data = None;
+                }
                 let mut trial = items.clone();
                 trial.push(item.clone());
                 if fits(&trial, &state, instance, &q.page, output)? {
@@ -6561,6 +6625,122 @@ mod inbox_v2 {
         {
             return Err(ApiError::invalid_budget("selected response cannot fit"));
         }
-        Ok(CommandResult::InboxBatchV2(page))
+        Ok((CommandResult::InboxBatchV2(page), visited))
     }
+}
+
+/// Internal canonical presentation source. Unlike public V1/V2 inbox reads,
+/// it neither captures nor traverses invitations. Exactly one bounded query
+/// is permitted per fresh presentation quantum; the caller persists its cursor.
+pub(super) fn ordinary_presentation_page(
+    db: &Connection,
+    context: &StoreContext,
+    instance: &str,
+    seat: &SeatId,
+    cursor: Option<String>,
+    budget: &CallBudget,
+) -> Result<(Page<crate::protocol::results::InboxBatchV2Item>, usize), ApiError> {
+    let query = InboxQuery {
+        seat: Some(seat.clone()),
+        page: PageRequest {
+            cursor,
+            limit: 32,
+            max_bytes: 65536,
+        },
+    };
+    let (result, visited) = inbox_v2::query_mode(
+        db,
+        context,
+        instance,
+        &query,
+        &OutputSpec::default(),
+        budget,
+        true,
+    )?;
+    match result {
+        CommandResult::InboxBatchV2(page) => Ok((page, visited)),
+        _ => Err(api_error(
+            ErrorCode::StoreCorrupt,
+            "invalid ordinary presentation page",
+        )),
+    }
+}
+
+/// Fixed setup for the exact-key due source. Canonical presentation admission
+/// has already proved a live, nonretired addressed seat in this transaction.
+pub(super) fn ordinary_due_context(
+    db: &Connection,
+    instance: &str,
+    seat: &SeatId,
+    work: &mut crate::ports::PresentationWork,
+) -> Result<(i64, bool), ApiError> {
+    work.ordinary_due_key_probes += 3;
+    let head = db
+        .query_row(
+            "SELECT decision_seq FROM host_instances WHERE id=?1",
+            [instance],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    Ok((head, inbox_v2::current_agent(db, seat)?))
+}
+
+/// One exact canonical key, never a pending-table scan. Charge the conservative
+/// effective-receipt envelope even when its logical branch short-circuits.
+pub(super) fn ordinary_presentation_message_by_id(
+    db: &Connection,
+    instance: &str,
+    seat: &SeatId,
+    id: &MessageId,
+    due_context: (i64, bool),
+    work: &mut crate::ports::PresentationWork,
+) -> Result<Option<crate::protocol::results::InboxBatchV2Item>, ApiError> {
+    use crate::protocol::results::InboxBatchV2Item;
+    let (head, current_agent) = due_context;
+    work.ordinary_due_key_probes += 1;
+    let row: Option<(String, String, i64)> = db.query_row(
+        "SELECT delivery_mode,thread_id,COALESCE(decision_seq,0) FROM messages WHERE id=?1 AND instance_id=?2 AND kind='ordinary'",
+        params![id.as_str(), instance], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)),
+    ).optional().map_err(store_error)?;
+    let Some((mode, thread, published)) = row else {
+        return Ok(None);
+    };
+    if published > head {
+        return Ok(None);
+    }
+    let lazy = match mode.as_str() {
+        "lazy" => {
+            work.ordinary_due_key_probes += 2;
+            let addressed: bool = db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM lazy_recipients r JOIN send_manifests sm ON sm.preparation_id=r.preparation_id AND sm.message_id=r.message_id AND sm.thread_id=r.thread_id WHERE r.message_id=?1 AND r.seat_id=?2 AND r.state='pending' AND r.thread_id=?3 AND sm.instance_id=?4 AND sm.decision_seq<=?5)",
+                params![id.as_str(),seat.as_str(),thread,instance,head], |r|r.get(0),
+            ).map_err(store_error)?;
+            if !addressed {
+                return Ok(None);
+            }
+            true
+        }
+        "ordinary" => {
+            work.ordinary_due_key_probes += 10;
+            work.ordinary_due_seeks += 1;
+            let receipt = super::effective::effective_receipt(db, id.as_str(), seat.as_str())?;
+            if !receipt.is_some_and(|r| {
+                r.state == super::effective::EffectiveReceiptState::Pending
+                    && r.decision_seq.unwrap_or(0) <= head
+                    && r.thread_id == thread
+            }) {
+                return Ok(None);
+            }
+            false
+        }
+        _ => return Ok(None),
+    };
+    work.ordinary_due_key_probes += if lazy { 3 } else { 2 };
+    let item = inbox_v2::hydrate_message(db, id.as_str(), lazy, current_agent, seat, None)?;
+    // Hydration and canonical eligibility must describe the same thread.
+    Ok(item.filter(|item| match item {
+        InboxBatchV2Item::Message { thread: actual, .. }
+        | InboxBatchV2Item::LazyMessage { thread: actual, .. } => actual.as_str() == thread,
+        _ => false,
+    }))
 }

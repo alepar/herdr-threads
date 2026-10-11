@@ -81,6 +81,8 @@ pub struct DigestRun {
     /// The pending-warning set behind `digest.warnings`, unnarrowed (a
     /// caller that needs the waking subset applies `wake_warnings`).
     pub warnings: PendingSet,
+    /// Recipient-visible pending invitation window; bounded by WINDOW.
+    pub invitations: PendingSet,
 }
 
 /// One pending item with its logical publication key.
@@ -98,9 +100,45 @@ pub struct PendingSet {
     pub items: Vec<PendingItem>,
     pub saturated: bool,
     pub work_steps: u64,
+    /// Canonical metadata revisions from the same bounded invitation window.
+    pub context_revisions: BTreeMap<String, i64>,
 }
 
 impl PendingSet {
+    /// Content signature of this canonical bounded window. All visible keys
+    /// participate, so removal of an older row cannot hide behind a saturated
+    /// count or an unchanged newest key. Unrelated decisions do not participate.
+    pub fn content_version(&self) -> u64 {
+        if self.items.is_empty() && !self.saturated {
+            return 0;
+        }
+        let mut hash = 0xcbf2_9ce4_8422_2325u64;
+        let mut feed = |bytes: &[u8]| {
+            for byte in bytes {
+                hash ^= u64::from(*byte);
+                hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        };
+        feed(&[u8::from(self.saturated)]);
+        for item in &self.items {
+            feed(&(item.id.len() as u64).to_le_bytes());
+            feed(item.id.as_bytes());
+            feed(&(item.thread_id.len() as u64).to_le_bytes());
+            feed(item.thread_id.as_bytes());
+            feed(&item.key.0.to_le_bytes());
+            feed(&item.key.1.to_le_bytes());
+            feed(
+                &self
+                    .context_revisions
+                    .get(&item.id)
+                    .copied()
+                    .unwrap_or(0)
+                    .to_le_bytes(),
+            );
+        }
+        hash
+    }
+
     /// The presented count: at most `ATTENTION_COUNT_CAP`, with `has_more`
     /// when more than the cap may be pending.
     pub fn count(&self) -> (u64, bool) {
@@ -123,6 +161,7 @@ impl PendingSet {
                 .collect(),
             saturated: self.saturated,
             work_steps: 0,
+            context_revisions: self.context_revisions.clone(),
         }
     }
 }
@@ -166,6 +205,7 @@ impl Gather {
             items,
             saturated: self.saturated,
             work_steps: self.steps,
+            context_revisions: BTreeMap::new(),
         }
     }
 }
@@ -369,6 +409,7 @@ pub fn seat_digest(
             + warnings.work_steps
             + receipt_thread_steps,
         warnings,
+        invitations,
     })
 }
 
@@ -464,10 +505,10 @@ fn invitation_window(
     through: i64,
     confirming: bool,
 ) -> Result<PendingSet, ApiError> {
-    const SEAT: &str = "SELECT w.invitation_id,w.thread_id,w.created_decision_seq,w.ordinal,(i.state='pending' AND s.state!='retired' AND NOT EXISTS(SELECT 1 FROM invitation_cancellations c WHERE c.invitation_id=w.invitation_id) AND NOT EXISTS(SELECT 1 FROM invitation_rejections rejection WHERE rejection.invitation_id=w.invitation_id)) FROM (SELECT invitation_id,thread_id,created_decision_seq,ordinal FROM digest_pending_invitations INDEXED BY digest_pending_invitations_seat WHERE seat_id=?1 AND created_decision_seq<=?2 ORDER BY created_decision_seq DESC,ordinal DESC LIMIT ?3) w LEFT JOIN invitations i ON i.id=w.invitation_id LEFT JOIN seats s ON s.id=?1";
-    const THREAD: &str = "SELECT w.invitation_id,w.thread_id,w.created_decision_seq,w.ordinal,(i.state='pending' AND s.state!='retired' AND NOT EXISTS(SELECT 1 FROM invitation_cancellations c WHERE c.invitation_id=w.invitation_id) AND NOT EXISTS(SELECT 1 FROM invitation_rejections rejection WHERE rejection.invitation_id=w.invitation_id)) FROM (SELECT invitation_id,thread_id,created_decision_seq,ordinal FROM digest_pending_invitations INDEXED BY digest_pending_invitations_thread WHERE seat_id=?1 AND thread_id=?4 AND created_decision_seq<=?2 ORDER BY created_decision_seq DESC,ordinal DESC LIMIT ?3) w LEFT JOIN invitations i ON i.id=w.invitation_id LEFT JOIN seats s ON s.id=?1";
-    const TIMED_SEAT: &str = "SELECT w.invitation_id,w.thread_id,w.created_decision_seq,w.ordinal,(s.state!='retired' AND NOT EXISTS(SELECT 1 FROM invitation_cancellations c WHERE c.invitation_id=w.invitation_id) AND NOT EXISTS(SELECT 1 FROM invitation_rejections r WHERE r.invitation_id=w.invitation_id)) FROM (SELECT id AS invitation_id,thread_id,created_decision_seq,ordinal FROM invitations INDEXED BY invitations_confirmation_pending_seat WHERE seat_id=?1 AND state='pending' AND (confirmation IS NULL OR confirmation='require_ack') AND created_decision_seq<=?2 ORDER BY created_decision_seq DESC,ordinal DESC LIMIT ?3) w LEFT JOIN seats s ON s.id=?1";
-    const TIMED_THREAD: &str = "SELECT w.invitation_id,w.thread_id,w.created_decision_seq,w.ordinal,(s.state!='retired' AND NOT EXISTS(SELECT 1 FROM invitation_cancellations c WHERE c.invitation_id=w.invitation_id) AND NOT EXISTS(SELECT 1 FROM invitation_rejections r WHERE r.invitation_id=w.invitation_id)) FROM (SELECT id AS invitation_id,thread_id,created_decision_seq,ordinal FROM invitations INDEXED BY invitations_confirmation_pending_thread WHERE seat_id=?1 AND thread_id=?4 AND state='pending' AND (confirmation IS NULL OR confirmation='require_ack') AND created_decision_seq<=?2 ORDER BY created_decision_seq DESC,ordinal DESC LIMIT ?3) w LEFT JOIN seats s ON s.id=?1";
+    const SEAT: &str = "SELECT w.invitation_id,w.thread_id,w.created_decision_seq,w.ordinal,(i.state='pending' AND s.state!='retired' AND NOT EXISTS(SELECT 1 FROM invitation_cancellations c WHERE c.invitation_id=w.invitation_id) AND NOT EXISTS(SELECT 1 FROM invitation_rejections rejection WHERE rejection.invitation_id=w.invitation_id)),t.topic_revision FROM (SELECT invitation_id,thread_id,created_decision_seq,ordinal FROM digest_pending_invitations INDEXED BY digest_pending_invitations_seat WHERE seat_id=?1 AND created_decision_seq<=?2 ORDER BY created_decision_seq DESC,ordinal DESC LIMIT ?3) w LEFT JOIN invitations i ON i.id=w.invitation_id LEFT JOIN seats s ON s.id=?1 LEFT JOIN threads t ON t.id=w.thread_id";
+    const THREAD: &str = "SELECT w.invitation_id,w.thread_id,w.created_decision_seq,w.ordinal,(i.state='pending' AND s.state!='retired' AND NOT EXISTS(SELECT 1 FROM invitation_cancellations c WHERE c.invitation_id=w.invitation_id) AND NOT EXISTS(SELECT 1 FROM invitation_rejections rejection WHERE rejection.invitation_id=w.invitation_id)),t.topic_revision FROM (SELECT invitation_id,thread_id,created_decision_seq,ordinal FROM digest_pending_invitations INDEXED BY digest_pending_invitations_thread WHERE seat_id=?1 AND thread_id=?4 AND created_decision_seq<=?2 ORDER BY created_decision_seq DESC,ordinal DESC LIMIT ?3) w LEFT JOIN invitations i ON i.id=w.invitation_id LEFT JOIN seats s ON s.id=?1 LEFT JOIN threads t ON t.id=w.thread_id";
+    const TIMED_SEAT: &str = "SELECT w.invitation_id,w.thread_id,w.created_decision_seq,w.ordinal,(s.state!='retired' AND NOT EXISTS(SELECT 1 FROM invitation_cancellations c WHERE c.invitation_id=w.invitation_id) AND NOT EXISTS(SELECT 1 FROM invitation_rejections r WHERE r.invitation_id=w.invitation_id)),t.topic_revision FROM (SELECT id AS invitation_id,thread_id,created_decision_seq,ordinal FROM invitations INDEXED BY invitations_confirmation_pending_seat WHERE seat_id=?1 AND state='pending' AND (confirmation IS NULL OR confirmation='require_ack') AND created_decision_seq<=?2 ORDER BY created_decision_seq DESC,ordinal DESC LIMIT ?3) w LEFT JOIN seats s ON s.id=?1 LEFT JOIN threads t ON t.id=w.thread_id";
+    const TIMED_THREAD: &str = "SELECT w.invitation_id,w.thread_id,w.created_decision_seq,w.ordinal,(s.state!='retired' AND NOT EXISTS(SELECT 1 FROM invitation_cancellations c WHERE c.invitation_id=w.invitation_id) AND NOT EXISTS(SELECT 1 FROM invitation_rejections r WHERE r.invitation_id=w.invitation_id)),t.topic_revision FROM (SELECT id AS invitation_id,thread_id,created_decision_seq,ordinal FROM invitations INDEXED BY invitations_confirmation_pending_thread WHERE seat_id=?1 AND thread_id=?4 AND state='pending' AND (confirmation IS NULL OR confirmation='require_ack') AND created_decision_seq<=?2 ORDER BY created_decision_seq DESC,ordinal DESC LIMIT ?3) w LEFT JOIN seats s ON s.id=?1 LEFT JOIN threads t ON t.id=w.thread_id";
     let (seat_sql, thread_sql) = if confirming {
         (TIMED_SEAT, TIMED_THREAD)
     } else {
@@ -480,6 +521,7 @@ fn invitation_window(
             r.get::<_, i64>(2)?,
             r.get::<_, i64>(3)?,
             r.get::<_, Option<bool>>(4)?.unwrap_or(false),
+            r.get::<_, i64>(5)?,
         ))
     };
     let window = match thread {
@@ -493,7 +535,8 @@ fn invitation_window(
     };
     let mut gather = Gather::default();
     gather.window(window.len());
-    for (id, thread, seq, ordinal, valid) in window {
+    let mut revisions = BTreeMap::new();
+    for (id, thread, seq, ordinal, valid, revision) in window {
         if seq <= 0 || ordinal <= 0 {
             return Err(api_error(
                 ErrorCode::StoreCorrupt,
@@ -501,6 +544,7 @@ fn invitation_window(
             ));
         }
         if valid {
+            revisions.insert(id.clone(), revision);
             gather.add(PendingItem {
                 id,
                 thread_id: thread,
@@ -508,7 +552,9 @@ fn invitation_window(
             });
         }
     }
-    Ok(gather.finish())
+    let mut result = gather.finish();
+    result.context_revisions = revisions;
+    Ok(result)
 }
 
 /// The seat's pending addressed receipts (optionally in one thread): three

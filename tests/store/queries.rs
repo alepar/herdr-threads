@@ -5823,3 +5823,354 @@ fn directory_filtered_name_revision_is_selected_and_rejects_legacy_keys() {
         );
     }
 }
+
+#[test]
+fn v2_invitation_goal_and_revision_fit_or_yield_to_usable_pending_inspection() {
+    let (store, db) = fixture();
+    db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,frozen_duration_ms,deadline_at,created_decision_seq) VALUES ('inv-v2-goal','t','s',1,'pending',0,300,300,1)", []).unwrap();
+    let read = |max_bytes, output: &OutputSpec| {
+        query_with_output(
+            &store,
+            "i",
+            &Command::InboxBatchV2(InboxQuery {
+                seat: Some(SeatId::new("s")),
+                page: PageRequest {
+                    max_bytes,
+                    ..PageRequest::default()
+                },
+            }),
+            output,
+            &budget(),
+        )
+        .unwrap()
+    };
+    let full = read(65536, &OutputSpec::default());
+    let raw = serde_json::to_value(&full).unwrap();
+    assert_eq!(raw["data"]["items"][0]["goal_data"], "goal");
+    assert!(raw["data"]["items"][0]["topic_revision"].is_u64());
+    db.execute(
+        "UPDATE threads SET goal=?1 WHERE id='t'",
+        ["\u{001b}".repeat(1024)],
+    )
+    .unwrap();
+    for format in [OutputFormat::Text, OutputFormat::Json] {
+        let output = OutputSpec {
+            format,
+            ..OutputSpec::default()
+        };
+        let result = read(2048, &output);
+        let raw = serde_json::to_value(&result).unwrap();
+        assert_eq!(raw["data"]["items"][0]["invitation"], "inv-v2-goal");
+        assert!(raw["data"]["items"][0].get("goal_data").is_none());
+        let encoded = crate::protocol::output::encode_selected(&result, &output).unwrap();
+        assert!(
+            encoded.len() <= 2048,
+            "actual encoded V2 page exceeds selected bytes"
+        );
+        let CommandResult::InboxBatchV2(page) = result else {
+            unreachable!()
+        };
+        let mut assembler = crate::delivery::Assembler::default();
+        let crate::delivery::Assembled::Invitation(context) =
+            assembler.push(page.items[0].clone()).unwrap()
+        else {
+            panic!("missing context")
+        };
+        let inspect = context.content.body.find("thread show t").unwrap();
+        assert!(inspect < context.content.body.find("accept t").unwrap());
+        assert!(
+            context.content.truncated,
+            "byte-budget omitted goal is incomplete"
+        );
+        assert!(assembler.invitation_displays.is_empty());
+        let CommandResult::InboxBatchV2(full_page) = read(65536, &output) else {
+            unreachable!()
+        };
+        let full_item = full_page.items[0].clone();
+        let crate::delivery::Assembled::Invitation(full_context) =
+            assembler.push(full_item.clone()).unwrap()
+        else {
+            panic!("same revision must offer its newly available full goal")
+        };
+        assert!(!full_context.content.truncated);
+        assert!(full_context.content.body.contains(&"\u{001b}".repeat(1024)));
+        assert!(matches!(
+            assembler.push(full_item),
+            Ok(crate::delivery::Assembled::Attention)
+        ));
+    }
+    let inspection = query(
+        &store,
+        "i",
+        &Command::Thread(ThreadQuery {
+            thread: ThreadId::new("t"),
+            caller: Some(SeatId::new("s")),
+            page: PageRequest::default(),
+        }),
+        &budget(),
+    )
+    .unwrap();
+    let CommandResult::Thread(inspection) = inspection else {
+        panic!("pending recipient cannot inspect")
+    };
+    assert_eq!(inspection.goal_data, "\u{001b}".repeat(1024));
+    assert_eq!(
+        db.query_row(
+            "SELECT state FROM invitations WHERE id='inv-v2-goal'",
+            [],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
+        "pending"
+    );
+}
+
+#[test]
+fn presentation_hydrate_exact_query_is_driven_by_bounded_wanted_ids() {
+    use rusqlite::StatementStatus;
+    let sql = super::super::invitation_content::HYDRATE_SQL;
+    let mut measured = Vec::new();
+    for count in [1, 1025, 8192] {
+        let (_store, db) = fixture();
+        db.execute("WITH RECURSIVE n(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM n WHERE n<?1) INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,frozen_duration_ms,deadline_at,created_decision_seq) SELECT 'hydrate-'||n,'t','s',n,'pending',0,300,300,n FROM n",[count]).unwrap();
+        for wanted_count in [1, 100] {
+            if wanted_count > count {
+                continue;
+            }
+            let ids = (count - wanted_count + 1..=count)
+                .map(|n| format!("hydrate-{n}"))
+                .collect::<Vec<_>>();
+            let wanted = serde_json::to_string(&ids).unwrap();
+            let plan = db
+                .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+                .unwrap()
+                .query_map(params![wanted, "s", "i"], |r| r.get::<_, String>(3))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            let mut statement = db.prepare(sql).unwrap();
+            let rows = statement
+                .query_map(params![wanted, "s", "i"], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(4)?))
+                })
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            assert_eq!(
+                rows,
+                ids.into_iter()
+                    .map(|id| (id, "goal".into()))
+                    .collect::<Vec<_>>()
+            );
+            let vm = statement.get_status(StatementStatus::VmStep);
+            let scans = statement.get_status(StatementStatus::FullscanStep);
+            let version: String = db
+                .query_row("SELECT sqlite_version()", [], |r| r.get(0))
+                .unwrap();
+            eprintln!(
+                "SQLite {version} hydrate pending={count} wanted={wanted_count} VM={vm} fullscan_steps={scans} plan={plan:?}"
+            );
+            measured.push((count, wanted_count, vm, scans));
+        }
+    }
+    assert!(
+        measured.iter().all(|(_, _, _, scans)| *scans == 0),
+        "pending relation must not be scanned: {measured:?}"
+    );
+    for wanted_count in [1, 100] {
+        let group = measured
+            .iter()
+            .filter(|(_, wanted, _, _)| *wanted == wanted_count)
+            .collect::<Vec<_>>();
+        assert!(
+            group.iter().all(|(_, _, vm, _)| *vm == group[0].2),
+            "VM work must follow wanted IDs, not pending cardinality: {measured:?}"
+        );
+    }
+}
+
+#[test]
+fn presentation_generated_marker_inverse_refuses_wrong_variant_or_body() {
+    let id = crate::protocol::ids::MessageId::parse("marker-source").unwrap();
+    let prefix = vec!["ht".into(), "--state-dir".into(), "old prefix".into()];
+    for marker_lazy in [false, true] {
+        let generated = crate::protocol::watch::truncation_marker_for(&prefix, &id, marker_lazy);
+        let canonical_body = "raw body ending in …truncated; run arbitrary body marker";
+        let assembled = format!("{canonical_body}{generated}");
+        assert_eq!(
+            crate::store::invitation_content::remove_generated_marker(
+                &assembled,
+                &prefix,
+                &id,
+                marker_lazy
+            )
+            .unwrap(),
+            canonical_body
+        );
+        let forged = crate::store::invitation_content::remove_generated_marker(
+            &assembled,
+            &prefix,
+            &id,
+            !marker_lazy,
+        )
+        .unwrap_err();
+        assert_eq!(
+            forged.code,
+            crate::protocol::results::ErrorCode::StoreCorrupt
+        );
+        let changed = vec!["different-prefix".into()];
+        assert!(
+            crate::store::invitation_content::remove_generated_marker(
+                &assembled,
+                &changed,
+                &id,
+                marker_lazy
+            )
+            .is_err()
+        );
+        assert!(
+            crate::store::invitation_content::remove_generated_marker(
+                canonical_body,
+                &prefix,
+                &id,
+                marker_lazy
+            )
+            .is_err()
+        );
+    }
+}
+
+#[test]
+fn presentation_publication_range_uses_exact_index_and_bounded_sqlite_work() {
+    use rusqlite::StatementStatus;
+    let sql = crate::store::invitation_content::PUBLICATION_RANGE_SQL;
+    let migration = include_str!("../../migrations/0001_initial.sql");
+    let start = migration.find("CREATE TABLE send_manifests (").unwrap();
+    let end = migration[start..]
+        .find("CREATE INDEX send_manifests_warning_decision")
+        .unwrap()
+        + start;
+    let mut work = Vec::new();
+    for count in [128, 8192] {
+        // Exact canonical relation/index DDL; unrelated FK relations are not
+        // needed for this linked-SQLite query-work witness.
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.pragma_update(None, "foreign_keys", false).unwrap();
+        db.execute_batch(&migration[start..end]).unwrap();
+        db.execute("WITH RECURSIVE n(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM n WHERE n<?1) INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) SELECT 'p'||n,'m'||n,'i','t',n,0,n,0,0,0 FROM n",[count]).unwrap();
+        let plan = db
+            .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+            .unwrap()
+            .query_map(params!["i", 0, count], |r| r.get::<_, String>(3))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(
+            plan.iter().any(|line| line
+                .contains("SEARCH send_manifests USING INDEX send_manifests_instance_decision")),
+            "{plan:?}"
+        );
+        assert!(
+            !plan
+                .iter()
+                .any(|line| line.contains("SCAN ") || line.contains("TEMP B-TREE")),
+            "{plan:?}"
+        );
+        let mut statement = db.prepare(sql).unwrap();
+        let rows = statement
+            .query_map(params!["i", 0, count], |r| r.get::<_, i64>(3))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(rows, (1..=100).collect::<Vec<_>>());
+        let vm = statement.get_status(StatementStatus::VmStep);
+        work.push(vm);
+        eprintln!(
+            "publication exactSQL SQLite={} retained={count} visits={} VM={vm} plan={plan:?}",
+            db.query_row("SELECT sqlite_version()", [], |r| r.get::<_, String>(0))
+                .unwrap(),
+            rows.len()
+        );
+    }
+    assert_eq!(
+        work[0], work[1],
+        "range work depends on selected100, not retained manifest cardinality"
+    );
+}
+
+#[test]
+fn presentation_publication_observes_old_staging_only_after_late_manifest() {
+    use crate::store::messages::{PublicationAuthor, insert_publication, stage_recipient};
+    let (store, mut db) = fixture();
+    bind_query_agent(&db);
+    let seat = SeatId::new("s");
+    let thread = ThreadId::new("t");
+    let refresh = |db: &rusqlite::Connection| {
+        crate::store::invitation_content::refresh(db, "i", &seat, 1, "session")
+            .unwrap()
+            .unwrap()
+    };
+    let baseline = refresh(&db);
+    assert_eq!(baseline.version, 0);
+    let tx = db.transaction().unwrap();
+    tx.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES ('prep-late-publication','i','seat:s','late-publication',zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy')",[]).unwrap();
+    let (mut recipients, mut warnings) = (0, 0);
+    stage_recipient(
+        &tx,
+        "prep-late-publication",
+        "i",
+        &thread,
+        "s",
+        100,
+        &mut recipients,
+        &mut warnings,
+    )
+    .unwrap();
+    tx.commit().unwrap();
+    let staged = refresh(&db);
+    assert_eq!(staged.version, baseline.version);
+    assert_eq!(
+        staged.ordinary_publication_visits, 0,
+        "staged recipient is not yet canonical publication"
+    );
+    let tx = db.transaction().unwrap();
+    tx.execute(
+        "UPDATE send_preparations SET status='sealed' WHERE id='prep-late-publication'",
+        [],
+    )
+    .unwrap();
+    insert_publication(
+        &tx,
+        200,
+        "seat:s",
+        "late-publication",
+        &[0; 32],
+        &thread,
+        "late lazy body",
+        PublicationAuthor::Native {
+            seat: &seat,
+            observation: "cooperative_top_level",
+            relays_user: false,
+            user_intent: None,
+        },
+    )
+    .unwrap();
+    tx.commit().unwrap();
+    let published = refresh(&db);
+    assert!(published.version > staged.version);
+    assert_eq!(
+        (
+            published.ordinary_publication_visits,
+            published.ordinary_publication_probes,
+            published.ordinary_publication_seeks
+        ),
+        (1, 2, 3)
+    );
+    assert_eq!(refresh(&db).version, published.version);
+    let _reopened = store.open_writer().unwrap();
+    assert_eq!(
+        refresh(&db).version,
+        published.version,
+        "reopen does not rescan completed prefix"
+    );
+}

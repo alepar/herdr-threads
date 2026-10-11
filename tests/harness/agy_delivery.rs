@@ -15,6 +15,10 @@ use crate::{
     protocol::{
         authority::{CallerRole, Harness},
         delivery::{DeliveryConfirmItem, DeliveryConfirmReport, DeliveryPage},
+        delivery::{
+            DeliveryPresentationConfirmationReplyV2, PresentationItemV2,
+            PresentationRenderSelection,
+        },
         ids::{ExecutionId, HostTargetId, NativeSessionId, SeatId},
         results::{ApiError, ErrorCode},
         time::{CallBudget, MonoInstant},
@@ -297,12 +301,14 @@ fn unparseable_missing_and_non_file_transcripts_find_nothing() {
 struct Fake {
     replies: RefCell<VecDeque<Result<CommandResult, ApiError>>>,
     calls: RefCell<Vec<Command>>,
+    modern: bool,
 }
 impl Fake {
     fn with(replies: Vec<Result<CommandResult, ApiError>>) -> Self {
         Self {
             replies: RefCell::new(replies.into()),
             calls: RefCell::default(),
+            modern: false,
         }
     }
     fn calls(&self) -> Vec<Command> {
@@ -321,6 +327,10 @@ impl Fake {
     }
 }
 impl HookStepDaemon for Fake {
+    fn supports_capability(&self, name: &str) -> bool {
+        self.modern && name == PRESENTATION_V2
+    }
+
     fn call(&self, command: Command) -> Result<CommandResult, ApiError> {
         self.calls.borrow_mut().push(command);
         self.replies.borrow_mut().pop_front().unwrap_or_else(|| {
@@ -393,7 +403,13 @@ impl Rig {
             .write_all(bytes)
             .unwrap();
     }
-    fn run(&self, event: &str, payload: Value, fake: Option<&Fake>, rt: &Runtime) -> Vec<u8> {
+    fn prepare(
+        &self,
+        event: &str,
+        payload: Value,
+        fake: Option<&Fake>,
+        rt: &Runtime,
+    ) -> HookStepOutput {
         let mut payload = payload;
         payload["conversationId"] = json!(CONV);
         payload["transcriptPath"] = json!(self.transcript.to_str().unwrap());
@@ -408,7 +424,7 @@ impl Rig {
             &input,
         )
         .unwrap();
-        run_step(
+        run_step_with_completion(
             &HookStepContext {
                 input: &input,
                 decoded: &decoded,
@@ -420,6 +436,20 @@ impl Rig {
             },
             rt,
         )
+    }
+    fn run(&self, event: &str, payload: Value, fake: Option<&Fake>, rt: &Runtime) -> Vec<u8> {
+        let prepared = self.prepare(event, payload, fake, rt);
+        // These legacy behavior fixtures model a successful native emission.
+        // The explicit un-emitted regression calls HookStep::run directly.
+        if let (Some(payload), Some(fake)) = (prepared.completion, fake) {
+            complete_step(
+                &payload.0,
+                fake,
+                &self.state,
+                Instant::now() + Duration::from_secs(30),
+            );
+        }
+        prepared.stdout
     }
     fn pre(&self, invocation: u64, fake: &Fake, rt: &Runtime) -> Vec<u8> {
         self.run(
@@ -496,6 +526,60 @@ fn nothing_is_printed_for_unchanged_refusals_and_daemon_errors() {
 }
 
 // --- the per-conversation state file ----------------------------------------------------------
+
+/// Returning hook bytes is only preparation: the CLI has not written or flushed them.
+/// Kills: eagerly committing a page's seen version or injected ids in HookStep::run,
+/// which makes a broken stdout pipe look like a successful delivery on the next turn.
+#[test]
+fn hook_step_does_not_commit_offered_page_before_stdout_emission() {
+    let rig = Rig::new();
+    let fake = offering();
+    let input = HookInput {
+        bytes: serde_json::to_vec(&json!({
+            "conversationId": CONV,
+            "transcriptPath": rig.transcript.to_str().unwrap(),
+            "invocationNum": 0,
+            "initialNumSteps": 1,
+        }))
+        .unwrap(),
+        registered_event: Some("PreInvocation".to_owned()),
+    };
+    let decoded = decode(
+        &AgyAdmission {
+            step: InjectionStep::SystemMessage,
+        },
+        &input,
+    )
+    .unwrap();
+    let output = AgyHookStep.run(&HookStepContext {
+        input: &input,
+        decoded: &decoded,
+        claim: Some(claim(0)),
+        daemon: Some(&fake),
+        state_dir: Some(rig.state.clone()),
+        command_prefix: vec!["herdr-threads".into()],
+        deadline: Instant::now() + Duration::from_secs(30),
+    });
+    let native: Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(
+        native["injectSteps"][0]["systemMessage"]["systemMessage"],
+        TEXT
+    );
+    // Nothing consumes or emits `output`. In particular, no stdout completion occurred.
+    let (state, _) = ConversationState::load(&rig.state_file());
+    assert_eq!(
+        state.seen_attention_version, None,
+        "an un-emitted page must remain eligible on the next pull"
+    );
+    assert!(
+        state.injected.is_empty(),
+        "un-emitted ids must not become transcript-confirm candidates"
+    );
+    assert!(
+        !state.injected_this_turn,
+        "preparing output cannot spend a successful injection turn"
+    );
+}
 
 #[test]
 fn the_state_file_is_created_after_a_pull_and_deleted_on_session_mismatch() {
@@ -1400,7 +1484,7 @@ mod daemon {
                 &input,
             )
             .unwrap();
-            run_step(
+            let prepared = run_step_with_completion(
                 &HookStepContext {
                     input: &input,
                     decoded: &decoded,
@@ -1411,7 +1495,16 @@ mod daemon {
                     deadline: Instant::now() + Duration::from_secs(30),
                 },
                 &rt,
-            )
+            );
+            if let Some(payload) = prepared.completion {
+                complete_step(
+                    &payload.0,
+                    daemon,
+                    &rig.state,
+                    Instant::now() + Duration::from_secs(30),
+                );
+            }
+            prepared.stdout
         };
         let up = Direct(&world.service, false);
 
@@ -1547,6 +1640,251 @@ mod daemon {
         assert_eq!(confirm(&second, "op-3"), DeliveryConfirmOutcome::Settled);
         assert_eq!(world.receipt().0, "acked");
     }
+    fn canonical_v2_allocations_fit_actual_native_codec(user: bool) {
+        use crate::protocol::{
+            commands::{CreateThread, InvitationConfirmation, Invite},
+            delivery::DeliveryPageV2,
+        };
+        let world = world();
+        let recipient = world.check_in();
+        world.db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('origin','i','resolved','native','p-origin',0,0,0)", []).unwrap();
+        world.db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','p-origin','b',1,0,1,'fresh','unknown','unknown',0,0,'term-origin','inc-origin','coherent_enumeration',1)", []).unwrap();
+        let mut origin = claim(0);
+        origin.seat = SeatId::new("origin");
+        origin.target = HostTargetId::new("p-origin");
+        origin.native_session = NativeSessionId::new("origin-conversation");
+        origin.execution = ExecutionId::new("00000000-0000-4000-8000-000000000009");
+        let CommandResult::CheckedIn(origin) = world
+            .service
+            .handle(
+                Command::CheckIn(CheckIn {
+                    mode: CheckInMode::Lifecycle {
+                        expected_binding_generation: 0,
+                    },
+                    claim: origin,
+                    operation: OperationId::new("origin-checkin"),
+                }),
+                peer(),
+                &budget(),
+            )
+            .unwrap()
+        else {
+            panic!("origin check-in")
+        };
+        let origin = origin.context;
+        //300NUL per field is a supported public canonical producer: unlike the
+        // old scripted1024NUL fixture, the released4096byte event admission fits.
+        let topic = "\0".repeat(300);
+        let goal = "\0".repeat(300);
+        for n in 0..24 {
+            let CommandResult::ThreadCreated(thread) = world
+                .service
+                .handle(
+                    Command::CreateThread(CreateThread {
+                        name: None,
+                        topic: topic.clone(),
+                        goal: goal.clone(),
+                        operation: OperationId::new(format!("escaped-create-{n}")),
+                        claim: origin.clone(),
+                    }),
+                    peer(),
+                    &budget(),
+                )
+                .unwrap()
+            else {
+                panic!("created canonical thread")
+            };
+            world
+                .service
+                .handle(
+                    Command::Invite(Invite {
+                        confirmation: Some(InvitationConfirmation::Lazy),
+                        thread,
+                        seat: recipient.seat.clone(),
+                        deadline_millis: None,
+                        operation: OperationId::new(format!("escaped-invite-{n}")),
+                        claim: origin.clone(),
+                    }),
+                    peer(),
+                    &budget(),
+                )
+                .unwrap();
+        }
+        struct Canonical<'a> {
+            service: &'a DomainService,
+            page: RefCell<Option<DeliveryPageV2>>,
+        }
+        impl HookStepDaemon for Canonical<'_> {
+            fn supports_capability(&self, name: &str) -> bool {
+                name == PRESENTATION_V2
+            }
+            fn call(&self, command: Command) -> Result<CommandResult, ApiError> {
+                // The external transport is in-process, but every deciding pull
+                // and confirmation is the actual production DomainService.
+                let result = self.service.handle(command, peer(), &budget())?;
+                let result_bytes = serde_json::to_vec(&result).unwrap().len();
+                let response = crate::protocol::wire::WireResponse {
+                    version: crate::protocol::wire::PROTOCOL_VERSION,
+                    request_id: "\"".repeat(128),
+                    instance: uuid::Uuid::from_u128(1).to_string(),
+                    daemon_boot: uuid::Uuid::from_u128(2).to_string(),
+                    result: Ok(result.clone()),
+                };
+                let framed = crate::protocol::wire::encode_wire_response(&response).unwrap();
+                assert!(
+                    framed.len() - result_bytes <= 512
+                        && framed.len() <= crate::protocol::wire::MAX_WIRE_FRAME_BYTES,
+                    "actual framed pull AND explicit Confirm reply"
+                );
+                assert_eq!(
+                    u32::from_be_bytes(framed[..4].try_into().unwrap()) as usize,
+                    framed.len() - 4
+                );
+                if let CommandResult::DeliveryPulledV2(DeliveryPullReplyV2::Page(page)) = &result {
+                    *self.page.borrow_mut() = Some(page.clone());
+                }
+                Ok(result)
+            }
+        }
+        let daemon = Canonical {
+            service: &world.service,
+            page: RefCell::new(None),
+        };
+        let rig = Rig::new();
+        let identity = ident("a");
+        if user {
+            let mut record = DowngradeRecord::blank(&identity);
+            record.downgrade("abort", 1000);
+            save_downgrade(&rig.state, &record);
+        }
+        let input = HookInput {
+            bytes: serde_json::to_vec(&json!({"conversationId": CONV, "transcriptPath": rig.transcript.to_str().unwrap(), "invocationNum": 0, "initialNumSteps": 1})).unwrap(),
+            registered_event: Some("PreInvocation".into()),
+        };
+        let decoded = decode(
+            &AgyAdmission {
+                step: InjectionStep::SystemMessage,
+            },
+            &input,
+        )
+        .unwrap();
+        let rt = runtime(1001, &identity);
+        let mut full = BTreeSet::new();
+        let mut largest = 0;
+        for _ in 0..40 {
+            daemon.page.borrow_mut().take();
+            let prepared = run_step_with_completion(
+                &HookStepContext {
+                    input: &input,
+                    decoded: &decoded,
+                    claim: Some(recipient.clone()),
+                    daemon: Some(&daemon),
+                    state_dir: Some(rig.state.clone()),
+                    command_prefix: vec!["herdr-threads".into()],
+                    deadline: Instant::now() + Duration::from_secs(30),
+                },
+                &rt,
+            );
+            assert!(prepared.diagnostic.is_none(), "{:?}", prepared.diagnostic);
+            let Some(page) = daemon.page.borrow_mut().take() else {
+                continue;
+            };
+            let result = CommandResult::DeliveryPulledV2(
+                crate::protocol::delivery::DeliveryPullReplyV2::Page(page.clone()),
+            );
+            let result_bytes = serde_json::to_vec(&result).unwrap().len();
+            let response = crate::protocol::wire::WireResponse {
+                version: crate::protocol::wire::PROTOCOL_VERSION,
+                request_id: "\"".repeat(128),
+                instance: uuid::Uuid::from_u128(1).to_string(),
+                daemon_boot: uuid::Uuid::from_u128(2).to_string(),
+                result: Ok(result),
+            };
+            let response_bytes = crate::protocol::wire::encode_wire_response(&response).unwrap();
+            assert!(
+                serde_json::from_slice::<crate::protocol::wire::WireResponse>(&response_bytes[4..])
+                    .is_ok(),
+                "actual maximum escaped valid envelope decodes"
+            );
+            assert!(
+                response_bytes.len() - result_bytes <= 512,
+                "actual wrapper reserve includes max request ID escaping"
+            );
+            assert!(
+                result_bytes <= crate::delivery::presentation::RPC_RESULT_LIMIT
+                    && response_bytes.len() <= crate::protocol::wire::MAX_WIRE_FRAME_BYTES
+            );
+            assert_eq!(page.output_bytes as usize, prepared.stdout.len());
+            assert!(prepared.stdout.len() <= 65_536, "actual final native bytes");
+            largest = largest.max(prepared.stdout.len());
+            if !page.items.is_empty() {
+                let native: Value = serde_json::from_slice(&prepared.stdout).unwrap();
+                let text = if user {
+                    native["injectSteps"][0]["userMessage"].as_str().unwrap()
+                } else {
+                    native["injectSteps"][0]["systemMessage"]["systemMessage"]
+                        .as_str()
+                        .unwrap()
+                };
+                assert_eq!(text, page.text);
+            }
+            for item in &page.items {
+                if let PresentationItemV2::Invitation { id, content } = item
+                    && !content.truncated
+                {
+                    assert!(content.body.contains(&topic) && content.body.contains(&goal));
+                    full.insert(id.as_str().to_owned());
+                }
+            }
+            // Real write+flush of the native bytes precedes actual canonical
+            // confirmation. The process transport/write-failure seam has its
+            // separate neutral CLI controls; this is canonical codec integration.
+            let mut stdout = Vec::new();
+            use std::io::Write;
+            stdout.write_all(&prepared.stdout).unwrap();
+            stdout.flush().unwrap();
+            assert_eq!(stdout, prepared.stdout);
+            if let Some(payload) = prepared.completion {
+                complete_step(
+                    &payload.0,
+                    &daemon,
+                    &rig.state,
+                    Instant::now() + Duration::from_secs(30),
+                );
+            }
+            if full.len() == 24 {
+                break;
+            }
+        }
+        assert_eq!(
+            full.len(),
+            24,
+            "every canonical invitation becomes full through bounded V2 pages"
+        );
+        assert!(
+            largest > 32_768,
+            "exercise real aggregate escaping, not just tiny pages"
+        );
+        let pending: i64 = world.db.query_row("SELECT count(*) FROM invitations WHERE seat_id='s' AND state='pending' AND confirmation='lazy'", [], |row| row.get(0)).unwrap();
+        assert_eq!(
+            pending, 24,
+            "emission confirmation is not invitation acceptance"
+        );
+        assert_eq!(
+            world.receipt().0,
+            "pending",
+            "presentation confirmation is not message ACK"
+        );
+    }
+
+    #[test]
+    fn canonical_v2_system_allocated_pages_fit_actual_native_codec() {
+        canonical_v2_allocations_fit_actual_native_codec(false);
+    }
+    #[test]
+    fn canonical_v2_downgraded_user_allocated_pages_fit_actual_native_codec() {
+        canonical_v2_allocations_fit_actual_native_codec(true);
+    }
 }
 
 // --- stale tracked ids and old state files (ht-poh.36) ---------------------------------------------
@@ -1666,5 +2004,1049 @@ fn an_existing_conversation_does_not_prune() {
     assert!(
         old.exists(),
         "pruning runs only when a file is first created"
+    );
+}
+/// Preparing a probation injection cannot consume the one retry if stdout never reaches agy.
+#[test]
+fn preparing_probation_does_not_open_it_before_emission() {
+    let rig = Rig::new();
+    let identity = ident("a");
+    let mut record = DowngradeRecord::blank(&identity);
+    record.downgrade("abort", 1000);
+    save_downgrade(&rig.state, &record);
+    let input = HookInput {
+        bytes: serde_json::to_vec(&json!({
+            "conversationId": CONV,
+            "transcriptPath": rig.transcript.to_str().unwrap(),
+            "invocationNum": 0,
+            "initialNumSteps": 1,
+        }))
+        .unwrap(),
+        registered_event: Some("PreInvocation".to_owned()),
+    };
+    let decoded = decode(
+        &AgyAdmission {
+            step: InjectionStep::SystemMessage,
+        },
+        &input,
+    )
+    .unwrap();
+    let fake = offering();
+    let output = run_step(
+        &HookStepContext {
+            input: &input,
+            decoded: &decoded,
+            claim: Some(claim(0)),
+            daemon: Some(&fake),
+            state_dir: Some(rig.state.clone()),
+            command_prefix: vec!["herdr-threads".into()],
+            deadline: Instant::now() + Duration::from_secs(30),
+        },
+        &runtime(1000 + 24 * HOUR, &identity),
+    );
+    assert_eq!(output, fixture_bytes("output-system-message.json"));
+    // Deliberately no write or flush of the returned native bytes.
+    assert_eq!(
+        rig.record(),
+        Some(record),
+        "un-emitted probation must remain available"
+    );
+}
+fn native_escaping_invitation_page() -> String {
+    use crate::delivery::invitation::InvitationContext;
+    let items: Vec<_> = (0..8)
+        .map(|n| {
+            InvitationContext {
+                id: crate::protocol::ids::InvitationId::new(format!("invite-{n}")),
+                thread: crate::protocol::ids::ThreadId::new(format!("thread-{n}")),
+                topic: "\0".repeat(1024),
+                goal: "\0".repeat(1024),
+                episode: 1,
+                topic_revision: 1,
+                command_epoch: 0,
+                confirmation: Some(crate::protocol::commands::InvitationConfirmation::Lazy),
+                deadline: None,
+                required: None,
+            }
+            .render(&["herdr-threads".into()])
+        })
+        .collect();
+    crate::delivery::frame(&items)
+}
+
+#[test]
+fn historical_system_message_scripted_page_preserves_native_bytes_and_oversize_geometry() {
+    let rig = Rig::new();
+    let text = native_escaping_invitation_page();
+    assert!(text.len() < 65_536, "supported canonical plaintext page");
+    let output = rig.pre(
+        0,
+        &Fake::with(vec![page(&[], &text, 11)]),
+        &runtime(1000, &ident("a")),
+    );
+    let native: Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(
+        native["injectSteps"][0]["systemMessage"]["systemMessage"],
+        text
+    );
+    // Corrected scope: this is a handcrafted V1 daemon page, not a supported
+    // canonical V2 allocation. Preserve historical bytes; actual V2 allocation
+    // tests below own the final64KiB guarantee.
+    assert_eq!(output.len(), 100_333);
+}
+
+#[test]
+fn historical_downgraded_user_message_scripted_page_preserves_native_bytes_and_oversize_geometry() {
+    let rig = Rig::new();
+    let identity = ident("a");
+    let mut record = DowngradeRecord::blank(&identity);
+    record.downgrade("abort", 1000);
+    save_downgrade(&rig.state, &record);
+    let text = native_escaping_invitation_page();
+    assert!(text.len() < 65_536, "supported canonical plaintext page");
+    let output = rig.pre(
+        0,
+        &Fake::with(vec![page(&[], &text, 11)]),
+        &runtime(1001, &identity),
+    );
+    let native: Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(native["injectSteps"][0]["userMessage"], text);
+    assert_eq!(output.len(), 100_313);
+}
+
+fn modern_items() -> Vec<PresentationItemV2> {
+    vec![
+        PresentationItemV2::Message {
+            id: MessageId::new("msg-a1"),
+            lazy: false,
+            content: crate::protocol::watch::WatchMessage {
+                thread: crate::protocol::ids::ThreadId::new("t1"),
+                thread_name: None,
+                sender: Some(SeatId::new("s2")),
+                sender_name: None,
+                author_role: None,
+                relays_user: false,
+                user_intent: None,
+                body: "hello \"q\"".into(),
+                body_len: 9,
+                truncated: false,
+                ack_required: true,
+            },
+        },
+        PresentationItemV2::Attention {
+            epoch: "1".into(),
+            attention_version: 11,
+            text: "herdr-threads: attention".into(),
+        },
+    ]
+}
+fn modern_reply(
+    items: Vec<PresentationItemV2>,
+    token: Option<&str>,
+    version: u64,
+    step: InjectionStep,
+    offered: Vec<MessageId>,
+) -> Result<CommandResult, ApiError> {
+    use crate::protocol::delivery::DeliveryPageV2;
+    let text = crate::delivery::presentation::presentation_hook_text(&items);
+    let bytes = serde_json::to_vec(&step.render(&text)).unwrap();
+    Ok(CommandResult::DeliveryPulledV2(DeliveryPullReplyV2::Page(
+        DeliveryPageV2 {
+            attention_version: version,
+            output_bytes: if items.is_empty() {
+                0
+            } else {
+                bytes.len() as u32
+            },
+            render: PresentationRenderSelection::Hook {
+                selector: step.presentation_selector(),
+            },
+            text,
+            offered,
+            truncated: vec![],
+            more: false,
+            presentation_token: token.map(str::to_owned),
+            emitted_controls: crate::delivery::presentation::emitted_controls(&items),
+            items,
+        },
+    )))
+}
+fn modern_page(token: &str) -> Result<CommandResult, ApiError> {
+    modern_reply(
+        modern_items(),
+        Some(token),
+        11,
+        InjectionStep::SystemMessage,
+        vec![MessageId::new("msg-a1")],
+    )
+}
+fn modern_system_output() -> Vec<u8> {
+    serde_json::to_vec(&InjectionStep::SystemMessage.render(
+        &crate::delivery::presentation::presentation_hook_text(&modern_items()),
+    ))
+    .unwrap()
+}
+fn modern_fake(replies: Vec<Result<CommandResult, ApiError>>) -> Fake {
+    let mut fake = Fake::with(replies);
+    fake.modern = true;
+    fake
+}
+
+#[test]
+fn postflush_confirmation_loss_keeps_state_replayable_after_restart() {
+    let rig = Rig::new();
+    let rt = runtime(1000, &ident("a"));
+    let token = "a".repeat(32);
+    let failed = modern_fake(vec![
+        modern_page(&token),
+        Err(ApiError::new(
+            ErrorCode::InvalidRequest,
+            "lost confirm reply",
+        )),
+    ]);
+    let prepared = rig.prepare(
+        "PreInvocation",
+        json!({"invocationNum": 0}),
+        Some(&failed),
+        &rt,
+    );
+    assert_eq!(prepared.stdout, modern_system_output());
+    assert!(!rig.state_file().exists());
+    complete_step(
+        &prepared.completion.unwrap().0,
+        &failed,
+        &rig.state,
+        Instant::now() + Duration::from_secs(30),
+    );
+    assert!(
+        !rig.state_file().exists(),
+        "lost confirmation cannot commit seen/injected hints"
+    );
+    // A fresh producer invocation has no saved completion. The canonical outbox
+    // supplies the same token and content; already-confirmed replay is legitimate.
+    let restarted = modern_fake(vec![
+        modern_page(&token),
+        Ok(CommandResult::DeliveryPresentationConfirmedV2(
+            DeliveryPresentationConfirmationReplyV2 {
+                status: DeliveryPresentationConfirmationV2::AlreadyConfirmed,
+                acknowledged_controls: crate::delivery::presentation::emitted_controls(
+                    &modern_items(),
+                ),
+            },
+        )),
+    ]);
+    let replay = rig.prepare(
+        "PreInvocation",
+        json!({"invocationNum": 0}),
+        Some(&restarted),
+        &rt,
+    );
+    assert_eq!(replay.stdout, prepared.stdout);
+    complete_step(
+        &replay.completion.unwrap().0,
+        &restarted,
+        &rig.state,
+        Instant::now() + Duration::from_secs(30),
+    );
+    assert_eq!(rig.conversation().seen_attention_version, Some(11));
+    assert_eq!(rig.conversation().injected[0].id, "msg-a1");
+    for fake in [&failed, &restarted] {
+        let calls = fake.calls();
+        assert!(
+            matches!(&calls[0], Command::DeliveryPullV2(pull) if pull.consumer == PresentationConsumer::Hook && pull.presentation_lease.is_none() && pull.claim == claim(0))
+        );
+        assert!(
+            matches!(&calls[1], Command::DeliveryPresentationConfirmV2(confirm) if confirm.token == token && confirm.claim == claim(0) && confirm.presentation_lease.is_none() && confirm.emitted_controls == crate::delivery::presentation::emitted_controls(&modern_items()))
+        );
+        assert_eq!(
+            calls.len(),
+            2,
+            "presentation completion never ACKs or accepts"
+        );
+    }
+}
+
+#[test]
+fn stale_confirmation_and_expired_completion_never_save_injected_state() {
+    for result in [
+        DeliveryPresentationConfirmationV2::StaleBinding,
+        DeliveryPresentationConfirmationV2::NotCurrentPage,
+    ] {
+        let rig = Rig::new();
+        let fake = modern_fake(vec![
+            modern_page(&"a".repeat(32)),
+            Ok(CommandResult::DeliveryPresentationConfirmedV2(
+                DeliveryPresentationConfirmationReplyV2 {
+                    status: result,
+                    acknowledged_controls: vec![],
+                },
+            )),
+        ]);
+        let prepared = rig.prepare(
+            "PreInvocation",
+            json!({"invocationNum": 0}),
+            Some(&fake),
+            &runtime(1000, &ident("a")),
+        );
+        complete_step(
+            &prepared.completion.unwrap().0,
+            &fake,
+            &rig.state,
+            Instant::now() + Duration::from_secs(30),
+        );
+        assert!(!rig.state_file().exists());
+    }
+    let rig = Rig::new();
+    let fake = offering();
+    let prepared = rig.prepare(
+        "PreInvocation",
+        json!({"invocationNum": 0}),
+        Some(&fake),
+        &runtime(1000, &ident("a")),
+    );
+    complete_step(
+        &prepared.completion.unwrap().0,
+        &fake,
+        &rig.state,
+        Instant::now() - Duration::from_millis(1),
+    );
+    assert!(!rig.state_file().exists());
+    assert_eq!(fake.calls().len(), 1, "expired completion sends no command");
+}
+
+#[test]
+fn postflush_state_hint_does_not_overwrite_an_observed_concurrent_change() {
+    let rig = Rig::new();
+    let fake = offering();
+    let prepared = rig.prepare(
+        "PreInvocation",
+        json!({"invocationNum": 0}),
+        Some(&fake),
+        &runtime(1000, &ident("a")),
+    );
+    let mut changed = ConversationState {
+        turn: 9,
+        seen_attention_version: Some(77),
+        ..Default::default()
+    };
+    changed.save(&rig.state_file());
+    let before = std::fs::read(rig.state_file()).unwrap();
+    complete_step(
+        &prepared.completion.unwrap().0,
+        &fake,
+        &rig.state,
+        Instant::now() + Duration::from_secs(30),
+    );
+    assert_eq!(std::fs::read(rig.state_file()).unwrap(), before);
+}
+
+#[test]
+fn malformed_or_oversized_completion_is_inert() {
+    let rig = Rig::new();
+    let fake = Fake::default();
+    for payload in [vec![b'x'; COMPLETION_MAX_BYTES + 1], b"{}".to_vec()] {
+        complete_step(
+            &payload,
+            &fake,
+            &rig.state,
+            Instant::now() + Duration::from_secs(30),
+        );
+    }
+    assert!(!rig.state_file().exists());
+    assert!(fake.calls().is_empty());
+}
+
+#[test]
+fn probation_opening_is_deferred_until_successful_completion() {
+    let rig = Rig::new();
+    let identity = ident("a");
+    let mut record = DowngradeRecord::blank(&identity);
+    record.downgrade("abort", 1000);
+    save_downgrade(&rig.state, &record);
+    let rt = runtime(1000 + 24 * HOUR, &identity);
+    let fake = offering();
+    let prepared = rig.prepare(
+        "PreInvocation",
+        json!({"invocationNum": 0}),
+        Some(&fake),
+        &rt,
+    );
+    assert_eq!(prepared.stdout, fixture_bytes("output-system-message.json"));
+    assert_eq!(rig.record(), Some(record.clone()));
+    assert!(!rig.state_file().exists());
+    // Dropped output or an expired completion cannot spend the retry.
+    let payload = prepared.completion.unwrap();
+    complete_step(
+        &payload.0,
+        &fake,
+        &rig.state,
+        Instant::now() - Duration::from_millis(1),
+    );
+    assert_eq!(rig.record(), Some(record));
+    assert!(!rig.state_file().exists());
+    complete_step(
+        &payload.0,
+        &fake,
+        &rig.state,
+        Instant::now() + Duration::from_secs(30),
+    );
+    let saved = rig.record().unwrap();
+    assert!(saved.probation);
+    assert_eq!(saved.probation_at, Some(1000 + 24 * HOUR));
+    assert_eq!(rig.conversation().injected[0].id, "msg-a1");
+}
+
+#[test]
+fn probation_confirmation_loss_keeps_the_retry_available() {
+    let rig = Rig::new();
+    let identity = ident("a");
+    let mut record = DowngradeRecord::blank(&identity);
+    record.downgrade("abort", 1000);
+    save_downgrade(&rig.state, &record);
+    let rt = runtime(1000 + 24 * HOUR, &identity);
+    let token = "a".repeat(32);
+    let fake = modern_fake(vec![
+        modern_page(&token),
+        Err(ApiError::new(
+            ErrorCode::InvalidRequest,
+            "confirmation lost",
+        )),
+    ]);
+    let prepared = rig.prepare(
+        "PreInvocation",
+        json!({"invocationNum": 0}),
+        Some(&fake),
+        &rt,
+    );
+    complete_step(
+        &prepared.completion.unwrap().0,
+        &fake,
+        &rig.state,
+        Instant::now() + Duration::from_secs(30),
+    );
+    assert_eq!(rig.record(), Some(record));
+    assert!(!rig.state_file().exists());
+    let replay = modern_fake(vec![
+        modern_page(&token),
+        Ok(CommandResult::DeliveryPresentationConfirmedV2(
+            DeliveryPresentationConfirmationReplyV2 {
+                status: DeliveryPresentationConfirmationV2::Confirmed,
+                acknowledged_controls: crate::delivery::presentation::emitted_controls(
+                    &modern_items(),
+                ),
+            },
+        )),
+    ]);
+    let prepared = rig.prepare(
+        "PreInvocation",
+        json!({"invocationNum": 0}),
+        Some(&replay),
+        &rt,
+    );
+    assert_eq!(prepared.stdout, modern_system_output());
+    complete_step(
+        &prepared.completion.unwrap().0,
+        &replay,
+        &rig.state,
+        Instant::now() + Duration::from_secs(30),
+    );
+    assert!(rig.record().unwrap().probation);
+}
+
+#[test]
+fn probation_completion_preserves_an_observed_changed_downgrade_hint() {
+    let rig = Rig::new();
+    let identity = ident("a");
+    let mut record = DowngradeRecord::blank(&identity);
+    record.downgrade("abort", 1000);
+    save_downgrade(&rig.state, &record);
+    let fake = offering();
+    let prepared = rig.prepare(
+        "PreInvocation",
+        json!({"invocationNum": 0}),
+        Some(&fake),
+        &runtime(1000 + 24 * HOUR, &identity),
+    );
+    record.downgrade("misses", 2000);
+    save_downgrade(&rig.state, &record);
+    let before = std::fs::read(downgrade_path(&rig.state)).unwrap();
+    complete_step(
+        &prepared.completion.unwrap().0,
+        &fake,
+        &rig.state,
+        Instant::now() + Duration::from_secs(30),
+    );
+    assert_eq!(std::fs::read(downgrade_path(&rig.state)).unwrap(), before);
+    assert!(!rig.state_file().exists());
+}
+
+#[test]
+fn expired_probation_maintenance_remains_independent_of_page_emission() {
+    let rig = Rig::new();
+    let identity = ident("a");
+    let mut record = DowngradeRecord::blank(&identity);
+    record.downgrade("abort", 0);
+    record.probation = true;
+    record.probation_at = Some(1000);
+    save_downgrade(&rig.state, &record);
+    let now = 1000 + 24 * HOUR;
+    let prepared = rig.prepare(
+        "PreInvocation",
+        json!({"invocationNum": 0}),
+        Some(&offering()),
+        &runtime(now, &identity),
+    );
+    assert_eq!(prepared.stdout, fixture_bytes("output-user-message.json"));
+    let saved = rig.record().unwrap();
+    assert!(!saved.probation);
+    assert_eq!(saved.downgraded_at, Some(now));
+    assert!(
+        !rig.state_file().exists(),
+        "new page state is still emission-coupled"
+    );
+}
+
+#[test]
+fn typed_completion_fits_two_maximal_admitted_records_and_escaped_claim_fields() {
+    let mut state = ConversationState {
+        seen_attention_version: Some(u64::MAX),
+        seen_presentation_epoch: Some(u64::MAX.to_string()),
+        turn: u64::MAX,
+        injected_this_turn: true,
+        generation: Some(u64::MAX),
+        injected: (0..MAX_TRACKED)
+            .map(|n| Injected {
+                id: format!("m{n}"),
+                offset: u64::MAX,
+                turn: u64::MAX,
+                user: true,
+            })
+            .collect(),
+        ..Default::default()
+    };
+    // Fill the actual serializer's admitted4KiB state with printable opaque IDs.
+    for n in 0..state.injected.len() {
+        while state.injected[n].id.len() < 128 {
+            state.injected[n].id.push('"');
+            if serde_json::to_vec(&state).unwrap().len() > MAX_STATE_BYTES {
+                state.injected[n].id.pop();
+                break;
+            }
+        }
+    }
+    if serde_json::to_vec(&state).unwrap().len() < MAX_STATE_BYTES {
+        let entry = state
+            .injected
+            .iter_mut()
+            .find(|entry| entry.id.len() < 128)
+            .unwrap();
+        entry.id.push('x');
+    }
+    assert_eq!(state.serialize_bounded().len(), MAX_STATE_BYTES);
+    assert_eq!(state.injected.len(), MAX_TRACKED);
+    let mut record = DowngradeRecord::blank(&Identity {
+        path: "/".into(),
+        inode: u64::MAX,
+        size: u64::MAX,
+        mtime_ns: i64::MAX,
+    });
+    record.downgrade("abort", u64::MAX);
+    record.probation = true;
+    record.probation_at = Some(u64::MAX);
+    let mut quote = true;
+    while serde_json::to_vec(&record).unwrap().len() + 2 <= MAX_STATE_BYTES {
+        // Both characters need escaping; these are admitted historical format
+        // bytes, not a claim that an OS resolves a path at this limit.
+        record.identity.path.push(if quote { '"' } else { '\\' });
+        quote = !quote;
+    }
+    if serde_json::to_vec(&record).unwrap().len() < MAX_STATE_BYTES {
+        record.identity.path.push('x');
+    }
+    assert_eq!(serde_json::to_vec(&record).unwrap().len(), MAX_STATE_BYTES);
+    let mut original = claim(u64::MAX);
+    original.instance = "\0".repeat(128); // String field is checked, never assumed to be an ID type.
+    original.seat = SeatId::new("\"\\".repeat(64));
+    original.execution = ExecutionId::new("\"\\".repeat(64));
+    original.target = HostTargetId::new("\"\\".repeat(64));
+    original.native_session = NativeSessionId::new("a".repeat(128));
+    let mut completion = EmissionCompletion {
+        state,
+        probation: Some(record),
+        previous_probation_digest: Some("f".repeat(64)),
+        conversation_key: hex_digest(original.native_session.as_str().as_bytes()),
+        claim: original,
+        previous_digest: Some("f".repeat(64)),
+        presentation_token: Some("a".repeat(32)),
+        emitted_controls: (0..32)
+            .map(|n| PresentationControlStampV2::Attention {
+                epoch: (u64::MAX - n).to_string(),
+                version: u64::MAX,
+            })
+            .collect(),
+        now_ms: u64::MAX,
+        existed: true,
+    };
+    assert!(valid_completion(&completion));
+    let encoded = serde_json::to_vec(&completion).unwrap();
+    assert!(
+        encoded.len() <= COMPLETION_MAX_BYTES,
+        "actual encoded payload {}",
+        encoded.len()
+    );
+    let native: Value = serde_json::from_slice(&encoded).unwrap();
+    assert!(native["state"].is_object() && native["probation"].is_object());
+    assert!(valid_completion(
+        &serde_json::from_slice::<EmissionCompletion>(&encoded).unwrap()
+    ));
+    completion.claim.instance.push('x');
+    assert!(
+        !valid_completion(&completion),
+        "instance String cap is enforced"
+    );
+    completion.claim.instance.pop();
+    completion
+        .probation
+        .as_mut()
+        .unwrap()
+        .identity
+        .path
+        .push('x');
+    assert!(
+        !valid_completion(&completion),
+        "probation's own4KiB cap is enforced"
+    );
+}
+
+fn passive_invitation_item() -> PresentationItemV2 {
+    PresentationItemV2::Invitation {
+        id: crate::protocol::ids::InvitationId::new("i-passive"),
+        content: crate::protocol::watch::WatchInvitation {
+            thread: crate::protocol::ids::ThreadId::new("t-passive"),
+            thread_name: None,
+            body: "topic\ngoal: goal\nnext: herdr-threads accept t-passive".into(),
+            truncated: false,
+            wakes: false,
+            topic_revision: Some("1".into()),
+            command_context_epoch: Some("0".into()),
+        },
+    }
+}
+
+#[test]
+fn v2_invitation_only_empty_and_unchanged_pages_never_cache_current_metadata_as_seen() {
+    let rig = Rig::new();
+    let mut state = ConversationState {
+        seen_attention_version: Some(55),
+        seen_presentation_epoch: Some("9007199254740993".into()),
+        generation: Some(0),
+        ..Default::default()
+    };
+    state.save(&rig.state_file());
+    let token = "a".repeat(32);
+    let fake = modern_fake(vec![
+        modern_reply(
+            vec![passive_invitation_item()],
+            Some(&token),
+            999,
+            InjectionStep::SystemMessage,
+            vec![],
+        ),
+        Ok(CommandResult::DeliveryPresentationConfirmedV2(
+            DeliveryPresentationConfirmationReplyV2 {
+                status: DeliveryPresentationConfirmationV2::AlreadyConfirmed,
+                acknowledged_controls: vec![],
+            },
+        )),
+    ]);
+    let prepared = rig.prepare(
+        "PreInvocation",
+        json!({"invocationNum": 0}),
+        Some(&fake),
+        &runtime(1000, &ident("a")),
+    );
+    assert!(!prepared.stdout.is_empty());
+    complete_step(
+        &prepared.completion.unwrap().0,
+        &fake,
+        &rig.state,
+        Instant::now() + Duration::from_secs(30),
+    );
+    assert_eq!(rig.conversation().seen_attention_version, Some(55));
+    assert_eq!(
+        rig.conversation().seen_presentation_epoch.as_deref(),
+        Some("9007199254740993")
+    );
+    for reply in [
+        modern_reply(vec![], None, 1000, InjectionStep::SystemMessage, vec![]),
+        Ok(CommandResult::DeliveryPulledV2(
+            DeliveryPullReplyV2::Unchanged {
+                attention_version: 1001,
+            },
+        )),
+    ] {
+        let before = std::fs::read(rig.state_file()).unwrap();
+        let fake = modern_fake(vec![reply]);
+        let prepared = rig.prepare(
+            "PreInvocation",
+            json!({"invocationNum": 0}),
+            Some(&fake),
+            &runtime(1000, &ident("a")),
+        );
+        assert!(prepared.stdout.is_empty() && prepared.completion.is_none());
+        assert_eq!(std::fs::read(rig.state_file()).unwrap(), before);
+        assert_eq!(fake.calls().len(), 1);
+    }
+}
+
+#[test]
+fn emitted_v2_controls_apply_exact_epochs_and_old_replay_cannot_resurrect_a_clear() {
+    let rig = Rig::new();
+    let newer = "9007199254740995";
+    let mut state = ConversationState {
+        seen_attention_version: Some(88),
+        seen_presentation_epoch: Some(newer.into()),
+        generation: Some(0),
+        ..Default::default()
+    };
+    state.save(&rig.state_file());
+    for (item, expected_version, expected_epoch) in [
+        (
+            PresentationItemV2::AttentionCleared {
+                epoch: "9007199254740993".into(),
+                attention_version: 55,
+            },
+            Some(88),
+            newer,
+        ),
+        (
+            PresentationItemV2::Attention {
+                epoch: "9007199254740993".into(),
+                attention_version: 55,
+                text: "herdr-threads: attention".into(),
+            },
+            Some(88),
+            newer,
+        ),
+        (
+            PresentationItemV2::AttentionCleared {
+                epoch: newer.into(),
+                attention_version: 88,
+            },
+            None,
+            newer,
+        ),
+        (
+            PresentationItemV2::Attention {
+                epoch: newer.into(),
+                attention_version: 88,
+                text: "herdr-threads: attention".into(),
+            },
+            None,
+            newer,
+        ),
+        (
+            PresentationItemV2::Attention {
+                epoch: "9007199254740997".into(),
+                attention_version: 99,
+                text: "herdr-threads: attention".into(),
+            },
+            Some(99),
+            "9007199254740997",
+        ),
+    ] {
+        let acknowledged_controls =
+            crate::delivery::presentation::emitted_controls(std::slice::from_ref(&item));
+        let fake = modern_fake(vec![
+            modern_reply(
+                vec![item],
+                Some(&"a".repeat(32)),
+                999,
+                InjectionStep::SystemMessage,
+                vec![],
+            ),
+            Ok(CommandResult::DeliveryPresentationConfirmedV2(
+                DeliveryPresentationConfirmationReplyV2 {
+                    status: DeliveryPresentationConfirmationV2::Confirmed,
+                    acknowledged_controls,
+                },
+            )),
+        ]);
+        let before = rig.conversation();
+        let prepared = rig.prepare(
+            "PreInvocation",
+            json!({"invocationNum": 0}),
+            Some(&fake),
+            &runtime(1000, &ident("a")),
+        );
+        assert_eq!(
+            rig.conversation(),
+            before,
+            "preparing native output is not emission"
+        );
+        complete_step(
+            &prepared.completion.unwrap().0,
+            &fake,
+            &rig.state,
+            Instant::now() + Duration::from_secs(30),
+        );
+        assert_eq!(rig.conversation().seen_attention_version, expected_version);
+        assert_eq!(
+            rig.conversation().seen_presentation_epoch.as_deref(),
+            Some(expected_epoch)
+        );
+    }
+}
+
+#[test]
+fn frozen_reply_codec_overrides_new_local_preference_without_opening_early_probation() {
+    let rig = Rig::new();
+    let identity = ident("a");
+    let mut record = DowngradeRecord::blank(&identity);
+    record.downgrade("abort", 1000);
+    save_downgrade(&rig.state, &record);
+    let fake = modern_fake(vec![
+        modern_page(&"a".repeat(32)),
+        Ok(CommandResult::DeliveryPresentationConfirmedV2(
+            DeliveryPresentationConfirmationReplyV2 {
+                status: DeliveryPresentationConfirmationV2::Confirmed,
+                acknowledged_controls: crate::delivery::presentation::emitted_controls(
+                    &modern_items(),
+                ),
+            },
+        )),
+    ]);
+    let prepared = rig.prepare(
+        "PreInvocation",
+        json!({"invocationNum": 0}),
+        Some(&fake),
+        &runtime(1001, &identity),
+    );
+    assert_eq!(
+        prepared.stdout,
+        modern_system_output(),
+        "replay uses frozen supported System codec"
+    );
+    assert!(
+        matches!(&fake.calls()[0], Command::DeliveryPullV2(pull) if pull.render == PresentationRenderRequest::Hook { confirmable_selector: 1, passive_selector: 1 })
+    );
+    complete_step(
+        &prepared.completion.unwrap().0,
+        &fake,
+        &rig.state,
+        Instant::now() + Duration::from_secs(30),
+    );
+    assert_eq!(
+        rig.record(),
+        Some(record),
+        "old frozen System output cannot spend a new early retry"
+    );
+}
+
+#[test]
+fn mismatched_or_unsupported_v2_native_output_is_not_emitted_or_confirmed() {
+    for case in 0..5 {
+        let rig = Rig::new();
+        let Ok(CommandResult::DeliveryPulledV2(DeliveryPullReplyV2::Page(mut page))) =
+            modern_page(&"a".repeat(32))
+        else {
+            unreachable!()
+        };
+        match case {
+            0 => page.output_bytes += 1,
+            1 => page.render = PresentationRenderSelection::Hook { selector: 255 },
+            2 => page.render = PresentationRenderSelection::WatchJsonLinesV1,
+            3 => page.emitted_controls.clear(),
+            _ => page.text.push('x'),
+        }
+        let fake = modern_fake(vec![Ok(CommandResult::DeliveryPulledV2(
+            DeliveryPullReplyV2::Page(page),
+        ))]);
+        let prepared = rig.prepare(
+            "PreInvocation",
+            json!({"invocationNum": 0}),
+            Some(&fake),
+            &runtime(1000, &ident("a")),
+        );
+        assert!(prepared.stdout.is_empty() && prepared.completion.is_none());
+        assert_eq!(
+            prepared.diagnostic.as_deref(),
+            Some("presentation codec mismatch")
+        );
+        assert!(!rig.state_file().exists());
+        assert_eq!(fake.calls().len(), 1);
+    }
+}
+
+#[test]
+fn completion_applies_only_the_daemon_acknowledged_captured_control_subset() {
+    for empty_obsolete in [false, true] {
+        let rig = Rig::new();
+        let mut state = ConversationState {
+            seen_attention_version: Some(7),
+            seen_presentation_epoch: Some("0".into()),
+            generation: Some(0),
+            ..Default::default()
+        };
+        state.save(&rig.state_file());
+        let items = vec![
+            PresentationItemV2::Attention {
+                epoch: "1".into(),
+                attention_version: 11,
+                text: "herdr-threads: attention".into(),
+            },
+            PresentationItemV2::Attention {
+                epoch: "2".into(),
+                attention_version: 22,
+                text: "herdr-threads: attention".into(),
+            },
+        ];
+        let captured = crate::delivery::presentation::emitted_controls(&items);
+        let acknowledged_controls = if empty_obsolete {
+            vec![]
+        } else {
+            vec![captured[0].clone()]
+        };
+        let fake = modern_fake(vec![
+            modern_reply(
+                items,
+                Some(&"a".repeat(32)),
+                999,
+                InjectionStep::SystemMessage,
+                vec![],
+            ),
+            Ok(CommandResult::DeliveryPresentationConfirmedV2(
+                DeliveryPresentationConfirmationReplyV2 {
+                    status: DeliveryPresentationConfirmationV2::AlreadyConfirmed,
+                    acknowledged_controls,
+                },
+            )),
+        ]);
+        let prepared = rig.prepare(
+            "PreInvocation",
+            json!({"invocationNum": 0}),
+            Some(&fake),
+            &runtime(1000, &ident("a")),
+        );
+        assert!(!prepared.stdout.is_empty());
+        let before = std::fs::read(rig.state_file()).unwrap();
+        assert_eq!(rig.conversation().seen_attention_version, Some(7));
+        complete_step(
+            &prepared.completion.unwrap().0,
+            &fake,
+            &rig.state,
+            Instant::now() + Duration::from_secs(30),
+        );
+        assert!(
+            matches!(&fake.calls()[1], Command::DeliveryPresentationConfirmV2(request) if request.emitted_controls == captured)
+        );
+        let saved = rig.conversation();
+        assert_eq!(
+            saved.seen_attention_version,
+            Some(if empty_obsolete { 7 } else { 11 })
+        );
+        assert_eq!(
+            saved.seen_presentation_epoch.as_deref(),
+            Some(if empty_obsolete { "0" } else { "1" })
+        );
+        // The turn/injection hint can change after a valid completion, but current
+        // metadata999 and unacknowledged epoch2 never become seen evidence.
+        assert_ne!(std::fs::read(rig.state_file()).unwrap(), before);
+    }
+}
+
+#[test]
+fn invalid_acknowledged_control_subset_never_saves_hints_or_opens_probation() {
+    let captured = crate::delivery::presentation::emitted_controls(&modern_items())[0].clone();
+    for acknowledged_controls in [
+        vec![captured.clone(), captured.clone()],
+        vec![PresentationControlStampV2::Attention {
+            epoch: "2".into(),
+            version: 11,
+        }],
+        vec![PresentationControlStampV2::Attention {
+            epoch: "1".into(),
+            version: 12,
+        }],
+        vec![PresentationControlStampV2::Cleared {
+            epoch: "1".into(),
+            version: 11,
+        }],
+        vec![PresentationControlStampV2::Attention {
+            epoch: "01".into(),
+            version: 11,
+        }],
+        vec![captured.clone(); 33],
+    ] {
+        let rig = Rig::new();
+        let identity = ident("a");
+        let mut record = DowngradeRecord::blank(&identity);
+        record.downgrade("abort", 1000);
+        save_downgrade(&rig.state, &record);
+        let before = std::fs::read(downgrade_path(&rig.state)).unwrap();
+        let fake = modern_fake(vec![
+            modern_page(&"a".repeat(32)),
+            Ok(CommandResult::DeliveryPresentationConfirmedV2(
+                DeliveryPresentationConfirmationReplyV2 {
+                    status: DeliveryPresentationConfirmationV2::Confirmed,
+                    acknowledged_controls,
+                },
+            )),
+        ]);
+        let prepared = rig.prepare(
+            "PreInvocation",
+            json!({"invocationNum": 0}),
+            Some(&fake),
+            &runtime(1000 + 24 * HOUR, &identity),
+        );
+        assert_eq!(prepared.stdout, modern_system_output());
+        complete_step(
+            &prepared.completion.unwrap().0,
+            &fake,
+            &rig.state,
+            Instant::now() + Duration::from_secs(30),
+        );
+        assert!(!rig.state_file().exists());
+        assert_eq!(std::fs::read(downgrade_path(&rig.state)).unwrap(), before);
+        assert!(
+            matches!(&fake.calls()[1], Command::DeliveryPresentationConfirmV2(request) if request.emitted_controls == vec![captured.clone()])
+        );
+        assert_eq!(
+            fake.calls().len(),
+            2,
+            "invalid result cannot trigger recovery RPC or ACK/accept"
+        );
+    }
+}
+
+#[test]
+fn completion_rejects_duplicate_captured_control_stamps() {
+    let rig = Rig::new();
+    let items = vec![PresentationItemV2::Attention {
+        epoch: "1".into(),
+        attention_version: 11,
+        text: "attention".into(),
+    }];
+    let fake = modern_fake(vec![modern_reply(
+        items,
+        Some(&"a".repeat(32)),
+        999,
+        InjectionStep::SystemMessage,
+        vec![],
+    )]);
+    let prepared = rig.prepare(
+        "PreInvocation",
+        json!({"invocationNum":0}),
+        Some(&fake),
+        &runtime(1000, &ident("a")),
+    );
+    let mut completion: EmissionCompletion =
+        serde_json::from_slice(&prepared.completion.unwrap().0).unwrap();
+    completion
+        .emitted_controls
+        .push(completion.emitted_controls[0].clone());
+    assert!(
+        !valid_completion(&completion),
+        "duplicate captured controls must be refused before confirmation or local hint writes"
     );
 }

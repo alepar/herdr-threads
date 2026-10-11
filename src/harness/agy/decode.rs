@@ -25,7 +25,64 @@ pub enum InjectionStep {
     /// `{"injectSteps":[{"userMessage":"T"}]}`
     UserMessage,
 }
+const SYSTEM_PRESENTATION_PREFIX: &str = "{\"injectSteps\":[{\"systemMessage\":{\"systemMessage\":";
+const SYSTEM_PRESENTATION_SUFFIX: &str = "}}]}";
+const USER_PRESENTATION_PREFIX: &str = "{\"injectSteps\":[{\"userMessage\":";
+const USER_PRESENTATION_SUFFIX: &str = "}]}";
+const PRESENTATION_MAX_BYTES: usize = 65_536;
+
 impl InjectionStep {
+    pub(crate) fn presentation_selector(self) -> u8 {
+        match self {
+            Self::SystemMessage => 0,
+            Self::UserMessage => 1,
+        }
+    }
+    pub(crate) fn from_presentation_selector(selector: u8) -> Option<Self> {
+        match selector {
+            0 => Some(Self::SystemMessage),
+            1 => Some(Self::UserMessage),
+            _ => None,
+        }
+    }
+    pub(crate) fn presentation_codec(self) -> crate::harness::adapter::PresentationCodec {
+        use crate::harness::adapter::PresentationCodec;
+        match self {
+            Self::SystemMessage => PresentationCodec::JsonStringEnvelope {
+                prefix: SYSTEM_PRESENTATION_PREFIX,
+                suffix: SYSTEM_PRESENTATION_SUFFIX,
+            },
+            Self::UserMessage => PresentationCodec::JsonStringEnvelope {
+                prefix: USER_PRESENTATION_PREFIX,
+                suffix: USER_PRESENTATION_SUFFIX,
+            },
+        }
+    }
+    /// One capped native encoding, using exactly the static descriptor exposed
+    /// to canonical fitting. Historical lifecycle encoding still uses render().
+    pub(crate) fn encode_presentation(self, text: &str) -> Option<Vec<u8>> {
+        use std::io::Write;
+        struct Capped(Vec<u8>);
+        impl Write for Capped {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                if bytes.len() > PRESENTATION_MAX_BYTES.saturating_sub(self.0.len()) {
+                    return Err(std::io::ErrorKind::FileTooLarge.into());
+                }
+                self.0.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let crate::harness::adapter::PresentationCodec::JsonStringEnvelope { prefix, suffix } =
+            self.presentation_codec();
+        let mut writer = Capped(Vec::new());
+        writer.write_all(prefix.as_bytes()).ok()?;
+        serde_json::to_writer(&mut writer, text).ok()?;
+        writer.write_all(suffix.as_bytes()).ok()?;
+        Some(writer.0)
+    }
     pub(super) fn render(self, text: &str) -> Value {
         match self {
             Self::SystemMessage => {

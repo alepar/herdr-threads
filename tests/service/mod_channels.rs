@@ -220,6 +220,7 @@ fn view(seat_name: &str, generation: u64, fingerprint: ModFingerprint) -> ModSea
             ..fingerprint
         },
         newest_pending_notice: None,
+        pending_invitation_version: 0,
     }
 }
 fn pending(version: u64) -> ModFingerprint {
@@ -848,6 +849,68 @@ mod domain {
     }
 
     #[test]
+    fn presentation_owner_current_watch_is_admitted_and_old_lease_is_refused() {
+        use crate::protocol::{
+            authority::PeerIdentity,
+            commands::Command,
+            delivery::{DeliveryPullReplyV2, DeliveryPullV2, PresentationConsumer},
+            results::CommandResult,
+        };
+        let rig = rig();
+        let req = request();
+        let (first, _) = register(&rig, &req).unwrap();
+        let old = rig
+            .registry
+            .presentation_lease(first)
+            .expect("current owner lease");
+        let pull = |lease: String| {
+            rig.domain
+                .handle(
+                    Command::DeliveryPullV2(DeliveryPullV2 {
+                        claim: req.claim.clone(),
+                        consumer: PresentationConsumer::Watch,
+                        render:
+                            crate::protocol::delivery::PresentationRenderRequest::WatchJsonLinesV1,
+                        presentation_lease: Some(lease),
+                        marker_prefix: vec![],
+                    }),
+                    PeerIdentity::from_kernel(501),
+                    &budget(),
+                )
+                .unwrap()
+        };
+        assert!(
+            matches!(
+                pull(old.clone()),
+                CommandResult::DeliveryPulledV2(DeliveryPullReplyV2::Unchanged { .. })
+            ),
+            "current exact Live owner must be admitted"
+        );
+        let (second, _) = register(&rig, &req).unwrap();
+        let new = rig.registry.presentation_lease(second).unwrap();
+        assert!(
+            matches!(
+                pull(old),
+                CommandResult::DeliveryPulledV2(DeliveryPullReplyV2::Refused { .. })
+            ),
+            "replacement fences previous lease"
+        );
+        assert!(matches!(
+            pull(new.clone()),
+            CommandResult::DeliveryPulledV2(DeliveryPullReplyV2::Unchanged { .. })
+        ));
+        rig.registry
+            .unregister(second, rig.registry.clock.utc_now());
+        assert!(
+            matches!(
+                pull(new),
+                CommandResult::DeliveryPulledV2(DeliveryPullReplyV2::Refused { .. })
+            ),
+            "reconnect grace grants no presentation authority"
+        );
+    }
+
+    #[test]
     fn watch_register_accepts_matching_claude_binding() {
         let rig = rig();
         let (_, version) = register(&rig, &request()).unwrap();
@@ -1266,4 +1329,160 @@ fn record_ack_and_attention_push_for_another_generation_are_ignored() {
     assert!(!f.registry.stalled(&seat("a"), f.now()));
     f.registry.record_attention_push(&seat("a"), 1, f.now());
     assert!(f.registry.stalled(&seat("a"), f.now()));
+}
+
+#[test]
+fn passive_invitation_drain_does_not_arm_attention_stall_history() {
+    let f = fixture();
+    let (_, sink) = f.register("a", 1);
+    f.set_view("a", Some(view("a", 1, ModFingerprint::default())));
+    f.registry.pass(f.now()).unwrap();
+    let mut changed = view("a", 1, ModFingerprint::default());
+    changed.pending_invitation_version = 42;
+    f.set_view("a", Some(changed));
+    f.registry.pass(f.now()).unwrap();
+    assert_eq!(sink.frames().len(), 1);
+    assert_eq!(
+        f.registry.lock().entries[&seat("a")].last_attention_push,
+        None
+    );
+    f.registry.pass(f.now()).unwrap();
+    assert_eq!(sink.frames().len(), 1);
+}
+
+#[test]
+fn presentation_owner_lease_is_exact_live_and_replacement_fenced() {
+    let f = fixture();
+    let a = seat("a");
+    let (first, _) = f.register("a", 1);
+    let old = f
+        .registry
+        .presentation_lease(first)
+        .expect("attached channel gets presentation lease");
+    assert!(crate::protocol::delivery::valid_presentation_token(&old));
+    assert!(f.registry.presentation_owner_live(&a, 1, "native", &old));
+    assert!(!f.registry.presentation_owner_live(&a, 2, "native", &old));
+    assert!(!f.registry.presentation_owner_live(&a, 1, "different", &old));
+    let (second, _) = f.register("a", 1);
+    let new = f
+        .registry
+        .presentation_lease(second)
+        .expect("replacement gets fresh lease");
+    assert_ne!(old, new);
+    assert!(f.registry.presentation_lease(first).is_none());
+    assert!(!f.registry.presentation_owner_live(&a, 1, "native", &old));
+    assert!(f.registry.presentation_owner_live(&a, 1, "native", &new));
+    f.registry.unregister(second, f.now());
+    assert!(
+        f.registry.is_live(&a, 1),
+        "legacy ACK reconnect grace remains"
+    );
+    assert!(!f.registry.presentation_owner_live(&a, 1, "native", &new));
+    assert!(f.registry.presentation_lease(second).is_none());
+}
+
+#[test]
+fn presentation_owner_permit_serializes_replacement() {
+    let f = fixture();
+    let (first, _) = f.register("a", 1);
+    let old = f.registry.presentation_lease(first).expect("live lease");
+    let permit = f
+        .registry
+        .presentation_owner(&seat("a"))
+        .unwrap()
+        .expect("registry owner permit");
+    let owner = permit.lock().unwrap();
+    let (started_rx, done_rx, worker) = {
+        let registry = f.registry.clone();
+        let now = f.now();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            let result = registry.register(
+                ModChannelRegistration {
+                    seat: seat("a"),
+                    binding_generation: 1,
+                    native_session: NativeSessionId::new("native"),
+                    harness: Harness::Claude,
+                    idle_wake: IdleWake::Channel,
+                    registered_at: now,
+                },
+                Arc::new(RecordingSink::default()),
+            );
+            done_tx.send(result).unwrap();
+        });
+        (started_rx, done_rx, worker)
+    };
+    started_rx.recv().unwrap();
+    assert!(
+        done_rx
+            .recv_timeout(std::time::Duration::from_millis(20))
+            .is_err(),
+        "replacement cannot cross an active allocation/confirm permit"
+    );
+    assert!(
+        f.registry
+            .presentation_owner_live(&seat("a"), 1, "native", &old)
+    );
+    drop(owner);
+    let second = done_rx
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .unwrap()
+        .unwrap();
+    worker.join().unwrap();
+    assert_ne!(first, second);
+    assert!(
+        !f.registry
+            .presentation_owner_live(&seat("a"), 1, "native", &old)
+    );
+}
+
+#[test]
+fn presentation_attention_cutoff_requires_exact_live_owner() {
+    let f = fixture();
+    let a = seat("a");
+    let (first, _) = f.register("a", 1);
+    let old = f.registry.presentation_lease(first).unwrap();
+    for (generation, native, lease) in [
+        (2, "native", old.as_str()),
+        (1, "wrong", old.as_str()),
+        (1, "native", "wrong"),
+    ] {
+        f.registry.record_presentation_attention_push(
+            &a,
+            generation,
+            native,
+            lease,
+            UtcMillis(100),
+        );
+        assert_eq!(f.registry.lock().entries[&a].last_attention_push, None);
+    }
+    f.registry
+        .record_presentation_attention_push(&a, 1, "native", &old, UtcMillis(101));
+    assert_eq!(
+        f.registry.lock().entries[&a].last_attention_push,
+        Some(UtcMillis(101))
+    );
+    let (second, _) = f.register("a", 1);
+    let new = f.registry.presentation_lease(second).unwrap();
+    f.registry
+        .record_presentation_attention_push(&a, 1, "native", &old, UtcMillis(102));
+    assert_eq!(
+        f.registry.lock().entries[&a].last_attention_push,
+        None,
+        "replacement rejects previous lease"
+    );
+    f.registry.unregister(second, f.now());
+    f.registry
+        .record_presentation_attention_push(&a, 1, "native", &new, UtcMillis(103));
+    assert_eq!(
+        f.registry.lock().entries[&a].last_attention_push,
+        None,
+        "reconnect grace grants no presentation health evidence"
+    );
+    struct Inert;
+    impl ModChannels for Inert {}
+    Inert.record_presentation_attention_push(&a, 1, "native", &new, UtcMillis(104));
+    assert!(!Inert.stalled(&a, UtcMillis(104)));
 }

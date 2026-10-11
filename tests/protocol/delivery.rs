@@ -273,3 +273,169 @@ fn capability_is_defined_and_advertised() {
     assert_eq!(capabilities::DELIVERY_PULL, "delivery.pull_v1");
     assert!(capabilities::ADVERTISED.contains(&capabilities::DELIVERY_PULL));
 }
+
+// Missing/overpermissive V2 decoding would let a token acknowledge the wrong
+// presentation scope; these exercise the actual public command decoder.
+#[test]
+fn presentation_v2_decodes_scoped_commands_without_changing_v1() {
+    let caller = serde_json::to_value(claim(CallerRole::TopLevel)).unwrap();
+    let request = json!({"kind":"delivery_pull_v2","args":{
+        "render":{"kind":"hook","confirmable_selector":0,"passive_selector":0},"claim":caller,"consumer":"hook","marker_prefix":["ht"]
+    }});
+    let parsed = serde_json::from_value::<Command>(request.clone());
+    assert!(parsed.is_ok(), "V2 public pull must decode: {parsed:?}");
+    let parsed = parsed.unwrap();
+    assert!(parsed.validate().is_ok());
+    assert_eq!(serde_json::to_value(&parsed).unwrap(), request);
+
+    let confirmation = json!({"kind":"delivery_presentation_confirm_v2","args":{
+        "claim":caller,"consumer":"hook","token":"0123456789abcdef0123456789abcdef"
+    }});
+    let parsed = serde_json::from_value::<Command>(confirmation.clone());
+    assert!(parsed.is_ok(), "V2 public confirm must decode: {parsed:?}");
+    let parsed = parsed.unwrap();
+    assert!(parsed.validate().is_ok());
+    assert_eq!(serde_json::to_value(&parsed).unwrap(), confirmation);
+    // Presentation completion must not become a message ACK permit.
+    assert!(PermitMutation::try_from(parsed).is_err());
+
+    let historical = serde_json::to_string(&Command::DeliveryPull(pull())).unwrap();
+    assert!(!historical.contains("consumer"));
+    assert!(!historical.contains("token"));
+    assert_eq!(
+        serde_json::from_str::<Command>(&historical).unwrap(),
+        Command::DeliveryPull(pull())
+    );
+}
+
+#[test]
+fn presentation_v2_rejects_invalid_tokens_consumers_and_watch_without_lease() {
+    let request = json!({"kind":"delivery_pull_v2","args":{
+        "render":{"kind":"hook","confirmable_selector":0,"passive_selector":0},"claim":claim(CallerRole::TopLevel),"consumer":"hook"
+    }});
+    let command = serde_json::from_value::<Command>(request.clone());
+    assert!(
+        command.is_ok(),
+        "valid V2 request must decode before negative controls: {command:?}"
+    );
+    assert!(command.unwrap().validate().is_ok());
+    let confirmation = json!({"kind":"delivery_presentation_confirm_v2","args":{
+        "claim":claim(CallerRole::TopLevel),"consumer":"hook",
+        "token":"0123456789abcdef0123456789abcdef"
+    }});
+    let command = serde_json::from_value::<Command>(confirmation.clone()).unwrap();
+    assert!(command.validate().is_ok());
+    for token in [
+        "",
+        "0",
+        "0123456789ABCDEF0123456789abcdef",
+        "g123456789abcdef0123456789abcdef",
+        "0123456789abcdef0123456789abcdef0",
+    ] {
+        let mut bad = confirmation.clone();
+        bad["args"]["token"] = json!(token);
+        let command = serde_json::from_value::<Command>(bad)
+            .expect("malformed Confirm token must decode before validation");
+        assert!(
+            command.validate().is_err(),
+            "invalid token accepted: {token}"
+        );
+    }
+    let mut watch_confirmation = confirmation;
+    watch_confirmation["args"]["consumer"] = json!("watch");
+    let command = serde_json::from_value::<Command>(watch_confirmation.clone()).unwrap();
+    assert!(
+        command.validate().is_err(),
+        "Watch confirmation requires a lease"
+    );
+    watch_confirmation["args"]["presentation_lease"] = json!("g123456789abcdef0123456789abcdef");
+    let command = serde_json::from_value::<Command>(watch_confirmation.clone()).unwrap();
+    assert!(
+        command.validate().is_err(),
+        "Watch confirmation rejects a malformed lease"
+    );
+    watch_confirmation["args"]["presentation_lease"] = json!("fedcba9876543210fedcba9876543210");
+    let command = serde_json::from_value::<Command>(watch_confirmation).unwrap();
+    assert!(command.validate().is_ok());
+    let mut watch = request.clone();
+    watch["args"]["consumer"] = json!("watch");
+    watch["args"]["render"] = json!({"kind":"watch_json_lines_v1"});
+    let command = serde_json::from_value::<Command>(watch.clone()).unwrap();
+    assert!(
+        command.validate().is_err(),
+        "claim alone cannot authorize Watch"
+    );
+    watch["args"]["presentation_lease"] = json!("fedcba9876543210fedcba9876543210");
+    assert!(
+        serde_json::from_value::<Command>(watch)
+            .unwrap()
+            .validate()
+            .is_ok()
+    );
+    let mut extra = request.clone();
+    extra["args"]["bogus"] = json!(1);
+    assert!(serde_json::from_value::<Command>(extra).is_err());
+    let mut invented = request;
+    invented["args"]["consumer"] = json!("third");
+    assert!(serde_json::from_value::<Command>(invented).is_err());
+}
+
+#[test]
+fn presentation_confirmation_exact_control_shape_and_removed_piggyback() {
+    let base = json!({"kind":"delivery_presentation_confirm_v2","args":{"claim":claim(CallerRole::TopLevel),"consumer":"hook","token":"0123456789abcdef0123456789abcdef","emitted_controls":[{"kind":"attention","epoch":"18446744073709551615","version":9}]}});
+    let command: Command = serde_json::from_value(base.clone()).unwrap();
+    assert!(command.validate().is_ok());
+    assert_eq!(serde_json::to_value(command).unwrap(), base);
+    for controls in [
+        json!([{"kind":"attention","epoch":"01","version":9}]),
+        json!([{"kind":"attention","epoch":"1","version":9},{"kind":"attention","epoch":"1","version":9}]),
+        json!(vec![
+            json!({"kind":"attention","epoch":"1","version":9});
+            33
+        ]),
+    ] {
+        let mut invalid = base.clone();
+        invalid["args"]["emitted_controls"] = controls;
+        assert!(!serde_json::from_value::<Command>(invalid).is_ok_and(|v| v.validate().is_ok()));
+    }
+    let removed = json!({"kind":"delivery_pull_v2","args":{"claim":claim(CallerRole::TopLevel),"consumer":"hook","render":{"kind":"hook","confirmable_selector":0,"passive_selector":0},"confirmed_token":"0123456789abcdef0123456789abcdef"}});
+    assert!(serde_json::from_value::<Command>(removed).is_err());
+}
+
+#[test]
+fn presentation_confirmation_maximum_valid_controls_fit_actual_framed_wrapper_reserve() {
+    use crate::protocol::{
+        delivery::{
+            DeliveryPresentationConfirmationReplyV2, DeliveryPresentationConfirmationV2,
+            PresentationControlStampV2,
+        },
+        results::CommandResult,
+        wire::{MAX_WIRE_FRAME_BYTES, PROTOCOL_VERSION, WireResponse, encode_wire_response},
+    };
+    let acknowledged_controls = (0..32)
+        .map(|n| PresentationControlStampV2::Attention {
+            epoch: (u64::MAX - n).to_string(),
+            version: u64::MAX,
+        })
+        .collect();
+    let result =
+        CommandResult::DeliveryPresentationConfirmedV2(DeliveryPresentationConfirmationReplyV2 {
+            status: DeliveryPresentationConfirmationV2::Confirmed,
+            acknowledged_controls,
+        });
+    let result_bytes = serde_json::to_vec(&result).unwrap().len();
+    let response = WireResponse {
+        version: PROTOCOL_VERSION,
+        request_id: "\"".repeat(128),
+        instance: uuid::Uuid::from_u128(1).to_string(),
+        daemon_boot: uuid::Uuid::from_u128(2).to_string(),
+        result: Ok(result),
+    };
+    let framed = encode_wire_response(&response).unwrap();
+    assert_eq!(
+        u32::from_be_bytes(framed[..4].try_into().unwrap()) as usize,
+        framed.len() - 4
+    );
+    assert!(framed.len() - result_bytes <= 512 && framed.len() <= MAX_WIRE_FRAME_BYTES);
+    assert!(serde_json::from_slice::<WireResponse>(&framed[4..]).is_ok());
+}
