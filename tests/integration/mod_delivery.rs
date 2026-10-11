@@ -50,6 +50,17 @@ const BIN: &str = env!("CARGO_BIN_EXE_herdr-threads");
 const PANE_A: &str = "w1:p1";
 const PANE_B: &str = "w1:p2";
 const SESSION_B: &str = "SB";
+const PANE_C: &str = "w1:p3";
+const SESSION_C: &str = "SC";
+
+/// The harness session running in `pane`: B's or C's registered one, or the stand-in agent's (A).
+fn session_of(pane: &str) -> &'static str {
+    match pane {
+        PANE_B => SESSION_B,
+        PANE_C => SESSION_C,
+        _ => "SA",
+    }
+}
 /// A step the sweep waits for; generous because the suite shares the machine.
 const STEP: Duration = Duration::from_secs(20);
 /// How long an absence is observed (a negative check) once its trigger has
@@ -546,6 +557,12 @@ impl Rig {
                 .env("HERDR_ENV", "1")
                 .env("HERDR_PANE_ID", pane)
                 .env("HERDR_SOCKET_PATH", &self.socket);
+            // A pane-routed command runs as the harness session in that pane (decision 15).
+            herdr_threads::test_support::isolation::as_agent(
+                &mut command,
+                "claude",
+                session_of(pane),
+            );
         }
         command
     }
@@ -570,6 +587,7 @@ impl Rig {
             .env("CLAUDE_CONFIG_DIR", self.root.join("claude-config"))
             .env("HERDR_THREADS_OFFLINE", "1")
             .env("NO_COLOR", "1");
+        herdr_threads::test_support::isolation::as_agent(&mut command, "claude", session_of(pane));
         command
     }
 
@@ -654,6 +672,13 @@ impl Rig {
         }
         all.extend_from_slice(args);
         let mut command = self.command(None, &all);
+        if let Some((_, pane)) = caller {
+            herdr_threads::test_support::isolation::as_agent(
+                &mut command,
+                "claude",
+                session_of(pane),
+            );
+        }
         collect(
             command
                 .stdin(Stdio::null())
@@ -680,6 +705,7 @@ impl Rig {
         ];
         all.extend_from_slice(args);
         let mut command = self.command_with(false, None, &all);
+        herdr_threads::test_support::isolation::as_agent(&mut command, "claude", SESSION_B);
         collect(
             command
                 .stdin(Stdio::null())
@@ -705,7 +731,10 @@ impl Rig {
             .as_str()
             .unwrap_or_else(|| panic!("no installed Claude registration for {event}"))
             .to_owned();
-        let mut child = spawn::command("/bin/sh")
+        let mut shell = spawn::command("/bin/sh");
+        // The installed hook runs under its harness (the test process stands in for it).
+        herdr_threads::test_support::isolation::as_agent(&mut shell, "claude", "hook-session");
+        let mut child = shell
             .arg("-c")
             .arg(command)
             .env("HERDR_ENV", "1")
@@ -2519,8 +2548,6 @@ fn watch_admission_over_cap_refuses_busy() {
 /// submit it into an idle session), while the affected seat's watch does.
 #[test]
 fn other_seat_overdue_transitions_raise_no_mod_attention_for_a_bystander() {
-    const PANE_C: &str = "w1:p3";
-    const SESSION_C: &str = "SC";
     let rig = Rig::new();
     rig.host.set_panes(vec![
         pane(PANE_A, "term-a"),

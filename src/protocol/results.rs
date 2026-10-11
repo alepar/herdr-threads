@@ -340,6 +340,9 @@ pub enum ErrorCode {
     /// A subagent claim attempted an accountable command (ht-54r.20): subagent bindings are
     /// read-only. Stable; the refusal is cooperative, on the recognized claim.
     SubagentReadOnly,
+    /// Client-local, never sent by a daemon: the CLI runs under a `codex app-server
+    /// --managed-daemon` process, which has no pane to attribute the call to.
+    ManagedDaemonRefused,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1747,6 +1750,7 @@ impl ErrorCode {
         ErrorCode::SessionClaimRequired,
         ErrorCode::LivenessFingerprintRequired,
         ErrorCode::SubagentReadOnly,
+        ErrorCode::ManagedDaemonRefused,
     ];
 
     /// The failure class this code defaults to, or `None` for codes that
@@ -1797,6 +1801,7 @@ impl ErrorCode {
             ErrorCode::SessionClaimRequired => None,
             ErrorCode::LivenessFingerprintRequired => None,
             ErrorCode::SubagentReadOnly => None,
+            ErrorCode::ManagedDaemonRefused => None,
             // The daemon restarted between the caller's view and the request
             // (B5, protocol 2): retry against the new boot.
             ErrorCode::DaemonBootChanged => Some(ErrorClass::Transient),
@@ -1873,6 +1878,7 @@ api_error_constructors! {
     session_claim_required => SessionClaimRequired,
     liveness_fingerprint_required => LivenessFingerprintRequired,
     subagent_read_only => SubagentReadOnly,
+    managed_daemon_refused => ManagedDaemonRefused,
 }
 
 #[cfg(test)]

@@ -230,7 +230,9 @@ impl Smoke {
     /// One driver process (one Hermes process) replaying `steps`.
     fn drive(&self, pane: &str, steps: &[Value], in_herdr: bool) -> Driven {
         let mut command = self.base(Command::new("python3"));
+        // The driver is the Hermes process: the hooks it runs have it as their harness parent.
         command
+            .env("HT_TEST_HARNESS", "hermes")
             .args(["-I", DRIVER])
             .arg(&self.bridge)
             .arg(&self.native_src)
@@ -335,7 +337,7 @@ impl Smoke {
             .query_row(
                 &format!(
                     "SELECT b.native_session FROM occupant_bindings b JOIN seats s ON s.id=b.seat_id \
-                     WHERE s.target_id=?1 AND {OPEN_HERMES}"
+                     WHERE s.target_id=?1 AND {OPEN_HERMES} ORDER BY b.ordinal DESC LIMIT 1"
                 ),
                 [pane],
                 |row| row.get(0),
@@ -360,6 +362,7 @@ impl Smoke {
             .arg("--host-endpoint")
             .arg(self.herdr.socket_path())
             .args(["hook", "hermes"])
+            .env("HT_TEST_HARNESS", "hermes")
             .env("HERDR_ENV", "1")
             .env("HERDR_PANE_ID", pane)
             .env("HERDR_SOCKET_PATH", self.herdr.socket_path())
@@ -667,8 +670,9 @@ fn hermes_bare_enrollment_configurations_with_daemon_up() {
     );
     assert_seated_turn(&new, 2, "clear");
     assert_eq!(smoke.seat(&pane), seat, "/new moved the seat");
+    // Each session keeps its own binding (spec §1): /new adds one and ends nothing.
     assert_eq!(smoke.all_bindings(&pane), 2);
-    assert_eq!(smoke.open_bindings(&pane), 1);
+    assert_eq!(smoke.open_bindings(&pane), 2);
     assert_eq!(smoke.open_session(&pane), "S4b");
 
     // 5. Fallback: a top-level turn with no start in an unseated pane enrolls and

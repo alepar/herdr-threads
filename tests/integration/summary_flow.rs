@@ -209,7 +209,8 @@ impl World {
         json: bool,
     ) -> Out {
         let mut command = crate::scrubbed_command(binary);
-        let args = if args.first() == Some(&"human") {
+        let is_person = args.first() == Some(&"human");
+        let args = if is_person {
             command.arg("human");
             &args[1..]
         } else {
@@ -224,6 +225,11 @@ impl World {
             .arg("--host-endpoint")
             .arg(&self.host);
         if let Some(caller) = caller {
+            herdr_threads::test_support::isolation::as_agent(
+                &mut command,
+                "claude",
+                session_of(caller.pane),
+            );
             command.args([
                 "--cooperative-seat",
                 caller.seat,
@@ -258,6 +264,14 @@ impl World {
             .stderr(Stdio::piped());
         if let Some(pane) = pane {
             command.env("HERDR_PANE_ID", pane).env("HERDR_ENV", "1");
+            // A pane-routed agent command runs as the harness session in that pane.
+            if !is_person {
+                herdr_threads::test_support::isolation::as_agent(
+                    &mut command,
+                    "claude",
+                    session_of(pane),
+                );
+            }
         }
         let mut child = command.spawn_owned().unwrap();
         if let Some(text) = stdin {
@@ -282,7 +296,10 @@ impl World {
                 .as_str()
                 .unwrap_or_else(|| panic!("no installed Claude registration for {event}"))
         };
-        let mut child = crate::scrubbed_command("/bin/sh")
+        let mut shell = crate::scrubbed_command("/bin/sh");
+        // The installed hook runs under its harness (the test process stands in for it).
+        herdr_threads::test_support::isolation::as_agent(&mut shell, harness, session_of(pane));
+        let mut child = shell
             .arg("-c")
             .arg(command)
             .env("HERDR_ENV", "1")
@@ -362,30 +379,66 @@ impl World {
         let envelope: Value = serde_json::from_slice(&encoded).unwrap();
         Ok(envelope["result"]["data"].clone())
     }
-    /// `seat`'s current occupant claim, read from the private context
-    /// journal its lifecycle check-in saved: the claim the CLI's cooperative
-    /// mutations send.
+    /// `seat`'s current occupant claim: its open binding's identity, the claim the CLI's
+    /// cooperative mutations send (an agent saves no context).
     fn seat_claim(&self, seat: &str) -> herdr_threads::protocol::authority::CallerClaim {
         use herdr_threads::{
             daemon::ownership::read_existing_namespace,
-            harness::{bridge::caller_claim, context::ContextJournal},
+            protocol::{
+                authority::{CallerRole, Harness, LivenessFingerprint},
+                ids::*,
+            },
         };
-        use sha2::{Digest, Sha256};
         let paths = InstancePaths::resolve(
             &RuntimeContext::explicit(self.state.clone(), self.host.clone(), None).unwrap(),
         )
         .unwrap();
         let instance = read_existing_namespace(&paths).unwrap().unwrap();
-        let dir = paths
-            .instance_dir
-            .canonicalize()
-            .unwrap()
-            .join("contexts")
-            .join(format!("{:x}", Sha256::digest(seat.as_bytes())));
-        let contexts = ContextJournal::open_existing(&dir, instance, Duration::from_secs(1))
-            .unwrap()
-            .expect("the seat's lifecycle check-in saved its context");
-        caller_claim(&contexts.current().unwrap().expect("a current context")).unwrap()
+        let db = rusqlite::Connection::open(&paths.database_path).unwrap();
+        #[allow(clippy::type_complexity)]
+        let (generation, harness, session, execution, target, pid, start): (
+            i64,
+            String,
+            String,
+            String,
+            String,
+            Option<i64>,
+            Option<i64>,
+        ) = db
+            .query_row(
+                "SELECT generation,harness,native_session,execution_id,target_id,liveness_pid,liveness_start FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL",
+                [seat],
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                        r.get(6)?,
+                    ))
+                },
+            )
+            .expect("the seat's lifecycle check-in opened its binding");
+        herdr_threads::protocol::authority::CallerClaim {
+            instance: instance.to_string(),
+            seat: SeatId::new(seat),
+            binding_generation: generation as u64,
+            role: CallerRole::TopLevel,
+            harness: herdr_threads::harness::registry::builtins()
+                .agent(&harness)
+                .map(Harness::Agent)
+                .unwrap(),
+            native_session: NativeSessionId::new(session),
+            execution: ExecutionId::new(execution),
+            target: HostTargetId::new(target),
+            agent_id: None,
+            liveness: pid.zip(start).map(|(pid, start)| LivenessFingerprint {
+                pid: pid as u32,
+                start: start as u64,
+            }),
+        }
     }
     /// One `send` as `claim`, called in process: the same `SendMessage` the
     /// CLI builds (`Lazy` unless an ACK recipient is named, as `send` picks)
@@ -603,6 +656,17 @@ const PANE_B: &str = "w1:p2";
 const PANE_C: &str = "w1:p3";
 const PANE_D: &str = "w1:p4";
 const SESSION_B: &str = "SB";
+
+/// The harness session running in `pane`: the one its SessionStart hook registered (A, B), or the
+/// stand-in agent's (C, D).
+fn session_of(pane: &str) -> &'static str {
+    match pane {
+        PANE_A => "SA",
+        PANE_B => SESSION_B,
+        PANE_C => "SC",
+        _ => "SD",
+    }
+}
 
 /// How far [`Fixture::build_stage`] goes.
 #[derive(Clone, Copy, PartialEq, Eq)]

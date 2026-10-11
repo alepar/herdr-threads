@@ -949,6 +949,49 @@ impl CallerFailure {
     }
 }
 
+/// The watch child's caller. The mod passes the session it serves as `--session` (spec D3), so
+/// the harness's session variable is not needed: a Claude ancestor with the variable unset is
+/// that session, fingerprinted by its own process.
+fn watch_origin(
+    parsed: &super::commands::ParsedCli,
+    session: &str,
+) -> Option<super::caller::CallerOrigin> {
+    use super::caller::CallerOrigin;
+    use crate::{
+        harness::caller_env::{self, EnvClaim, EnvInputs, EnvRefusal},
+        protocol::authority::{COOPERATIVE_ENV_SESSION_PROVENANCE, CallerRole},
+    };
+    let origin = super::caller::derive(parsed);
+    let Some(CallerOrigin::Refused(EnvRefusal::MissingSession {
+        harness: "claude", ..
+    })) = &origin
+    else {
+        return origin;
+    };
+    let env = |name: &str| std::env::var(name).ok();
+    let inputs = EnvInputs {
+        env: &env,
+        self_pid: std::process::id(),
+        agent_id: None,
+        processes: &crate::host::process_table::HostProcessTable,
+    };
+    match (
+        caller_env::harness_fingerprint(&inputs, "claude"),
+        NativeSessionId::parse(session.to_owned()),
+    ) {
+        (Ok(fingerprint), Ok(native_session)) => CallerOrigin::Agent(EnvClaim {
+            harness: crate::protocol::authority::Harness::Claude,
+            native_session,
+            agent_id: None,
+            role: CallerRole::TopLevel,
+            fingerprint,
+            provenance: COOPERATIVE_ENV_SESSION_PROVENANCE,
+        })
+        .into(),
+        _ => origin,
+    }
+}
+
 /// Pane (or `--cooperative-*`) to seat to the seat's recorded Claude context,
 /// as a claim whose native session is the `--session` value (spec D3).
 fn locate_claim<C, F>(
@@ -964,7 +1007,9 @@ where
     C: LocalClient,
     F: Fn() -> Result<(uuid::Uuid, C), RunError>,
 {
-    let (instance, _) = connection.get().map_err(|_| CallerFailure::Daemon)?;
+    let (instance, client) = connection.get().map_err(|_| CallerFailure::Daemon)?;
+    let origin = watch_origin(parsed, session);
+    let _origin = super::caller::ActiveGuard::enter(origin.clone());
     let selection = match derive_caller(parsed, caller_pane, context, paths, connection, clock) {
         Ok(Some(selection)) => selection,
         Ok(None) => return Err(CallerFailure::NoBinding),
@@ -978,6 +1023,27 @@ where
         }
         Err(_) => return Err(CallerFailure::Other),
     };
+    if let Some(super::caller::CallerOrigin::Agent(env)) = origin {
+        // The mod's watch child runs under the session's harness: its claim is the environment's
+        // (the fingerprint is the harness process's), with the `--session` the mod passed.
+        if Harness::from(env.harness) != Harness::Claude {
+            return Err(CallerFailure::NotClaude);
+        }
+        let generation = super::seat_generation(client, &parsed.output, &selection, clock.as_ref())
+            .map_err(|_| CallerFailure::NoBinding)?;
+        let current = super::caller::agent_context(
+            &env,
+            *instance,
+            &selection.seat,
+            &selection.target,
+            generation,
+        );
+        let mut claim = bridge::caller_claim(&current).map_err(|_| CallerFailure::NoBinding)?;
+        claim.native_session =
+            NativeSessionId::parse(session.to_owned()).map_err(|_| CallerFailure::Other)?;
+        claim.liveness = Some(env.fingerprint);
+        return Ok((claim, selection.seat, *instance));
+    }
     let contexts =
         seat_contexts(paths, *instance, &selection.seat).map_err(|_| CallerFailure::Other)?;
     let current = contexts

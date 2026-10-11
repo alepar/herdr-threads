@@ -107,6 +107,10 @@ impl World {
             .env("HOME", self.root.join("home"))
             .env("CODEX_HOME", self.root.join("codex"))
             .env("CLAUDE_CONFIG_DIR", self.root.join("claude"));
+        // A stand-in seat is an agent: it acts as a harness session (decision 15).
+        if claim.is_some() || args.contains(&"--cooperative-seat") {
+            herdr_threads::test_support::isolation::as_agent(&mut cmd, "claude", "channel-session");
+        }
         if let Some(c) = claim {
             cmd.args([
                 "--cooperative-seat",

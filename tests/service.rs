@@ -12,6 +12,37 @@ pub(crate) fn scrubbed_command(program: impl AsRef<std::ffi::OsStr>) -> std::pro
 
 static IN_PROCESS_DAEMON: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// The in-process CLI this thread drives acts as an agent session of `harness` ("claude" |
+/// "codex"), as if derived from a harness environment (decision 15; the harness fingerprint is
+/// the fixed test one). Held for the duration of the call.
+#[cfg(feature = "test-support")]
+pub(crate) fn agent_caller(
+    harness: &str,
+    session: &str,
+) -> herdr_threads::cli::caller::OriginFixture {
+    use herdr_threads::{
+        cli::caller::{CallerOrigin, fix_origin},
+        harness::caller_env::EnvClaim,
+        protocol::{
+            authority::{COOPERATIVE_ENV_SESSION_PROVENANCE, CallerRole, Harness},
+            ids::NativeSessionId,
+        },
+    };
+    fix_origin(CallerOrigin::Agent(EnvClaim {
+        harness: match harness {
+            "claude" => Harness::Claude,
+            _ => Harness::Codex,
+        },
+        native_session: NativeSessionId::new(session),
+        agent_id: None,
+        role: CallerRole::TopLevel,
+        // One live process per session: a shared fingerprint would supersede across sessions,
+        // and a dead one is disconnected by the liveness worker.
+        fingerprint: herdr_threads::test_support::isolation::stand_in_fingerprint(harness, session),
+        provenance: COOPERATIVE_ENV_SESSION_PROVENANCE,
+    }))
+}
+
 /// SQLite busy timeout for a fake host's "host I/O is not called under the
 /// SQLite writer" probe (`BEGIN IMMEDIATE` from inside the host call).
 ///

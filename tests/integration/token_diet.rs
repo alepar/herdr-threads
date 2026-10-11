@@ -35,6 +35,11 @@ impl Plugin {
             command.arg("--json");
         }
         if let Some((seat, target, harness)) = agent {
+            herdr_threads::test_support::isolation::as_agent(
+                &mut command,
+                harness,
+                &format!("diet-{}", seat),
+            );
             command.args([
                 "--cooperative-seat",
                 seat,

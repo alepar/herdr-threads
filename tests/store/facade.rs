@@ -1489,7 +1489,7 @@ fn fixture_claim(seat: &str, target: &str) -> CallerClaim {
         execution: ExecutionId::new("00000000-0000-4000-8000-000000000001"),
         target: HostTargetId::new(target),
         agent_id: None,
-        liveness: None,
+        liveness: Some(crate::protocol::authority::LivenessFingerprint::TEST),
     }
 }
 /// Mutates through the production cooperative path: the service-local permit
@@ -1886,7 +1886,7 @@ fn invalid_inbox_completion_writes_no_state() {
         execution: ExecutionId::new("e"),
         target: HostTargetId::new("p"),
         agent_id: None,
-        liveness: None,
+        liveness: Some(crate::protocol::authority::LivenessFingerprint::TEST),
     };
     let completion = CompleteInboxDelivery {
         via: None,

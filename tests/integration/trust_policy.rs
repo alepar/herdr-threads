@@ -222,6 +222,16 @@ impl Output {
     }
 }
 
+/// The harness session running in `pane`: pane 1 is the real Claude session `SA`, whose hook
+/// registered it; the stand-in agents of the other panes each have a session of their own.
+fn session_of(pane: &str, seat: &str) -> String {
+    if pane == "w1:p1" {
+        "SA".to_owned()
+    } else {
+        format!("trust-{seat}")
+    }
+}
+
 struct World {
     root: PathBuf,
     state: PathBuf,
@@ -341,6 +351,14 @@ impl World {
                 command.env_remove(key);
             }
         }
+        // A stand-in seat is an agent: it acts as a harness session (decision 15).
+        if let Some(caller) = &caller {
+            herdr_threads::test_support::isolation::as_agent(
+                &mut command,
+                caller.harness,
+                &session_of(caller.pane, caller.seat),
+            );
+        }
         command
             .args(args)
             .env_remove("CLAUDECODE")
@@ -415,7 +433,15 @@ impl World {
                 .as_str()
                 .unwrap_or_else(|| panic!("no installed Claude registration for {event}"))
         };
-        let mut child = Command::new("/bin/sh")
+        let mut shell = Command::new("/bin/sh");
+        // The installed hook runs under its harness (the test process stands in for it).
+        // The hook's process is its harness session's: the session named in the payload.
+        let session = serde_json::from_slice::<Value>(stdin)
+            .ok()
+            .and_then(|payload| payload["session_id"].as_str().map(str::to_owned))
+            .unwrap_or_else(|| "hook-session".to_owned());
+        herdr_threads::test_support::isolation::as_agent(&mut shell, harness, &session);
+        let mut child = shell
             .envs([herdr_threads::daemon::lifecycle::test_owner_env()])
             .arg("-c")
             .arg(command)
@@ -1012,9 +1038,9 @@ fn resume_on_same_pane_id_before_reconciliation_with_daemon_kept_running_reattac
 /// resumed session reattached holds a `cooperative_top_level` binding, so a
 /// person's `me init` over it is refused. Herdr reports no agent in the pane,
 /// so the refusal comes from the reattached seat itself: first from the
-/// private context the resume hook wrote, then, with that client-local hint
-/// deleted (A2: hints never authorize), from the daemon's own check of the
-/// binding. Neither refusal touches the binding; `--operator` overrides.
+/// daemon's own check of the binding (A2: client-local hints never authorize; an
+/// agent saves none). The refusal does not touch the binding; `--operator`
+/// overrides.
 #[test]
 fn me_init_over_reattached_seat_is_refused() {
     let (world, a) = reattached(
@@ -1023,15 +1049,9 @@ fn me_init_over_reattached_seat_is_refused() {
         pane("w1:p1", "term-a2"),
     );
     let before = world.open_binding(&a);
-    let by_context = world.run(Some("w1:p1"), None, &["human", "me", "init"]);
-    let text = by_context.refused("me init over a reattached agent seat");
-    assert!(text.contains("belongs to a Claude agent"), "{text}");
-    assert_eq!(world.open_binding(&a), before);
-
-    // Without the client-local context only the daemon can refuse.
-    fs::remove_dir_all(world.find("contexts").expect("hook context directory")).unwrap();
+    // An agent saves no client-local context, so only the daemon can refuse.
     let by_daemon = world.run(Some("w1:p1"), None, &["human", "me", "init"]);
-    let text = by_daemon.refused("me init with no client context");
+    let text = by_daemon.refused("me init over a reattached agent seat");
     assert!(!text.contains("belongs to a Claude agent"), "{text}");
     assert!(text.contains("never replaces an agent's binding"), "{text}");
     assert_eq!(world.open_binding(&a), before);
@@ -1551,10 +1571,14 @@ fn pane_agent_observation_reads_the_same_in_me_init_launch_and_diagnostics() {
     assert!(!absent_me.contains("Herdr reports"), "{absent_me}");
     assert!(absent_launch.contains("missing_hook"), "{absent_launch}");
     // Error: neither guesses. `launch` fails on the read itself; `me init`
-    // treats the failed read as no evidence and is stopped by the agent seat.
+    // treats the failed read as no evidence and is stopped by the daemon's own
+    // check of the agent seat's binding.
     assert!(!error_me.contains("Herdr reports"), "{error_me}");
     assert!(!error_me.contains("scripted read error"), "{error_me}");
-    assert!(error_me.contains("belongs to a Claude agent"), "{error_me}");
+    assert!(
+        error_me.contains("never replaces an agent's binding"),
+        "{error_me}"
+    );
     assert!(
         error_launch.contains("scripted read error"),
         "{error_launch}"

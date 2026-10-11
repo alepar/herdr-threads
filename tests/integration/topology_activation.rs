@@ -6,7 +6,7 @@ use herdr_threads::{
         ownership::OwnerLock,
         paths::{InstancePaths, RuntimeContext},
     },
-    harness::context::{ContextJournal, Harness, OccupantContext, Role, SessionReference},
+    harness::context::Harness,
     host::native::NativeCli,
     ports::{
         BootstrapObserver, DurableWorkAdmission, HostCallContext, LocalClient, SnapshotHeader,
@@ -112,6 +112,8 @@ struct Fixture {
     host: Option<JoinHandle<()>>,
     stop: Cancellation,
     daemon: Option<JoinHandle<std::io::Result<bool>>>,
+    /// The sender's harness: its CLI runs as that harness's session `session` (decision 15).
+    harness: &'static str,
 }
 impl Fixture {
     fn new() -> Self {
@@ -334,7 +336,14 @@ impl Fixture {
             .unwrap();
         store.seal_snapshot_stage(&stage.id, &budget).unwrap();
         store.publish_snapshot_stage(&stage.id, &budget).unwrap();
-        let execution = Uuid::new_v4();
+        // The sender's binding carries its session's execution, as every claim of that session
+        // does.
+        let execution = herdr_threads::harness::context::session_execution(
+            instance,
+            original_harness,
+            "session",
+            None,
+        );
         for (seat, target, terminal) in [
             ("sender", "w4:p1", "term_1"),
             ("recipient", "w4:p2", "term_2"),
@@ -344,30 +353,6 @@ impl Fixture {
         db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES('sender',1,'w4:p1',?1,1,1,?3,'session',?2,'cooperative_top_level',0,0,'term_1',?1)",rusqlite::params![observation.host_boot.as_str(),execution.to_string(), original_harness.as_str()]).unwrap();
         drop(db);
         drop(store);
-        use sha2::{Digest, Sha256};
-        let contexts = paths
-            .instance_dir
-            .join("contexts")
-            .join(format!("{:x}", Sha256::digest(b"sender")));
-        fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(&contexts)
-            .unwrap();
-        ContextJournal::open(&contexts, instance, "sender", Duration::from_secs(1))
-            .unwrap()
-            .install_reattached(OccupantContext {
-                format_version: 1,
-                instance,
-                seat: "sender".into(),
-                target: "w4:p1".into(),
-                harness: original_harness,
-                binding_generation: 1,
-                execution,
-                session: SessionReference::Native("session".into()),
-                role: Role::TopLevel,
-            })
-            .unwrap();
         let stop = Cancellation::default();
         let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
         let (daemon_paths, daemon_context, daemon_clock, daemon_stop) =
@@ -436,6 +421,7 @@ impl Fixture {
             host: pending_host.host.take(),
             stop,
             daemon: pending_daemon.daemon.take(),
+            harness: original_harness.as_str(),
         };
         let until = Instant::now() + Duration::from_secs(5);
         while fixture.db().query_row("SELECT count(*) FROM host_instances WHERE reconciled_boot IS NOT NULL AND reconciled_boot=recovery_boot AND reconciled_epoch=recovery_epoch", [], |r|r.get::<_,i64>(0)).unwrap() == 0 {
@@ -492,6 +478,9 @@ impl Fixture {
             );
         if let Some(pane) = pane {
             cmd.env("HERDR_PANE_ID", pane);
+        }
+        if !actor {
+            herdr_threads::test_support::isolation::as_agent(&mut cmd, self.harness, "session");
         }
         spawn::tag(&mut cmd).output().unwrap()
     }
@@ -1955,7 +1944,11 @@ fn current_main_registered_original_caller_preserves_bootstrap_and_delivery_clai
         native_session: NativeSessionId::new("session"),
         execution: ExecutionId::new(execution),
         agent_id: None,
-        liveness: None,
+        // The CLI's harness is the stand-in process of its session (`as_agent`), whose
+        // fingerprint it sends.
+        liveness: Some(
+            herdr_threads::test_support::isolation::stand_in_fingerprint("hermes", "session"),
+        ),
     };
     let setup = f.cli(
         &["setup", "codex", "--harness-binary", "/usr/bin/true"],
@@ -2172,7 +2165,7 @@ fn elected_generic_refuses_fresh_and_saved_recovery_before_publication_or_effect
         execution: ExecutionId::new(execution),
         target: HostTargetId::new("w4:p1"),
         agent_id: None,
-        liveness: None,
+        liveness: Some(herdr_threads::protocol::authority::LivenessFingerprint::TEST),
     };
     let payload = BootstrapPayload {
         handoff: HandoffPayload {

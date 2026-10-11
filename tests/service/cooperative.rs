@@ -99,11 +99,11 @@ fn claim() -> CallerClaim {
         binding_generation: 0,
         role: CallerRole::TopLevel,
         harness: Harness::Codex,
-        native_session: NativeSessionId::new("plugin_context:n"),
+        native_session: NativeSessionId::new("session-n"),
         execution: ExecutionId::new("00000000-0000-4000-8000-000000000001"),
         target: HostTargetId::new("p"),
         agent_id: None,
-        liveness: None,
+        liveness: Some(crate::protocol::authority::LivenessFingerprint::TEST),
     }
 }
 fn lifecycle(claim: CallerClaim, operation: &str) -> Command {
@@ -266,6 +266,7 @@ fn explicit_send_accept_and_ack_are_separate_sqlite_decisions() {
     let mut recipient = claim();
     recipient.seat = SeatId::new("recipient");
     recipient.target = HostTargetId::new("q");
+    recipient.liveness = Some(crate::protocol::authority::LivenessFingerprint { pid: 2, start: 1 });
     recipient.execution = ExecutionId::new("00000000-0000-4000-8000-000000000002");
     let recipient = checked(&service, lifecycle(recipient, "recipient")).context;
     let pending = || {
@@ -392,7 +393,7 @@ fn changed_context_is_fenced_and_historical_replay_cannot_restore_predecessor() 
     // execution, and no second binding was registered or forked.
     assert_eq!(
         db.query_row(
-            "SELECT execution_id FROM occupant_bindings WHERE seat_id='s' AND native_session='plugin_context:n' AND ended_at IS NULL",
+            "SELECT execution_id FROM occupant_bindings WHERE seat_id='s' AND native_session='session-n' AND ended_at IS NULL",
             [],
             |r| r.get::<_, String>(0)
         )
@@ -1019,6 +1020,7 @@ fn sends_succeed_after_host_outage_epoch_advance_and_reconfirmation() {
     let mut recipient = claim();
     recipient.seat = SeatId::new("recipient");
     recipient.target = HostTargetId::new("q");
+    recipient.liveness = Some(crate::protocol::authority::LivenessFingerprint { pid: 2, start: 1 });
     recipient.execution = ExecutionId::new("00000000-0000-4000-8000-000000000002");
     let recipient = checked(&service, lifecycle(recipient, "recipient")).context;
     let CommandResult::ThreadCreated(thread) = service
@@ -1227,6 +1229,7 @@ fn send_before_first_pass_to_structurally_continuous_seat_has_no_warning() {
     let mut recipient = claim();
     recipient.seat = SeatId::new("recipient");
     recipient.target = HostTargetId::new("q");
+    recipient.liveness = Some(crate::protocol::authority::LivenessFingerprint { pid: 2, start: 1 });
     recipient.execution = ExecutionId::new("00000000-0000-4000-8000-000000000002");
     let recipient = checked(&service, lifecycle(recipient, "recipient")).context;
     let CommandResult::ThreadCreated(thread) = service
@@ -1462,6 +1465,7 @@ fn lazy_inbox_fix_real_service_completion() {
     let mut recipient = claim();
     recipient.seat = SeatId::new("recipient");
     recipient.target = HostTargetId::new("q");
+    recipient.liveness = Some(crate::protocol::authority::LivenessFingerprint { pid: 2, start: 1 });
     recipient.execution = ExecutionId::new("00000000-0000-4000-8000-000000000002");
     let recipient = checked(&service, lifecycle(recipient, "recipient")).context;
     let CommandResult::ThreadCreated(thread) = service

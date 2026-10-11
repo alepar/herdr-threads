@@ -4054,8 +4054,12 @@ pub(crate) fn cooperative_mapping(
                     "lifecycle expected generation differs from context",
                 ));
             }
-            let used: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM occupant_bindings WHERE seat_id=?1 AND execution_id=?2)",
-                params![claim.seat.as_str(),claim.execution.as_str()], |r|r.get(0)).map_err(store_error)?;
+            // Another session's execution is refused; a session's own lifecycle events share the
+            // one execution its claims carry (its binding's `execution_id`, which its later
+            // claims must match).
+            let agent = claim.agent_id.as_ref().map_or("", |agent| agent.as_str());
+            let used: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM occupant_bindings WHERE seat_id=?1 AND execution_id=?2 AND NOT (harness=?3 AND native_session=?4 AND agent_id=?5))",
+                params![claim.seat.as_str(),claim.execution.as_str(),claim.harness.as_str(),claim.native_session.as_str(),agent], |r|r.get(0)).map_err(store_error)?;
             if used {
                 return Err(api_error(
                     ErrorCode::CallerUnverified,
@@ -4308,7 +4312,6 @@ pub(crate) fn resolve_cooperative(
             placement: &placement,
             lineage: None,
         },
-        bindings::AGENT_FINGERPRINT_RULE,
         at.utc,
     )
 }

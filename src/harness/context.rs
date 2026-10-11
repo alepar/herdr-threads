@@ -107,6 +107,22 @@ impl EventKind {
     }
 }
 impl OccupantContext {
+    /// The context of an agent session's own lifecycle event: same execution (the session's),
+    /// the event's native session. The caller's session is its environment's, so it never
+    /// changes here.
+    pub fn for_agent_event(&self, native_session: Option<String>) -> Result<Self, ContextError> {
+        if self.role == Role::Subagent {
+            return Err(ContextError::Child);
+        }
+        let mut next = self.clone();
+        if let Some(session) = native_session {
+            if !valid_text(&session) {
+                return Err(ContextError::Invalid);
+            }
+            next.session = SessionReference::Native(session);
+        }
+        Ok(next)
+    }
     /// Build before serializing the eventual CLI intent. Caller persists this UUID in that intent.
     pub fn for_event(
         &self,
@@ -386,6 +402,45 @@ pub struct ContextJournal {
     instance: Uuid,
     seat: String,
     lock_timeout: Duration,
+    agent: Option<AgentCaller>,
+}
+/// The calling agent session, from the harness environment or hook payload (spec §1, decision
+/// 15). It replaces the journal's saved `current` context: an agent's identity is never read
+/// from, or written to, `context.json`. The pending/completed request records stay (they make
+/// check-in replay exact); only `current` is virtual.
+#[derive(Debug, Clone)]
+struct AgentCaller {
+    current: OccupantContext,
+    liveness: crate::protocol::authority::LivenessFingerprint,
+}
+/// Stable execution id of one agent session: the execution of every claim the session makes,
+/// lifecycle or not (and of its continuity reattachment), so the binding's `execution_id` is
+/// always the one its later claims carry, and the session's attention mark has one key. It does
+/// not name a seat: a resumed session may land on another.
+pub fn session_execution(
+    instance: Uuid,
+    harness: Harness,
+    session: &str,
+    agent_id: Option<&str>,
+) -> Uuid {
+    use sha2::{Digest, Sha256};
+    let mut hash = Sha256::new();
+    for part in [
+        "herdr-threads session execution v2",
+        &instance.to_string(),
+        harness.as_str(),
+        session,
+        agent_id.unwrap_or(""),
+    ] {
+        hash.update((part.len() as u64).to_be_bytes());
+        hash.update(part.as_bytes());
+    }
+    let digest = hash.finalize();
+    let mut bytes = [0u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    bytes[6] = (bytes[6] & 0x0f) | 0x50;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    Uuid::from_bytes(bytes)
 }
 impl ContextJournal {
     /// Directory must already exist, be private, and contain no symlink ancestors.
@@ -410,7 +465,47 @@ impl ContextJournal {
             instance,
             seat: seat.into(),
             lock_timeout,
+            agent: None,
         })
+    }
+    /// Make this handle act as one agent session: `current()` is that session's context at the
+    /// seat's mapping generation, nothing about it is persisted, and claims built through
+    /// [`Self::claim`] carry `liveness`. The context is derived from the caller's environment
+    /// or hook payload, never from `context.json`.
+    pub fn with_agent_caller(
+        mut self,
+        current: OccupantContext,
+        liveness: crate::protocol::authority::LivenessFingerprint,
+    ) -> Result<Self, ContextError> {
+        self.validate_context(&current)?;
+        self.agent = Some(AgentCaller { current, liveness });
+        Ok(self)
+    }
+    /// Whether this handle acts as an agent session (see [`Self::with_agent_caller`]).
+    pub fn is_agent_caller(&self) -> bool {
+        self.agent.is_some()
+    }
+    /// The context in force: the agent session when this handle acts as one, else the saved one.
+    fn effective<'a>(&'a self, state: &'a State) -> Option<&'a OccupantContext> {
+        self.agent
+            .as_ref()
+            .map(|agent| &agent.current)
+            .or(state.current.as_ref())
+    }
+    /// The caller's claim for `context`: `bridge::caller_claim` plus the agent session's liveness
+    /// fingerprint when `context` is that session's.
+    pub fn claim(
+        &self,
+        context: &OccupantContext,
+    ) -> Result<crate::protocol::authority::CallerClaim, ContextError> {
+        let mut claim = crate::harness::bridge::caller_claim(context)?;
+        if let Some(agent) = &self.agent
+            && context.session == agent.current.session
+            && context.harness == agent.current.harness
+        {
+            claim.liveness = Some(agent.liveness);
+        }
+        Ok(claim)
     }
     fn lock(&self) -> Result<File, ContextError> {
         private_metadata(&self.directory, true)?;
@@ -747,7 +842,8 @@ impl ContextJournal {
     }
     pub fn current(&self) -> Result<Option<OccupantContext>, ContextError> {
         let _lock = self.lock()?;
-        Ok(self.load()?.current)
+        let state = self.load()?;
+        Ok(self.effective(&state).cloned())
     }
     /// The current context read without taking `context.lock`, for display
     /// paths that must never wait on (or delay) a check-in. `save` replaces
@@ -755,7 +851,8 @@ impl ContextJournal {
     /// one before or the one after a concurrent write, never a torn file.
     /// Not for decisions: it can be one write behind.
     pub fn current_snapshot(&self) -> Result<Option<OccupantContext>, ContextError> {
-        Ok(self.load()?.current)
+        let state = self.load()?;
+        Ok(self.effective(&state).cloned())
     }
     pub fn pending(&self) -> Result<Option<PendingCheckIn>, ContextError> {
         let _lock = self.lock()?;
@@ -832,7 +929,7 @@ impl ContextJournal {
         if state.completed.len() >= MAX_HISTORY {
             return Err(ContextError::TooLarge);
         }
-        let request = factory(state.current.as_ref())?;
+        let request = factory(self.effective(&state))?;
         if request.event_id != event_id {
             return Err(ContextError::Conflict);
         }
@@ -888,7 +985,11 @@ impl ContextJournal {
         reset.ordering.validate_deadline(now)?;
         let _lock = self.lock()?;
         let mut state = self.load()?;
-        let Some(current) = &state.current else {
+        let Some(current) = state
+            .current
+            .clone()
+            .or_else(|| Self::last_registered(&state).cloned())
+        else {
             return Ok(false);
         };
         if current.harness != harness
@@ -996,13 +1097,20 @@ impl ContextJournal {
                 return Err(ContextError::Conflict);
             }
         }
+        // The context a reset is measured against: the saved one, or for an agent session (which
+        // saves none) the one this journal last checked in.
+        let predecessor = if self.agent.is_some() {
+            Self::last_registered(&state)
+        } else {
+            state.current.as_ref()
+        };
         let reset_hint = state.declared_resets.iter().position(|r| {
             !r.consumed
                 && r.harness == harness
                 && r.target == target
                 && r.session == turn.session
                 && now.saturating_sub(r.observed_at_millis) <= RESET_HINT_TTL
-                && state.current.as_ref().is_some_and(|c| {
+                && predecessor.is_some_and(|c| {
                     c.binding_generation == r.generation
                         && c.session != SessionReference::Native(turn.session.clone())
                 })
@@ -1012,6 +1120,20 @@ impl ContextJournal {
                 })
         });
         let kind = match state.current.as_ref() {
+            // An agent session has no saved predecessor: a witnessed or declared reset is a Clear,
+            // a session this journal already checked in is a Tool turn, and any other is its
+            // Startup. The daemon resolves the binding either way.
+            _ if self.agent.is_some() => {
+                if turn.reset.is_some() {
+                    EventKind::Clear
+                } else if Self::session_in_state(&state, &turn.session) {
+                    EventKind::Tool
+                } else if reset_hint.is_some() {
+                    EventKind::Clear
+                } else {
+                    EventKind::Startup
+                }
+            }
             None => EventKind::Startup,
             Some(current) => {
                 if current.harness != harness || current.target != target {
@@ -1039,7 +1161,7 @@ impl ContextJournal {
                 }
             }
         };
-        let request = factory(state.current.as_ref(), kind)?;
+        let request = factory(self.effective(&state), kind)?;
         if request.event_id != turn.event_key
             || request.mode != kind.mode()
             || request.context.harness != harness
@@ -1074,6 +1196,34 @@ impl ContextJournal {
             .retain(|r| now.saturating_sub(r.observed_at_millis) <= RESET_HINT_TTL);
         self.prepare_locked_kind(&mut state, request.clone(), Some(kind))?;
         Ok(request)
+    }
+    /// The context of the latest check-in this journal completed (not a historical reply).
+    fn last_registered(state: &State) -> Option<&OccupantContext> {
+        state
+            .completed
+            .iter()
+            .rev()
+            .find(|done| !done.response.historical)
+            .map(|done| &done.response.context)
+    }
+    /// The saved context, else the one last checked in: what an observer matches a target against.
+    pub fn registered_snapshot(&self) -> Result<Option<OccupantContext>, ContextError> {
+        let state = self.load()?;
+        Ok(state
+            .current
+            .clone()
+            .or_else(|| Self::last_registered(&state).cloned()))
+    }
+    fn session_in_state(state: &State, session: &str) -> bool {
+        state.completed.iter().any(|done| {
+            !done.response.historical
+                && done.request.context.session == SessionReference::Native(session.to_owned())
+        })
+    }
+    /// Whether this journal already checked `session` in (a Current turn, not a Startup).
+    pub fn session_known(&self, session: &str) -> Result<bool, ContextError> {
+        let _lock = self.lock()?;
+        Ok(Self::session_in_state(&self.load()?, session))
     }
     fn request_in_state<'a>(state: &'a State, event_id: &str) -> Option<&'a PendingCheckIn> {
         state
@@ -1137,8 +1287,8 @@ impl ContextJournal {
         }
         match request.mode {
             CheckInMode::Current => {
-                if state.current.as_ref() != Some(&request.context) {
-                    return Err(if state.current.is_none() {
+                if self.effective(state) != Some(&request.context) {
+                    return Err(if self.effective(state).is_none() {
                         ContextError::LifecycleRequired
                     } else {
                         ContextError::Conflict
@@ -1151,7 +1301,7 @@ impl ContextJournal {
                 // invalidation and reconfirmation, operator repair), CASes
                 // the service's newer generation. It never targets an older
                 // one.
-                let local = state.current.as_ref().map(|c| c.binding_generation);
+                let local = self.effective(state).map(|c| c.binding_generation);
                 if local.is_some_and(|local| {
                     request
                         .expected_generation
@@ -1164,15 +1314,20 @@ impl ContextJournal {
                 // (TRUST-POLICY A4) and `dispatch` replaces `current` only on
                 // success.
                 let person_over_agent = request.context.harness == Harness::Human;
-                if state.current.as_ref().is_some_and(|c| {
-                    c.execution == request.context.execution
-                        || c.target != request.context.target
+                // An agent session's lifecycle events share its one execution.
+                let reused = self.agent.is_none()
+                    && (self
+                        .effective(state)
+                        .is_some_and(|c| c.execution == request.context.execution)
+                        || state
+                            .completed
+                            .iter()
+                            .any(|d| d.request.context.execution == request.context.execution));
+                if self.effective(state).is_some_and(|c| {
+                    c.target != request.context.target
                         || (c.harness != request.context.harness
                             && !(person_over_agent && c.harness != Harness::Human))
-                }) || state
-                    .completed
-                    .iter()
-                    .any(|d| d.request.context.execution == request.context.execution)
+                }) || reused
                 {
                     return Err(ContextError::Conflict);
                 }
@@ -1248,7 +1403,9 @@ impl ContextJournal {
             {
                 return Err(ContextError::Conflict);
             }
-            state.current = Some(response.context.clone());
+            if self.agent.is_none() {
+                state.current = Some(response.context.clone());
+            }
         }
         state.completed.push(Completed {
             request,
@@ -1306,7 +1463,27 @@ impl ContextJournal {
                 operation_id: pending.operation_id,
             });
         }
-        state.current = Some(context);
+        if self.agent.is_none() {
+            state.current = Some(context);
+        }
+        prune(&mut state, now_millis());
+        prune_kinds(&mut state);
+        self.save(&state)?;
+        Ok(abandoned)
+    }
+    /// Move the pending request, if any, to `abandoned` and return it. A continuity reattachment
+    /// of an agent session installs no context (its identity is its environment); the request
+    /// pending for the replaced one is dead all the same.
+    pub fn abandon_any_pending(&self) -> Result<Option<PendingCheckIn>, ContextError> {
+        let _lock = self.lock()?;
+        let mut state = self.load()?;
+        let abandoned = state.pending.take();
+        if let Some(pending) = &abandoned {
+            state.abandoned.push(Abandoned {
+                event_id: pending.event_id.clone(),
+                operation_id: pending.operation_id,
+            });
+        }
         prune(&mut state, now_millis());
         prune_kinds(&mut state);
         self.save(&state)?;

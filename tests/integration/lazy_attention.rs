@@ -155,6 +155,7 @@ impl Fixture {
     }
     fn check(&self, seat: &str, op: &str, startup: bool) -> CheckInResult {
         let mut claim = self.claim(seat);
+        claim.liveness = Some(herdr_threads::protocol::authority::LivenessFingerprint::TEST);
         if startup {
             claim.execution = ExecutionId::new(uuid::Uuid::new_v4().to_string());
         }

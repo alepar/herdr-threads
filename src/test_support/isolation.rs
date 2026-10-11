@@ -110,7 +110,67 @@ impl TestIsolation {
 pub fn scrub_env(command: &mut Command) -> &mut Command {
     scrub_inherited(command, std::env::vars_os().map(|(key, _)| key));
     crate::test_support::spawn::tag(command);
+    // The harness above the test runner (the developer's own Claude Code, say) is not this
+    // child's caller: its ancestry, for `caller_env`, ends at the test process.
+    command.env("HT_TEST_ANCESTRY_FLOOR_PID", std::process::id().to_string());
     command
+}
+
+/// Make `command` an agent of `harness` ("claude" | "codex" | "hermes") running session
+/// `session`, for tests that drive the binary with `--cooperative-*` flags: the spawning test
+/// process stands in for the harness process (fingerprint included) and the harness's own session
+/// variable carries `session`. Real process ancestry is `harness_shim`'s job.
+pub fn as_agent<'a>(command: &'a mut Command, harness: &str, session: &str) -> &'a mut Command {
+    let variable = match harness {
+        "claude" => "CLAUDE_CODE_SESSION_ID",
+        "codex" => "CODEX_SESSION_ID",
+        _ => "HERMES_SESSION_ID",
+    };
+    let stand_in = stand_in_process(harness, session).to_string();
+    // Claude exports its own pid, and a claim prefers it: it names the stand-in too, never the
+    // developer's real Claude session the test runner may sit under.
+    command
+        .env("CLAUDE_PID", &stand_in)
+        .env("HT_TEST_HARNESS", harness)
+        .env("HT_TEST_HARNESS_PID", &stand_in)
+        .env(variable, session)
+}
+
+/// The liveness fingerprint of the stand-in process of `session` (see [`as_agent`]): a live
+/// process of its own, so the liveness worker keeps its binding connected.
+pub fn stand_in_fingerprint(
+    harness: &str,
+    session: &str,
+) -> crate::protocol::authority::LivenessFingerprint {
+    use crate::ports::ProcessInfo;
+    let record = crate::host::process_table::HostProcessTable
+        .process(stand_in_process(harness, session))
+        .expect("the stand-in process is in the process table");
+    crate::protocol::authority::LivenessFingerprint::of(&record)
+}
+
+/// The pid of a long-lived process standing in for the harness process of `session`, started on
+/// first use and shared by every command of that session in this test process. Two sessions are
+/// two processes, as in a real run (a shared fingerprint would make one supersede the other).
+/// It is owned (`spawn_owned`): the reaper stops it once the test process is gone.
+fn stand_in_process(harness: &str, session: &str) -> u32 {
+    use crate::test_support::spawn::{OwnedChild, SpawnOwned};
+    use std::{collections::HashMap, process::Stdio, sync::Mutex};
+    static STAND_INS: Mutex<Option<HashMap<String, OwnedChild>>> = Mutex::new(None);
+    let mut stand_ins = STAND_INS.lock().unwrap_or_else(|e| e.into_inner());
+    stand_ins
+        .get_or_insert_with(HashMap::new)
+        .entry(format!("{harness}/{session}"))
+        .or_insert_with(|| {
+            Command::new("/bin/sleep")
+                .arg("86400")
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn_owned()
+                .expect("start a stand-in harness process")
+        })
+        .id()
 }
 
 /// The removal half of [`scrub_env`] over an explicit list of inherited

@@ -434,9 +434,9 @@ fn user_intent_service_send_stays_unclassified() {
             binding_generation: 0,
             role: CallerRole::TopLevel,
             harness: Harness::Codex,
-            native_session: NativeSessionId::new("plugin_context:worker"),
+            native_session: NativeSessionId::new("session-worker"),
             execution: ExecutionId::new("00000000-0000-4000-8000-000000000211"),
-            target: HostTargetId::new("pane-worker"), agent_id: None, liveness: None, };
+            target: HostTargetId::new("pane-worker"), agent_id: None, liveness: Some(herdr_threads::protocol::authority::LivenessFingerprint::current_process()), };
         let CommandResult::CheckedIn(checked) = native(Command::CheckIn(CheckIn {
             mode: CheckInMode::Lifecycle {
                 expected_binding_generation: 0,

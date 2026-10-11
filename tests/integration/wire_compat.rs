@@ -237,6 +237,11 @@ impl Plugin {
     fn raw(&self, agent: Option<(&str, &str, &str)>, args: &[&str]) -> Output {
         let mut command = self.command();
         if let Some((seat, target, harness)) = agent {
+            herdr_threads::test_support::isolation::as_agent(
+                &mut command,
+                harness,
+                &format!("wire-{}", seat),
+            );
             command.args([
                 "--cooperative-seat",
                 seat,
@@ -588,6 +593,7 @@ fn hook_parse_failure_under_optimistic_sends_no_report_to_an_old_daemon() {
             .arg("--host-endpoint")
             .arg(&world.plugin.host)
             .args(["hook", "claude"])
+            .env("HT_TEST_HARNESS", "claude")
             .env("HERDR_ENV", "1")
             .env("HERDR_PANE_ID", "w1:p1")
             .env("HERDR_SOCKET_PATH", &world.plugin.host)

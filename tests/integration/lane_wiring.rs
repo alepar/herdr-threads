@@ -138,6 +138,16 @@ impl Session {
     }
 
     pub(crate) fn cli(&self, caller: Option<&Caller>, args: &[&str]) -> (i32, Value, String) {
+        self.cli_in_session(caller, None, args)
+    }
+
+    /// `cli`, with the agent's harness session set to `session` instead of the caller's default.
+    pub(crate) fn cli_in_session(
+        &self,
+        caller: Option<&Caller>,
+        session: Option<&str>,
+        args: &[&str],
+    ) -> (i32, Value, String) {
         let mut command = self.herdr.command(BIN);
         command
             .arg("--json")
@@ -146,6 +156,11 @@ impl Session {
             .arg("--host-endpoint")
             .arg(self.herdr.socket_path());
         if let Some(caller) = caller {
+            herdr_threads::test_support::isolation::as_agent(
+                &mut command,
+                "claude",
+                &session.map_or_else(|| format!("wiring-{}", caller.seat), str::to_owned),
+            );
             command.args([
                 "--cooperative-seat",
                 &caller.seat,
@@ -172,7 +187,16 @@ impl Session {
     }
 
     pub(crate) fn ok(&self, caller: Option<&Caller>, args: &[&str]) -> Value {
-        let (code, value, stderr) = self.cli(caller, args);
+        self.ok_in_session(caller, None, args)
+    }
+
+    pub(crate) fn ok_in_session(
+        &self,
+        caller: Option<&Caller>,
+        session: Option<&str>,
+        args: &[&str],
+    ) -> Value {
+        let (code, value, stderr) = self.cli_in_session(caller, session, args);
         assert_eq!(code, 0, "herdr-threads {args:?} failed: {stderr}{value}");
         value["result"]["data"].clone()
     }

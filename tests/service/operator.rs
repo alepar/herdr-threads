@@ -578,6 +578,14 @@ fn cli_operator_and_pane_derived_agent_forms_drive_the_elected_service() {
     };
     let run = |pane: Option<&str>, args: &[&str]| -> Result<serde_json::Value, RunError> {
         let mut out = Vec::new();
+        // An agent-namespace call acts as its harness session (decision 15); a person's keeps
+        // the pane-context path.
+        let _agent = (args.first() != Some(&"human")).then(|| {
+            crate::agent_caller(
+                "claude",
+                &format!("operator-session-{}", session_pane(pane, args)),
+            )
+        });
         run_in_pane(base(args), pane, &mut out)?;
         Ok(serde_json::from_slice(&out).unwrap())
     };
@@ -916,6 +924,14 @@ fn cli_pane_derivation_covers_retry_and_seat_default_reads() {
     };
     let run = |pane: Option<&str>, args: &[&str]| -> Result<serde_json::Value, RunError> {
         let mut out = Vec::new();
+        // An agent-namespace call acts as its harness session (decision 15); a person's keeps
+        // the pane-context path.
+        let _agent = (args.first() != Some(&"human")).then(|| {
+            crate::agent_caller(
+                "claude",
+                &format!("operator-session-{}", session_pane(pane, args)),
+            )
+        });
         run_in_pane(base(args), pane, &mut out)?;
         Ok(serde_json::from_slice(&out).unwrap())
     };
@@ -979,6 +995,7 @@ fn cli_pane_derivation_covers_retry_and_seat_default_reads() {
 
     // A pane-derived send whose output is lost stays journaled.
     let mut lost = LostOutput;
+    let _agent = crate::agent_caller("claude", "operator-session");
     assert!(
         run_in_pane(
             base(&[
@@ -1223,4 +1240,14 @@ fn elected_operator_replace_over_ipc() {
             ("operator_rebind".to_owned(), label)
         ]
     );
+}
+
+/// The pane a test call acts from: its `--cooperative-target`, else the invoking pane. Each pane
+/// is its own harness session (and process), so seats do not supersede each other.
+fn session_pane<'a>(pane: Option<&'a str>, args: &[&'a str]) -> &'a str {
+    args.windows(2)
+        .find(|pair| pair[0] == "--cooperative-target")
+        .map(|pair| pair[1])
+        .or(pane)
+        .unwrap_or("")
 }

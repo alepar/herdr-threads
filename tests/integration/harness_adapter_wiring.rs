@@ -133,8 +133,10 @@ impl World {
         serde_json::from_slice(&output.stdout).unwrap()
     }
     fn hook(&self, harness: &str, pane: &str, payload: &Value) -> Value {
-        let mut child = self
-            .command()
+        let mut command = self.command();
+        // A hook runs under its harness (the test process stands in for it).
+        herdr_threads::test_support::isolation::as_agent(&mut command, harness, "hook-session");
+        let mut child = command
             .args(self.routed(&["hook", harness]))
             .env("HERDR_ENV", "1")
             .env("HERDR_PANE_ID", pane)

@@ -109,6 +109,11 @@ mod operator_ux;
 #[cfg(feature = "test-support")]
 #[path = "integration/pane_close_retirement.rs"]
 mod pane_close_retirement;
+/// ht-54r.5: agent callers are attributed from the harness environment, the real
+/// binary under a synthetic harness parent.
+#[cfg(feature = "test-support")]
+#[path = "integration/session_claims.rs"]
+mod session_claims;
 /// Real versionless setup output/configuration through the live canary consumer.
 #[cfg(feature = "test-support")]
 #[path = "integration/setup_canary_seam.rs"]

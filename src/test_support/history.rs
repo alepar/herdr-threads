@@ -109,7 +109,9 @@ impl Actor {
             execution: self.execution.clone(),
             target: self.target.clone(),
             agent_id: None,
-            liveness: None,
+            // An agent claim that enrolls or reconnects carries its harness fingerprint.
+            liveness: (self.harness != Harness::Human)
+                .then_some(crate::protocol::authority::LivenessFingerprint::TEST),
         }
     }
     fn permit(

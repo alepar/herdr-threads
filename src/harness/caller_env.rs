@@ -158,13 +158,47 @@ fn walk(
                     inputs.self_pid
                 ),
             })?;
+    // Test builds: a stand-in agent. `HT_TEST_HARNESS=claude|codex|hermes` makes the spawning test
+    // process (this one's parent) the harness, so a test that drives the binary with
+    // `--cooperative-*` flags need not build a real process tree (see `test_support::isolation::
+    // as_agent`). Never compiled into a release binary.
+    #[cfg(any(test, feature = "test-support"))]
+    if let Some(kind) = env_var(inputs, "HT_TEST_HARNESS") {
+        // A hook names its own harness, which may be a synthetic registered adapter.
+        let kind: &'static str = match (kind.as_str(), want) {
+            ("claude", _) => "claude",
+            ("codex", _) => "codex",
+            ("hermes", _) => "hermes",
+            (_, Some(_)) => "stand-in",
+            _ => return Err(EnvRefusal::NoHarness),
+        };
+        // `HT_TEST_HARNESS_PID` names a long-lived stand-in process for this caller's session
+        // (`test_support::isolation::as_agent`), so two sessions are two processes.
+        let stand_in = env_var(inputs, "HT_TEST_HARNESS_PID")
+            .and_then(|pid| pid.trim().parse::<u32>().ok())
+            .or(own.parent);
+        if (kind == "stand-in" || want.is_none_or(|w| w == kind))
+            && let Some(parent) = stand_in.and_then(|pid| inputs.processes.process(pid))
+        {
+            return Ok((kind, parent));
+        }
+    }
     let mut seen = vec![own.pid];
     let mut next = own.parent;
+    // Test builds: a test that spawns this binary names its own pid as the top of the ancestry
+    // it means to simulate, so the real harness above the test runner never counts.
+    #[cfg(any(test, feature = "test-support"))]
+    let floor: Option<u32> =
+        env_var(inputs, "HT_TEST_ANCESTRY_FLOOR_PID").and_then(|pid| pid.trim().parse().ok());
     for _ in 0..MAX_HOPS {
         let Some(pid) = next.filter(|p| *p > 1) else {
             break;
         };
         if seen.contains(&pid) {
+            break;
+        }
+        #[cfg(any(test, feature = "test-support"))]
+        if floor == Some(pid) {
             break;
         }
         seen.push(pid);

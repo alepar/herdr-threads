@@ -1,5 +1,6 @@
 use super::*;
 use crate::cli::commands::{parse_argv, parse_argv_or_informational};
+use crate::harness::bridge;
 use crate::protocol::commands::{Command as WireCommand, HistoryRange};
 use crate::protocol::{
     ids::*,

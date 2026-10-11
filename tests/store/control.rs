@@ -1362,7 +1362,7 @@ fn claim(seat: &str) -> CallerClaim {
         execution: ExecutionId::new("00000000-0000-4000-8000-000000000001"),
         target: HostTargetId::new(seat),
         agent_id: None,
-        liveness: None,
+        liveness: Some(crate::protocol::authority::LivenessFingerprint::TEST),
     }
 }
 fn permit(

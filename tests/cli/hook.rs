@@ -2873,17 +2873,48 @@ mod continuity_gate {
         let seat = SeatId::new("saved");
         let contexts = crate::cli::seat_contexts(&pane.paths, pane.instance, &seat).unwrap();
         if registered {
-            contexts
-                .install_reattached(OccupantContext {
-                    format_version: 1,
-                    instance: pane.instance,
-                    seat: "saved".into(),
-                    target: pane.target.as_str().into(),
-                    harness: Harness::Claude,
-                    binding_generation: 1,
-                    execution: uuid::Uuid::new_v4(),
-                    session: SessionReference::Native("S-1".into()),
-                    role: Role::TopLevel,
+            // S-1 already checked in: its lifecycle request is a completed entry of the journal,
+            // which is how a later turn of that session is known to be a Current turn.
+            let context = OccupantContext {
+                format_version: 1,
+                instance: pane.instance,
+                seat: "saved".into(),
+                target: pane.target.as_str().into(),
+                harness: Harness::Claude,
+                binding_generation: 1,
+                execution: uuid::Uuid::new_v4(),
+                session: SessionReference::Native("S-1".into()),
+                role: Role::TopLevel,
+            };
+            let earlier = crate::cli::seat_contexts(&pane.paths, pane.instance, &seat)
+                .unwrap()
+                .with_agent_caller(
+                    context.clone(),
+                    crate::protocol::authority::LivenessFingerprint::TEST,
+                )
+                .unwrap();
+            earlier
+                .prepare(PendingCheckIn {
+                    operation_id: uuid::Uuid::new_v4(),
+                    mode: crate::harness::context::CheckInMode::Lifecycle,
+                    // A lifecycle claim carries a fresh execution of its own.
+                    context: OccupantContext {
+                        execution: uuid::Uuid::new_v4(),
+                        ..context
+                    },
+                    expected_generation: Some(1),
+                    event_id: "registered-earlier".into(),
+                    payload_version: 1,
+                    payload: b"{}".to_vec(),
+                })
+                .unwrap();
+            earlier
+                .dispatch("registered-earlier", &mut |pending: &PendingCheckIn| {
+                    Ok(crate::harness::context::CheckInResponse {
+                        context: pending.context.clone(),
+                        historical: false,
+                        output: Vec::new(),
+                    })
                 })
                 .unwrap();
         }
@@ -3112,9 +3143,10 @@ mod continuity_gate {
     }
 
     // Kills: a request that names a seat, drops the harness, session or source,
-    // a follow-up lifecycle check-in, or a context not written from the reply.
+    // a follow-up lifecycle check-in, or a context written from the reply (an
+    // agent's identity is its environment, never a saved context).
     #[test]
-    fn resume_reattaches_in_one_request_and_installs_the_context() {
+    fn resume_reattaches_in_one_request_and_saves_no_context() {
         for harness in [Harness::Claude, Harness::Codex] {
             let pane = Pane::new();
             let daemon = Daemon::new(vec![reattached("saved", 3)]);
@@ -3149,15 +3181,9 @@ mod continuity_gate {
                 )),
                 "no follow-up lifecycle check-in"
             );
-            let context = pane.saved_context("saved").expect("context installed");
-            assert_eq!(context.binding_generation, 3);
-            assert_eq!(context.target, pane.target.as_str());
-            assert_eq!(context.harness, harness);
-            assert_eq!(context.session, SessionReference::Native("S-1".into()));
-            assert_eq!(context.role, Role::TopLevel);
-            assert_eq!(
-                context.execution.to_string(),
-                requests[0].execution.as_str()
+            assert!(
+                pane.saved_context("saved").is_none(),
+                "a reattached agent session saves no context"
             );
             assert!(pane.pending().is_none(), "the intent is completed");
         }
@@ -3184,19 +3210,13 @@ mod continuity_gate {
             requests[1].operation.as_str(),
             requests[0].operation.as_str()
         );
-        let context = pane.saved_context("saved").expect("context installed");
-        assert_eq!(context.binding_generation, 5);
-        assert_eq!(
-            context.execution.to_string(),
-            requests[1].execution.as_str(),
-            "the context carries the execution of the intent that reattached"
-        );
+        assert!(pane.saved_context("saved").is_none());
         assert!(pane.pending().is_none());
     }
 
     // Kills: a currency check that rejects a replay that is the pane's mapping.
     #[test]
-    fn a_reused_intent_whose_replay_is_current_installs_it() {
+    fn a_reused_intent_whose_replay_is_current_completes_it() {
         let pane = Pane::new();
         pane.record("S-1");
         let daemon = Daemon::new(vec![reattached("saved", 2)]).with_lookups(vec![vec!["saved"]]);
@@ -3207,8 +3227,11 @@ mod continuity_gate {
                 .is_some()
         );
         assert_eq!(daemon.continuity_requests().len(), 1);
-        assert_eq!(pane.saved_context("saved").unwrap().binding_generation, 2);
-        assert!(pane.pending().is_none());
+        assert!(pane.saved_context("saved").is_none());
+        assert!(
+            pane.pending().is_none(),
+            "the confirmed replay completes the intent"
+        );
     }
 
     // Kills: installing or reporting success for a replay whose currency the
@@ -3245,10 +3268,10 @@ mod continuity_gate {
         assert_eq!(daemon.lookup_count(), 0);
     }
 
-    // Kills: a context install that keeps a saved context for another pane or
-    // an older generation, or leaves its dead pending request's intent behind.
+    // Kills: a reattachment that rewrites the seat's saved context (it is a person's hint and
+    // an agent never owns it).
     #[test]
-    fn reattachment_replaces_any_saved_context_of_the_seat() {
+    fn reattachment_leaves_the_saved_context_of_the_seat_alone() {
         let pane = Pane::new();
         let contexts =
             crate::cli::seat_contexts(&pane.paths, pane.instance, &SeatId::new("saved")).unwrap();
@@ -3276,9 +3299,10 @@ mod continuity_gate {
         let context = pane.saved_context("saved").unwrap();
         assert_eq!(
             (context.target.as_str(), context.binding_generation),
-            (pane.target.as_str(), 4)
+            ("old-pane", 1),
+            "the stale context is neither replaced nor consulted"
         );
-        assert_ne!(context.execution, execution);
+        assert_eq!(context.execution, execution);
     }
 
     // Kills: keeping a refused intent, which would be resubmitted by every
@@ -3389,7 +3413,7 @@ mod continuity_gate {
                 .all(|r| r.execution == requests[0].execution)
         );
         assert!(pane.pending().is_none(), "one intent, completed");
-        assert_eq!(pane.saved_context("saved").unwrap().binding_generation, 2);
+        assert!(pane.saved_context("saved").is_none());
     }
 
     // Kills: reusing an intent of another session (a seat would move on
@@ -3435,7 +3459,6 @@ mod continuity_gate {
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].operation, reference.operation);
         assert_eq!(requests[0].execution.as_str(), execution.to_string());
-        assert_eq!(pane.saved_context("saved").unwrap().execution, execution);
         assert!(pane.pending().is_none());
     }
 
@@ -3538,6 +3561,7 @@ mod continuity_gate {
                 | ErrorCode::RequiredInvitationNeedsManagedThread
                 | ErrorCode::SessionClaimRequired
                 | ErrorCode::LivenessFingerprintRequired
+                | ErrorCode::ManagedDaemonRefused
                 | ErrorCode::TransportDenied => false,
             }
         }
@@ -3586,6 +3610,7 @@ mod continuity_gate {
             ErrorCode::SessionClaimRequired,
             ErrorCode::LivenessFingerprintRequired,
             ErrorCode::SubagentReadOnly,
+            ErrorCode::ManagedDaemonRefused,
         ];
         for code in &all {
             assert_eq!(
@@ -4901,10 +4926,15 @@ mod mod_channel_live {
     struct Daemon {
         live: AtomicBool,
         calls: Mutex<Vec<&'static str>>,
+        /// Every CheckIn the hook sent: its mode and claim.
+        check_ins: Mutex<Vec<(WireMode, crate::protocol::authority::CallerClaim)>>,
     }
     impl Daemon {
         fn calls(&self) -> Vec<&'static str> {
             std::mem::take(&mut *self.calls.lock().unwrap())
+        }
+        fn check_ins(&self) -> Vec<(WireMode, crate::protocol::authority::CallerClaim)> {
+            self.check_ins.lock().unwrap().clone()
         }
     }
     impl LocalClient for Daemon {
@@ -4949,6 +4979,10 @@ mod mod_channel_live {
                 Command::Directory(_) => Ok(CommandResult::Directory(empty())),
                 Command::CheckIn(check) => {
                     self.calls.lock().unwrap().push("check_in");
+                    self.check_ins
+                        .lock()
+                        .unwrap()
+                        .push((check.mode, check.claim.clone()));
                     let mut claim = check.claim;
                     if let WireMode::Lifecycle {
                         expected_binding_generation,
@@ -5148,6 +5182,96 @@ mod mod_channel_live {
         assert!(done.summary.is_none());
         assert!(done.attention.is_none(), "mark stays where it was");
         assert_eq!(stdout(&ev, &done), "", "nothing reaches the model");
+    }
+
+    fn in_session(mut ev: LifecycleEvent, session: &str) -> LifecycleEvent {
+        ev.native_session = Some(session.into());
+        ev
+    }
+
+    // Kills: a tool-boundary hook that reads the pane's saved context for a session it never
+    // checked in (the old "no registered execution for this session" refusal), a claim that
+    // names the saved session instead of the payload's, and one that drops the fingerprint.
+    #[test]
+    fn second_claude_session_pre_tool_use_enrolls() {
+        let pane = Pane::new();
+        let daemon = Daemon::default();
+        pane.call(&daemon)
+            .check_in_seat(&in_session(start(), "session-A"), &seat(), 1)
+            .map_err(describe)
+            .expect("session A registers");
+        daemon.calls();
+        let ev = in_session(tool(), "session-B");
+        let done = pane
+            .call(&daemon)
+            .check_in_seat(&ev, &seat(), 1)
+            .map_err(describe)
+            .expect("session B's tool call enrolls, it is not refused");
+        assert!(
+            !String::from_utf8_lossy(&done.text).contains("no registered execution"),
+            "{:?}",
+            String::from_utf8_lossy(&done.text)
+        );
+        assert_eq!(daemon.calls(), vec!["digest", "check_in"]);
+        let sent = daemon.check_ins();
+        let (mode_a, claim_a) = &sent[0];
+        let (mode_b, claim_b) = &sent[1];
+        assert!(matches!(mode_a, WireMode::Lifecycle { .. }), "{mode_a:?}");
+        assert_eq!(mode_b, &WireMode::Current);
+        assert_eq!(claim_a.native_session.as_str(), "session-A");
+        assert_eq!(claim_b.native_session.as_str(), "session-B");
+        assert_eq!(claim_b.seat, seat());
+        assert_eq!(claim_b.binding_generation, 1);
+        for claim in [claim_a, claim_b] {
+            assert_eq!(
+                claim.liveness,
+                Some(crate::protocol::authority::LivenessFingerprint::TEST),
+                "every agent claim carries the harness fingerprint"
+            );
+            assert_eq!(claim.role, crate::protocol::authority::CallerRole::TopLevel);
+            assert_eq!(claim.agent_id, None);
+        }
+        // Nothing about either session was saved as the pane's context.
+        assert!(
+            crate::cli::seat_contexts(&pane.paths, pane.instance, &seat())
+                .unwrap()
+                .current()
+                .unwrap()
+                .is_none(),
+            "an agent's identity is its environment, not context.json"
+        );
+    }
+
+    // Kills: a subagent's tool call that checks in for the seat (or reads its digest), which would
+    // enroll the parent's session on the subagent's behalf.
+    #[test]
+    fn subagent_tool_boundary_never_checks_in_for_the_seat() {
+        let pane = Pane::new();
+        let daemon = Daemon::default();
+        let payload = serde_json::json!({
+            "hook_event_name": "PreToolUse",
+            "session_id": "session-A",
+            "agent_id": "agent-1",
+            "agent_type": "general-purpose",
+            "tool_name": "Bash",
+            "tool_use_id": "toolu_1",
+            "tool_input": {"command": "herdr-threads inbox"},
+        });
+        let mut ev = event(&serde_json::to_vec(&payload).unwrap());
+        ev.event_id = uuid::Uuid::new_v4().to_string();
+        assert_eq!(
+            ev.role,
+            Role::Subagent,
+            "the payload's agent_id makes it a child"
+        );
+        let done = pane
+            .call(&daemon)
+            .check_in_seat(&ev, &seat(), 1)
+            .map_err(describe)
+            .expect("a child's tool call is quiet, not an error");
+        assert!(done.text.is_empty());
+        assert_eq!(daemon.calls(), Vec::<&str>::new(), "no digest, no CheckIn");
+        assert!(daemon.check_ins().is_empty());
     }
 
     // Kills: the quiet tool boundary outliving the channel: with it gone the
@@ -5751,12 +5875,24 @@ mod enum_callback {
         drop(calls);
         let journal =
             crate::cli::seat_contexts(&paths, instance, &SeatId::new("callback-seat")).unwrap();
-        let saved = journal.current().unwrap().unwrap();
-        assert_eq!(saved.binding_generation, 2);
-        assert_eq!(saved.harness, args.harness);
+        // The session is the payload's, sent on the check-in; nothing is saved as the context.
+        assert!(journal.current().unwrap().is_none());
+        let sent = service
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .find_map(|c| match c {
+                Command::CheckIn(check) => Some(check.claim.clone()),
+                _ => None,
+            })
+            .expect("a check-in");
+        assert_eq!(sent.binding_generation, 1);
+        assert_eq!(sent.harness, args.harness.into());
+        assert_eq!(sent.native_session.as_str(), "enum-only-session");
         assert_eq!(
-            saved.session,
-            SessionReference::Native("enum-only-session".into())
+            sent.liveness,
+            Some(crate::protocol::authority::LivenessFingerprint::TEST)
         );
         assert!(journal.pending().unwrap().is_none());
         // Exercise the same observation and input projections as the active
@@ -5811,7 +5947,7 @@ mod enum_callback {
             |detail| panic!("enum callback was refused before admission: {detail}"),
             |_| {},
         );
-        assert_eq!(journal.current().unwrap(), Some(saved));
+        assert!(journal.current().unwrap().is_none());
         let outside = run_hook_registered(
             registration,
             &args,
@@ -6683,10 +6819,13 @@ mod registered_resume {
                 read_fixture_json(&self.root.join("transcript.json"), 1024 * 1024).unwrap();
             outcome
         }
+        /// The session the hook last checked in as, at the generation the reply carried: the
+        /// journal's last completed check-in. An agent's identity is its environment, never a
+        /// saved context (decision 15), so `context.json` holds none.
         fn saved(&self) -> Option<OccupantContext> {
             crate::cli::seat_contexts(&self.paths, self.instance, &SeatId::new("registered-seat"))
                 .unwrap()
-                .current()
+                .registered_snapshot()
                 .unwrap()
         }
         fn teardown(&mut self) -> Result<(), String> {
@@ -7159,18 +7298,49 @@ mod registered_resume {
         let execution = uuid::Uuid::parse_str(c.execution.as_str()).unwrap();
         assert!(!execution.is_nil());
         assert_eq!(Command::ContinuityCheckIn(c.clone()).validate(), Ok(()));
-        let saved = f.saved().expect("canonical reply context installed");
-        assert_eq!(saved.instance, f.instance);
-        assert_eq!(saved.seat, "registered-seat");
-        assert_eq!(saved.binding_generation, 7);
-        assert_eq!(saved.target, "w9:p1");
-        assert_eq!(saved.harness, OccupantHarness::Agent(d.harness).into());
+        // The reattached session saves no context. Its presentation check-in (a non-durable
+        // Current one) is made as the session itself, at the generation the reply carried, with
+        // its stable per-session execution (not the continuity intent's) and the fingerprint.
+        assert!(f.saved().is_none(), "an agent's identity is not saved");
+        let presented = f
+            .service
+            .seen
+            .lock()
+            .unwrap()
+            .iter()
+            .find_map(|command| match command {
+                Command::CheckIn(check) => Some(check.clone()),
+                _ => None,
+            })
+            .expect("the presentation check-in");
         assert_eq!(
-            saved.session,
-            SessionReference::Native("fourth-resume-session".into())
+            presented.mode,
+            crate::protocol::commands::CheckInMode::Current
         );
-        assert_eq!(saved.role, Role::TopLevel);
-        assert_eq!(saved.execution, execution);
+        let claim = presented.claim;
+        assert_eq!(claim.instance, f.instance.to_string());
+        assert_eq!(claim.seat.as_str(), "registered-seat");
+        assert_eq!(claim.binding_generation, 7);
+        assert_eq!(claim.target.as_str(), "w9:p1");
+        assert_eq!(claim.harness, OccupantHarness::Agent(d.harness));
+        assert_eq!(claim.native_session.as_str(), "fourth-resume-session");
+        assert_eq!(claim.role, crate::protocol::authority::CallerRole::TopLevel);
+        assert_eq!(
+            claim.liveness,
+            Some(crate::protocol::authority::LivenessFingerprint::TEST)
+        );
+        // The continuity intent already carried the session's execution.
+        assert_eq!(claim.execution.as_str(), execution.to_string());
+        assert_eq!(
+            claim.execution.as_str(),
+            crate::harness::context::session_execution(
+                f.instance,
+                claim.harness.into(),
+                "fourth-resume-session",
+                None,
+            )
+            .to_string()
+        );
         let journal =
             crate::cli::journal::Journal::open(f.paths.instance_dir.join("intents")).unwrap();
         assert!(
@@ -7192,7 +7362,6 @@ mod registered_resume {
                 .contains("Before using threads")
         );
         assert!(outcome.attention.is_some());
-        eprintln!("installed canonical fixture context: {saved:?}");
     }
     #[test]
     fn registered_fourth_resume_refuses_child_unknown_role_and_observer() {
@@ -7711,9 +7880,17 @@ mod registered_resume {
             contexts.prepared_kind_for_event("pre_llm_call-3").unwrap(),
             EventKind::Clear
         );
-        assert!(contexts.attention_mark(saved.execution).is_none());
+        // A session's attention mark is keyed by its stable execution, whatever execution its
+        // lifecycle claim carried.
+        let key = crate::harness::context::session_execution(
+            f.instance,
+            saved.harness,
+            "task52-new",
+            None,
+        );
+        assert!(contexts.attention_mark(key).is_none());
         outcome.attention.unwrap().commit().unwrap();
-        assert!(contexts.attention_mark(saved.execution).is_some());
+        assert!(contexts.attention_mark(key).is_some());
     }
     #[test]
     fn task52_accepted_kind_replay_and_refused_neighbors_preserve_original_eligibility() {
@@ -8353,10 +8530,11 @@ mod registered_resume {
             f.saved().unwrap().session,
             SessionReference::Native("cli-side".into())
         );
-        // The pre-existing ping-pong: the foreground session checks in again.
+        // No ping-pong: the foreground session keeps its own binding, so its next turn is a
+        // Current turn and not another lifecycle check-in.
         let a2 = hermes_cli_turn("cli-a", "t3", 5);
-        turn_output(&f.run(r, &a2), "startup", &a2);
-        assert_eq!(lifecycle_check_ins(&f), 3);
+        turn_output(&f.run(r, &a2), "current", &a2);
+        assert_eq!(lifecycle_check_ins(&f), 2);
         assert_eq!(f.saved().unwrap().seat, "registered-seat");
         assert_eq!(enrollment_counts(&f).0, 2);
     }

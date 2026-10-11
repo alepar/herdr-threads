@@ -105,7 +105,9 @@ fn continuation_legacy_own_text_survives_v2_capability_upgrade() {
         let state: String = w.db().query_row("SELECT state FROM receipt_state WHERE message_id=?1 AND seat_id=?2 UNION SELECT state FROM receipts WHERE message_id=?1 AND seat_id=?2", [&ordinary, &w.seats[1]], |r| r.get(0)).unwrap();
         assert_eq!(state, "pending", "partial body must not ACK");
         proxy.mode.store(0, Ordering::SeqCst);
-        let output = spawn::command(env!("CARGO_BIN_EXE_herdr-threads"))
+        let mut command = spawn::command(env!("CARGO_BIN_EXE_herdr-threads"));
+        herdr_threads::test_support::isolation::as_agent(&mut command, "codex", "lazy-session-1");
+        let output = command
             .args(&argv[1..])
             .env("HOME", w.root.join("home"))
             .env("CLAUDE_CONFIG_DIR", w.root.join("claude"))
@@ -233,7 +235,9 @@ fn continuation_legacy_checkin_replays_on_v2_daemon_readonly() {
         }
         // Execute the printed argv unchanged, with a different caller pane and
         // no routing environment: its explicit seat must keep the read passive.
-        let output = spawn::command(env!("CARGO_BIN_EXE_herdr-threads"))
+        let mut command = spawn::command(env!("CARGO_BIN_EXE_herdr-threads"));
+        herdr_threads::test_support::isolation::as_agent(&mut command, "codex", "lazy-session-0");
+        let output = command
             .args(&argv[1..])
             .env("HOME", w.root.join("home"))
             .env("CLAUDE_CONFIG_DIR", w.root.join("claude"))
@@ -330,6 +334,12 @@ fn traverse(w: &World, who: usize, human: bool, args: &[&str], readonly: bool, s
     let mut initial = spawn::command(env!("CARGO_BIN_EXE_herdr-threads"));
     if human {
         initial.arg("human");
+    } else {
+        herdr_threads::test_support::isolation::as_agent(
+            &mut initial,
+            "codex",
+            &format!("lazy-session-{who}"),
+        );
     }
     let o = initial
         .args(args)
@@ -460,7 +470,15 @@ fn traverse(w: &World, who: usize, human: bool, args: &[&str], readonly: bool, s
                 "own default text lost: {argv:?}"
             );
         }
-        let o = spawn::command(env!("CARGO_BIN_EXE_herdr-threads"))
+        let mut command = spawn::command(env!("CARGO_BIN_EXE_herdr-threads"));
+        if argv.get(1).map(String::as_str) != Some("human") {
+            herdr_threads::test_support::isolation::as_agent(
+                &mut command,
+                "codex",
+                &format!("lazy-session-{who}"),
+            );
+        }
+        let o = command
             .args(&argv[1..])
             .env("HOME", w.root.join("home"))
             .env("CLAUDE_CONFIG_DIR", w.root.join("claude"))
@@ -732,7 +750,9 @@ fn continuation_legacy_human_long_topics_fit_and_remain_readonly() {
         }
         // A capability upgrade cannot change the protocol of the captured page.
         proxy.mode.store(0, Ordering::SeqCst);
-        let output = spawn::command(env!("CARGO_BIN_EXE_herdr-threads"))
+        let mut command = spawn::command(env!("CARGO_BIN_EXE_herdr-threads"));
+        herdr_threads::test_support::isolation::as_agent(&mut command, "codex", "lazy-session-2");
+        let output = command
             .args(&argv[1..])
             .env("HOME", w.root.join("home"))
             .env("CLAUDE_CONFIG_DIR", w.root.join("claude"))

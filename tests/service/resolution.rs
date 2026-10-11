@@ -699,6 +699,7 @@ fn direct_socket_hook_keeps_selected_check_in_and_directory_continuations() {
     )
     .unwrap();
     let execution = Uuid::new_v4();
+    // The hook acts as the harness session its payload names (decision 15).
     let seed = OccupantContext {
         format_version: 1,
         instance: fixture.descriptor.instance_uuid,
@@ -707,14 +708,20 @@ fn direct_socket_hook_keeps_selected_check_in_and_directory_continuations() {
         harness: Harness::Codex,
         binding_generation: 0,
         execution,
-        session: SessionReference::PluginContext(execution),
+        session: SessionReference::Native("selected-hook-session".into()),
         role: Role::TopLevel,
     };
+    let contexts = contexts
+        .with_agent_caller(
+            seed.clone(),
+            herdr_threads::protocol::authority::LivenessFingerprint::TEST,
+        )
+        .unwrap();
     let event = LifecycleEvent {
         harness: Harness::Codex,
         source: "explicit".into(),
         kind: EventKind::Startup,
-        native_session: None,
+        native_session: Some("selected-hook-session".into()),
         role: Role::TopLevel,
         event_id: "selected-socket-start".into(),
         capability: Capability::SourceSupported,
@@ -859,6 +866,11 @@ fn direct_socket_hook_keeps_selected_check_in_and_directory_continuations() {
         fixture.descriptor.instance_uuid,
         seat.as_str(),
         Duration::from_millis(500),
+    )
+    .unwrap()
+    .with_agent_caller(
+        seed.clone(),
+        herdr_threads::protocol::authority::LivenessFingerprint::TEST,
     )
     .unwrap();
     assert_eq!(contexts.pending().unwrap().unwrap(), pending);
@@ -1848,11 +1860,11 @@ fn held_real_sqlite_search_allows_health_and_writer_then_cancels_and_reuses_work
         binding_generation: 0,
         role: CallerRole::TopLevel,
         harness: Harness::Codex,
-        native_session: NativeSessionId::new("plugin_context:search-checkin"),
+        native_session: NativeSessionId::new("session-search-checkin"),
         execution: ExecutionId::new("00000000-0000-4000-8000-000000000001"),
         target: HostTargetId::new("w1:p1"),
         agent_id: None,
-        liveness: None,
+        liveness: Some(herdr_threads::protocol::authority::LivenessFingerprint::TEST),
     };
     let check_in = Command::CheckIn(CheckIn {
         mode: CheckInMode::Lifecycle {

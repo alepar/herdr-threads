@@ -911,7 +911,7 @@ mod contract_tests {
                 execution: ExecutionId::new("execution-1"),
                 target: HostTargetId::new("target-1"),
                 agent_id: None,
-                liveness: None,
+                liveness: Some(crate::protocol::authority::LivenessFingerprint::TEST),
             },
         };
         assert_eq!(

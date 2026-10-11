@@ -1723,7 +1723,7 @@ fn producer_ordering_control(
             native_session: NativeSessionId::new("session-a"),
             execution: ExecutionId::new("00000000-0000-4000-8000-0000000000a1"),
             agent_id: None,
-            liveness: None,
+            liveness: Some(herdr_threads::protocol::authority::LivenessFingerprint::TEST),
         },
     };
     while !matches!(

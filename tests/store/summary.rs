@@ -133,7 +133,7 @@ impl Fx {
             execution: ExecutionId::new(format!("e{seat}")),
             target: HostTargetId::new(format!("pane-{seat}")),
             agent_id: None,
-            liveness: None,
+            liveness: Some(crate::protocol::authority::LivenessFingerprint::TEST),
         }
     }
 

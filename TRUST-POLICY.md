@@ -166,7 +166,11 @@ transaction, against:
 - the effective host observation (published snapshot or newer current-target read) at the current host boot
   and epoch, never the raw per-target rows.
 
-Client-local state (`contexts/`, `intents/`) only selects what to ask; it never authorizes.
+Client-local state (`contexts/`, `intents/`) only selects what to ask; it never authorizes. Agent claims come
+from the harness environment (`cooperative_env_session`: `CLAUDE_CODE_SESSION_ID`, `CODEX_SESSION_ID`,
+`HERMES_SESSION_ID` for the CLI; the payload's `session_id` for hooks) with the harness process's liveness
+fingerprint; the pane context journal remains a human-seat hint only, and an agent's own pending check-in
+records there are replay machinery, never its identity.
 
 **A3. Provenance values.** Exactly these, each with one meaning:
 
@@ -263,10 +267,14 @@ model open work, and summary closure never changes receipt state or installs glo
   worker: the reconciler's C2 path owns those seats. A verdict is applied only if the binding is still
   connected with the fingerprint it was judged on. Availability follows liveness per binding (C4).
 - *Refusals*: an agent call without a harness session id (empty, a `launch:` placeholder, and from
-  ht-54r.5 a `plugin_context:` session), reads included, is refused with `session_claim_required`. An agent
+  a `plugin_context:` session), reads included, is refused with `session_claim_required`. An agent
   call that would enroll, reconnect or reopen a binding without a liveness fingerprint is refused with
-  `liveness_fingerprint_required`; this is implemented and tested but enforced only once every client sends
-  fingerprints (ht-54r.5 switches the daemon rule). Until then the daemon admits fingerprint-less claims.
+  `liveness_fingerprint_required`. Both rules are enforced: every CLI call and hook of an agent sends its
+  environment's session and fingerprint. The CLI refuses before any daemon call an agent whose session id is
+  unset (`session_claim_required`), whose harness process cannot be fingerprinted
+  (`liveness_fingerprint_required`), or that runs under `codex app-server --managed-daemon`
+  (`managed_daemon_refused`, client-local). A process with no harness ancestor and no harness marker is a
+  person and keeps the pane-context path; a person's shell cannot act through an agent seat.
 - *Subagent read-only* (ht-54r.20): a subagent claim (the declared subagent role, or any agent id) is
   refused `subagent_read_only` before dispatch for every accountable command: check-in, handoff, create
   thread, invite, join, accept, reject, send, ACK, display ACK, mod-delivery ACK, completion of an inbox
