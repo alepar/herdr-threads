@@ -1,7 +1,7 @@
 # super-auto run — 2026-10-09-session-keyed-seat-bindings
 
 flags: planOneShot=f skipPlanRoast=f skipCodeRoast=f autonomous=t
-phase: finish
+phase: fix-loop
 codeMechanism: Workflow
 
 idea: Goal: implement the new herdr-threads seat-bindings model we designed in this session, absorbing the Hermes global-enrollment work (ht-4ne, branch super-auto/hermes-global-enrollment, unmerged) it sprang from. Flags: planOneShot=false (interactive Mode A design for remaining questions), skipPlanRoast=false, skipCodeRoast=false, autonomous=true from after the design. The Codex CODEX_EXEC_SERVER_URL pane-env installer step runs separately on branch codex-daemon-env and is out of scope here.
@@ -74,3 +74,4 @@ feedback: parked — docs/superpowers/runs/2026-10-09-session-keyed-seat-binding
 - base drift · escalation · "main moved to v0.8.1 (026ad3ab, schema 31 unchanged, ht-clj fix). Absorb after the post-hand-back fix round, before the re-sweep."
 - post-hand-back fix round 2 · decision · "final review 5 must-fix → ht-54r.87 ht-54r.88 ht-54r.89 ht-54r.90 ht-54r.91; agy run_command env escalation RESOLVED by ht-54r.84 live probe (agy 1.3.3 carries ANTIGRAVITY_CONVERSATION_ID; evidence/ht-54r.84/)."
 sweepFix: 1 failing (sweep 3 @ eb28b769: cli::skill::tests::skill_file_is_a_well_formed_concise_guide, stale needle) → fixed inline 6abfd4f9 · re-run 6abfd4f9 — 5522 passed, 0 failed, 0 errors, 44 skipped; failing: none; command: nice cargo nextest run --locked --all-targets --all-features --no-fail-fast (+ scripts/check-harness-neutral exit 0, check-no-leaked-processes clean, wall 224s) @ 6abfd4f9
+- fix round 3 (main review mtCJ3BMEw of a79a326c) · decision · "I1 → ht-54r.93; I2 → ht-54r.94; trust_policy env leak → ht-54r.95; M1 → ht-54r.96. I2 reclassified from punch list to correctness per main."
