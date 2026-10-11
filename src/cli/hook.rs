@@ -2147,6 +2147,7 @@ impl PaneCall<'_> {
                 }
             }
         }
+        let fast_forward = reattached.fast_forward;
         let seat = reattached.seat;
         let contexts = match super::seat_contexts(self.paths, self.instance, &seat) {
             Ok(contexts) => contexts,
@@ -2188,6 +2189,12 @@ impl PaneCall<'_> {
                 lazy: None,
                 link: None,
             });
+        // The daemon moved this binding's cursors past a backlog beyond one page: the gap is
+        // reported the way a check-in's fast-forward is.
+        if let Some(ff) = &fast_forward {
+            let lines = crate::store::first_contact::render_fast_forward(ff, self.clock.utc_now());
+            done.summary = with_history(&lines, done.summary.take());
+        }
         // A resumed session is a lifecycle start: it gets the standing
         // instruction a lifecycle check-in presents, ahead of any attention.
         let mut text = render_context(Role::TopLevel, &[], true)

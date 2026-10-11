@@ -2704,10 +2704,18 @@ mod continuity_gate {
         ApiError::new(code, "scripted")
     }
     fn reattached(seat: &str, generation: u64) -> Reply {
+        reattached_with(seat, generation, None)
+    }
+    fn reattached_with(
+        seat: &str,
+        generation: u64,
+        fast_forward: Option<crate::protocol::results::FastForward>,
+    ) -> Reply {
         Ok(Ok(CommandResult::ContinuityReattached(
             ContinuityReattachment {
                 seat: SeatId::new(seat),
                 binding_generation: generation,
+                fast_forward,
             },
         )))
     }
@@ -3201,6 +3209,58 @@ mod continuity_gate {
                 "a reattached agent session saves no context"
             );
             assert!(pane.pending().is_none(), "the intent is completed");
+        }
+    }
+
+    // Kills: a continuity reattachment whose fast-forward gap report never reaches the resumed
+    // agent (the daemon moved its cursors, so the skipped messages would be silently gone).
+    #[test]
+    fn resume_reattachment_shows_the_fast_forward_gap() {
+        let pane = Pane::new();
+        let last = crate::protocol::results::MessageSummary {
+            user_intent: None,
+            message: crate::protocol::ids::MessageId::new("m-last"),
+            thread: crate::protocol::ids::ThreadId::new("t1"),
+            author: Some(SeatId::new("peer")),
+            event_author: None,
+            author_role: None,
+            relays_user: true,
+            author_role_backfilled: false,
+            kind: crate::protocol::results::MessageKind::Ordinary,
+            sequence: 41,
+            created_at: crate::protocol::time::UtcMillis(0),
+            actor_label: None,
+            preview_data: "ship it\nnow".into(),
+            preview_omitted: false,
+            preview_detail_argv: None,
+        };
+        let fast_forward = crate::protocol::results::FastForward {
+            skipped: 40,
+            threads: vec![crate::protocol::results::FastForwardThread {
+                history: crate::protocol::results::ThreadHistory {
+                    thread: crate::protocol::ids::ThreadId::new("t1"),
+                    name: Some("proj".into()),
+                    earlier: 40,
+                    from_people: 4,
+                    open_requests: 2,
+                    last_at: crate::protocol::time::UtcMillis(0),
+                },
+                last_message: Some(last),
+            }],
+            more: 0,
+        };
+        let daemon = Daemon::new(vec![reattached_with("saved", 3, Some(fast_forward))]);
+        let done = pane
+            .call(&daemon)
+            .reattach_by_continuity(&resume(Harness::Claude), false)
+            .done()
+            .expect("reattached");
+        let context = done.summary.clone().unwrap_or_default();
+        for want in [
+            "history: resumed past 40 messages:",
+            "— herdr-threads summary t1",
+        ] {
+            assert_eq!(context.matches(want).count(), 1, "{want}: {context}");
         }
     }
 
@@ -6993,6 +7053,7 @@ mod registered_resume {
                         ContinuityReattachment {
                             seat: SeatId::new("registered-seat"),
                             binding_generation: 7,
+                            fast_forward: None,
                         },
                     ))
                 }

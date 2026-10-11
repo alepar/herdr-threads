@@ -5440,6 +5440,8 @@ struct PokeStore {
     seq: AtomicU64,
     /// The largest `limit` `poke_candidates` was asked for.
     asked_limit: AtomicU64,
+    /// Each `before_wake_decision` call: the seat and how many store calls were logged before it.
+    rechecked: Mutex<Vec<(String, usize)>>,
 }
 impl PokeStore {
     fn new(clock: Arc<FakeClock>, due: Vec<PokeDue>) -> Self {
@@ -5452,6 +5454,7 @@ impl PokeStore {
             wake: Mutex::new(Vec::new()),
             seq: AtomicU64::new(0),
             asked_limit: AtomicU64::new(0),
+            rechecked: Mutex::new(Vec::new()),
         }
     }
     /// Due pokes minus the receipts a submitted attempt marked.
@@ -5495,6 +5498,14 @@ impl PokeStore {
 impl WakePort for PokeStore {
     fn clock(&self) -> &dyn Clock {
         self.clock.as_ref()
+    }
+    fn before_wake_decision(&self, seat: &SeatId, _: &CallBudget) -> Result<(), ApiError> {
+        let logged = self.log.lock().unwrap().len();
+        self.rechecked
+            .lock()
+            .unwrap()
+            .push((seat.as_str().to_owned(), logged));
+        Ok(())
     }
     fn wake_candidates(
         &self,
@@ -5920,6 +5931,29 @@ fn idle_unfocused_target_gets_one_coalesced_poke() {
         ["reserve_poke", "complete_poke:Submitted:3"],
         "one reservation, settled once with the receipts it covered"
     );
+}
+
+// Kills: a soft poke that reserves without the store's liveness re-check (a dead binding poked
+// before the liveness pass disconnects it), or one that re-checks after the reservation.
+#[test]
+fn soft_poke_rechecks_liveness_before_reserving() {
+    let clock = Arc::new(FakeClock(AtomicU64::new(0)));
+    let store = PokeStore::new(clock, one_seat_due());
+    let host = PokeHost::new(HostUiState::Idle, false);
+    with_scheduler(
+        &store,
+        &host,
+        &crate::ports::NoPokeCapabilities,
+        |scheduler| {
+            scheduler.drive_pokes(&poke_budget()).unwrap();
+        },
+    );
+    assert_eq!(
+        *store.rechecked.lock().unwrap(),
+        [("seat".to_owned(), 0)],
+        "re-checked once, before reserve_poke logged anything"
+    );
+    assert_eq!(store.log(), ["reserve_poke", "complete_poke:Submitted:3"]);
 }
 
 #[test]

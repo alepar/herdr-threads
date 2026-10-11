@@ -1053,6 +1053,10 @@ pub struct ManagedLaunchRecord {
 pub struct ContinuityReattachment {
     pub seat: SeatId,
     pub binding_generation: u64,
+    /// The gap report when the reattached binding's unread backlog exceeded one page and its
+    /// cursors were fast-forwarded in the deciding transaction (spec §2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fast_forward: Option<FastForward>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

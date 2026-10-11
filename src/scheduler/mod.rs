@@ -744,10 +744,6 @@ impl<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> WakeRunner<'a, S, N
         }
     }
 
-    /// The single call point for the liveness re-check that runs before a wake decision (spec §3,
-    /// ht-54r.23 fills it). A no-op here.
-    fn before_wake_decision(&self, _seat: &SeatId) {}
-
     /// Candidate discovery is advisory. `reserve_wake` rechecks it atomically,
     /// then the notification adapter must use only committed reservation identity.
     pub fn try_candidate(
@@ -761,7 +757,6 @@ impl<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> WakeRunner<'a, S, N
                 "wake admission deadline exhausted",
             ));
         }
-        self.before_wake_decision(&candidate.seat);
         if AttentionSnapshot::from_candidate(candidate)
             .select()
             .is_none()
@@ -1032,7 +1027,6 @@ impl<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> WakeRunner<'a, S, N
         if due.receipts.is_empty() {
             return Ok(None);
         }
-        self.before_wake_decision(&due.seat);
         let seat = due.seat.clone();
         // Like a wake, admission and the durable reservation share one hold of
         // the state lock, so concurrent seats cannot all pass the active limit
@@ -1050,6 +1044,9 @@ impl<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> WakeRunner<'a, S, N
         {
             return Ok(None);
         }
+        // Like a wake: the store's liveness re-check runs after in-memory admission and before
+        // the durable reservation, so `reserve_poke` decides against the updated presence.
+        self.store.before_wake_decision(&seat, budget)?;
         let Some(reserved) = self.store.reserve_poke(due, budget)? else {
             state
                 .dispatch
