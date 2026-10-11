@@ -4,7 +4,7 @@
 //!
 //! Fixture: a resolved seat `s` (mapping generation 4) holding two connected top-level agent
 //! bindings (sessions A and B, enrolled through `bindings::resolve_claim`) and one disconnected
-//! binding (session C), a joined thread `t` with messages. Several tests then make the bindings'
+//! binding (session C; each session has its own liveness PID because of same-PID supersede), a joined thread `t` with messages. Several tests then make the bindings'
 //! own `generation` stale: since V29 it is informational, so no reader may depend on it.
 use super::*;
 use crate::{
@@ -74,6 +74,19 @@ fn placement() -> BindingPlacement {
     }
 }
 
+/// A deterministic liveness fingerprint, distinct per session string: same-PID supersede
+/// (ht-54r.10) would otherwise disconnect the previous session's binding on every enrollment.
+fn fingerprint(session: &str) -> LivenessFingerprint {
+    LivenessFingerprint {
+        pid: 1000
+            + session
+                .bytes()
+                .fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(u32::from(b)))
+                % 50_000,
+        start: 9,
+    }
+}
+
 fn claim(session: &str) -> CallerClaim {
     CallerClaim {
         instance: "i".into(),
@@ -85,7 +98,7 @@ fn claim(session: &str) -> CallerClaim {
         execution: ExecutionId::new(EXEC),
         target: HostTargetId::new("p"),
         agent_id: None,
-        liveness: Some(LivenessFingerprint { pid: 7, start: 9 }),
+        liveness: Some(fingerprint(session)),
     }
 }
 
@@ -162,6 +175,9 @@ fn open_count(db: &Connection) -> i64 {
 #[test]
 fn fixture_holds_three_open_bindings_one_disconnected() {
     let f = fixture();
+    let sessions = ["sess-A", "sess-B", "sess-C", "sess-ended", "sess-unknown"];
+    let pids: std::collections::BTreeSet<_> = sessions.iter().map(|s| fingerprint(s).pid).collect();
+    assert_eq!(pids.len(), sessions.len(), "sessions need distinct PIDs");
     assert_eq!(open_count(&f.db), 3);
     let connected = bindings::list_connected(&f.db, &SeatId::new("s")).unwrap();
     assert_eq!(connected.len(), 2, "A and B are connected, C is not");
