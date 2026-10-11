@@ -1346,7 +1346,8 @@
       "src/client/local.rs",
       "tests/daemon/transport.rs",
       "tests/store/direct_threads.rs",
-      "tests/service/cooperative.rs"
+      "tests/service/cooperative.rs",
+      ".config/nextest.toml"
     ]
   },
   {
