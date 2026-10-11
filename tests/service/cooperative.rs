@@ -382,9 +382,31 @@ fn changed_context_is_fenced_and_historical_replay_cannot_restore_predecessor() 
     let successor = checked(&service, lifecycle(successor, "successor"));
     let replay = checked(&service, original);
     assert_eq!(replay.context, initial.context);
+    // The same session's binding is still open, and execution is not binding identity
+    // (spec section 1; ht-54r.3), so replaying the predecessor check-in is `Current`.
     assert_eq!(
         replay.context_disposition,
-        CheckInContextDisposition::Historical
+        CheckInContextDisposition::Current
+    );
+    // The replay cannot restore the predecessor: the open binding keeps the successor's
+    // execution, and no second binding was registered or forked.
+    assert_eq!(
+        db.query_row(
+            "SELECT execution_id FROM occupant_bindings WHERE seat_id='s' AND native_session='plugin_context:n' AND ended_at IS NULL",
+            [],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
+        "00000000-0000-4000-8000-000000000002"
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT COUNT(*) FROM occupant_bindings WHERE seat_id='s' AND ended_at IS NULL",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
     );
     // ht-54r.3: the same session re-registers in place; the mapping generation stays 0.
     assert_eq!(successor.context.binding_generation, 0);
@@ -406,6 +428,18 @@ fn changed_context_is_fenced_and_historical_replay_cannot_restore_predecessor() 
             .unwrap_err()
             .code,
         ErrorCode::OperationPayloadMismatch
+    );
+    // Once the session's binding has ended, the same replay presents the stored result as history.
+    db.execute(
+        "UPDATE occupant_bindings SET ended_at=1 WHERE seat_id='s'",
+        [],
+    )
+    .unwrap();
+    let ended_replay = checked(&service, lifecycle(claim(), "initial"));
+    assert_eq!(ended_replay.context, initial.context);
+    assert_eq!(
+        ended_replay.context_disposition,
+        CheckInContextDisposition::Historical
     );
 }
 

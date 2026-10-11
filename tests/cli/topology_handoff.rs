@@ -732,7 +732,7 @@ mod live {
                     return Err(ApiError::unknown_outcome("committed wrapper reply lost"));
                 }
                 if role == "reserve" && s.fault == Fault::Check {
-                    s.db.execute("UPDATE occupant_bindings SET execution_id='00000000-0000-4000-8000-000000000002' WHERE seat_id='sender'", []).unwrap();
+                    s.db.execute("UPDATE occupant_bindings SET native_session='changed-session' WHERE seat_id='sender'", []).unwrap();
                 }
                 if role == "reserve" && s.fault == Fault::SavePossible {
                     std::fs::create_dir(self.progress()).unwrap();
@@ -1243,7 +1243,7 @@ mod live {
                 vec![],
             )?;
             if let Some(path) = &self.change_binding_before_gate {
-                rusqlite::Connection::open(path).unwrap().execute("UPDATE occupant_bindings SET execution_id='changed-before-launch' WHERE seat_id='sender'",[]).unwrap();
+                rusqlite::Connection::open(path).unwrap().execute("UPDATE occupant_bindings SET native_session='changed-before-launch' WHERE seat_id='sender'",[]).unwrap();
             }
             gate(true)?;
             if self.not_submitted {
@@ -4702,7 +4702,7 @@ mod live {
                         .unwrap();
                 }
                 "binding" => {
-                    state.db.execute("UPDATE occupant_bindings SET execution_id='00000000-0000-4000-8000-000000000002' WHERE seat_id='sender'", []).unwrap();
+                    state.db.execute("UPDATE occupant_bindings SET native_session='changed-session' WHERE seat_id='sender'", []).unwrap();
                 }
                 "namespace" => namespace.host_endpoint = f._temp.path().join("different.sock"),
                 "claim" => {
@@ -4944,7 +4944,7 @@ mod live {
                 )
                 .unwrap();
             } else {
-                s.db.execute("UPDATE occupant_bindings SET execution_id='00000000-0000-4000-8000-000000000002' WHERE seat_id='sender'",[]).unwrap();
+                s.db.execute("UPDATE occupant_bindings SET native_session='changed-session' WHERE seat_id='sender'",[]).unwrap();
             }
             let result = crate::store::seats::resolve_bootstrap_seat(
                 &ctx,
