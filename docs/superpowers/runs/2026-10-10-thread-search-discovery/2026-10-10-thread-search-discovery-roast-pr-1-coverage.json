@@ -1,0 +1,71 @@
+{
+  "triageDead": false,
+  "scoutsDispatched": 10,
+  "scoutsDead": 0,
+  "rawFindings": 0,
+  "dedupedFindings": 0,
+  "beyondCap": 0,
+  "beyondPanelCap": 0,
+  "dedupeDead": false,
+  "panelCount": 0,
+  "spotCount": 0,
+  "promotedCount": 0,
+  "judgeCompletionPct": 0,
+  "lanes": [
+    "correctness",
+    "security",
+    "premortem",
+    "simplicity-design",
+    "hot-path-perf",
+    "concurrency-async",
+    "api-contract",
+    "observability",
+    "testing",
+    "hygiene-docs"
+  ],
+  "scoutResults": {
+    "correctness": {
+      "findings": []
+    },
+    "security": {
+      "findings": []
+    },
+    "premortem": {
+      "findings": []
+    },
+    "simplicity-design": {
+      "findings": []
+    },
+    "hot-path-perf": {
+      "findings": []
+    },
+    "concurrency-async": {
+      "findings": []
+    },
+    "api-contract": {
+      "findings": []
+    },
+    "observability": {
+      "findings": []
+    },
+    "testing": {
+      "findings": []
+    },
+    "hygiene-docs": {
+      "findings": []
+    }
+  },
+  "dedupeResult": {
+    "findings": [],
+    "beyondCapCount": 0
+  },
+  "packets": [],
+  "independence": "same-family (OpenAI) \u2014 seat-differentiated panel",
+  "execution": "manual native-agent fan-out; inherited OpenAI roster; no judge panel required",
+  "qualifiers": [
+    "low coverage"
+  ],
+  "coverageNote": "All ten lanes completed with empty findings. Low coverage is mandated by reporter Step 4 for zero raw findings on a non-trivial artifact. judgeCompletionPct=0 follows engine convention when zero judge seats are required; no judge failed.",
+  "inputs": "super-auto/thread-search-discovery@840522e5 versus main@effa14a2",
+  "iteration": "1 of 3"
+}

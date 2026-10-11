@@ -228,7 +228,7 @@ test('context attaches only to an answered main tool result', async () => {
   expect(r.context[1]).toContain('body of m1')
   await flush()
   expect(h.submits.length).toBe(0)
-  expect(h.logs).toEqual(['herdr-threads: delivered 1 message(s)'])
+  expect(h.logs).toEqual(['delivered 1 message(s)'])
   expect(h.ackRuns()).toEqual([['herdr-threads', 'watch', 'ack', '--session', 's1', '--via', 'context', 'm1']])
   // delivered once: a second call carries nothing
   const again = await h.core.onToolCall({ tool: 'Bash' }, answered)
@@ -246,7 +246,7 @@ test('a turn that ends before a tool result delivers by append, then a wake subm
   expect(h.appends[0]).toContain('body of m1')
   expect(h.submits).toEqual([WAKE])
   expect(h.ackRuns()[0].slice(5)).toEqual(['--via', 'append', 'm1'])
-  expect(h.logs).toEqual(['herdr-threads: delivered 1 message(s)'])
+  expect(h.logs).toEqual(['delivered 1 message(s)'])
 })
 
 test('submit is re-checked and never issued while a main turn is open', async () => {
@@ -532,7 +532,7 @@ test('lazy rows are appended at once, busy or idle, and acked via append', async
   await flush()
   expect(busy.appends.length).toBe(1)
   expect(busy.submits.length).toBe(0)
-  expect(busy.logs).toEqual(['herdr-threads: delivered 1 message(s)'])
+  expect(busy.logs).toEqual(['delivered 1 message(s)'])
   expect(busy.ackRuns()[0].slice(5)).toEqual(['--via', 'append', 'l1'])
   const idle = await harness({ state: IDLE }).boot()
   idle.line(lazy('l1'))

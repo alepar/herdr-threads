@@ -319,8 +319,9 @@ export function createCore(io) {
     S.lastHeld = ''
     ledger('delivered', { ids, via })
     if (via !== 'submit') {
+      // Claude Code already prefixes mod log lines with the plugin name.
       try {
-        io.log(`herdr-threads: delivered ${ids.length} message(s)`)
+        io.log(`delivered ${ids.length} message(s)`)
       } catch {}
     }
     const ackable = items.filter((i) => i.ackable).map((i) => i.id)

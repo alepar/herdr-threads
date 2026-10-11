@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## v0.6.4
+
+- **Claude mod log prefix.** Delivery notices no longer repeat the plugin name that Claude Code already adds to mod log lines.
+
+## v0.6.3
+
+- **Thread search discovery.** `thread list --search` now matches case-sensitive literal thread names as well as topics, with rename-safe bounded pagination.
+
 ## v0.6.2
 
 - **Canary version discovery.** npm version listings have a separate bounded 4 MiB capture/parse limit instead of the 64 KiB companion-result limit, fixing Codex discovery failures as its release list grows. Exhausted retries retain the final failure reason.

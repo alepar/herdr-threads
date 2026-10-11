@@ -1,0 +1,26 @@
+{
+  "completed": [
+    "ht-akx.1",
+    "ht-akx.2",
+    "ht-akx.3"
+  ],
+  "escalated": [],
+  "pendingRetry": [],
+  "parked": [],
+  "stalled": false,
+  "review": "CLEAN",
+  "stopReason": "root-closed",
+  "authRefused": [],
+  "sweep": "Deferred to caller super-auto after code roast; no full suite claimed.",
+  "metrics": [
+    "Metrics: merges 3 \u00b7 merge-failed 0 \u00b7 rebase-conflicts 0 \u00b7 seam-reviews 0 (fixed 0) \u00b7 gate-fails 0",
+    "Metrics: fix-loop round 1: 0 addressed / 0 entered \u00b7 round 2: 0 addressed / 0 entered \u00b7 round 3: 0 addressed / 0 entered \u00b7 round 4: 0 addressed / 0 entered \u00b7 round 5: 0 addressed / 0 entered",
+    "Metrics: fix-loop breaker-tripped: 0",
+    "Metrics: ledger-check ok \u00b7 append-failed 0 \u00b7 append-retried 0"
+  ],
+  "ledger": "/Users/alepar/AleCode/herdr-threads/.worktrees/super-auto/thread-search-discovery/.superpowers/sdd/ht-akx-plan/progress.md",
+  "durableLedger": "/Users/alepar/AleCode/herdr-threads/.worktrees/super-auto/thread-search-discovery/docs/superpowers/runs/2026-10-10-thread-search-discovery/progress.md",
+  "combinedMain": "effa14a2d6e6ccd406ec020230003f44272ce17a",
+  "reviewedSourceHead": "fe464af5abcfc75d7c15ad2ec354c77e6353c5f8",
+  "privateTarget": "/Users/alepar/AleCode/herdr-threads/.worktrees/super-auto/thread-search-discovery/target"
+}

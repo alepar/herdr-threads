@@ -100,7 +100,8 @@ builds `io` from `$`. Rules (spec D5, D6):
   append is awaited before the submit, so the order is append, then submit. A denied append submits no wake
   (items stay queued, ledger `refused` via `append`, 30 s backoff). The submit is never awaited in a hook and
   never issued while a main turn is open (re-checked right before the call). `lazy` rows
-  go to `$.session.append` at once. Each context or append delivery logs one dim `$.ui.log` line.
+  go to `$.session.append` at once. Each context or append delivery logs one dim `$.ui.log` line
+  (`delivered N message(s)`; Claude Code adds the plugin-name prefix).
 - **Attention freshness.** A queued attention item is dropped (ledger `refused`, `attention_cleared`) when
   `watch` reports that nothing it pointed at is still pending: an accepted invitation, or notices a check-in
   offered. One already submitted or attached is not recalled.

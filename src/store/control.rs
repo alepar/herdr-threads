@@ -1354,6 +1354,7 @@ pub fn set_thread_name(
                     )
                     .map_err(store_error)?;
                 schema::bump_filter_revision(tx, &instance, "directory", "all")?;
+                schema::bump_filter_revision(tx, &instance, "directory", "name/all")?;
             }
             Ok(CommandResult::ThreadNameChanged(command.thread.clone()))
         },
