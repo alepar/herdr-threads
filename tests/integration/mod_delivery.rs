@@ -2456,6 +2456,7 @@ fn activation_v2_elected_watch_capabilities_lease_output_confirm() {
             }
             "notice" => {
                 assert_eq!(line["kind"], "notice");
+                assert_eq!(line["warning"], item["warning"]);
                 assert_eq!(line["body"], item["body"]);
                 assert_eq!(line["thread"], "activation-warn");
             }
@@ -2467,6 +2468,29 @@ fn activation_v2_elected_watch_capabilities_lease_output_confirm() {
             other => panic!("unexpected initial activation item {other}"),
         }
     }
+    // The real Pull settles its carried notice for this exact occupant before
+    // replying, independently of the still-held presentation Confirm. Session
+    // identity is deliberately different from execution identity in this rig.
+    let notice = items.iter().find(|item| item["kind"] == "notice").unwrap();
+    let claim = &confirm.request["command"]["args"]["claim"];
+    assert_ne!(claim["execution"], claim["native_session"]);
+    let (offered_generation, offered_execution, frontier, notice_ordinal, binding_generation, binding_execution):
+        (i64, String, i64, i64, i64, String) = rig.db().query_row(
+            "SELECT o.binding_generation,o.execution_id,o.offered_ordinal,d.ordinal,b.generation,b.execution_id FROM digest_notice_offer o JOIN digest_programmatic_warnings d ON d.seat_id=o.seat_id JOIN seats s ON s.id=o.seat_id JOIN occupant_bindings b ON b.seat_id=s.id AND b.generation=s.generation AND b.ended_at IS NULL WHERE o.seat_id=?1 AND d.warning_id=?2",
+            [&rig.b, notice["warning"].as_str().unwrap()],
+            |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?)),
+        ).unwrap();
+    assert_eq!(offered_generation, binding_generation);
+    assert_eq!(
+        offered_generation as u64,
+        claim["binding_generation"].as_u64().unwrap()
+    );
+    assert_eq!(offered_execution, binding_execution);
+    assert_eq!(offered_execution, claim["execution"].as_str().unwrap());
+    assert!(
+        frontier >= notice_ordinal,
+        "the actual carried notice is covered by the current occupant's frontier"
+    );
     assert_eq!(
         activation_pending(&rig).0.as_deref(),
         Some(token),
@@ -2549,6 +2573,15 @@ fn activation_v2_elected_watch_capabilities_lease_output_confirm() {
     assert_eq!(
         clear["presentation_epoch"], attention["epoch"],
         "the real clear closes the captured attention epoch"
+    );
+    assert_eq!(
+        watch
+            .seen
+            .iter()
+            .filter(|line| line["kind"] == "notice" && line["warning"] == notice["warning"])
+            .count(),
+        1,
+        "subsequent real Watch Pulls do not re-emit the settled notice"
     );
     assert_eq!(rig.channel_state().as_deref(), Some("live"));
     assert_eq!(lease.len(), 32);

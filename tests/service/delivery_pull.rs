@@ -5742,6 +5742,175 @@ fn presentation_registered_channel_materializes_each_published_warn_before_drain
     registry.unregister(channel, f.clock.utc_now());
 }
 
+// Kills: storing native_session as execution when a real V2 page carries a
+// notice, overwriting a valid shared frontier and reoffering settled notices.
+#[test]
+fn presentation_hook_notice_settles_current_execution_without_reoffer() {
+    presentation_notice_settles_current_execution(false);
+}
+
+#[test]
+fn presentation_watch_notice_settles_current_execution_without_reoffer() {
+    presentation_notice_settles_current_execution(true);
+}
+
+fn presentation_notice_settles_current_execution(watch: bool) {
+    use crate::{
+        ports::{
+            ServiceAuthorityGate, ServiceConnectionAuthority, ServiceDecisionGuard,
+            ServiceWriteTransactionProof,
+        },
+        protocol::{
+            delivery::{DeliveryPullReplyV2, PresentationItemV2},
+            results::ApiError,
+            service::{NotificationSeverity, ServiceNotify, ServiceOperation, ServiceResult},
+        },
+    };
+    struct Gate(ServiceAuthorId);
+    struct Guard(ServiceAuthorId);
+    impl ServiceDecisionGuard for Guard {
+        fn author(&self) -> &ServiceAuthorId {
+            &self.0
+        }
+    }
+    impl ServiceAuthorityGate for Gate {
+        fn register(
+            &self,
+            instance: &str,
+            boot: &str,
+            author: ServiceAuthorId,
+        ) -> Result<ServiceConnectionAuthority, ApiError> {
+            Ok(ServiceConnectionAuthority::new(
+                instance.into(),
+                boot.into(),
+                1,
+                author,
+            ))
+        }
+        fn decision_guard<'a>(
+            &'a self,
+            _: &ServiceWriteTransactionProof,
+            connection: &ServiceConnectionAuthority,
+        ) -> Result<Box<dyn ServiceDecisionGuard + 'a>, ApiError> {
+            assert_eq!(connection.author(), &self.0);
+            Ok(Box::new(Guard(self.0.clone())))
+        }
+        fn revoke_exact(&self, _: &ServiceConnectionAuthority) -> bool {
+            true
+        }
+    }
+    let window = OfferWindowFixture::new(watch);
+    let f = &window.f;
+    let recipient = &window.recipient;
+    assert_ne!(
+        recipient.execution.as_str(),
+        recipient.native_session.as_str()
+    );
+    let tx = f.db.unchecked_transaction().unwrap();
+    let author =
+        crate::store::service_substrate::ensure_reserved_author(&tx, "i", UtcMillis(0)).unwrap();
+    tx.commit().unwrap();
+    let gate = Gate(author.clone());
+    let connection = ServiceConnectionAuthority::new("i".into(), "boot".into(), 1, author);
+    let notify = |operation: &str| {
+        let ServiceResult::Notification(notification) = f
+            .store
+            .service_operation(
+                ServiceOperation::Notify(ServiceNotify {
+                    thread: ThreadId::new("t"),
+                    severity: NotificationSeverity::Warn,
+                    event_json: serde_json::json!({"detail": operation}),
+                    operation: OperationId::new(operation),
+                }),
+                &connection,
+                &gate,
+                &budget(),
+                None,
+            )
+            .unwrap()
+        else {
+            panic!("real Notify result")
+        };
+        let warning = notification.summary.message;
+        let job: String = f.db.query_row(
+            "SELECT id FROM work_jobs WHERE kind='send_attention' AND subject_id=(SELECT 'service-notify:'||preparation_id FROM service_notification_publications WHERE message_id=?1)",
+            [warning.as_str()], |row| row.get(0),
+        ).unwrap();
+        finish_presentation_attention_job(f, &job);
+        warning
+    };
+    // A real Current CheckIn establishes an earlier valid shared frontier.
+    // The second notice must be settled by V2 itself, without a repair hook.
+    let first = notify("frontier-first-notify");
+    let initial = current_check_in(f, recipient.clone(), "frontier-initial-offer");
+    assert!(
+        initial
+            .notices
+            .items
+            .iter()
+            .any(|notice| notice.warning == first)
+    );
+    let frontier = || {
+        f.db.query_row(
+        "SELECT binding_generation,execution_id,offered_ordinal FROM digest_notice_offer WHERE seat_id=?1",
+        [recipient.seat.as_str()], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?)),
+    ).unwrap()
+    };
+    let before = frontier();
+    assert_eq!(before.0 as u64, recipient.binding_generation);
+    assert_eq!(before.1, recipient.execution.as_str());
+    let second = notify("frontier-second-notify");
+    let DeliveryPullReplyV2::Page(page) = window.pull() else {
+        panic!("actual V2 notice page")
+    };
+    assert_eq!(
+        page.items
+            .iter()
+            .filter(|item| matches!(item,
+        PresentationItemV2::Notice { warning, .. } if warning == &second))
+            .count(),
+        1
+    );
+    assert!(!page.items.iter().any(|item| matches!(item,
+        PresentationItemV2::Notice { warning, .. } if warning == &first)));
+    let after = frontier();
+    assert_eq!(after.0 as u64, recipient.binding_generation);
+    assert_eq!(
+        after.1,
+        recipient.execution.as_str(),
+        "V2 preserves canonical execution, not native session"
+    );
+    let ordinal: i64 =
+        f.db.query_row(
+            "SELECT ordinal FROM digest_programmatic_warnings WHERE seat_id=?1 AND warning_id=?2",
+            [recipient.seat.as_str(), second.as_str()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(after.2 >= ordinal && after.2 > before.2);
+    let mut quiet = false;
+    for _ in 0..32 {
+        match window.pull() {
+            DeliveryPullReplyV2::Page(page) => assert!(!page.items.iter().any(|item| matches!(item,
+                PresentationItemV2::Notice { warning, .. } if warning == &first || warning == &second)),
+                "settled notices never reappear in subsequent V2 pages"),
+            DeliveryPullReplyV2::Unchanged { .. } => { quiet = true; break; }
+            other => panic!("admitted real V2 drain refused: {other:?}"),
+        }
+    }
+    assert!(quiet, "finite notice/control drain reaches unchanged");
+    assert_eq!(
+        frontier(),
+        after,
+        "subsequent V2 pulls preserve settled frontier"
+    );
+    let next = current_check_in(f, recipient.clone(), "frontier-after-v2");
+    assert!(
+        next.notices.items.is_empty(),
+        "a later CheckIn does not carry V2-settled notices"
+    );
+}
+
 // These fixtures issue through the real V2 service and settle through the real
 // canonical ACK writers. No offers or terminal receipt states are preseeded.
 struct OfferWindowFixture {
