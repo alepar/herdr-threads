@@ -15,7 +15,7 @@ stepBackDesign-round-1: patch — four clusters (supersede rule, V29 row classes
 roast-design: 2026-10-10-session-keyed-seat-bindings-roast-design-1.md, 2026-10-10-session-keyed-seat-bindings-roast-design-2.md
 
 roastCodeRound: 2
-roast-code: 2026-10-10-session-keyed-seat-bindings-roast-pr-1.md, 2026-10-10-session-keyed-seat-bindings-roast-pr-2.md
+roast-code: 2026-10-10-session-keyed-seat-bindings-roast-pr-1.md, 2026-10-10-session-keyed-seat-bindings-roast-pr-2.md, 2026-10-10-session-keyed-seat-bindings-roast-pr-post-cap-audit.md
 roastCodeExit: converged
 regressionPass-round-2: [Should-fix] src/service/liveness.rs:72 → ht-54r.70 (also repairs plain_call_enrolled_agent_display_acks, S2)
 stepBackCode-round-1: patch — no recurrence yet (round 1); three clusters (lazy-unread-per-binding, role-from-resolved-binding, authority-by-role-and-liveness) where the per-seat→per-binding migration was applied unevenly; sweep each rule
@@ -65,3 +65,4 @@ parked:
 - sweep scope · decision · "phase-6 sweep includes scripts/check-harness-neutral (AGENTS.md per-change check, required CI step ci.yml:197) alongside nextest; its 68 violations (round-2 findings bindings.rs:1043, caller_env.rs:159, bindings.rs:1285, required_hooks.rs:29) are handled by the sweep-fix pass, not punch-listed, so the branch can merge green."
 sweepFix-prefiled: scripts/check-harness-neutral 68 violations → ht-54r.71 (filed with the regression-only pass, same super-code re-entry)
 sweepFix: 4 failing → ht-54r.72 ht-54r.73 ht-54r.74 ht-54r.75 · re-run abe1bf03 — 5471 passed, 0 failed, 0 errors, 44 skipped; failing: none; command: nice cargo nextest run --locked --all-targets --all-features --no-fail-fast (+ scripts/check-harness-neutral exit 0, check-no-leaked-processes clean, wall 258s) @ abe1bf03
+friction: 12 events
