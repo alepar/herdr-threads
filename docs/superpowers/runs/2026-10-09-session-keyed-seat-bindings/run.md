@@ -38,7 +38,7 @@ codeBuckets:
   parked: ht-54r.5 ht-54r.12 ht-54r.19
   stalled: false
   review: not ready (S1 main absorption: migration collision 29-31, agy harness unknown to caller_env, seat_wake_on overlap; S2 plain_call_enrolled_agent_display_acks fails (NULL-fingerprint shortcut vs .56); S3 continuity_candidates newest-row only; S4 Hermes child pre-subagent_start supersedes parent; S5 mod channel/ACK still provenance-gated + provenance overwrite; full suite + Linux unverified)
-  sweep: 7a06cd79 — 5464 passed, 3 failed, 1 errors (timeout), 44 skipped; failing: store::control::tests::continuity_successor_survives_a_liveness_pass_before_its_first_touch, lazy_display::lazy_display_json_machine_explicit_selector_readonly, session_bindings_smoke::config9_foreground_and_background_agents_in_one_pane, mod_delivery::watch_admission_over_cap_refuses_busy (TIMEOUT 300s); command: nice cargo nextest run --locked --all-targets --all-features --no-fail-fast (+ scripts/check-harness-neutral exit 0, check-no-leaked-processes clean, wall 343s) @ 7a06cd79
+  sweep: abe1bf03 — 5471 passed, 0 failed, 0 errors, 44 skipped; failing: none; command: nice cargo nextest run --locked --all-targets --all-features --no-fail-fast (+ scripts/check-harness-neutral exit 0, check-no-leaked-processes clean, wall 258s) @ abe1bf03
   slowness: round 1 hook.rs hot-file cap raised to 4; merge queue peaked at 3
   worktreesKept: 
   processSweep: stopped 0 · survived 0
@@ -64,4 +64,4 @@ parked:
 - base drift · decision · "absorb main BEFORE roast-code round 2 (deviation from §Base drift after-loop timing): main is +335 commits/+101k lines with colliding migrations 29-31 and a new agy harness; landing needs behaviour changes (agy in caller_env, migration renumber, seat_wake_on reconciliation) that round 2 must review. Round 2 roasts the combined tree."
 - sweep scope · decision · "phase-6 sweep includes scripts/check-harness-neutral (AGENTS.md per-change check, required CI step ci.yml:197) alongside nextest; its 68 violations (round-2 findings bindings.rs:1043, caller_env.rs:159, bindings.rs:1285, required_hooks.rs:29) are handled by the sweep-fix pass, not punch-listed, so the branch can merge green."
 sweepFix-prefiled: scripts/check-harness-neutral 68 violations → ht-54r.71 (filed with the regression-only pass, same super-code re-entry)
-sweepFix-pending: 4 failing → ht-54r.72 ht-54r.73 ht-54r.74 ht-54r.75
+sweepFix: 4 failing → ht-54r.72 ht-54r.73 ht-54r.74 ht-54r.75 · re-run abe1bf03 — 5471 passed, 0 failed, 0 errors, 44 skipped; failing: none; command: nice cargo nextest run --locked --all-targets --all-features --no-fail-fast (+ scripts/check-harness-neutral exit 0, check-no-leaked-processes clean, wall 258s) @ abe1bf03
