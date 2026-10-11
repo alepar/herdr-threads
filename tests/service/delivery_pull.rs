@@ -6320,29 +6320,33 @@ fn presentation_reclamation_legacy_terminal_delta_has_exact_bounded_work_on_unch
     use crate::protocol::delivery::DeliveryPullReplyV2;
     let f = fixture(257);
     let recipient = pull_seat(&f);
-    f.db.execute("UPDATE receipts SET state='acked' WHERE seat_id='s'", [])
-        .unwrap();
-    let known = (1..=256)
-        .map(|n| MessageId::new(format!("m{n}")))
-        .collect::<Vec<_>>();
-    let output = f
-        .store
-        .presentation_pull(
-            offer_reconciliation_input(&f, &recipient, known.clone()),
-            &budget(),
-        )
-        .unwrap();
-    assert!(matches!(
-        output.reply,
-        DeliveryPullReplyV2::Unchanged { .. }
-    ));
-    assert_eq!(
-        output
-            .reclaimed_messages
-            .into_iter()
-            .collect::<std::collections::BTreeSet<_>>(),
-        known.into_iter().collect()
-    );
+    f.db.execute("UPDATE receipts SET state='acked' WHERE seat_id='s'", []).unwrap();
+    // A new consumer must finish its finite ordinary scan before it can be
+    // quiet. Prime that real walk without any ledger hints or reconciliation.
+    let mut quiet = false;
+    for _ in 0..16 {
+        let primed = f.store.presentation_pull(
+            offer_reconciliation_input(&f, &recipient, vec![]), &budget(),
+        ).unwrap();
+        assert_eq!(primed.work.offer_reconciliation_visits, 0);
+        assert_eq!(primed.work.offer_reconciliation_probes, 0);
+        assert!(primed.reclaimed_messages.is_empty());
+        assert!(primed.work.initial + primed.work.context + primed.work.revisit
+            + primed.work.ordinary + primed.work.notices <= 433);
+        match primed.reply {
+            DeliveryPullReplyV2::Unchanged { .. } => {
+                quiet = true;
+                break;
+            }
+            DeliveryPullReplyV2::Page(_) => {}
+            other => panic!("finite consumer prime refused: {other:?}"),
+        }
+    }
+    assert!(quiet, "finite empty consumer walk must reach quiet within bounded pulls");
+    let known = (1..=256).map(|n| MessageId::new(format!("m{n}"))).collect::<Vec<_>>();
+    let output = f.store.presentation_pull(offer_reconciliation_input(&f, &recipient, known.clone()), &budget()).unwrap();
+    assert!(matches!(output.reply, DeliveryPullReplyV2::Unchanged { .. }));
+    assert_eq!(output.reclaimed_messages.into_iter().collect::<std::collections::BTreeSet<_>>(), known.into_iter().collect());
     assert_eq!(output.work.offer_reconciliation_visits, 256);
     assert_eq!(output.work.offer_reconciliation_probes, 1280);
     assert_eq!(output.work.ordinary_publication_visits, 0);
