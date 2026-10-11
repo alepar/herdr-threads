@@ -6290,7 +6290,13 @@ fn full_pending_offer_window_with_fresh_carry() -> (OfferWindowFixture, Vec<Mess
     let window = OfferWindowFixture::new(true);
     let big = "x".repeat(WATCH_BODY_LIMIT_BYTES + 1);
     let sent = (0..257)
-        .map(|n| window.send(n, DeliveryMode::Ordinary, if n == 0 { &big } else { "pending" }))
+        .map(|n| {
+            window.send(
+                n,
+                DeliveryMode::Ordinary,
+                if n == 0 { &big } else { "pending" },
+            )
+        })
         .collect::<Vec<_>>();
     assert_eq!(window.drain(256), sent[..256].iter().cloned().collect());
     let offers = window.offers();
@@ -6306,9 +6312,18 @@ fn full_pending_offer_window_with_fresh_carry() -> (OfferWindowFixture, Vec<Mess
 }
 
 fn assert_full_pending_offer_work(window: &OfferWindowFixture) {
-    let work = window.f.service.presentation.last_work.lock().unwrap().unwrap();
-    assert!(work.initial + work.context + work.revisit + work.ordinary + work.notices <= 433,
-        "full pending carry must respect fresh discovery: {work:?}");
+    let work = window
+        .f
+        .service
+        .presentation
+        .last_work
+        .lock()
+        .unwrap()
+        .unwrap();
+    assert!(
+        work.initial + work.context + work.revisit + work.ordinary + work.notices <= 433,
+        "full pending carry must respect fresh discovery: {work:?}"
+    );
     assert_eq!(work.offer_reconciliation_visits, 256);
     assert_eq!(work.offer_reconciliation_probes, 1024);
 }
@@ -6325,17 +6340,28 @@ fn presentation_full_pending_carry_reaches_quiet_without_evicting_offers() {
         match window.pull() {
             DeliveryPullReplyV2::Unchanged { .. } => quiet = true,
             DeliveryPullReplyV2::Page(page) => {
-                assert!(page.offered.is_empty() && page.truncated.is_empty(),
-                    "no offer is due and the fresh identity must wait at capacity");
+                assert!(
+                    page.offered.is_empty() && page.truncated.is_empty(),
+                    "no offer is due and the fresh identity must wait at capacity"
+                );
                 quiet = !page.more;
             }
             other => panic!("live full-capacity owner refused: {other:?}"),
         }
         assert_full_pending_offer_work(&window);
-        assert_eq!(window.offers(), original, "quieting cannot evict or reset pending offers");
-        if quiet { break; }
+        assert_eq!(
+            window.offers(),
+            original,
+            "quieting cannot evict or reset pending offers"
+        );
+        if quiet {
+            break;
+        }
     }
-    assert!(quiet, "full pending carry must stop actionable continuation within bounded pulls");
+    assert!(
+        quiet,
+        "full pending carry must stop actionable continuation within bounded pulls"
+    );
     assert!(!window.offers().contains_key(&sent[256]));
 }
 
@@ -6360,9 +6386,15 @@ fn presentation_full_pending_carry_serves_due_known_offers_without_admitting_fre
         match window.pull() {
             DeliveryPullReplyV2::Page(page) => {
                 for id in page.offered.iter().chain(&page.truncated) {
-                    assert!(original.contains_key(id), "only due known IDs fit at capacity");
+                    assert!(
+                        original.contains_key(id),
+                        "only due known IDs fit at capacity"
+                    );
                     assert_ne!(id, &sent[256]);
-                    assert!(shown.insert(id.clone()), "same-time duplicate reoffer {id:?}");
+                    assert!(
+                        shown.insert(id.clone()),
+                        "same-time duplicate reoffer {id:?}"
+                    );
                 }
             }
             DeliveryPullReplyV2::Unchanged { .. } => {}
@@ -6376,19 +6408,36 @@ fn presentation_full_pending_carry_serves_due_known_offers_without_admitting_fre
             assert_eq!(after.first_at, before.first_at);
             assert_eq!(after.truncated, before.truncated);
             assert_eq!(after.count, if shown.contains(id) { 2 } else { 1 });
-            assert_eq!(after.last_at, if shown.contains(id) { due_at } else { before.last_at });
+            assert_eq!(
+                after.last_at,
+                if shown.contains(id) {
+                    due_at
+                } else {
+                    before.last_at
+                }
+            );
         }
-        if shown.len() == 256 { break; }
+        if shown.len() == 256 {
+            break;
+        }
     }
-    assert!(!shown.is_empty(), "due known offers must make progress past a retained fresh ID");
-    assert_eq!(shown, sent[..256].iter().cloned().collect(),
-        "the finite due set must progress within bounded pulls");
+    assert!(
+        !shown.is_empty(),
+        "due known offers must make progress past a retained fresh ID"
+    );
+    assert_eq!(
+        shown,
+        sent[..256].iter().cloned().collect(),
+        "the finite due set must progress within bounded pulls"
+    );
     assert!(!window.offers().contains_key(&sent[256]));
     let twice = window.offers();
     for _ in 0..4 {
         if let DeliveryPullReplyV2::Page(page) = window.pull() {
-            assert!(page.offered.is_empty() && page.truncated.is_empty(),
-                "due progress cannot reset the original reoffer spacing");
+            assert!(
+                page.offered.is_empty() && page.truncated.is_empty(),
+                "due progress cannot reset the original reoffer spacing"
+            );
         }
         assert_full_pending_offer_work(&window);
         assert_eq!(window.offers(), twice);
@@ -6430,19 +6479,30 @@ fn presentation_reclamation_legacy_terminal_delta_has_exact_bounded_work_on_unch
     use crate::protocol::delivery::DeliveryPullReplyV2;
     let f = fixture(257);
     let recipient = pull_seat(&f);
-    f.db.execute("UPDATE receipts SET state='acked' WHERE seat_id='s'", []).unwrap();
+    f.db.execute("UPDATE receipts SET state='acked' WHERE seat_id='s'", [])
+        .unwrap();
     // A new consumer must finish its finite ordinary scan before it can be
     // quiet. Prime that real walk without any ledger hints or reconciliation.
     let mut quiet = false;
     for _ in 0..16 {
-        let primed = f.store.presentation_pull(
-            offer_reconciliation_input(&f, &recipient, vec![]), &budget(),
-        ).unwrap();
+        let primed = f
+            .store
+            .presentation_pull(
+                offer_reconciliation_input(&f, &recipient, vec![]),
+                &budget(),
+            )
+            .unwrap();
         assert_eq!(primed.work.offer_reconciliation_visits, 0);
         assert_eq!(primed.work.offer_reconciliation_probes, 0);
         assert!(primed.reclaimed_messages.is_empty());
-        assert!(primed.work.initial + primed.work.context + primed.work.revisit
-            + primed.work.ordinary + primed.work.notices <= 433);
+        assert!(
+            primed.work.initial
+                + primed.work.context
+                + primed.work.revisit
+                + primed.work.ordinary
+                + primed.work.notices
+                <= 433
+        );
         match primed.reply {
             DeliveryPullReplyV2::Unchanged { .. } => {
                 quiet = true;
@@ -6452,11 +6512,31 @@ fn presentation_reclamation_legacy_terminal_delta_has_exact_bounded_work_on_unch
             other => panic!("finite consumer prime refused: {other:?}"),
         }
     }
-    assert!(quiet, "finite empty consumer walk must reach quiet within bounded pulls");
-    let known = (1..=256).map(|n| MessageId::new(format!("m{n}"))).collect::<Vec<_>>();
-    let output = f.store.presentation_pull(offer_reconciliation_input(&f, &recipient, known.clone()), &budget()).unwrap();
-    assert!(matches!(output.reply, DeliveryPullReplyV2::Unchanged { .. }));
-    assert_eq!(output.reclaimed_messages.into_iter().collect::<std::collections::BTreeSet<_>>(), known.into_iter().collect());
+    assert!(
+        quiet,
+        "finite empty consumer walk must reach quiet within bounded pulls"
+    );
+    let known = (1..=256)
+        .map(|n| MessageId::new(format!("m{n}")))
+        .collect::<Vec<_>>();
+    let output = f
+        .store
+        .presentation_pull(
+            offer_reconciliation_input(&f, &recipient, known.clone()),
+            &budget(),
+        )
+        .unwrap();
+    assert!(matches!(
+        output.reply,
+        DeliveryPullReplyV2::Unchanged { .. }
+    ));
+    assert_eq!(
+        output
+            .reclaimed_messages
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>(),
+        known.into_iter().collect()
+    );
     assert_eq!(output.work.offer_reconciliation_visits, 256);
     assert_eq!(output.work.offer_reconciliation_probes, 1280);
     assert_eq!(output.work.ordinary_publication_visits, 0);

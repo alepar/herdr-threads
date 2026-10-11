@@ -336,7 +336,10 @@ fn presentation_v2_rejects_invalid_tokens_consumers_and_watch_without_lease() {
         bad["args"]["token"] = json!(token);
         let command = serde_json::from_value::<Command>(bad)
             .expect("malformed Confirm token must decode before validation");
-        assert!(command.validate().is_err(), "invalid token accepted: {token}");
+        assert!(
+            command.validate().is_err(),
+            "invalid token accepted: {token}"
+        );
     }
     let mut watch_confirmation = confirmation;
     watch_confirmation["args"]["consumer"] = json!("watch");
