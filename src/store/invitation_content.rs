@@ -2280,7 +2280,47 @@ pub(super) fn pull(
             state.ordinary_version = input.ordinary_version.to_string();
             state.ordinary_scan_passive_generation = state.ordinary_passive_generation;
         }
-        let (ordinary, visited) = super::queries::ordinary_presentation_page(
+        // Validate the private accumulator before querying: retiring a body
+        // must not bypass the assembler's exact offset/identity contract.
+        let mut assembler =
+            Assembler::new(None).with_command_prefix(input.pull.marker_prefix.clone());
+        assembler.partial = partial_state(&state.ordinary_partial)?;
+        let current = state
+            .ordinary_cursor
+            .as_ref()
+            .map(|cursor| {
+                crate::protocol::pagination::InboxBatchV2CursorState::decode_for(
+                    cursor,
+                    &claim.instance,
+                    &claim.seat,
+                )
+            })
+            .transpose()
+            .map_err(corrupt)?;
+        let old_body = current.as_ref().and_then(|cursor| cursor.body.as_ref());
+        match (&state.ordinary_skip_body, old_body) {
+            (Some(id), Some(body)) => {
+                MessageId::parse(id)
+                    .map_err(|_| corrupt("invalid ordinary skipped body identity"))?;
+                if id != body.message.as_str() || !assembler.partial.is_empty() {
+                    return Err(corrupt("invalid ordinary skipped body cursor"));
+                }
+                assembler.emitted.insert(id.clone());
+            }
+            (None, Some(body)) => {
+                if assembler.partial.len() != 1
+                    || assembler
+                        .partial
+                        .get(body.message.as_str())
+                        .is_none_or(|text| text.len() as u64 != body.offset)
+                {
+                    return Err(corrupt("invalid ordinary continued body accumulator"));
+                }
+            }
+            (None, None) if assembler.partial.is_empty() => {}
+            _ => return Err(corrupt("ordinary accumulator lacks matching body cursor")),
+        }
+        let ordinary = super::queries::ordinary_presentation_page(
             db,
             context,
             &claim.instance,
@@ -2288,35 +2328,16 @@ pub(super) fn pull(
             state.ordinary_cursor.clone(),
             budget,
         )?;
-        work.ordinary = visited;
-        let mut assembler =
-            Assembler::new(None).with_command_prefix(input.pull.marker_prefix.clone());
-        assembler.partial = partial_state(&state.ordinary_partial)?;
-        if let Some(id) = &state.ordinary_skip_body {
-            MessageId::parse(id).map_err(|_| corrupt("invalid ordinary skipped body identity"))?;
-            let current = state
-                .ordinary_cursor
-                .as_ref()
-                .map(|cursor| {
-                    crate::protocol::pagination::InboxBatchV2CursorState::decode_for(
-                        cursor,
-                        &claim.instance,
-                        &claim.seat,
-                    )
-                })
-                .transpose()
-                .map_err(corrupt)?;
-            if current
-                .as_ref()
-                .and_then(|v| v.body.as_ref())
-                .map(|v| v.message.as_str())
-                != Some(id.as_str())
-                || !assembler.partial.is_empty()
-            {
-                return Err(corrupt("invalid ordinary skipped body cursor"));
+        work.ordinary = ordinary.visited;
+        work.ordinary_continuation_key_probes = ordinary.continuation_probes;
+        if let Some(retired) = &ordinary.retired_body {
+            if old_body.map(|body| &body.message) != Some(retired) {
+                return Err(corrupt("ordinary retirement does not match continued body"));
             }
-            assembler.emitted.insert(id.clone());
+            assembler.partial.remove(retired.as_str());
+            assembler.emitted.remove(retired.as_str());
         }
+        let ordinary = ordinary.page;
         carry.prefix = input.pull.marker_prefix.clone();
         for value in ordinary.items {
             if let Some(message) = assemble_message(&mut assembler, value, &carry.prefix)? {
@@ -2728,6 +2749,9 @@ fn finish(
         || work.ordinary_due_key_probes > 1803
         || work.ordinary_due_seeks > 100
         || work.ordinary_due_hydrated > 32
+        || work.ordinary_continuation_key_probes > 15
+        || (work.ordinary_continuation_key_probes != 0
+            && (work.ordinary_due_key_probes != 0 || work.ordinary_carry_key_probes != 0))
         || work.ordinary_carry_key_probes > 579
         || work.ordinary_carry_seeks > 32
         || work.ordinary_carry_hydrated > 32

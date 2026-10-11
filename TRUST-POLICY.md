@@ -1611,6 +1611,20 @@ control work retain their separately declared accounting. These finite allowance
 add no time-budget extension, weaken no cancellation or exact-owner fence, and
 install no progress after refusal or transaction rollback.
 
+A private normal ordinary-page continuation may classify its one captured
+Unread body against the exact binding's display cursor and canonical receipt.
+This separately charges at most 15 keyed probes (five captured-recipient/read
+relations plus ten conservative effective-receipt probes) in
+`ordinary_continuation_key_probes`; existing setup and body hydration remain
+separate. Retirement consumes one of the existing 100 normal candidate visits,
+with no additional source walk, due/replay or carry work. Only positively
+Acknowledged, RecipientRetired or NotRequired receipt authority plus this
+binding's completed cursor may retire that exact captured body. Pending remains
+eligible; missing, mismatched or invalid authority refuses. Captured bounds,
+binding fence and exact partial-byte/skip bookkeeping remain checked, and a
+refusal rolls the private update back. Public inbox cursor validation is
+unchanged; no cursor reset or receipt ACK is implied.
+
 Finite failed-key traversal uses two process-local negative caches (Hook and
 Watch) per retained ledger binding, each at most256 ID/full-offer-stamp pairs,
 scoped to binding_id, execution, ordinary signal, passive publication generation

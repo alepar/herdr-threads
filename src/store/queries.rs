@@ -6333,6 +6333,86 @@ mod inbox_v2 {
             ),
         )
     }
+    struct ContinuedOrdinary {
+        message: MessageId,
+        ordinal: i64,
+        pending: bool,
+        retire: bool,
+    }
+    /// Private presentation continuation only. Positive captured authority is
+    /// independent of the reader's mutable display cursor; missing authority
+    /// never proves that a continued body may be retired.
+    fn continued_ordinary(
+        db: &Connection,
+        instance: &str,
+        state: &State,
+        binding: &BindingId,
+        probes: &mut usize,
+    ) -> Result<ContinuedOrdinary, ApiError> {
+        let body = state.body.as_ref().expect("continued ordinary body");
+        let position = state
+            .unread
+            .ok_or_else(|| invalid("missing unread capture"))?;
+        // Recipient, manifest, message, membership and the exact binding cursor.
+        *probes += 5;
+        let captured: Option<(i64, String, i64, i64, i64)> = db.query_row(
+            "SELECT pr.ordinal,m.thread_id,m.sequence,sm.decision_seq,COALESCE((SELECT c.seq FROM binding_cursors c WHERE c.binding_id=?2 AND c.thread_id=m.thread_id),0) FROM messages m JOIN send_manifests sm ON sm.message_id=m.id AND sm.thread_id=m.thread_id JOIN prepared_recipients pr ON pr.preparation_id=sm.preparation_id AND pr.thread_id=m.thread_id AND pr.seat_id=?1 WHERE m.id=?3 AND m.instance_id=?4 AND sm.instance_id=?4 AND m.kind='ordinary' AND m.delivery_mode='ordinary' AND sm.decision_seq<=?5 AND EXISTS(SELECT 1 FROM memberships mb WHERE mb.thread_id=m.thread_id AND mb.seat_id=pr.seat_id AND mb.state='joined')",
+            params![state.seat.as_str(),binding.as_str(),body.message.as_str(),instance,state.publication_decision_high_water as i64],
+            |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)),
+        ).optional().map_err(store_error)?;
+        let Some((ordinal, thread, sequence, decision, displayed)) = captured else {
+            return Err(invalid("continued body lacks captured recipient authority"));
+        };
+        if ordinal <= 0
+            || ordinal as u64 <= position.after_ordinal
+            || ordinal as u64 > position.high_water_ordinal
+            || sequence <= 0
+            || decision < 0
+            || displayed < 0
+        {
+            return Err(invalid(
+                "continued body is outside captured recipient bounds",
+            ));
+        }
+        // The conservative effective-receipt envelope includes sparse misses.
+        *probes += 10;
+        let receipt = super::super::effective::effective_receipt(
+            db,
+            body.message.as_str(),
+            state.seat.as_str(),
+        )?
+        .ok_or_else(|| invalid("continued body lacks receipt authority"))?;
+        if receipt.source != super::super::effective::ReceiptSource::Manifest
+            || receipt.message_id != body.message.as_str()
+            || receipt.seat_id != state.seat.as_str()
+            || receipt.thread_id != thread
+            || receipt.sequence != sequence
+            || receipt.source_ordinal != ordinal
+            || receipt.decision_seq != Some(decision)
+        {
+            return Err(invalid(
+                "continued body receipt differs from captured authority",
+            ));
+        }
+        let (pending, terminal) = match receipt.state {
+            EffectiveReceiptState::Pending => (true, false),
+            EffectiveReceiptState::Acknowledged
+            | EffectiveReceiptState::RecipientRetired
+            | EffectiveReceiptState::NotRequired => (false, true),
+        };
+        Ok(ContinuedOrdinary {
+            message: body.message.clone(),
+            ordinal,
+            pending,
+            retire: displayed >= sequence && terminal,
+        })
+    }
+    pub(super) struct QueryModePage {
+        pub result: CommandResult,
+        pub visited: usize,
+        pub retired_body: Option<MessageId>,
+        pub continuation_probes: usize,
+    }
     fn capture(
         db: &Connection,
         instance: &str,
@@ -6621,6 +6701,7 @@ mod inbox_v2 {
         current_agent: bool,
         reading: Option<&BindingId>,
         ordinary_only: bool,
+        continuation: Option<&ContinuedOrdinary>,
     ) -> Result<(Option<Item>, usize), ApiError> {
         let seat = &state.seat.clone();
         match state.source {
@@ -6631,13 +6712,25 @@ mod inbox_v2 {
                 let decision = state.publication_decision_high_water;
                 // A partial body pins an already validated unread identity (the same rule as lazy).
                 if let Some(body) = state.body.clone() {
-                    let ordinal =
-                        unread_ordinal(db, seat, binding, body.message.as_str(), decision)?
+                    let (ordinal, pending) = if ordinary_only {
+                        let validated = continuation
+                            .filter(|value| value.message == body.message && !value.retire)
                             .ok_or_else(|| {
-                                invalid("continued body is not captured unread content")
+                                invalid("missing validated private body continuation")
                             })?;
-                    let ack = current_agent
-                        && receipt_pending(db, seat, body.message.as_str(), decision)?;
+                        (validated.ordinal, validated.pending)
+                    } else {
+                        let ordinal =
+                            unread_ordinal(db, seat, binding, body.message.as_str(), decision)?
+                                .ok_or_else(|| {
+                                    invalid("continued body is not captured unread content")
+                                })?;
+                        (
+                            ordinal,
+                            receipt_pending(db, seat, body.message.as_str(), decision)?,
+                        )
+                    };
+                    let ack = current_agent && pending;
                     let item = message(db, body.message.as_str(), false, ack, state)?;
                     state.unread = Some(InboxBatchV2UnreadPosition {
                         after_ordinal: ordinal as u64,
@@ -6959,7 +7052,7 @@ mod inbox_v2 {
         output: &OutputSpec,
         budget: &CallBudget,
     ) -> Result<CommandResult, ApiError> {
-        query_mode(db, store, instance, q, output, budget, false).map(|(result, _)| result)
+        query_mode(db, store, instance, q, output, budget, false).map(|page| page.result)
     }
 
     pub(super) fn current_agent(
@@ -6985,7 +7078,7 @@ mod inbox_v2 {
         output: &OutputSpec,
         budget: &CallBudget,
         ordinary_only: bool,
-    ) -> Result<(CommandResult, usize), ApiError> {
+    ) -> Result<QueryModePage, ApiError> {
         let seat = q.seat.as_ref().ok_or_else(|| {
             api_error(
                 ErrorCode::InvalidRequest,
@@ -7034,12 +7127,37 @@ mod inbox_v2 {
         // settlement), never a fixed harness list:
         // a Hermes binding's pending receipts are ACK candidates too.
         let current_agent = current_agent(db, seat, reading)?;
-        if let Some(body) = &state.body {
+        // Progress is compared to the original capture, before retirement.
+        let initial = state.clone();
+        let mut continuation = None;
+        let mut retired_body = None;
+        let mut continuation_probes = 0;
+        if let Some(body) = state.body.clone() {
             let lazy = state.source == Source::Lazy;
             if message(db, body.message.as_str(), lazy, current_agent, &state)?.is_none() {
                 return Err(invalid("continued body is absent"));
             }
-            let addressed = if state.source == Source::Unread {
+            let addressed = if ordinary_only && state.source == Source::Unread {
+                let validated = continued_ordinary(
+                    db,
+                    instance,
+                    &state,
+                    reading.expect("bound private reader"),
+                    &mut continuation_probes,
+                )?;
+                if validated.retire {
+                    state
+                        .unread
+                        .as_mut()
+                        .expect("captured unread position")
+                        .after_ordinal = validated.ordinal as u64;
+                    state.body = None;
+                    retired_body = Some(validated.message);
+                } else {
+                    continuation = Some(validated);
+                }
+                true
+            } else if state.source == Source::Unread {
                 reading.is_some_and(|binding| {
                     unread_ordinal(
                         db,
@@ -7071,7 +7189,6 @@ mod inbox_v2 {
                 return Err(invalid("continued body is not captured addressed content"));
             }
         }
-        let initial = state.clone();
         let mut items = Vec::new();
         // A session the daemon has not enrolled yet reads the page a fresh binding would get,
         // with the history stats it would start from (spec §2 First-contact stats). Only the
@@ -7098,7 +7215,8 @@ mod inbox_v2 {
                 }
             }
         }
-        let mut visited = 0;
+        // A retired body consumes one of the existing candidate visits.
+        let mut visited = usize::from(retired_body.is_some());
         let mut stop = StopReason::Complete;
         while !done(&state) {
             if budget.is_exhausted(store.clock()) {
@@ -7129,6 +7247,7 @@ mod inbox_v2 {
                 current_agent,
                 reading,
                 ordinary_only,
+                continuation.as_ref(),
             )?;
             visited += work;
             state.body = None;
@@ -7224,13 +7343,30 @@ mod inbox_v2 {
         {
             return Err(ApiError::invalid_budget("selected response cannot fit"));
         }
-        Ok((CommandResult::InboxBatchV2(page), visited))
+        if continuation_probes > 15 || (ordinary_only && visited > CANDIDATE_LIMIT) {
+            return Err(api_error(
+                ErrorCode::StoreCorrupt,
+                "private continuation work bound",
+            ));
+        }
+        Ok(QueryModePage {
+            result: CommandResult::InboxBatchV2(page),
+            visited,
+            retired_body,
+            continuation_probes,
+        })
     }
 }
 
 /// Internal canonical presentation source. Unlike public V1/V2 inbox reads,
 /// it neither captures nor traverses invitations. Exactly one bounded query
 /// is permitted per fresh presentation quantum; the caller persists its cursor.
+pub(super) struct OrdinaryPresentationPage {
+    pub page: Page<crate::protocol::results::InboxBatchV2Item>,
+    pub visited: usize,
+    pub retired_body: Option<MessageId>,
+    pub continuation_probes: usize,
+}
 pub(super) fn ordinary_presentation_page(
     db: &Connection,
     context: &StoreContext,
@@ -7238,7 +7374,7 @@ pub(super) fn ordinary_presentation_page(
     claim: &crate::protocol::authority::CallerClaim,
     cursor: Option<String>,
     budget: &CallBudget,
-) -> Result<(Page<crate::protocol::results::InboxBatchV2Item>, usize), ApiError> {
+) -> Result<OrdinaryPresentationPage, ApiError> {
     let query = InboxQuery {
         seat: Some(claim.seat.clone()),
         claim: Some(claim.clone()),
@@ -7248,7 +7384,7 @@ pub(super) fn ordinary_presentation_page(
             max_bytes: 65536,
         },
     };
-    let (result, visited) = inbox_v2::query_mode(
+    let result = inbox_v2::query_mode(
         db,
         context,
         instance,
@@ -7257,8 +7393,13 @@ pub(super) fn ordinary_presentation_page(
         budget,
         true,
     )?;
-    match result {
-        CommandResult::InboxBatchV2(page) => Ok((page, visited)),
+    match result.result {
+        CommandResult::InboxBatchV2(page) => Ok(OrdinaryPresentationPage {
+            page,
+            visited: result.visited,
+            retired_body: result.retired_body,
+            continuation_probes: result.continuation_probes,
+        }),
         _ => Err(api_error(
             ErrorCode::StoreCorrupt,
             "invalid ordinary presentation page",

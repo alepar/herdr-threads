@@ -5264,6 +5264,11 @@ pub struct PresentationWork {
     pub ordinary_carry_key_probes: usize,
     pub ordinary_carry_seeks: usize,
     pub ordinary_carry_hydrated: usize,
+    /// At most one private normal-walk body continuation: five exact captured
+    /// identity/read-cursor probes plus ten conservative receipt probes. Its
+    /// retirement also consumes one of the normal walk's 100 candidate visits.
+    /// Separate from due/replay, carry, and existing hydration/setup accounting.
+    pub ordinary_continuation_key_probes: usize,
     /// Snapshot identities checked for explicit canonical terminal evidence.
     pub offer_reconciliation_visits: usize,
     /// Fixed indexed relation probes, charged conservatively including misses.

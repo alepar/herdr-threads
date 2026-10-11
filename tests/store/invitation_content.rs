@@ -1110,6 +1110,10 @@ mod binding_presentation {
         let resumed = f.store.presentation_pull(input(), &budget()).expect(
             "a legitimate same-binding full read must not wedge private presentation continuation",
         );
+        assert_eq!(resumed.work.ordinary_continuation_key_probes, 15);
+        assert!(resumed.work.ordinary <= 100);
+        assert_eq!(resumed.work.ordinary_due_key_probes, 0);
+        assert_eq!(resumed.work.ordinary_carry_key_probes, 0);
         let DeliveryPullReplyV2::Page(resumed) = resumed.reply else {
             panic!("presentation must reach later unread mail")
         };
@@ -1141,6 +1145,7 @@ mod binding_presentation {
             .presentation_pull(f.input_for_claim("b", claim.clone()), &budget())
             .unwrap();
         assert!(initial.work.ordinary > 0);
+        assert_eq!(initial.work.ordinary_continuation_key_probes, 0);
         let cursor: String = f.db.query_row("SELECT ordinary_cursor FROM invitation_presentation_consumers WHERE binding_id='b' AND consumer='watch'", [], |r| r.get(0)).unwrap();
         let state = InboxBatchV2CursorState::decode_for(&cursor, "i", &claim.seat).unwrap();
         assert_eq!(state.source, InboxBatchV2Source::Unread);
@@ -1260,6 +1265,7 @@ mod binding_presentation {
             .store
             .presentation_pull(f.input_for_claim("b", claim), &budget())
             .unwrap();
+        assert_eq!(result.work.ordinary_continuation_key_probes, 15);
         assert_eq!(
             result.work.ordinary, 1,
             "retirement consumes exactly one existing source visit"
@@ -1291,6 +1297,7 @@ mod binding_presentation {
             .store
             .presentation_pull(f.input_for_claim("b", claim), &budget())
             .unwrap();
+        assert_eq!(result.work.ordinary_continuation_key_probes, 15);
         let DeliveryPullReplyV2::Page(page) = result.reply else {
             panic!("pending continuation remains model-visible")
         };
@@ -1320,6 +1327,7 @@ mod binding_presentation {
             .store
             .presentation_pull(f.input_for_claim("b", claim), &budget())
             .unwrap();
+        assert_eq!(result.work.ordinary_continuation_key_probes, 15);
         assert!(result.work.ordinary > 0);
         assert_eq!(
             f.db.query_row(
@@ -1382,6 +1390,7 @@ mod binding_presentation {
             .store
             .presentation_pull(f.input_for_claim("b", claim), &budget())
             .unwrap();
+        assert_eq!(retried.work.ordinary_continuation_key_probes, 15);
         assert!(retried.work.ordinary <= 100);
     }
 }
