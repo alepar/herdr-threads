@@ -348,9 +348,16 @@ fn every_advertised_capability_has_a_handler() {
             }
             INVITATION_REJECT => probe_invitation_reject(),
             THREAD_JOIN => probe_thread_join(),
-            DIRECT_THREADS_V1 => {
+            DIRECT_THREADS_V1 | ENSURE_CREATION_POLICY_V1 => {
                 let command =
                     Command::EnsureDirectThread(crate::protocol::commands::EnsureDirectThread {
+                        creation_policy: (*name == ENSURE_CREATION_POLICY_V1).then_some(
+                            crate::protocol::commands::EnsureCreationPolicy {
+                                confirmation:
+                                    crate::protocol::commands::InvitationConfirmation::Lazy,
+                                deadline_millis: None,
+                            },
+                        ),
                         recipient: crate::protocol::ids::SeatId::new("peer"),
                         operation: crate::protocol::ids::OperationId::new("direct-probe"),
                         claim: crate::protocol::authority::CallerClaim {

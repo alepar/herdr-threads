@@ -835,9 +835,10 @@ pub type PendingPage = Page<LocalIntent>;
 pub(crate) const MAX_DELIVERY_ORIGIN_BYTES: usize = 512 * 1024;
 pub(crate) const MAX_BOOTSTRAP_ORIGIN_BYTES: usize =
     2 * crate::store::topology_handoff::MAX_IDENTITY_BYTES + 4096;
-// The canonical automatic envelope (claim + original) is capped at 128 KiB.
-// The first 128 KiB covers the nested original and claim, and the second
-// covers repeated claim/scope fields in the frozen semantic and header. Fixed
+// The canonical automatic envelope (claim + original) is capped at 512 KiB
+// for modern explicit policy (historical absent policy retains 128 KiB). One
+// envelope covers the nested original and claim, another covers repeated
+// claim/scope fields in the frozen semantic and header. Fixed
 // reference fields and JSON tags use 4 KiB. Reject oversize, never truncate.
 pub(crate) const MAX_AUTOMATIC_ORIGIN_BYTES: usize =
     2 * crate::protocol::handoff::MAX_AUTOMATIC_ORIGINAL_BYTES + 4096;

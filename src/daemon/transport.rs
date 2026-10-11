@@ -71,8 +71,14 @@ impl Drop for PendingDrain {
 }
 
 pub async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R) -> io::Result<Vec<u8>> {
+    read_frame_with_limit(reader, MAX_FRAME_BYTES).await
+}
+pub(crate) async fn read_frame_with_limit<R: AsyncRead + Unpin>(
+    reader: &mut R,
+    limit: usize,
+) -> io::Result<Vec<u8>> {
     let length = reader.read_u32().await? as usize;
-    if length == 0 || length > MAX_FRAME_BYTES {
+    if length == 0 || length > limit {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "invalid frame length",
@@ -129,7 +135,10 @@ pub(crate) fn encode_json<T: Serialize>(value: &T) -> io::Result<Vec<u8>> {
 }
 
 fn encode_response(response: &WireResponse) -> io::Result<Vec<u8>> {
-    match encode_wire_response(response) {
+    encode_response_scoped(response, false)
+}
+fn encode_response_scoped(response: &WireResponse, automatic: bool) -> io::Result<Vec<u8>> {
+    match crate::protocol::wire::encode_wire_response_scoped(response, automatic) {
         Ok(frame) => Ok(frame),
         Err(error) if error.code == ErrorCode::InvalidBudget => {
             let fallback = WireResponse {
@@ -418,6 +427,7 @@ async fn serve_connection(
             "request id too long",
         ));
     }
+    let automatic_response = crate::protocol::wire::automatic_response_request(&request.command);
     let is_search = matches!(request.command, Command::Search(_));
     let is_stop = matches!(request.command, Command::Stop(_));
     let is_service_control = matches!(
@@ -530,7 +540,7 @@ async fn serve_connection(
             daemon_boot,
             result,
         };
-        let frame = encode_response(&response)?;
+        let frame = encode_response_scoped(&response, automatic_response)?;
         tokio::time::timeout_at(expires, write_half.write_all(&frame))
             .await
             .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "response expired"))??;
@@ -543,7 +553,7 @@ async fn serve_connection(
         daemon_boot,
         result,
     };
-    let frame = encode_response(&response)?;
+    let frame = encode_response_scoped(&response, automatic_response)?;
     tokio::time::timeout_at(expires, stream.write_all(&frame))
         .await
         .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "response expired"))?

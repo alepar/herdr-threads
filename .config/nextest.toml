@@ -6,6 +6,8 @@
 # chain's tests one at a time, as under `cargo test`.
 
 [test-groups]
+# Full automatic envelopes exercise the unchanged 250 ms cooperative permits.
+automatic-envelope = { max-threads = 1 }
 # hook_entrypoint asserts wall-clock hook budgets (1.5 s tool, 5 s lifecycle);
 # its spawned hooks starve each other when run together (ht-p03.8).
 hook-budget = { max-threads = 1 }
@@ -152,3 +154,12 @@ test-threads = 7
 [profile.ci.junit]
 path = "junit.xml"
 store-success-output = true
+
+# The two full-envelope positives overlapped under the lib runner and expired
+# 250 ms permits; the boundary case reaches decisions at 180-192 ms alone.
+# Keep exact body/metadata geometry and permit budgets, and run these alone.
+[[profile.default.overrides]]
+filter = "test(/^cli::topology_handoff::tests::live::automatic_live::modern_automatic_(maximum_escaped_body_completes_and_recovers_exactly|actual_admission_boundary_completes_and_next_metadata_size_has_zero_effects)$/)"
+test-group = "automatic-envelope"
+threads-required = "num-test-threads"
+priority = 100

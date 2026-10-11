@@ -372,6 +372,9 @@ pub(crate) fn mutate(
                     if let Some(saved) = current(tx, request)? {
                         return Ok(CommandResult::Handoff(saved));
                     }
+                    request
+                        .validate_admission()
+                        .map_err(ApiError::invalid_request)?;
                     let linked =
                         crate::store::topology_handoff::automatic::guard_child(tx, request, false)?;
                     if !linked {
@@ -427,12 +430,12 @@ pub(crate) fn mutate(
                     )?))
                 }
                 AutomaticDeliveryAction::Ensure(v) => {
-                    let thread = control::resolve_direct_pair(
+                    let (thread, created) = control::resolve_direct_pair(
                         tx,
                         decision,
-                        &request.claim.instance,
-                        &request.claim.seat,
+                        &request.claim,
                         &v.recipient,
+                        v.creation_policy.as_ref(),
                         installation_default_ms,
                     )?;
                     super::attach_created_legacy(
@@ -447,7 +450,13 @@ pub(crate) fn mutate(
                     if attached.as_ref() != Some(&thread) {
                         return Err(mismatch());
                     }
-                    Ok(CommandResult::ThreadCreated(thread))
+                    control::direct_pair_selection(
+                        tx,
+                        thread,
+                        &v.recipient,
+                        created,
+                        v.creation_policy.is_some(),
+                    )
                 }
                 AutomaticDeliveryAction::Complete { .. } => {
                     let mut saved = current(tx, request)?
@@ -486,6 +495,15 @@ pub(crate) fn mutate(
                     if saved.thread.as_ref() == Some(&thread) =>
                 {
                     Ok(CommandResult::ThreadCreated(thread))
+                }
+                (
+                    AutomaticDeliveryAction::Ensure(v),
+                    CommandResult::DirectThreadEnsured(actual),
+                ) if v.creation_policy.is_some()
+                    && saved.thread.as_ref() == Some(&actual.thread)
+                    && actual.recipient == v.recipient =>
+                {
+                    Ok(CommandResult::DirectThreadEnsured(actual))
                 }
                 _ => Err(api_error(
                     ErrorCode::StoreCorrupt,

@@ -34,6 +34,8 @@ struct ParentProgress {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ChildProgress {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    selection: Option<crate::protocol::results::DirectThreadEnsured>,
     version: u32,
     identity: AutomaticBootstrapIdentity,
     attachment: AutomaticBootstrapAttachment,
@@ -45,6 +47,8 @@ struct ChildProgress {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Terminal {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    selection: Option<crate::protocol::results::DirectThreadEnsured>,
     version: u32,
     original: String,
     completed: AutomaticBootstrapResult,
@@ -204,6 +208,7 @@ fn load_child(
     )?
     else {
         return Ok(ChildProgress {
+            selection: None,
             version: 2,
             identity: id.clone(),
             attachment: attachment.clone(),
@@ -215,6 +220,12 @@ fn load_child(
     };
     let value: ChildProgress = super::decode_linked(&bytes, super::MAX_LINKED_LOCAL_BYTES)?;
     if value.version != 2
+        || value.selection.as_ref().is_some_and(|actual| {
+            actual.validate().is_err()
+                || Some(&actual.thread) != value.thread.as_ref()
+                || actual.recipient != attachment.resolved_seat
+                || id.plan.payload.handoff.policy.is_none()
+        })
         || value.identity != *id
         || value.attachment != *attachment
         || value.thread.as_ref().is_some_and(|thread| {
@@ -324,6 +335,17 @@ fn resume_to_attachment<C: LocalClient + ?Sized, N: CreateTabPort + ?Sized>(
     let id = super::automatic_bootstrap_identity(&pending)?;
     exact_namespace(&id, namespace)?;
     let _lock = super::super::handoff::lock(journal, reference)?;
+    if id.plan.payload.handoff.policy.is_some() {
+        let completed =
+            matches!(status(client, clock, &id), Ok(s) if s.state == BootstrapState::Completed);
+        if !completed {
+            super::super::handoff_delivery::require_policy_capabilities(
+                client,
+                clock,
+                id.plan.payload.handoff.policy.as_ref(),
+            )?;
+        }
+    }
     let mut local = load_parent(journal, reference, &id)?;
     let begun = call(
         client,
@@ -683,6 +705,15 @@ pub(super) fn resume_to_writer<C: LocalClient + ?Sized, N: CreateTabPort + ?Size
         let thread = automatic_selected_thread(&ensured)
             .map_err(invalid)?
             .clone();
+        progress.selection = match ensured {
+            CommandResult::DirectThreadEnsured(actual)
+                if actual.recipient == attachment.resolved_seat =>
+            {
+                Some(actual)
+            }
+            CommandResult::ThreadCreated(_) if id.plan.payload.handoff.policy.is_none() => None,
+            _ => return Err(invalid("automatic Ensure lacks actual selection")),
+        };
         progress.thread = Some(thread);
         save_child(journal, reference, &progress)?;
     }
@@ -743,16 +774,32 @@ pub(super) fn resume_to_writer<C: LocalClient + ?Sized, N: CreateTabPort + ?Size
             }
         });
         if let Ok(report) = &result {
-            progress.launch = Some(report.report.clone());
-            save_child(journal, reference, &progress)?;
+            if id.plan.payload.handoff.policy.is_some() {
+                progress.launch = Some(super::super::handoff::automatic_summary(&report.report)?);
+                // The critical started summary precedes optional diagnostic IO. A failure
+                // here or afterward retains possible-start and never permits another launch.
+                save_child(journal, reference, &progress)?;
+                super::super::handoff::save_automatic_diagnostics(
+                    journal,
+                    reference,
+                    &report.report,
+                )?;
+            } else {
+                progress.launch = Some(report.report.clone());
+                save_child(journal, reference, &progress)?;
+            }
         }
         result?;
     }
-    if progress.possible_start
-        && progress
-            .launch
-            .as_ref()
-            .is_none_or(|v| v["outcome"] != "started")
+    if progress
+        .launch
+        .as_ref()
+        .is_some_and(|v| v["format"] == "automatic_launch_noncompletion_v1")
+        || progress.possible_start
+            && progress
+                .launch
+                .as_ref()
+                .is_none_or(|v| v["outcome"] != "started")
     {
         return Err(ApiError::unknown_outcome(format!("automatic bootstrap {} downstream possible start; inspect exact pane {}; no automatic relaunch", reference.recovery_ref(), attachment.created.root_pane.as_str())).into());
     }
@@ -800,12 +847,29 @@ fn read_terminal(journal: &Journal, reference: &IntentRef) -> Result<Option<Term
         || saved.completed.state != BootstrapState::Completed
         || saved.completed.completed.is_none()
         || saved.completed.thread.is_none()
-        || !matches!(saved.message.as_ref(), Some(CommandResult::MessageSent(_)))
     {
         return Err(invalid("invalid automatic bootstrap terminal"));
     }
     let original = Journal::decode_bootstrap_origin(reference, saved.original.as_bytes())?;
     let id = super::automatic_bootstrap_identity(&original)?;
+    if !matches!(saved.message.as_ref(), Some(CommandResult::MessageSent(_)))
+        && (saved.message.is_some() || id.plan.payload.handoff.policy.is_none())
+    {
+        return Err(invalid("invalid automatic bootstrap terminal message"));
+    }
+    if let Some(selection) = &saved.selection {
+        selection.validate().map_err(invalid)?;
+        if id.plan.payload.handoff.policy.is_none()
+            || Some(&selection.thread) != saved.completed.thread.as_ref()
+            || saved
+                .completed
+                .attachment
+                .as_ref()
+                .is_none_or(|attachment| selection.recipient != attachment.resolved_seat)
+        {
+            return Err(invalid("automatic terminal selection differs"));
+        }
+    }
     if saved.completed.identity != id {
         return Err(invalid("automatic terminal original differs"));
     }
@@ -1025,7 +1089,7 @@ pub(super) fn write_pending<C: LocalClient + ?Sized, W: Write>(
             "message": child.as_ref().and_then(|v| v.message.as_ref()),
             "possible_start": possible_start,
             "retry_argv": retry,
-            "guidance": "Inspect the exact original namespace and attempt. Retry retains original body and keys; unknown native creation or start never grants another automatic submission. No topology cleanup, invitation acceptance or ACK."
+            "guidance": super::super::handoff::AUTOMATIC_BOOTSTRAP_GUIDANCE
         }
     });
     let bytes = if output.format == OutputFormat::Json {
@@ -1088,6 +1152,32 @@ fn present_completed<W: Write>(
     {
         return Err(invalid("automatic canonical completion differs"));
     }
+    if id.plan.payload.handoff.policy.is_some() {
+        let attachment = completed
+            .attachment
+            .as_ref()
+            .ok_or_else(|| invalid("automatic completion lacks attachment"))?;
+        let retained = completed.completed.as_ref().unwrap();
+        attachment.validate(id).map_err(invalid)?;
+        AutomaticBootstrapMutation {
+            identity: id.clone(),
+            action: AutomaticBootstrapAction::Complete {
+                attachment: Box::new(attachment.clone()),
+                retained: retained.clone(),
+            },
+        }
+        .validate()
+        .map_err(invalid)?;
+        let full_digest = retained.report["full_report_digest"]
+            .as_str()
+            .ok_or_else(|| invalid("automatic completion lacks summary digest"))?;
+        if automatic_launch_summary(&retained.report, full_digest).map_err(invalid)?
+            != retained.report
+            || completed.thread.as_ref() != Some(&retained.thread)
+        {
+            return Err(invalid("automatic canonical summary differs"));
+        }
+    }
     let terminal = read_terminal(journal, reference)?;
     if terminal
         .as_ref()
@@ -1104,9 +1194,18 @@ fn present_completed<W: Write>(
     } else {
         None
     };
-    if !matches!(message.as_ref(), Some(CommandResult::MessageSent(_))) {
+    if !matches!(message.as_ref(), Some(CommandResult::MessageSent(_)))
+        && (message.is_some() || id.plan.payload.handoff.policy.is_none())
+    {
         return Err(invalid("automatic completion lacks retained sent message"));
     }
+    let selection = if let Some(saved) = &terminal {
+        saved.selection.clone()
+    } else if let Some(attachment) = &completed.attachment {
+        load_child(journal, reference, id, attachment)?.selection
+    } else {
+        None
+    };
     if terminal.is_none() {
         let original = String::from_utf8(journal.snapshot_bootstrap_origin(reference)?)
             .map_err(std::io::Error::other)?;
@@ -1114,6 +1213,7 @@ fn present_completed<W: Write>(
             journal,
             reference,
             &Terminal {
+                selection: selection.clone(),
                 version: 2,
                 original,
                 completed: completed.clone(),
@@ -1121,7 +1221,7 @@ fn present_completed<W: Write>(
             },
         )?;
     }
-    let report = serde_json::json!({
+    let mut report = serde_json::json!({
         "bootstrap": { "failed": false, "outcome": "started", "state": "completed",
             "recovery_ref": reference.recovery_ref(), "thread": completed.thread,
             "seat": completed.attachment.as_ref().map(|a| &a.resolved_seat),
@@ -1129,6 +1229,24 @@ fn present_completed<W: Write>(
             "message": message, "launch": completed.completed.as_ref().map(|r| &r.report),
         }
     });
+    if let Some(selection) = selection {
+        report["bootstrap"]["selection"] = selection.presentation();
+    }
+    if message.is_none() {
+        report["bootstrap"]["message_status"] = serde_json::json!("unavailable");
+    }
+    if let Some(retained) = &completed.completed
+        && retained.report["format"] == "automatic_launch_summary_v1"
+    {
+        report["bootstrap"]["local_diagnostics"] =
+            super::super::handoff::automatic_diagnostics_marker(
+                journal,
+                reference,
+                &retained.report,
+            );
+        report["bootstrap"]["launch"] =
+            super::super::handoff::automatic_launch_presentation(&retained.report);
+    }
     let bytes = if output.format == OutputFormat::Json {
         format!("{report}\n").into_bytes()
     } else {

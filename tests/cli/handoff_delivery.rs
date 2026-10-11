@@ -4121,6 +4121,7 @@ fn automatic_existing_retry_requires_exact_namespace_path_bytes_before_client() 
 }
 
 struct AutomaticPeerClient {
+    body: String,
     supported: bool,
     calls: Mutex<Vec<Command>>,
     thread: Mutex<Option<ThreadId>>,
@@ -4133,6 +4134,7 @@ struct AutomaticPeerClient {
 impl AutomaticPeerClient {
     fn new(supported: bool) -> Self {
         Self {
+            body: "literal '$HOME' work".into(),
             supported,
             calls: Mutex::new(vec![]),
             thread: Mutex::new(None),
@@ -4159,7 +4161,12 @@ impl LocalClient for AutomaticPeerClient {
             Command::Capabilities => Ok(CommandResult::Capabilities(
                 crate::protocol::results::CapabilityList {
                     capabilities: if self.supported {
-                        vec![crate::protocol::capabilities::AUTOMATIC_HANDOFF_V1.into()]
+                        vec![
+                            crate::protocol::capabilities::AUTOMATIC_HANDOFF_V1.into(),
+                            crate::protocol::capabilities::ENSURE_CREATION_POLICY_V1.into(),
+                            crate::protocol::capabilities::SEND_TIME_RECEIPTS_V1.into(),
+                            crate::protocol::capabilities::INVITATION_CONFIRMATION_V1.into(),
+                        ]
                     } else {
                         vec![]
                     },
@@ -4179,7 +4186,7 @@ impl LocalClient for AutomaticPeerClient {
             Command::AutomaticHandoffDelivery(request) => {
                 use crate::protocol::handoff::{AutomaticDeliveryAction, HandoffResult};
                 assert_eq!(request.plan().recipient.as_str(), "recipient");
-                assert_eq!(request.plan().payload.body, "literal '$HOME' work");
+                assert_eq!(request.plan().payload.body, self.body);
                 let keys = &request.plan().payload.keys;
                 let status = |state, thread| {
                     CommandResult::Handoff(HandoffResult {
@@ -4215,7 +4222,17 @@ impl LocalClient for AutomaticPeerClient {
                             *lost = None;
                             return Err(ApiError::unknown_outcome("Ensure committed; reply lost"));
                         }
-                        Ok(CommandResult::ThreadCreated(ThreadId::new("t-pair")))
+                        if let Some(policy) = &q.creation_policy {
+                            use crate::protocol::results::{
+                                DirectThreadEnsureOutcome, DirectThreadEnsured,
+                                DirectThreadInvitation,
+                            };
+                            Ok(CommandResult::DirectThreadEnsured(DirectThreadEnsured {thread:ThreadId::new("t-pair"),recipient:SeatId::new("recipient"),outcome:DirectThreadEnsureOutcome::Created,
+                                invitation:Some(DirectThreadInvitation {id:crate::protocol::ids::InvitationId::new("iv-pair"),episode:1,confirmation:policy.confirmation,
+                                    effective_deadline_at:if policy.confirmation==crate::protocol::commands::InvitationConfirmation::RequireAck {Some(UtcMillis(11001))} else {None},inviter:Some(q.claim.seat.clone())})}))
+                        } else {
+                            Ok(CommandResult::ThreadCreated(ThreadId::new("t-pair")))
+                        }
                     }
                     AutomaticDeliveryAction::Send(q) => {
                         assert_eq!(q.operation, keys.send);
@@ -4256,4 +4273,64 @@ impl LocalClient for AutomaticPeerClient {
             other => panic!("automatic existing producer used forbidden command: {other:?}"),
         }
     }
+}
+
+#[test]
+fn automatic_existing_max_escaped_body_and_independent_frozen_deadlines() {
+    let body = "\0".repeat(65536);
+    let parsed = super::super::commands::parse_argv([
+        "ht",
+        "handoff",
+        "--existing",
+        "--seat",
+        "recipient",
+        "--deadline",
+        "7",
+        "--invite-deadline",
+        "11",
+        "--",
+        &body,
+    ])
+    .unwrap();
+    let super::super::commands::CliAction::TopologyHandoff(request) = parsed.action else {
+        panic!("wrong route")
+    };
+    let tmp = TempRoot::new();
+    let journal = Journal::open(tmp.0.join("intents")).unwrap();
+    let mut client = AutomaticPeerClient::new(true);
+    client.body = body.clone();
+    let topology = crate::host::observation::HostTopology {
+        spaces: vec![],
+        tabs: vec![],
+        panes: vec![],
+    };
+    let namespace = fixture::payload().handoff.namespace;
+    let result = run_automatic_existing(
+        &request,
+        Preparation {
+            claim: &canonical_claim(),
+            namespace: &namespace,
+            topology: &topology,
+            client: &client,
+            clock: &TestClock,
+        },
+        &journal,
+        super::super::actor_route::InvocationActor::Agent,
+        &OutputSpec::default(),
+        &mut vec![],
+    );
+    assert!(result.is_ok(), "maximum exact body refused: {result:?}");
+    let calls = client.calls.lock().unwrap();
+    let send = calls
+        .iter()
+        .find_map(|c| match c {
+            Command::AutomaticHandoffDelivery(q) => match &q.action {
+                crate::protocol::handoff::AutomaticDeliveryAction::Send(v) => Some(v),
+                _ => None,
+            },
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(send.body, body);
+    assert_eq!(send.deadline_millis, Some(7000));
 }

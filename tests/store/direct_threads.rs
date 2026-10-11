@@ -21,6 +21,7 @@ fn store_fixture() -> (SqliteStore, Connection, PathBuf) {
 }
 fn ensure(store: &SqliteStore, from: &str, to: &str, key: &str) -> Result<CommandResult, ApiError> {
     let v = EnsureDirectThread {
+        creation_policy: None,
         recipient: SeatId::new(to),
         operation: OperationId::new(key),
         claim: claim(from),

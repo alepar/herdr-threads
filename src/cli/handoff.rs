@@ -668,6 +668,7 @@ fn start_automatic<C: LocalClient + ?Sized, W: Write>(
         ));
     }
     super::handoff_delivery::require_automatic_capability(client, clock)?;
+    super::handoff_delivery::require_policy_capabilities(client, clock, request.policy.as_ref())?;
     let namespace = HandoffNamespace {
         instance: claim.instance.clone(),
         state_dir: output
@@ -693,14 +694,28 @@ fn start_automatic<C: LocalClient + ?Sized, W: Write>(
         &template,
     )?;
     validate_whole_input(&envelope, &launcher.native_input(&envelope.request)?)?;
-    let prepared = launcher.preflight_startup(&request.launch, &envelope.request)?;
-    validate_whole_input(&envelope, &prepared.native_argv)?;
     let payload = AutomaticHandoffPayload::new(
         namespace.clone(),
         OperationId::new(uuid::Uuid::new_v4().to_string()),
         request.body,
     )
+    .and_then(|payload| payload.with_policy(request.policy.clone()))
     .map_err(super::invalid_request)?;
+    // Seat allocation follows the complete original and continuation admission.
+    let prospective = AutomaticOriginal::Handoff(Box::new(AutomaticHandoffPlan {
+        version: AUTOMATIC_PLAN_VERSION,
+        delivery: AutomaticDeliveryPlan::new(payload.clone(), SeatId::new("\\".repeat(128)))
+            .map_err(super::invalid_request)?,
+        launch: request.launch.clone(),
+        context: output.context.clone(),
+        startup_input: Some(template.clone()),
+    }));
+    super::handoff_delivery::validate_automatic_local_admission(
+        journal,
+        &super::handoff_delivery::automatic_envelope(&claim, prospective)?,
+    )?;
+    let prepared = launcher.preflight_startup(&request.launch, &envelope.request)?;
+    validate_whole_input(&envelope, &prepared.native_argv)?;
     let delivery =
         AutomaticDeliveryPlan::new(payload, prepared.recipient).map_err(super::invalid_request)?;
     let original = AutomaticOriginal::Handoff(Box::new(AutomaticHandoffPlan {
@@ -2295,3 +2310,141 @@ pub(crate) fn run<W: Write>(
 #[cfg(test)]
 #[path = "../../tests/cli/handoff.rs"]
 mod tests;
+
+/// Hash the exact generated JSON without retaining a second diagnostic buffer.
+pub(crate) fn automatic_summary(report: &serde_json::Value) -> io::Result<serde_json::Value> {
+    use sha2::{Digest, Sha256};
+    struct HashWriter(Sha256);
+    impl Write for HashWriter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0.update(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut writer = HashWriter(Sha256::new());
+    serde_json::to_writer(&mut writer, report)?;
+    let digest = format!("{:x}", writer.0.finalize());
+    if report["outcome"] == "started" {
+        crate::protocol::handoff::automatic_launch_summary(report, &digest)
+            .map_err(io::Error::other)
+    } else {
+        Ok(
+            serde_json::json!({"format":"automatic_launch_noncompletion_v1", "observed_started":false,
+            "full_report_digest":digest,"diagnostics":"optional_local_artifact"}),
+        )
+    }
+}
+pub(crate) fn automatic_diagnostics_path(
+    journal: &Journal,
+    reference: &IntentRef,
+) -> std::path::PathBuf {
+    journal.root().join(format!(
+        "automatic-diagnostics-{}.json",
+        reference.operation.as_str()
+    ))
+}
+/// Critical started progress MUST be durable before this optional diagnostic write.
+/// This file is never read to authorize, recover or complete a handoff.
+pub(crate) fn save_automatic_diagnostics(
+    journal: &Journal,
+    reference: &IntentRef,
+    report: &serde_json::Value,
+) -> io::Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let temp = journal
+        .root()
+        .join(format!(".automatic-diagnostics-{}", uuid::Uuid::new_v4()));
+    let result = (|| {
+        let file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&temp)?;
+        let mut writer = io::BufWriter::new(file);
+        serde_json::to_writer(&mut writer, report)?;
+        writer.flush()?;
+        writer.get_ref().sync_all()?;
+        fs::hard_link(&temp, automatic_diagnostics_path(journal, reference))?;
+        File::open(journal.root())?.sync_all()
+    })();
+    let cleanup = fs::remove_file(&temp);
+    result?;
+    cleanup?;
+    File::open(journal.root())?.sync_all()
+}
+pub(crate) fn automatic_diagnostics_marker(
+    journal: &Journal,
+    reference: &IntentRef,
+    summary: &serde_json::Value,
+) -> serde_json::Value {
+    let path = automatic_diagnostics_path(journal, reference);
+    let state = match fs::symlink_metadata(&path) {
+        Ok(m) if m.file_type().is_file() => "local_file",
+        Err(e) if e.kind() == io::ErrorKind::NotFound => "missing",
+        _ => "unavailable",
+    };
+    serde_json::json!({"path":path,"full_report_digest":summary["full_report_digest"],"state":state,"authority":"local_hint"})
+}
+
+/// Serialize supported presentation fields with the actual canonical journal root.
+/// The UUID/ordinal below dominate future generated references and are only sizes.
+pub(crate) fn validate_automatic_presentation_admission(
+    root: &std::path::Path,
+    namespace: &crate::protocol::handoff::HandoffNamespace,
+    summary: &serde_json::Value,
+    selection: &crate::protocol::results::DirectThreadEnsured,
+    metadata: serde_json::Value,
+) -> Result<(), &'static str> {
+    let escaped = "\\".repeat(128);
+    let reference = IntentRef {
+        ordinal: u64::MAX,
+        operation: OperationId::new("ffffffff-ffff-ffff-ffff-ffffffffffff"),
+    };
+    let path = root.join(format!(
+        "automatic-diagnostics-{}.json",
+        reference.operation.as_str()
+    ));
+    let mut retry = super::hook::cli_prefix(&crate::protocol::output::ContinuationContext {
+        state_dir: namespace.state_dir.to_str().map(str::to_owned),
+        host: namespace.host_endpoint.to_str().map(str::to_owned),
+    });
+    retry.extend(["retry".into(), reference.recovery_ref()]);
+    let report = serde_json::json!({"bootstrap":{
+        "failed":false,"outcome":"completion_pending","state":"possible_creation",
+        "phase":"complete","recovery_ref":reference.recovery_ref(),"namespace":namespace,
+        "thread":escaped,"recipient":escaped,"seat":escaped,"pane":escaped,"message":crate::protocol::results::CommandResult::MessageSent(crate::protocol::ids::MessageId::new(escaped.clone())),
+        "message_status":"unavailable","launch":summary,"selection":selection.presentation(),
+        "local_diagnostics":{"path":path,"full_report_digest":"f".repeat(64),"state":"unavailable","authority":"local_hint"},
+        "retry_argv":retry,"metadata":metadata,"guidance":[AUTOMATIC_PENDING_GUIDANCE,AUTOMATIC_BOOTSTRAP_GUIDANCE],
+    }});
+    // A joint pair of actual wrappers conservatively covers either presentation.
+    let repeated = serde_json::json!({"handoff":report,"delivery":report});
+    if serde_json::to_vec(&repeated)
+        .map_err(|_| "automatic presentation encoding")?
+        .len()
+        + 1
+        > 1024 * 1024
+        || super::setup::render_text(&repeated).len() > 1024 * 1024
+    {
+        return Err("automatic future presentation exceeds 1 MiB");
+    }
+    Ok(())
+}
+
+pub(crate) const AUTOMATIC_PENDING_GUIDANCE: &str = "Retry the exact original reference after inspecting the pair lifecycle. Ensure creates the initial invitation once; a reject or leave needs explicit repair on the same pair. A possible native start must be inspected before any manual launch. No automatic invitation acceptance, ACK or topology cleanup occurs.";
+pub(crate) const AUTOMATIC_BOOTSTRAP_GUIDANCE: &str = "Inspect the exact original namespace and attempt. Retry retains original body and keys; unknown native creation or start never grants another automatic submission. No topology cleanup, invitation acceptance or ACK.";
+
+/// Output projection only; the retained canonical/local argv remains exact.
+pub(crate) fn automatic_launch_presentation(report: &serde_json::Value) -> serde_json::Value {
+    let mut presented = report.clone();
+    if presented["format"] == "automatic_launch_summary_v1"
+        && let Some(fields) = presented.as_object_mut()
+    {
+        fields.remove("argv");
+    }
+    presented
+}

@@ -356,8 +356,24 @@ Explicit leave, rejection and archival require ordinary join/accept/reinvite/reo
 automatic resurrection or replacement. Exact operation replay returns historical selection before
 fresh A2/lifecycle checks; it grants no permission for a new send. Direct markers freeze the exact
 other pair seat independently of ACK requests and are validated at preparation and publication,
-including corrupt participant/audience refusal. Lazy messages retain A8; a first Ensure may separately
-produce ordinary invitation attention and wake. Pair identity remains with its channel history;
+including corrupt participant/audience refusal. Lazy messages retain A8. An absent Ensure creation policy preserves the historical
+initial timed invitation and exact `ThreadCreated` result bytes. Explicit creation policy
+uses a bounded `DirectThreadEnsured` result: canonical thread/recipient, the selection
+outcome (created, existing pending or already joined), and the actual pending
+invitation's ID, episode, confirmation, effective deadline and inviter. This is the
+canonical selection at the original keyed decision; replay never refreshes the
+policy or deadline, and local copies remain hints. Historical NULL confirmation is
+presented as effective RequireAck while preserving its original deadline and NULL
+inviter. A new explicit RequireAck from a Human issuer is refused, matching ordinary
+Invite; existing episodes and historical absent-policy creation remain unchanged.
+The additive `direct_threads.ensure_creation_policy_v1`
+capability admits an explicit frozen initial Lazy or RequireAck policy and optional
+positive duration. Only creation of a new pair applies it; existing pending or joined
+participation keeps its original policy, inviter and deadline, and left/rejected
+participation still requires explicit repair. Modern direct sends and automatic
+handoffs freeze Lazy by default and require this capability before publication or
+canonical/native effects. A requested body ACK has its own send-time deadline and
+cannot accept an invitation or settle participation. Pair identity remains with its channel history;
 there is no seat merge, remapping or generation rollover and no new provenance value.
 
 **Voluntary self-join.** An explicit `join THREAD` enrolls the caller's seat in an active
@@ -600,7 +616,8 @@ completion cannot validate.
 
 Canonical automatic handoff storage retains the full normalized V2 original request,
 including frozen scope, caller, digest, namespace, child keys and any outer launch,
-context and startup template, within 128 KiB of encoded JSON. JSON escaping counts;
+context and startup template, within 128 KiB for historical absent-policy originals
+and 512 KiB for modern explicitly frozen invitation policy originals. JSON escaping counts;
 a syntactically valid plan can exceed this representation ceiling. Shared request
 validation refuses it before local publication or canonical effects; no fields are
 truncated or omitted to make it fit. Exact historical presentation compares this
@@ -609,8 +626,9 @@ provenance, receipt authority or permission from local data.
 
 The additive V2 automatic topology parent retains the full original agent claim,
 scope, namespace, topology, launch, startup template and delivery payload within
-128 KiB. Its exact typed attachment is derived from that original and canonical
-creation and ordinary resolution; it has the same 128 KiB bound. V2 has no Invite
+128 KiB for historical absent-policy originals or 512 KiB for modern policy
+originals. Its exact typed attachment is derived from that original and canonical
+creation and ordinary resolution; the corresponding original's capacity applies. V2 has no Invite
 phase or wire key. A registered child cannot fall back to unlinked admission.
 Possible-start checks require fresh sealed canonical creation evidence, original
 claim, exact recipient owner and current pair lifecycle; Send success grants no
@@ -620,12 +638,53 @@ or membership changes. It cannot create another message or launch.
 
 V2 recovery uses the authenticated local-account operator lane and an immutable
 inspection digest. Its request and complete retained historical result each fit
-256 KiB of encoded JSON; escaping and nested copies count. Fresh overflow refuses
+256 KiB for historical absent-policy originals. Modern recovery retains at most
+2 MiB of encoded JSON; escaping and nested copies count. General requests remain
+limited to a framed 1 MiB, including modern recovery requests. Fresh overflow refuses
 atomically. At most one creation/noncreation decision and one subsequent
 cancellation are retained per attempt. Recovery never replaces the original agent
 claim, allocates a seat, proves quiescence or authorizes native submission. An
 unknown attempt cannot become transport-proven not-submitted; an inspected
 noncreation decision starts a distinct attempt while retaining the unknown record.
+Modern automatic public admission checks the aggregate future envelope before local
+publication and the canonical first Begin repeats that check before inserting a
+parent. It derives supported generated startup prompts, frozen template/native argv,
+128-byte escaped opaque identifiers, bounded creation/witness fields, the 4096-byte
+operator reason and every request/result/reservation/recovery/local envelope. Independent
+metadata maxima may therefore be refused even when the body itself is within 65,536
+UTF-8 bytes. No retained identity, body or history is clipped. The framed response
+exception is exactly 2 MiB only for a known AutomaticBootstrap request with a frozen
+modern policy (Some) and its matching result family. Historical absent-policy (None)
+requests retain their preexisting 1 MiB response ceiling, as do every other request,
+response, watch, service and error. The historical 256 KiB canonical recovery-result
+limit is separate: transport does not add a semantic validator for handcrafted
+historical results between 256 KiB and 1 MiB.
+The client chooses its allocation limit from the known request before reading the
+frame body and checks result family plus request/instance/boot and embedded original
+identity correlation.
+
+A modern successful automatic launch canonically retains the explicitly versioned
+`automatic_launch_summary_v1`: truthful started outcome, exact pane/seat/harness and
+composed argv, and a separately named `full_report_digest`. Optional generated
+diagnostics are omitted from this summary. Their exact generated JSON bytes are
+streamed to a private deterministic local artifact after bounded critical started
+progress is synced; the full-report digest hashes those exact bytes, independently
+of the canonical summary digest. The artifact's path, presence marker and hash are
+cooperative local hints, never authority. Critical retry, recovery and completion
+never decode the artifact. A missing, unreadable or unsuccessfully written artifact
+cannot authorize another native submission or invalidate canonical Completed replay.
+A non-Started report uses a distinct bounded local noncompletion observation and
+never becomes a successful canonical completion. Any possible native start keeps the
+existing no-relaunch guard, including IO failure or interruption before summary sync.
+A valid frozen modern original and exact canonical Completed result remain readable
+when child progress and the optional artifact are truly absent. If no real retained
+message ID is available, presentation uses a null message and an explicit unavailable
+marker. It performs no Begin, Ensure, Send, launch or new-capability admission to
+reconstruct one. Existing corrupt or mismatched child records still refuse.
+Historical absent-policy reports, bytes, digests and presentation remain unchanged.
+The generated summary contract covers supported public producers; it is not a
+promise to carry arbitrary externally authored diagnostic JSON through a request.
+
 Live automatic parents protect archival before child registration and on the exact
 selected thread. Completed or cancelled tombstones release only that parent veto;
 replay cannot restore it or cancel a live downstream child fence or journal hint.

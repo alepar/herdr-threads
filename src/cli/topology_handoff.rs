@@ -143,6 +143,7 @@ pub fn prepare_automatic<C: crate::ports::LocalClient + ?Sized>(
         OperationId::new(uuid::Uuid::new_v4().to_string()),
         request.body.clone(),
     )
+    .and_then(|payload| payload.with_policy(request.policy.clone()))
     .map_err(fail)?;
     let scope = super::journal::IntentScope::Cooperative {
         instance: inputs.claim.instance.clone(),
@@ -182,6 +183,7 @@ pub fn prepare_automatic<C: crate::ports::LocalClient + ?Sized>(
         },
     )
     .map_err(fail)?;
+    identity.validate_admission().map_err(fail)?;
     let effective = preflight_automatic_launch_request(&identity)?;
     // Completion validates the retained native argv against the applied caller argv, not a
     // frozen composition, so the automatic plan admits only an adapter whose composition
@@ -586,7 +588,9 @@ pub fn publish_automatic(
     identity: &crate::protocol::handoff::AutomaticBootstrapIdentity,
     created_at_millis: i64,
 ) -> Result<super::journal::IntentRef, RunError> {
-    identity.validate().map_err(super::invalid_request)?;
+    identity
+        .validate_local_admission(journal.root())
+        .map_err(super::invalid_request)?;
     if !identity.plan.payload.cwd.is_dir() {
         return Err(super::invalid_request(
             "bootstrap cwd disappeared before publication",

@@ -678,6 +678,9 @@ pub struct CreateThread {
 /// Resolve the immutable canonical pair; returns the ordinary ThreadCreated ID.
 /// Resolves the immutable canonical pair through the guarded thread.direct_v1 runtime.
 pub struct EnsureDirectThread {
+    /// Only initial creation uses this policy; omission retains the historical timed request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub creation_policy: Option<EnsureCreationPolicy>,
     pub recipient: SeatId,
     pub operation: OperationId,
     pub claim: CallerClaim,
@@ -693,6 +696,25 @@ pub struct Invite {
     pub deadline_millis: Option<u64>,
     pub operation: OperationId,
     pub claim: CallerClaim,
+}
+/// Frozen initial direct-pair invitation policy. Existing episodes are never changed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EnsureCreationPolicy {
+    pub confirmation: InvitationConfirmation,
+    pub deadline_millis: Option<u64>,
+}
+impl EnsureCreationPolicy {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self
+            .deadline_millis
+            .is_some_and(|v| v == 0 || v > i64::MAX as u64)
+            || (self.confirmation == InvitationConfirmation::Lazy && self.deadline_millis.is_some())
+        {
+            return Err("invalid direct invitation creation policy");
+        }
+        Ok(())
+    }
 }
 /// Explicit modern invitation policy; the duration remains `deadline_millis`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -1775,6 +1775,43 @@ mod automatic_contract_tests {
         assert!(changed.validate().is_err());
     }
     #[test]
+    fn automatic_historical_original_capacity_and_exact_bytes_remain_unchanged() {
+        let historical = request();
+        assert_eq!(
+            historical.digest,
+            "8a9d2f46e0b4786658b9ee4ad9aa011cc91110e9ea9cf932479810c2f0998f71"
+        );
+        let AutomaticOriginal::Delivery(original) = &historical.original else {
+            unreachable!()
+        };
+        assert_eq!(serde_json::to_string(original).unwrap(), PLAN);
+        let mut oversized = historical;
+        let AutomaticOriginal::Delivery(plan) = &mut oversized.original else {
+            unreachable!()
+        };
+        plan.payload.body = "\0".repeat(65536);
+        oversized.digest = oversized.original.digest(&oversized.claim).unwrap();
+        assert!(
+            Command::AutomaticHandoffDelivery(Box::new(oversized.clone()))
+                .validate()
+                .is_err(),
+            "historical absent-policy envelope gained a new canonical capacity"
+        );
+        let AutomaticOriginal::Delivery(plan) = &mut oversized.original else {
+            unreachable!()
+        };
+        plan.payload.policy = Some(HandoffPolicy {
+            deadline_millis: None,
+            invitation_confirmation: crate::protocol::commands::InvitationConfirmation::Lazy,
+            invite_deadline_millis: None,
+        });
+        oversized.digest = oversized.original.digest(&oversized.claim).unwrap();
+        Command::AutomaticHandoffDelivery(Box::new(oversized))
+            .validate()
+            .unwrap();
+    }
+
+    #[test]
     fn automatic_keys_versions_and_raw_legacy_phases_fail_closed() {
         let mut plan: AutomaticDeliveryPlan = serde_json::from_str(PLAN).unwrap();
         plan.payload.keys.ensure = plan.payload.keys.send.clone();
