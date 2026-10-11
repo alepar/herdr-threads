@@ -368,12 +368,12 @@ model open work, and summary closure never changes receipt state or installs glo
   mail). Subagent, disconnected, ended and human bindings are never targets, and a seat that holds a human
   binding is never woken. A target whose mod channel is live and not stalled is woken through that channel
   and is never also typed to. The composer wake (typing into the pane) goes at most once per seat per wake:
-  with several targets only when Herdr reports the pane idle, and only to the one target whose fingerprint
-  pid equals Herdr's pane foreground process pid (the single non-shell process of `pane.process_info`);
-  no match, several matches, no fingerprint or no foreground report means no composer wake, with no fallback
-  to the latest claim or touch (nothing is guessed, and the refusal is pre-send so the reminder ladder does
-  not climb). A seat with exactly one target keeps the single-harness rule: its sole target is the
-  composer wake's target. A soft poke follows the same targets and rule.
+  only to the one target whose fingerprint pid equals Herdr's pane foreground process pid (the single
+  non-shell process of `pane.process_info`), and with several targets only when Herdr reports the pane
+  idle. No match, several matches, no fingerprint or no foreground report means no composer wake, with
+  no fallback to the latest claim or touch, even for a seat with one target (nothing is guessed, and the
+  refusal is pre-send so the reminder ladder does not climb). Only a reservation that names no targets
+  (a legacy source) keeps the single-harness rule. A soft poke follows the same targets and rule.
 - *Poke*: a soft-deadline poke is the fixed reminder
   `herdr-threads: receipt due in <N>s on <thread-ids>; run herdr-threads inbox` (thread ids only),
   submitted through the wake dispatcher and its limits to the seat's bound native agent of the bound

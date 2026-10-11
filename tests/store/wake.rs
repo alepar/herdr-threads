@@ -2303,6 +2303,44 @@ fn composer_choice_over_wake_targets_is_the_unique_fingerprint_pid_match() {
     drop(db);
     drop(store);
     let _ = std::fs::remove_file(path);
+
+    // One target is the list of length one: the same unique-match rule, no special arm.
+    let (store, path) = multi_store(&[row("only", "hermes", 30)]);
+    let db = store.context.open_writer().unwrap();
+    let targets = crate::store::wake::wake_targets(&db, &seat, true).unwrap();
+    let single = crate::ports::ReservedWakeAuthority::Cooperative {
+        terminal: crate::protocol::ids::TerminalId::new("t"),
+        incarnation: "i".into(),
+        binding_generation: None,
+        harness: None,
+        targets,
+    };
+    assert!(
+        matches!(single.composer_choice(Some(30)), crate::ports::ComposerChoice::Binding(t) if t.binding.as_str() == "only")
+    );
+    assert_eq!(
+        single.composer_choice(Some(10)),
+        crate::ports::ComposerChoice::NoMatch
+    );
+    assert_eq!(
+        single.composer_choice(None),
+        crate::ports::ComposerChoice::NoMatch
+    );
+    let none = crate::ports::ReservedWakeAuthority::Cooperative {
+        terminal: crate::protocol::ids::TerminalId::new("t"),
+        incarnation: "i".into(),
+        binding_generation: None,
+        harness: None,
+        targets: Vec::new(),
+    };
+    assert_eq!(
+        none.composer_choice(None),
+        crate::ports::ComposerChoice::Unspecified,
+        "a reservation naming no targets keeps the legacy single-harness rule"
+    );
+    drop(db);
+    drop(store);
+    let _ = std::fs::remove_file(path);
 }
 
 /// Kills: a per-binding fence. The reserved wake stays valid when a new binding enrolls or one

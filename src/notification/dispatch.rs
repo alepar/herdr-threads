@@ -242,12 +242,15 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
         ) {
             return refuse(RefusalCause::Unsafe, WakeOutcome::Unsafe);
         }
-        // Several target bindings share one composer (spec §3 Wake, roast r2): type only when
-        // Herdr reports the pane idle, and only to the binding whose process is the pane's
-        // foreground process. No unique match, no composer wake; never a guess.
+        // Every target set shares one composer (spec §3 Wake): type only to the target whose
+        // process is the pane's foreground process; with several targets also only when Herdr
+        // reports the pane idle. No unique match, no composer wake; never a guess.
         let mut composer_harness: Option<String> = None;
-        if cooperative && reservation.authority.targets().len() > 1 {
-            if !poke_only && observation.ui != HostUiState::Idle {
+        if cooperative && !reservation.authority.targets().is_empty() {
+            if reservation.authority.targets().len() > 1
+                && !poke_only
+                && observation.ui != HostUiState::Idle
+            {
                 return refuse(RefusalCause::Unsafe, WakeOutcome::Unsafe);
             }
             let foreground = match self.host.foreground_pid(&reservation.target, &read_context) {
@@ -260,8 +263,6 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
                     return refuse(RefusalCause::Unsafe, WakeOutcome::Unsafe);
                 }
             }
-        } else if let ComposerChoice::Binding(only) = reservation.authority.composer_choice(None) {
-            composer_harness = Some(only.harness.clone());
         }
         let selected = if poke.is_some() {
             self.host.safe_poke_target(&reservation.seat, &observation)

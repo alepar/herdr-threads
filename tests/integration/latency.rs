@@ -40,6 +40,11 @@ fn host_delay(method: &str) -> Duration {
     })
 }
 
+/// The harness session of the agent in `pane`; each pane's agent is a process of its own.
+fn latency_session(pane: &str) -> String {
+    format!("latency-{pane}")
+}
+
 fn agent_pane(id: &str, terminal: &str, label: &str) -> Value {
     json!({"pane_id":id,"terminal_id":terminal,"workspace_id":"w1","tab_id":format!("w1:t{id}"),
            "focused":false,"agent_status":"idle","agent":"claude","label":label,"revision":3})
@@ -119,6 +124,26 @@ impl SlowHost {
                                 json!({"id":id,"error":{"code":"pane_not_found","message":"pane not found"}})
                             }
                         },
+                        // Herdr's foreground process of the pane is the pane's agent process (the
+                        // stand-in of `latency_session`): the composer wake types only to the
+                        // binding with that fingerprint pid (spec §3 Wake).
+                        "pane.process_info" => {
+                            match find("pane_id") {
+                                Some(pane) => {
+                                    let pid = herdr_threads::test_support::isolation::stand_in_fingerprint(
+                                    "claude",
+                                    &latency_session(pane["pane_id"].as_str().unwrap_or_default()),
+                                )
+                                .pid;
+                                    json!({"id":id,"result":{"type":"pane_process_info","process_info":{
+                                    "pane_id":pane["pane_id"],"shell_pid":1,
+                                    "foreground_processes":[{"pid":pid,"name":"claude","argv0":"claude"}]}}})
+                                }
+                                None => {
+                                    json!({"id":id,"error":{"code":"pane_not_found","message":"pane not found"}})
+                                }
+                            }
+                        }
                         "agent.get" => match find("target") {
                             Some(agent) => {
                                 json!({"id":id,"result":{"type":"agent_info","agent":agent}})
@@ -199,7 +224,7 @@ impl Plugin {
             herdr_threads::test_support::isolation::as_agent(
                 &mut command,
                 "claude",
-                &format!("latency-{}", seat),
+                &latency_session(target),
             );
             command.args([
                 "--cooperative-seat",

@@ -27,7 +27,13 @@ fn agy_fixtures() -> PathBuf {
 }
 
 fn agy_pane_value() -> Value {
-    agent_pane(PANE_G, "term-g", "agy", None)
+    let mut pane = agent_pane(PANE_G, "term-g", "agy", None);
+    // Herdr's foreground process of the pane is the agy process its binding is fingerprinted
+    // with: the composer wake types only to that binding (spec §3 Wake).
+    pane["foreground_pid"] = json!(
+        herdr_threads::test_support::isolation::stand_in_fingerprint("agy", "agy-process").pid
+    );
+    pane
 }
 
 /// The agy seat `g` of a rig, joined to the rig's thread.
