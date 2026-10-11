@@ -1,0 +1,15 @@
+{
+  "positive_quiescent_ack": true,
+  "source_before": "6a8705ad3a98e8c2edbc951abd6d7a7a8e7c23bf20fd295862d29de89e81ad72",
+  "dirty_before": "b4a3aa570780e4bdf24b8f11a12a609ebdd0b7909404a386ac626a249143579c",
+  "files": 3533,
+  "path": "tests/store/invitation_content.rs",
+  "baseline": "a3452caf1072e9a070ec949024b777fe37f54d87e3917ab8c9702c88a99745b6",
+  "preserved_original_prefix": "1a5bd5d0580e8ffd611a806fda9c07b214c992529c8449e3ea126912bf9c1c0f",
+  "publication_block": "89500827eebe29a0c7187dd89a9c02413259b55c5ce788af23f0c9ef81710d87",
+  "epoch_block": "e657761a07a33a6ebe755e423c175eb660ec29d0115751c2e69dd33b877ef718",
+  "final": "b0bc53e82db0174c3baa9cb2b0b15aa933a57353560c6a8fa51e553a23d9c04c",
+  "exact_replacement_verified": true,
+  "fresh_review": "task-15-publication-check-proof-rereview-2.md",
+  "execution_claim": false
+}

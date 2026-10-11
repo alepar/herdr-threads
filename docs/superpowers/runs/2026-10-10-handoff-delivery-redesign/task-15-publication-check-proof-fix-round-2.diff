@@ -1,0 +1,132 @@
+--- round1-230/block.rs
++++ round2/block.rs
+@@ -1,15 +1,11 @@
+-#[test]
+-fn presentation_publication_scalar_checks_validate_retained_consumer_rows() -> rusqlite::Result<()>
+-{
++fn presentation_sqlite_measured(db: &Connection, sql: &str) -> rusqlite::Result<(i32, u64)> {
+     use std::cell::Cell;
+     use std::ffi::{c_int, c_void};
+-
+-    use rusqlite::{params_from_iter, types::Value};
+ 
+     // This callback is connection-local and never calls back into SQLite.
+     // Saturation avoids any possible arithmetic panic crossing the C ABI.
+     unsafe extern "C" fn count_instruction(context: *mut c_void) -> c_int {
+-        // SAFETY: measured() passes a stable live Box<Cell<u64>> and removes
++        // SAFETY: presentation_sqlite_measured() passes a stable live Box<Cell<u64>> and removes
+         // this callback before freeing it. SQLite invokes it synchronously on
+         // the same thread; the private in-memory connection is not shared.
+         let count = unsafe { &*context.cast::<Cell<u64>>() };
+@@ -32,26 +28,31 @@
+             }
+         }
+     }
+-    fn measured(db: &Connection, sql: &str) -> rusqlite::Result<(i32, u64)> {
+-        let mut statement = db.prepare(sql)?;
+-        let count = Box::new(Cell::new(0_u64));
+-        // SAFETY: the Box's pointee cannot move. The guard unregisters before
+-        // count drops. No connection operation overlaps this synchronous
+-        // execute, and the callback returns zero without unwinding.
+-        unsafe {
+-            rusqlite::ffi::sqlite3_progress_handler(
+-                db.handle(),
+-                1,
+-                Some(count_instruction),
+-                (&*count as *const Cell<u64>).cast_mut().cast::<c_void>(),
+-            );
+-        }
+-        let guard = ProgressGuard(db);
+-        statement.execute([])?;
+-        let result = (statement.get_status(StatementStatus::VmStep), count.get());
+-        drop(guard);
+-        Ok(result)
+-    }
++    let mut statement = db.prepare(sql)?;
++    let count = Box::new(Cell::new(0_u64));
++    // SAFETY: the Box's pointee cannot move. The guard unregisters before
++    // count drops. No connection operation overlaps this synchronous
++    // execute, and the callback returns zero without unwinding.
++    unsafe {
++        rusqlite::ffi::sqlite3_progress_handler(
++            db.handle(),
++            1,
++            Some(count_instruction),
++            (&*count as *const Cell<u64>).cast_mut().cast::<c_void>(),
++        );
++    }
++    let guard = ProgressGuard(db);
++    statement.execute([])?;
++    let result = (statement.get_status(StatementStatus::VmStep), count.get());
++    drop(guard);
++    Ok(result)
++}
++
++#[test]
++fn presentation_publication_scalar_checks_validate_retained_consumer_rows() -> rusqlite::Result<()>
++{
++    use rusqlite::{params_from_iter, types::Value};
++
+     fn retained(db: &Connection, columns: &str) -> rusqlite::Result<Vec<Vec<Value>>> {
+         let mut statement = db.prepare(&format!(
+             "SELECT {columns} FROM invitation_presentation_consumers ORDER BY seat_id,consumer"
+@@ -156,11 +157,12 @@
+             let mut controls = Vec::new();
+             let version: String = db.query_row("SELECT sqlite_version()", [], |row| row.get(0))?;
+             for (sql, column) in alters.iter().zip(scalar_names) {
+-                let (outer, progress) = measured(&db, sql)?;
++                let (outer, progress) = presentation_sqlite_measured(&db, sql)?;
+                 // Matched uncomplicated ADD COLUMN: only CHECK is removed.
+                 // The control isolates fixed DDL from validation of retained rows.
+                 let (prefix, _) = sql.split_once(" CHECK(").expect("scalar CHECK");
+-                let (control_outer, control_progress) = measured(&control, &format!("{prefix};"))?;
++                let (control_outer, control_progress) =
++                    presentation_sqlite_measured(&control, &format!("{prefix};"))?;
+                 assert!(outer > 0 && control_outer > 0 && progress > control_progress);
+                 assert_eq!(retained(&db, &old_columns)?, before);
+                 let zeroes: i64 = db.query_row(
+@@ -198,19 +200,31 @@
+             control_work.push(controls);
+         }
+         for column in 0..4 {
+-            assert_eq!(control_work[0][column], control_work[1][column]);
+-            assert_eq!(control_work[1][column], control_work[2][column]);
+-            let first_delta = checked_work[1][column]
+-                .checked_sub(checked_work[0][column])
+-                .expect("positive validation slope");
+-            let second_delta = checked_work[2][column]
+-                .checked_sub(checked_work[1][column])
+-                .expect("positive validation slope");
+-            assert!(first_delta > 0 && second_delta > 0);
+-            // Each of four ALTERs validates S retained consumer rows, plus fixed
+-            // DDL/scan overhead. VM ticks are NOT asserted equal to 4*S: their
+-            // per-row slope includes all existing V40 constraints and new ones.
+-            assert_eq!(first_delta * 96, second_delta * 31);
++            for work in [&checked_work, &control_work] {
++                let small = work[1][column]
++                    .checked_sub(work[0][column])
++                    .expect("positive retained-row work");
++                let total = work[2][column]
++                    .checked_sub(work[0][column])
++                    .expect("positive retained-row work");
++                assert!(small > 0);
++                // 127 added rows versus 31: bounded linear growth permits
++                // fixed/page overhead; it does not guess an exact VM slope.
++                assert!(total >= small * 4 && total <= small * 5);
++            }
++            let added = (0..3)
++                .map(|size| {
++                    checked_work[size][column]
++                        .checked_sub(control_work[size][column])
++                        .expect("CHECK adds work")
++                })
++                .collect::<Vec<_>>();
++            assert!(added[0] > 0);
++            // Isolate this linked fixture's added scalar CHECKs through this ALTER.
++            // Infer its coefficient from the one-row sample, not a literal
++            // VM-cost assumption or a claim that total work equals 4*S.
++            assert_eq!(added[1], added[0] * 32);
++            assert_eq!(added[2], added[0] * 128);
+         }
+     }
+     Ok(())
