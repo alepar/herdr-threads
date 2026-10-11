@@ -8077,6 +8077,7 @@ fn continuity_reattaches_unique_session_match_on_held_target() {
         CommandResult::ContinuityReattached(crate::protocol::results::ContinuityReattachment {
             seat: SeatId::new("s1"),
             binding_generation: 2,
+            fast_forward: None,
         })
     );
     let seat: (String, Option<String>, i64) = conn
@@ -8370,6 +8371,11 @@ fn c1_unresolved_binding(conn: &Connection, seat: &str, generation: i64, session
 
 /// Thread `ct` of `messages` ordinary messages receivable by `s1`, which has joined it.
 fn c1_history(conn: &Connection, messages: i64) {
+    c1_history_body(conn, messages, "'body'");
+}
+
+/// [`c1_history`] with every message body the SQL expression `body` (messages are immutable).
+fn c1_history_body(conn: &Connection, messages: i64, body: &str) {
     conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('ct','i','topic','goal',0,0)", []).unwrap();
     conn.execute(
         "INSERT INTO memberships(thread_id,seat_id,state) VALUES ('ct','s1','joined')",
@@ -8378,7 +8384,7 @@ fn c1_history(conn: &Connection, messages: i64) {
     .unwrap();
     for n in 1..=messages {
         conn.execute_batch(&format!(
-            "INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i','cm{n}','ct',{n},'ordinary','body',{n},{n});
+            "INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i','cm{n}','ct',{n},'ordinary',{body},{n},{n});
              INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES ('cp{n}','i','actor','cm{n}',zeroblob(32),'ct',0,0,0,0,0,0,1,'sealed');
              INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES ('cp{n}','ct','s1',1,300,1);
              INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('cp{n}','cm{n}','i','ct',{n},{n},{n},0,1,0);"
@@ -8439,6 +8445,194 @@ fn continuity_reattach_reopens_the_sessions_binding_with_its_cursors() {
         Some(5)
     );
     assert!(!read_cursors::has_unread(&conn, &id).unwrap());
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+/// `s1` unresolved with the session's `seat_unresolved` row, 6 long messages of thread `ct`
+/// (about 4000 bytes each) and the reopenable row's cursor at `cursor`.
+fn c1_past_one_page(cursor: i64, long: bool) -> (StoreContext, Connection, PathBuf, String) {
+    let (context, conn, path) = c1_fixture();
+    conn.execute("DELETE FROM occupant_bindings WHERE seat_id='s1'", [])
+        .unwrap();
+    let ended = c1_unresolved_binding(&conn, "s1", 1, "sess-1");
+    if long {
+        c1_history_body(&conn, 6, "hex(zeroblob(2000))");
+    } else {
+        c1_history(&conn, 5);
+    }
+    c1_set_cursor(&conn, &ended, cursor);
+    (context, conn, path, ended)
+}
+
+#[test]
+fn continuity_reattach_past_one_page_fast_forwards_the_reopened_binding() {
+    use crate::store::read_cursors;
+    let (context, mut conn, path, ended) = c1_past_one_page(1, true);
+    let receipts_before: (i64, i64) = conn
+        .query_row(
+            "SELECT (SELECT count(*) FROM receipts),(SELECT count(*) FROM prepared_recipients)",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    let CommandResult::ContinuityReattached(reply) = c1_decide(
+        &context,
+        &mut conn,
+        &c1_command("held-pane", "sess-1", "c1-ff"),
+        "match",
+    )
+    .unwrap() else {
+        panic!("not reattached")
+    };
+    let ff = reply
+        .fast_forward
+        .expect("a backlog past one page is fast-forwarded");
+    assert_eq!(ff.skipped, 5);
+    assert_eq!(ff.threads.len(), 1);
+    assert_eq!(ff.threads[0].history.thread, ThreadId::new("ct"));
+    assert_eq!(ff.threads[0].history.earlier, 5);
+    assert_eq!(
+        ff.threads[0].last_message.as_ref().map(|m| m.sequence),
+        Some(6)
+    );
+    let id = BindingId::new(ended.clone());
+    assert_eq!(
+        read_cursors::cursor_for(&conn, &id, &ThreadId::new("ct")).unwrap(),
+        Some(6)
+    );
+    let open: String = conn
+        .query_row(
+            "SELECT binding_id FROM occupant_bindings WHERE seat_id='s1' AND ended_at IS NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(open, ended, "the reopened row is the one fast-forwarded");
+    let receipts_after: (i64, i64) = conn
+        .query_row(
+            "SELECT (SELECT count(*) FROM receipts),(SELECT count(*) FROM prepared_recipients)",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(receipts_after, receipts_before, "no obligation is settled");
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn continuity_reattach_within_one_page_does_not_fast_forward() {
+    use crate::store::read_cursors;
+    let (context, mut conn, path, ended) = c1_past_one_page(2, false);
+    let CommandResult::ContinuityReattached(reply) = c1_decide(
+        &context,
+        &mut conn,
+        &c1_command("held-pane", "sess-1", "c1-noff"),
+        "match",
+    )
+    .unwrap() else {
+        panic!("not reattached")
+    };
+    assert_eq!(reply.fast_forward, None);
+    assert_eq!(
+        read_cursors::cursor_for(&conn, &BindingId::new(ended), &ThreadId::new("ct")).unwrap(),
+        Some(2)
+    );
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn continuity_replay_returns_the_recorded_fast_forward() {
+    use crate::store::read_cursors;
+    let (context, mut conn, path, ended) = c1_past_one_page(1, true);
+    let command = c1_command("held-pane", "sess-1", "c1-ff-replay");
+    let first = c1_decide(&context, &mut conn, &command, "match").unwrap();
+    let CommandResult::ContinuityReattached(reply) = &first else {
+        panic!("not reattached")
+    };
+    assert!(reply.fast_forward.is_some());
+    let again = c1_decide(&context, &mut conn, &command, "match").unwrap();
+    assert_eq!(again, first, "the replay carries the gap report");
+    let replayed =
+        crate::store::seats::replay_continuity(&context, "i", &command, &b5_budget()).unwrap();
+    assert_eq!(replayed, Some(first));
+    assert_eq!(
+        read_cursors::cursor_for(&conn, &BindingId::new(ended), &ThreadId::new("ct")).unwrap(),
+        Some(6)
+    );
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn continuity_prefers_the_seat_where_the_session_was_live_at_unresolve() {
+    for reason in ["liveness_process_exit", "superseded", "liveness_end_event"] {
+        let (context, mut conn, path) = c1_fixture();
+        conn.execute("DELETE FROM occupant_bindings WHERE seat_id='s1'", [])
+            .unwrap();
+        c1_unresolved_binding(&conn, "s1", 1, "sess-1");
+        c1_unresolved_seat(&conn, "s3", "claude", "sess-1");
+        conn.execute(
+            "UPDATE occupant_bindings SET liveness='disconnected',disconnect_reason=?1,role='top_level',agent_id='' WHERE seat_id='s3'",
+            [reason],
+        )
+        .unwrap();
+        let tx = conn.transaction().unwrap();
+        let candidates =
+            crate::store::seats::continuity_candidates(&tx, "i", "claude", "sess-1").unwrap();
+        drop(tx);
+        assert_eq!(candidates, vec![SeatId::new("s1")], "{reason}");
+        let CommandResult::ContinuityReattached(reply) = c1_decide(
+            &context,
+            &mut conn,
+            &c1_command("held-pane", "sess-1", "c1-prefer"),
+            "match",
+        )
+        .unwrap() else {
+            panic!("not reattached")
+        };
+        assert_eq!(reply.seat, SeatId::new("s1"), "{reason}");
+        let s3: String = conn
+            .query_row("SELECT state FROM seats WHERE id='s3'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(s3, "unresolved", "{reason}");
+        drop(conn);
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+#[test]
+fn continuity_still_refuses_two_seats_where_the_session_was_live() {
+    use crate::protocol::results::ErrorCode;
+    let (context, mut conn, path) = c1_fixture();
+    b5_set_marker_to_recovery(&conn);
+    conn.execute("DELETE FROM occupant_bindings WHERE seat_id='s1'", [])
+        .unwrap();
+    c1_unresolved_binding(&conn, "s1", 1, "sess-1");
+    c1_unresolved_seat(&conn, "s3", "claude", "sess-1");
+    conn.execute(
+        "UPDATE occupant_bindings SET liveness='disconnected',disconnect_reason='seat_unresolved',role='top_level',agent_id='' WHERE seat_id='s3'",
+        [],
+    )
+    .unwrap();
+    let refused = c1_decide(
+        &context,
+        &mut conn,
+        &c1_command("held-pane", "sess-1", "c1-two-live"),
+        "match",
+    )
+    .unwrap_err();
+    assert_eq!(refused.code, ErrorCode::Conflict);
+    let states: Vec<String> = conn
+        .prepare("SELECT state FROM seats WHERE id IN ('s1','s3') ORDER BY id")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(states, ["unresolved", "unresolved"]);
     drop(conn);
     let _ = std::fs::remove_file(path);
 }

@@ -68,7 +68,7 @@ explicitly, so that a weakness is a documented decision rather than a surprise.
 | Path | Trigger | Recorded as |
 |---|---|---|
 | Structural reconfirm | Same terminal, same Herdr boot and incarnation | automatic, no new provenance |
-| Cooperative continuity | A resumed top-level session (SessionStart source `resume`) whose harness session id uniquely matches a top-level binding (any of its bindings, not only the latest) of an unresolved seat | `cooperative_continuity` |
+| Cooperative continuity | A resumed top-level session (SessionStart source `resume`) whose harness session id uniquely matches a top-level binding (any of its bindings, not only the latest) of an unresolved seat; when several unresolved seats match, only those on which that session's binding was still open when the seat became unresolved (disconnect reason `seat_unresolved`) count, if there are any | `cooperative_continuity` |
 | Operator decision | `ht human seat rebind`, `ht human seat resolve --new-seat`, `ht human seat retire`, `ht human seat rebind --replace` (each with `--operator`) | `operator:local-user:<uid>` |
 
 Seats are never merged. Pane labels, saved addresses, terminal-id hints and Herdr's agent field may *suggest*

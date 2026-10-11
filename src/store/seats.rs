@@ -3405,8 +3405,13 @@ fn reconciliation_lags(tx: &Transaction<'_>, instance: &str) -> Result<bool, Api
 /// Sentinel (`plugin_context:`), empty and human values never match, and a
 /// `managed_launch` binding (no session: the agent never checked in)
 /// never counts (ht-5n6); NULL
-/// never equals anything. Returns at most two (the caller only needs to tell
-/// zero, one and several apart).
+/// never equals anything. When several seats match, only those on which a
+/// matching row ended `seat_unresolved` count, if there are any: that reason
+/// is written only to a row still connected when its seat became unresolved,
+/// so a row that had already disconnected for another reason is recorded
+/// evidence that the session had left that seat (ht-54r.91). Returns at most
+/// two, in seat-id order (the caller only needs to tell zero, one and
+/// several apart).
 pub(crate) fn continuity_candidates(
     tx: &Transaction<'_>,
     instance: &str,
@@ -3415,16 +3420,23 @@ pub(crate) fn continuity_candidates(
 ) -> Result<Vec<SeatId>, ApiError> {
     let mut statement = tx
         .prepare(
-            "SELECT DISTINCT s.id FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id WHERE s.instance_id=?1 AND s.state='unresolved' AND b.harness=?2 AND b.harness<>'human' AND b.role='top_level' AND b.agent_id='' AND b.observation_provenance<>'managed_launch' AND b.native_session=?3 AND b.native_session<>'' AND substr(b.native_session,1,15)<>'plugin_context:' ORDER BY s.id LIMIT 2",
+            "SELECT s.id, COALESCE(MAX(b.disconnect_reason IS 'seat_unresolved'),0) FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id WHERE s.instance_id=?1 AND s.state='unresolved' AND b.harness=?2 AND b.harness<>'human' AND b.role='top_level' AND b.agent_id='' AND b.observation_provenance<>'managed_launch' AND b.native_session=?3 AND b.native_session<>'' AND substr(b.native_session,1,15)<>'plugin_context:' GROUP BY s.id ORDER BY s.id",
         )
         .map_err(store_error)?;
-    let rows = statement
+    let rows: Vec<(String, bool)> = statement
         .query_map(params![instance, harness, native_session], |r| {
-            r.get::<_, String>(0)
+            Ok((r.get(0)?, r.get(1)?))
         })
+        .map_err(store_error)?
+        .collect::<Result<_, _>>()
         .map_err(store_error)?;
-    rows.map(|row| row.map(SeatId::new).map_err(store_error))
-        .collect()
+    let live_at_unresolve = rows.iter().any(|(_, live)| *live);
+    Ok(rows
+        .into_iter()
+        .filter(|(_, live)| *live || !live_at_unresolve)
+        .map(|(seat, _)| SeatId::new(seat))
+        .take(2)
+        .collect())
 }
 
 pub fn continuity_digest(
@@ -3750,7 +3762,7 @@ pub fn decide_continuity(
                 observed_at: at.utc,
                 registered_at: Some(at.utc),
             };
-            bindings::resolve_claim(
+            let resolution = bindings::resolve_claim(
                 tx,
                 &bindings::ResolveRequest {
                     claim: &claim,
@@ -3760,6 +3772,17 @@ pub fn decide_continuity(
                 },
                 at.utc,
             )?;
+            // Spec §2: a reopened session's cursors stayed where they were, so a backlog past
+            // one page is fast-forwarded here, as `register_available` does for a reconnect. An
+            // enrolled successor starts at the seat's read position and is not (its first-contact
+            // stats are out of scope).
+            let fast_forward = match &resolution {
+                bindings::Resolution::Reopened(_)
+                | bindings::Resolution::Existing {
+                    reconnected: true, ..
+                } => super::first_contact::fast_forward(tx, &resolution.binding().binding_id)?,
+                _ => None,
+            };
             catch_up::supersede_ended_bindings(tx, seat, at.utc)?;
             tx.execute("UPDATE wake_work SET binding_generation=?1 WHERE seat_id=?2 AND reservation_id IS NULL",
                 params![new_generation,seat.as_str()]).map_err(store_error)?;
@@ -3788,6 +3811,7 @@ pub fn decide_continuity(
                     binding_generation: u64::try_from(new_generation).map_err(|_| {
                         api_error(ErrorCode::StoreCorrupt, "negative seat generation")
                     })?,
+                    fast_forward,
                 },
             ))
         },
