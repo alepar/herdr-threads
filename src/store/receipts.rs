@@ -327,21 +327,25 @@ pub fn ack_policy_delivered(
                 &actor.binding_id,
                 "ack_mod",
             )?;
+            // One display, one cursor walk per thread: lazy rows this display completes, plus
+            // the ordinary messages it showed whole (settled now, or already settled elsewhere).
+            // A refused id was never displayed and never advances the cursor.
+            let mut complete_ids = Vec::new();
+            let mut shown_ids = settle_ids;
             let mut results = Vec::with_capacity(plans.len());
             for (id, plan) in request.messages.iter().zip(plans) {
                 let (result, reason) = match plan {
                     SettlePlan::Settle => (ModAckOutcome::Settled, None),
                     SettlePlan::Complete => {
-                        super::lazy_delivery::complete_for_binding(
-                            tx,
-                            &instance,
-                            &seat,
-                            binding.as_ref(),
-                            std::slice::from_ref(id),
-                        )?;
+                        complete_ids.push(id.clone());
                         (ModAckOutcome::Settled, None)
                     }
-                    SettlePlan::Done(result, reason) => (result, reason),
+                    SettlePlan::Done(result, reason) => {
+                        if result == ModAckOutcome::AlreadySettled {
+                            shown_ids.push(id.clone());
+                        }
+                        (result, reason)
+                    }
                 };
                 results.push(ModAckItem {
                     id: id.clone(),
@@ -349,6 +353,14 @@ pub fn ack_policy_delivered(
                     reason,
                 });
             }
+            super::lazy_delivery::complete_displayed_for_binding(
+                tx,
+                &instance,
+                &seat,
+                binding.as_ref(),
+                &complete_ids,
+                &shown_ids,
+            )?;
             failpoint!("ack.before_commit", context.failpoint_scope());
             Ok(CommandResult::ModDeliveryAcked(ModAckReport { results }))
         },
