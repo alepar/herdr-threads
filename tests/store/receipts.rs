@@ -3855,6 +3855,14 @@ mod binding_attribution {
         b.liveness = None;
         let error = ack_as(&context, &mut conn, b, vec![id.clone()], "ack-b", false).unwrap_err();
         assert_eq!(error.code, ErrorCode::CallerUnverified);
+        // The refusal names the reason this fix introduced: only a fingerprinted call reconnects
+        // the binding. The previous blanket "context changed" refusal of
+        // every disconnected binding would not say so.
+        assert!(
+            error.detail.contains("fingerprinted call"),
+            "{}",
+            error.detail
+        );
         assert_eq!(
             crate::store::effective::effective_receipt(&conn, id.as_str(), "b")
                 .unwrap()
@@ -3961,6 +3969,12 @@ fn fingerprintless_display_ack_of_a_disconnected_binding_is_refused() {
     assert_eq!(
         error.code,
         crate::protocol::results::ErrorCode::CallerUnverified
+    );
+    // The reason this fix introduced, not the former blanket refusal of every disconnected binding.
+    assert!(
+        error.detail.contains("fingerprinted call"),
+        "{}",
+        error.detail
     );
     assert_eq!(receipt_state_b(&conn), "pending");
 }

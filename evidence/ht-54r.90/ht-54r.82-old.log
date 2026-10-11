@@ -1,0 +1,43 @@
+# src state: tip with reverse-applied src diffs of: 60ad4885
+ M src/notification/dispatch.rs
+ M src/ports.rs
+# command: cargo test --locked --all-features --lib -- single_target_composer_wake_requires a_launch_placeholder_target_matches composer_choice_over_wake_targets
+
+running 3 tests
+test scheduler::tests::a_launch_placeholder_target_matches_the_started_process ... FAILED
+test scheduler::tests::single_target_composer_wake_requires_the_foreground_match ... FAILED
+test store::wake_tests::composer_choice_over_wake_targets_is_the_unique_fingerprint_pid_match ... FAILED
+
+failures:
+
+---- scheduler::tests::a_launch_placeholder_target_matches_the_started_process stdout ----
+
+thread 'scheduler::tests::a_launch_placeholder_target_matches_the_started_process' (52450781) panicked at src/scheduler/../../tests/scheduler/dispatch.rs:5151:5:
+assertion `left == right` failed
+  left: Submitted
+ right: Refused(Unsafe)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- scheduler::tests::single_target_composer_wake_requires_the_foreground_match stdout ----
+
+thread 'scheduler::tests::single_target_composer_wake_requires_the_foreground_match' (52450782) panicked at src/scheduler/../../tests/scheduler/dispatch.rs:5124:9:
+assertion `left == right` failed: hermes one-shot target, Claude in the foreground: a pre-send refusal, the ladder does not climb
+  left: Submitted
+ right: Refused(Unsafe)
+
+---- store::wake_tests::composer_choice_over_wake_targets_is_the_unique_fingerprint_pid_match stdout ----
+
+thread 'store::wake_tests::composer_choice_over_wake_targets_is_the_unique_fingerprint_pid_match' (52450783) panicked at src/store/../../tests/store/wake.rs:2321:5:
+assertion `left == right` failed
+  left: Binding(WakeTarget { binding: BindingId("only"), harness: "hermes", fingerprint_pid: Some(30) })
+ right: NoMatch
+
+
+failures:
+    scheduler::tests::a_launch_placeholder_target_matches_the_started_process
+    scheduler::tests::single_target_composer_wake_requires_the_foreground_match
+    store::wake_tests::composer_choice_over_wake_targets_is_the_unique_fingerprint_pid_match
+
+test result: FAILED. 0 passed; 3 failed; 0 ignored; 0 measured; 4466 filtered out; finished in 0.27s
+
+error: test failed, to rerun pass `--lib`

@@ -1,0 +1,12 @@
+# src state: tip with reverse-applied src diffs of: (none; tip)
+# command: cargo test --locked --all-features --lib -- mod_ack_of_ordinary_and_lazy mod_ack_of_only_the_lazy truncated_ordinary_next already_settled_ordinary_still hook_pull_confirm_of_ordinary_and_lazy
+
+running 5 tests
+test store::receipts::mod_ack_tests::mod_ack_of_ordinary_and_lazy_advances_the_cursor_past_both ... ok
+test store::receipts::mod_ack_tests::already_settled_ordinary_still_advances_a_second_bindings_cursor ... ok
+test store::receipts::mod_ack_tests::mod_ack_of_only_the_lazy_row_stops_before_an_unshown_ordinary_message ... ok
+test store::receipts::mod_ack_tests::truncated_ordinary_next_to_a_lazy_row_does_not_let_the_cursor_pass ... ok
+test service::delivery_pull::lazy_hook_pull_tests::hook_pull_confirm_of_ordinary_and_lazy_advances_the_cursor_and_does_not_reoffer ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 4464 filtered out; finished in 0.30s
+

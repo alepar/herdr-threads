@@ -382,12 +382,23 @@ fn hook_pull_confirm_of_ordinary_and_lazy_advances_the_cursor_and_does_not_reoff
             |r| r.get(0),
         )
         .unwrap();
-    // At least the lazy row's sequence (the cursor also skips the ack events the settlement
-    // appended after it).
+    // The ordinary row and the lazy row are the thread's only receivable messages; the cursor
+    // walks both and then the non-receivable ack events the settlement appended after them, so it
+    // ends exactly at the thread's last sequence.
+    let thread_tail: i64 =
+        f.db.query_row(
+            "SELECT max(sequence) FROM messages WHERE thread_id='t'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
     assert!(
-        read_cursors::cursor_for(&f.db, &binding, &ThreadId::new("t"))
-            .unwrap()
-            .is_some_and(|c| c >= u64::try_from(lazy_sequence).unwrap())
+        thread_tail > lazy_sequence,
+        "the settlement appended ack events after the lazy row"
+    );
+    assert_eq!(
+        read_cursors::cursor_for(&f.db, &binding, &ThreadId::new("t")).unwrap(),
+        Some(u64::try_from(thread_tail).unwrap())
     );
     assert!(!read_cursors::has_unread(&f.db, &binding).unwrap());
     assert_eq!(

@@ -1,0 +1,89 @@
+# worktree at 78a521e2 (the .81 fix commit, tests as committed except tests/store/receipts.rs from the task branch) with its src diff reverse-applied, plus a PlainCall enum variant kept so the tests compile (nothing in src constructs it)
+
+running 13 tests
+test store::bindings::tests::resolution::plain_call_on_a_retired_seat_does_not_reconnect ... ok
+test store::bindings::tests::resolution::plain_call_with_a_fingerprint_reconnects_a_disconnected_binding ... FAILED
+test store::bindings::tests::resolution::superseded_binding_plain_call_reconnects_without_superseding ... FAILED
+test store::bindings::tests::resolution::plain_call_without_a_fingerprint_serves_a_disconnected_binding_without_reconnecting ... ok
+test store::receipts::tests::binding_attribution::disconnected_binding_ack_reconnects_and_settles ... FAILED
+test store::receipts::tests::binding_attribution::fingerprintless_ack_of_a_disconnected_binding_is_refused ... FAILED
+test store::receipts::tests::display_ack_reconnects_a_disconnected_plain_call_enrolled_binding ... FAILED
+test service::liveness::liveness_worker_tests::a_stale_callers_reconnect_of_a_superseded_binding_is_superseded_again ... ok
+test service::liveness::liveness_worker_tests::a_dead_fingerprint_reconnect_is_disconnected_on_the_next_pass ... ok
+test service::dispatch::cooperative_tests::hermes_registered_child_call_after_subagent_stop_reconnects_it ... FAILED
+test service::delivery_pull::tests::a_pull_reconnects_a_disconnected_non_migrated_binding_and_delivers ... FAILED
+test store::first_contact::tests::plain_call_reconnect_never_fast_forwards ... FAILED
+test store::receipts::tests::fingerprintless_display_ack_of_a_disconnected_binding_is_refused ... FAILED
+
+failures:
+
+---- store::bindings::tests::resolution::plain_call_with_a_fingerprint_reconnects_a_disconnected_binding stdout ----
+
+thread 'store::bindings::tests::resolution::plain_call_with_a_fingerprint_reconnects_a_disconnected_binding' (52573513) panicked at src/store/../../tests/store/bindings.rs:674:9:
+assertion `left == right` failed
+  left: Disconnected
+ right: Connected
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- store::bindings::tests::resolution::superseded_binding_plain_call_reconnects_without_superseding stdout ----
+
+thread 'store::bindings::tests::resolution::superseded_binding_plain_call_reconnects_without_superseding' (52573515) panicked at src/store/../../tests/store/bindings.rs:766:9:
+assertion `left == right` failed
+  left: Disconnected
+ right: Connected
+
+---- store::receipts::tests::binding_attribution::disconnected_binding_ack_reconnects_and_settles stdout ----
+
+thread 'store::receipts::tests::binding_attribution::disconnected_binding_ack_reconnects_and_settles' (52573517) panicked at src/store/../../tests/store/receipts.rs:3821:74:
+called `Result::unwrap()` on an `Err` value: ApiError { code: CallerUnverified, detail: "cooperative occupant context changed", restart_argv: None, required_minimum_bytes: None, class_override: None }
+
+---- store::receipts::tests::binding_attribution::fingerprintless_ack_of_a_disconnected_binding_is_refused stdout ----
+
+thread 'store::receipts::tests::binding_attribution::fingerprintless_ack_of_a_disconnected_binding_is_refused' (52573518) panicked at src/store/../../tests/store/receipts.rs:3853:9:
+cooperative occupant context changed
+
+---- store::receipts::tests::display_ack_reconnects_a_disconnected_plain_call_enrolled_binding stdout ----
+
+thread 'store::receipts::tests::display_ack_reconnects_a_disconnected_plain_call_enrolled_binding' (52573519) panicked at src/store/../../tests/store/receipts.rs:3944:44:
+called `Result::unwrap()` on an `Err` value: ApiError { code: CallerUnverified, detail: "display ACK requires a connected top-level agent binding of the seat for this exact session", restart_argv: None, required_minimum_bytes: None, class_override: None }
+
+---- service::dispatch::cooperative_tests::hermes_registered_child_call_after_subagent_stop_reconnects_it stdout ----
+OWNED_COOPERATIVE_DIRECTORY /tmp/sp-ede3b852/ht-54r.90/service-cooperative-36af1994-e05a-46d2-91dc-22380094bec0
+
+thread 'service::dispatch::cooperative_tests::hermes_registered_child_call_after_subagent_stop_reconnects_it' (52573509) panicked at src/service/../../tests/service/cooperative.rs:2160:5:
+assertion `left == right` failed: reconnected by its own call
+  left: "disconnected"
+ right: "connected"
+
+---- service::delivery_pull::tests::a_pull_reconnects_a_disconnected_non_migrated_binding_and_delivers stdout ----
+
+thread 'service::delivery_pull::tests::a_pull_reconnects_a_disconnected_non_migrated_binding_and_delivers' (52573508) panicked at src/service/../../tests/service/delivery_pull.rs:270:18:
+expected a page, got Refused { reason: NoBinding }
+
+---- store::first_contact::tests::plain_call_reconnect_never_fast_forwards stdout ----
+
+thread 'store::first_contact::tests::plain_call_reconnect_never_fast_forwards' (52573516) panicked at src/store/../../tests/store/first_contact.rs:691:5:
+assertion `left == right` failed
+  left: "disconnected"
+ right: "connected"
+
+---- store::receipts::tests::fingerprintless_display_ack_of_a_disconnected_binding_is_refused stdout ----
+
+thread 'store::receipts::tests::fingerprintless_display_ack_of_a_disconnected_binding_is_refused' (52573522) panicked at src/store/../../tests/store/receipts.rs:3966:5:
+display ACK requires a connected top-level agent binding of the seat for this exact session
+
+
+failures:
+    service::delivery_pull::tests::a_pull_reconnects_a_disconnected_non_migrated_binding_and_delivers
+    service::dispatch::cooperative_tests::hermes_registered_child_call_after_subagent_stop_reconnects_it
+    store::bindings::tests::resolution::plain_call_with_a_fingerprint_reconnects_a_disconnected_binding
+    store::bindings::tests::resolution::superseded_binding_plain_call_reconnects_without_superseding
+    store::first_contact::tests::plain_call_reconnect_never_fast_forwards
+    store::receipts::tests::binding_attribution::disconnected_binding_ack_reconnects_and_settles
+    store::receipts::tests::binding_attribution::fingerprintless_ack_of_a_disconnected_binding_is_refused
+    store::receipts::tests::display_ack_reconnects_a_disconnected_plain_call_enrolled_binding
+    store::receipts::tests::fingerprintless_display_ack_of_a_disconnected_binding_is_refused
+
+test result: FAILED. 4 passed; 9 failed; 0 ignored; 0 measured; 4454 filtered out; finished in 0.34s
+
+error: test failed, to rerun pass `--lib`

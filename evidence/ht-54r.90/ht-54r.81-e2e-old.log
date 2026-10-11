@@ -1,0 +1,29 @@
+# worktree at 78a521e2 (.81 fix commit) with src diff reverse-applied (+PlainCall shim); nextest, integration binary
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 02s
+────────────
+ Nextest run ID eff82a62-906c-4e8b-945d-41310aee6b45 with nextest profile: default
+    Starting 2 tests across 1 binary (218 tests skipped)
+        FAIL [  36.740s] (1/2) herdr-threads::integration session_bindings_e2e::a_one_shot_adds_sends_exits_and_a_later_call_reconnects_until_its_process_exits
+  stdout ───
+
+    running 1 test
+    test session_bindings_e2e::a_one_shot_adds_sends_exits_and_a_later_call_reconnects_until_its_process_exits ... FAILED
+
+    failures:
+
+    failures:
+        session_bindings_e2e::a_one_shot_adds_sends_exits_and_a_later_call_reconnects_until_its_process_exits
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 219 filtered out; finished in 36.73s
+
+  stderr ───
+
+    thread 'session_bindings_e2e::a_one_shot_adds_sends_exits_and_a_later_call_reconnects_until_its_process_exits' (52631244) panicked at tests/integration/session_bindings_smoke.rs:34:9:
+    timed out waiting for the reconnected one-shot to disconnect again
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   1.064s] (2/2) herdr-threads::integration session_bindings_e2e::two_agents_in_one_pane_settle_one_obligation_once_and_a_subagent_reads_only
+────────────
+     Summary [  37.806s] 2 tests run: 1 passed, 1 failed, 218 skipped
+        FAIL [  36.740s] (1/2) herdr-threads::integration session_bindings_e2e::a_one_shot_adds_sends_exits_and_a_later_call_reconnects_until_its_process_exits
+error: test run failed
