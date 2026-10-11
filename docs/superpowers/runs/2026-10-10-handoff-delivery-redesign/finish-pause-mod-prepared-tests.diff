@@ -1,0 +1,185 @@
+diff --git a/integrations/claude/mod/tests/delivery.test.ts b/integrations/claude/mod/tests/delivery.test.ts
+index 83e2bdf6..d2f52a74 100644
+--- a/integrations/claude/mod/tests/delivery.test.ts
++++ b/integrations/claude/mod/tests/delivery.test.ts
+@@ -1,7 +1,9 @@
+ // Rule tests for the herdr-threads Claude mod (spec D5, D6): each test drives
+-// createCore with fakes. `claude plugin test` runs this file.
++// createCore with fakes or production register handlers in the plugin engine.
++// `claude plugin test` runs this file.
+ import { test, expect, mock } from 'claude-code/testing'
+ import { createCore, frame, markers, register } from '../hooks/register.js'
++import activationCapture from './fixtures/watch-activation.js'
+ 
+ type Any = any
+ 
+@@ -1347,6 +1349,169 @@ test('register wires session.start to the core and the serialized ledger', async
+   expect(last).toContain('exit:3')
+ })
+ 
++// Actual elected Watch stdout is replayed unchanged through buildIo's production
++// JSONLines parser. Only the external process and engine API outcomes are mocked;
++// register() and its session/turn/tool handlers are loaded by the plugin engine.
++const engineEventually = async (ready: () => boolean) => {
++  for (let i = 0; i < 100 && !ready(); i++) await new Promise<void>((r) => setTimeout(r, 5))
++  expect(ready()).toBe(true)
++}
++
++function capturedWatchLines() {
++  if (!activationCapture.raw) throw new Error('NEEDS_CONTEXT: actual elected Watch capture is not installed')
++  const lines = activationCapture.raw.match(/[^\n]*\n/g) ?? []
++  expect(lines.join('')).toBe(activationCapture.raw)
++  const parsed = lines.map((raw) => ({ raw, item: JSON.parse(raw) }))
++  expect(parsed[0].item.state).toBe('connected')
++  expect(parsed.some(({ item }) => item.kind === 'attention_cleared' && typeof item.presentation_epoch === 'string')).toBe(true)
++  return parsed
++}
++
++async function capturedWatchEngine($: Any, on: Any, state = busyState('capture-turn')) {
++  mock.clock(on, { now: 5_000 })
++  mock.store(on)
++  mock.env(on, { HERDR_THREADS_MOD_LEDGER: '/ledger/capture.jsonl', HERDR_THREADS_BIN: 'ht-captured-watch' })
++  const appends: string[] = []
++  const submits: string[] = []
++  const runs: string[][] = []
++  let entries: Any[] = []
++  let closed = false
++  let ended = false
++  let release: ((text: string | null) => void) | null = null
++  const chunks: string[] = []
++  on('session.start', async (_$: Any, e: Any) => ({ cwd: e.cwd }) as Any)
++  on('session.id', async () => ({ value: 'capture-session' }) as Any)
++  on('state.get', async () => ({ value: { value: state, version: 0 } }) as Any)
++  on('state.set', async () => ({ value: { isSet: true, version: 1 } }) as Any)
++  on('fs.write', async (_$: Any, e: Any) => {
++    entries = String(e.content ?? e.text).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line))
++    return { value: undefined } as Any
++  })
++  on('session.append', async (_$: Any, e: Any) => {
++    expect(e.message.type).toBe('user')
++    expect(e.message.content.map((block: Any) => block.type)).toEqual(['text'])
++    appends.push(e.message.content[0].text)
++    return {} as Any
++  })
++  on('prompt.read', async () => ({ text: '' }) as Any)
++  on('prompt.submit', async (_$: Any, e: Any) => {
++    submits.push(e.text)
++    return {} as Any
++  })
++  on('ui.log', async () => ({ value: undefined }) as Any)
++  on('process.run', async (_$: Any, e: Any) => {
++    const argv = e.argv
++    runs.push(argv)
++    // Refuse unexpected commands rather than silently treating acceptance or
++    // another mutation as a successful receipt.
++    expect(argv.slice(0, 5)).toEqual(['ht-captured-watch', 'watch', 'ack', '--session', 'capture-session'])
++    expect(argv[5]).toBe('--via')
++    return { value: { exitCode: 0, stdout: argv.slice(7).map((id: string) => JSON.stringify({ id, result: 'settled' })).join('\n'), stderr: '' } } as Any
++  })
++  on('tool.call', async () => ({ ...answered, context: ['existing tool context'] }) as Any)
++  on('process.spawn', async function* (_$: Any, e: Any) {
++    expect(e.argv).toEqual(['ht-captured-watch', 'watch', '--harness', 'claude', '--session', 'capture-session'])
++    try {
++      while (!closed || chunks.length) {
++        const text = chunks.length ? chunks.shift()! : await new Promise<string | null>((resolve) => { release = resolve })
++        release = null
++        if (text === null) break
++        yield { stream: 'stdout', text } as Any
++      }
++      return { value: { code: 3, signal: null } } as Any
++    } finally {
++      ended = true
++    }
++  })
++  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
++  return {
++    appends, submits, runs,
++    entries: () => entries,
++    async feed(raw: string) {
++      // Deliberately split one JSON line across process chunks. No capture byte
++      // or JSON object is rewritten before the production parser consumes it.
++      const split = Math.min(17, raw.length)
++      for (const text of [raw.slice(0, split), raw.slice(split)].filter(Boolean)) {
++        if (release) { const resolve = release; release = null; resolve(text) }
++        else chunks.push(text)
++      }
++      await flush()
++    },
++    async stop() {
++      closed = true
++      if (release) { const resolve = release; release = null; resolve(null) }
++      await engineEventually(() => ended)
++    },
++  }
++}
++
++const captureHeaders = (text: string) => text.split('\n').filter((line) => /^\[herdr-threads\] (?:lazy|message|invitation|notice|attention) /.test(line))
++
++test('register consumes captured active Watch order through passive append and tool context with only eligible ACKs', async ($, on) => {
++  const lines = capturedWatchLines()
++  const h = await capturedWatchEngine($, on)
++  try {
++    const firstClear = lines.findIndex(({ item }) => item.kind === 'attention_cleared')
++    await h.feed(lines.slice(0, firstClear).map(({ raw }) => raw).join(''))
++    await engineEventually(() => h.entries().some((entry) => entry.kind === 'received' && entry.ids.includes(activationCapture.ids.attention)))
++    await engineEventually(() => h.entries().filter((entry) => entry.kind === 'delivered' && entry.via === 'append').flatMap((entry) => entry.ids).length === 3)
++    expect(h.appends.flatMap(captureHeaders)).toEqual(activationCapture.passiveHeaders)
++    expect(h.submits).toEqual([])
++    expect(h.runs.flatMap((argv) => argv.slice(7))).toEqual([activationCapture.ids.lazy])
++    const result = await $.tool.call({ tool: 'Bash', command: 'true' })
++    expect(result.context[0]).toBe('existing tool context')
++    expect(captureHeaders(result.context[1])).toEqual(activationCapture.activeHeaders)
++    expect(result.context[1]).toContain('  activation ordinary ACK candidate')
++    await engineEventually(() => h.entries().some((entry) => entry.kind === 'acked' && entry.ids.includes(activationCapture.ids.message)))
++    expect(h.runs.map((argv) => [argv[6], ...argv.slice(7)])).toEqual([
++      ['append', activationCapture.ids.lazy], ['context', activationCapture.ids.message],
++    ])
++    expect(h.submits).toEqual([])
++    // Replay of the same captured page cannot duplicate passive rows or context.
++    await h.feed(lines.slice(0, firstClear).map(({ raw }) => raw).join(''))
++    const again = await $.tool.call({ tool: 'Bash', command: 'true' })
++    expect(again.context).toEqual(['existing tool context'])
++    expect(h.appends.flatMap(captureHeaders)).toEqual(activationCapture.passiveHeaders)
++    expect(h.runs.length).toBe(2)
++  } finally {
++    await h.stop()
++  }
++})
++
++test('register appends captured invitation and notice while idle without waking accepting or ACKing them', async ($, on) => {
++  const lines = capturedWatchLines()
++  const h = await capturedWatchEngine($, on, IDLE)
++  try {
++    // A byte-preserving subsequence isolates passive nonmessage scheduling from
++    // the ordinary/attention items that legitimately request a turn.
++    await h.feed(lines.filter(({ item }) => item.kind === 'status' || item.kind === 'invitation' || item.kind === 'notice').map(({ raw }) => raw).join(''))
++    await engineEventually(() => h.entries().filter((entry) => entry.kind === 'delivered' && entry.via === 'append').flatMap((entry) => entry.ids).length === 2)
++    expect(h.appends.flatMap(captureHeaders)).toEqual(activationCapture.nonmessageHeaders)
++    expect(h.submits).toEqual([])
++    expect(h.runs).toEqual([])
++  } finally {
++    await h.stop()
++  }
++})
++
++test('register consumes captured scoped clear without retracting the queued ordinary message', async ($, on) => {
++  const lines = capturedWatchLines()
++  const h = await capturedWatchEngine($, on)
++  try {
++    await h.feed(lines.map(({ raw }) => raw).join(''))
++    await engineEventually(() => h.entries().some((entry) => entry.reason === 'attention_cleared'))
++    expect(h.entries().filter((entry) => entry.reason === 'attention_cleared').flatMap((entry) => entry.ids)).toEqual([activationCapture.ids.attention])
++    const result = await $.tool.call({ tool: 'Bash', command: 'true' })
++    expect(captureHeaders(result.context[1])).toEqual(activationCapture.messageHeaders)
++    expect(result.context[1]).toContain('  activation ordinary ACK candidate')
++    await engineEventually(() => h.entries().some((entry) => entry.kind === 'acked' && entry.ids.includes(activationCapture.ids.message)))
++    expect(h.runs.flatMap((argv) => argv.slice(7))).toEqual([activationCapture.ids.lazy, activationCapture.ids.message])
++    expect(h.submits).toEqual([])
++  } finally {
++    await h.stop()
++  }
++})
++
+ // ---- reload (ht-j16.29, R18) ----------------------------------------------
+ // Idle delivery no longer writes a `turns.submitting` record: a reload that upgrades the mod can still find one
+ // written by an older instance, so these tests seed it through $.state.
