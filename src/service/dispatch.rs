@@ -40,6 +40,7 @@ pub struct DomainService {
     cooperative_runtime: Option<(u32, Arc<FairWriter>)>,
     bootstrap: Option<BootstrapRuntime>,
     mod_channels: Arc<dyn crate::ports::ModChannels>,
+    pub(super) presentation: super::delivery_presentation::PresentationState,
     pub(super) delivery_pull: Arc<super::delivery_pull::DeliveryPullState>,
 }
 
@@ -56,6 +57,7 @@ impl DomainService {
             bootstrap: None,
             mod_channels: Arc::new(crate::ports::NoModChannels),
             delivery_pull: Default::default(),
+            presentation: Default::default(),
         }
     }
     /// Share the offered ledger with the wake lane (the same instance the wake worker reads).
@@ -886,7 +888,7 @@ impl LocalService for DomainService {
         }
         let view = self
             .store
-            .mod_seat_view(&claim.seat, budget)
+            .presentation_seat_view(&claim.seat, budget)
             .map_err(|_| Refusal::Busy)?;
         let Some(view) = view else {
             return Err(Refusal::Unresolved);
@@ -924,6 +926,10 @@ impl LocalService for DomainService {
             sink,
         )?;
         Ok((channel, view.attention_version))
+    }
+
+    fn watch_presentation_lease(&self, channel: crate::ports::ModChannelId) -> Option<String> {
+        self.mod_channels.presentation_lease(channel)
     }
 
     fn watch_unregister(
@@ -1234,6 +1240,10 @@ impl LocalService for DomainService {
                 }
                 let _turn = writer.enter_foreground(budget, self.clock.as_ref())?;
                 self.store.record_managed_launch(launch, budget)
+            }
+            Command::DeliveryPullV2(pull) => self.presentation_pull(&pull, budget),
+            Command::DeliveryPresentationConfirmV2(confirm) => {
+                self.presentation_confirm(&confirm, budget)
             }
             Command::LocalIntents(_) => Err(error(
                 ErrorCode::Unsupported,

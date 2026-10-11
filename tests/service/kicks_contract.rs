@@ -189,3 +189,21 @@ fn lazy_recipient_publication_and_completion_kick_no_lane() {
     assert!(lanes_for_table("receipts").contains(Lane::Deadlines));
     assert!(lanes_for_table("wake_work").contains(Lane::Wakes));
 }
+
+#[test]
+fn invitation_presentation_bookkeeping_is_passive_but_context_producers_refresh_mod() {
+    for table in [
+        "invitation_presentation_consumers",
+        "invitation_presentation_items",
+    ] {
+        assert_eq!(lanes_for_table(table), LaneSet::EMPTY);
+        assert!(
+            !notifies_mod(table),
+            "presentation must not reschedule itself"
+        );
+    }
+    assert_eq!(lanes_for_table("invitation_context_latest"), LaneSet::EMPTY);
+    assert!(notifies_mod("invitation_context_latest"));
+    assert!(notifies_mod("invitations"));
+    assert!(lanes_for_table("invitations").contains(Lane::Deadlines));
+}

@@ -552,3 +552,61 @@ fn agy_lazy_row_settles_only_through_the_transcript_confirm_never_hook_context()
     assert!(stop.stdout.is_empty(), "{:?}", stop.stdout);
     assert_eq!(lazy_row_state(&fx, &lazy), "displayed");
 }
+
+// Kills: classifying Lazy invitation as passive but losing its complete
+// pending item between canonical inbox paging and the registered turn hook.
+#[test]
+fn agy_turn_hook_carries_lazy_invitation_without_accepting_or_confirming_it() {
+    let fx = Fixture::start();
+    let home = home_with(&fx, "top-level");
+    system_message(&run(&fx, &home, "SessionStart", "session-start-top"));
+    let peer = fx.hook("w9:p2", &start("peer-sess"));
+    assert_eq!(peer.code, Some(0), "{}", peer.stderr);
+    // Prime the hook's quiet attention-version cache before the invitation arrives.
+    let quiet = run(&fx, &home, "PreInvocation", "pre-invocation-inv1");
+    assert_eq!(quiet.code, Some(0), "{}", quiet.stderr);
+    assert!(quiet.stdout.is_empty(), "{:?}", quiet.stdout);
+    let thread = data(cooperative_as(
+        &fx,
+        "claude",
+        "peer",
+        "w9:p2",
+        &[
+            "thread",
+            "create",
+            "--topic",
+            "passive invitation for review",
+            "--goal",
+            "review recipient remit before acceptance",
+        ],
+    ));
+    cooperative_as(
+        &fx,
+        "claude",
+        "peer",
+        "w9:p2",
+        &["invite", &thread, "--seat", "seat"],
+    );
+    let text = system_message(&run(&fx, &home, "PreInvocation", "pre-invocation-inv1"));
+    assert!(text.contains("passive invitation for review"), "{text}");
+    assert!(
+        text.contains("review recipient remit before acceptance"),
+        "{text}"
+    );
+    assert!(text.contains(&thread), "{text}");
+    assert!(text.contains("accept"), "{text}");
+    assert!(!text.contains("] attention "), "{text}");
+    assert_eq!(fx.count("SELECT count(*) FROM invitations WHERE seat_id='seat' AND state='pending' AND confirmation='lazy'"), 1);
+    assert_eq!(
+        fx.count("SELECT count(*) FROM memberships WHERE seat_id='seat' AND state='joined'"),
+        0
+    );
+    assert_eq!(
+        fx.count("SELECT count(*) FROM receipts WHERE seat_id='seat'"),
+        0
+    );
+    assert_eq!(
+        fx.count("SELECT count(*) FROM wake_work WHERE seat_id='seat' AND attention_version>0"),
+        0
+    );
+}

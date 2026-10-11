@@ -284,6 +284,7 @@ trait ErasedAdapter: Send + Sync {
     fn launch_policy(&self) -> Option<&dyn LaunchPolicy>;
     fn composer_policy(&self) -> Option<&dyn ComposerPolicy>;
     fn local_evidence(&self, request: &LocalEvidenceRequest<'_>) -> LocalEvidence;
+    fn presentation_codec(&self, selector: u8) -> Option<PresentationCodec>;
     fn hook_step(&self) -> Option<&dyn HookStep>;
     fn delivery_policy(&self) -> Option<&dyn DeliveryPolicy>;
     fn canary_strategy(&self) -> Option<&dyn CanaryStrategy>;
@@ -485,6 +486,9 @@ impl<A: HarnessAdapter> ErasedAdapter for TypedAdapter<A> {
     }
     fn local_evidence(&self, request: &LocalEvidenceRequest<'_>) -> LocalEvidence {
         self.0.local_evidence(request)
+    }
+    fn presentation_codec(&self, selector: u8) -> Option<PresentationCodec> {
+        self.0.presentation_codec(selector)
     }
     fn hook_step(&self) -> Option<&dyn HookStep> {
         self.0.hook_step()
@@ -1100,6 +1104,9 @@ impl Registration {
     }
     pub fn local_evidence(&self, request: &LocalEvidenceRequest<'_>) -> LocalEvidence {
         self.adapter.local_evidence(request)
+    }
+    pub fn presentation_codec(&self, selector: u8) -> Option<PresentationCodec> {
+        self.adapter.presentation_codec(selector)
     }
     pub fn hook_step(&self) -> Option<&dyn HookStep> {
         self.adapter.hook_step()

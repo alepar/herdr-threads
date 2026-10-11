@@ -6531,7 +6531,7 @@ fn direct_pair_migration_preserves_v28_and_enforces_identity() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        39
+        schema::LATEST_VERSION
     );
     assert_eq!(
         db.query_row("SELECT count(*) FROM direct_threads", [], |r| r
@@ -6658,7 +6658,7 @@ fn released_main31_populated_automatic_graph_physically_upgrades_and_reopens() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        39
+        schema::LATEST_VERSION
     );
     assert_eq!(snapshot(&db), before);
     assert_eq!(
@@ -6752,7 +6752,7 @@ fn released_main31_populated_automatic_graph_physically_upgrades_and_reopens() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        39
+        schema::LATEST_VERSION
     );
     assert_eq!(
         db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
@@ -6765,4 +6765,335 @@ fn released_main31_populated_automatic_graph_physically_upgrades_and_reopens() {
     drop(db);
     std::fs::remove_file(failure_path).unwrap();
     std::fs::remove_file(path).unwrap();
+}
+
+fn presentation_populated_v39() -> Connection {
+    presentation_populated_v39_with_confirmations(false)
+}
+fn presentation_populated_v39_with_confirmations(mixed: bool) -> Connection {
+    let db = Connection::open_in_memory().unwrap();
+    db.pragma_update(None, "foreign_keys", true).unwrap();
+    let mut migrations = std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations"))
+        .unwrap()
+        .map(|p| p.unwrap().path())
+        .collect::<Vec<_>>();
+    migrations.sort();
+    for path in migrations.into_iter().take(39) {
+        db.execute_batch(&std::fs::read_to_string(path).unwrap())
+            .unwrap();
+    }
+    db.pragma_update(None, "user_version", 39).unwrap();
+    let confirmation = if mixed {
+        "CASE WHEN n=2 THEN NULL WHEN n%8=0 OR n=1 THEN 'require_ack' ELSE 'lazy' END"
+    } else {
+        "'lazy'"
+    };
+    db.execute_batch(&format!("INSERT INTO host_instances(id,created_at,decision_seq) VALUES('i',0,1000); INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES('s','i','resolved','native',0,0),('x','i','resolved','native',0,0); INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('t','i','retained topic','retained goal',0,0); WITH RECURSIVE n(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM n WHERE n<64) INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,frozen_duration_ms,deadline_at,created_decision_seq,confirmation,inviter_seat_id) SELECT 'retained-'||n,'t','s',n,CASE WHEN n%2=0 THEN 'pending' ELSE 'recipient_retired' END,7,300,307,n,{confirmation},'x' FROM n;")).unwrap();
+    db
+}
+fn presentation_schema_catalog(
+    db: &Connection,
+) -> Vec<(String, String, String, i64, Option<String>)> {
+    db.prepare("SELECT type,name,tbl_name,rootpage,sql FROM sqlite_schema ORDER BY type,name")
+        .unwrap()
+        .query_map([], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap()
+}
+fn presentation_retained_rows(db: &Connection) -> Vec<Vec<rusqlite::types::Value>> {
+    let mut stmt = db
+        .prepare("SELECT * FROM invitations ORDER BY ordinal")
+        .unwrap();
+    let columns = stmt.column_count();
+    stmt.query_map([], |r| {
+        (0..columns)
+            .map(|n| r.get(n))
+            .collect::<Result<Vec<_>, _>>()
+    })
+    .unwrap()
+    .collect::<Result<Vec<_>, _>>()
+    .unwrap()
+}
+#[test]
+fn presentation_schema_populated_v39_upgrade_is_additive_and_reopens() {
+    // Policies are immutable: construct legacy NULL, timed and Lazy rows at
+    // insertion, never rewrite a released episode for the bootstrap fixture.
+    let db = presentation_populated_v39_with_confirmations(true);
+    let before = presentation_retained_rows(&db);
+    let catalog = presentation_schema_catalog(&db);
+    let pending: i64 = db
+        .query_row("SELECT count(*) FROM digest_pending_invitations", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(pending, 32);
+    schema::initialize(&db, || UtcMillis(10000)).unwrap();
+    assert_eq!(
+        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        schema::LATEST_VERSION
+    );
+    let after = presentation_retained_rows(&db);
+    assert_eq!(before.len(), after.len());
+    for (old, new) in before.iter().zip(&after) {
+        assert_eq!(&new[..old.len()], old);
+        assert_eq!(new.last(), Some(&rusqlite::types::Value::Integer(0)));
+    }
+    let after_catalog = presentation_schema_catalog(&db);
+    for (kind, name, table, root, sql) in &catalog {
+        let new = after_catalog
+            .iter()
+            .find(|row| &row.0 == kind && &row.1 == name)
+            .unwrap();
+        assert_eq!(
+            (&new.2, new.3),
+            (table, *root),
+            "old object/rootpage {name}"
+        );
+        if name != "invitations" {
+            assert_eq!(&new.4, sql, "old object DDL {name}");
+        }
+    }
+    for table in [
+        "invitation_context_latest",
+        "invitation_presentation_consumers",
+        "invitation_presentation_items",
+    ] {
+        assert_eq!(
+            db.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0,
+            "no projection seeding/history"
+        );
+    }
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM digest_pending_invitations", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        pending
+    );
+    let confirming=db.prepare("SELECT invitation_id,ordinal FROM presentation_confirming_invitations WHERE seat_id='s' ORDER BY ordinal").unwrap().query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?))).unwrap().collect::<Result<Vec<_>,_>>().unwrap();
+    let expected = std::iter::once(2)
+        .chain((8..=64).step_by(8))
+        .map(|n| (format!("retained-{n}"), n))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        confirming, expected,
+        "exact populated41 bootstrap membership"
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM presentation_warning_proofs",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0,
+        "no per-recipient proof seeding"
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT version FROM presentation_warning_fence WHERE singleton=1",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0,
+        "bootstrap precedes fence installation"
+    );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+            .get::<_, i64>(
+            0
+        ))
+        .unwrap(),
+        0
+    );
+    schema::initialize(&db, || UtcMillis(20000)).unwrap();
+    assert_eq!(presentation_retained_rows(&db), after);
+    assert_eq!(presentation_schema_catalog(&db), after_catalog);
+}
+#[test]
+fn presentation_schema_populated_v39_failed_ddl_rolls_back_epoch_and_catalog() {
+    let db = presentation_populated_v39();
+    db.execute_batch("CREATE INDEX invitation_content_initial ON threads(instance_id,ordinal)")
+        .unwrap();
+    let before = presentation_retained_rows(&db);
+    let catalog = presentation_schema_catalog(&db);
+    let error = schema::initialize(&db, || UtcMillis(10000)).unwrap_err();
+    assert!(
+        error.detail.contains("invitation_content_initial")
+            && error.detail.contains("already exists"),
+        "failure must reach new index DDL after epoch ADD: {error:?}"
+    );
+    assert_eq!(
+        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        39
+    );
+    assert_eq!(presentation_retained_rows(&db), before);
+    assert_eq!(presentation_schema_catalog(&db), catalog);
+    assert_eq!(db.query_row("SELECT count(*) FROM pragma_table_info('invitations') WHERE name='command_context_epoch'",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+            .get::<_, i64>(
+            0
+        ))
+        .unwrap(),
+        0
+    );
+}
+
+#[test]
+fn presentation_schema_pending_index_build_work_tracks_only_pending_projection() {
+    use rusqlite::StatementStatus;
+    let sql = include_str!("../../migrations/0040_invitation_presentation.sql")
+        .lines()
+        .find(|line| line.starts_with("CREATE INDEX invitation_content_initial "))
+        .unwrap();
+    let mut work = Vec::new();
+    for pending in [0, 1, 32] {
+        let db = presentation_populated_v39();
+        db.execute(
+            "UPDATE invitations SET state='recipient_retired' WHERE ordinal>?1",
+            [pending * 2],
+        )
+        .unwrap();
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM invitations", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            64
+        );
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM digest_pending_invitations", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            pending
+        );
+        let mut statement = db.prepare(sql).unwrap();
+        statement.execute([]).unwrap();
+        let vm = statement.get_status(StatementStatus::VmStep);
+        let version: String = db
+            .query_row("SELECT sqlite_version()", [], |r| r.get(0))
+            .unwrap();
+        eprintln!(
+            "SQLite {version} actual upgrade-index DDL retained=64 pending={pending} VM={vm}"
+        );
+        work.push(vm);
+    }
+    assert!(
+        work[0] < work[1] && work[1] < work[2],
+        "one-time index construction scales with pending projection: {work:?}"
+    );
+}
+
+#[test]
+fn presentation_schema_populated_v40_failed_v41_rolls_back_bootstrap_and_catalog() {
+    let db = presentation_populated_v39_with_confirmations(true);
+    db.execute_batch(include_str!(
+        "../../migrations/0040_invitation_presentation.sql"
+    ))
+    .unwrap();
+    db.pragma_update(None, "user_version", 40).unwrap();
+    // Fail at the final41 trigger, after projection bootstrap and earlier fence
+    // objects, to prove the entire41 step rolls back to the durable40 boundary.
+    db.execute_batch("CREATE TRIGGER presentation_fence_warning_close_sweeps_delete AFTER DELETE ON warning_close_sweeps BEGIN SELECT 1; END;").unwrap();
+    let before = presentation_retained_rows(&db);
+    let catalog = presentation_schema_catalog(&db);
+    let error = schema::initialize(&db, || UtcMillis(10000)).unwrap_err();
+    assert!(
+        error
+            .detail
+            .contains("presentation_fence_warning_close_sweeps_delete")
+            && error.detail.contains("already exists"),
+        "actual late41 DDL collision: {error:?}"
+    );
+    assert_eq!(
+        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        40
+    );
+    assert_eq!(presentation_retained_rows(&db), before);
+    assert_eq!(presentation_schema_catalog(&db), catalog);
+    assert_eq!(db.query_row("SELECT count(*) FROM sqlite_schema WHERE name IN ('presentation_confirming_invitations','presentation_warning_proofs','presentation_warning_fence')",[],|r|r.get::<_,i64>(0)).unwrap(),0,"rollback removes bootstrapped projection and new proof/fence tables");
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+            .get::<_, i64>(
+            0
+        ))
+        .unwrap(),
+        0
+    );
+}
+
+#[test]
+fn presentation_schema_populated_v40_consumers_upgrade_revised_v41_and_reopen() {
+    let db = presentation_populated_v39_with_confirmations(true);
+    db.execute_batch(include_str!(
+        "../../migrations/0040_invitation_presentation.sql"
+    ))
+    .unwrap();
+    db.pragma_update(None, "user_version", 40).unwrap();
+    let columns=db.prepare("SELECT name,type,\"notnull\" FROM pragma_table_info('invitation_presentation_consumers') ORDER BY cid").unwrap().query_map([],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,i64>(2)?))).unwrap().collect::<Result<Vec<_>,_>>().unwrap();
+    let names = columns
+        .iter()
+        .map(|(name, _, _)| name.as_str())
+        .collect::<Vec<_>>()
+        .join(",");
+    let values = columns
+        .iter()
+        .map(|(name, kind, required)| match name.as_str() {
+            "seat_id" => "'s'",
+            "consumer" => "'hook'",
+            "instance_id" => "'i'",
+            "execution" => "'retained-execution'",
+            "ordinary_pending" => "'{\"prefix\":[],\"items\":[]}'",
+            "ordinary_partial" | "control_state" => "'{}'",
+            "last_descriptors" | "outbox_prefix" | "outbox_descriptors" => "'[]'",
+            _ if *required == 0 => "NULL",
+            _ if kind == "INTEGER" => "0",
+            _ => "''",
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    db.execute_batch(&format!(
+        "INSERT INTO invitation_presentation_consumers({names}) VALUES({values})"
+    ))
+    .unwrap();
+    let read_old = || {
+        db.query_row(
+            &format!("SELECT {names} FROM invitation_presentation_consumers"),
+            [],
+            |r| {
+                (0..columns.len())
+                    .map(|n| r.get::<_, rusqlite::types::Value>(n))
+                    .collect::<Result<Vec<_>, _>>()
+            },
+        )
+        .unwrap()
+    };
+    let before = read_old();
+    schema::initialize(&db, || UtcMillis(10000)).unwrap();
+    assert_eq!(
+        read_old(),
+        before,
+        "all retained40 presentation bytes preserved"
+    );
+    let scalars:(i64,i64,i64,i64)=db.query_row("SELECT ordinary_publication_after,ordinary_publication_high,ordinary_passive_generation,ordinary_scan_passive_generation FROM invitation_presentation_consumers",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).unwrap();
+    assert_eq!(scalars, (0, 0, 0, 0));
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+            .get::<_, i64>(
+            0
+        ))
+        .unwrap(),
+        0
+    );
+    schema::initialize(&db, || UtcMillis(10001)).unwrap();
+    assert_eq!(read_old(), before);
 }

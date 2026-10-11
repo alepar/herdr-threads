@@ -2507,8 +2507,20 @@ impl PriorLadder {
 
 /// What the mod watch channel needs to read from the store (spec D2, D7).
 /// A narrow supertrait of [`StorePort`] so the registry can be exercised
-/// against a small fake; read-only, one read transaction per call.
+/// against a small fake. Admission reads remain read-only; passive maintenance
+/// uses a separately bounded canonical write transaction.
 pub trait ModStoreReads: Send + Sync {
+    /// Bounded passive invitation maintenance, independent of allocation,
+    /// counters and the fixed outstanding presentation page.
+    fn presentation_refresh(
+        &self,
+        _seat: &SeatId,
+        _generation: u64,
+        _native: &str,
+        _budget: &CallBudget,
+    ) -> Result<Option<ModPresentationRefresh>, ApiError> {
+        Ok(None)
+    }
     /// The A2 view of `seat` for a watch registration or a channel check.
     /// `None`: no such seat in this store's instance.
     fn mod_seat_view(
@@ -2516,6 +2528,15 @@ pub trait ModStoreReads: Send + Sync {
         seat: &SeatId,
         budget: &CallBudget,
     ) -> Result<Option<ModSeatView>, ApiError>;
+    /// Canonical binding/admission only: presentation reads its pending
+    /// sources through separately budgeted progress, never a legacy digest.
+    fn presentation_seat_view(
+        &self,
+        seat: &SeatId,
+        budget: &CallBudget,
+    ) -> Result<Option<ModSeatView>, ApiError> {
+        self.mod_seat_view(seat, budget)
+    }
     /// The oldest publication time among the seat's ordinary pending receipts
     /// published at or before `at_or_before` whose body is at most
     /// `body_limit` bytes (truncated items never count toward a stall).
@@ -2526,6 +2547,17 @@ pub trait ModStoreReads: Send + Sync {
         body_limit: usize,
         budget: &CallBudget,
     ) -> Result<Option<UtcMillis>, ApiError>;
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ModPresentationRefresh {
+    pub version: u64,
+    pub more: bool,
+    pub context_visits: usize,
+    pub lifecycle_visits: usize,
+    pub ordinary_publication_visits: usize,
+    pub ordinary_publication_probes: usize,
+    pub ordinary_publication_seeks: usize,
 }
 
 /// The open binding as the mod channel decision sees it.
@@ -2577,6 +2609,9 @@ pub struct ModSeatView {
     /// deliberately not part of `ModFingerprint`: notices never wake and the
     /// mod channel's change detector must not see them.
     pub newest_pending_notice: Option<i64>,
+    /// Recipient-specific bounded invitation content signature. Zero means no
+    /// visible pending invitation. Independent of native/mod wake eligibility.
+    pub pending_invitation_version: u64,
 }
 
 /// One informational notice a hook-pull page carries: the warning, its
@@ -2795,6 +2830,28 @@ pub trait StorePort: ModStoreReads + Send + Sync {
         budget: &CallBudget,
         admission: Option<&crate::service::fair_writer::FairWriter>,
     ) -> Result<ServiceResult, ApiError>;
+    fn presentation_render_selection(
+        &self,
+        _claim: &CallerClaim,
+        _consumer: crate::protocol::delivery::PresentationConsumer,
+        _budget: &CallBudget,
+    ) -> Result<Option<crate::delivery::presentation::FrozenRenderIdentity>, ApiError> {
+        Ok(None)
+    }
+    fn presentation_pull(
+        &self,
+        _input: PresentationInput,
+        _budget: &CallBudget,
+    ) -> Result<PresentationOutput, ApiError> {
+        Err(ApiError::unsupported("presentation unavailable"))
+    }
+    fn presentation_confirm(
+        &self,
+        _request: &crate::protocol::delivery::DeliveryPresentationConfirmV2,
+        _budget: &CallBudget,
+    ) -> Result<crate::protocol::delivery::DeliveryPresentationConfirmationReplyV2, ApiError> {
+        Err(ApiError::unsupported("presentation unavailable"))
+    }
     fn query(
         &self,
         command: &Command,
@@ -3535,6 +3592,28 @@ pub trait ModChannelSink: Send + Sync {
 /// The registry of live mod delivery channels (spec D2, D7). Every method has
 /// a no-op default; the defaults ARE the inert behaviour ([`NoModChannels`]).
 pub trait ModChannels: Send + Sync {
+    /// Serializes current-owner replacement with presentation allocation and
+    /// confirmation. Inert registries do not provide Watch presentation.
+    fn presentation_owner(
+        &self,
+        _seat: &SeatId,
+    ) -> Result<Option<std::sync::Arc<std::sync::Mutex<()>>>, ApiError> {
+        Ok(None)
+    }
+    /// Only the attached Live channel owns a presentation lease; reconnect
+    /// grace remains exclusively the legacy ACK/wake policy.
+    fn presentation_lease(&self, _channel: ModChannelId) -> Option<String> {
+        None
+    }
+    fn presentation_owner_live(
+        &self,
+        _seat: &SeatId,
+        _generation: u64,
+        _native_session: &str,
+        _lease: &str,
+    ) -> bool {
+        false
+    }
     /// Register a channel: at most one per seat. A newer one for the same seat
     /// and generation replaces the older (`Close{replaced}`); a new-generation
     /// registration ends a rebind grace; a same-generation re-registration
@@ -3593,6 +3672,18 @@ pub trait ModChannels: Send + Sync {
     /// An Attention frame was pushed to the seat's channel at `now`. Counts
     /// only for the entry of `binding_generation`, in Live or ReconnectGrace.
     fn record_attention_push(&self, _seat: &SeatId, _binding_generation: u64, _now: UtcMillis) {}
+    /// Post-emission presentation confirmation for the exact current Live
+    /// Watch owner. This records a receipt-publication cutoff, not an ACK or
+    /// a fresh stall countdown. Unsupported registries remain inert.
+    fn record_presentation_attention_push(
+        &self,
+        _seat: &SeatId,
+        _binding_generation: u64,
+        _native_session: &str,
+        _lease: &str,
+        _now: UtcMillis,
+    ) {
+    }
     /// A mod ack landed for the seat (only `settled`/`already_settled` count).
     /// Counts only for the entry of `binding_generation` (the generation the
     /// ack was decided against), in Live or ReconnectGrace.
@@ -3725,6 +3816,9 @@ pub trait LocalClient: Send + Sync {
     }
 }
 pub trait LocalService: Send + Sync {
+    fn watch_presentation_lease(&self, _channel: ModChannelId) -> Option<String> {
+        None
+    }
     /// Decide a mod watch registration against A2 and record the channel
     /// (spec D2). Returns the channel id and the seat's attention version.
     /// The default refuses: a service without a registry serves no channel.
@@ -4814,4 +4908,48 @@ pub enum CreateTabOutcome {
     /// Transport-proven zero submission, never inferred from a guessed error.
     NotSubmitted(ApiError),
     OutcomeUnknown(ApiError),
+}
+
+/// Bounded service-owned hints for ordinary offer coalescing. These grant no
+/// authority and never settle an invitation or message.
+#[derive(Debug, Clone)]
+pub struct PresentationInput {
+    pub frozen_render: Option<crate::delivery::presentation::FrozenPresentationRender>,
+    pub render_profile: crate::delivery::presentation::PresentationRenderProfile,
+    pub pull: crate::protocol::delivery::DeliveryPullV2,
+    pub attention_version: u64,
+    pub ordinary_version: u64,
+    pub with_attention: bool,
+    pub retry_messages: bool,
+    pub blocked_messages: Vec<MessageId>,
+    pub known_messages: Vec<MessageId>,
+    pub new_message_slots: usize,
+}
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct PresentationWork {
+    pub ordinary_publication_visits: usize,
+    pub ordinary_publication_probes: usize,
+    pub ordinary_publication_seeks: usize,
+    pub relevance_calls: usize,
+    pub relevance_sources: usize,
+    pub relevance_fallback: usize,
+    pub relevance_point_probes: usize,
+    pub relevance_seeks: usize,
+    pub relevance_witness_probes: usize,
+    pub output_passes: usize,
+    pub output_bytes: usize,
+    pub rpc_passes: usize,
+    pub rpc_bytes: usize,
+    pub initial: usize,
+    pub context: usize,
+    pub revisit: usize,
+    pub ordinary: usize,
+    pub notices: usize,
+    pub notice_validations: usize,
+    pub replay: usize,
+}
+#[derive(Debug, Clone)]
+pub struct PresentationOutput {
+    pub reply: crate::protocol::delivery::DeliveryPullReplyV2,
+    pub work: PresentationWork,
 }

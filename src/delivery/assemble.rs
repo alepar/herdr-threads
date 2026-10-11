@@ -5,9 +5,9 @@
 
 use super::page::BODY_LIMIT_BYTES;
 use crate::protocol::{
-    ids::{MessageId, SeatId},
+    ids::{InvitationId, MessageId, SeatId},
     results::InboxBatchV2Item,
-    watch::{WatchMessage, truncation_marker_for},
+    watch::{WatchInvitation, WatchMessage, truncation_marker_for},
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -35,11 +35,20 @@ pub struct DeliveryItem {
     pub message: WatchMessage,
 }
 
+/// An invitation remains pending after its complete context is displayed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeliveryInvitation {
+    pub id: InvitationId,
+    pub topic_revision: Option<u64>,
+    pub content: WatchInvitation,
+}
+
 /// What [`Assembler::push`] made of one page item.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Assembled {
     /// A message completed (whole, or its first `BODY_LIMIT_BYTES`).
     Item(DeliveryItem),
+    Invitation(DeliveryInvitation),
     /// A chunk was buffered; more of the body is needed.
     Pending,
     /// An invitation or a waking warning: the seat needs attention.
@@ -60,6 +69,8 @@ pub struct AssembleError;
 pub struct Assembler {
     /// Ids already produced (and `attention:<version>` ids already shown).
     pub emitted: HashSet<String>,
+    /// Independent whole-invitation display cache; no acceptance or ACK authority.
+    pub invitation_displays: HashMap<InvitationId, Option<u64>>,
     /// Text assembled so far for each multi-chunk body.
     pub partial: HashMap<String, String>,
     /// Invocation the truncation marker's commands start with; empty means
@@ -87,11 +98,115 @@ impl Assembler {
     pub fn push(&mut self, item: InboxBatchV2Item) -> Result<Assembled, AssembleError> {
         match item {
             InboxBatchV2Item::Invitation {
-                confirmation: Some(crate::protocol::commands::InvitationConfirmation::Lazy),
-                ..
-            } => Ok(Assembled::InformationalNotice),
-            InboxBatchV2Item::Invitation { .. }
-            | InboxBatchV2Item::Warning {
+                thread,
+                topic_data,
+                goal_data,
+                topic_revision,
+                invitation,
+                confirmation,
+                deadline_at,
+                required_service,
+            } => {
+                let wakes =
+                    confirmation != Some(crate::protocol::commands::InvitationConfirmation::Lazy);
+                if self.invitation_displays.get(&invitation) == Some(&topic_revision) {
+                    return Ok(if wakes {
+                        Assembled::Attention
+                    } else {
+                        Assembled::Duplicate
+                    });
+                }
+                let mut argv = if self.command_prefix.is_empty() {
+                    vec!["herdr-threads".to_owned()]
+                } else {
+                    self.command_prefix.clone()
+                };
+                if let Some(required) = required_service {
+                    argv.extend([
+                        "accept-required".to_owned(),
+                        thread.as_str().to_owned(),
+                        "--invitation".to_owned(),
+                        invitation.as_str().to_owned(),
+                        "--requirement".to_owned(),
+                        required.requirement.as_str().to_owned(),
+                        "--revision".to_owned(),
+                        required.revision.to_string(),
+                    ]);
+                } else {
+                    argv.extend(["accept".to_owned(), thread.as_str().to_owned()]);
+                }
+                let goal_omitted = goal_data.is_none();
+                let mut body = topic_data.clone();
+                if let Some(goal) = goal_data {
+                    body.push_str(&format!("\ngoal: {goal}"));
+                } else {
+                    let mut inspect = if self.command_prefix.is_empty() {
+                        vec!["herdr-threads".to_owned()]
+                    } else {
+                        self.command_prefix.clone()
+                    };
+                    inspect.extend([
+                        "thread".to_owned(),
+                        "show".to_owned(),
+                        thread.as_str().to_owned(),
+                    ]);
+                    body.push_str(&format!(
+                        "\ngoal: omitted\nnext: {}",
+                        crate::protocol::output::format_command_argv(&inspect)
+                    ));
+                }
+                if let Some(deadline) = deadline_at {
+                    body.push_str(&format!("\ndeadline: {}", deadline.0));
+                }
+                body.push_str(&format!(
+                    "\nnext: {}",
+                    crate::protocol::output::format_command_argv(&argv)
+                ));
+                let body_truncated = body.len() > BODY_LIMIT_BYTES;
+                let truncated = goal_omitted || body_truncated;
+                if body_truncated {
+                    let mut cut = BODY_LIMIT_BYTES;
+                    while !body.is_char_boundary(cut) {
+                        cut -= 1;
+                    }
+                    body.truncate(cut);
+                    let mut inspect = if self.command_prefix.is_empty() {
+                        vec!["herdr-threads".to_owned()]
+                    } else {
+                        self.command_prefix.clone()
+                    };
+                    inspect.extend([
+                        "thread".to_owned(),
+                        "show".to_owned(),
+                        thread.as_str().to_owned(),
+                    ]);
+                    body.push_str(&format!(
+                        "\n…truncated; next: {}",
+                        crate::protocol::output::format_command_argv(&inspect)
+                    ));
+                } else if !goal_omitted
+                    && (self.invitation_displays.contains_key(&invitation)
+                        || self.invitation_displays.len()
+                            < crate::delivery::ledger::MAX_INVITATION_DISPLAYS_PER_SEAT)
+                {
+                    self.invitation_displays
+                        .insert(invitation.clone(), topic_revision);
+                }
+                Ok(Assembled::Invitation(DeliveryInvitation {
+                    id: invitation,
+                    topic_revision,
+                    content: WatchInvitation {
+                        command_context_epoch: None,
+                        topic_revision: topic_revision.map(|revision| revision.to_string()),
+                        thread,
+                        thread_name: label(&topic_data),
+                        body,
+                        truncated,
+                        wakes,
+                    },
+                }))
+            }
+            InboxBatchV2Item::Warning {
                 informational: false,
                 ..
             } => Ok(Assembled::Attention),

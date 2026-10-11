@@ -69,6 +69,8 @@ pub(super) fn render(result: &CommandResult, spec: &OutputSpec) -> Option<String
                     InboxBatchV2Item::Invitation {
                         thread,
                         topic_data,
+                        goal_data,
+                        topic_revision: _,
                         invitation,
                         confirmation,
                         deadline_at,
@@ -76,7 +78,7 @@ pub(super) fn render(result: &CommandResult, spec: &OutputSpec) -> Option<String
                     } => InboxBatchItem::Invitation {
                         thread: thread.clone(),
                         topic_data: topic_data.clone(),
-                        goal_data: None,
+                        goal_data: goal_data.clone(),
                         invitation: invitation.clone(),
                         confirmation: *confirmation,
                         deadline_at: *deadline_at,

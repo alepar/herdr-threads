@@ -234,6 +234,17 @@ pub mod synthetic_fourth {
     }
     static DELIVERY: FourthDelivery = FourthDelivery;
     impl HarnessAdapter for Fourth {
+        fn presentation_codec(
+            &self,
+            selector: u8,
+        ) -> Option<crate::harness::adapter::PresentationCodec> {
+            (selector == 0).then_some(
+                crate::harness::adapter::PresentationCodec::JsonStringEnvelope {
+                    prefix: "",
+                    suffix: "",
+                },
+            )
+        }
         type Admission = ();
         fn metadata(&self) -> &'static AdapterMetadata {
             &METADATA

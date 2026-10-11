@@ -120,3 +120,6 @@ impl Capabilities {
 #[cfg(test)]
 #[path = "../../tests/protocol/capabilities.rs"]
 mod tests;
+
+/// Capable bounded ordered delivery; deliberately absent from ALL until every consumer is active.
+pub const DELIVERY_PRESENTATION_V2: &str = "delivery.presentation_v2";

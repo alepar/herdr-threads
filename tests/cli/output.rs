@@ -244,11 +244,7 @@ fn invitation_policy_compact_keeps_lazy_discoverable_and_timed_deadline_honest()
             Some(UtcMillis(7000)),
             "confirmation: acceptance required",
         ),
-        (
-            None,
-            None,
-            "confirmation: acceptance required",
-        ),
+        (None, None, "confirmation: acceptance required"),
     ] {
         let result = CommandResult::InboxBatch(Page {
             items: vec![InboxBatchItem::Invitation {
@@ -320,6 +316,8 @@ fn invitation_policy_lazy_hook_display_remains_recoverable_without_acceptance() 
             items: vec![InboxBatchV2Item::Invitation {
                 thread: ThreadId::new("thread-1"),
                 topic_data: "topic".into(),
+                goal_data: None,
+                topic_revision: None,
                 invitation: InvitationId::new("invitation-1"),
                 confirmation: Some(InvitationConfirmation::Lazy),
                 deadline_at: None,

@@ -7,6 +7,7 @@ pub mod control;
 pub mod effective;
 pub mod handoff;
 pub mod harness_evidence;
+pub mod invitation_content;
 pub mod invitation_due;
 pub mod lazy_delivery;
 pub mod materialization;
@@ -14,6 +15,7 @@ pub mod messages;
 pub mod operator;
 pub mod page_fit;
 pub mod poke;
+mod presentation_relevance;
 pub(crate) mod public_ids;
 pub mod queries;
 pub mod receipts;
@@ -1219,6 +1221,31 @@ fn wake_candidates_page(
 }
 
 impl crate::ports::ModStoreReads for SqliteStore {
+    fn presentation_refresh(
+        &self,
+        seat: &SeatId,
+        generation: u64,
+        native: &str,
+        budget: &CallBudget,
+    ) -> Result<Option<crate::ports::ModPresentationRefresh>, ApiError> {
+        let mut writer = self.writer(budget)?;
+        self.context.execute_decision(
+            &mut writer,
+            |tx| invitation_content::refresh(tx, &self.instance, seat, generation, native),
+            |_, _, reply| Ok(reply),
+        )
+    }
+    fn presentation_seat_view(
+        &self,
+        seat: &SeatId,
+        budget: &CallBudget,
+    ) -> Result<Option<crate::ports::ModSeatView>, ApiError> {
+        let db = self.context.open_query(budget.clone())?;
+        db.execute_batch("BEGIN DEFERRED")
+            .map_err(|e| db.map_error(e))?;
+        seats::presentation_seat_view(&db, &self.instance, seat)
+    }
+
     fn mod_seat_view(
         &self,
         seat: &crate::protocol::ids::SeatId,
@@ -1245,6 +1272,43 @@ impl crate::ports::ModStoreReads for SqliteStore {
 }
 
 impl StorePort for SqliteStore {
+    fn presentation_render_selection(
+        &self,
+        claim: &crate::protocol::authority::CallerClaim,
+        consumer: crate::protocol::delivery::PresentationConsumer,
+        budget: &CallBudget,
+    ) -> Result<Option<crate::delivery::presentation::FrozenRenderIdentity>, ApiError> {
+        let db = self.context.open_query(budget.clone())?;
+        db.execute_batch("BEGIN DEFERRED")
+            .map_err(|e| db.map_error(e))?;
+        invitation_content::render_selection(&db, claim, consumer)
+    }
+
+    fn presentation_pull(
+        &self,
+        input: crate::ports::PresentationInput,
+        budget: &CallBudget,
+    ) -> Result<crate::ports::PresentationOutput, ApiError> {
+        let mut writer = self.writer(budget)?;
+        self.context.execute_decision(
+            &mut writer,
+            |tx| invitation_content::pull(tx, &self.context, input, budget),
+            |_, _, reply| Ok(reply),
+        )
+    }
+    fn presentation_confirm(
+        &self,
+        request: &crate::protocol::delivery::DeliveryPresentationConfirmV2,
+        budget: &CallBudget,
+    ) -> Result<crate::protocol::delivery::DeliveryPresentationConfirmationReplyV2, ApiError> {
+        let mut writer = self.writer(budget)?;
+        self.context.execute_decision(
+            &mut writer,
+            |tx| invitation_content::confirm(tx, request),
+            |_, _, reply| Ok(reply),
+        )
+    }
+
     fn archival_pass(
         &self,
         runtime: &archival::Runtime,

@@ -4,7 +4,7 @@
 //! (`service::delivery_pull`) and never holds the lock across a store read.
 
 use crate::ports::NextPull;
-use crate::protocol::{ids::MessageId, ids::SeatId, time::UtcMillis};
+use crate::protocol::{ids::InvitationId, ids::MessageId, ids::SeatId, time::UtcMillis};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 /// Seats the ledger remembers; the least recently touched is evicted first.
@@ -12,6 +12,9 @@ pub const MAX_LEDGER_SEATS: usize = 4096;
 /// Offers kept per seat. A full table evicts nothing (an evicted pending id would be offered afresh): a new id
 /// waits, pending, for `inbox` until a confirm, a settle or a whole read frees a slot.
 pub const MAX_OFFERS_PER_SEAT: usize = 256;
+/// Independent invitation display cache, large enough for the canonical 1001-row window.
+/// Neither these whole displays nor truncated attempts are receipt offers or wake work.
+pub const MAX_INVITATION_DISPLAYS_PER_SEAT: usize = 1024;
 /// An unconfirmed id is offered again only after this long.
 pub const REOFFER_AFTER_MS: i64 = 60_000;
 /// An id is offered at most this many times per binding generation.
@@ -57,6 +60,10 @@ pub struct SeatOffers {
     /// new id, so a pull reads only as far as its due offers. `None` on a new entry.
     pub whole_read: Option<u64>,
     pub offers: BTreeMap<MessageId, Offer>,
+    pub whole_invitations: BTreeMap<InvitationId, Option<u64>>,
+    pub truncated_invitations: BTreeMap<InvitationId, (Option<u64>, Offer)>,
+    /// Passive page continuation, ignored by native wake outlook.
+    pub invitations_pending: bool,
     touched: u64,
 }
 
@@ -184,6 +191,9 @@ impl OfferedLedger {
                     read_attention: None,
                     whole_read: None,
                     offers: BTreeMap::new(),
+                    whole_invitations: BTreeMap::new(),
+                    truncated_invitations: BTreeMap::new(),
+                    invitations_pending: false,
                     touched,
                 },
             );

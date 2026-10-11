@@ -5987,7 +5987,12 @@ mod inbox_v2 {
     fn binding(db: &Connection, seat: &SeatId) -> Result<Option<(u64, ExecutionId)>, ApiError> {
         db.query_row("SELECT b.generation,b.execution_id FROM occupant_bindings b JOIN seats s ON s.id=b.seat_id AND s.generation=b.generation WHERE b.seat_id=?1 AND b.ended_at IS NULL",[seat.as_str()],|r|Ok((r.get::<_,i64>(0)? as u64,ExecutionId::new(r.get::<_,String>(1)?)))).optional().map_err(store_error)
     }
-    fn capture(db: &Connection, instance: &str, seat: &SeatId) -> Result<State, ApiError> {
+    fn capture(
+        db: &Connection,
+        instance: &str,
+        seat: &SeatId,
+        ordinary_only: bool,
+    ) -> Result<State, ApiError> {
         let high = super::super::lazy_delivery::capture_high_water(db, instance, seat)?;
         let (generation, execution) =
             binding(db, seat)?.map_or((None, None), |(g, e)| (Some(g), Some(e)));
@@ -6012,9 +6017,16 @@ mod inbox_v2 {
             attention: SeatAttentionCursorState {
                 invitation_after_seq: 0,
                 invitation_after_ordinal: 0,
-                invitations_done: false,
+                invitations_done: ordinary_only,
                 has_pending_invitation: false,
-                invitation_frontier: Some((0, max("invitations")?)),
+                invitation_frontier: Some((
+                    0,
+                    if ordinary_only {
+                        0
+                    } else {
+                        max("invitations")?
+                    },
+                )),
                 receipts: Some(ReceiptAttentionCursorState {
                     physical_after: 0,
                     manifest_after: 0,
@@ -6239,8 +6251,8 @@ mod inbox_v2 {
             }
             Source::Invitations => {
                 let a = &state.attention;
-                let row:Option<(i64,String,String)>=db.query_row("SELECT ordinal,id,thread_id FROM invitations WHERE seat_id=?1 AND ordinal>?2 AND ordinal<=?3 AND created_decision_seq<=?4 ORDER BY ordinal LIMIT 1",params![seat.as_str(),a.invitation_after_ordinal,a.invitation_frontier.unwrap().1,state.publication_decision_high_water as i64],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(store_error)?;
-                let Some((ordinal, id, thread)) = row else {
+                let row:Option<(i64,String,String,String,String,i64)>=db.query_row("SELECT i.ordinal,i.id,i.thread_id,t.topic,t.goal,t.topic_revision FROM invitations i JOIN threads t ON t.id=i.thread_id WHERE i.seat_id=?1 AND i.ordinal>?2 AND i.ordinal<=?3 AND i.created_decision_seq<=?4 ORDER BY i.ordinal LIMIT 1",params![seat.as_str(),a.invitation_after_ordinal,a.invitation_frontier.unwrap().1,state.publication_decision_high_water as i64],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).optional().map_err(store_error)?;
+                let Some((ordinal, id, thread, topic, goal, revision)) = row else {
                     state.attention.invitations_done = true;
                     return Ok((None, 0));
                 };
@@ -6260,7 +6272,11 @@ mod inbox_v2 {
                     let (confirmation, deadline_at) = invitation_confirmation_metadata(db, &id)?;
                     Some(Item::Invitation {
                         thread: ThreadId::new(&thread),
-                        topic_data: batch_topic(db, &thread)?,
+                        topic_data: topic,
+                        goal_data: Some(goal),
+                        topic_revision: Some(u64::try_from(revision).map_err(|_| {
+                            api_error(ErrorCode::StoreCorrupt, "negative topic revision")
+                        })?),
                         invitation: crate::protocol::ids::InvitationId::new(id),
                         confirmation,
                         deadline_at,
@@ -6392,13 +6408,25 @@ mod inbox_v2 {
         position.map(|p| (chunk, p))
     }
     pub(super) fn query(
-        db: &QueryConnection,
+        db: &Connection,
         store: &StoreContext,
         instance: &str,
         q: &InboxQuery,
         output: &OutputSpec,
         budget: &CallBudget,
     ) -> Result<CommandResult, ApiError> {
+        query_mode(db, store, instance, q, output, budget, false).map(|(result, _)| result)
+    }
+
+    pub(super) fn query_mode(
+        db: &Connection,
+        store: &StoreContext,
+        instance: &str,
+        q: &InboxQuery,
+        output: &OutputSpec,
+        budget: &CallBudget,
+        ordinary_only: bool,
+    ) -> Result<(CommandResult, usize), ApiError> {
         let seat = q.seat.as_ref().ok_or_else(|| {
             api_error(
                 ErrorCode::InvalidRequest,
@@ -6411,8 +6439,12 @@ mod inbox_v2 {
         }
         let mut state = match q.page.cursor.as_ref() {
             Some(raw) => State::decode_for(raw, instance, seat).map_err(invalid)?,
-            None => capture(db, instance, seat)?,
+            None => capture(db, instance, seat, ordinary_only)?,
         };
+        if ordinary_only {
+            state.attention.invitations_done = true;
+            state.attention.invitation_frontier = Some((0, 0));
+        }
         let current = binding(db, seat)?;
         if current != state.binding_generation.zip(state.execution.clone()) {
             return Err(invalid("inbox binding changed"));
@@ -6486,7 +6518,23 @@ mod inbox_v2 {
             visited += work;
             state.body = None;
             rotate(&mut state);
-            if let Some(item) = item {
+            if let Some(mut item) = item {
+                if matches!(
+                    &item,
+                    Item::Invitation {
+                        goal_data: Some(_),
+                        ..
+                    }
+                ) && !fits(
+                    std::slice::from_ref(&item),
+                    &state,
+                    instance,
+                    &q.page,
+                    output,
+                )? && let Item::Invitation { goal_data, .. } = &mut item
+                {
+                    *goal_data = None;
+                }
                 let mut trial = items.clone();
                 trial.push(item.clone());
                 if fits(&trial, &state, instance, &q.page, output)? {
@@ -6561,6 +6609,43 @@ mod inbox_v2 {
         {
             return Err(ApiError::invalid_budget("selected response cannot fit"));
         }
-        Ok(CommandResult::InboxBatchV2(page))
+        Ok((CommandResult::InboxBatchV2(page), visited))
+    }
+}
+
+/// Internal canonical presentation source. Unlike public V1/V2 inbox reads,
+/// it neither captures nor traverses invitations. Exactly one bounded query
+/// is permitted per fresh presentation quantum; the caller persists its cursor.
+pub(super) fn ordinary_presentation_page(
+    db: &Connection,
+    context: &StoreContext,
+    instance: &str,
+    seat: &SeatId,
+    cursor: Option<String>,
+    budget: &CallBudget,
+) -> Result<(Page<crate::protocol::results::InboxBatchV2Item>, usize), ApiError> {
+    let query = InboxQuery {
+        seat: Some(seat.clone()),
+        page: PageRequest {
+            cursor,
+            limit: 32,
+            max_bytes: 65536,
+        },
+    };
+    let (result, visited) = inbox_v2::query_mode(
+        db,
+        context,
+        instance,
+        &query,
+        &OutputSpec::default(),
+        budget,
+        true,
+    )?;
+    match result {
+        CommandResult::InboxBatchV2(page) => Ok((page, visited)),
+        _ => Err(api_error(
+            ErrorCode::StoreCorrupt,
+            "invalid ordinary presentation page",
+        )),
     }
 }

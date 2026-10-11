@@ -1476,3 +1476,4682 @@ fn notices_settled_by_a_pull_that_lost_a_rotation_race_are_still_returned() {
         "nothing recorded into the newer entry"
     );
 }
+
+// Kills: dropping informational invitations from the actual service page, or
+// treating a displayed invitation as a message receipt / accepted membership.
+#[test]
+fn a_lazy_invitation_reaches_hook_pull_without_attention_or_acceptance() {
+    use crate::protocol::commands::{CreateThread, InvitationConfirmation, Invite};
+    let f = fixture(0);
+    let context = pull_seat(&f);
+    let DeliveryPullReply::Unchanged {
+        attention_version: quiet_version,
+    } = pull(&f, &context, None)
+    else {
+        panic!("quiet pull must be unchanged")
+    };
+    let inviter = check_in(&f, claim("x", "px", fourth(), "inviter", 0), "ci-inviter");
+    let CommandResult::ThreadCreated(thread) = f
+        .service
+        .handle(
+            Command::CreateThread(CreateThread {
+                name: None,
+                topic: "lazy invitation topic".into(),
+                goal: "review the handoff".into(),
+                operation: OperationId::new("create-lazy-invite"),
+                claim: inviter.clone(),
+            }),
+            peer(),
+            &budget(),
+        )
+        .unwrap()
+    else {
+        panic!("thread not created")
+    };
+    f.service
+        .handle(
+            Command::Invite(Invite {
+                confirmation: Some(InvitationConfirmation::Lazy),
+                thread: thread.clone(),
+                seat: SeatId::new("s"),
+                deadline_millis: None,
+                operation: OperationId::new("lazy-invite"),
+                claim: inviter,
+            }),
+            peer(),
+            &budget(),
+        )
+        .unwrap();
+    assert_eq!(
+        wake_attention(&f),
+        0,
+        "Lazy invitation never schedules ordinary wake work"
+    );
+    let first = page(pull(&f, &context, Some(quiet_version)));
+    assert!(
+        first.text.contains("lazy invitation topic"),
+        "{}",
+        first.text
+    );
+    assert!(first.text.contains(thread.as_str()), "{}", first.text);
+    assert!(first.text.contains("accept"), "{}", first.text);
+    assert!(!first.text.contains("] attention "), "{}", first.text);
+    assert!(
+        first.offered.is_empty(),
+        "invitations are not confirmable message ids"
+    );
+    assert!(first.truncated.is_empty());
+    assert!(
+        first.text.contains("review the handoff"),
+        "invitation goal reaches context: {}",
+        first.text
+    );
+    assert!(
+        matches!(
+            pull(&f, &context, Some(first.attention_version)),
+            DeliveryPullReply::Unchanged { .. }
+        ),
+        "whole passive display is not repeatedly injected"
+    );
+    let (state, mode): (String, String) =
+        f.db.query_row(
+            "SELECT state,confirmation FROM invitations WHERE thread_id=?1 AND seat_id='s'",
+            [thread.as_str()],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((state.as_str(), mode.as_str()), ("pending", "lazy"));
+    let attention = crate::store::attention::wake_seat_attention(&f.db, "s").unwrap();
+    assert!(!attention.attention.has_pending_invitation);
+    assert!(!attention.attention.has_pending_receipt);
+    assert!(attention.attention.latest_warning_seq.is_none());
+}
+
+// Kills: caching an offered informational frontier as if it settled the
+// original sender's independent open-condition attention.
+#[test]
+fn departed_receipt_origins_survive_pull_offers_late_association_and_partial_ack() {
+    use crate::protocol::commands::{Ack, Leave};
+    let mut f = fixture(0);
+    let a = pull_seat(&f);
+    let b = check_in(&f, claim("x", "px", fourth(), "origin-b", 0), "ci-origin-b");
+    let recipient = check_in(
+        &f,
+        claim("c", "pc", fourth(), "recipient", 0),
+        "ci-recipient",
+    );
+    for (n, author) in [(1, "s"), (2, "s"), (3, "x")] {
+        let id = format!("origin-{n}");
+        f.db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,author_kind,actor_seat_id,body,decision_at,decision_seq) VALUES (?1,'i','t',?2,'ordinary','native',?3,'origin body',0,?2)", params![id,n,author]).unwrap();
+        if n < 3 {
+            f.db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES (?1,'t','c','pending',1,0,500)", [&id]).unwrap();
+        } else {
+            f.db.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES ('origin-p','i','actor','origin-p',zeroblob(32),'t',0,0,0,0,0,0,1,'sealed')", []).unwrap();
+            f.db.execute("INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES ('origin-p','t','c',1,1001000,0)", []).unwrap();
+            f.db.execute("INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('origin-p',?1,'i','t',3,0,3,0,1,0)", [&id]).unwrap();
+            f.db.execute("INSERT INTO receipt_state(message_id,seat_id,state,deadline_at,ack_required) VALUES (?1,'c','pending',1001000,1)", [&id]).unwrap();
+        }
+    }
+    f.db.execute("UPDATE threads SET next_sequence=1000 WHERE id='t'", [])
+        .unwrap();
+    f.db.execute(
+        "UPDATE host_instances SET decision_seq=1000 WHERE id='i'",
+        [],
+    )
+    .unwrap();
+    for (who, operation) in [(&a, "leave-a"), (&b, "leave-b")] {
+        f.service
+            .handle(
+                Command::Leave(Leave {
+                    thread: ThreadId::new("t"),
+                    operation: OperationId::new(operation),
+                    claim: who.clone(),
+                }),
+                peer(),
+                &budget(),
+            )
+            .unwrap();
+    }
+    let shared: Arc<dyn Clock> = f.clock.clone();
+    let context = StoreContext::new(f.directory.join("store.db"), shared);
+    crate::store::receipts::scan_due(
+        &context,
+        &mut f.db,
+        100,
+        &mut crate::store::receipts::ReceiptDueCursor::default(),
+    )
+    .unwrap();
+    let warning: String =
+        f.db.query_row(
+            "SELECT open_warning_id FROM warning_conditions WHERE condition_kind='receipt'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    while crate::store::materialization::advance_work(
+        &mut f.db,
+        &format!("work:{warning}"),
+        crate::ports::DurableWorkAdmission::new(16).unwrap(),
+        &budget(),
+        context.clock(),
+    )
+    .unwrap()
+    .has_more
+    {}
+    let first_a = page(pull(&f, &a, None));
+    assert!(first_a.text.contains("] attention "), "{}", first_a.text);
+    assert!(
+        matches!(
+            pull(&f, &a, Some(first_a.attention_version)),
+            DeliveryPullReply::Unchanged { .. }
+        ),
+        "whole warning offer does not force repeated context"
+    );
+    struct OriginNotifier(std::sync::Mutex<Vec<SeatId>>);
+    impl crate::ports::NotificationPort for OriginNotifier {
+        fn attempt_wake(
+            &self,
+            reservation: crate::ports::WakeReservation,
+            _: &crate::ports::HostCallContext,
+        ) -> Result<crate::ports::WakeOutcome, ApiError> {
+            self.0.lock().unwrap().push(reservation.seat);
+            Ok(crate::ports::WakeOutcome::Unavailable)
+        }
+    }
+    f.db.execute(
+        "UPDATE observed_targets SET ui_state='active_turn',observed_at=?1",
+        [f.clock.utc_now().0],
+    )
+    .unwrap();
+    f.db.execute(
+        "UPDATE observed_targets SET ui_state='idle' WHERE target_id='p'",
+        [],
+    )
+    .unwrap();
+    let elected_boot = uuid::Uuid::new_v4();
+    let wake_store: Arc<dyn StorePort> = Arc::new(
+        SqliteStore::new(
+            StoreContext::new(f.directory.join("store.db"), f.clock.clone()),
+            "i",
+            StoreSettings {
+                daemon_boot: Some(elected_boot),
+                ..StoreSettings::default()
+            },
+        )
+        .unwrap(),
+    );
+    let scheduled =
+        crate::service::workers::ScheduledStore::new(wake_store, Arc::new(FairWriter::new(32)));
+    let notifier = OriginNotifier(std::sync::Mutex::new(Vec::new()));
+    let scheduler = crate::scheduler::Scheduler::new(
+        "i".into(),
+        &scheduled,
+        &scheduled,
+        &notifier,
+        crate::notification::policy::RetryConfig::default(),
+        elected_boot,
+    )
+    .with_hook_pull(f.state.as_ref());
+    scheduler.drive_wakes(&budget()).unwrap();
+    assert!(
+        notifier.0.lock().unwrap().contains(&a.seat),
+        "actual canonical scheduler must retain an open origin warning after whole offer despite NextPull::Nothing"
+    );
+
+    let first_b = pull(&f, &b, None);
+    let seen_b = match first_b {
+        DeliveryPullReply::Page(p) => p.attention_version,
+        DeliveryPullReply::Unchanged { attention_version } => attention_version,
+        other => panic!("unexpected {other:?}"),
+    };
+    assert_eq!(
+        f.db.query_row(
+            "SELECT count(*) FROM receipt_warning_origins WHERE seat_id='x'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    f.clock.0.store(1_002_000, Ordering::SeqCst);
+    crate::store::receipts::scan_due(
+        &context,
+        &mut f.db,
+        100,
+        &mut crate::store::receipts::ReceiptDueCursor::default(),
+    )
+    .unwrap();
+    let later_b = page(pull(&f, &b, Some(seen_b)));
+    assert!(later_b.text.contains("] attention "), "{}", later_b.text);
+    assert_eq!(
+        f.db.query_row(
+            "SELECT count(*) FROM warning_conditions WHERE condition_kind='receipt'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+    for (n, remaining) in [(1, 2), (2, 1), (3, 0)] {
+        f.service
+            .handle(
+                Command::Ack(Ack {
+                    messages: vec![MessageId::new(format!("origin-{n}"))],
+                    operation: OperationId::new(format!("ack-origin-{n}")),
+                    claim: recipient.clone(),
+                }),
+                peer(),
+                &budget(),
+            )
+            .unwrap();
+        let a_view = f.store.mod_seat_view(&a.seat, &budget()).unwrap().unwrap();
+        let b_view = f.store.mod_seat_view(&b.seat, &budget()).unwrap().unwrap();
+        assert_eq!(a_view.fingerprint.other_pending, u64::from(remaining > 0));
+        assert_eq!(b_view.fingerprint.other_pending, u64::from(remaining > 0));
+        assert_eq!(
+            f.db.query_row(
+                "SELECT count(*) FROM receipt_warning_origins WHERE warning_id=?1",
+                [&warning],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            if remaining > 0 { 2 } else { 0 }
+        );
+    }
+    let before_final_pass = notifier.0.lock().unwrap().len();
+    scheduler.drive_wakes(&budget()).unwrap();
+    assert_eq!(
+        notifier.0.lock().unwrap().len(),
+        before_final_pass,
+        "passive final clear creates no warning-only wake"
+    );
+    assert_eq!(f.db.query_row("SELECT count(*) FROM warning_conditions WHERE condition_kind='receipt' AND clear_warning_id IS NOT NULL", [], |r| r.get::<_,i64>(0)).unwrap(), 1);
+}
+
+// Kills: a real canonical lazy arrival never triggering the live watch consumer.
+#[test]
+fn canonical_lazy_invitation_signals_a_passive_channel_drain_without_attention_history() {
+    use crate::{
+        ports::ModChannelSink,
+        protocol::{
+            commands::{CreateThread, InvitationConfirmation, Invite},
+            watch::{ModDeliverySetting, WatchFrame, WatchRequest},
+        },
+        service::mod_channels::ModChannelRegistry,
+    };
+    struct Sink(std::sync::Mutex<Vec<WatchFrame>>);
+    impl ModChannelSink for Sink {
+        fn push(&self, frame: WatchFrame) -> bool {
+            self.0.lock().unwrap().push(frame);
+            true
+        }
+    }
+    let f = fixture(0);
+    let recipient = check_in(
+        &f,
+        claim("s", "p", Harness::Claude, "channel", 0),
+        "channel-ci",
+    );
+    let inviter = check_in(
+        &f,
+        claim("x", "px", fourth(), "inviter", 0),
+        "channel-inviter-ci",
+    );
+    let reads = Arc::new(
+        SqliteStore::new(
+            StoreContext::new(f.directory.join("store.db"), f.clock.clone()),
+            "i",
+            StoreSettings::default(),
+        )
+        .unwrap(),
+    );
+    let registry = Arc::new(ModChannelRegistry::new(
+        f.clock.clone(),
+        reads,
+        "i".into(),
+        Arc::new(|| {}),
+        ModDeliverySetting::On,
+    ));
+    let service = DomainService::new("i".into(), f.store.clone(), f.clock.clone())
+        .with_cooperative_owner(501, Arc::new(FairWriter::new(32)))
+        .with_mod_channels(registry.clone());
+    let sink = Arc::new(Sink(std::sync::Mutex::new(Vec::new())));
+    service
+        .watch_register(
+            &WatchRequest {
+                claim: recipient.clone(),
+            },
+            sink.clone(),
+            &budget(),
+        )
+        .unwrap();
+    registry.pass(f.clock.utc_now()).unwrap();
+    assert!(sink.0.lock().unwrap().is_empty());
+    let before = f
+        .store
+        .mod_seat_view(&recipient.seat, &budget())
+        .unwrap()
+        .unwrap();
+    let CommandResult::ThreadCreated(thread) = service
+        .handle(
+            Command::CreateThread(CreateThread {
+                name: None,
+                topic: "channel invitation".into(),
+                goal: "review channel".into(),
+                operation: OperationId::new("channel-create"),
+                claim: inviter.clone(),
+            }),
+            peer(),
+            &budget(),
+        )
+        .unwrap()
+    else {
+        panic!("thread not created")
+    };
+    service
+        .handle(
+            Command::Invite(Invite {
+                confirmation: Some(InvitationConfirmation::Lazy),
+                thread,
+                seat: recipient.seat.clone(),
+                deadline_millis: None,
+                operation: OperationId::new("channel-invite"),
+                claim: inviter,
+            }),
+            peer(),
+            &budget(),
+        )
+        .unwrap();
+    let after = f
+        .store
+        .mod_seat_view(&recipient.seat, &budget())
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        before.fingerprint, after.fingerprint,
+        "passive content never changes wake eligibility"
+    );
+    registry.pass(f.clock.utc_now()).unwrap();
+    assert_eq!(
+        sink.0.lock().unwrap().len(),
+        1,
+        "actual channel receives a drain signal"
+    );
+    registry.pass(f.clock.utc_now()).unwrap();
+    assert_eq!(
+        sink.0.lock().unwrap().len(),
+        1,
+        "unchanged canonical content does not flood the channel"
+    );
+}
+
+#[test]
+fn canonical_lazy_invitation_content_changes_on_accept_reject_and_retirement_only() {
+    use crate::protocol::commands::{
+        Accept, CreateThread, InvitationConfirmation, Invite, OperatorRetire, Reject,
+    };
+    let f = fixture(0);
+    let recipient = pull_seat(&f);
+    let inviter = check_in(
+        &f,
+        claim("x", "px", fourth(), "version-inviter", 0),
+        "version-inviter-ci",
+    );
+    let create = |suffix: &str, invite: bool| {
+        let CommandResult::ThreadCreated(thread) = f
+            .service
+            .handle(
+                Command::CreateThread(CreateThread {
+                    name: None,
+                    topic: suffix.into(),
+                    goal: "review".into(),
+                    operation: OperationId::new(format!("version-create-{suffix}")),
+                    claim: inviter.clone(),
+                }),
+                peer(),
+                &budget(),
+            )
+            .unwrap()
+        else {
+            panic!("not created")
+        };
+        let invitation = if invite {
+            let CommandResult::Invitation(id) = f
+                .service
+                .handle(
+                    Command::Invite(Invite {
+                        confirmation: Some(InvitationConfirmation::Lazy),
+                        thread: thread.clone(),
+                        seat: recipient.seat.clone(),
+                        deadline_millis: None,
+                        operation: OperationId::new(format!("version-invite-{suffix}")),
+                        claim: inviter.clone(),
+                    }),
+                    peer(),
+                    &budget(),
+                )
+                .unwrap()
+            else {
+                panic!("not invited")
+            };
+            Some(id)
+        } else {
+            None
+        };
+        (thread, invitation)
+    };
+    let version = || {
+        f.store
+            .mod_seat_view(&recipient.seat, &budget())
+            .unwrap()
+            .unwrap()
+            .pending_invitation_version
+    };
+    assert_eq!(version(), 0);
+    let (accepted, _) = create("accepted", true);
+    let (rejected, rejection) = create("rejected", true);
+    let (newest, _) = create("newest", true);
+    let initial = version();
+    let shown = page(pull(&f, &recipient, None));
+    create("unrelated", false);
+    assert_eq!(
+        version(),
+        initial,
+        "unrelated real decisions do not change recipient content"
+    );
+    assert!(matches!(
+        pull(&f, &recipient, Some(shown.attention_version)),
+        DeliveryPullReply::Unchanged { .. }
+    ));
+    f.service
+        .handle(
+            Command::Accept(Accept {
+                thread: accepted,
+                operation: OperationId::new("version-accept"),
+                claim: recipient.clone(),
+            }),
+            peer(),
+            &budget(),
+        )
+        .unwrap();
+    let after_accept = version();
+    assert_ne!(
+        after_accept, initial,
+        "older acceptance changes content despite unchanged newest pending invitation"
+    );
+    f.service
+        .handle(
+            Command::Reject(Reject {
+                thread: rejected,
+                invitation: rejection.unwrap(),
+                reason: "outside remit".into(),
+                operation: OperationId::new("version-reject"),
+                claim: recipient.clone(),
+            }),
+            peer(),
+            &budget(),
+        )
+        .unwrap();
+    assert_ne!(
+        version(),
+        after_accept,
+        "older rejection removes canonical content"
+    );
+    let before_topic = version();
+    f.service
+        .handle(
+            Command::SetTopic(crate::protocol::commands::SetTopic {
+                thread: newest,
+                topic: "updated invitation decision context".into(),
+                operation: OperationId::new("version-topic"),
+                claim: inviter.clone(),
+            }),
+            peer(),
+            &budget(),
+        )
+        .unwrap();
+    assert_ne!(
+        version(),
+        before_topic,
+        "canonical topic revision invalidates a previously whole-offered invitation"
+    );
+    let changed = page(pull(&f, &recipient, Some(shown.attention_version)));
+    assert!(changed.text.contains("updated invitation decision context"));
+    assert!(
+        !changed.text.contains("accepted"),
+        "settled/unchanged invitation contexts do not flood the next page"
+    );
+    f.store
+        .mutate_operator(
+            crate::ports::OperatorRequest::Retire(OperatorRetire {
+                seat: recipient.seat.clone(),
+                operation: OperationId::new("version-retire"),
+            }),
+            crate::protocol::authority::OperatorActor::from_peer(peer(), 501).unwrap(),
+            &budget(),
+        )
+        .unwrap();
+    assert_eq!(
+        version(),
+        0,
+        "retirement removes recipient-visible pending content"
+    );
+}
+
+fn canonical_lazy_invitation_backlog(
+    f: &Fixture,
+    recipient: &CallerClaim,
+    inviter: &CallerClaim,
+    count: usize,
+    prefix: &str,
+) -> ThreadId {
+    use crate::protocol::commands::{CreateThread, InvitationConfirmation, Invite};
+    let mut oldest = None;
+    for n in 0..count {
+        let CommandResult::ThreadCreated(thread) = f
+            .service
+            .handle(
+                Command::CreateThread(CreateThread {
+                    name: None,
+                    topic: format!("{prefix}-topic-{n}"),
+                    goal: "review".into(),
+                    operation: OperationId::new(format!("{prefix}-create-{n}")),
+                    claim: inviter.clone(),
+                }),
+                peer(),
+                &budget(),
+            )
+            .unwrap()
+        else {
+            panic!("thread not created")
+        };
+        oldest.get_or_insert_with(|| thread.clone());
+        f.service
+            .handle(
+                Command::Invite(Invite {
+                    confirmation: Some(InvitationConfirmation::Lazy),
+                    thread,
+                    seat: recipient.seat.clone(),
+                    deadline_millis: None,
+                    operation: OperationId::new(format!("{prefix}-invite-{n}")),
+                    claim: inviter.clone(),
+                }),
+                peer(),
+                &budget(),
+            )
+            .unwrap();
+    }
+    oldest.expect("nonempty canonical backlog")
+}
+
+// These saturation controls intentionally exercise the capable route. The
+// historical V1 REDs remain evidence of the unsupported old cache limit.
+fn presentation_test_pull(
+    f: &Fixture,
+    claim: &CallerClaim,
+) -> crate::protocol::delivery::DeliveryPullReplyV2 {
+    let result = f
+        .service
+        .handle(
+            Command::DeliveryPullV2(crate::protocol::delivery::DeliveryPullV2 {
+                claim: claim.clone(),
+                consumer: crate::protocol::delivery::PresentationConsumer::Hook,
+                render: crate::protocol::delivery::PresentationRenderRequest::Hook {
+                    confirmable_selector: 0,
+                    passive_selector: 0,
+                },
+                presentation_lease: None,
+                marker_prefix: Vec::new(),
+            }),
+            peer(),
+            &budget(),
+        )
+        .unwrap();
+    let CommandResult::DeliveryPulledV2(reply) = result else {
+        panic!("wrong presentation result {result:?}")
+    };
+    reply
+}
+fn presentation_invitations(
+    page: &crate::protocol::delivery::DeliveryPageV2,
+) -> Vec<crate::protocol::delivery::PresentationInvitation> {
+    page.items
+        .iter()
+        .filter_map(|v| match v {
+            crate::protocol::delivery::PresentationItemV2::Invitation { id, content } => {
+                Some(crate::protocol::delivery::PresentationInvitation {
+                    id: id.clone(),
+                    content: content.clone(),
+                })
+            }
+            _ => None,
+        })
+        .collect()
+}
+fn presentation_watch_frozen(
+    f: &Fixture,
+    claim: &CallerClaim,
+) -> Option<crate::delivery::presentation::FrozenPresentationRender> {
+    f.store
+        .presentation_render_selection(
+            claim,
+            crate::protocol::delivery::PresentationConsumer::Watch,
+            &budget(),
+        )
+        .unwrap()
+        .map(
+            |identity| crate::delivery::presentation::FrozenPresentationRender {
+                identity,
+                codec: None,
+            },
+        )
+}
+fn presentation_test_confirm(
+    f: &Fixture,
+    claim: &CallerClaim,
+    page: &crate::protocol::delivery::DeliveryPageV2,
+) {
+    if let Some(token) = &page.presentation_token {
+        let result = f
+            .service
+            .handle(
+                Command::DeliveryPresentationConfirmV2(
+                    crate::protocol::delivery::DeliveryPresentationConfirmV2 {
+                        claim: claim.clone(),
+                        consumer: crate::protocol::delivery::PresentationConsumer::Hook,
+                        token: token.clone(),
+                        emitted_controls: page.emitted_controls.clone(),
+                        presentation_lease: None,
+                    },
+                ),
+                peer(),
+                &budget(),
+            )
+            .unwrap();
+        assert!(matches!(
+            result,
+            CommandResult::DeliveryPresentationConfirmedV2(
+                crate::protocol::delivery::DeliveryPresentationConfirmationReplyV2 {
+                    status:
+                        crate::protocol::delivery::DeliveryPresentationConfirmationV2::Confirmed,
+                    ..
+                }
+            )
+        ));
+    }
+}
+
+#[test]
+fn an_old_visible_invitation_topic_change_survives_a_saturated_newest_window() {
+    use crate::protocol::commands::SetTopic;
+    let f = fixture(0);
+    let recipient = pull_seat(&f);
+    let inviter = check_in(
+        &f,
+        claim("x", "px", fourth(), "saturated-inviter", 0),
+        "saturated-inviter-ci",
+    );
+    // The smallest backlog with a visible invitation outside WINDOW1001.
+    let oldest = canonical_lazy_invitation_backlog(
+        &f,
+        &recipient,
+        &inviter,
+        crate::store::attention::WINDOW + 1,
+        "window",
+    );
+
+    let mut exhausted = false;
+    let mut saw_oldest = false;
+    for _ in 0..40 {
+        let crate::protocol::delivery::DeliveryPullReplyV2::Page(shown) =
+            presentation_test_pull(&f, &recipient)
+        else {
+            panic!("expected finite presentation page")
+        };
+        saw_oldest |= shown.text.contains("window-topic-0");
+        presentation_test_confirm(&f, &recipient, &shown);
+        if !shown.more {
+            exhausted = true;
+            break;
+        }
+    }
+    assert!(
+        exhausted,
+        "finite1002 invitation display must make progress"
+    );
+    assert!(saw_oldest, "the old context was actually displayed");
+    assert_eq!(f.db.query_row("SELECT count(*) FROM invitation_presentation_items WHERE seat_id='s' AND consumer='hook' AND complete_count=1",[],|r|r.get::<_,i64>(0)).unwrap(),(crate::store::attention::WINDOW+1) as i64,"every canonical context completed before quiet");
+    assert!(matches!(
+        presentation_test_pull(&f, &recipient),
+        crate::protocol::delivery::DeliveryPullReplyV2::Unchanged { .. }
+    ));
+    f.service
+        .handle(
+            Command::SetTopic(SetTopic {
+                thread: oldest,
+                topic: "changed oldest visible invitation context".into(),
+                operation: OperationId::new("window-change-oldest"),
+                claim: inviter,
+            }),
+            peer(),
+            &budget(),
+        )
+        .unwrap();
+    let crate::protocol::delivery::DeliveryPullReplyV2::Page(changed) =
+        presentation_test_pull(&f, &recipient)
+    else {
+        panic!("expected changed canonical context")
+    };
+    assert!(
+        changed
+            .text
+            .contains("changed oldest visible invitation context"),
+        "{}",
+        changed.text
+    );
+    assert!(changed.offered.is_empty());
+    assert!(changed.truncated.is_empty());
+    presentation_test_confirm(&f, &recipient, &changed);
+    assert!(matches!(
+        presentation_test_pull(&f, &recipient),
+        crate::protocol::delivery::DeliveryPullReplyV2::Unchanged { .. }
+    ));
+}
+
+#[test]
+fn a_finite_invitation_backlog_progresses_beyond_the_whole_display_cache() {
+    let f = fixture(0);
+    let recipient = pull_seat(&f);
+    let inviter = check_in(
+        &f,
+        claim("x", "px", fourth(), "capacity-inviter", 0),
+        "capacity-inviter-ci",
+    );
+    let count = crate::delivery::ledger::MAX_INVITATION_DISPLAYS_PER_SEAT + 1;
+    canonical_lazy_invitation_backlog(&f, &recipient, &inviter, count, "capacity");
+
+    let mut saw_final = false;
+    let mut reached_quiet = false;
+    for _ in 0..40 {
+        match presentation_test_pull(&f, &recipient) {
+            crate::protocol::delivery::DeliveryPullReplyV2::Page(shown) => {
+                saw_final |= shown
+                    .text
+                    .contains(&format!("capacity-topic-{}", count - 1));
+                presentation_test_confirm(&f, &recipient, &shown);
+                assert!(shown.offered.is_empty());
+                assert!(shown.truncated.is_empty());
+            }
+            crate::protocol::delivery::DeliveryPullReplyV2::Unchanged { .. } => {
+                reached_quiet = true;
+                break;
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+    assert!(
+        saw_final,
+        "finite1025 backlog must display its last invitation before quiet"
+    );
+    assert!(reached_quiet, "whole context is not repeatedly flooded");
+    assert_eq!(f.db.query_row("SELECT count(*) FROM invitation_presentation_items WHERE seat_id='s' AND consumer='hook' AND complete_count=1",[],|r|r.get::<_,i64>(0)).unwrap(),count as i64,"every canonical context completed before quiet");
+    assert_eq!(f.db.query_row(
+        "SELECT count(*) FROM invitations WHERE seat_id='s' AND state='pending' AND confirmation='lazy'",
+        [], |r| r.get::<_, i64>(0),
+    ).unwrap(), count as i64);
+    assert_eq!(wake_attention(&f), 0);
+}
+
+#[test]
+fn a_departed_inviter_remains_actionable_after_whole_deadline_warning_until_acceptance() {
+    use crate::protocol::commands::{Accept, CreateThread, InvitationConfirmation, Invite, Leave};
+    let mut f = fixture(0);
+    let inviter = pull_seat(&f);
+    let recipient = check_in(
+        &f,
+        claim("x", "px", fourth(), "invited-recipient", 0),
+        "invited-recipient-ci",
+    );
+    let CommandResult::ThreadCreated(thread) = f
+        .service
+        .handle(
+            Command::CreateThread(CreateThread {
+                name: None,
+                topic: "inviter deadline origin".into(),
+                goal: "review".into(),
+                operation: OperationId::new("inviter-origin-create"),
+                claim: inviter.clone(),
+            }),
+            peer(),
+            &budget(),
+        )
+        .unwrap()
+    else {
+        panic!("not created")
+    };
+    let CommandResult::Invitation(invitation) = f
+        .service
+        .handle(
+            Command::Invite(Invite {
+                confirmation: Some(InvitationConfirmation::RequireAck),
+                thread: thread.clone(),
+                seat: recipient.seat.clone(),
+                deadline_millis: Some(1000),
+                operation: OperationId::new("inviter-origin-invite"),
+                claim: inviter.clone(),
+            }),
+            peer(),
+            &budget(),
+        )
+        .unwrap()
+    else {
+        panic!("not invited")
+    };
+    f.service
+        .handle(
+            Command::Leave(Leave {
+                thread: thread.clone(),
+                operation: OperationId::new("inviter-origin-leave"),
+                claim: inviter.clone(),
+            }),
+            peer(),
+            &budget(),
+        )
+        .unwrap();
+    let _ = pull(&f, &inviter, None);
+    f.clock.0.store(1_001_001, Ordering::SeqCst);
+    let context = StoreContext::new(f.directory.join("store.db"), f.clock.clone());
+    let expired =
+        crate::store::invitation_due::scan_invitation_due_batch(&context, &mut f.db, None, 100)
+            .unwrap();
+    assert_eq!(expired.warnings_added, 1);
+    let warning: String = f.db.query_row(
+        "SELECT open_warning_id FROM warning_conditions WHERE condition_kind='invitation' AND condition_id=?1",
+        [invitation.as_str()], |r| r.get(0),
+    ).unwrap();
+    while crate::store::materialization::advance_work(
+        &mut f.db,
+        &format!("work:{warning}"),
+        crate::ports::DurableWorkAdmission::new(16).unwrap(),
+        &budget(),
+        context.clock(),
+    )
+    .unwrap()
+    .has_more
+    {}
+    let first = page(pull(&f, &inviter, None));
+    assert!(first.text.contains("] attention "), "{}", first.text);
+    assert!(matches!(
+        pull(&f, &inviter, Some(first.attention_version)),
+        DeliveryPullReply::Unchanged { .. }
+    ));
+    assert_eq!(
+        f.store
+            .mod_seat_view(&inviter.seat, &budget())
+            .unwrap()
+            .unwrap()
+            .fingerprint
+            .other_pending,
+        1,
+        "whole display does not consume the original departed inviter's condition"
+    );
+    f.service
+        .handle(
+            Command::Accept(Accept {
+                thread,
+                operation: OperationId::new("inviter-origin-accept"),
+                claim: recipient,
+            }),
+            peer(),
+            &budget(),
+        )
+        .unwrap();
+    assert_eq!(
+        f.store
+            .mod_seat_view(&inviter.seat, &budget())
+            .unwrap()
+            .unwrap()
+            .fingerprint
+            .other_pending,
+        0
+    );
+    assert_eq!(f.db.query_row(
+        "SELECT count(*) FROM warning_conditions WHERE condition_kind='invitation' AND condition_id=?1 AND open_warning_id=?2 AND clear_warning_id IS NOT NULL",
+        params![invitation.as_str(), warning], |r| r.get::<_, i64>(0),
+    ).unwrap(), 1, "one immutable warning lifetime clears on actual acceptance");
+}
+
+#[test]
+fn presentation_v2_replays_one_canonical_invitation_until_emit_confirmation() {
+    use serde_json::json;
+    let mut f = fixture(0);
+    let recipient = pull_seat(&f);
+    let inviter = check_in(
+        &f,
+        claim("x", "px", fourth(), "v2-inviter", 0),
+        "v2-inviter-ci",
+    );
+    canonical_lazy_invitation_backlog(&f, &recipient, &inviter, 1, "durable-v2");
+    let wire = json!({"kind":"delivery_pull_v2","args":{
+        "claim":recipient,"consumer":"hook"
+    }});
+    let command = serde_json::from_value::<Command>(wire.clone());
+    assert!(
+        command.is_ok(),
+        "actual canonical service needs the V2 route: {command:?}"
+    );
+    let result = f
+        .service
+        .handle(command.unwrap(), peer(), &budget())
+        .unwrap();
+    let first = serde_json::to_value(result).unwrap();
+    assert_eq!(first["kind"], "delivery_pulled_v2");
+    assert_eq!(first["data"]["kind"], "page");
+    let page = &first["data"]["args"];
+    assert!(
+        page["text"]
+            .as_str()
+            .unwrap()
+            .contains("durable-v2-topic-0")
+    );
+    let token = page["presentation_token"].as_str().unwrap().to_owned();
+    assert_eq!(token.len(), 32);
+    assert_eq!(
+        f.db.query_row(
+            "SELECT count(*) FROM invitations WHERE state='pending'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+    // A lost reply and service restart cannot consume the invitation offer.
+    restart(&mut f);
+    let replay = f
+        .service
+        .handle(
+            serde_json::from_value(wire.clone()).unwrap(),
+            peer(),
+            &budget(),
+        )
+        .unwrap();
+    assert_eq!(serde_json::to_value(replay).unwrap(), first);
+    let wrong = json!({"kind":"delivery_presentation_confirm_v2","args":{
+        "claim":recipient,"consumer":"hook","token":"ffffffffffffffffffffffffffffffff"
+    }});
+    let wrong = f
+        .service
+        .handle(serde_json::from_value(wrong).unwrap(), peer(), &budget())
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(wrong).unwrap()["data"],
+        "not_current_page"
+    );
+    let confirmation = json!({"kind":"delivery_presentation_confirm_v2","args":{
+        "claim":recipient,"consumer":"hook","token":token
+    }});
+    let settled = f
+        .service
+        .handle(
+            serde_json::from_value(confirmation.clone()).unwrap(),
+            peer(),
+            &budget(),
+        )
+        .unwrap();
+    assert_eq!(serde_json::to_value(settled).unwrap()["data"], "confirmed");
+    let duplicate = f
+        .service
+        .handle(
+            serde_json::from_value(confirmation).unwrap(),
+            peer(),
+            &budget(),
+        )
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(duplicate).unwrap()["data"],
+        "already_confirmed"
+    );
+    assert_eq!(
+        f.db.query_row(
+            "SELECT count(*) FROM invitations WHERE state='pending'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1,
+        "presentation never accepts or ACKs"
+    );
+}
+
+#[test]
+fn canonical_invitation_context_coalesces_topic_changes_without_recipient_fanout() {
+    use crate::protocol::commands::SetTopic;
+    let f = fixture(0);
+    let recipient = pull_seat(&f);
+    let inviter = check_in(
+        &f,
+        claim("x", "px", fourth(), "context-inviter", 0),
+        "context-inviter-ci",
+    );
+    let thread = canonical_lazy_invitation_backlog(&f, &recipient, &inviter, 1, "context-source");
+    let original_wake = wake_attention(&f);
+    for (n, topic) in [(1, "first latest topic"), (2, "second latest topic")] {
+        f.service
+            .handle(
+                Command::SetTopic(SetTopic {
+                    thread: thread.clone(),
+                    topic: topic.into(),
+                    operation: OperationId::new(format!("context-topic-{n}")),
+                    claim: inviter.clone(),
+                }),
+                peer(),
+                &budget(),
+            )
+            .unwrap();
+    }
+    let projection = f.db.prepare("SELECT c.context_revision,c.last_change_seq,t.topic,t.topic_revision FROM invitation_context_latest c JOIN threads t ON t.id=c.thread_id WHERE c.instance_id='i' AND c.thread_id=?1");
+    assert!(
+        projection.is_ok(),
+        "canonical mutations need a durable latest-context projection: {:?}",
+        projection.as_ref().err()
+    );
+    let (revision, seq, topic, topic_revision): (i64, i64, String, i64) = projection
+        .unwrap()
+        .query_row([thread.as_str()], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+        })
+        .unwrap();
+    assert_eq!(topic, "second latest topic");
+    assert_eq!(topic_revision, 2);
+    assert!(revision >= 2);
+    assert!(seq > 0);
+    assert_eq!(
+        f.db.query_row(
+            "SELECT count(*) FROM invitation_context_latest WHERE thread_id=?1",
+            [thread.as_str()],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1,
+        "coalesced state stays one row per thread"
+    );
+    assert_eq!(
+        wake_attention(&f),
+        original_wake,
+        "passive topic changes do not wake"
+    );
+    let before: (i64, i64) = (revision, seq);
+    // Exact operation replay must not invent a new canonical change sequence.
+    f.service
+        .handle(
+            Command::SetTopic(SetTopic {
+                thread: thread.clone(),
+                topic: "second latest topic".into(),
+                operation: OperationId::new("context-topic-2"),
+                claim: inviter,
+            }),
+            peer(),
+            &budget(),
+        )
+        .unwrap();
+    assert_eq!(f.db.query_row("SELECT context_revision,last_change_seq FROM invitation_context_latest WHERE thread_id=?1", [thread.as_str()], |r| Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?))).unwrap(), before);
+}
+
+#[test]
+fn presentation_v2_resumes_control_heavy_ordinary_partial_without_changing_body_limit() {
+    let f = fixture(0);
+    let recipient = pull_seat(&f);
+    ordinary_message(&f, "partial-prefix", &"a".repeat(20000));
+    ordinary_message(&f, "partial-controls", &"\0".repeat(9000));
+    let first = presentation_test_pull(&f, &recipient);
+    assert!(matches!(
+        first,
+        crate::protocol::delivery::DeliveryPullReplyV2::Page(_)
+    ));
+    let partial:String=f.db.query_row("SELECT ordinary_partial FROM invitation_presentation_consumers WHERE seat_id='s' AND consumer='hook'",[],|r|r.get(0)).unwrap();
+    let partial: std::collections::HashMap<String, String> =
+        serde_json::from_str(&partial).unwrap();
+    let bytes = partial
+        .get("partial-controls")
+        .expect("real page split retained control bytes");
+    assert!(bytes.len() > 16384 / 6 && bytes.len() < WATCH_BODY_LIMIT_BYTES);
+    assert!(bytes.bytes().all(|b| b == 0));
+    let mut completed = false;
+    for _ in 0..4 {
+        if let crate::protocol::delivery::DeliveryPullReplyV2::Page(page) =
+            presentation_test_pull(&f, &recipient)
+            && page.truncated.contains(&MessageId::new("partial-controls"))
+        {
+            assert!(page.text.contains(&"\0".repeat(WATCH_BODY_LIMIT_BYTES)));
+            completed = true;
+            break;
+        }
+    }
+    assert!(completed, "partial resumes to inherited8KiB truncation");
+    assert_eq!(
+        f.db.query_row(
+            "SELECT count(*) FROM receipts WHERE state='pending'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        2,
+        "no synthetic ordinary ACK"
+    );
+}
+
+#[test]
+fn presentation_v2_keeps_truncated_ordinary_cursor_progress_across_quanta() {
+    let f = fixture(0);
+    let recipient = pull_seat(&f);
+    ordinary_message(&f, "multipage-ordinary", &"z".repeat(65536));
+    ordinary_message(&f, "after-multipage", "following ordinary body");
+    let crate::protocol::delivery::DeliveryPullReplyV2::Page(first) =
+        presentation_test_pull(&f, &recipient)
+    else {
+        panic!("first ordinary body missing")
+    };
+    assert_eq!(first.truncated, vec![MessageId::new("multipage-ordinary")]);
+    assert!(first.text.contains(&"z".repeat(WATCH_BODY_LIMIT_BYTES)));
+    let mut quiet = false;
+    let mut following = false;
+    for _ in 0..5 {
+        let next = presentation_test_pull(&f, &recipient);
+        if let crate::protocol::delivery::DeliveryPullReplyV2::Page(page) = &next {
+            assert!(
+                !page
+                    .truncated
+                    .contains(&MessageId::new("multipage-ordinary")),
+                "no repeated truncated body"
+            );
+            if page.offered.contains(&MessageId::new("after-multipage")) {
+                assert!(page.text.contains("following ordinary body"));
+                following = true;
+            }
+        }
+        if matches!(
+            next,
+            crate::protocol::delivery::DeliveryPullReplyV2::Unchanged { .. }
+        ) {
+            quiet = true;
+            break;
+        }
+    }
+    assert!(
+        following || first.offered.contains(&MessageId::new("after-multipage")),
+        "following fetched item retained"
+    );
+    assert!(
+        quiet,
+        "already displayed truncated body remainder advances without reassembly failure or repeated display"
+    );
+    assert_eq!(
+        f.db.query_row(
+            "SELECT state FROM receipts WHERE message_id='multipage-ordinary'",
+            [],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
+        "pending"
+    );
+}
+
+#[test]
+fn presentation_refresh_observes_lazy_context_and_removal_without_consuming_output() {
+    use crate::protocol::commands::{Accept, SetTopic};
+    let f = fixture(0);
+    let recipient = pull_seat(&f);
+    let inviter = check_in(
+        &f,
+        claim("x", "px", fourth(), "refresh-inviter", 0),
+        "refresh-inviter-ci",
+    );
+    let thread = canonical_lazy_invitation_backlog(&f, &recipient, &inviter, 3, "refresh");
+    let wake = wake_attention(&f);
+    let refresh = || {
+        f.store
+            .presentation_refresh(
+                &recipient.seat,
+                recipient.binding_generation,
+                recipient.native_session.as_str(),
+                &budget(),
+            )
+            .unwrap()
+            .expect("canonical bounded passive refresh available")
+    };
+    let mut initial = refresh();
+    for _ in 0..8 {
+        assert!(initial.context_visits <= 40 && initial.lifecycle_visits <= 20);
+        if !initial.more {
+            break;
+        }
+        initial = refresh();
+    }
+    assert!(initial.version > 0);
+    assert!(!initial.more);
+    let before = initial.version;
+    assert_eq!(refresh().version, before, "quiet content does not churn");
+    assert_eq!(f.db.query_row("SELECT initial_after FROM invitation_presentation_consumers WHERE seat_id='s' AND consumer='watch'",[],|r|r.get::<_,i64>(0)).unwrap(),0,"maintenance never consumes presentation discovery");
+    assert_eq!(f.db.query_row("SELECT count(*) FROM invitation_presentation_items WHERE seat_id='s' AND (complete_count!=0 OR partial_count!=0)",[],|r|r.get::<_,i64>(0)).unwrap(),0,"maintenance creates no display offers");
+    f.service
+        .handle(
+            Command::SetTopic(SetTopic {
+                thread: thread.clone(),
+                topic: "latest passive refresh topic".into(),
+                operation: OperationId::new("refresh-topic"),
+                claim: inviter,
+            }),
+            peer(),
+            &budget(),
+        )
+        .unwrap();
+    let changed = refresh();
+    assert!(changed.version > before);
+    assert_eq!(refresh().version, changed.version);
+    f.service
+        .handle(
+            Command::Accept(Accept {
+                thread,
+                operation: OperationId::new("refresh-accept"),
+                claim: recipient.clone(),
+            }),
+            peer(),
+            &budget(),
+        )
+        .unwrap();
+    let removed = refresh();
+    assert!(
+        removed.version > changed.version,
+        "removal invalidates passive content"
+    );
+    assert_eq!(refresh().version, removed.version);
+    assert_eq!(
+        wake_attention(&f),
+        wake,
+        "passive maintenance and lazy acceptance do not manufacture wake attention"
+    );
+}
+
+#[test]
+fn presentation_refresh_preserves_live_presentation_header_and_outbox_across_rebind() {
+    use crate::{
+        ports::PresentationInput,
+        protocol::delivery::{DeliveryPullReplyV2, DeliveryPullV2, PresentationConsumer},
+    };
+    let f = fixture(0);
+    let recipient = pull_seat(&f);
+    let inviter = check_in(
+        &f,
+        claim("x", "px", fourth(), "refresh-preserve-inviter", 0),
+        "refresh-preserve-ci",
+    );
+    canonical_lazy_invitation_backlog(&f, &recipient, &inviter, 1, "refresh-preserve");
+    let pull = |claim: CallerClaim| {
+        f.store
+            .presentation_pull(
+                PresentationInput {
+                    frozen_render: presentation_watch_frozen(&f, &claim),
+                    render_profile:
+                        crate::delivery::presentation::PresentationRenderProfile::WatchJsonLinesV1,
+                    pull: DeliveryPullV2 {
+                        claim,
+                        consumer: PresentationConsumer::Watch,
+                        render:
+                            crate::protocol::delivery::PresentationRenderRequest::WatchJsonLinesV1,
+                        presentation_lease: Some("0123456789abcdef0123456789abcdef".into()),
+                        marker_prefix: vec![],
+                    },
+                    attention_version: 0,
+                    ordinary_version: 0,
+                    with_attention: false,
+                    retry_messages: false,
+                    blocked_messages: vec![],
+                    known_messages: vec![],
+                    new_message_slots: 256,
+                },
+                &budget(),
+            )
+            .unwrap()
+            .reply
+    };
+    let DeliveryPullReplyV2::Page(first) = pull(recipient.clone()) else {
+        panic!("initial full context")
+    };
+    assert_eq!(presentation_invitations(&first).len(), 1);
+    assert!(!presentation_invitations(&first)[0].content.truncated);
+    let snapshot = || {
+        f.db.query_row("SELECT json_object('generation',generation,'execution',execution,'initial_after',initial_after,'initial_high',initial_high,'context_after_seq',context_after_seq,'revisit_after_bytes',revisit_after_bytes,'rotation',rotation,'outbox_token',outbox_token,'outbox_text',outbox_text,'outbox_descriptors',outbox_descriptors,'counters',(SELECT json_group_array(json_array(generation,execution,context_key,partial_count,complete_count,output_class)) FROM invitation_presentation_items WHERE seat_id='s' AND consumer='watch')) FROM invitation_presentation_consumers WHERE seat_id='s' AND consumer='watch'",[],|r|r.get::<_,String>(0)).unwrap()
+    };
+    let before = snapshot();
+    f.store
+        .presentation_refresh(
+            &recipient.seat,
+            recipient.binding_generation,
+            recipient.native_session.as_str(),
+            &budget(),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        snapshot(),
+        before,
+        "same-binding maintenance preserves allocation and replay"
+    );
+    let next = rotate(&f, &recipient, "refresh-new-native", 2);
+    assert_eq!(
+        snapshot(),
+        before,
+        "canonical rebind itself does not rewrite presentation rows"
+    );
+    f.store
+        .presentation_refresh(
+            &next.seat,
+            next.binding_generation,
+            next.native_session.as_str(),
+            &budget(),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        snapshot(),
+        before,
+        "maintenance must not perform presentation binding reset"
+    );
+    let DeliveryPullReplyV2::Page(fresh) = pull(next) else {
+        panic!("actual presentation owns reset and redisplays full context")
+    };
+    assert_eq!(presentation_invitations(&fresh).len(), 1);
+    assert!(!presentation_invitations(&fresh)[0].content.truncated);
+    assert_ne!(fresh.presentation_token, first.presentation_token);
+}
+
+#[test]
+fn presentation_refresh_stub_allows_actual_watch_full_offer_and_replaced_owner_replay() {
+    use crate::{
+        ports::{ModChannelSink, ModChannels, ModStoreReads},
+        protocol::{
+            delivery::{
+                DeliveryPresentationConfirmV2, DeliveryPresentationConfirmationV2,
+                DeliveryPullReplyV2, DeliveryPullV2, PresentationConsumer,
+            },
+            watch::{ModDeliverySetting, WatchFrame, WatchRequest},
+        },
+        service::mod_channels::ModChannelRegistry,
+    };
+    struct Sink;
+    impl ModChannelSink for Sink {
+        fn push(&self, _: WatchFrame) -> bool {
+            true
+        }
+    }
+    let mut f = fixture(0);
+    let recipient = check_in(
+        &f,
+        claim("c", "pc", Harness::Claude, "watch-full-context", 0),
+        "watch-full-ci",
+    );
+    let inviter = check_in(
+        &f,
+        claim("x", "px", fourth(), "watch-full-inviter", 0),
+        "watch-full-inviter-ci",
+    );
+    canonical_lazy_invitation_backlog(&f, &recipient, &inviter, 1, "watch-full");
+    let reads: Arc<dyn ModStoreReads> = f.store.clone();
+    let registry = Arc::new(ModChannelRegistry::new(
+        f.clock.clone(),
+        reads,
+        "i".into(),
+        Arc::new(|| {}),
+        ModDeliverySetting::On,
+    ));
+    f.service = DomainService::new("i".into(), f.store.clone(), f.clock.clone())
+        .with_cooperative_owner(501, Arc::new(FairWriter::new(32)))
+        .with_delivery_pull(f.state.clone())
+        .with_mod_channels(registry.clone());
+    let refresh = f
+        .store
+        .presentation_refresh(
+            &recipient.seat,
+            recipient.binding_generation,
+            recipient.native_session.as_str(),
+            &budget(),
+        )
+        .unwrap()
+        .unwrap();
+    assert!(refresh.version > 0);
+    let (first, _) = f
+        .service
+        .watch_register(
+            &WatchRequest {
+                claim: recipient.clone(),
+            },
+            Arc::new(Sink),
+            &budget(),
+        )
+        .unwrap();
+    let old = registry.presentation_lease(first).unwrap();
+    let pull = |lease: String| match f
+        .service
+        .handle(
+            Command::DeliveryPullV2(DeliveryPullV2 {
+                claim: recipient.clone(),
+                consumer: PresentationConsumer::Watch,
+                render: crate::protocol::delivery::PresentationRenderRequest::WatchJsonLinesV1,
+                presentation_lease: Some(lease),
+                marker_prefix: vec![],
+            }),
+            peer(),
+            &budget(),
+        )
+        .unwrap()
+    {
+        CommandResult::DeliveryPulledV2(reply) => reply,
+        other => panic!("{other:?}"),
+    };
+    let DeliveryPullReplyV2::Page(full) = pull(old.clone()) else {
+        panic!("mod-only stub must not hide first full output")
+    };
+    assert_eq!(presentation_invitations(&full).len(), 1);
+    assert!(!presentation_invitations(&full)[0].content.truncated);
+    assert!(
+        presentation_invitations(&full)[0]
+            .content
+            .body
+            .contains("review")
+    );
+    let (second, _) = f
+        .service
+        .watch_register(
+            &WatchRequest {
+                claim: recipient.clone(),
+            },
+            Arc::new(Sink),
+            &budget(),
+        )
+        .unwrap();
+    let new = registry.presentation_lease(second).unwrap();
+    let DeliveryPullReplyV2::Page(replay) = pull(new.clone()) else {
+        panic!("replacement reuses current outbox")
+    };
+    assert_eq!(replay, full);
+    let confirm = |lease: String| {
+        f.service
+            .handle(
+                Command::DeliveryPresentationConfirmV2(DeliveryPresentationConfirmV2 {
+                    claim: recipient.clone(),
+                    consumer: PresentationConsumer::Watch,
+                    token: full.presentation_token.clone().unwrap(),
+                    emitted_controls: full.emitted_controls.clone(),
+                    presentation_lease: Some(lease),
+                }),
+                peer(),
+                &budget(),
+            )
+            .unwrap()
+    };
+    assert!(matches!(
+        confirm(old),
+        CommandResult::DeliveryPresentationConfirmedV2(
+            crate::protocol::delivery::DeliveryPresentationConfirmationReplyV2 {
+                status: DeliveryPresentationConfirmationV2::StaleBinding,
+                ..
+            }
+        )
+    ));
+    assert!(matches!(
+        confirm(new),
+        CommandResult::DeliveryPresentationConfirmedV2(
+            crate::protocol::delivery::DeliveryPresentationConfirmationReplyV2 {
+                status: DeliveryPresentationConfirmationV2::Confirmed,
+                ..
+            }
+        )
+    ));
+    assert_eq!(
+        f.db.query_row(
+            "SELECT count(*) FROM invitations WHERE seat_id='c' AND state='pending'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1,
+        "no invitation acceptance or fake ACK"
+    );
+}
+
+#[test]
+fn presentation_final_watch_codec_counts_escaped_canonical_invitation_batch() {
+    use crate::{
+        ports::PresentationInput,
+        protocol::{
+            commands::{CreateThread, InvitationConfirmation, Invite},
+            delivery::{DeliveryPullReplyV2, DeliveryPullV2, PresentationConsumer},
+            watch::{WatchItem, WatchLine},
+        },
+    };
+    let f = fixture(0);
+    let recipient = pull_seat(&f);
+    let inviter = check_in(
+        &f,
+        claim("x", "px", fourth(), "watch-frame-inviter", 0),
+        "watch-frame-ci",
+    );
+    let topic = "\0".repeat(300);
+    let goal = "\0".repeat(300);
+    for n in 0..24 {
+        let CommandResult::ThreadCreated(thread) = f
+            .service
+            .handle(
+                Command::CreateThread(CreateThread {
+                    name: None,
+                    topic: topic.clone(),
+                    goal: goal.clone(),
+                    operation: OperationId::new(format!("watch-frame-create-{n}")),
+                    claim: inviter.clone(),
+                }),
+                peer(),
+                &budget(),
+            )
+            .unwrap()
+        else {
+            panic!("canonical thread")
+        };
+        f.service
+            .handle(
+                Command::Invite(Invite {
+                    confirmation: Some(InvitationConfirmation::Lazy),
+                    thread,
+                    seat: recipient.seat.clone(),
+                    deadline_millis: None,
+                    operation: OperationId::new(format!("watch-frame-invite-{n}")),
+                    claim: inviter.clone(),
+                }),
+                peer(),
+                &budget(),
+            )
+            .unwrap();
+    }
+    let wake = wake_attention(&f);
+    let mut displayed = std::collections::HashSet::new();
+    for _ in 0..24 {
+        let result = f
+            .store
+            .presentation_pull(
+                PresentationInput {
+                    frozen_render: presentation_watch_frozen(&f, &recipient),
+                    render_profile:
+                        crate::delivery::presentation::PresentationRenderProfile::WatchJsonLinesV1,
+                    pull: DeliveryPullV2 {
+                        claim: recipient.clone(),
+                        consumer: PresentationConsumer::Watch,
+                        render:
+                            crate::protocol::delivery::PresentationRenderRequest::WatchJsonLinesV1,
+                        presentation_lease: Some("0123456789abcdef0123456789abcdef".into()),
+                        marker_prefix: vec![],
+                    },
+                    attention_version: 0,
+                    ordinary_version: 0,
+                    with_attention: false,
+                    retry_messages: false,
+                    blocked_messages: vec![],
+                    known_messages: vec![],
+                    new_message_slots: 256,
+                },
+                &budget(),
+            )
+            .unwrap();
+        let DeliveryPullReplyV2::Page(page) = result.reply else {
+            break;
+        };
+        let mut final_bytes = 0;
+        for item in &presentation_invitations(&page) {
+            assert!(!item.content.truncated, "standalone full context fits");
+            assert_eq!(
+                item.content.body.matches(&topic).count(),
+                2,
+                "exact canonical topic and goal preserved"
+            );
+            final_bytes += serde_json::to_vec(&WatchLine::new(
+                format!("invitation:{}", item.id.as_str()),
+                WatchItem::Invitation(item.content.clone()),
+            ))
+            .unwrap()
+            .len()
+                + 1;
+            displayed.insert(item.id.clone());
+        }
+        assert!(
+            final_bytes <= 65536,
+            "final Watch JSON-lines batch is {final_bytes} bytes"
+        );
+        if let Some(token) = page.presentation_token {
+            let result = f
+                .store
+                .presentation_confirm(
+                    &crate::protocol::delivery::DeliveryPresentationConfirmV2 {
+                        claim: recipient.clone(),
+                        consumer: PresentationConsumer::Watch,
+                        token,
+                        presentation_lease: Some("0123456789abcdef0123456789abcdef".into()),
+                        emitted_controls: page.emitted_controls,
+                    },
+                    &budget(),
+                )
+                .unwrap();
+            assert!(matches!(result.status,crate::protocol::delivery::DeliveryPresentationConfirmationV2::Confirmed|crate::protocol::delivery::DeliveryPresentationConfirmationV2::AlreadyConfirmed));
+        }
+    }
+    assert_eq!(
+        displayed.len(),
+        24,
+        "every canonical invitation eventually full"
+    );
+    assert_eq!(
+        wake_attention(&f),
+        wake,
+        "lazy output never creates wake work"
+    );
+    assert_eq!(
+        f.db.query_row(
+            "SELECT count(*) FROM invitations WHERE seat_id='s' AND state='pending'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        24
+    );
+}
+
+#[test]
+fn presentation_final_cleanup_preserves_passive_removal_observation() {
+    use crate::{
+        ports::PresentationInput,
+        protocol::{
+            commands::Accept,
+            delivery::{DeliveryPullV2, PresentationConsumer},
+        },
+    };
+    let f = fixture(0);
+    let recipient = pull_seat(&f);
+    let inviter = check_in(
+        &f,
+        claim("x", "px", fourth(), "cleanup-inviter", 0),
+        "cleanup-ci",
+    );
+    let thread = canonical_lazy_invitation_backlog(&f, &recipient, &inviter, 1, "cleanup-order");
+    let refresh = || {
+        f.store
+            .presentation_refresh(
+                &recipient.seat,
+                recipient.binding_generation,
+                recipient.native_session.as_str(),
+                &budget(),
+            )
+            .unwrap()
+            .unwrap()
+    };
+    let initial = refresh();
+    assert!(initial.version > 0);
+    f.service
+        .handle(
+            Command::Accept(Accept {
+                thread,
+                operation: OperationId::new("cleanup-accept"),
+                claim: recipient.clone(),
+            }),
+            peer(),
+            &budget(),
+        )
+        .unwrap();
+    // Presentation cleanup wins the race with passive maintenance.
+    f.store
+        .presentation_pull(
+            PresentationInput {
+                frozen_render: presentation_watch_frozen(&f, &recipient),
+                render_profile:
+                    crate::delivery::presentation::PresentationRenderProfile::WatchJsonLinesV1,
+                pull: DeliveryPullV2 {
+                    claim: recipient.clone(),
+                    consumer: PresentationConsumer::Watch,
+                    render: crate::protocol::delivery::PresentationRenderRequest::WatchJsonLinesV1,
+                    presentation_lease: Some("0123456789abcdef0123456789abcdef".into()),
+                    marker_prefix: vec![],
+                },
+                attention_version: 0,
+                ordinary_version: 0,
+                with_attention: false,
+                retry_messages: false,
+                blocked_messages: vec![],
+                known_messages: vec![],
+                new_message_slots: 256,
+            },
+            &budget(),
+        )
+        .unwrap();
+    let removed = refresh();
+    assert!(
+        removed.version > initial.version,
+        "removal must invalidate passive content even after presentation cleanup"
+    );
+    assert_eq!(refresh().version, removed.version, "removal observed once");
+    assert_eq!(f.db.query_row("SELECT count(*) FROM invitation_presentation_items WHERE seat_id='s' AND consumer='watch'",[],|r|r.get::<_,i64>(0)).unwrap(),0,"settled current row is reclaimed");
+}
+
+#[test]
+fn presentation_registry_pass_drives_bounded_passive_refresh_before_full_pull() {
+    use crate::{
+        ports::{ModChannelSink, ModChannels, ModStoreReads},
+        protocol::{
+            delivery::{DeliveryPullReplyV2, DeliveryPullV2, PresentationConsumer},
+            watch::{ModDeliverySetting, WatchFrame, WatchRequest},
+        },
+        service::mod_channels::ModChannelRegistry,
+    };
+    #[derive(Default)]
+    struct Sink(std::sync::Mutex<Vec<WatchFrame>>);
+    impl ModChannelSink for Sink {
+        fn push(&self, frame: WatchFrame) -> bool {
+            self.0.lock().unwrap().push(frame);
+            true
+        }
+    }
+    let mut f = fixture(0);
+    let recipient = check_in(
+        &f,
+        claim("c", "pc", Harness::Claude, "registry-refresh", 0),
+        "registry-refresh-ci",
+    );
+    let inviter = check_in(
+        &f,
+        claim("x", "px", fourth(), "registry-refresh-inviter", 0),
+        "registry-refresh-inviter-ci",
+    );
+    let reads: Arc<dyn ModStoreReads> = f.store.clone();
+    let registry = Arc::new(ModChannelRegistry::new(
+        f.clock.clone(),
+        reads,
+        "i".into(),
+        Arc::new(|| {}),
+        ModDeliverySetting::On,
+    ));
+    f.service = DomainService::new("i".into(), f.store.clone(), f.clock.clone())
+        .with_cooperative_owner(501, Arc::new(FairWriter::new(32)))
+        .with_delivery_pull(f.state.clone())
+        .with_mod_channels(registry.clone());
+    let sink = Arc::new(Sink::default());
+    let (channel, _) = f
+        .service
+        .watch_register(
+            &WatchRequest {
+                claim: recipient.clone(),
+            },
+            sink.clone(),
+            &budget(),
+        )
+        .unwrap();
+    registry.pass(UtcMillis(0)).unwrap();
+    sink.0.lock().unwrap().clear();
+    canonical_lazy_invitation_backlog(&f, &recipient, &inviter, 1, "registry-refresh");
+    registry.pass(UtcMillis(1)).unwrap();
+    let version:i64=f.db.query_row("SELECT COALESCE((SELECT mod_version FROM invitation_presentation_consumers WHERE seat_id='c' AND consumer='watch'),0)",[],|r|r.get(0)).unwrap();
+    assert!(
+        version > 0,
+        "actual registry worker must drive independent canonical maintenance"
+    );
+    let frames = sink.0.lock().unwrap().clone();
+    assert!(
+        matches!(frames.as_slice(), [WatchFrame::Attention { .. }]),
+        "passive arrival requests exactly one in-turn drain: {frames:?}"
+    );
+    registry.pass(UtcMillis(2)).unwrap();
+    assert_eq!(
+        *sink.0.lock().unwrap(),
+        frames,
+        "quiet maintenance does not flood context"
+    );
+    assert_eq!(f.db.query_row("SELECT initial_after FROM invitation_presentation_consumers WHERE seat_id='c' AND consumer='watch'",[],|r|r.get::<_,i64>(0)).unwrap(),0,"worker has not consumed presentation discovery");
+    let lease = registry.presentation_lease(channel).unwrap();
+    let result = f
+        .service
+        .handle(
+            Command::DeliveryPullV2(DeliveryPullV2 {
+                claim: recipient,
+                consumer: PresentationConsumer::Watch,
+                render: crate::protocol::delivery::PresentationRenderRequest::WatchJsonLinesV1,
+                presentation_lease: Some(lease),
+                marker_prefix: vec![],
+            }),
+            peer(),
+            &budget(),
+        )
+        .unwrap();
+    let CommandResult::DeliveryPulledV2(DeliveryPullReplyV2::Page(page)) = result else {
+        panic!("actual full pull")
+    };
+    assert_eq!(presentation_invitations(&page).len(), 1);
+    assert!(!presentation_invitations(&page)[0].content.truncated);
+    assert!(
+        presentation_invitations(&page)[0]
+            .content
+            .body
+            .contains("goal: review")
+    );
+}
+
+#[test]
+fn presentation_private_partial_guards_reject_corrupt_supported_shapes() {
+    use crate::protocol::results::ErrorCode;
+    let cases = [
+        (
+            "cardinality",
+            serde_json::json!({"one":"a","two":"b"}).to_string(),
+        ),
+        (
+            "raw-limit",
+            serde_json::json!({"raw":"\0".repeat(8192)}).to_string(),
+        ),
+        ("invalid-id", serde_json::json!({"é":"x"}).to_string()),
+        (
+            "serialized-limit",
+            serde_json::json!({"raw":"\0".repeat(9000)}).to_string(),
+        ),
+        ("invalid-json", "not-json".into()),
+    ];
+    for (label, partial) in cases {
+        let f = fixture(0);
+        let recipient = pull_seat(&f);
+        presentation_test_pull(&f, &recipient);
+        // Deliberate local corruption exercises canonical checked reads even
+        // when an operator/older writer bypassed the schema's storage guard.
+        f.db.execute_batch("PRAGMA ignore_check_constraints=ON")
+            .unwrap();
+        f.db.execute("UPDATE invitation_presentation_consumers SET ordinary_partial=?1,ordinary_done=0,ordinary_cursor=NULL WHERE seat_id='s' AND consumer='hook'",[partial]).unwrap();
+        f.db.execute_batch("PRAGMA ignore_check_constraints=OFF")
+            .unwrap();
+        let error = f
+            .service
+            .handle(
+                Command::DeliveryPullV2(crate::protocol::delivery::DeliveryPullV2 {
+                    claim: recipient,
+                    consumer: crate::protocol::delivery::PresentationConsumer::Hook,
+                    render: crate::protocol::delivery::PresentationRenderRequest::Hook {
+                        confirmable_selector: 0,
+                        passive_selector: 0,
+                    },
+                    presentation_lease: None,
+                    marker_prefix: vec![],
+                }),
+                peer(),
+                &budget(),
+            )
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::StoreCorrupt, "{label}: {error:?}");
+        assert!(f.db.query_row("SELECT outbox_token IS NULL FROM invitation_presentation_consumers WHERE seat_id='s' AND consumer='hook'",[],|r|r.get::<_,bool>(0)).unwrap(),"failed allocation has no token");
+    }
+}
+
+#[test]
+fn presentation_private_skipped_body_requires_exact_retained_cursor() {
+    use crate::protocol::results::ErrorCode;
+    let f = fixture(0);
+    let recipient = pull_seat(&f);
+    presentation_test_pull(&f, &recipient);
+    f.db.execute("UPDATE invitation_presentation_consumers SET ordinary_skip_body='missing-body',ordinary_done=0,ordinary_cursor=NULL WHERE seat_id='s' AND consumer='hook'",[]).unwrap();
+    let error = f
+        .service
+        .handle(
+            Command::DeliveryPullV2(crate::protocol::delivery::DeliveryPullV2 {
+                claim: recipient,
+                consumer: crate::protocol::delivery::PresentationConsumer::Hook,
+                render: crate::protocol::delivery::PresentationRenderRequest::Hook {
+                    confirmable_selector: 0,
+                    passive_selector: 0,
+                },
+                presentation_lease: None,
+                marker_prefix: vec![],
+            }),
+            peer(),
+            &budget(),
+        )
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::StoreCorrupt);
+    assert!(error.detail.contains("skipped body cursor"));
+}
+
+#[test]
+fn presentation_ordinary_carry_survives_completed_control_partial_and_invitation_priority() {
+    use crate::protocol::delivery::{DeliveryPullReplyV2, DeliveryPullV2, PresentationConsumer};
+    let f = fixture(0);
+    let recipient = pull_seat(&f);
+    ordinary_message(&f, "carry-prefix", &"a".repeat(20000));
+    ordinary_message(&f, "carry-controls", &"\0".repeat(9000));
+    for n in 0..6 {
+        ordinary_message(&f, &format!("carry-after-{n}"), &"b".repeat(8192));
+    }
+    let first = presentation_test_pull(&f, &recipient);
+    assert!(matches!(first, DeliveryPullReplyV2::Page(_)));
+    let partial:String=f.db.query_row("SELECT ordinary_partial FROM invitation_presentation_consumers WHERE seat_id='s' AND consumer='hook'",[],|r|r.get(0)).unwrap();
+    let partial: std::collections::HashMap<String, String> =
+        serde_json::from_str(&partial).unwrap();
+    assert!(
+        partial.contains_key("carry-controls"),
+        "actual query split retains control-heavy partial"
+    );
+    let inviter = check_in(
+        &f,
+        claim("x", "px", fourth(), "carry-inviter", 0),
+        "carry-inviter-ci",
+    );
+    canonical_lazy_invitation_backlog(&f, &recipient, &inviter, 24, "carry-priority");
+    let prefix = vec!["p".repeat(4096)];
+    let mut seen = std::collections::HashSet::new();
+    for _ in 0..24 {
+        let result=f.service.handle(Command::DeliveryPullV2(DeliveryPullV2{claim:recipient.clone(),consumer:PresentationConsumer::Hook,render:crate::protocol::delivery::PresentationRenderRequest::Hook{confirmable_selector:0,passive_selector:0},presentation_lease:None,marker_prefix:prefix.clone()}),peer(),&budget()).expect("valid bounded ordinary query plus prior partial must persist withheld ordinary items");
+        let CommandResult::DeliveryPulledV2(reply) = result else {
+            panic!("pull result")
+        };
+        let DeliveryPullReplyV2::Page(page) = reply else {
+            break;
+        };
+        for id in page.offered.iter().chain(&page.truncated) {
+            seen.insert(id.as_str().to_owned());
+        }
+        presentation_test_confirm(&f, &recipient, &page);
+    }
+    assert!(
+        seen.contains("carry-controls"),
+        "completed partial eventually presents inherited truncated body"
+    );
+    for n in 0..6 {
+        assert!(
+            seen.contains(&format!("carry-after-{n}")),
+            "following fetched ordinary item retained"
+        );
+    }
+    assert_eq!(
+        f.db.query_row(
+            "SELECT count(*) FROM receipts WHERE state='pending'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        8,
+        "presentation is no ACK"
+    );
+}
+
+#[test]
+fn presentation_raw_carry_serializer_accounting_witness() {
+    use crate::{
+        delivery::{Assembled, Assembler},
+        protocol::{
+            ids::{MessageId, SeatId, ThreadId},
+            results::InboxBatchV2Item,
+        },
+    };
+    let prefix = vec!["\0".repeat(4096)];
+    assert_eq!(serde_json::to_vec(&prefix).unwrap().len(), 24580);
+    // Eight arguments maximize independent quote/comma overhead at fixed raw bytes.
+    let max_prefix = vec!["\0".repeat(512); 8];
+    assert_eq!(serde_json::to_vec(&max_prefix).unwrap().len(), 24601);
+    let mut max_delta = 0isize;
+    for topic in [
+        "".into(),
+        "x".repeat(121),
+        "é".repeat(121),
+        "\0".repeat(121),
+        "\"".repeat(121),
+        "\u{2028}".repeat(121),
+    ] {
+        for lazy in [false, true] {
+            let message = MessageId::parse("\"".repeat(128)).unwrap();
+            let sender = Some(SeatId::parse("\"".repeat(128)).unwrap());
+            let item = if lazy {
+                InboxBatchV2Item::LazyMessage {
+                    thread: ThreadId::parse("t").unwrap(),
+                    topic_data: topic.clone(),
+                    message: message.clone(),
+                    sequence: 1,
+                    sender: sender.clone(),
+                    author_role: None,
+                    relays_user: false,
+                    user_intent: None,
+                    author_role_backfilled: false,
+                    body: "\0".repeat(8192),
+                    body_start: 0,
+                    body_end: 8192,
+                    body_len: 8193,
+                    wakes: false,
+                }
+            } else {
+                InboxBatchV2Item::Message {
+                    thread: ThreadId::parse("t").unwrap(),
+                    topic_data: topic.clone(),
+                    message: message.clone(),
+                    sequence: 1,
+                    sender: sender.clone(),
+                    author_role: None,
+                    relays_user: false,
+                    user_intent: None,
+                    author_role_backfilled: false,
+                    body: "\0".repeat(8192),
+                    body_start: 0,
+                    body_end: 8192,
+                    body_len: 8193,
+                    ack_candidate: None,
+                }
+            };
+            let source_len = serde_json::to_vec(&item).unwrap().len();
+            let mut assembler = Assembler::new(None).with_command_prefix(prefix.clone());
+            let Assembled::Item(mut assembled) = assembler.push(item).unwrap() else {
+                panic!("completed supported chunk")
+            };
+            let marker = crate::protocol::watch::truncation_marker_for(&prefix, &message, lazy);
+            assert!(assembled.message.truncated);
+            assembled.message.body = assembled
+                .message
+                .body
+                .strip_suffix(&marker)
+                .expect("producer-owned exact generated marker")
+                .to_owned();
+            assert_eq!(assembled.message.body, "\0".repeat(8192));
+            let raw = serde_json::json!({"marker_lazy":lazy,"content":{"id":message,"lazy":lazy,"content":assembled.message}});
+            let delta = serde_json::to_vec(&raw).unwrap().len() as isize - source_len as isize;
+            max_delta = max_delta.max(delta);
+            assert!(delta <= 512, "metadata delta {delta}");
+        }
+    }
+    // Page bytes + one prior raw partial + per-item metadata + one prefix + shell.
+    let derived = 65536 + 6 * (8192 - 1) + 32 * 512 + 24601 + 64;
+    assert_eq!(derived, 155731);
+    eprintln!("raw carry metadata witness max_delta={max_delta}, derived_cap={derived}");
+}
+
+#[test]
+fn presentation_current_handler_derives_timed_invitation_attention() {
+    use crate::protocol::commands::{CreateThread, InvitationConfirmation, Invite};
+    let f = fixture(0);
+    let recipient = pull_seat(&f);
+    let inviter = check_in(
+        &f,
+        claim("x", "px", fourth(), "relevance-inviter", 0),
+        "relevance-inviter-ci",
+    );
+    let CommandResult::ThreadCreated(thread) = f
+        .service
+        .handle(
+            Command::CreateThread(CreateThread {
+                name: None,
+                topic: "timed invitation".into(),
+                goal: "review".into(),
+                operation: OperationId::new("relevance-thread"),
+                claim: inviter.clone(),
+            }),
+            peer(),
+            &budget(),
+        )
+        .unwrap()
+    else {
+        panic!("thread")
+    };
+    f.service
+        .handle(
+            Command::Invite(Invite {
+                confirmation: Some(InvitationConfirmation::RequireAck),
+                thread,
+                seat: recipient.seat.clone(),
+                deadline_millis: Some(1000),
+                operation: OperationId::new("relevance-invite"),
+                claim: inviter,
+            }),
+            peer(),
+            &budget(),
+        )
+        .unwrap();
+    let crate::protocol::delivery::DeliveryPullReplyV2::Page(page) =
+        presentation_test_pull(&f, &recipient)
+    else {
+        panic!("actual pending invitation page")
+    };
+    assert!(
+        page.text.contains("[herdr-threads] attention "),
+        "actual handler must derive canonical confirming invitation relevance, not digest-free placeholder metadata: {}",
+        page.text
+    );
+}
+
+#[test]
+fn presentation_promoted_lazy_raw_carry_survives_restart_with_frozen_prefix() {
+    use crate::protocol::delivery::{
+        DeliveryPullReplyV2, DeliveryPullV2, PresentationConsumer, PresentationItemV2,
+        PresentationRenderRequest,
+    };
+    let mut f = fixture(0);
+    let recipient = pull_seat(&f);
+    f.db.execute("UPDATE seats SET wake_on='all' WHERE id='s'", [])
+        .unwrap();
+    let inviter = check_in(
+        &f,
+        claim("x", "px", fourth(), "promoted-carry-inviter", 0),
+        "promoted-carry-ci",
+    );
+    canonical_lazy_invitation_backlog(&f, &recipient, &inviter, 1, "promoted-baseline");
+    let DeliveryPullReplyV2::Page(baseline) = presentation_test_pull(&f, &recipient) else {
+        panic!("baseline invitation")
+    };
+    presentation_test_confirm(&f, &recipient, &baseline);
+    canonical_lazy_invitation_backlog(&f, &recipient, &inviter, 24, "promoted-priority");
+    lazy_message(&f, "msg-promoted-carry", &"\0".repeat(9000));
+    let old_prefix = vec!["p".repeat(4096)];
+    let pull = |f: &Fixture, prefix: Vec<String>| match f
+        .service
+        .handle(
+            Command::DeliveryPullV2(DeliveryPullV2 {
+                claim: recipient.clone(),
+                consumer: PresentationConsumer::Hook,
+                render: PresentationRenderRequest::Hook {
+                    confirmable_selector: 0,
+                    passive_selector: 0,
+                },
+                presentation_lease: None,
+                marker_prefix: prefix,
+            }),
+            peer(),
+            &budget(),
+        )
+        .unwrap()
+    {
+        CommandResult::DeliveryPulledV2(reply) => reply,
+        other => panic!("{other:?}"),
+    };
+    let DeliveryPullReplyV2::Page(first) = pull(&f, old_prefix.clone()) else {
+        panic!("priority page")
+    };
+    let json:String=f.db.query_row("SELECT ordinary_pending FROM invitation_presentation_consumers WHERE seat_id='s' AND consumer='hook'",[],|r|r.get(0)).unwrap();
+    let carry: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(carry["prefix"], serde_json::json!(old_prefix));
+    let row = carry["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|v| v["content"]["id"] == "msg-promoted-carry")
+        .expect("actual promoted lazy withheld carry");
+    assert_eq!(row["marker_lazy"], true);
+    assert_eq!(
+        row["content"]["lazy"], false,
+        "promotion changes output type only"
+    );
+    assert_eq!(row["content"]["content"]["body"], "\0".repeat(8192));
+    presentation_test_confirm(&f, &recipient, &first);
+    restart(&mut f);
+    let mut emitted = None;
+    for _ in 0..24 {
+        let DeliveryPullReplyV2::Page(page) = pull(&f, vec!["new-prefix".into()]) else {
+            break;
+        };
+        for item in &page.items {
+            if let PresentationItemV2::Message { id, lazy, content } = item
+                && id.as_str() == "msg-promoted-carry"
+            {
+                assert!(!lazy);
+                emitted = Some(content.body.clone());
+            }
+        }
+        presentation_test_confirm(&f, &recipient, &page);
+        if emitted.is_some() {
+            break;
+        }
+    }
+    let expected = format!(
+        "{}{}",
+        "\0".repeat(8192),
+        crate::protocol::watch::truncation_marker_for(
+            &old_prefix,
+            &MessageId::new("msg-promoted-carry"),
+            true
+        )
+    );
+    assert_eq!(
+        emitted,
+        Some(expected),
+        "restart and new request prefix preserve original presentation bytes"
+    );
+    assert_eq!(
+        lazy_state(&f, "msg-promoted-carry"),
+        "pending",
+        "presentation is no lazy completion"
+    );
+    assert_eq!(
+        f.db.query_row(
+            "SELECT count(*) FROM receipts WHERE message_id='msg-promoted-carry'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+}
+
+// Private fixed-state transition coverage; actual canonical Attention allocation
+// is separately exercised by the current-handler relevance regression.
+#[test]
+fn presentation_confirmation_preserves_original_slots_and_exact_subsets_on_restart() {
+    use crate::protocol::delivery::{
+        DeliveryPresentationConfirmV2, DeliveryPresentationConfirmationV2 as Status,
+        PresentationConsumer, PresentationControlStampV2 as Stamp, PresentationItemV2 as Item,
+    };
+    let mut f = fixture(0);
+    let recipient = pull_seat(&f);
+    let inviter = check_in(
+        &f,
+        claim("x", "px", fourth(), "confirm-slot-inviter", 0),
+        "confirm-slot-ci",
+    );
+    canonical_lazy_invitation_backlog(&f, &recipient, &inviter, 1, "confirm-slot");
+    let crate::protocol::delivery::DeliveryPullReplyV2::Page(page) =
+        presentation_test_pull(&f, &recipient)
+    else {
+        panic!("canonical invitation page")
+    };
+    let token = page.presentation_token.clone().unwrap();
+    let mut descriptors:serde_json::Value=serde_json::from_str(&f.db.query_row("SELECT outbox_descriptors FROM invitation_presentation_consumers WHERE seat_id='s' AND consumer='hook'",[],|r|r.get::<_,String>(0)).unwrap()).unwrap();
+    let attention = Stamp::Attention {
+        epoch: "1".into(),
+        version: 9,
+    };
+    descriptors.as_array_mut().unwrap().push(serde_json::json!({"item":Item::Attention{epoch:"1".into(),attention_version:9,text:"ht inbox".into()},"context_key":null}));
+    let controls = serde_json::json!({"counter":"1","last_exact":true,"active_epoch":"1","allocated_attention":attention});
+    f.db.execute("UPDATE invitation_presentation_consumers SET outbox_descriptors=?1,control_state=?2 WHERE seat_id='s' AND consumer='hook'",rusqlite::params![descriptors.to_string(),controls.to_string()]).unwrap();
+    let confirm = |f: &Fixture, stamps: Vec<Stamp>| {
+        f.store.presentation_confirm(
+            &DeliveryPresentationConfirmV2 {
+                claim: recipient.clone(),
+                consumer: PresentationConsumer::Hook,
+                token: token.clone(),
+                presentation_lease: None,
+                emitted_controls: stamps,
+            },
+            &budget(),
+        )
+    };
+    let before=f.db.query_row("SELECT outbox_descriptors||control_state||outbox_retired_mask FROM invitation_presentation_consumers WHERE seat_id='s' AND consumer='hook'",[],|r|r.get::<_,String>(0)).unwrap();
+    for stamps in [
+        vec![Stamp::Attention {
+            epoch: "1".into(),
+            version: 10,
+        }],
+        vec![attention.clone(), attention.clone()],
+    ] {
+        assert!(confirm(&f, stamps).is_err());
+        assert_eq!(f.db.query_row("SELECT outbox_descriptors||control_state||outbox_retired_mask FROM invitation_presentation_consumers WHERE seat_id='s' AND consumer='hook'",[],|r|r.get::<_,String>(0)).unwrap(),before,"invalid subset has no effects");
+    }
+    let first = confirm(&f, vec![]).unwrap();
+    assert_eq!(first.status, Status::Confirmed);
+    assert!(first.acknowledged_controls.is_empty());
+    let retained=f.db.query_row("SELECT outbox_token,outbox_descriptors,outbox_retired_mask,outbox_confirmed_mask FROM invitation_presentation_consumers WHERE seat_id='s' AND consumer='hook'",[],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?))).unwrap();
+    assert_eq!(
+        retained,
+        (token.clone(), descriptors.to_string(), 1, 1),
+        "slot1 survives original slot0 retirement without compaction"
+    );
+    restart(&mut f);
+    assert_eq!(
+        confirm(&f, vec![]).unwrap().status,
+        Status::AlreadyConfirmed,
+        "old empty completion cannot consume newly visible control"
+    );
+    let exact = confirm(&f, vec![attention.clone()]).unwrap();
+    assert_eq!(exact.status, Status::Confirmed);
+    assert_eq!(exact.acknowledged_controls, vec![attention.clone()]);
+    let retry = confirm(&f, vec![attention.clone()]).unwrap();
+    assert_eq!(retry.status, Status::AlreadyConfirmed);
+    assert_eq!(retry.acknowledged_controls, vec![attention.clone()]);
+    f.db.execute("UPDATE invitation_presentation_consumers SET control_state=?1 WHERE seat_id='s' AND consumer='hook'",[serde_json::json!({"counter":"2","last_exact":true,"active_epoch":"2"}).to_string()]).unwrap();
+    assert!(
+        confirm(&f, vec![attention])
+            .unwrap()
+            .acknowledged_controls
+            .is_empty(),
+        "last-token retry cannot resurrect obsolete epoch"
+    );
+}
+
+#[test]
+fn presentation_actual_candidate_sizing_and_rpc_wrapper_work_remain_bounded() {
+    use crate::{
+        delivery::presentation::{FrozenPresentationRender, PresentationRenderProfile},
+        ports::PresentationInput,
+        protocol::delivery::{
+            DeliveryPullReplyV2, DeliveryPullV2, PresentationConsumer, PresentationRenderRequest,
+        },
+    };
+    let f = fixture(0);
+    let recipient = pull_seat(&f);
+    let inviter = check_in(
+        &f,
+        claim("x", "px", fourth(), "sizing-bound-inviter", 0),
+        "sizing-bound-ci",
+    );
+    canonical_lazy_invitation_backlog(&f, &recipient, &inviter, 100, "sizing-bound");
+    let registry = crate::harness::registry::builtins();
+    let adapter = registry
+        .by_id(registry.agent(recipient.harness.as_str()).unwrap())
+        .unwrap();
+    let codec = adapter.presentation_codec(0).unwrap();
+    let profile = PresentationRenderProfile::Hook {
+        confirmable_selector: 0,
+        passive_selector: 0,
+        confirmable: codec,
+        passive: codec,
+    };
+    let mut all = std::collections::HashSet::new();
+    let mut max_passes = 0;
+    for _ in 0..20 {
+        let frozen_render = f
+            .store
+            .presentation_render_selection(&recipient, PresentationConsumer::Hook, &budget())
+            .unwrap()
+            .map(|identity| FrozenPresentationRender {
+                identity,
+                codec: Some(codec),
+            });
+        let output = f
+            .store
+            .presentation_pull(
+                PresentationInput {
+                    frozen_render,
+                    render_profile: profile.clone(),
+                    pull: DeliveryPullV2 {
+                        claim: recipient.clone(),
+                        consumer: PresentationConsumer::Hook,
+                        render: PresentationRenderRequest::Hook {
+                            confirmable_selector: 0,
+                            passive_selector: 0,
+                        },
+                        presentation_lease: None,
+                        marker_prefix: vec![],
+                    },
+                    attention_version: u64::MAX,
+                    ordinary_version: 0,
+                    with_attention: false,
+                    retry_messages: false,
+                    blocked_messages: vec![],
+                    known_messages: vec![],
+                    new_message_slots: 256,
+                },
+                &budget(),
+            )
+            .unwrap();
+        let work = &output.work;
+        assert!(
+            work.initial <= 40
+                && work.context <= 80 - work.initial
+                && work.revisit <= 100 - work.initial - work.context
+                && work.initial + work.context + work.revisit <= 100
+                && work.ordinary <= 100
+                && work.notices <= 17
+                && work.notice_validations <= 16
+                && work.replay <= 32,
+            "{work:?}"
+        );
+        assert!(
+            work.output_passes <= 352
+                && work.output_bytes <= 352 * 65537
+                && work.rpc_passes == 1
+                && work.rpc_bytes <= crate::delivery::presentation::RPC_RESULT_LIMIT + 1
+        );
+        max_passes = max_passes.max(work.output_passes);
+        let result = CommandResult::DeliveryPulledV2(output.reply.clone());
+        let encoded_result = serde_json::to_vec(&result).unwrap();
+        assert_eq!(work.rpc_bytes, encoded_result.len());
+        let response = crate::protocol::wire::WireResponse {
+            version: crate::protocol::wire::PROTOCOL_VERSION,
+            request_id: "\"".repeat(128),
+            instance: uuid::Uuid::from_u128(1).to_string(),
+            daemon_boot: uuid::Uuid::from_u128(2).to_string(),
+            result: Ok(result),
+        };
+        let encoded = crate::protocol::wire::encode_wire_response(&response).unwrap();
+        assert!(
+            serde_json::from_slice::<crate::protocol::wire::WireResponse>(&encoded[4..]).is_ok()
+        );
+        assert_eq!(
+            u32::from_be_bytes(encoded[..4].try_into().unwrap()) as usize,
+            encoded.len() - 4
+        );
+        assert!(
+            encoded.len() - encoded_result.len() <= 512
+                && encoded.len() <= crate::protocol::wire::MAX_WIRE_FRAME_BYTES
+        );
+        let DeliveryPullReplyV2::Page(page) = output.reply else {
+            break;
+        };
+        let (_, actual) = crate::delivery::presentation::measure(&profile, &page.items).unwrap();
+        assert_eq!(actual, page.output_bytes as usize);
+        for invitation in presentation_invitations(&page) {
+            if !invitation.content.truncated {
+                all.insert(invitation.id);
+            }
+        }
+        presentation_test_confirm(&f, &recipient, &page);
+        if all.len() == 100 {
+            break;
+        }
+    }
+    assert_eq!(all.len(), 100);
+    assert!(
+        max_passes > 32,
+        "actual candidate sizing, not only one final serializer"
+    );
+    eprintln!(
+        "actual_candidate_max_output_passes={max_passes}; declared_bound=352; wrapper_reserve=512"
+    );
+}
+
+#[test]
+fn presentation_handler_clears_unconfirmed_epoch_then_reopens_new_episode() {
+    use crate::protocol::{
+        commands::{Accept, CreateThread, InvitationConfirmation, Invite},
+        delivery::{DeliveryPullReplyV2, PresentationControlStampV2 as Stamp},
+    };
+    let f = fixture(0);
+    let recipient = pull_seat(&f);
+    let inviter = check_in(
+        &f,
+        claim("x", "px", fourth(), "episode-inviter", 0),
+        "episode-ci",
+    );
+    let invite = |suffix: &str| {
+        let CommandResult::ThreadCreated(thread) = f
+            .service
+            .handle(
+                Command::CreateThread(CreateThread {
+                    name: None,
+                    topic: "episode".into(),
+                    goal: "review".into(),
+                    operation: OperationId::new(format!("episode-thread-{suffix}")),
+                    claim: inviter.clone(),
+                }),
+                peer(),
+                &budget(),
+            )
+            .unwrap()
+        else {
+            panic!("thread")
+        };
+        f.service
+            .handle(
+                Command::Invite(Invite {
+                    confirmation: Some(InvitationConfirmation::RequireAck),
+                    thread: thread.clone(),
+                    seat: recipient.seat.clone(),
+                    deadline_millis: Some(1000),
+                    operation: OperationId::new(format!("episode-invite-{suffix}")),
+                    claim: inviter.clone(),
+                }),
+                peer(),
+                &budget(),
+            )
+            .unwrap();
+        thread
+    };
+    let first_thread = invite("first");
+    let DeliveryPullReplyV2::Page(first) = presentation_test_pull(&f, &recipient) else {
+        panic!("first")
+    };
+    let first_stamp = first
+        .emitted_controls
+        .iter()
+        .find(|v| matches!(v, Stamp::Attention { .. }))
+        .unwrap()
+        .clone();
+    let Stamp::Attention {
+        epoch: first_epoch, ..
+    } = &first_stamp
+    else {
+        unreachable!()
+    };
+    // Acceptance closes the condition before any emission confirmation. Clear
+    // must still retire the possibly emitted epoch, retaining original slots.
+    f.service
+        .handle(
+            Command::Accept(Accept {
+                thread: first_thread.clone(),
+                operation: OperationId::new("episode-accept"),
+                claim: recipient.clone(),
+            }),
+            peer(),
+            &budget(),
+        )
+        .unwrap();
+    // Retained canonical warning-job rows whose publications have not arrived
+    // force bounded proof progress before exact absence. They are fixture
+    // source rows, not a claim that public commands created 301 warnings.
+    f.db.execute("WITH RECURSIVE n(x) AS(SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<301) INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id) SELECT 'episode-unpublished-'||x,20,?1,1000000,'s','invitation',?2 FROM n",rusqlite::params![first_thread.as_str(),presentation_invitations(&first)[0].id.as_str()]).unwrap();
+    let DeliveryPullReplyV2::Page(unknown) = presentation_test_pull(&f, &recipient) else {
+        panic!("bounded Unknown replay")
+    };
+    assert_eq!(
+        unknown.presentation_token, first.presentation_token,
+        "Unknown must preserve original outbox identity"
+    );
+    assert!(
+        unknown.emitted_controls.is_empty() && unknown.more,
+        "Unknown withholds Attention while progressing proof"
+    );
+    let mut clear = None;
+    let mut diagnostics = Vec::new();
+    // Two indexed sources each retain301 rows. Allow one source and one
+    // fallback microstep per row, each scheduled within13 eligible calls,
+    // plus13 startup slots. This is a finite test guard, not a delivery cap.
+    let convergence_guard = 13 * (2 * 2 * 301 + 13);
+    for quantum in 0..convergence_guard {
+        let reply = presentation_test_pull(&f, &recipient);
+        let work = f.service.presentation.last_work.lock().unwrap().unwrap();
+        assert_eq!(
+            work.relevance_calls, 1,
+            "each successful handler call advances exactly once"
+        );
+        assert!(
+            work.relevance_sources + work.relevance_fallback <= 100 && work.relevance_seeks <= 26
+        );
+        let fence: i64 =
+            f.db.query_row(
+                "SELECT version FROM presentation_warning_fence WHERE singleton=1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let proof:String=f.db.query_row("SELECT proof_json FROM presentation_warning_proofs WHERE seat_id='s' AND consumer='hook'",[],|r|r.get(0)).unwrap();
+        let diagnostic = serde_json::json!({"quantum":quantum,"work":format!("{work:?}"),"fence":fence,"proof":serde_json::from_str::<serde_json::Value>(&proof).unwrap()});
+        if diagnostics.len() < 32 {
+            diagnostics.push(diagnostic);
+        } else {
+            diagnostics[31] = diagnostic;
+        }
+        match reply {
+            DeliveryPullReplyV2::Page(page) => {
+                if page
+                    .emitted_controls
+                    .iter()
+                    .any(|v| matches!(v,Stamp::Cleared{epoch,..} if epoch==first_epoch))
+                {
+                    clear = Some(page);
+                    break;
+                }
+                assert!(
+                    !page.emitted_controls.contains(&first_stamp),
+                    "closed Attention cannot replay"
+                );
+                if !page.items.is_empty() {
+                    presentation_test_confirm(&f, &recipient, &page);
+                }
+            }
+            DeliveryPullReplyV2::Unchanged { .. } => {}
+            other => panic!("{other:?}"),
+        }
+    }
+    let clear = clear.unwrap_or_else(|| {
+        panic!(
+            "unconfirmed allocated Attention receives exact scoped clear; diagnostics={}",
+            serde_json::to_string(&diagnostics).unwrap()
+        )
+    });
+    assert!(!clear.emitted_controls.contains(&first_stamp));
+    presentation_test_confirm(&f, &recipient, &clear);
+    invite("second");
+    let mut reopened = None;
+    for _ in 0..32 {
+        if let DeliveryPullReplyV2::Page(page) = presentation_test_pull(&f, &recipient) {
+            reopened = page
+                .emitted_controls
+                .iter()
+                .find(|v| matches!(v, Stamp::Attention { .. }))
+                .cloned();
+            presentation_test_confirm(&f, &recipient, &page);
+            if reopened.is_some() {
+                break;
+            }
+        }
+    }
+    let Stamp::Attention { epoch, .. } = reopened.expect("new canonical open receives new episode")
+    else {
+        unreachable!()
+    };
+    assert_ne!(
+        &epoch, first_epoch,
+        "presentation epoch never reuses a retired epoch"
+    );
+}
+
+#[test]
+fn presentation_handler_published_warn_reopens_at_unchanged_native_version() {
+    use crate::{
+        ports::{
+            ServiceAuthorityGate, ServiceConnectionAuthority, ServiceDecisionGuard,
+            ServiceWriteTransactionProof,
+        },
+        protocol::{
+            commands::{Accept, CreateThread, InvitationConfirmation, Invite},
+            delivery::{DeliveryPullReplyV2, PresentationControlStampV2 as Stamp},
+            results::ApiError,
+            service::{NotificationSeverity, ServiceNotify, ServiceOperation, ServiceResult},
+        },
+    };
+    struct Gate(ServiceAuthorId);
+    struct Guard(ServiceAuthorId);
+    impl ServiceDecisionGuard for Guard {
+        fn author(&self) -> &ServiceAuthorId {
+            &self.0
+        }
+    }
+    impl ServiceAuthorityGate for Gate {
+        fn register(
+            &self,
+            instance: &str,
+            boot: &str,
+            author: ServiceAuthorId,
+        ) -> Result<ServiceConnectionAuthority, ApiError> {
+            Ok(ServiceConnectionAuthority::new(
+                instance.into(),
+                boot.into(),
+                1,
+                author,
+            ))
+        }
+        fn decision_guard<'a>(
+            &'a self,
+            _: &ServiceWriteTransactionProof,
+            connection: &ServiceConnectionAuthority,
+        ) -> Result<Box<dyn ServiceDecisionGuard + 'a>, ApiError> {
+            assert_eq!(connection.author(), &self.0);
+            Ok(Box::new(Guard(self.0.clone())))
+        }
+        fn revoke_exact(&self, _: &ServiceConnectionAuthority) -> bool {
+            true
+        }
+    }
+    let f = fixture(0);
+    let recipient = pull_seat(&f);
+    let inviter = check_in(
+        &f,
+        claim("x", "px", fourth(), "warn-epoch-inviter", 0),
+        "warn-epoch-ci",
+    );
+    let CommandResult::ThreadCreated(thread) = f
+        .service
+        .handle(
+            Command::CreateThread(CreateThread {
+                name: None,
+                topic: "first epoch".into(),
+                goal: "review".into(),
+                operation: OperationId::new("warn-epoch-thread"),
+                claim: inviter.clone(),
+            }),
+            peer(),
+            &budget(),
+        )
+        .unwrap()
+    else {
+        panic!("thread")
+    };
+    f.service
+        .handle(
+            Command::Invite(Invite {
+                confirmation: Some(InvitationConfirmation::RequireAck),
+                thread: thread.clone(),
+                seat: recipient.seat.clone(),
+                deadline_millis: Some(1000),
+                operation: OperationId::new("warn-epoch-invite"),
+                claim: inviter,
+            }),
+            peer(),
+            &budget(),
+        )
+        .unwrap();
+    let DeliveryPullReplyV2::Page(first) = presentation_test_pull(&f, &recipient) else {
+        panic!("first Attention")
+    };
+    let first_epoch = first
+        .emitted_controls
+        .iter()
+        .find_map(|v| match v {
+            Stamp::Attention { epoch, .. } => Some(epoch.clone()),
+            _ => None,
+        })
+        .unwrap();
+    presentation_test_confirm(&f, &recipient, &first);
+    f.service
+        .handle(
+            Command::Accept(Accept {
+                thread,
+                operation: OperationId::new("warn-epoch-accept"),
+                claim: recipient.clone(),
+            }),
+            peer(),
+            &budget(),
+        )
+        .unwrap();
+    let mut clear_version = None;
+    for _ in 0..32 {
+        if let DeliveryPullReplyV2::Page(page) = presentation_test_pull(&f, &recipient) {
+            if page
+                .emitted_controls
+                .iter()
+                .any(|v| matches!(v,Stamp::Cleared{epoch,..} if epoch==&first_epoch))
+            {
+                clear_version = Some(page.attention_version);
+            }
+            if !page.items.is_empty() {
+                presentation_test_confirm(&f, &recipient, &page);
+            }
+            if clear_version.is_some() {
+                break;
+            }
+        }
+    }
+    let prior_version = clear_version.expect("first exact epoch cleared");
+    let native_version = || {
+        f.db.query_row(
+            "SELECT attention_version FROM wake_work WHERE seat_id='s'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap()
+    };
+    let before = native_version();
+    let tx = f.db.unchecked_transaction().unwrap();
+    let author =
+        crate::store::service_substrate::ensure_reserved_author(&tx, "i", UtcMillis(0)).unwrap();
+    tx.commit().unwrap();
+    let gate = Gate(author.clone());
+    let connection = ServiceConnectionAuthority::new("i".into(), "boot".into(), 1, author);
+    let ServiceResult::Notification(published) = f
+        .store
+        .service_operation(
+            ServiceOperation::Notify(ServiceNotify {
+                thread: ThreadId::new("t"),
+                severity: NotificationSeverity::Warn,
+                event_json: serde_json::json!({"text":"new warning before materialization"}),
+                operation: OperationId::new("warn-epoch-notify"),
+            }),
+            &connection,
+            &gate,
+            &budget(),
+            None,
+        )
+        .unwrap()
+    else {
+        panic!("published Warn")
+    };
+    assert_eq!(
+        native_version(),
+        before,
+        "canonical publication precedes its native materializer bump"
+    );
+    assert_eq!(
+        f.db.query_row(
+            "SELECT count(*) FROM messages WHERE id=?1 AND kind='warn'",
+            [published.summary.message.as_str()],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+    assert_eq!(f.db.query_row("SELECT count(*) FROM work_jobs WHERE kind='send_attention' AND subject_id LIKE 'service-notify:%' AND status='pending'",[],|r|r.get::<_,i64>(0)).unwrap(),1,"actual materialization remains pending");
+    let mut reopened = None;
+    for _ in 0..32 {
+        if let DeliveryPullReplyV2::Page(page) = presentation_test_pull(&f, &recipient) {
+            assert_eq!(
+                page.attention_version, prior_version,
+                "actual handler native metadata remains unchanged"
+            );
+            reopened = page.emitted_controls.iter().find_map(|v| match v {
+                Stamp::Attention { epoch, .. } => Some(epoch.clone()),
+                _ => None,
+            });
+            if !page.items.is_empty() {
+                presentation_test_confirm(&f, &recipient, &page);
+            }
+            if reopened.is_some() {
+                break;
+            }
+        }
+    }
+    assert_ne!(
+        reopened.expect("published Warn reopens presentation relevance before materialization"),
+        first_epoch
+    );
+    assert_eq!(
+        native_version(),
+        before,
+        "V2 pull/Confirm never runs native materialization"
+    );
+}
+
+#[test]
+fn presentation_quiet_channel_observes_new_lazy_ordinary_without_wake() {
+    use crate::{
+        ports::{ModChannelSink, ModStoreReads},
+        protocol::{
+            commands::{DeliveryMode, SendMessage},
+            watch::{ModDeliverySetting, WatchFrame, WatchRequest},
+        },
+        service::mod_channels::ModChannelRegistry,
+    };
+    #[derive(Default)]
+    struct Sink(std::sync::Mutex<Vec<WatchFrame>>);
+    impl ModChannelSink for Sink {
+        fn push(&self, frame: WatchFrame) -> bool {
+            self.0.lock().unwrap().push(frame);
+            true
+        }
+    }
+    let mut f = fixture(0);
+    let recipient = check_in(
+        &f,
+        claim("c", "pc", Harness::Claude, "quiet-lazy-recipient", 0),
+        "quiet-lazy-ci",
+    );
+    let sender = check_in(
+        &f,
+        claim("x", "px", fourth(), "quiet-lazy-sender", 0),
+        "quiet-lazy-sender-ci",
+    );
+    let reads: Arc<dyn ModStoreReads> = f.store.clone();
+    let registry = Arc::new(ModChannelRegistry::new(
+        f.clock.clone(),
+        reads,
+        "i".into(),
+        Arc::new(|| {}),
+        ModDeliverySetting::On,
+    ));
+    f.service = DomainService::new("i".into(), f.store.clone(), f.clock.clone())
+        .with_cooperative_owner(501, Arc::new(FairWriter::new(32)))
+        .with_delivery_pull(f.state.clone())
+        .with_mod_channels(registry.clone());
+    let sink = Arc::new(Sink::default());
+    let (_channel, _) = f
+        .service
+        .watch_register(
+            &WatchRequest {
+                claim: recipient.clone(),
+            },
+            sink.clone(),
+            &budget(),
+        )
+        .unwrap();
+    registry.pass(UtcMillis(0)).unwrap();
+    sink.0.lock().unwrap().clear();
+    let native = || {
+        f.db.query_row(
+            "SELECT COALESCE((SELECT attention_version FROM wake_work WHERE seat_id='c'),0)",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap()
+    };
+    let before = native();
+    f.service
+        .handle(
+            Command::SendMessage(SendMessage {
+                delivery_mode: DeliveryMode::Lazy,
+                user_intent: None,
+                thread: ThreadId::new("t"),
+                body: "new lazy content after quiet registration".into(),
+                direct_recipient: None,
+                invited_recipients: vec![],
+                deadline_millis: None,
+                operation: OperationId::new("quiet-lazy-send"),
+                claim: sender,
+                relays_user: false,
+            }),
+            peer(),
+            &budget(),
+        )
+        .unwrap();
+    assert_eq!(f.db.query_row("SELECT count(*) FROM lazy_recipients r JOIN send_manifests sm ON sm.preparation_id=r.preparation_id AND sm.message_id=r.message_id WHERE r.seat_id='c' AND r.state='pending'",[],|r|r.get::<_,i64>(0)).unwrap(),1,"actual canonical lazy publication");
+    assert_eq!(
+        native(),
+        before,
+        "ordinary Lazy does not create native attention"
+    );
+    registry.pass(UtcMillis(1)).unwrap();
+    let frames = sink.0.lock().unwrap().clone();
+    assert!(
+        matches!(frames.as_slice(), [WatchFrame::Attention { .. }]),
+        "new recipient-visible Lazy content needs one passive in-turn drain after quiet registration: {frames:?}"
+    );
+    registry.pass(UtcMillis(2)).unwrap();
+    assert_eq!(
+        *sink.0.lock().unwrap(),
+        frames,
+        "unchanged lazy content does not repeat passive drains"
+    );
+    assert_eq!(
+        native(),
+        before,
+        "passive observation preserves native eligibility"
+    );
+}
+
+#[test]
+fn presentation_confirm_rejects_oversized_private_json_before_decoding() {
+    use crate::protocol::delivery::{
+        DeliveryPresentationConfirmV2, DeliveryPullReplyV2, PresentationConsumer,
+    };
+    for (field, limit) in [
+        ("last_descriptors", 4096),
+        ("control_state", 4096),
+        ("outbox_descriptors", 262144),
+        ("outbox_prefix", 24601),
+        ("outbox_selection", 128),
+        ("outbox_text", 65536),
+        ("ordinary_pending", 155731),
+        ("ordinary_partial", 49415),
+        ("ordinary_version", 20),
+        ("outbox_version", 20),
+        ("ordinary_cursor", 8192),
+        ("ordinary_skip_body", 128),
+        ("execution", 128),
+        ("mod_execution", 128),
+        ("render_key", 64),
+        ("outbox_render_key", 64),
+        ("outbox_codec_key", 64),
+    ] {
+        let f = fixture(0);
+        let recipient = pull_seat(&f);
+        let inviter = check_in(
+            &f,
+            claim("x", "px", fourth(), "private-bound-inviter", 0),
+            "private-bound-ci",
+        );
+        canonical_lazy_invitation_backlog(&f, &recipient, &inviter, 1, "private-bound");
+        let DeliveryPullReplyV2::Page(page) = presentation_test_pull(&f, &recipient) else {
+            panic!("canonical page")
+        };
+        presentation_test_confirm(&f, &recipient, &page);
+        let original=f.db.query_row(&format!("SELECT {field} FROM invitation_presentation_consumers WHERE seat_id='s' AND consumer='hook'"),[],|r|r.get::<_,Option<String>>(0)).unwrap().unwrap_or_default();
+        let corrupted = original + &" ".repeat(limit + 1);
+        f.db.execute_batch("PRAGMA ignore_check_constraints=ON")
+            .unwrap();
+        f.db.execute(&format!("UPDATE invitation_presentation_consumers SET {field}=?1 WHERE seat_id='s' AND consumer='hook'"),[corrupted]).unwrap();
+        f.db.execute_batch("PRAGMA ignore_check_constraints=OFF")
+            .unwrap();
+        let result = f.store.presentation_confirm(
+            &DeliveryPresentationConfirmV2 {
+                claim: recipient,
+                consumer: PresentationConsumer::Hook,
+                token: page.presentation_token.unwrap(),
+                emitted_controls: vec![],
+                presentation_lease: None,
+            },
+            &budget(),
+        );
+        assert!(
+            matches!(
+                result,
+                Err(crate::protocol::results::ApiError {
+                    code: crate::protocol::results::ErrorCode::StoreCorrupt,
+                    ..
+                })
+            ),
+            "{field} must enforce declared{limit}byte bound before allocation/parsing/effects: {result:?}"
+        );
+    }
+}
+
+#[test]
+fn presentation_last_token_control_serializer_has_exact_bounded_witness() {
+    use crate::protocol::delivery::PresentationControlStampV2 as Stamp;
+    let stamps = (0..32)
+        .map(|n| Stamp::Attention {
+            epoch: (u64::MAX - n).to_string(),
+            version: u64::MAX,
+        })
+        .collect::<Vec<_>>();
+    crate::protocol::delivery::validate_control_stamps(&stamps).unwrap();
+    for stamp in &stamps {
+        assert_eq!(serde_json::to_vec(stamp).unwrap().len(), 82);
+    }
+    let serialized = serde_json::to_vec(&stamps).unwrap();
+    assert_eq!(serialized.len(), 32 * 82 + 31 + 2);
+    assert_eq!(serialized.len(), 2657);
+    assert!(serialized.len() <= 4096);
+    assert_eq!(
+        serde_json::from_slice::<Vec<Stamp>>(&serialized).unwrap(),
+        stamps
+    );
+}
+
+#[test]
+fn presentation_handler_partial_confirmation_retains_canonical_slots_across_restart() {
+    use crate::protocol::{
+        commands::{CreateThread, InvitationConfirmation, Invite},
+        delivery::{
+            DeliveryPresentationConfirmV2, DeliveryPresentationConfirmationV2 as Status,
+            DeliveryPullReplyV2, PresentationConsumer, PresentationControlStampV2 as Stamp,
+            PresentationItemV2 as Item,
+        },
+    };
+    let mut f = fixture(0);
+    let recipient = pull_seat(&f);
+    let inviter = check_in(
+        &f,
+        claim("x", "px", fourth(), "public-subset-inviter", 0),
+        "public-subset-ci",
+    );
+    let CommandResult::ThreadCreated(thread) = f
+        .service
+        .handle(
+            Command::CreateThread(CreateThread {
+                name: None,
+                topic: "canonical partial confirmation".into(),
+                goal: "review".into(),
+                operation: OperationId::new("public-subset-thread"),
+                claim: inviter.clone(),
+            }),
+            peer(),
+            &budget(),
+        )
+        .unwrap()
+    else {
+        panic!("thread")
+    };
+    f.service
+        .handle(
+            Command::Invite(Invite {
+                confirmation: Some(InvitationConfirmation::RequireAck),
+                thread,
+                seat: recipient.seat.clone(),
+                deadline_millis: Some(1000),
+                operation: OperationId::new("public-subset-invite"),
+                claim: inviter,
+            }),
+            peer(),
+            &budget(),
+        )
+        .unwrap();
+    let DeliveryPullReplyV2::Page(page) = presentation_test_pull(&f, &recipient) else {
+        panic!("canonical page")
+    };
+    assert_eq!(page.emitted_controls.len(), 1);
+    assert!(
+        page.items
+            .iter()
+            .any(|v| matches!(v, Item::Invitation { .. }))
+    );
+    let token = page.presentation_token.clone().unwrap();
+    let stamp = page.emitted_controls[0].clone();
+    let row = |f: &Fixture| {
+        f.db.query_row("SELECT outbox_descriptors,outbox_retired_mask,outbox_confirmed_mask,control_state,last_descriptors,last_confirmed_mask FROM invitation_presentation_consumers WHERE seat_id='s' AND consumer='hook'",[],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?,r.get::<_,String>(3)?,r.get::<_,String>(4)?,r.get::<_,i64>(5)?))).unwrap()
+    };
+    let original = row(&f);
+    let descriptors: Vec<serde_json::Value> = serde_json::from_str(&original.0).unwrap();
+    let control_slot = descriptors
+        .iter()
+        .position(|v| v["item"]["kind"] == "attention")
+        .unwrap();
+    let allowed = (1i64 << descriptors.len()) - 1;
+    let noncontrols = allowed & !(1i64 << control_slot);
+    let confirm = |f: &Fixture, emitted_controls: Vec<Stamp>| {
+        f.service.handle(
+            Command::DeliveryPresentationConfirmV2(DeliveryPresentationConfirmV2 {
+                claim: recipient.clone(),
+                consumer: PresentationConsumer::Hook,
+                token: token.clone(),
+                presentation_lease: None,
+                emitted_controls,
+            }),
+            peer(),
+            &budget(),
+        )
+    };
+    let CommandResult::DeliveryPresentationConfirmedV2(empty) = confirm(&f, vec![]).unwrap() else {
+        panic!("confirm")
+    };
+    assert_eq!(empty.status, Status::Confirmed);
+    assert!(empty.acknowledged_controls.is_empty());
+    let partial = row(&f);
+    assert_eq!(partial.0, original.0);
+    assert_eq!((partial.1, partial.2), (noncontrols, noncontrols));
+    restart(&mut f);
+    let DeliveryPullReplyV2::Page(replay) = presentation_test_pull(&f, &recipient) else {
+        panic!("canonical replay")
+    };
+    assert_eq!(replay.presentation_token, Some(token.clone()));
+    assert_eq!(replay.emitted_controls, vec![stamp.clone()]);
+    assert!(
+        replay
+            .items
+            .iter()
+            .all(|v| matches!(v, Item::Attention { .. }))
+    );
+    assert_eq!(
+        row(&f),
+        partial,
+        "replay preserves original slots and masks"
+    );
+    let foreign = match &stamp {
+        Stamp::Attention { epoch, version } => Stamp::Attention {
+            epoch: epoch.clone(),
+            version: version + 1,
+        },
+        _ => panic!("attention"),
+    };
+    for invalid in [vec![foreign], vec![stamp.clone(), stamp.clone()]] {
+        assert!(confirm(&f, invalid).is_err());
+        assert_eq!(
+            row(&f),
+            partial,
+            "invalid capture cannot mutate slots or controls"
+        );
+    }
+    let CommandResult::DeliveryPresentationConfirmedV2(reply) =
+        confirm(&f, vec![stamp.clone()]).unwrap()
+    else {
+        panic!("confirm")
+    };
+    assert_eq!(reply.status, Status::Confirmed);
+    assert_eq!(reply.acknowledged_controls, vec![stamp.clone()]);
+    restart(&mut f);
+    let CommandResult::DeliveryPresentationConfirmedV2(retry) =
+        confirm(&f, vec![stamp.clone()]).unwrap()
+    else {
+        panic!("retry")
+    };
+    assert_eq!(retry.status, Status::AlreadyConfirmed);
+    assert_eq!(
+        retry.acknowledged_controls,
+        vec![stamp],
+        "lost reply retry acknowledges the original still-applicable capture"
+    );
+    assert_eq!(
+        f.db.query_row("SELECT count(*) FROM receipts", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        0,
+        "presentation confirmation is not message ACK"
+    );
+    assert_eq!(
+        f.db.query_row(
+            "SELECT count(*) FROM invitations WHERE accepted_at IS NOT NULL",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0,
+        "presentation confirmation is not invitation acceptance"
+    );
+}
+
+#[test]
+fn presentation_private_state_rejects_typed_corruption_without_confirmation_effects() {
+    use crate::protocol::delivery::{
+        DeliveryPresentationConfirmV2, DeliveryPullReplyV2, PresentationConsumer,
+    };
+    for (field, value) in [
+        ("last_descriptors", "null"),
+        ("last_descriptors", "7"),
+        ("last_descriptors", "["),
+        ("control_state", "null"),
+        ("control_state", "{\"unknown\":true}"),
+        ("control_state", "{\"counter\":\"-1\"}"),
+        ("last_confirmed_mask", "-1"),
+        ("last_confirmed_mask", "1"),
+    ] {
+        let f = fixture(0);
+        let recipient = pull_seat(&f);
+        let inviter = check_in(
+            &f,
+            claim("x", "px", fourth(), "typed-corrupt-inviter", 0),
+            "typed-corrupt-ci",
+        );
+        canonical_lazy_invitation_backlog(&f, &recipient, &inviter, 1, "typed-corrupt");
+        let DeliveryPullReplyV2::Page(page) = presentation_test_pull(&f, &recipient) else {
+            panic!("canonical page")
+        };
+        presentation_test_confirm(&f, &recipient, &page);
+        f.db.execute_batch("PRAGMA ignore_check_constraints=ON")
+            .unwrap();
+        f.db.execute(&format!("UPDATE invitation_presentation_consumers SET {field}=?1 WHERE seat_id='s' AND consumer='hook'"),[value]).unwrap();
+        f.db.execute_batch("PRAGMA ignore_check_constraints=OFF")
+            .unwrap();
+        let snapshot = || {
+            f.db.query_row("SELECT last_token,last_descriptors,last_confirmed_mask,control_state FROM invitation_presentation_consumers WHERE seat_id='s' AND consumer='hook'",[],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,i64>(2)?,r.get::<_,String>(3)?))).unwrap()
+        };
+        let before = snapshot();
+        let result = f.store.presentation_confirm(
+            &DeliveryPresentationConfirmV2 {
+                claim: recipient,
+                consumer: PresentationConsumer::Hook,
+                token: page.presentation_token.unwrap(),
+                emitted_controls: vec![],
+                presentation_lease: None,
+            },
+            &budget(),
+        );
+        assert!(
+            matches!(
+                result,
+                Err(crate::protocol::results::ApiError {
+                    code: crate::protocol::results::ErrorCode::StoreCorrupt,
+                    ..
+                })
+            ),
+            "typed {field}={value} must refuse before effects: {result:?}"
+        );
+        assert_eq!(snapshot(), before);
+        assert!(f.db.execute("UPDATE invitation_presentation_consumers SET last_descriptors=NULL WHERE seat_id='s' AND consumer='hook'",[]).is_err(),"STRICT NOT NULL rejects SQL NULL at storage boundary");
+    }
+}
+
+#[test]
+fn presentation_watch_fresh_confirmation_records_exact_owner_publication_cutoff_once() {
+    use crate::{
+        ports::{ModChannelSink, ModChannels, ModStoreReads},
+        protocol::{
+            commands::{
+                Ack, CreateThread, DeliveryMode, InvitationConfirmation, Invite, SendMessage,
+            },
+            delivery::{
+                DeliveryPresentationConfirmV2, DeliveryPresentationConfirmationV2 as Status,
+                DeliveryPullReplyV2, DeliveryPullV2, PresentationConsumer,
+                PresentationControlStampV2 as Stamp, PresentationRenderRequest,
+            },
+            watch::{MOD_STALL_AFTER_MS, ModDeliverySetting, WatchFrame, WatchRequest},
+        },
+        service::mod_channels::ModChannelRegistry,
+    };
+    struct Sink;
+    impl ModChannelSink for Sink {
+        fn push(&self, _: WatchFrame) -> bool {
+            true
+        }
+    }
+    let mut f = fixture(0);
+    let recipient = check_in(
+        &f,
+        claim("c", "pc", Harness::Claude, "stall-v2-recipient", 0),
+        "stall-v2-ci",
+    );
+    let sender = check_in(
+        &f,
+        claim("x", "px", fourth(), "stall-v2-sender", 0),
+        "stall-v2-sender-ci",
+    );
+    let reads: Arc<dyn ModStoreReads> = f.store.clone();
+    let registry = Arc::new(ModChannelRegistry::new(
+        f.clock.clone(),
+        reads,
+        "i".into(),
+        Arc::new(|| {}),
+        ModDeliverySetting::On,
+    ));
+    f.service = DomainService::new("i".into(), f.store.clone(), f.clock.clone())
+        .with_cooperative_owner(501, Arc::new(FairWriter::new(32)))
+        .with_delivery_pull(f.state.clone())
+        .with_mod_channels(registry.clone());
+    let (channel, _) = f
+        .service
+        .watch_register(
+            &WatchRequest {
+                claim: recipient.clone(),
+            },
+            Arc::new(Sink),
+            &budget(),
+        )
+        .unwrap();
+    let lease = registry.presentation_lease(channel).unwrap();
+    let send = |f: &Fixture, key: &str| {
+        let CommandResult::MessageSent(id) = f
+            .service
+            .handle(
+                Command::SendMessage(SendMessage {
+                    delivery_mode: DeliveryMode::Ordinary,
+                    user_intent: None,
+                    thread: ThreadId::new("t"),
+                    body: key.into(),
+                    direct_recipient: None,
+                    invited_recipients: vec![],
+                    deadline_millis: None,
+                    operation: OperationId::new(key),
+                    claim: sender.clone(),
+                    relays_user: false,
+                }),
+                peer(),
+                &budget(),
+            )
+            .unwrap()
+        else {
+            panic!("message")
+        };
+        id
+    };
+    let first_receipt = send(&f, "stall-v2-first");
+    // Timed invitation supplies an independently canonical NUDGE condition;
+    // this fixture proves mod health bookkeeping, not initial receipt relevance.
+    let CommandResult::ThreadCreated(thread) = f
+        .service
+        .handle(
+            Command::CreateThread(CreateThread {
+                name: None,
+                topic: "stall proof".into(),
+                goal: "review".into(),
+                operation: OperationId::new("stall-v2-thread"),
+                claim: sender.clone(),
+            }),
+            peer(),
+            &budget(),
+        )
+        .unwrap()
+    else {
+        panic!("thread")
+    };
+    f.service
+        .handle(
+            Command::Invite(Invite {
+                confirmation: Some(InvitationConfirmation::RequireAck),
+                thread,
+                seat: recipient.seat.clone(),
+                deadline_millis: Some(1000),
+                operation: OperationId::new("stall-v2-invite"),
+                claim: sender.clone(),
+            }),
+            peer(),
+            &budget(),
+        )
+        .unwrap();
+    f.clock
+        .0
+        .store(1_000_000 + MOD_STALL_AFTER_MS as i64 + 1, Ordering::Relaxed);
+    let CommandResult::DeliveryPulledV2(DeliveryPullReplyV2::Page(page)) = f
+        .service
+        .handle(
+            Command::DeliveryPullV2(DeliveryPullV2 {
+                claim: recipient.clone(),
+                consumer: PresentationConsumer::Watch,
+                render: PresentationRenderRequest::WatchJsonLinesV1,
+                presentation_lease: Some(lease.clone()),
+                marker_prefix: vec![],
+            }),
+            peer(),
+            &budget(),
+        )
+        .unwrap()
+    else {
+        panic!("Watch page")
+    };
+    assert_eq!(
+        page.emitted_controls
+            .iter()
+            .filter(|v| matches!(v, Stamp::Attention { .. }))
+            .count(),
+        1,
+        "single-control producer dependency of fresh status"
+    );
+    assert_eq!(page.emitted_controls.len(), 1);
+    assert!(
+        !registry.stalled(&recipient.seat, f.clock.utc_now()),
+        "allocation/replay is not physical emission evidence; no legacy observer pass in this fixture"
+    );
+    let request = DeliveryPresentationConfirmV2 {
+        claim: recipient.clone(),
+        consumer: PresentationConsumer::Watch,
+        token: page.presentation_token.unwrap(),
+        presentation_lease: Some(lease),
+        emitted_controls: page.emitted_controls,
+    };
+    let CommandResult::DeliveryPresentationConfirmedV2(first) = f
+        .service
+        .handle(
+            Command::DeliveryPresentationConfirmV2(request.clone()),
+            peer(),
+            &budget(),
+        )
+        .unwrap()
+    else {
+        panic!("confirm")
+    };
+    assert_eq!(first.status, Status::Confirmed);
+    assert_eq!(first.acknowledged_controls, request.emitted_controls);
+    assert!(
+        registry.stalled(&recipient.seat, f.clock.utc_now()),
+        "fresh exact Watch emission confirmation records receipt-publication cutoff, not a new countdown"
+    );
+    // Drop the first response as a lost-reply simulation. Isolate the original
+    // qualifying receipt via a REAL ACK before testing the later cutoff.
+    f.service
+        .handle(
+            Command::Ack(Ack {
+                messages: vec![first_receipt],
+                operation: OperationId::new("stall-v2-real-ack"),
+                claim: recipient.clone(),
+            }),
+            peer(),
+            &budget(),
+        )
+        .unwrap();
+    f.clock.0.fetch_add(1000, Ordering::Relaxed);
+    let _later_receipt = send(&f, "stall-v2-later");
+    f.clock
+        .0
+        .fetch_add(MOD_STALL_AFTER_MS as i64 + 1, Ordering::Relaxed);
+    assert!(
+        !registry.stalled(&recipient.seat, f.clock.utc_now()),
+        "later receipt is after original push cutoff; prior receipt settled and real ACK is now old"
+    );
+    let CommandResult::DeliveryPresentationConfirmedV2(retry) = f
+        .service
+        .handle(
+            Command::DeliveryPresentationConfirmV2(request),
+            peer(),
+            &budget(),
+        )
+        .unwrap()
+    else {
+        panic!("retry")
+    };
+    assert_eq!(retry.status, Status::AlreadyConfirmed);
+    assert!(!retry.acknowledged_controls.is_empty());
+    assert!(
+        !registry.stalled(&recipient.seat, f.clock.utc_now()),
+        "AlreadyConfirmed lost-reply retry must not move publication cutoff"
+    );
+}
+
+#[test]
+fn presentation_publication_scalar_maximum_roundtrips_without_changing_carry() {
+    use crate::protocol::delivery::DeliveryPullReplyV2;
+    let f = fixture(0);
+    let recipient = pull_seat(&f);
+    let inviter = check_in(
+        &f,
+        claim("x", "px", fourth(), "scalar-inviter", 0),
+        "scalar-ci",
+    );
+    canonical_lazy_invitation_backlog(&f, &recipient, &inviter, 1, "scalar");
+    let DeliveryPullReplyV2::Page(page) = presentation_test_pull(&f, &recipient) else {
+        panic!("page")
+    };
+    let carry:String=f.db.query_row("SELECT ordinary_pending FROM invitation_presentation_consumers WHERE seat_id='s' AND consumer='hook'",[],|r|r.get(0)).unwrap();
+    let fields = [
+        "ordinary_publication_after",
+        "ordinary_publication_high",
+        "ordinary_passive_generation",
+        "ordinary_scan_passive_generation",
+    ];
+    for field in fields {
+        assert_eq!(f.db.query_row(&format!("SELECT {field} FROM invitation_presentation_consumers WHERE seat_id='s' AND consumer='hook'"),[],|r|r.get::<_,i64>(0)).unwrap(),0);
+    }
+    f.db.execute("UPDATE invitation_presentation_consumers SET ordinary_publication_after=?1,ordinary_publication_high=?1,ordinary_passive_generation=?1,ordinary_scan_passive_generation=?1 WHERE seat_id='s' AND consumer='hook'",[i64::MAX]).unwrap();
+    presentation_test_confirm(&f, &recipient, &page);
+    let mut map = serde_json::Map::new();
+    for field in fields {
+        let(value,kind)=f.db.query_row(&format!("SELECT {field},typeof({field}) FROM invitation_presentation_consumers WHERE seat_id='s' AND consumer='hook'"),[],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?))).unwrap();
+        assert_eq!((value, kind), (i64::MAX, "integer".into()));
+        map.insert(field.into(), serde_json::json!(value));
+    }
+    assert_eq!(serde_json::to_vec(&map).unwrap().len(), 203);
+    let with_other = serde_json::json!({"existing":0});
+    let old = serde_json::to_vec(&with_other).unwrap().len();
+    let mut with_other = with_other.as_object().unwrap().clone();
+    with_other.extend(map);
+    assert_eq!(serde_json::to_vec(&with_other).unwrap().len() - old, 202);
+    assert_eq!(f.db.query_row("SELECT ordinary_pending FROM invitation_presentation_consumers WHERE seat_id='s' AND consumer='hook'",[],|r|r.get::<_,String>(0)).unwrap(),carry,"four scalars add zero carry bytes");
+}
+
+#[test]
+fn presentation_publication_walk_counts_foreign_prefix_before_filter_and_progresses() {
+    use crate::protocol::commands::{CreateThread, DeliveryMode, SendMessage};
+    let f = fixture(0);
+    let recipient = pull_seat(&f);
+    let sender = check_in(
+        &f,
+        claim("x", "px", fourth(), "prefix-sender", 0),
+        "prefix-sender-ci",
+    );
+    let CommandResult::ThreadCreated(foreign) = f
+        .service
+        .handle(
+            Command::CreateThread(CreateThread {
+                name: None,
+                topic: "foreign prefix".into(),
+                goal: "bounded walk".into(),
+                operation: OperationId::new("prefix-thread"),
+                claim: sender.clone(),
+            }),
+            peer(),
+            &budget(),
+        )
+        .unwrap()
+    else {
+        panic!("thread")
+    };
+    let send = |thread: ThreadId, n: usize| {
+        f.service
+            .handle(
+                Command::SendMessage(SendMessage {
+                    delivery_mode: DeliveryMode::Lazy,
+                    user_intent: None,
+                    thread,
+                    body: format!("prefix-body-{n}"),
+                    direct_recipient: None,
+                    invited_recipients: vec![],
+                    deadline_millis: None,
+                    operation: OperationId::new(format!("prefix-send-{n}")),
+                    claim: sender.clone(),
+                    relays_user: false,
+                }),
+                peer(),
+                &budget(),
+            )
+            .unwrap()
+    };
+    for n in 0..101 {
+        send(foreign.clone(), n);
+    }
+    send(ThreadId::new("t"), 101);
+    assert_eq!(
+        f.db.query_row(
+            "SELECT count(*) FROM send_manifests WHERE instance_id='i'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        102
+    );
+    let native = wake_attention(&f);
+    let refresh = || {
+        f.store
+            .presentation_refresh(
+                &recipient.seat,
+                recipient.binding_generation,
+                recipient.native_session.as_str(),
+                &budget(),
+            )
+            .unwrap()
+            .unwrap()
+    };
+    let first = refresh();
+    assert_eq!(
+        (
+            first.ordinary_publication_visits,
+            first.ordinary_publication_probes,
+            first.ordinary_publication_seeks
+        ),
+        (100, 100, 2)
+    );
+    assert!(
+        first.more,
+        "foreign rows still require bounded maintenance continuation"
+    );
+    assert_eq!(
+        first.version, 0,
+        "no addressed publication in first quantum"
+    );
+    let second = refresh();
+    assert_eq!(
+        (
+            second.ordinary_publication_visits,
+            second.ordinary_publication_probes,
+            second.ordinary_publication_seeks
+        ),
+        (2, 3, 2)
+    );
+    assert!(
+        second.version > first.version,
+        "addressed final row advances passive content"
+    );
+    let quiet = refresh();
+    assert_eq!(
+        (
+            quiet.ordinary_publication_visits,
+            quiet.ordinary_publication_probes,
+            quiet.ordinary_publication_seeks
+        ),
+        (0, 0, 1)
+    );
+    assert_eq!(quiet.version, second.version);
+    assert!(!quiet.more);
+    assert_eq!(
+        wake_attention(&f),
+        native,
+        "maintenance never adds native wake eligibility"
+    );
+    let mut bodies = Vec::new();
+    for _ in 0..32 {
+        match presentation_test_pull(&f, &recipient) {
+            crate::protocol::delivery::DeliveryPullReplyV2::Page(page) => {
+                bodies.push(page.text.clone());
+                presentation_test_confirm(&f, &recipient, &page);
+                if !page.more {
+                    break;
+                }
+            }
+            _ => break,
+        }
+    }
+    assert!(bodies.join("\n").contains("prefix-body-101"));
+    assert!(!bodies.join("\n").contains("prefix-body-100"));
+}
+
+#[test]
+fn presentation_publication_invalid_scalars_refuse_before_confirmation_effects() {
+    use crate::protocol::delivery::{
+        DeliveryPresentationConfirmV2, DeliveryPullReplyV2, PresentationConsumer,
+    };
+    for (after, high, passive, scan) in [(2, 1, 0, 0), (0, 0, 1, 2)] {
+        let f = fixture(0);
+        let recipient = pull_seat(&f);
+        let inviter = check_in(
+            &f,
+            claim("x", "px", fourth(), "invalid-scalar-inviter", 0),
+            "invalid-scalar-ci",
+        );
+        canonical_lazy_invitation_backlog(&f, &recipient, &inviter, 1, "invalid-scalar");
+        let DeliveryPullReplyV2::Page(page) = presentation_test_pull(&f, &recipient) else {
+            panic!("page")
+        };
+        f.db.execute("UPDATE invitation_presentation_consumers SET ordinary_publication_after=?1,ordinary_publication_high=?2,ordinary_passive_generation=?3,ordinary_scan_passive_generation=?4 WHERE seat_id='s' AND consumer='hook'",rusqlite::params![after,high,passive,scan]).unwrap();
+        let snapshot = || {
+            f.db.query_row("SELECT outbox_token,outbox_retired_mask,outbox_confirmed_mask FROM invitation_presentation_consumers WHERE seat_id='s' AND consumer='hook'",[],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?))).unwrap()
+        };
+        let before = snapshot();
+        let result = f.store.presentation_confirm(
+            &DeliveryPresentationConfirmV2 {
+                claim: recipient,
+                consumer: PresentationConsumer::Hook,
+                token: page.presentation_token.unwrap(),
+                emitted_controls: page.emitted_controls,
+                presentation_lease: None,
+            },
+            &budget(),
+        );
+        assert!(matches!(
+            result,
+            Err(crate::protocol::results::ApiError {
+                code: crate::protocol::results::ErrorCode::StoreCorrupt,
+                ..
+            })
+        ));
+        assert_eq!(snapshot(), before);
+    }
+}
+
+#[test]
+fn presentation_publication_refresh_and_pull_rebind_preserve_each_others_progress() {
+    use crate::{
+        ports::PresentationInput,
+        protocol::{
+            commands::{DeliveryMode, SendMessage},
+            delivery::{DeliveryPullV2, PresentationConsumer},
+        },
+    };
+    for (refresh_first, same_generation_repair) in
+        [(false, false), (true, false), (false, true), (true, true)]
+    {
+        let f = fixture(0);
+        let recipient = pull_seat(&f);
+        let sender = check_in(
+            &f,
+            claim("x", "px", fourth(), "reset-publication-sender", 0),
+            "reset-publication-ci",
+        );
+        for n in 0..201 {
+            f.service
+                .handle(
+                    Command::SendMessage(SendMessage {
+                        delivery_mode: DeliveryMode::Lazy,
+                        user_intent: None,
+                        thread: ThreadId::new("t"),
+                        body: format!("reset body {n}"),
+                        direct_recipient: None,
+                        invited_recipients: vec![],
+                        deadline_millis: None,
+                        operation: OperationId::new(format!("reset-publication-{n}")),
+                        claim: sender.clone(),
+                        relays_user: false,
+                    }),
+                    peer(),
+                    &budget(),
+                )
+                .unwrap();
+        }
+        let pull = |claim: &CallerClaim| {
+            f.store.presentation_pull(PresentationInput{frozen_render:presentation_watch_frozen(&f,claim),render_profile:crate::delivery::presentation::PresentationRenderProfile::WatchJsonLinesV1,pull:DeliveryPullV2{claim:claim.clone(),consumer:PresentationConsumer::Watch,render:crate::protocol::delivery::PresentationRenderRequest::WatchJsonLinesV1,presentation_lease:Some("0123456789abcdef0123456789abcdef".into()),marker_prefix:vec![]},attention_version:0,ordinary_version:0,with_attention:false,retry_messages:false,blocked_messages:vec![],known_messages:vec![],new_message_slots:256},&budget()).unwrap()
+        };
+        let refresh = |claim: &CallerClaim| {
+            f.store
+                .presentation_refresh(
+                    &claim.seat,
+                    claim.binding_generation,
+                    claim.native_session.as_str(),
+                    &budget(),
+                )
+                .unwrap()
+                .unwrap()
+        };
+        let initial = refresh(&recipient);
+        assert_eq!(
+            (
+                initial.ordinary_publication_visits,
+                initial.ordinary_publication_probes,
+                initial.ordinary_publication_seeks
+            ),
+            (100, 200, 2),
+            "all addressed candidates reach both indexed probes"
+        );
+        let scalar = || {
+            f.db.query_row("SELECT ordinary_publication_after,ordinary_publication_high,ordinary_passive_generation FROM invitation_presentation_consumers WHERE seat_id='s' AND consumer='watch'",[],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?))).unwrap()
+        };
+        assert_eq!(scalar().2, 1);
+        assert!(scalar().0 > 0 && scalar().0 < scalar().1);
+        let next = if same_generation_repair {
+            // Explicit canonical repair fixture: preserve generation/session,
+            // replace execution, and prove private ownership compares BOTH.
+            let next = fresh_execution(recipient.clone(), 2);
+            f.db.execute("UPDATE occupant_bindings SET execution_id=?1 WHERE seat_id='s' AND generation=?2 AND ended_at IS NULL",rusqlite::params![next.execution.as_str(),next.binding_generation as i64]).unwrap();
+            assert_eq!(next.binding_generation, recipient.binding_generation);
+            assert_ne!(next.execution, recipient.execution);
+            next
+        } else {
+            let next = rotate(&f, &recipient, "publication-reset-native", 2);
+            assert!(next.binding_generation > recipient.binding_generation);
+            next
+        };
+        if refresh_first {
+            refresh(&next);
+        } else {
+            pull(&next);
+        }
+        let first = scalar();
+        assert!(first.0 > 0 && first.0 < first.1);
+        assert_eq!(first.2, 1, "first new owner initializes exactly once");
+        if refresh_first {
+            pull(&next);
+        } else {
+            refresh(&next);
+        }
+        let second = scalar();
+        assert!(
+            second.0 > first.0,
+            "second owner keeps positive cursor, continues instead of resetting"
+        );
+        assert_eq!(second.1, first.1);
+        assert_eq!(second.2, 2);
+        // Reopen the canonical store and continue the same finite frontier.
+        let context = StoreContext::new(f.directory.join("store.db"), f.clock.clone());
+        let _reopened = context.open_writer().unwrap();
+        refresh(&next);
+        let done = scalar();
+        assert_eq!(done.0, done.1);
+        assert_eq!(done.2, 3);
+        let before = scalar();
+        refresh(&next);
+        assert_eq!(
+            scalar(),
+            before,
+            "quiet refresh preserves completed progress"
+        );
+    }
+}
+
+#[test]
+fn presentation_private_context_cursors_refuse_invalid_thread_ids_before_effects() {
+    use crate::protocol::delivery::{
+        DeliveryPresentationConfirmV2, DeliveryPullReplyV2, PresentationConsumer,
+    };
+    for field in [
+        "context_after_thread",
+        "context_thread",
+        "mod_context_after_thread",
+        "mod_context_thread",
+    ] {
+        for bad in ["x".repeat(129), "bad thread".into(), "λ".into()] {
+            let f = fixture(0);
+            let recipient = pull_seat(&f);
+            let inviter = check_in(
+                &f,
+                claim("x", "px", fourth(), "cursor-bound-inviter", 0),
+                "cursor-bound-ci",
+            );
+            canonical_lazy_invitation_backlog(&f, &recipient, &inviter, 1, "cursor-bound");
+            let DeliveryPullReplyV2::Page(page) = presentation_test_pull(&f, &recipient) else {
+                panic!("page")
+            };
+            f.db.execute(&format!("UPDATE invitation_presentation_consumers SET {field}=?1 WHERE seat_id='s' AND consumer='hook'"),[bad]).unwrap();
+            let snapshot = || {
+                f.db.query_row("SELECT outbox_token,outbox_retired_mask,outbox_confirmed_mask,context_after_thread,context_thread,mod_context_after_thread,mod_context_thread FROM invitation_presentation_consumers WHERE seat_id='s' AND consumer='hook'",[],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?,r.get::<_,String>(3)?,r.get::<_,String>(4)?,r.get::<_,String>(5)?,r.get::<_,String>(6)?))).unwrap()
+            };
+            let before = snapshot();
+            let result = f.store.presentation_confirm(
+                &DeliveryPresentationConfirmV2 {
+                    claim: recipient,
+                    consumer: PresentationConsumer::Hook,
+                    token: page.presentation_token.unwrap(),
+                    emitted_controls: page.emitted_controls,
+                    presentation_lease: None,
+                },
+                &budget(),
+            );
+            assert!(
+                matches!(
+                    result,
+                    Err(crate::protocol::results::ApiError {
+                        code: crate::protocol::results::ErrorCode::StoreCorrupt,
+                        ..
+                    })
+                ),
+                "{field} invalid cursor must refuse before effects: {result:?}"
+            );
+            assert_eq!(snapshot(), before);
+        }
+    }
+}
+
+#[test]
+fn presentation_private_item_refresh_text_bounds_refuse_before_effects() {
+    for (field, bad) in [
+        ("mod_key", "x".repeat(4097)),
+        ("mod_execution", "x".repeat(129)),
+    ] {
+        let f = fixture(0);
+        let recipient = pull_seat(&f);
+        let inviter = check_in(
+            &f,
+            claim("x", "px", fourth(), "item-bound-inviter", 0),
+            "item-bound-ci",
+        );
+        canonical_lazy_invitation_backlog(&f, &recipient, &inviter, 1, "item-bound");
+        f.store
+            .presentation_refresh(
+                &recipient.seat,
+                recipient.binding_generation,
+                recipient.native_session.as_str(),
+                &budget(),
+            )
+            .unwrap()
+            .unwrap();
+        f.db.execute_batch("PRAGMA ignore_check_constraints=ON")
+            .unwrap();
+        f.db.execute(&format!("UPDATE invitation_presentation_items SET {field}=?1 WHERE seat_id='s' AND consumer='watch'"),[bad]).unwrap();
+        f.db.execute_batch("PRAGMA ignore_check_constraints=OFF")
+            .unwrap();
+        let snapshot = || {
+            f.db.query_row("SELECT mod_version,mod_cleanup_after,mod_cleanup_high,mod_initial_after FROM invitation_presentation_consumers WHERE seat_id='s' AND consumer='watch'",[],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?))).unwrap()
+        };
+        let before = snapshot();
+        let result = f.store.presentation_refresh(
+            &recipient.seat,
+            recipient.binding_generation,
+            recipient.native_session.as_str(),
+            &budget(),
+        );
+        assert!(
+            matches!(
+                result,
+                Err(crate::protocol::results::ApiError {
+                    code: crate::protocol::results::ErrorCode::StoreCorrupt,
+                    ..
+                })
+            ),
+            "private {field} must refuse before effects: {result:?}"
+        );
+        assert_eq!(snapshot(), before);
+    }
+}
+
+#[test]
+fn presentation_publication_signal_preserves_active_capture_and_replays_across_restart() {
+    use crate::protocol::{
+        commands::{DeliveryMode, SendMessage},
+        delivery::DeliveryPullReplyV2,
+    };
+    let mut f = fixture(0);
+    let recipient = pull_seat(&f);
+    let sender = check_in(
+        &f,
+        claim("x", "px", fourth(), "capture-lazy-sender", 0),
+        "capture-lazy-ci",
+    );
+    let send = |f: &Fixture, key: &str, body: String| {
+        f.service
+            .handle(
+                Command::SendMessage(SendMessage {
+                    delivery_mode: DeliveryMode::Lazy,
+                    user_intent: None,
+                    thread: ThreadId::new("t"),
+                    body,
+                    direct_recipient: None,
+                    invited_recipients: vec![],
+                    deadline_millis: None,
+                    operation: OperationId::new(key),
+                    claim: sender.clone(),
+                    relays_user: false,
+                }),
+                peer(),
+                &budget(),
+            )
+            .unwrap()
+    };
+    canonical_lazy_invitation_backlog(&f, &recipient, &sender, 1, "capture-outbox");
+    send(&f, "capture-large", "z".repeat(65536));
+    let DeliveryPullReplyV2::Page(first) = presentation_test_pull(&f, &recipient) else {
+        panic!("large body page")
+    };
+    let scalar = |f: &Fixture| {
+        f.db.query_row("SELECT ordinary_scan_passive_generation,ordinary_passive_generation,ordinary_version,ordinary_cursor,ordinary_pending,ordinary_partial FROM invitation_presentation_consumers WHERE seat_id='s' AND consumer='hook'",[],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,String>(2)?,r.get::<_,Option<String>>(3)?,r.get::<_,String>(4)?,r.get::<_,String>(5)?))).unwrap()
+    };
+    let frozen_text:String=f.db.query_row("SELECT outbox_text FROM invitation_presentation_consumers WHERE seat_id='s' AND consumer='hook'",[],|r|r.get(0)).unwrap();
+    assert!(
+        first.presentation_token.is_some(),
+        "canonical nonordinary invitation owns replay token"
+    );
+    let captured = scalar(&f);
+    assert_eq!((captured.0, captured.1), (1, 1));
+    assert!(
+        captured.3.is_some(),
+        "actual bounded large body capture remains active"
+    );
+    send(&f, "capture-following", "later-publication-body".into());
+    let DeliveryPullReplyV2::Page(replay) = presentation_test_pull(&f, &recipient) else {
+        panic!("immutable pending output replay")
+    };
+    assert_eq!(replay.presentation_token, first.presentation_token);
+    assert_eq!(
+        replay.text, frozen_text,
+        "only frozen nonordinary projection is replayed; ordinary uses its existing display ledger"
+    );
+    let newer = scalar(&f);
+    assert_eq!((newer.0, newer.1), (1, 2));
+    assert_eq!(
+        (&newer.2, &newer.3, &newer.4, &newer.5),
+        (&captured.2, &captured.3, &captured.4, &captured.5),
+        "new signal must not reset active START tuple/body/carry"
+    );
+    restart(&mut f);
+    let DeliveryPullReplyV2::Page(restarted) = presentation_test_pull(&f, &recipient) else {
+        panic!("restart replay")
+    };
+    assert_eq!(restarted.text, frozen_text);
+    presentation_test_confirm(&f, &recipient, &restarted);
+    let mut later = false;
+    for _ in 0..32 {
+        match presentation_test_pull(&f, &recipient) {
+            DeliveryPullReplyV2::Page(page) => {
+                later |= page.text.contains("later-publication-body");
+                presentation_test_confirm(&f, &recipient, &page);
+                if later && !page.more {
+                    break;
+                }
+            }
+            DeliveryPullReplyV2::Unchanged { .. } => break,
+            other => panic!("unexpected active capture reply: {other:?}"),
+        }
+    }
+    assert!(
+        later,
+        "after frozen capture finishes, changed passive tuple starts next capture without losing following publication"
+    );
+    assert_eq!(
+        f.db.query_row(
+            "SELECT count(*) FROM lazy_recipients WHERE seat_id='s' AND state='pending'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        2,
+        "no synthetic lazy completion"
+    );
+}
+
+fn finish_presentation_attention_job(f: &Fixture, job: &str) {
+    for _ in 0..16 {
+        let progress = f
+            .store
+            .advance_work(
+                job,
+                crate::ports::DurableWorkAdmission::new(1).unwrap(),
+                &budget(),
+            )
+            .unwrap();
+        assert!(progress.processed_this_turn <= 1);
+        assert_eq!(progress.last_error, None);
+        if !progress.has_more {
+            return;
+        }
+    }
+    panic!("fixture attention job did not finish within its finite recipient bound");
+}
+
+#[test]
+fn presentation_registered_channel_materializes_each_published_warn_before_drain() {
+    use crate::{
+        ports::{
+            ModChannelSink, ModChannels, ModStoreReads, ServiceAuthorityGate,
+            ServiceConnectionAuthority, ServiceDecisionGuard, ServiceWriteTransactionProof,
+        },
+        protocol::{
+            delivery::{
+                DeliveryPullReplyV2, DeliveryPullV2, PresentationConsumer,
+                PresentationControlStampV2, PresentationRenderRequest,
+            },
+            results::ApiError,
+            service::{NotificationSeverity, ServiceNotify, ServiceOperation, ServiceResult},
+            watch::{ModDeliverySetting, WatchFrame, WatchRequest},
+        },
+        service::mod_channels::ModChannelRegistry,
+    };
+    struct Gate(ServiceAuthorId);
+    struct Guard(ServiceAuthorId);
+    impl ServiceDecisionGuard for Guard {
+        fn author(&self) -> &ServiceAuthorId {
+            &self.0
+        }
+    }
+    impl ServiceAuthorityGate for Gate {
+        fn register(
+            &self,
+            instance: &str,
+            boot: &str,
+            author: ServiceAuthorId,
+        ) -> Result<ServiceConnectionAuthority, ApiError> {
+            Ok(ServiceConnectionAuthority::new(
+                instance.into(),
+                boot.into(),
+                1,
+                author,
+            ))
+        }
+        fn decision_guard<'a>(
+            &'a self,
+            _: &ServiceWriteTransactionProof,
+            connection: &ServiceConnectionAuthority,
+        ) -> Result<Box<dyn ServiceDecisionGuard + 'a>, ApiError> {
+            assert_eq!(connection.author(), &self.0);
+            Ok(Box::new(Guard(self.0.clone())))
+        }
+        fn revoke_exact(&self, _: &ServiceConnectionAuthority) -> bool {
+            true
+        }
+    }
+
+    #[derive(Default)]
+    struct Sink(std::sync::Mutex<Vec<WatchFrame>>);
+    impl ModChannelSink for Sink {
+        fn push(&self, frame: WatchFrame) -> bool {
+            self.0.lock().unwrap().push(frame);
+            true
+        }
+    }
+    let mut f = fixture(0);
+    let recipient = check_in(
+        &f,
+        claim("c", "pc", Harness::Claude, "warn-channel-recipient", 0),
+        "warn-channel-ci",
+    );
+    let reads: Arc<dyn ModStoreReads> = f.store.clone();
+    let registry = Arc::new(ModChannelRegistry::new(
+        f.clock.clone(),
+        reads,
+        "i".into(),
+        Arc::new(|| {}),
+        ModDeliverySetting::On,
+    ));
+    f.service = DomainService::new("i".into(), f.store.clone(), f.clock.clone())
+        .with_cooperative_owner(501, Arc::new(FairWriter::new(32)))
+        .with_delivery_pull(f.state.clone())
+        .with_mod_channels(registry.clone());
+    let sink = Arc::new(Sink::default());
+    let (channel, _) = f
+        .service
+        .watch_register(
+            &WatchRequest {
+                claim: recipient.clone(),
+            },
+            sink.clone(),
+            &budget(),
+        )
+        .unwrap();
+    let lease = registry.presentation_lease(channel).unwrap();
+    registry.pass(f.clock.utc_now()).unwrap();
+    sink.0.lock().unwrap().clear();
+    let native = || {
+        f.db.query_row(
+            "SELECT COALESCE((SELECT attention_version FROM wake_work WHERE seat_id='c'),0)",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap()
+    };
+    let tx = f.db.unchecked_transaction().unwrap();
+    let author =
+        crate::store::service_substrate::ensure_reserved_author(&tx, "i", UtcMillis(0)).unwrap();
+    tx.commit().unwrap();
+    let gate = Gate(author.clone());
+    let connection = ServiceConnectionAuthority::new("i".into(), "boot".into(), 1, author);
+    for n in 0..2 {
+        sink.0.lock().unwrap().clear();
+        let before = native();
+        let text = format!("distinct channel warning {n}");
+        let ServiceResult::Notification(notification) = f
+            .store
+            .service_operation(
+                ServiceOperation::Notify(ServiceNotify {
+                    thread: ThreadId::new("t"),
+                    severity: NotificationSeverity::Warn,
+                    event_json: serde_json::json!({"text":text}),
+                    operation: OperationId::new(format!("warn-channel-notify-{n}")),
+                }),
+                &connection,
+                &gate,
+                &budget(),
+                None,
+            )
+            .unwrap()
+        else {
+            panic!("Warn")
+        };
+        assert_eq!(
+            native(),
+            before,
+            "publication precedes bounded native projection"
+        );
+        let job:String=f.db.query_row("SELECT id FROM work_jobs WHERE kind='send_attention' AND subject_id=(SELECT 'service-notify:'||preparation_id FROM service_notification_publications WHERE message_id=?1)",[notification.summary.message.as_str()],|r|r.get(0)).unwrap();
+        finish_presentation_attention_job(&f, &job);
+        assert!(
+            native() > before,
+            "each distinct Warn projects a native change even while generic relevance remains Open"
+        );
+        registry.mark_dirty();
+        registry.pass(f.clock.utc_now()).unwrap();
+        assert!(
+            sink.0
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|frame| matches!(frame, WatchFrame::Attention { .. })),
+            "healthy bounded materialization causes channel drain"
+        );
+        let CommandResult::DeliveryPulledV2(DeliveryPullReplyV2::Page(page)) = f
+            .service
+            .handle(
+                Command::DeliveryPullV2(DeliveryPullV2 {
+                    claim: recipient.clone(),
+                    consumer: PresentationConsumer::Watch,
+                    render: PresentationRenderRequest::WatchJsonLinesV1,
+                    presentation_lease: Some(lease.clone()),
+                    marker_prefix: vec![],
+                }),
+                peer(),
+                &budget(),
+            )
+            .unwrap()
+        else {
+            panic!("drained page")
+        };
+        assert!(page.items.iter().any(|item|matches!(item,crate::protocol::delivery::PresentationItemV2::Notice{warning,..} if warning==&notification.summary.message)),"each published Warn delivers its distinct Notice");
+        if n == 0 {
+            assert!(
+                page.emitted_controls
+                    .iter()
+                    .any(|v| matches!(v, PresentationControlStampV2::Attention { .. }))
+            );
+        }
+        if let Some(token) = page.presentation_token {
+            f.service
+                .handle(
+                    Command::DeliveryPresentationConfirmV2(
+                        crate::protocol::delivery::DeliveryPresentationConfirmV2 {
+                            claim: recipient.clone(),
+                            consumer: PresentationConsumer::Watch,
+                            token,
+                            emitted_controls: page.emitted_controls,
+                            presentation_lease: Some(lease.clone()),
+                        },
+                    ),
+                    peer(),
+                    &budget(),
+                )
+                .unwrap();
+        }
+    }
+    registry.unregister(channel, f.clock.utc_now());
+}
+
+#[test]
+fn presentation_publication_foreign_refresh_refuses_without_touching_hook_or_watch() {
+    let f = fixture(0);
+    let recipient = pull_seat(&f);
+    let inviter = check_in(
+        &f,
+        claim("x", "px", fourth(), "foreign-refresh-inviter", 0),
+        "foreign-refresh-ci",
+    );
+    canonical_lazy_invitation_backlog(&f, &recipient, &inviter, 1, "foreign-refresh");
+    let _ = presentation_test_pull(&f, &recipient);
+    let hook = || {
+        f.db.query_row("SELECT outbox_token,outbox_text,ordinary_publication_after,ordinary_passive_generation FROM invitation_presentation_consumers WHERE seat_id='s' AND consumer='hook'",[],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?))).unwrap()
+    };
+    let before_hook = hook();
+    f.store
+        .presentation_refresh(
+            &recipient.seat,
+            recipient.binding_generation,
+            recipient.native_session.as_str(),
+            &budget(),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        hook(),
+        before_hook,
+        "Watch maintenance is independent of Hook presentation"
+    );
+    f.db.execute(
+        "INSERT INTO host_instances(id,created_at) VALUES ('foreign-instance',0)",
+        [],
+    )
+    .unwrap();
+    f.db.execute("UPDATE invitation_presentation_consumers SET instance_id='foreign-instance' WHERE seat_id='s' AND consumer='watch'",[]).unwrap();
+    let watch = || {
+        f.db.query_row("SELECT instance_id,mod_generation,mod_execution,ordinary_publication_after,ordinary_passive_generation FROM invitation_presentation_consumers WHERE seat_id='s' AND consumer='watch'",[],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?,r.get::<_,String>(2)?,r.get::<_,i64>(3)?,r.get::<_,i64>(4)?))).unwrap()
+    };
+    let before = watch();
+    let result = f.store.presentation_refresh(
+        &recipient.seat,
+        recipient.binding_generation,
+        recipient.native_session.as_str(),
+        &budget(),
+    );
+    assert!(matches!(
+        result,
+        Err(crate::protocol::results::ApiError {
+            code: crate::protocol::results::ErrorCode::StoreCorrupt,
+            ..
+        })
+    ));
+    assert_eq!(watch(), before);
+    assert_eq!(hook(), before_hook);
+}
+
+#[test]
+fn presentation_handler_initial_ordinary_receipt_delivers_body_without_invented_attention() {
+    use crate::protocol::{
+        commands::{DeliveryMode, SendMessage},
+        delivery::{DeliveryPullReplyV2, PresentationControlStampV2},
+    };
+    let f = fixture(0);
+    let recipient = pull_seat(&f);
+    let sender = check_in(
+        &f,
+        claim("x", "px", fourth(), "initial-ordinary-sender", 0),
+        "initial-ordinary-ci",
+    );
+    f.service
+        .handle(
+            Command::SendMessage(SendMessage {
+                delivery_mode: DeliveryMode::Ordinary,
+                user_intent: None,
+                thread: ThreadId::new("t"),
+                body: "ordinary bounded response needed".into(),
+                direct_recipient: None,
+                invited_recipients: vec![],
+                deadline_millis: None,
+                operation: OperationId::new("initial-ordinary-send"),
+                claim: sender,
+                relays_user: false,
+            }),
+            peer(),
+            &budget(),
+        )
+        .unwrap();
+    assert_eq!(
+        f.db.query_row(
+            "SELECT count(*) FROM invitations WHERE seat_id='s' AND state='pending'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    let DeliveryPullReplyV2::Page(page) = presentation_test_pull(&f, &recipient) else {
+        panic!("actual ordinary body")
+    };
+    assert!(page.text.contains("ordinary bounded response needed")); // M Attention relevance is confirming invitations plus warnings;
+    // ordinary ACK obligations retain their own nudge-class message output.
+    assert!(
+        !page
+            .emitted_controls
+            .iter()
+            .any(|v| matches!(v, PresentationControlStampV2::Attention { .. }))
+    );
+    assert!(!page.offered.is_empty());
+    assert_eq!(f.db.query_row("SELECT count(*) FROM prepared_recipients pr JOIN send_manifests sm ON sm.preparation_id=pr.preparation_id LEFT JOIN receipt_state rs ON rs.message_id=sm.message_id AND rs.seat_id=pr.seat_id WHERE pr.seat_id='s' AND COALESCE(rs.state,'pending')='pending' AND pr.ack_required=1",[],|r|r.get::<_,i64>(0)).unwrap(),1,"body presentation does not ACK ordinary obligation");
+}
+
+#[test]
+fn presentation_publication_watch_reconnect_keeps_positive_frontier_without_native_wake() {
+    use crate::{
+        ports::{ModChannelSink, ModChannels, ModStoreReads},
+        protocol::{
+            commands::{DeliveryMode, SendMessage},
+            watch::{ModDeliverySetting, WatchFrame, WatchRequest},
+        },
+        service::mod_channels::ModChannelRegistry,
+    };
+    struct Sink;
+    impl ModChannelSink for Sink {
+        fn push(&self, _: WatchFrame) -> bool {
+            true
+        }
+    }
+    let mut f = fixture(0);
+    let recipient = check_in(
+        &f,
+        claim(
+            "c",
+            "pc",
+            Harness::Claude,
+            "publication-reconnect-recipient",
+            0,
+        ),
+        "publication-reconnect-ci",
+    );
+    let sender = check_in(
+        &f,
+        claim("x", "px", fourth(), "publication-reconnect-sender", 0),
+        "publication-reconnect-sender-ci",
+    );
+    let reads: Arc<dyn ModStoreReads> = f.store.clone();
+    let registry = Arc::new(ModChannelRegistry::new(
+        f.clock.clone(),
+        reads,
+        "i".into(),
+        Arc::new(|| {}),
+        ModDeliverySetting::On,
+    ));
+    f.service = DomainService::new("i".into(), f.store.clone(), f.clock.clone())
+        .with_cooperative_owner(501, Arc::new(FairWriter::new(32)))
+        .with_delivery_pull(f.state.clone())
+        .with_mod_channels(registry.clone());
+    let request = WatchRequest {
+        claim: recipient.clone(),
+    };
+    let (first, _) = f
+        .service
+        .watch_register(&request, Arc::new(Sink), &budget())
+        .unwrap();
+    let old = registry.presentation_lease(first).unwrap();
+    for n in 0..201 {
+        f.service
+            .handle(
+                Command::SendMessage(SendMessage {
+                    delivery_mode: DeliveryMode::Lazy,
+                    user_intent: None,
+                    thread: ThreadId::new("t"),
+                    body: format!("reconnect body {n}"),
+                    direct_recipient: None,
+                    invited_recipients: vec![],
+                    deadline_millis: None,
+                    operation: OperationId::new(format!("publication-reconnect-{n}")),
+                    claim: sender.clone(),
+                    relays_user: false,
+                }),
+                peer(),
+                &budget(),
+            )
+            .unwrap();
+    }
+    let native = wake_attention(&f);
+    registry.pass(f.clock.utc_now()).unwrap();
+    let state = || {
+        f.db.query_row("SELECT ordinary_publication_after,ordinary_publication_high,ordinary_passive_generation FROM invitation_presentation_consumers WHERE seat_id='c' AND consumer='watch'",[],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?))).unwrap()
+    };
+    let before = state();
+    assert!(before.0 > 0 && before.0 < before.1);
+    assert_eq!(before.2, 1);
+    registry.unregister(first, f.clock.utc_now());
+    assert!(!registry.presentation_owner_live(
+        &recipient.seat,
+        recipient.binding_generation,
+        recipient.native_session.as_str(),
+        &old
+    ));
+    assert_eq!(
+        state(),
+        before,
+        "grace transition does not rewrite canonical cursor"
+    );
+    let (second, _) = f
+        .service
+        .watch_register(&request, Arc::new(Sink), &budget())
+        .unwrap();
+    let new = registry.presentation_lease(second).unwrap();
+    assert_ne!(old, new);
+    registry.pass(f.clock.utc_now()).unwrap();
+    let continued = state();
+    assert!(continued.0 > before.0);
+    assert_eq!(continued.1, before.1);
+    assert_eq!(continued.2, 2);
+    assert_eq!(
+        wake_attention(&f),
+        native,
+        "passive reconnect maintenance never creates native eligibility"
+    );
+    registry.unregister(second, f.clock.utc_now());
+}
+
+#[test]
+fn presentation_publication_generation_overflow_rolls_back_frontier_and_version() {
+    use crate::protocol::commands::{DeliveryMode, SendMessage};
+    for field in ["ordinary_passive_generation", "mod_version"] {
+        let f = fixture(0);
+        let recipient = pull_seat(&f);
+        let sender = check_in(
+            &f,
+            claim("x", "px", fourth(), "publication-overflow-sender", 0),
+            "publication-overflow-ci",
+        );
+        f.store
+            .presentation_refresh(
+                &recipient.seat,
+                recipient.binding_generation,
+                recipient.native_session.as_str(),
+                &budget(),
+            )
+            .unwrap()
+            .unwrap();
+        f.db.execute(&format!("UPDATE invitation_presentation_consumers SET {field}=?1 WHERE seat_id='s' AND consumer='watch'"),[i64::MAX]).unwrap();
+        f.service
+            .handle(
+                Command::SendMessage(SendMessage {
+                    delivery_mode: DeliveryMode::Lazy,
+                    user_intent: None,
+                    thread: ThreadId::new("t"),
+                    body: "overflow addressed body".into(),
+                    direct_recipient: None,
+                    invited_recipients: vec![],
+                    deadline_millis: None,
+                    operation: OperationId::new("publication-overflow-send"),
+                    claim: sender,
+                    relays_user: false,
+                }),
+                peer(),
+                &budget(),
+            )
+            .unwrap();
+        let snapshot = || {
+            f.db.query_row("SELECT ordinary_publication_after,ordinary_publication_high,ordinary_passive_generation,ordinary_scan_passive_generation,mod_version FROM invitation_presentation_consumers WHERE seat_id='s' AND consumer='watch'",[],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?,r.get::<_,i64>(4)?))).unwrap()
+        };
+        let before = snapshot();
+        let result = f.store.presentation_refresh(
+            &recipient.seat,
+            recipient.binding_generation,
+            recipient.native_session.as_str(),
+            &budget(),
+        );
+        assert!(
+            matches!(
+                result,
+                Err(crate::protocol::results::ApiError {
+                    code: crate::protocol::results::ErrorCode::SequenceExhausted,
+                    ..
+                })
+            ),
+            "{field} overflow must refuse: {result:?}"
+        );
+        assert_eq!(
+            snapshot(),
+            before,
+            "no consumed publication or partial version write on overflow"
+        );
+    }
+}
+
+#[test]
+fn presentation_quiet_channel_observes_new_ordinary_ack_message() {
+    use crate::{
+        ports::{ModChannelSink, ModChannels, ModStoreReads},
+        protocol::{
+            commands::{DeliveryMode, SendMessage},
+            watch::{ModDeliverySetting, WatchFrame, WatchRequest},
+        },
+        service::mod_channels::ModChannelRegistry,
+    };
+    #[derive(Default)]
+    struct Sink(std::sync::Mutex<Vec<WatchFrame>>);
+    impl ModChannelSink for Sink {
+        fn push(&self, frame: WatchFrame) -> bool {
+            self.0.lock().unwrap().push(frame);
+            true
+        }
+    }
+    let mut f = fixture(0);
+    let recipient = check_in(
+        &f,
+        claim("c", "pc", Harness::Claude, "quiet-ordinary-recipient", 0),
+        "quiet-ordinary-ci",
+    );
+    let sender = check_in(
+        &f,
+        claim("x", "px", fourth(), "quiet-ordinary-sender", 0),
+        "quiet-ordinary-sender-ci",
+    );
+    let reads: Arc<dyn ModStoreReads> = f.store.clone();
+    let registry = Arc::new(ModChannelRegistry::new(
+        f.clock.clone(),
+        reads,
+        "i".into(),
+        Arc::new(|| {}),
+        ModDeliverySetting::On,
+    ));
+    f.service = DomainService::new("i".into(), f.store.clone(), f.clock.clone())
+        .with_cooperative_owner(501, Arc::new(FairWriter::new(32)))
+        .with_delivery_pull(f.state.clone())
+        .with_mod_channels(registry.clone());
+    let sink = Arc::new(Sink::default());
+    let (channel, _) = f
+        .service
+        .watch_register(
+            &WatchRequest {
+                claim: recipient.clone(),
+            },
+            sink.clone(),
+            &budget(),
+        )
+        .unwrap();
+    registry.pass(f.clock.utc_now()).unwrap();
+    sink.0.lock().unwrap().clear();
+    let native = || {
+        f.db.query_row(
+            "SELECT COALESCE((SELECT attention_version FROM wake_work WHERE seat_id='c'),0)",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap()
+    };
+    let before = native();
+    let CommandResult::MessageSent(message) = f
+        .service
+        .handle(
+            Command::SendMessage(SendMessage {
+                delivery_mode: DeliveryMode::Ordinary,
+                user_intent: None,
+                thread: ThreadId::new("t"),
+                body: "new ordinary ACK content after quiet registration".into(),
+                direct_recipient: None,
+                invited_recipients: vec![],
+                deadline_millis: None,
+                operation: OperationId::new("quiet-ordinary-send"),
+                claim: sender,
+                relays_user: false,
+            }),
+            peer(),
+            &budget(),
+        )
+        .unwrap()
+    else {
+        panic!("ordinary message")
+    };
+    assert_eq!(native(), before, "native materializer has not yet run");
+
+    let job:String=f.db.query_row("SELECT id FROM work_jobs WHERE kind='send_attention' AND subject_id=(SELECT preparation_id FROM send_manifests WHERE message_id=?1)",[message.as_str()],|r|r.get(0)).unwrap();
+    finish_presentation_attention_job(&f, &job);
+    assert!(native() > before);
+    registry.mark_dirty();
+    registry.pass(f.clock.utc_now()).unwrap();
+    let frames = sink.0.lock().unwrap().clone();
+    assert!(
+        matches!(frames.as_slice(), [WatchFrame::Attention { .. }]),
+        "new ordinary ACK message needs an admitted channel drain after quiet registration: {frames:?}"
+    );
+    registry.pass(f.clock.utc_now()).unwrap();
+    assert_eq!(
+        *sink.0.lock().unwrap(),
+        frames,
+        "unchanged ordinary publication does not repeat drains"
+    );
+
+    let CommandResult::DeliveryPulledV2(crate::protocol::delivery::DeliveryPullReplyV2::Page(page)) =
+        f.service
+            .handle(
+                Command::DeliveryPullV2(crate::protocol::delivery::DeliveryPullV2 {
+                    claim: recipient.clone(),
+                    consumer: crate::protocol::delivery::PresentationConsumer::Watch,
+                    render: crate::protocol::delivery::PresentationRenderRequest::WatchJsonLinesV1,
+                    presentation_lease: registry.presentation_lease(channel),
+                    marker_prefix: vec![],
+                }),
+                peer(),
+                &budget(),
+            )
+            .unwrap()
+    else {
+        panic!("ordinary admitted drain")
+    };
+    assert!(page.items.iter().any(|v|matches!(v,crate::protocol::delivery::PresentationItemV2::Message{id,lazy:false,content} if id==&message && content.body=="new ordinary ACK content after quiet registration" && content.ack_required)),"ordered Watch item delivers exact ordinary body and ACK requirement");
+    assert!(
+        page.emitted_controls.is_empty(),
+        "ordinary receipt alone does not invent generic Attention"
+    );
+    assert_eq!(
+        f.db.query_row(
+            "SELECT state FROM receipt_state WHERE message_id=?1 AND seat_id='c'",
+            [message.as_str()],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
+        "pending",
+        "display does not ACK"
+    );
+    f.clock.0.store(
+        1_000_000 + crate::protocol::watch::MOD_STALL_AFTER_MS as i64 + 1,
+        Ordering::Relaxed,
+    );
+    assert!(
+        registry.stalled(&recipient.seat, f.clock.utc_now()),
+        "successful native observer push preserves ordinary-only legacy publication cutoff"
+    );
+    registry.unregister(channel, f.clock.utc_now());
+}

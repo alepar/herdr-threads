@@ -896,12 +896,10 @@ fn execute_guarded_inner(
             }}),
         }),
     };
-    // Prelaunch providers independently fingerprint actual native inputs, even
-    // without owned integration; ordinary providers only recheck used hooks.
-    let config_fingerprint = if let Some(handle) = &prelaunch {
-        Some(registration.recheck_prelaunch(&adapter_request, &scope, handle, &local_budget)?)
+    let candidate_fingerprint = if let Some(handle) = &prelaunch {
+        Some(registration.recheck_prelaunch(&adapter_request, &scope, handle, &local_budget))
     } else if crate::harness::launch::optional_launch_hook(&status).is_some() {
-        Some(policy.configuration_fingerprint(&adapter_request, &scope)?)
+        Some(policy.configuration_fingerprint(&adapter_request, &scope))
     } else {
         None
     };
@@ -919,6 +917,16 @@ fn execute_guarded_inner(
             }
             missing_hook(error)
         })?;
+    // Prelaunch providers independently fingerprint actual native inputs, even
+    // without owned integration; ordinary providers only recheck used hooks.
+    let config_fingerprint = if prelaunch.is_some() || preparation.hook.is_some() {
+        Some(
+            candidate_fingerprint
+                .unwrap_or_else(|| policy.configuration_fingerprint(&adapter_request, &scope))?,
+        )
+    } else {
+        None
+    };
     // The native host carries argv only; providers cannot silently request an environment it cannot submit.
     if !preparation.environment_overrides.is_empty() {
         return Err(api(

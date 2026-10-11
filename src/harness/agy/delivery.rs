@@ -14,15 +14,17 @@
 use super::{InjectionStep, paths};
 use crate::{
     harness::adapter::{
-        DeliveryMechanism, DeliveryPolicy, HookStep, HookStepContext, HookStepDaemon, IdleWake,
-        SetupEnvironment,
+        DeliveryMechanism, DeliveryPolicy, HookStep, HookStepCompletionPayload, HookStepContext,
+        HookStepDaemon, HookStepOutput, IdleWake, SetupEnvironment,
     },
     protocol::{
         authority::{COOPERATIVE_HOOK_DELIVERY_PROVENANCE, CallerClaim},
         commands::Command,
         delivery::{
-            DeliveryConfirm, DeliveryConfirmOutcome, DeliveryPull, DeliveryPullReply,
-            DeliveryRefusalReason,
+            DeliveryConfirm, DeliveryConfirmOutcome, DeliveryPresentationConfirmV2,
+            DeliveryPresentationConfirmationV2, DeliveryPull, DeliveryPullReply,
+            DeliveryPullReplyV2, DeliveryPullV2, DeliveryRefusalReason, PresentationConsumer,
+            PresentationControlStampV2, PresentationRenderRequest, PresentationRenderSelection,
         },
         ids::{MessageId, OperationId},
         results::CommandResult,
@@ -30,8 +32,9 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::{
-    cell::OnceCell,
+    cell::{OnceCell, RefCell},
     collections::BTreeSet,
     ffi::OsStr,
     io::{Read, Seek, SeekFrom},
@@ -277,6 +280,10 @@ pub struct Injected {
 pub struct ConversationState {
     pub v: u32,
     pub seen_attention_version: Option<u64>,
+    /// Highest emitted V2 Attention epoch, retained after its scoped clear so
+    /// an old replay cannot resurrect it. Absent preserves historical V1 bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seen_presentation_epoch: Option<String>,
     pub injected: Vec<Injected>,
     /// Counts `invocationNum == 0` events.
     pub turn: u64,
@@ -290,6 +297,7 @@ impl Default for ConversationState {
         Self {
             v: 1,
             seen_attention_version: None,
+            seen_presentation_epoch: None,
             injected: Vec::new(),
             turn: 0,
             injected_this_turn: false,
@@ -589,7 +597,19 @@ impl Runtime {
 pub struct AgyHookStep;
 impl HookStep for AgyHookStep {
     fn run(&self, context: &HookStepContext<'_>) -> Vec<u8> {
-        run_step(context, &Runtime::live())
+        self.run_with_completion(context).stdout
+    }
+    fn run_with_completion(&self, context: &HookStepContext<'_>) -> HookStepOutput {
+        run_step_with_completion(context, &Runtime::live())
+    }
+    fn complete(
+        &self,
+        payload: &[u8],
+        daemon: &dyn HookStepDaemon,
+        state_dir: &Path,
+        deadline: Instant,
+    ) {
+        complete_step(payload, daemon, state_dir, deadline);
     }
 }
 
@@ -618,11 +638,19 @@ fn parse_payload(context: &HookStepContext<'_>) -> Option<Payload> {
 
 /// Complete native stdout for one top-level `PreInvocation` or `Stop`; empty on any failure.
 pub fn run_step(context: &HookStepContext<'_>, runtime: &Runtime) -> Vec<u8> {
+    run_step_with_completion(context, runtime).stdout
+}
+fn run_step_with_completion(context: &HookStepContext<'_>, runtime: &Runtime) -> HookStepOutput {
+    let empty = || HookStepOutput {
+        stdout: Vec::new(),
+        completion: None,
+        diagnostic: None,
+    };
     let Some(state_dir) = context.state_dir.as_deref() else {
-        return Vec::new();
+        return empty();
     };
     let Some(payload) = parse_payload(context) else {
-        return Vec::new();
+        return empty();
     };
     let step = Step {
         context,
@@ -630,14 +658,220 @@ pub fn run_step(context: &HookStepContext<'_>, runtime: &Runtime) -> Vec<u8> {
         state_dir,
         payload: &payload,
         state_path: paths::conversation_state(state_dir, &payload.conversation),
+        completion: RefCell::new(None),
+        diagnostic: RefCell::new(None),
     };
-    match context.decoded.metadata.native_event.as_str() {
+    let stdout = match context.decoded.metadata.native_event.as_str() {
         "PreInvocation" => step.pre_invocation(),
         "Stop" => {
             step.stop();
             Vec::new()
         }
         _ => Vec::new(),
+    };
+    HookStepOutput {
+        stdout,
+        completion: step.completion.into_inner(),
+        diagnostic: step.diagnostic.into_inner(),
+    }
+}
+
+const PRESENTATION_V2: &str = "delivery.presentation_v2";
+// State and optional probation record <=4096 each; six <=128 claim fields
+// cost <=2048 escaped bytes (five graphic IDs, one ASCII instance String).
+// Three64hex digests, optional32hex token, <=32 canonical decimal epoch stamps
+// (<3072 bytes), and fixed keys/scalars (<1024) total <14560. Nested records
+// are typed objects, not JSON strings; the actual complete serializer is capped.
+// Enforce each component and the final serialized envelope, rather than assuming
+// the private transport cap bounds a nested state or an opaque caller ID.
+const COMPLETION_MAX_BYTES: usize = 16_384;
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EmissionCompletion {
+    state: ConversationState,
+    probation: Option<DowngradeRecord>,
+    previous_probation_digest: Option<String>,
+    claim: CallerClaim,
+    conversation_key: String,
+    previous_digest: Option<String>,
+    presentation_token: Option<String>,
+    emitted_controls: Vec<PresentationControlStampV2>,
+    now_ms: u64,
+    existed: bool,
+}
+fn hex_digest(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+fn valid_hex(value: &str, size: usize) -> bool {
+    value.len() == size
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+fn valid_completion(completion: &EmissionCompletion) -> bool {
+    let claim = &completion.claim;
+    let bounded_id = |id: &str| !id.is_empty() && id.len() <= 128 && id.is_ascii();
+    completion.state.v == 1
+        && completion
+            .state
+            .seen_presentation_epoch
+            .as_deref()
+            .is_none_or(|v| decimal_epoch(v).is_some())
+        && completion.emitted_controls.len() <= MAX_TRACKED
+        && crate::protocol::delivery::validate_control_stamps(&completion.emitted_controls).is_ok()
+        && completion.emitted_controls.iter().all(|stamp| match stamp {
+            PresentationControlStampV2::Attention { epoch, .. }
+            | PresentationControlStampV2::Cleared { epoch, .. } => decimal_epoch(epoch).is_some(),
+        })
+        && completion.state.injected.len() <= MAX_TRACKED
+        && serde_json::to_vec(&completion.state).is_ok_and(|bytes| bytes.len() <= MAX_STATE_BYTES)
+        && completion.probation.as_ref().is_none_or(|record| {
+            record.v == 1
+                && record.probation
+                && serde_json::to_vec(record).is_ok_and(|bytes| bytes.len() <= MAX_STATE_BYTES)
+        })
+        && completion
+            .previous_probation_digest
+            .as_deref()
+            .is_none_or(|v| valid_hex(v, 64))
+        && [
+            claim.instance.as_str(),
+            claim.seat.as_str(),
+            claim.harness.as_str(),
+            claim.native_session.as_str(),
+            claim.execution.as_str(),
+            claim.target.as_str(),
+        ]
+        .into_iter()
+        .all(bounded_id)
+        && claim.role == crate::protocol::authority::CallerRole::TopLevel
+        && valid_hex(&completion.conversation_key, 64)
+        && completion.conversation_key == hex_digest(claim.native_session.as_str().as_bytes())
+        && completion
+            .previous_digest
+            .as_deref()
+            .is_none_or(|v| valid_hex(v, 64))
+        && completion
+            .presentation_token
+            .as_deref()
+            .is_none_or(|v| valid_hex(v, 32))
+        && completion.state.generation == Some(claim.binding_generation)
+}
+fn decimal_epoch(epoch: &str) -> Option<u64> {
+    if !crate::protocol::delivery::valid_presentation_epoch(epoch) {
+        return None;
+    }
+    epoch.parse().ok()
+}
+fn apply_emitted_controls(state: &mut ConversationState, controls: &[PresentationControlStampV2]) {
+    for stamp in controls {
+        match stamp {
+            PresentationControlStampV2::Attention { epoch, version } => {
+                let Some(incoming) = decimal_epoch(epoch) else {
+                    continue;
+                };
+                let previous = state
+                    .seen_presentation_epoch
+                    .as_deref()
+                    .and_then(decimal_epoch);
+                if previous.is_none_or(|old| incoming > old) {
+                    state.seen_presentation_epoch = Some(epoch.clone());
+                    state.seen_attention_version = Some(*version);
+                }
+            }
+            PresentationControlStampV2::Cleared { epoch, version } => {
+                if state.seen_presentation_epoch.as_deref() == Some(epoch.as_str())
+                    && state.seen_attention_version == Some(*version)
+                {
+                    state.seen_attention_version = None;
+                }
+            }
+        }
+    }
+}
+fn complete_step(payload: &[u8], daemon: &dyn HookStepDaemon, state_dir: &Path, deadline: Instant) {
+    if payload.len() > COMPLETION_MAX_BYTES || Instant::now() >= deadline {
+        return;
+    }
+    let Ok(mut completion) = serde_json::from_slice::<EmissionCompletion>(payload) else {
+        return;
+    };
+    if !valid_completion(&completion) {
+        return;
+    }
+    if let Some(token) = completion.presentation_token.as_ref() {
+        if !daemon.supports_capability(PRESENTATION_V2) {
+            return;
+        }
+        let reply = daemon.call(Command::DeliveryPresentationConfirmV2(
+            DeliveryPresentationConfirmV2 {
+                claim: completion.claim.clone(),
+                consumer: PresentationConsumer::Hook,
+                token: token.clone(),
+                presentation_lease: None,
+                emitted_controls: completion.emitted_controls.clone(),
+            },
+        ));
+        let Ok(CommandResult::DeliveryPresentationConfirmedV2(reply)) = reply else {
+            return;
+        };
+        if !matches!(
+            reply.status,
+            DeliveryPresentationConfirmationV2::Confirmed
+                | DeliveryPresentationConfirmationV2::AlreadyConfirmed
+        ) || reply.acknowledged_controls.len() > MAX_TRACKED
+            || reply
+                .acknowledged_controls
+                .iter()
+                .enumerate()
+                .any(|(index, stamp)| {
+                    !completion.emitted_controls.contains(stamp)
+                        || reply.acknowledged_controls[..index].contains(stamp)
+                        || match stamp {
+                            PresentationControlStampV2::Attention { epoch, .. }
+                            | PresentationControlStampV2::Cleared { epoch, .. } => {
+                                decimal_epoch(epoch).is_none()
+                            }
+                        }
+                })
+        {
+            return;
+        }
+        // Obsolete frozen controls may be retired canonically without a current
+        // seen acknowledgement. Only the exact returned captured subset is a hint.
+        completion.emitted_controls = reply.acknowledged_controls;
+    }
+    if Instant::now() >= deadline {
+        return;
+    }
+    // Match the existing historical 128-bit filename; the payload carries a full
+    // digest, never arbitrary filename/path material. It carries no authority.
+    let path = state_dir
+        .join("conversations")
+        .join(format!("{}.json", &completion.conversation_key[..32]));
+    let current = read_capped(&path, MAX_STATE_BYTES).map(|bytes| hex_digest(&bytes));
+    if current != completion.previous_digest {
+        return;
+    }
+    // This detects an observed change, not a lock/CAS: local hints retain
+    // their historical cooperative concurrency limits.
+    if completion.probation.is_some() {
+        let current = read_capped(&downgrade_path(state_dir), MAX_STATE_BYTES)
+            .map(|bytes| hex_digest(&bytes));
+        if current != completion.previous_probation_digest {
+            return;
+        }
+    }
+    if !completion.existed {
+        prune_conversation_states(state_dir, &path, completion.now_ms);
+    }
+    apply_emitted_controls(&mut completion.state, &completion.emitted_controls);
+    completion.state.save(&path);
+    if let Some(probation) = completion.probation {
+        save_downgrade(state_dir, &probation);
     }
 }
 
@@ -647,6 +881,8 @@ struct Step<'a> {
     state_dir: &'a Path,
     payload: &'a Payload,
     state_path: PathBuf,
+    completion: RefCell<Option<HookStepCompletionPayload>>,
+    diagnostic: RefCell<Option<String>>,
 }
 
 /// Delete regular `*.json` files in `<state_dir>/conversations` (other than `keep`) whose mtime is
@@ -790,6 +1026,8 @@ impl Step<'_> {
             return Vec::new();
         };
         let (mut state, existed) = ConversationState::load(&self.state_path);
+        let previous_digest =
+            read_capped(&self.state_path, MAX_STATE_BYTES).map(|bytes| hex_digest(&bytes));
         if self.payload.invocation == Some(0) {
             state.turn += 1;
             state.injected_this_turn = false;
@@ -802,6 +1040,7 @@ impl Step<'_> {
         {
             state.injected.clear();
             state.seen_attention_version = None;
+            state.seen_presentation_epoch = None;
             state.injected_this_turn = false;
         }
         let mut downgrade = match load_downgrade(self.state_dir) {
@@ -815,18 +1054,120 @@ impl Step<'_> {
             }
             return Vec::new();
         }
-        let reply = daemon.call(Command::DeliveryPull(DeliveryPull {
-            claim: claim.clone(),
-            seen_attention_version: state.seen_attention_version,
-            marker_prefix: self.context.command_prefix.clone(),
-        }));
-        let reply = match reply {
-            Ok(CommandResult::DeliveryPulled(reply)) => reply,
-            _ => {
-                if existed {
-                    state.save(&self.state_path);
+        // Capability discovery precedes every V2 progress/token operation. Old
+        // daemons retain the old pull bytes and historical local-hint semantics.
+        let modern = daemon.supports_capability(PRESENTATION_V2);
+        // Freeze both preferences before the request. Replay may echo another
+        // still-supported frozen selector; never reread local state to encode it.
+        let mut frozen_record = modern.then(|| self.downgrade());
+        if let Some(record) = frozen_record.as_mut()
+            && record.probation
+            && record
+                .probation_at
+                .is_none_or(|at| self.runtime.now_ms >= at.saturating_add(PROBATION_AFTER_MS))
+        {
+            let reason = record.reason.clone().unwrap_or_else(|| "misses".to_owned());
+            record.downgrade(&reason, self.runtime.now_ms);
+            save_downgrade(self.state_dir, record);
+        }
+        let confirmable_step = frozen_record
+            .as_ref()
+            .map(|record| record.step(self.runtime.now_ms))
+            .unwrap_or(InjectionStep::SystemMessage);
+        let passive_step = if frozen_record
+            .as_ref()
+            .is_some_and(|record| record.downgraded_at.is_some())
+        {
+            InjectionStep::UserMessage
+        } else {
+            InjectionStep::SystemMessage
+        };
+        let mut selected_step = None;
+        let mut expected_output_bytes = None;
+        let mut emitted_controls = Vec::new();
+        let (reply, presentation_token) = if modern {
+            match daemon.call(Command::DeliveryPullV2(DeliveryPullV2 {
+                claim: claim.clone(),
+                consumer: PresentationConsumer::Hook,
+                render: PresentationRenderRequest::Hook {
+                    confirmable_selector: confirmable_step.presentation_selector(),
+                    passive_selector: passive_step.presentation_selector(),
+                },
+                presentation_lease: None,
+                marker_prefix: self.context.command_prefix.clone(),
+            })) {
+                Ok(CommandResult::DeliveryPulledV2(DeliveryPullReplyV2::Page(page))) => {
+                    let PresentationRenderSelection::Hook { selector } = page.render else {
+                        *self.diagnostic.borrow_mut() = Some("presentation codec mismatch".into());
+                        return Vec::new();
+                    };
+                    let Some(step) = InjectionStep::from_presentation_selector(selector) else {
+                        *self.diagnostic.borrow_mut() = Some("presentation codec mismatch".into());
+                        return Vec::new();
+                    };
+                    if page.items.len() > MAX_TRACKED
+                        || (page.presentation_token.is_none()
+                            && page.items.iter().any(|item| {
+                                !matches!(
+                                    item,
+                                    crate::protocol::delivery::PresentationItemV2::Message { .. }
+                                )
+                            }))
+                        || page.output_bytes > 65_536
+                        || crate::delivery::presentation::emitted_controls(&page.items)
+                            != page.emitted_controls
+                        || crate::delivery::presentation::presentation_hook_text(&page.items)
+                            != page.text
+                        || page.emitted_controls.iter().any(|stamp| match stamp {
+                            PresentationControlStampV2::Attention { epoch, .. }
+                            | PresentationControlStampV2::Cleared { epoch, .. } => {
+                                decimal_epoch(epoch).is_none()
+                            }
+                        })
+                    {
+                        *self.diagnostic.borrow_mut() = Some("presentation codec mismatch".into());
+                        return Vec::new();
+                    }
+                    if page.items.is_empty() && page.text.is_empty() && page.output_bytes == 0 {
+                        return Vec::new(); // obsolete-empty replay is not an emitted control
+                    }
+                    selected_step = Some(step);
+                    expected_output_bytes = Some(page.output_bytes);
+                    emitted_controls = page.emitted_controls;
+                    let token = page.presentation_token;
+                    (
+                        DeliveryPullReply::Page(crate::protocol::delivery::DeliveryPage {
+                            attention_version: page.attention_version,
+                            text: page.text,
+                            offered: page.offered,
+                            truncated: page.truncated,
+                            more: page.more,
+                        }),
+                        token,
+                    )
                 }
-                return Vec::new();
+                Ok(CommandResult::DeliveryPulledV2(DeliveryPullReplyV2::Unchanged {
+                    attention_version,
+                })) => (DeliveryPullReply::Unchanged { attention_version }, None),
+                Ok(CommandResult::DeliveryPulledV2(DeliveryPullReplyV2::Refused { reason })) => {
+                    (DeliveryPullReply::Refused { reason }, None)
+                }
+                _ => return Vec::new(),
+            }
+        } else {
+            let reply = daemon.call(Command::DeliveryPull(DeliveryPull {
+                claim: claim.clone(),
+                seen_attention_version: state.seen_attention_version,
+                marker_prefix: self.context.command_prefix.clone(),
+            }));
+            match reply {
+                Ok(CommandResult::DeliveryPulled(reply)) => (reply, None),
+                _ => {
+                    if existed {
+                        state.save(&self.state_path);
+                    }
+                    return Vec::new();
+                }
             }
         };
         match reply {
@@ -839,6 +1180,9 @@ impl Step<'_> {
                 Vec::new()
             }
             DeliveryPullReply::Unchanged { attention_version } => {
+                if modern {
+                    return Vec::new();
+                }
                 state.seen_attention_version = Some(attention_version);
                 state.generation = Some(claim.binding_generation);
                 self.prune_if_new(existed);
@@ -846,9 +1190,11 @@ impl Step<'_> {
                 Vec::new()
             }
             DeliveryPullReply::Page(page) => {
-                state.seen_attention_version = Some(page.attention_version);
+                if !modern {
+                    state.seen_attention_version = Some(page.attention_version);
+                }
                 state.generation = Some(claim.binding_generation);
-                let mut record = self.downgrade();
+                let mut record = frozen_record.unwrap_or_else(|| self.downgrade());
                 let now = self.runtime.now_ms;
                 // A probation turn that never reached a `Stop` (agy killed) ends after 24 h.
                 if record.probation
@@ -865,30 +1211,80 @@ impl Step<'_> {
                 // spends a probation turn, and a downgraded harness gets the step
                 // known to work.
                 let confirmable = !page.offered.is_empty();
-                let step = if confirmable {
-                    record.step(now)
-                } else if record.downgraded_at.is_some() {
-                    InjectionStep::UserMessage
-                } else {
-                    InjectionStep::SystemMessage
-                };
+                let step = selected_step.unwrap_or_else(|| {
+                    if confirmable {
+                        record.step(now)
+                    } else if record.downgraded_at.is_some() {
+                        InjectionStep::UserMessage
+                    } else {
+                        InjectionStep::SystemMessage
+                    }
+                });
+                let previous_probation_digest =
+                    read_capped(&downgrade_path(self.state_dir), MAX_STATE_BYTES)
+                        .map(|bytes| hex_digest(&bytes));
+                let mut probation = None;
                 if confirmable
                     && record.downgraded_at.is_some()
                     && !record.probation
                     && step == InjectionStep::SystemMessage
+                    && (!modern || confirmable_step == InjectionStep::SystemMessage)
                 {
-                    // The probation turn opens: one systemMessage retry.
+                    // Opening the retry is output-coupled. An un-emitted or
+                    // unconfirmed page cannot spend this one probation turn.
                     record.probation = true;
                     record.probation_at = Some(now);
-                    save_downgrade(self.state_dir, &record);
+                    probation = Some(record);
                 }
                 let user = step == InjectionStep::UserMessage;
-                let output = step.render(&page.text);
+                let stdout = if modern {
+                    let Some(bytes) = step.encode_presentation(&page.text) else {
+                        *self.diagnostic.borrow_mut() = Some("presentation codec mismatch".into());
+                        return Vec::new();
+                    };
+                    if Some(bytes.len() as u32) != expected_output_bytes {
+                        *self.diagnostic.borrow_mut() = Some("presentation codec mismatch".into());
+                        return Vec::new();
+                    }
+                    bytes
+                } else {
+                    // Historical V1 wire bytes and hint semantics are unchanged.
+                    let Ok(bytes) = serde_json::to_vec(&step.render(&page.text)) else {
+                        return Vec::new();
+                    };
+                    bytes
+                };
                 let offset = self.transcript_len();
                 state.record_injection(&page.offered, offset, user);
-                self.prune_if_new(existed);
-                state.save(&self.state_path);
-                serde_json::to_vec(&output).unwrap_or_default()
+                // Apply the existing bounded-state pruning policy before deriving
+                // the payload. No seen/injected/token state is saved during preparation.
+                let _ = state.serialize_bounded();
+                let completion = EmissionCompletion {
+                    state,
+                    probation,
+                    previous_probation_digest,
+                    claim: claim.clone(),
+                    conversation_key: hex_digest(self.payload.conversation.as_bytes()),
+                    previous_digest,
+                    presentation_token,
+                    emitted_controls,
+                    now_ms: self.runtime.now_ms,
+                    existed,
+                };
+                if !valid_completion(&completion) {
+                    return Vec::new();
+                }
+                let Ok(bytes) = serde_json::to_vec(&completion) else {
+                    return Vec::new();
+                };
+                if bytes.len() > COMPLETION_MAX_BYTES {
+                    return Vec::new();
+                }
+                let Some(payload) = HookStepCompletionPayload::new(bytes) else {
+                    return Vec::new();
+                };
+                *self.completion.borrow_mut() = Some(payload);
+                stdout
             }
         }
     }

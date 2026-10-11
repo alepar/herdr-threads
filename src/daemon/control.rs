@@ -262,6 +262,10 @@ where
         self.domain.watch_register(request, sink, budget)
     }
 
+    fn watch_presentation_lease(&self, channel: crate::ports::ModChannelId) -> Option<String> {
+        self.domain.watch_presentation_lease(channel)
+    }
+
     fn watch_unregister(
         &self,
         channel: crate::ports::ModChannelId,

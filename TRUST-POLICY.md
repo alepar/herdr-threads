@@ -1084,3 +1084,107 @@ Launch setup status failures/unavailable observations are diagnostic and establi
 owned-hook claim. They do not veto an independently validated native launch. The
 selected binary, native API/profile inputs and fingerprints of configuration actually
 used remain mandatory; incomplete structural observations still refuse submission.
+
+## Bounded invitation presentation (2026-10-11)
+
+Invitation presentation is cooperative FULL OFFER evidence after complete stdout
+write and flush, for both fixed Hook and Watch consumers. It is neither invitation
+acceptance nor a message receipt ACK, transcript proof, or model uptake. A7's
+accepted downstream silent-loss limit still applies. A crash after flush but before
+canonical confirmation can physically replay the same logical allocation.
+
+Canonical progress/outbox rows belong to the current seat and one of two fixed
+consumers. Binding history does not multiply those rows; stale generations reset
+lazily when visited. Item bookkeeping is bounded by retained canonical
+invitation-seat pairs times two consumers, plus explicit removed-item cleanup debt.
+Continued passive calls drain finite cleanup debt; no cleanup progress is promised
+without calls. Context changes coalesce per retained thread: eventual latest context
+requires that thread and relevant render shape to become quiescent; every transient
+revision is not promised. This does not alter invitation/receipt deadline guarantees.
+
+Upgrade40 constructs exact ordinal-seek indexes over the existing canonical
+pending-invitation projection. Its index startup cost scales with indexed pending
+rows; it seeds no new projection and rewrites no invitation history. The invitation
+command epoch uses byte-preserving ADD COLUMN with DEFAULT0 and no added CHECK.
+On the actual released STRICT invitation relation, linked SQLite invokes named-table
+quick_check: one-time read validation covers retained invitation rows/types/existing
+CHECK expressions and invitation index pages/bytes, plus catalog/schema work.
+No constant-time, no-row-read or all-retained-table startup guarantee is claimed.
+The earlier outer-VM-only metadata/no-row-validation inference is superseded.
+Deadline processing resumes after healthy migration without deadline resets.
+Canonical readers/writers reject negative epochs and checked increments reject
+exhaustion atomically. New presentation tables enforce their bounded-state constraints.
+
+Private ordinary presentation partial state preserves the inherited 8 KiB body
+limit. Only the current cursor's one incomplete message may be retained; checked
+readers and writers reject multiple entries, invalid message identities, or a
+partial at or above 8192 raw bytes. Its JSON bound is 49415 bytes: at most six
+serialized bytes per raw body byte, twice the128 ASCII-graphic identity bytes,
+and seven object/key/value framing bytes. This private persistence bound does
+not enlarge ordinary display, invitation outbox, final frame, or receipt ACK
+semantics. Corrupt or genuinely oversized records are refused.
+
+
+Private capable-delivery ordinary carry stores at most32 structured <=8KiB presentation bodies with one <=8-argument/4096-byte frozen marker prefix. Its serialized cap is155731 bytes:65536 fetched-page bytes +49146 escaped previous-partial bytes +32*512 metadata +24601 prefix +64 framing. This does not increase model output, canonical body or RPC limits. Marker reconstruction uses only the exact producer-generated suffix and frozen prefix; it is not receipt or identity authority. Checked loads refuse malformed or out-of-contract private records.
+
+
+Ordinary Lazy publication observation uses a fixed per-seat/fixed-consumer
+cursor over immutable instance publication order. Each admitted pull or passive
+refresh inspects at most100 manifests before recipient filtering, with at most200
+keyed probes and three publication range/head seeks. This adds100 source visits:
+refresh visits at most160, fresh pull433, plus separately declared indexed probes.
+No publication audience fanout, global output version or native wake is added.
+Initial/rebound consumers may traverse all retained instance publications before
+reaching addressed content. A stable prefix of M rows needs at most ceil(M/100)+2
+successful maintenance quanta; with continuing arrivals, finite predecessor count
+P gives conservative P+2 quanta, followed by existing ordinary output traversal.
+There is no progress guarantee during perpetual admission/storage failure.
+Unlanded migration41 adds four checked default-zero private scalar columns; its
+one-time SQLite validation may inspect each existing consumer row per added CHECK
+(up to4S rows, S at most two consumers per retained seat). It does not seed message
+history/projections or reset deadlines. Already-stamped41 stores are not claimed
+to automatically rerun this unlanded refinement. Existing155731-byte raw carry,
+8KiB ordinary body and final64KiB/RPC bounds remain unchanged.
+
+A fresh explicit Watch presentation confirmation may record local channel health
+only for an applicable acknowledged Attention and the exact currently Live
+seat/generation/native-session/lease owner, checked and written under the same
+registry entry lock. Hook, passive/clear, replay, AlreadyConfirmed and refused
+confirmations do not record or reset that evidence. This timestamp is the
+existing receipt-publication cutoff, not a new stall countdown or receipt ACK.
+The allocator's single-control-per-page invariant makes fresh confirmation
+sufficient to distinguish that first application. Canonical confirmation and
+local registry bookkeeping are not durably atomic: a process crash between them
+may omit health evidence; reconnect/normal operator recovery remains necessary.
+
+Capable presentation relevance uses the union of canonical direct associations
+and prepared representations, including coexistence at the same warning id.
+Positive witnesses use exact current local condition/association authority;
+unrelated canonical mutations must not delay a still-applicable positive witness.
+The global mutation fence is negative-proof invalidation only. Continued unrelated
+writes may keep absence Unknown and delay a clear; they are never recipient output
+or native-wake authority. One bounded advance serves every successful pull/replay;
+explicit confirmation performs no discovery, fallback or revalidation walk.
+Future condition/sweep writers and repairs must preserve the exact successor
+interval chain and invalidate its canonical fence; repairing that chain is not
+an invitation to infer continuity from presentation history or local hints.
+
+Presentation has one current row per seat and fixed Hook/Watch consumer. Its
+outbox contains bounded current nonordinary descriptors, not episode history or
+ordinary-message ACK authority. Topic changes coalesce to eventual latest context
+after updates quiesce; every transient topic revision is not promised. Removal,
+binding changes and output completion use the canonical row/frontier rules.
+An output offer is cooperative physical emission after successful writer flush,
+not evidence that a model read it, accepted an invitation or acknowledged a
+receipt. Exact captured control stamps and bounded applicable acknowledged subsets
+fence local seen/probation updates; stale, foreign, unknown or refused confirmation
+never supplies those effects. Partial retirement preserves original descriptor
+slots until that token's work is complete.
+
+A pending Hook outbox retains its originally registered codec selection across
+new local System/User preferences. A genuinely removed or drifted codec refuses
+boundedly before allocation/retirement; binding/operator repair may be needed.
+Client hints never select authority or override the immutable canonical token,
+binding, render identity and boot admission. Frame sizing includes the actual
+registered native codec or Watch JSON-line bytes; the final RPC wrapper reserve
+is separate from the 64KiB presentation bound.

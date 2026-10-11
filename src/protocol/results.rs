@@ -90,6 +90,10 @@ pub enum CommandResult {
     Acknowledged(AckResult),
     ModDeliveryAcked(crate::protocol::watch::ModAckReport),
     DeliveryPulled(crate::protocol::delivery::DeliveryPullReply),
+    DeliveryPulledV2(crate::protocol::delivery::DeliveryPullReplyV2),
+    DeliveryPresentationConfirmedV2(
+        crate::protocol::delivery::DeliveryPresentationConfirmationReplyV2,
+    ),
     DeliveryConfirmed(crate::protocol::delivery::DeliveryConfirmReport),
     Left(ThreadId),
     TopicChanged(ThreadId),
@@ -1101,6 +1105,10 @@ pub enum InboxBatchV2Item {
     Invitation {
         thread: ThreadId,
         topic_data: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        goal_data: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        topic_revision: Option<u64>,
         invitation: InvitationId,
         /// Frozen modern policy; absent for historical invitation payloads.
         #[serde(default, skip_serializing_if = "Option::is_none")]

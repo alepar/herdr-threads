@@ -279,35 +279,15 @@ impl LaunchPolicy for AgyLaunch {
         if admitted.metadata().id != "agy" || status.scope != scope.setup {
             return Err(invalid("launch admission or scope mismatch"));
         }
-        if !status.installed {
-            return Err(error(
-                ErrorCode::MissingHook,
-                "the agy plugin is missing or stale; run herdr-threads setup agy",
-            ));
-        }
-        match status.enabled {
-            Some(true) => {}
-            Some(false) => {
-                return Err(error(
-                    ErrorCode::Conflict,
-                    "the herdr-threads plugin is disabled in agy; run `agy plugin enable herdr-threads`",
-                ));
-            }
-            None => {
-                return Err(error(
-                    ErrorCode::Conflict,
-                    "agy plugin enablement is unknown (config.json unreadable); fix it or run `agy plugin enable herdr-threads`",
-                ));
-            }
-        }
-        let hook = status.configured_hook.clone().ok_or_else(|| {
-            error(
-                ErrorCode::MissingHook,
-                "the agy plugin hooks are not configured; run herdr-threads setup agy",
-            )
-        })?;
+        // Readiness is advisory. Only a current, explicitly enabled integration
+        // is selected as launch input; unavailable hooks cannot block native argv.
+        let hook = (status.installed && status.enabled == Some(true))
+            .then(|| status.configured_hook.clone())
+            .flatten();
         let roots = plugin_roots(&scope.setup)?;
-        if plugin::status(&roots, &request.environment).hook.as_ref() != Some(&hook) {
+        if hook.is_some()
+            && plugin::status(&roots, &request.environment).hook.as_ref() != hook.as_ref()
+        {
             return Err(error(
                 ErrorCode::Conflict,
                 "the agy plugin changed before preparation",
@@ -317,6 +297,12 @@ impl LaunchPolicy for AgyLaunch {
             .as_str()
             .unwrap_or(AllowEntryState::Missing.as_str());
         let mut warnings = Vec::new();
+        if hook.is_none() {
+            warnings.push(
+                "agy integration unavailable; run herdr-threads setup agy and enable the plugin"
+                    .to_owned(),
+            );
+        }
         if allow == AllowEntryState::Missing.as_str() {
             warnings.push(format!(
                 "the allow entry {ALLOW_RULE} is missing from {}; agy will ask before each herdr-threads command; run herdr-threads setup agy",
@@ -325,7 +311,7 @@ impl LaunchPolicy for AgyLaunch {
         }
         Ok(LaunchPreparation {
             argv: self.compose_argv(request.argv.clone(), Vec::new())?,
-            hook: Some(hook),
+            hook,
             working_directory: scope.working_directory.clone(),
             environment_overrides: Default::default(),
             report: serde_json::json!({"agy": {
