@@ -55,7 +55,10 @@ pub fn classify(
         let binding = &candidate.binding;
         match binding.fingerprint {
             Some(fingerprint) if fingerprint.is_alive(processes) => {
-                if binding.role == BindingRole::TopLevel {
+                // Only lifecycle-claimed bindings share a process: a plain-call-only binding
+                // neither supersedes nor is superseded (ht-54r.79). Keep in step with
+                // `store::bindings::is_superseded_now` and its `supersede_rank`.
+                if binding.role == BindingRole::TopLevel && binding.lifecycle_claimed() {
                     sharing
                         .entry((
                             candidate.instance.clone(),

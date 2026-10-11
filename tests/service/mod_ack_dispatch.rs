@@ -155,6 +155,12 @@ fn fresh_execution(mut claim: CallerClaim, n: u8) -> CallerClaim {
     claim.execution = ExecutionId::new(format!("00000000-0000-4000-8000-0000000000{n:02}"));
     claim
 }
+/// The claim of a session in another process: both sessions stay connected (a same-process
+/// lifecycle claim would disconnect the older session, which then has no channel to ack through).
+fn second_process(mut claim: CallerClaim) -> CallerClaim {
+    claim.liveness = Some(crate::protocol::authority::LivenessFingerprint { pid: 2, start: 1 });
+    claim
+}
 /// Lifecycle check-in; returns the claim the daemon hands back.
 fn check_in(f: &Fixture, claim: CallerClaim, operation: &str) -> CallerClaim {
     let command = Command::CheckIn(CheckIn {
@@ -251,6 +257,53 @@ fn no_live_channel_makes_every_id_retryable_and_settles_nothing() {
 }
 
 #[test]
+fn a_plain_call_binding_with_a_live_channel_mod_acks_and_keeps_its_provenance() {
+    let f = fixture();
+    // The binding is a V32-migrated row that a plain call then re-adopts, and the plain call
+    // never rewrites its observation provenance.
+    let first = claude(&f, "n1");
+    let id = binding_of(&f, "n1");
+    f.db.execute(
+        "UPDATE occupant_bindings SET observation_provenance='cooperative_env_session',migrated=1,liveness='disconnected',disconnected_at=1,disconnect_reason='migrated' WHERE binding_id=?1",
+        [id.as_str()],
+    )
+    .unwrap();
+    let command = Command::CheckIn(CheckIn {
+        lineage_parent: None,
+        mode: CheckInMode::Current,
+        claim: claim("s", "p", Harness::Claude, "n1", first.binding_generation),
+        operation: OperationId::new("plain-1"),
+    });
+    let context = match f.service.handle(command, peer(), &budget()).unwrap() {
+        CommandResult::CheckedIn(result) => result.context,
+        other => panic!("unexpected {other:?}"),
+    };
+    let (liveness, provenance): (String, String) =
+        f.db.query_row(
+            "SELECT liveness,observation_provenance FROM occupant_bindings WHERE binding_id=?1",
+            [id.as_str()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        liveness, "connected",
+        "the plain call re-adopts the binding"
+    );
+    assert_eq!(provenance, "cooperative_env_session");
+    let report = ack(&f, context, &["m1"], "op").unwrap();
+    assert_eq!(all(&report), vec![(ModAckOutcome::Settled, None)]);
+    assert_eq!(acked_by(&f, "m1").as_deref(), Some(id.as_str()));
+    let provenance: String =
+        f.db.query_row(
+            "SELECT observation_provenance FROM occupant_bindings WHERE binding_id=?1",
+            [id.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(provenance, "cooperative_env_session");
+}
+
+#[test]
 fn reconnect_grace_counts_as_live() {
     let f = fixture();
     let context = claude(&f, "n1");
@@ -272,10 +325,10 @@ fn a_second_session_acks_through_its_own_binding_and_the_older_one_still_does() 
     // /clear: a new native session is a binding of its own beside the first.
     let second = check_in(
         &f,
-        fresh_execution(
+        second_process(fresh_execution(
             claim("s", "p", Harness::Claude, "n2", first.binding_generation),
             2,
-        ),
+        )),
         "ci-2",
     );
     assert_eq!(second.binding_generation, first.binding_generation);
@@ -304,10 +357,10 @@ fn mod_ack_settles_as_the_channels_binding() {
     let first = claude(&f, "n1");
     let second = check_in(
         &f,
-        fresh_execution(
+        second_process(fresh_execution(
             claim("s", "p", Harness::Claude, "n2", first.binding_generation),
             2,
-        ),
+        )),
         "ci-2",
     );
     let (n1, n2) = (binding_of(&f, "n1"), binding_of(&f, "n2"));

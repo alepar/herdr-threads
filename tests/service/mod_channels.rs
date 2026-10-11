@@ -1116,13 +1116,34 @@ mod domain {
     }
 
     #[test]
+    fn watch_register_accepts_a_plain_call_enrolled_binding() {
+        let rig = rig();
+        db(&rig)
+            .execute(
+                "UPDATE occupant_bindings SET observation_provenance='cooperative_env_session'",
+                [],
+            )
+            .unwrap();
+        register(&rig, &request()).unwrap();
+        assert!(rig.registry.is_live(&seat("s"), &rig.binding()));
+        let provenance: String = db(&rig)
+            .query_row(
+                "SELECT observation_provenance FROM occupant_bindings",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(provenance, "cooperative_env_session");
+    }
+
+    #[test]
     fn no_binding() {
         let rig = rig();
         let held = rig.binding();
-        // Provenance other than cooperative_top_level.
+        // The claim's key resolves to no top-level row (the binding is a subagent's).
         db(&rig)
             .execute(
-                "UPDATE occupant_bindings SET observation_provenance='operator_human'",
+                "UPDATE occupant_bindings SET role='subagent',agent_id='x',parent_binding=binding_id",
                 [],
             )
             .unwrap();
@@ -1133,7 +1154,7 @@ mod domain {
         // A disconnected binding holds no channel.
         db(&rig)
             .execute(
-                "UPDATE occupant_bindings SET observation_provenance='cooperative_top_level',liveness='disconnected',disconnected_at=5,disconnect_reason='process_exit'",
+                "UPDATE occupant_bindings SET role='top_level',agent_id='',parent_binding=NULL,liveness='disconnected',disconnected_at=5,disconnect_reason='process_exit'",
                 [],
             )
             .unwrap();
@@ -1143,10 +1164,7 @@ mod domain {
         );
         // An ended binding.
         db(&rig)
-            .execute(
-                "UPDATE occupant_bindings SET observation_provenance='cooperative_top_level',ended_at=9",
-                [],
-            )
+            .execute("UPDATE occupant_bindings SET ended_at=9", [])
             .unwrap();
         assert_eq!(
             register(&rig, &request()).unwrap_err(),

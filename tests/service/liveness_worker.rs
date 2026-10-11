@@ -246,6 +246,53 @@ fn same_fingerprint_newer_session_disconnects_the_older() {
 }
 
 #[test]
+fn a_plain_call_only_binding_neither_supersedes_nor_is_superseded() {
+    let fx = Fx::new("liveness-plain-call");
+    fx.table.set(100, 5);
+    let older = fx.bind("s", "claude", "A", Some((100, 5)), 10);
+    let newer = fx.bind("s", "claude", "B", Some((100, 5)), 20);
+    let plain = |binding: &str| {
+        fx.raw()
+            .execute(
+                "UPDATE occupant_bindings SET observation_provenance='cooperative_env_session' WHERE binding_id=?1",
+                [binding],
+            )
+            .unwrap();
+    };
+    // The newer binding was enrolled by a plain call only: it does not take the process.
+    plain(&newer);
+    let candidates = fx.store.liveness_candidates(None, &budget()).unwrap();
+    assert_eq!(classify(&candidates, fx.table.as_ref()), vec![]);
+    fx.worker.pass(&budget()).unwrap();
+    assert!(fx.connected(&older));
+    assert!(fx.connected(&newer));
+    // And the older plain-call-only binding is not superseded by a newer lifecycle one either.
+    plain(&older);
+    fx.raw()
+        .execute(
+            "UPDATE occupant_bindings SET observation_provenance='cooperative_top_level' WHERE binding_id=?1",
+            [&newer],
+        )
+        .unwrap();
+    fx.worker.pass(&budget()).unwrap();
+    assert!(fx.connected(&older));
+    assert!(fx.connected(&newer));
+    // Control: both lifecycle-claimed, the older is superseded.
+    fx.raw()
+        .execute(
+            "UPDATE occupant_bindings SET observation_provenance='cooperative_top_level'",
+            [],
+        )
+        .unwrap();
+    fx.worker.pass(&budget()).unwrap();
+    assert_eq!(
+        fx.state(&older),
+        ("disconnected".into(), Some("superseded".into()))
+    );
+    assert!(fx.connected(&newer));
+}
+
+#[test]
 fn same_fingerprint_tie_goes_to_the_later_enrolled_binding() {
     let fx = Fx::new("liveness-tie");
     fx.table.set(100, 5);

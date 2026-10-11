@@ -9,10 +9,7 @@ use crate::{
         ServiceConnectionAuthority, StorePort,
     },
     protocol::{
-        authority::{
-            COOPERATIVE_TOP_LEVEL_PROVENANCE, CallerClaim, CallerRole, Harness, OperatorActor,
-            PeerIdentity,
-        },
+        authority::{CallerClaim, CallerRole, Harness, OperatorActor, PeerIdentity},
         commands::{AckModDelivered, Command, OperatorCommand, PermitMutation},
         output::OutputSpec,
         results::{ApiError, CommandResult, ErrorCode},
@@ -829,7 +826,8 @@ impl DomainService {
             .store
             .mod_ack_binding(&self.instance, &request.claim, budget)?;
         let Some(binding) = binding.filter(|binding| {
-            binding.provenance == COOPERATIVE_TOP_LEVEL_PROVENANCE
+            binding.connected
+                && binding.harness == request.claim.harness.as_str()
                 && crate::delivery::declares(&binding.harness, DeliveryMechanism::PushChannel)
         }) else {
             // The check-in that opens the binding may not have committed yet.
@@ -961,9 +959,8 @@ impl LocalService for DomainService {
         if !crate::delivery::declares(&binding.harness, DeliveryMechanism::PushChannel) {
             return Err(Refusal::NO_PUSH_CHANNEL);
         }
-        if binding.provenance != crate::protocol::authority::COOPERATIVE_TOP_LEVEL_PROVENANCE
-            || !binding.holds_channel()
-        {
+        // Role + liveness + harness, never the observation provenance (ht-54r.79).
+        if !binding.holds_channel() || binding.harness != claim.harness.as_str() {
             return Err(Refusal::NoBinding);
         }
         if claim.instance != self.instance {
