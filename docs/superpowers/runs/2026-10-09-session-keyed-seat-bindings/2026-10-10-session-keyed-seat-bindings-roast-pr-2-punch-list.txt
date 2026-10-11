@@ -1,0 +1,18 @@
+[Should-fix] src/store/read_cursors.rs:197
+[Nit] src/harness/claude_rewrite.rs:14; src/cli/commands.rs:1760
+[Nit] src/store/lazy_delivery.rs:46
+[FYI] src/store/schema.rs:592; src/store/schema.rs:423; docs/operations.md:230
+[Nit] TRUST-POLICY.md:312
+[Should-fix] src/store/lazy_delivery.rs:507
+[Should-fix] src/service/delivery_pull.rs:249
+[Should-fix] TRUST-POLICY.md:804
+[Should-fix] src/harness/caller_env.rs:358
+[Should-fix] src/store/bindings.rs:1043
+[Should-fix] src/harness/caller_env.rs:159
+[Should-fix] src/store/bindings.rs:1285
+[Should-fix] src/harness/required_hooks.rs:29
+[Nit] src/delivery/ledger.rs:162
+[Must-fix] final review: S3 src/store/seats.rs:3403 continuity_candidates newest-row only
+[Must-fix] final review: S4 Hermes child CLI call before subagent_start supersedes parent
+[Must-fix] final review: S5 src/service/dispatch.rs:593/:717 mod channel/ACK provenance gate + seats.rs:4545 provenance overwrite
+[Must-fix] final review: S6 foreground_binding test-only predicate; carry_binding_forward liveness filter; poke path before_wake_decision no-op

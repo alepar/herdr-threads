@@ -1,7 +1,7 @@
 # super-auto run — 2026-10-09-session-keyed-seat-bindings
 
 flags: planOneShot=f skipPlanRoast=f skipCodeRoast=f autonomous=t
-phase: roast-code
+phase: fix-loop
 codeMechanism: Workflow
 
 idea: Goal: implement the new herdr-threads seat-bindings model we designed in this session, absorbing the Hermes global-enrollment work (ht-4ne, branch super-auto/hermes-global-enrollment, unmerged) it sprang from. Flags: planOneShot=false (interactive Mode A design for remaining questions), skipPlanRoast=false, skipCodeRoast=false, autonomous=true from after the design. The Codex CODEX_EXEC_SERVER_URL pane-env installer step runs separately on branch codex-daemon-env and is out of scope here.
@@ -15,7 +15,9 @@ stepBackDesign-round-1: patch — four clusters (supersede rule, V29 row classes
 roast-design: 2026-10-10-session-keyed-seat-bindings-roast-design-1.md, 2026-10-10-session-keyed-seat-bindings-roast-design-2.md
 
 roastCodeRound: 2
-roast-code: 2026-10-10-session-keyed-seat-bindings-roast-pr-1.md
+roast-code: 2026-10-10-session-keyed-seat-bindings-roast-pr-1.md, 2026-10-10-session-keyed-seat-bindings-roast-pr-2.md
+roastCodeExit: converged
+regressionPass-round-2: [Should-fix] src/service/liveness.rs:72 → ht-54r.70 (also repairs plain_call_enrolled_agent_display_acks, S2)
 stepBackCode-round-1: patch — no recurrence yet (round 1); three clusters (lazy-unread-per-binding, role-from-resolved-binding, authority-by-role-and-liveness) where the per-seat→per-binding migration was applied unevenly; sweep each rule
 scopeFilter-round-1: [Should-fix] src/store/queries.rs:6514 in-scope — The inbox v2 lazy source pages the seat-level set instead of the binding's own cursor, which breaks per-binding cursors, a core goal behavior.
 scopeFilter-round-1: [Should-fix] src/store/receipts.rs:315 in-scope — A top-level binding enrolled by a plain CLI call can never display-ACK, which is incorrect behavior in exact-session attribution and receipts.
@@ -60,3 +62,4 @@ parked:
 - base drift · escalation · "main moved to v0.7.0 (478ec4a9, schema 30: 29 direct_threads, 30 automatic_handoff); agy (super-auto/agy-harness-adapter, claims 0031 seat_wake_on) may land first. At base absorption renumber this branch's V29 session_bindings/V30 archival scope/V31 binding delivery state above main's actual max (32+ if agy landed, else 31+), re-verify the V28→Vmax upgrade tests."
 - base drift · escalation · "update: agy merged to main (ab2291c5, v0.8.0 pending release; migration 31=seat_wake_on). Absorb main at its actual tip after the fix loop; this branch's session_bindings/archival-scope/binding-delivery migrations become 32/33/34 unless the handoff redesign (s2wUWZ7n3, provisional 31..37+) lands first, then above its max."
 - base drift · decision · "absorb main BEFORE roast-code round 2 (deviation from §Base drift after-loop timing): main is +335 commits/+101k lines with colliding migrations 29-31 and a new agy harness; landing needs behaviour changes (agy in caller_env, migration renumber, seat_wake_on reconciliation) that round 2 must review. Round 2 roasts the combined tree."
+- sweep scope · decision · "phase-6 sweep includes scripts/check-harness-neutral (AGENTS.md per-change check, required CI step ci.yml:197) alongside nextest; its 68 violations (round-2 findings bindings.rs:1043, caller_env.rs:159, bindings.rs:1285, required_hooks.rs:29) are handled by the sweep-fix pass, not punch-listed, so the branch can merge green."
