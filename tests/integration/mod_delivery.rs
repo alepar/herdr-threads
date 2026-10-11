@@ -1603,6 +1603,7 @@ struct ActivationRelay {
     capacity: Option<Arc<CapacityFlow>>,
     stop: Arc<AtomicBool>,
     release: Arc<AtomicBool>,
+    response_release: Arc<AtomicBool>,
     exchanges: Arc<Mutex<Vec<ObservedExchange>>>,
     open: Arc<Mutex<Vec<UnixStream>>>,
     worker: Option<JoinHandle<()>>,
@@ -1650,6 +1651,11 @@ impl ActivationRelay {
         fs::write(&descriptor, serde_json::to_vec(&routed).unwrap()).unwrap();
         let stop = Arc::new(AtomicBool::new(false));
         let release = Arc::new(AtomicBool::new(!hold));
+        // The positive test observes canonical retirement before this child
+        // can receive its Confirm reply and Pull a successor notice page.
+        let response_release = Arc::new(AtomicBool::new(
+            !hold || !matches!(fault, ConfirmFault::None),
+        ));
         let exchanges: Arc<Mutex<Vec<ObservedExchange>>> = Arc::default();
         let open: Arc<Mutex<Vec<UnixStream>>> = Arc::default();
         let used = Arc::new(AtomicBool::new(false));
@@ -1661,6 +1667,7 @@ impl ActivationRelay {
             upstream.clone(),
         );
         let capacity_worker = capacity.clone();
+        let response_released = response_release.clone();
         let worker = std::thread::spawn(move || {
             let mut threads = Vec::new();
             for incoming in listener.incoming() {
@@ -1682,6 +1689,7 @@ impl ActivationRelay {
                 let (stopped, released, log, used) =
                     (stopped.clone(), released.clone(), log.clone(), used.clone());
                 let capacity = capacity_worker.clone();
+                let response_released = response_released.clone();
                 threads.push(std::thread::spawn(move || {
                     let mut serve = || -> std::io::Result<()> {
                         let request_bytes = activation_read(&mut downstream)?;
@@ -1731,6 +1739,14 @@ impl ActivationRelay {
                         let reply_bytes = activation_read(&mut upstream)?;
                         log.lock().unwrap()[index].reply =
                             Some(serde_json::from_slice(&reply_bytes)?);
+                        if first && matches!(fault, ConfirmFault::None) {
+                            while !response_released.load(Ordering::SeqCst) {
+                                if stopped.load(Ordering::SeqCst) {
+                                    return Ok(());
+                                }
+                                std::thread::sleep(Duration::from_millis(5));
+                            }
+                        }
                         if let (Some(flow), Some(ordinal)) = (&capacity, pull_ordinal)
                             && !flow.hold_reply(ordinal, index)?
                         {
@@ -1803,6 +1819,7 @@ impl ActivationRelay {
             capacity,
             stop,
             release,
+            response_release,
             exchanges,
             open,
             worker: Some(worker),
@@ -1829,6 +1846,10 @@ impl ActivationRelay {
         self.release.store(true, Ordering::SeqCst);
     }
 
+    fn release_response(&self) {
+        self.response_release.store(true, Ordering::SeqCst);
+    }
+
     /// A separate explicit recovery call, never the selected-consumer positive.
     fn replay(&self, captured: &ObservedExchange, change: impl FnOnce(&mut Value)) -> Value {
         let mut request = captured.request.clone();
@@ -1846,6 +1867,7 @@ impl Drop for ActivationRelay {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
         self.release();
+        self.release_response();
         let _ = UnixStream::connect(&self.endpoint);
         for socket in self
             .open
@@ -1899,6 +1921,7 @@ fn activation_capacity_flow_oracle_unwind_restores_relay() {
         capacity: Some(flow.clone()),
         stop: Arc::new(AtomicBool::new(false)),
         release: Arc::new(AtomicBool::new(false)),
+        response_release: Arc::new(AtomicBool::new(false)),
         exchanges: Arc::default(),
         open: Arc::new(Mutex::new(vec![socket])),
         worker: Some(worker),
@@ -2467,24 +2490,26 @@ fn activation_v2_elected_watch_capabilities_lease_output_confirm() {
     let mark = rig.host.mark();
     relay.release();
     let committed = relay.control_confirm(true);
+    assert_eq!(committed.request, confirm.request);
     activation_confirm_result(
         committed.reply.as_ref().unwrap(),
         "confirmed",
         &page["emitted_controls"],
     );
-    let until = Instant::now() + STEP;
-    loop {
-        let (current, last, mask) = activation_pending(&rig);
-        if current.is_none() && last.as_deref() == Some(token) && mask != 0 {
-            break;
-        }
-        assert!(
-            Instant::now() < until,
-            "timed out waiting for canonical presentation retirement of {token}; {}",
-            activation_retirement_diagnostics(&rig, &relay)
-        );
-        std::thread::sleep(Duration::from_millis(25));
-    }
+    // The upstream response proves the transaction finished. Its unchanged
+    // bytes are still held downstream, so this child cannot Pull a successor
+    // that would replace last_token before this exact canonical observation.
+    let (current, last, mask) = activation_pending(&rig);
+    assert_eq!(
+        (current, last.as_deref(), mask),
+        (
+            None,
+            Some(token),
+            (1i64 << page["emitted_controls"].as_array().unwrap().len()) - 1,
+        ),
+        "canonical retirement of the matched token/control subset; {}",
+        activation_retirement_diagnostics(&rig, &relay)
+    );
     assert_eq!(
         rig.receipt_state(&ordinary),
         "pending",
@@ -2505,6 +2530,7 @@ fn activation_v2_elected_watch_capabilities_lease_output_confirm() {
         .unwrap();
     assert_eq!(pending, 1, "presentation is not acceptance");
     rig.assert_no_prompt(mark, QUIET);
+    relay.release_response();
     // ACK and acceptance are later explicit actions; the real Watch then emits
     // a scoped clear. Keep these separate from presentation's passive effects.
     assert_eq!(
@@ -2516,7 +2542,14 @@ fn activation_v2_elected_watch_capabilities_lease_output_confirm() {
     let clear = watch.wait_line("the active scoped clear", STEP, |line| {
         line["kind"] == "attention_cleared"
     });
-    assert!(clear["presentation_epoch"].as_str().is_some());
+    let attention = items
+        .iter()
+        .find(|item| item["kind"] == "attention")
+        .unwrap();
+    assert_eq!(
+        clear["presentation_epoch"], attention["epoch"],
+        "the real clear closes the captured attention epoch"
+    );
     assert_eq!(rig.channel_state().as_deref(), Some("live"));
     assert_eq!(lease.len(), 32);
     if let Some(path) = std::env::var_os("HT_ACTIVATION_CAPTURE_PATH") {
@@ -2762,9 +2795,11 @@ fn activation_v2_watch_lazy_only_page_is_passive() {
 #[test]
 fn activation_v2_watch_replacement_replays_uncommitted_output() {
     let rig = Rig::activation();
+    // An actual programmatic Warn opens V2 relevance. Its independent setup
+    // thread is accepted before the tested passive invitation even exists.
+    activation_warn(&rig);
     let invitation = activation_invitation(&rig);
-    // Keep the invitation passive; actual ordinary pending mail supplies the
-    // attention control whose pre-dispatch loss and owner replay are tested.
+    // Ordinary mail is the no-receipt-ACK witness; it does not open the epoch.
     let ordinary = rig.send_ordinary("activation replacement ACK candidate");
     let relay = ActivationRelay::start(&rig, false, ConfirmFault::BeforeCommit);
     let mut old = rig.watch(SESSION_B);
@@ -2806,6 +2841,11 @@ fn activation_v2_watch_replacement_replays_uncommitted_output() {
         new_lease
     );
     assert_eq!(
+        new_confirm.request["command"]["args"]["token"],
+        old_confirm.request["command"]["args"]["token"],
+        "replacement replays the original canonical page token"
+    );
+    assert_eq!(
         new_confirm.request["command"]["args"]["emitted_controls"],
         page["emitted_controls"]
     );
@@ -2816,17 +2856,30 @@ fn activation_v2_watch_replacement_replays_uncommitted_output() {
     );
     let stale = relay.replay(&old_confirm, |_| {});
     activation_confirm_result(&stale, "stale_binding", &json!([]));
-    let invitations: Vec<_> = old
-        .seen
-        .iter()
-        .filter(|line| line["kind"] == "invitation")
-        .collect();
-    for line in invitations {
-        assert!(
-            replacement.seen.iter().any(|new| new == line),
-            "replacement physically emits invitation bytes"
-        );
-    }
+    let invitation_bytes = |watch: &Watch| {
+        watch
+            .stdout
+            .lock()
+            .unwrap()
+            .split_inclusive(|byte| *byte == b'\n')
+            .filter(|bytes| {
+                let line: Value = serde_json::from_slice(bytes).unwrap();
+                line["kind"] == "invitation" && line["thread"] == invitation
+            })
+            .map(<[u8]>::to_vec)
+            .collect::<Vec<_>>()
+    };
+    let original_bytes = invitation_bytes(&old);
+    assert_eq!(
+        original_bytes.len(),
+        1,
+        "original child physically emitted the passive invitation"
+    );
+    assert_eq!(
+        invitation_bytes(&replacement),
+        original_bytes,
+        "replacement physically re-emits the exact raw invitation line"
+    );
     assert!(
         replacement
             .seen
@@ -2857,9 +2910,11 @@ fn activation_v2_watch_replacement_replays_uncommitted_output() {
 #[test]
 fn activation_v2_watch_lost_confirm_response_replays_exact_subset() {
     let rig = Rig::activation();
+    // Reuse the actual Warn producer; its separate setup acceptance precedes
+    // the passive invitation, which presentation/recovery never accepts.
+    activation_warn(&rig);
     let invitation = activation_invitation(&rig);
-    // The lazy invitation remains passive; this real require-ACK message is
-    // the independent source of the nonempty attention confirmation subset.
+    // Ordinary mail remains an independent no-receipt-ACK witness.
     let ordinary = rig.send_ordinary("activation lost-response ACK candidate");
     let relay = ActivationRelay::start(&rig, true, ConfirmFault::LoseReply);
     let mut watch = rig.watch(SESSION_B);
