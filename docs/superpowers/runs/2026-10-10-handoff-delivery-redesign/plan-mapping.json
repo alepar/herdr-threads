@@ -70,7 +70,9 @@
       "tests/cli/hook.rs",
       "tests/cli/commands.rs",
       "tests/hook_entrypoint.rs",
-      "tests/harness/setup.rs"
+      "tests/harness/setup.rs",
+      "src/harness/claude_mod.rs",
+      "tests/harness/claude_mod.rs"
     ]
   },
   {
@@ -140,7 +142,8 @@
       "src/protocol/output_compact.rs",
       "tests/store/lazy_inbox.rs",
       "tests/store/topology_attachment_guard.rs",
-      "tests/protocol/capabilities.rs"
+      "tests/protocol/capabilities.rs",
+      "migrations/0030_invitation_lifecycle.sql"
     ]
   },
   {

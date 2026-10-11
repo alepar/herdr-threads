@@ -132,3 +132,8 @@ Read TRUST-POLICY.md before any protected source changes. Only implement declare
 3. Keep Hermes Python transport and bundled Claude mod canonical route extraction compatible. Publish exact command-generation and route-extraction APIs for .4.2; preserve existing registrations until explicit migration owns their transition.
 4. Run focused hook/entrypoint/setup command grammar tests and format/clippy, including repeat identical spelling and different route separation.
 
+
+### Execution preflight amendment
+
+Read fixture-preflight.md before new tests/first build. Current upstream includes main6107075f and reviewed invitation producer Task2; preserve their CLI/control discovery behavior (base-composition.md). Task3 owns stable per-event command grammar/dispatch, Task9 owns installation ownership/reuse/migration. Expose producer command API early; do not broaden into Task9 ownership migration. Exact route identity includes executable, canonical state directory, canonical host endpoint, harness and event; equivalent commands are byte-identical without per-install random UUID. Preserve all legacy entrypoints and invalid harness/event rejection before daemon effects.
+Approved scope expansion: src/harness/claude_mod.rs::launch_prefix and tests/harness/claude_mod.rs for typed stable/legacy route extraction, preventing event tokens from leaking into bundled watch argv. Preserve installation ownership/migration for Task9.
