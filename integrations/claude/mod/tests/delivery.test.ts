@@ -555,6 +555,22 @@ test('a message another binding already settled (ack_required false) is appended
   expect(busy.submits.length).toBe(0)
 })
 
+test('a promoted wake_on:all lazy row (message, ack_required false, wakes true) still wakes an idle session', async () => {
+  const h = await harness({ state: IDLE }).boot()
+  h.line(msg('p1', { ack_required: false, wakes: true }))
+  await flush()
+  expect(h.submits).toEqual([WAKE])
+  expect(h.appends.length).toBe(1)
+  expect(h.appends[0]).toContain('p1')
+  expect(h.ackRuns()[0]).toContain('p1')
+  // the settled-ordinary control in the same shape minus `wakes` appends without a wake
+  const c = await harness({ state: IDLE }).boot()
+  c.line(msg('s1', { ack_required: false }))
+  await flush()
+  expect(c.submits.length).toBe(0)
+  expect(c.appends.length).toBe(1)
+})
+
 test('an append with deny keeps the lazy row and is retried later', async () => {
   const h = await harness({ state: IDLE }).boot()
   h.appendResult = () => ({ deny: 'readonly' })

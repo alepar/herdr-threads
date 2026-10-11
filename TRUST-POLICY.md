@@ -679,7 +679,9 @@ A push-channel mod (today the bundled Claude mod) is a second completion source:
 completion it is presentation bookkeeping (no ACK actor, adoption or proof of consumption).
 
 A seat that set `wake_on: all` (A5) opts its own lazy rows into push-channel promotion: the daemon marks such a
-row `wakes` in the inbox batch, and the mod delivers it as a `message` line with no ACK to run. The daemon still
+row `wakes` in the inbox batch, and the mod delivers it as a `message` line with no ACK to run, marked `wakes`
+on the watch line so the mod still wakes an idle session for it (a `message` line with no ACK and no `wakes` is
+mail another binding already settled: appended, never an idle wake). The daemon still
 creates no receipt, deadline or wake for it. The mod may complete a promoted row delivered via `context` or
 `submit` (`watch ack --via context|submit`); the daemon completes it as a lazy row (a lazy-mode id completes
 regardless of `via`), decided against A2 under the same checks as above. The mod's completion is the

@@ -216,6 +216,7 @@ impl Assembler {
             body_len: chunk.body_len,
             truncated,
             ack_required: chunk.ack_required,
+            wakes: chunk.lazy && chunk.promoted,
         };
         self.emitted.insert(id);
         Ok(Assembled::Item(DeliveryItem {

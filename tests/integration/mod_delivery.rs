@@ -1756,6 +1756,27 @@ fn partial_body_read_does_not_advance_binding_cursor() {
     assert_eq!(rig.receipt_state(&long), "pending", "body settles nothing");
 }
 
+/// Main review I1: on a `wake_on: all` seat the real watch child streams a lazy message as a
+/// `message` line with no ACK and `wakes: true`, which the mod treats as idle-wake work; a plain
+/// lazy row on the same seat before the opt-in streams as `lazy` with no `wakes`.
+#[test]
+fn wake_on_all_promoted_lazy_line_carries_wakes() {
+    let rig = Rig::new();
+    let mut watch = rig.raw_watch(SESSION_B);
+    watch.wait_connected();
+    let quiet = rig.send_lazy("before the opt-in");
+    let line = watch.wait_item(&quiet);
+    assert_eq!(line["kind"], "lazy", "{line}");
+    assert!(line.get("wakes").is_none(), "{line}");
+    rig.cli(Some((&rig.b, PANE_B)), &["wake-on", "all"])
+        .data("wake-on");
+    let loud = rig.send_lazy("after the opt-in");
+    let line = watch.wait_item(&loud);
+    assert_eq!(line["kind"], "message", "{line}");
+    assert_eq!(line["ack_required"], false, "{line}");
+    assert_eq!(line["wakes"], true, "{line}");
+}
+
 /// Spec D7: while a channel is live no native wake prompt is sent for the
 /// seat, and the pending item stays pending until acked.
 #[test]

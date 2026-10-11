@@ -288,8 +288,9 @@ export function createCore(io) {
         user_intent: o.user_intent ?? null,
         body: String(o.body ?? ''),
         truncated,
-        // mail another binding already settled carries no obligation: appended like a lazy row, never an idle wake
-        passive: o.kind === 'lazy' || o.ack_required === false,
+        // mail another binding already settled carries no obligation: appended like a lazy row, never an idle wake;
+        // a promoted wake_on:all lazy row (`wakes: true`) is no ACK either but still wakes an idle session
+        passive: o.kind === 'lazy' || (o.ack_required === false && o.wakes !== true),
         run: S.run,
         ackable: !truncated && (o.kind === 'lazy' || o.kind === 'message'),
       })

@@ -110,3 +110,47 @@ fn promoted_row_truncation_marker_names_body_only() {
         true
     )));
 }
+
+/// Main review I1: a promoted lazy row and an ordinary message another binding already settled
+/// both reach the mod as `message` lines with `ack_required: false`. The promoted one carries
+/// `wakes: true` on the watch line, so the mod still wakes an idle session for it; the settled
+/// ordinary line omits the key (an older watch child's line reads the same).
+#[test]
+fn watch_line_marks_a_promoted_row_waking_and_omits_it_otherwise() {
+    let line = |items: Vec<DeliveryItem>| {
+        let item = &items[0];
+        serde_json::to_value(crate::protocol::watch::WatchLine::new(
+            item.id.as_str(),
+            match item.kind {
+                DeliveryKind::Lazy => WatchItem::Lazy(item.message.clone()),
+                DeliveryKind::Message => WatchItem::Message(item.message.clone()),
+            },
+        ))
+        .unwrap()
+    };
+    let promoted = line(drain(vec![lazy("loud", "hello", true)]));
+    assert_eq!(promoted["kind"], "message", "{promoted}");
+    assert_eq!(promoted["ack_required"], false, "{promoted}");
+    assert_eq!(promoted["wakes"], true, "{promoted}");
+    let quiet = line(drain(vec![lazy("quiet", "hello", false)]));
+    assert!(quiet.get("wakes").is_none(), "{quiet}");
+    let settled = line(drain(vec![InboxBatchV2Item::Message {
+        thread: ThreadId::new("t1"),
+        topic_data: "topic".into(),
+        message: MessageId::new("settled"),
+        sequence: 2,
+        sender: Some(SeatId::new("sender")),
+        author_role: None,
+        relays_user: false,
+        user_intent: None,
+        author_role_backfilled: false,
+        body: "hi".into(),
+        body_start: 0,
+        body_end: 2,
+        body_len: 2,
+        ack_candidate: None,
+    }]));
+    assert_eq!(settled["kind"], "message", "{settled}");
+    assert_eq!(settled["ack_required"], false, "{settled}");
+    assert!(settled.get("wakes").is_none(), "{settled}");
+}

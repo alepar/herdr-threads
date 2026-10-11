@@ -24,6 +24,7 @@ fn message() -> WatchMessage {
         body_len: 9000,
         truncated: true,
         ack_required: true,
+        wakes: false,
     }
 }
 
