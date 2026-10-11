@@ -618,6 +618,70 @@ fn session_mismatch_subagent_held_and_unresolved_seats_are_refused() {
     assert_eq!(refusal(pull(&f, &context, None)), Refusal::Held);
 }
 
+const MARK_MIGRATED: &str = "UPDATE occupant_bindings SET migrated=1, migrated_session=native_session, liveness='disconnected', disconnected_at=1, disconnect_reason='migrated', liveness_pid=NULL, liveness_start=NULL WHERE seat_id='s' AND ended_at IS NULL";
+
+fn open_binding_row(f: &Fixture) -> (String, String, Option<i64>, String) {
+    f.db.query_row(
+        "SELECT binding_id, liveness, liveness_pid, observation_provenance FROM occupant_bindings WHERE seat_id='s' AND ended_at IS NULL",
+        [],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_pull_re_adopts_a_migrated_binding_and_delivers() {
+    let f = fixture(1);
+    let context = pull_seat(&f);
+    let (binding_id, ..) = open_binding_row(&f);
+    f.db.execute(MARK_MIGRATED, []).unwrap();
+    assert_eq!(open_binding_row(&f).1, "disconnected");
+
+    let offered = page(pull(&f, &context, None));
+    assert!(offered.text.contains("m1"), "{}", offered.text);
+    let (after_id, liveness, pid, provenance) = open_binding_row(&f);
+    assert_eq!(after_id, binding_id, "the same binding is re-adopted");
+    assert_eq!(liveness, "connected");
+    assert_eq!(
+        pid,
+        context.liveness.map(|l| i64::from(l.pid)),
+        "the claim's fingerprint is recorded"
+    );
+    assert_eq!(provenance, "cooperative_env_session");
+    assert_eq!(
+        confirm(&f, &context, &["m1"], "op-1"),
+        vec![("m1".to_owned(), Outcome::Settled, None)]
+    );
+}
+
+#[test]
+fn a_pull_without_a_fingerprint_does_not_re_adopt_and_is_refused_no_binding() {
+    let f = fixture(1);
+    let mut context = pull_seat(&f);
+    f.db.execute(MARK_MIGRATED, []).unwrap();
+    context.liveness = None;
+    assert_eq!(refusal(pull(&f, &context, None)), Refusal::NoBinding);
+    assert_eq!(open_binding_row(&f).1, "disconnected");
+}
+
+#[test]
+fn a_pull_on_a_disconnected_non_migrated_binding_is_refused_no_binding() {
+    let f = fixture(1);
+    let context = pull_seat(&f);
+    f.db.execute(
+        "UPDATE occupant_bindings SET liveness='disconnected', disconnected_at=1, disconnect_reason='liveness_process_exit' WHERE seat_id='s' AND ended_at IS NULL",
+        [],
+    )
+    .unwrap();
+    assert_eq!(refusal(pull(&f, &context, None)), Refusal::NoBinding);
+    assert_eq!(open_binding_row(&f).1, "disconnected");
+    assert_eq!(
+        confirm(&f, &context, &["m1"], "op-1"),
+        vec![("m1".to_owned(), Outcome::Retryable, None)]
+    );
+    assert_eq!(open_binding_row(&f).1, "disconnected");
+}
+
 #[test]
 fn confirm_of_an_id_never_offered_is_not_offered_and_settles_nothing() {
     let f = fixture(1);

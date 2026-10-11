@@ -4881,6 +4881,7 @@ pub fn mod_binding_view(
         top_level: row.role == super::bindings::BindingRole::TopLevel,
         connected: row.liveness == super::bindings::Liveness::Connected,
         ended_at: row.ended_at,
+        disconnect_reason: row.disconnect_reason,
         binding_id: row.binding_id,
     });
     let attention_version: i64 = db

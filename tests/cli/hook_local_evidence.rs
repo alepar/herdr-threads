@@ -725,6 +725,11 @@ fn hook_step_runs_for_top_level_observer_events_with_claim_state_dir_and_daemon(
             assert_eq!(claim.harness.as_str(), ADAPTER.metadata().id);
             assert_eq!(claim.seat.as_str(), "callback-seat");
             assert_eq!(
+                claim.liveness,
+                Some(crate::protocol::authority::LivenessFingerprint::TEST),
+                "the step's claim carries the hook's fingerprint"
+            );
+            assert_eq!(
                 ran.daemon_answer,
                 Some(true),
                 "a running daemon is handed over"

@@ -544,6 +544,22 @@ fn the_state_file_is_created_after_a_pull_and_deleted_on_session_mismatch() {
 }
 
 #[test]
+fn a_no_binding_refusal_keeps_the_state_file() {
+    let rig = Rig::new();
+    let rt = runtime(1000, &ident("a"));
+    rig.pre(0, &offering(), &rt);
+    let before = std::fs::read(rig.state_file()).unwrap();
+    rig.pre(
+        1,
+        &Fake::with(vec![pulled(DeliveryPullReply::Refused {
+            reason: DeliveryRefusalReason::NoBinding,
+        })]),
+        &rt,
+    );
+    assert_eq!(std::fs::read(rig.state_file()).unwrap(), before);
+}
+
+#[test]
 fn an_unchanged_reply_caches_the_attention_version_and_the_next_pull_sends_it() {
     let rig = Rig::new();
     let rt = runtime(1000, &ident("a"));

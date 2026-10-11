@@ -3100,7 +3100,13 @@ fn run_hook_step(
                 (SessionReference::Native(session), Some(native)) if session == native
             )
         })
-        .and_then(|context| bridge::caller_claim(&context).ok());
+        .and_then(|context| bridge::caller_claim(&context).ok())
+        .map(|mut claim| {
+            // The honest current process, as a CLI call of this session sends; only a re-adopting
+            // pull needs it, so a failure leaves it unset.
+            claim.liveness = hook_fingerprint(harness).ok();
+            claim
+        });
     let connected =
         RuntimeContext::from_environment(args.state_dir.clone(), args.host_endpoint.clone())
             .ok()
