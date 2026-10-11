@@ -1994,6 +1994,20 @@ mod publication_order {
         ) -> Result<CommandResult, ApiError> {
             self.inner.mutate(command, permit, budget)
         }
+        fn advance_cursors(
+            &self,
+            request: &crate::protocol::commands::AdvanceCursors,
+            budget: &CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            self.inner.advance_cursors(request, budget)
+        }
+        fn binding_event(
+            &self,
+            request: &crate::protocol::commands::BindingEvent,
+            budget: &CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            self.inner.binding_event(request, budget)
+        }
         fn prepare_send_step(
             &self,
             request: &SendMessage,
