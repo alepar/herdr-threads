@@ -625,7 +625,7 @@ impl DomainService {
 
     /// A binding's own read position (spec §2): authorised like a cooperative call, but open to
     /// declared subagents, since it never touches seat state. Decided by the store.
-    fn advance_cursors(
+    pub(super) fn advance_cursors(
         &self,
         request: &crate::protocol::commands::AdvanceCursors,
         peer: PeerIdentity,
@@ -1147,7 +1147,7 @@ impl LocalService for DomainService {
             }
             Command::AdvanceCursors(request) => self.advance_cursors(&request, peer, budget),
             Command::BindingEvent(request) => self.binding_event(&request, peer, budget),
-            Command::DeliveryPull(pull) => self.delivery_pull(pull, budget, &read),
+            Command::DeliveryPull(pull) => self.delivery_pull(pull, peer, budget, &read),
             Command::DeliveryConfirm(confirm) => self.delivery_confirm(confirm, peer, budget, read),
             command @ (Command::BeginHandoff(_)
             | Command::CompleteHandoff(_)

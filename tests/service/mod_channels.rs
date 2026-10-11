@@ -244,6 +244,7 @@ fn view(seat_name: &str, generation: u64, fingerprint: ModFingerprint) -> ModSea
             top_level: true,
             connected: true,
             ended_at: None,
+            disconnect_reason: None,
         }),
         attention_version: fingerprint.attention_version,
         fingerprint: ModFingerprint {

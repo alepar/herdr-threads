@@ -2636,6 +2636,8 @@ pub struct ModBindingView {
     pub connected: bool,
     /// When the binding ended; `None` while open.
     pub ended_at: Option<UtcMillis>,
+    /// Why the binding is disconnected (`superseded`, `migrated`, ...); `None` while connected.
+    pub disconnect_reason: Option<String>,
 }
 
 impl ModBindingView {

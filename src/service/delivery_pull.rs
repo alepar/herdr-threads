@@ -15,13 +15,13 @@ use crate::{
     ports::{ModBindingView, ModFingerprint, ModSeatView, PulledNotice, ReadContext, StorePort},
     protocol::{
         authority::{CallerClaim, CallerRole, Harness, PeerIdentity},
-        commands::{Command, InboxQuery, PermitMutation},
+        commands::{AdvanceCursors, Command, InboxQuery, PermitMutation},
         delivery::{
             DeliveryConfirm, DeliveryConfirmItem, DeliveryConfirmOutcome, DeliveryConfirmReason,
             DeliveryConfirmReport, DeliveryPage, DeliveryPull, DeliveryPullReply,
             DeliveryRefusalReason,
         },
-        ids::MessageId,
+        ids::{MessageId, OperationId},
         pagination::{Page, PageRequest},
         results::{ApiError, CommandResult, ErrorCode, InboxBatchV2Item, MAX_NOTICE_PAGE_ITEMS},
         time::CallBudget,
@@ -210,12 +210,64 @@ impl DomainService {
     fn hook_pull_view(
         &self,
         claim: &CallerClaim,
+        peer: PeerIdentity,
         budget: &CallBudget,
     ) -> Result<(ModSeatView, ModBindingView), DeliveryRefusalReason> {
         use DeliveryRefusalReason as Refusal;
         if claim.role != CallerRole::TopLevel || claim.instance != self.instance {
             return Err(Refusal::SessionMismatch);
         }
+        let (view, binding) = self.hook_binding_read(claim, budget)?;
+        // `SessionMismatch` means only a native-session mismatch: a stale conversation.
+        if binding.native_session != claim.native_session.as_str() {
+            return Err(Refusal::SessionMismatch);
+        }
+        if binding.holds_channel() {
+            return Ok((view, binding));
+        }
+        // Superseded by a `/clear` in the same process: a stale conversation, like a rotated one.
+        if binding.disconnect_reason.as_deref() == Some("superseded") {
+            return Err(Refusal::SessionMismatch);
+        }
+        if binding.ended_at.is_some() || !binding.top_level || binding.connected {
+            return Err(Refusal::NoBinding);
+        }
+        // A same-session disconnected top-level binding: the same plain cooperative call a CLI
+        // `inbox` makes. The store re-adopts a V32-migrated binding whose stored session is the
+        // claim's and only touches any other disconnected one.
+        if claim.liveness.is_none() {
+            return Err(Refusal::NoBinding);
+        }
+        let advance = AdvanceCursors {
+            claim: claim.clone(),
+            operation: OperationId::new(uuid::Uuid::new_v4().to_string()),
+            displayed: Vec::new(),
+        };
+        match self.advance_cursors(&advance, peer, budget) {
+            Ok(_) => {}
+            Err(e) if e.code == ErrorCode::ServiceBusy || e.code == ErrorCode::DeadlineExceeded => {
+                return Err(Refusal::Busy);
+            }
+            Err(_) => return Err(Refusal::NoBinding),
+        }
+        let (view, binding) = self.hook_binding_read(claim, budget)?;
+        if binding.native_session != claim.native_session.as_str() {
+            return Err(Refusal::SessionMismatch);
+        }
+        if binding.holds_channel() {
+            Ok((view, binding))
+        } else {
+            Err(Refusal::NoBinding)
+        }
+    }
+
+    /// One store read of the claim's binding, refused in the table's order up to the harness check.
+    fn hook_binding_read(
+        &self,
+        claim: &CallerClaim,
+        budget: &CallBudget,
+    ) -> Result<(ModSeatView, ModBindingView), DeliveryRefusalReason> {
+        use DeliveryRefusalReason as Refusal;
         let view = self
             .store
             .mod_binding_view(
@@ -242,14 +294,6 @@ impl DomainService {
         if binding.harness != claim.harness.as_str() {
             return Err(Refusal::NoBinding);
         }
-        // The claim's own binding no longer serves its session (superseded by a `/clear` in the
-        // same process, ended or disconnected): a stale session, like a rotated generation.
-        if !binding.holds_channel() {
-            return Err(Refusal::SessionMismatch);
-        }
-        if binding.native_session != claim.native_session.as_str() {
-            return Err(Refusal::SessionMismatch);
-        }
         Ok((view, binding))
     }
 
@@ -258,12 +302,13 @@ impl DomainService {
     pub(super) fn delivery_pull(
         &self,
         pull: DeliveryPull,
+        peer: PeerIdentity,
         budget: &CallBudget,
         read: &ReadContext,
     ) -> Result<CommandResult, ApiError> {
         pull.validate()
             .map_err(|why| error(ErrorCode::InvalidRequest, why))?;
-        let (view, binding) = match self.hook_pull_view(&pull.claim, budget) {
+        let (view, binding) = match self.hook_pull_view(&pull.claim, peer, budget) {
             Ok(decided) => decided,
             Err(reason) => return refused(reason),
         };
@@ -583,7 +628,7 @@ impl DomainService {
                     .collect(),
             }))
         };
-        let (_, binding) = match self.hook_pull_view(&confirm.claim, budget) {
+        let (_, binding) = match self.hook_pull_view(&confirm.claim, peer, budget) {
             Ok(decided) => decided,
             Err(DeliveryRefusalReason::NoHookPull) => {
                 return report(
