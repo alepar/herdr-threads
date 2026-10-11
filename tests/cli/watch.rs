@@ -120,6 +120,8 @@ struct FakeClient {
     handler: Handler,
     calls: Mutex<Vec<Command>>,
     watch_capability: bool,
+    /// The daemon also serves per-binding unread streams (`inbox.binding_cursors_v1`).
+    cursors_capability: bool,
     /// Makes the capability probe fail: `Err` is an outer (transport) failure,
     /// `Ok` a definitive daemon rejection.
     probe: Option<Result<ApiError, ApiError>>,
@@ -133,6 +135,7 @@ impl FakeClient {
             handler: Box::new(handler),
             calls: Mutex::new(Vec::new()),
             watch_capability: true,
+            cursors_capability: false,
             probe: None,
         }
     }
@@ -168,7 +171,11 @@ impl LocalClient for FakeClient {
                 Some(Ok(rejection)) => Ok(Err(rejection.clone())),
                 None => Ok(Ok(CommandResult::Capabilities(CapabilityList {
                     capabilities: if self.watch_capability {
-                        vec![MOD_WATCH.to_owned()]
+                        let mut list = vec![MOD_WATCH.to_owned()];
+                        if self.cursors_capability {
+                            list.push(crate::protocol::capabilities::BINDING_CURSORS.to_owned());
+                        }
+                        list
                     } else {
                         Vec::new()
                     },
@@ -307,6 +314,7 @@ fn run_drain(
         client,
         &clock(),
         &SeatId::new("me"),
+        None,
         version,
         state,
         &mut out,
@@ -905,6 +913,7 @@ fn drain_surfaces_daemon_errors_and_closed_stdout() {
         &client,
         &clock(),
         &SeatId::new("me"),
+        None,
         1,
         &mut EmitState::default(),
         &mut ClosedStdout,
@@ -1766,4 +1775,56 @@ fn every_chunk_failing_prints_nothing_and_exits_1() {
     assert_eq!(exit, 1);
     assert!(out.is_empty());
     assert_eq!(sent_acks(&client).len(), 2);
+}
+
+/// Every `InboxBatchV2` query the client recorded.
+fn inbox_claims(client: &FakeClient) -> Vec<Option<CallerClaim>> {
+    client
+        .calls()
+        .into_iter()
+        .filter_map(|command| match command {
+            Command::InboxBatchV2(query) => Some(query.claim),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Kills: a watch drain that reads the seat (`claim: None`), which never carries a message a
+/// sibling binding already settled.
+#[test]
+fn watch_drain_reads_the_registering_bindings_own_stream() {
+    let server = Server::start(|stream, request| {
+        write_frame(stream, &reply(&request, accepted(1)));
+    });
+    let mut client = empty_inbox();
+    client.cursors_capability = true;
+    let clock = clock();
+    let mut out = Vec::new();
+    let exit = run_session(session(&client, &clock, &server.socket), &mut out, || true);
+    assert_eq!(exit, 0);
+    let claims = inbox_claims(&client);
+    assert!(!claims.is_empty(), "the drain after Accepted ran");
+    for read in claims {
+        assert_eq!(read, Some(claim()), "the page is the binding's own stream");
+    }
+    server.finish();
+}
+
+/// Control: a daemon without `inbox.binding_cursors_v1` keeps the seat read.
+#[test]
+fn watch_drain_reads_the_seat_without_the_binding_cursors_capability() {
+    let server = Server::start(|stream, request| {
+        write_frame(stream, &reply(&request, accepted(1)));
+    });
+    let client = empty_inbox();
+    let clock = clock();
+    let mut out = Vec::new();
+    let exit = run_session(session(&client, &clock, &server.socket), &mut out, || true);
+    assert_eq!(exit, 0);
+    let claims = inbox_claims(&client);
+    assert!(!claims.is_empty());
+    for read in claims {
+        assert_eq!(read, None);
+    }
+    server.finish();
 }

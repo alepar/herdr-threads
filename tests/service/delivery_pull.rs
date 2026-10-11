@@ -936,6 +936,14 @@ fn attention_version_moves_with_every_fingerprint_field() {
             ..base.clone()
         },
         ModFingerprint {
+            unread: 1,
+            ..base.clone()
+        },
+        ModFingerprint {
+            max_unread_rowid: 1,
+            ..base.clone()
+        },
+        ModFingerprint {
             other_pending: 1,
             ..base.clone()
         },

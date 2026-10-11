@@ -62,6 +62,8 @@ pub fn attention_version(fingerprint: &ModFingerprint, newest_notice: Option<i64
     feed(fingerprint.max_pending_ordinal as u64);
     feed(fingerprint.lazy_pending);
     feed(fingerprint.max_lazy_rowid as u64);
+    feed(fingerprint.unread);
+    feed(fingerprint.max_unread_rowid as u64);
     feed(fingerprint.other_pending);
     match fingerprint.binding_generation {
         Some(generation) => {
@@ -139,12 +141,14 @@ struct StorePageSource<'a> {
     read: &'a ReadContext,
     budget: &'a CallBudget,
     seat: &'a crate::protocol::ids::SeatId,
+    /// The pulling binding's claim: every page is that binding's own stream.
+    claim: &'a CallerClaim,
 }
 
 impl PageSource for StorePageSource<'_> {
     fn page(&mut self, cursor: Option<String>) -> Result<Page<InboxBatchV2Item>, PageError> {
         let command = Command::InboxBatchV2(InboxQuery {
-            claim: None,
+            claim: Some(self.claim.clone()),
             seat: Some(self.seat.clone()),
             page: PageRequest {
                 cursor,
@@ -366,6 +370,7 @@ impl DomainService {
             read,
             budget,
             seat,
+            claim: &pull.claim,
         };
         let mut assembler = Assembler::new(None).with_command_prefix(pull.marker_prefix.clone());
         let mut blocks: Vec<FrameItem> = Vec::new();
