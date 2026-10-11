@@ -404,6 +404,47 @@ fn an_ack_through_a_binding_without_a_live_channel_is_retryable_while_the_other_
 }
 
 #[test]
+fn an_ack_through_a_superseded_binding_with_a_live_channel_is_retryable() {
+    let f = fixture();
+    let first = claude(&f, "n1");
+    let n1 = binding_of(&f, "n1");
+    // n2's lifecycle check-in in the same process supersedes n1; n1's channel is still live (it
+    // is not on `dead`), so only the binding's own liveness can refuse the ACK.
+    check_in(
+        &f,
+        fresh_execution(
+            claim("s", "p", Harness::Claude, "n2", first.binding_generation),
+            2,
+        ),
+        "ci-2",
+    );
+    let (liveness, reason): (String, Option<String>) =
+        f.db.query_row(
+            "SELECT liveness,disconnect_reason FROM occupant_bindings WHERE binding_id=?1",
+            [n1.as_str()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        (liveness.as_str(), reason.as_deref()),
+        ("disconnected", Some("superseded"))
+    );
+    let cursor = |f: &Fixture| {
+        crate::store::read_cursors::cursor_for(&f.db, &n1, &ThreadId::new("t")).unwrap()
+    };
+    let cursor_before = cursor(&f);
+    let refused = ack(&f, first, &["m1"], "op-1").unwrap();
+    assert_eq!(
+        all(&refused),
+        vec![(ModAckOutcome::Retryable, Some(ModAckReason::NoLiveChannel))]
+    );
+    assert_eq!(state(&f, "m1"), "pending");
+    assert_eq!(acked_by(&f, "m1"), None);
+    assert_eq!(cursor(&f), cursor_before, "n1's cursor is unchanged");
+    assert_eq!(f.channels.acks(), 0);
+}
+
+#[test]
 fn resume_previous_generation_same_native_session_settles() {
     let f = fixture();
     let first = claude(&f, "n1");
