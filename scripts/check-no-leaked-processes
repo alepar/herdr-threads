@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Fail when test-spawned processes outlive their run (ht-p03.131). Usage:
   check-no-leaked-processes [--run-id ID] [--root DIR] [--grace SECONDS] [--exclude PID]... [--kill]
+With --run-id, only exact HT_LEAK_RUN_ID matches are scanned or killed. Export the
+tag before the run and preserve it in every child environment; untagged children
+are outside this scope. Without --run-id, all processes use the legacy global rules.
 Rules (a process is a leak when any matches; the checker, its ancestors and
 anything in --exclude never match):
   run-id      its environment has HT_LEAK_RUN_ID=<ID>             (needs --run-id)
@@ -81,6 +84,8 @@ def classify(procs, *, root, run_id, alive, exclude, temp_prefixes):
     artifact = (root.rstrip("/") + "/target/") if root else None
     for proc in procs:
         if proc.pid in exclude:
+            continue
+        if run_id is not None and proc.env.get("HT_LEAK_RUN_ID") != run_id:
             continue
         owners = _owner_pids(proc)
         live_owner = any(alive(pid) for pid in owners)
