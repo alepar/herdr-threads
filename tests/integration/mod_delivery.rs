@@ -1413,6 +1413,9 @@ struct CapacityFlowState {
     attention_credits: usize,
     attention_forwarded: Vec<u64>,
     attention_expected_requests: Option<usize>,
+    // Actual downstream reply writes, distinct from release permits. At most
+    // one per admitted Pull (the existing admission bound is 65).
+    reply_writes: Vec<(usize, Option<String>)>,
     failure: Option<String>,
     order: u64,
     stop: bool,
@@ -1763,7 +1766,20 @@ impl ActivationRelay {
                             }
                             return Ok(());
                         }
-                        activation_write(&mut downstream, &reply_bytes)?;
+                        let written = activation_write(&mut downstream, &reply_bytes);
+                        if let (Some(flow), Some(ordinal)) = (&capacity, pull_ordinal) {
+                            let mut state = flow.lock();
+                            if state.reply_writes.len() < 65 {
+                                state.reply_writes.push((
+                                    ordinal,
+                                    written
+                                        .as_ref()
+                                        .err()
+                                        .map(|error| format!("{:?}", error.kind())),
+                                ));
+                            }
+                        }
+                        written?;
                         // Only Watch has further frames on this connection.
                         if log.lock().unwrap()[index].request.get("watch").is_some() {
                             // Propagate child EOF too: preserving only server-to-child
@@ -2689,14 +2705,14 @@ fn activation_v2_watch_full_pending_capacity_parks_until_real_channel_input() {
             other => panic!("the real current owner refused its capacity drain: {other}"),
         };
         if !more {
-            terminal = Some(ordinal);
+            terminal = Some((ordinal, index, Instant::now()));
             // The terminal response is still held: all source effects above
             // are actual daemon decisions, before any channel frame is released.
             break;
         }
         flow.release_reply(ordinal);
     }
-    let terminal = terminal.expect(
+    let (terminal, terminal_index, terminal_held_at) = terminal.expect(
         "full pending capacity must reach a terminal reply; empty Page.more is not runnable work",
     );
     assert_eq!(offered, sent[..256].iter().cloned().collect());
@@ -2725,6 +2741,7 @@ fn activation_v2_watch_full_pending_capacity_parks_until_real_channel_input() {
             // not work_jobs columns. Lane health is the exposed retry view.
         })
     };
+    let barrier_started_at = Instant::now();
     let attention_work_before = attention_work_diagnostic();
     let mut last_kicked_idle = None;
     let attention_work_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -2768,6 +2785,7 @@ fn activation_v2_watch_full_pending_capacity_parks_until_real_channel_input() {
             .push(diagnostic);
         std::panic::resume_unwind(failure)
     });
+    let barrier_elapsed = barrier_started_at.elapsed();
     assert_eq!(attention_jobs, completed_jobs);
     assert!(
         attention_jobs >= sent.len() as i64,
@@ -2800,8 +2818,75 @@ fn activation_v2_watch_full_pending_capacity_parks_until_real_channel_input() {
         .find(|item| item["content"]["id"] == sent[256])
         .expect("ID257 is retained in the actual canonical normal carry");
     assert_eq!(retained["content"]["content"]["body"], body);
+    let terminal_exchange = relay.snapshot()[terminal_index].clone();
+    let terminal_result = &terminal_exchange.reply.as_ref().unwrap()["result"]["Ok"]["data"];
+    let terminal_page = &terminal_result["args"];
+    let terminal_shape = json!({
+        "ordinal": terminal,
+        "kind": terminal_result["kind"],
+        "more": terminal_page["more"],
+        "token": terminal_page["presentation_token"],
+        "item_count": terminal_page["items"].as_array().map(Vec::len),
+        "target_offered": terminal_page["offered"].as_array().is_some_and(|ids| ids.iter().any(|id| id.as_str() == Some(sent[255].as_str()))),
+        "target_item": terminal_page["items"].as_array().is_some_and(|items| items.iter().any(|item| item["id"] == sent[255])),
+        "first_ids": terminal_page["items"].as_array().map(|items| items.iter().take(8).map(|item| item["id"].as_str().map(|id| id.chars().take(32).collect::<String>())).collect::<Vec<_>>()),
+    });
+    let held_before_release = terminal_held_at.elapsed();
     flow.release_reply(terminal);
-    watch.wait_item(&sent[255]);
+    let output_diagnostic = |watch: &mut Watch| {
+        let child = format!("{:?}", watch.child.try_wait());
+        let state = flow.lock();
+        let flow_state = json!({
+            "requests": state.requests.len(), "ready": state.ready.len(), "released": state.released,
+            "attention_seen": state.attention_seen, "attention_forwarded": state.attention_forwarded.len(),
+            "terminal_write": state.reply_writes.iter().find(|(ordinal, _)| *ordinal == terminal).map(|(_, error)| json!({"ok": error.is_none(), "error_kind": error})),
+            "writes": state.reply_writes.len(),
+            "failure": state.failure.as_deref().map(|text| text.chars().take(128).collect::<String>()),
+        });
+        drop(state);
+        let compact = |line: &Value| {
+            json!({
+                "kind": line["kind"].as_str().map(|s| s.chars().take(24).collect::<String>()),
+                "id": line["id"].as_str().map(|s| s.chars().take(32).collect::<String>()),
+                "state": line["state"].as_str().map(|s| s.chars().take(24).collect::<String>()),
+                "reason": line["reason"].as_str().map(|s| s.chars().take(64).collect::<String>()),
+                "epoch": line["presentation_epoch"], "version": line["attention_version"],
+            })
+        };
+        json!({
+            "child_try_wait": child,
+            "flow": flow_state,
+            "seen_count": watch.seen.len(),
+            "target_seen": watch.seen.iter().any(|line| line["id"] == sent[255]),
+            "seen_tail": watch.seen.iter().rev().take(4).map(compact).collect::<Vec<_>>(),
+            "status_tail": watch.seen.iter().rev().filter(|line| matches!(line["kind"].as_str(), Some("status" | "attention" | "attention_cleared"))).take(4).map(compact).collect::<Vec<_>>(),
+            "stderr": diagnostic_text(&watch.stderr(), 256),
+        })
+    };
+    let before_output_wait = output_diagnostic(&mut watch);
+    let output_wait =
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| watch.wait_item(&sent[255])));
+    if let Err(failure) = output_wait {
+        let mut diagnostic = format!(
+            "capacity output diagnostic: terminal={} hold_ms={} barrier_ms={} before={} after={}",
+            terminal_shape,
+            held_before_release.as_millis(),
+            barrier_elapsed.as_millis(),
+            before_output_wait,
+            output_diagnostic(&mut watch),
+        );
+        // A separate retained record survives daemon stderr ownership and the
+        // generic panic's body-heavy prefix. Cap this record at four KiB.
+        if diagnostic.len() > 4096 {
+            diagnostic.truncate(diagnostic.floor_char_boundary(4084));
+            diagnostic.push_str("[truncated]");
+        }
+        rig.panics
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(diagnostic);
+        std::panic::resume_unwind(failure);
+    }
     for id in &sent {
         assert_eq!(rig.receipt_state(id), "pending");
     }
