@@ -11,9 +11,9 @@ use crate::{
         DurableRetry, MARKER, PokeDecision, RetryConfig, RetryError, RetryGuard, poke_eligibility,
     },
     ports::{
-        AgentComposerState, EvidenceKind, ExecutionEvidence, HostCallContext, HostPort,
-        HostUiState, IncarnationEvidence, NotificationPort, ObservationProvenance, PokeAttempt,
-        PokeCapabilitySource, PokeMode, PokePlan, PromptOutcome, RefusalCause,
+        AgentComposerState, ComposerChoice, EvidenceKind, ExecutionEvidence, HostCallContext,
+        HostPort, HostUiState, IncarnationEvidence, NotificationPort, ObservationProvenance,
+        PokeAttempt, PokeCapabilitySource, PokeMode, PokePlan, PromptOutcome, RefusalCause,
         ReservedWakeAuthority, StructuralOccupancy, WakeOutcome, WakeReservation, WakeTargetBasis,
     },
     protocol::{
@@ -231,6 +231,27 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
         ) {
             return refuse(RefusalCause::Unsafe, WakeOutcome::Unsafe);
         }
+        // Several target bindings share one composer (spec §3 Wake, roast r2): type only when
+        // Herdr reports the pane idle, and only to the binding whose process is the pane's
+        // foreground process. No unique match, no composer wake; never a guess.
+        let mut composer_harness: Option<String> = None;
+        if cooperative && reservation.authority.targets().len() > 1 {
+            if !poke_only && observation.ui != HostUiState::Idle {
+                return refuse(RefusalCause::Unsafe, WakeOutcome::Unsafe);
+            }
+            let foreground = match self.host.foreground_pid(&reservation.target, &read_context) {
+                Ok(pid) => pid,
+                Err(err) => return refuse_error(err),
+            };
+            match reservation.authority.composer_choice(foreground) {
+                ComposerChoice::Binding(chosen) => composer_harness = Some(chosen.harness.clone()),
+                ComposerChoice::NoMatch | ComposerChoice::Unspecified => {
+                    return refuse(RefusalCause::Unsafe, WakeOutcome::Unsafe);
+                }
+            }
+        } else if let ComposerChoice::Binding(only) = reservation.authority.composer_choice(None) {
+            composer_harness = Some(only.harness.clone());
+        }
         let selected = if poke.is_some() {
             self.host.safe_poke_target(&reservation.seat, &observation)
         } else {
@@ -243,10 +264,11 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
         // (TRUST-POLICY A4 wake rule). No bound harness, no prompt: a
         // pre-send refusal, so the reminder ladder does not climb (pacer D5).
         if let ReservedWakeAuthority::Cooperative { harness, .. } = &reservation.authority {
+            let harness = composer_harness.as_ref().or(harness.as_ref());
             if harness.is_none() {
                 return refuse(RefusalCause::Unsafe, WakeOutcome::Unsafe);
             }
-            target.bound_harness = harness.clone();
+            target.bound_harness = harness.cloned();
         }
         let basis_ok = match (&target.basis, cooperative) {
             (WakeTargetBasis::CooperativeAgent, true) => true,

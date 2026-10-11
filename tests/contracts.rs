@@ -920,6 +920,7 @@ fn wake_candidate_exposes_pending_obligation_with_zero_projection_bits() {
     use herdr_threads::ports::{WakeCandidate, WarningOfferFrontier};
     use herdr_threads::protocol::ids::{ExecutionId, SeatId};
     let candidate = WakeCandidate {
+        targets: Vec::new(),
         seat: SeatId::new("s"),
         attention_witness: None,
         effectively_retired: false,

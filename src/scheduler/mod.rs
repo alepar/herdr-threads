@@ -15,11 +15,12 @@ use crate::{
     ports::{
         HostCallContext, ModChannels, NoModChannels, NoPokeCapabilities, NotificationPort,
         PokeAttempt, PokeCapabilitySource, PokeDue, PokeMode, PokePlan, PokeReceipt,
-        PokeReservation, PriorLadder, WakeCandidate, WakeOutcome, WakeRecoveryCandidate,
-        WakeRecoveryOutcome, WakeRecoveryRequest, WakeReservation,
+        PokeReservation, PriorLadder, RefusalCause, ReservedWakeAuthority, WakeCandidate,
+        WakeOutcome, WakeRecoveryCandidate, WakeRecoveryOutcome, WakeRecoveryRequest,
+        WakeReservation, WakeTarget,
     },
     protocol::{
-        ids::{SeatId, ThreadId, WakeAttemptId},
+        ids::{BindingId, SeatId, ThreadId, WakeAttemptId},
         pagination::{Page, PageRequest},
         results::{ApiError, ErrorCode},
         time::{CallBudget, Cancellation, Clock, MonoInstant, UtcMillis},
@@ -293,7 +294,12 @@ impl<'a, D: DeadlinePort + ?Sized, W: WakePort + ?Sized, N: NotificationPort + ?
                 .into_iter()
                 .filter(|due| {
                     !due.receipts.is_empty()
-                        && !mod_suppressed(self.wakes.mod_channels, &due.seat, utc)
+                        && !all_targets_covered(
+                            self.wakes.mod_channels,
+                            &due.seat,
+                            &due.targets,
+                            utc,
+                        )
                         && poke_admissible(&state, &due.seat, now)
                 })
                 .take(usize::from(POKE_SEAT_LIMIT))
@@ -617,6 +623,57 @@ fn mod_suppressed(channels: &dyn ModChannels, seat: &SeatId, now: UtcMillis) -> 
     channels.seat_live(seat) && !channels.stalled(seat, now)
 }
 
+/// Whether the mod channel of `binding` delivers its attention (spec §3 Wake): live for that
+/// binding and not stalled.
+fn binding_covered(
+    channels: &dyn ModChannels,
+    seat: &SeatId,
+    binding: &BindingId,
+    now: UtcMillis,
+) -> bool {
+    channels.binding_live(seat, binding) && !channels.stalled(seat, now)
+}
+
+/// Per-binding form of [`mod_suppressed`]: native wake and poke are suppressed only when every
+/// target binding has its own channel. A seat whose targets are unknown (a source that carries
+/// none) keeps the per-seat rule.
+fn all_targets_covered(
+    channels: &dyn ModChannels,
+    seat: &SeatId,
+    targets: &[WakeTarget],
+    now: UtcMillis,
+) -> bool {
+    if targets.is_empty() {
+        return mod_suppressed(channels, seat, now);
+    }
+    targets
+        .iter()
+        .all(|target| binding_covered(channels, seat, &target.binding, now))
+}
+
+/// The reservation with the bindings a mod channel already serves removed from its targets, so
+/// the composer wake never types to a binding that was woken through its channel. `None`: every
+/// target is covered, nothing is left for the composer. A reservation without targets is
+/// returned unchanged (the legacy single-harness rule).
+fn without_covered_targets(
+    channels: &dyn ModChannels,
+    reservation: &WakeReservation,
+    now: UtcMillis,
+) -> Option<WakeReservation> {
+    let mut reservation = reservation.clone();
+    if let ReservedWakeAuthority::Cooperative { targets, .. } = &mut reservation.authority {
+        if targets.is_empty() {
+            return Some(reservation);
+        }
+        targets
+            .retain(|target| !binding_covered(channels, &reservation.seat, &target.binding, now));
+        if targets.is_empty() {
+            return None;
+        }
+    }
+    Some(reservation)
+}
+
 #[derive(Clone)]
 struct PendingCompletion {
     seat: SeatId,
@@ -677,6 +734,10 @@ impl<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> WakeRunner<'a, S, N
         }
     }
 
+    /// The single call point for the liveness re-check that runs before a wake decision (spec §3,
+    /// ht-54r.23 fills it). A no-op here.
+    fn before_wake_decision(&self, _seat: &SeatId) {}
+
     /// Candidate discovery is advisory. `reserve_wake` rechecks it atomically,
     /// then the notification adapter must use only committed reservation identity.
     pub fn try_candidate(
@@ -690,6 +751,7 @@ impl<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> WakeRunner<'a, S, N
                 "wake admission deadline exhausted",
             ));
         }
+        self.before_wake_decision(&candidate.seat);
         if AttentionSnapshot::from_candidate(candidate)
             .select()
             .is_none()
@@ -706,9 +768,10 @@ impl<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> WakeRunner<'a, S, N
         // Spec D7: the mod channel delivers this seat's attention. Nothing is
         // reserved, refused or recorded: the ladder is untouched, and the
         // channel's removal kicks the wake lane so the candidate is re-derived.
-        if mod_suppressed(
+        if all_targets_covered(
             self.mod_channels,
             &candidate.seat,
+            &candidate.targets,
             self.store.clock().utc_now(),
         ) {
             return Ok(None);
@@ -881,6 +944,14 @@ impl<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> WakeRunner<'a, S, N
         if lease_end <= committed_at.0 {
             return simple(WakeOutcome::TimedOut);
         }
+        // Per-binding wake (spec §3): a binding with a live channel is woken through it, never
+        // also typed to. Nothing left for the composer sends nothing and climbs no ladder.
+        let Some(reservation) =
+            without_covered_targets(self.mod_channels, reservation, self.store.clock().utc_now())
+        else {
+            return simple(WakeOutcome::Refused(RefusalCause::Unsafe));
+        };
+        let reservation = &reservation;
         let owned_cancellation = Cancellation::default();
         let context = HostCallContext {
             budget: CallBudget {
@@ -932,6 +1003,7 @@ impl<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> WakeRunner<'a, S, N
         if due.receipts.is_empty() {
             return Ok(None);
         }
+        self.before_wake_decision(&due.seat);
         let seat = due.seat.clone();
         // Like a wake, admission and the durable reservation share one hold of
         // the state lock, so concurrent seats cannot all pass the active limit
@@ -940,8 +1012,12 @@ impl<'a, S: WakePort + ?Sized, N: NotificationPort + ?Sized> WakeRunner<'a, S, N
             .state
             .lock()
             .map_err(|_| error(ErrorCode::StoreCorrupt, "wake state lock poisoned"))?;
-        if mod_suppressed(self.mod_channels, &seat, self.store.clock().utc_now())
-            || !poke_admissible(&state, &seat, self.store.clock().monotonic_now())
+        if all_targets_covered(
+            self.mod_channels,
+            &seat,
+            &due.targets,
+            self.store.clock().utc_now(),
+        ) || !poke_admissible(&state, &seat, self.store.clock().monotonic_now())
         {
             return Ok(None);
         }

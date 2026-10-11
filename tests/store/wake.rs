@@ -740,6 +740,7 @@ fn unverified_execution_gets_structural_cooperative_reservation() {
         assert_eq!(
             reservation.authority,
             ReservedWakeAuthority::Cooperative {
+                targets: vec![sole_target(&store, "claude")],
                 terminal: crate::protocol::ids::TerminalId::new("term-pane"),
                 incarnation: "inc".into(),
                 binding_generation: registered.then_some(1),
@@ -1754,6 +1755,7 @@ fn managed_launch_binding_reserves_a_cooperative_wake() {
     assert_eq!(
         reservation.authority,
         crate::ports::ReservedWakeAuthority::Cooperative {
+            targets: vec![sole_target(&store, "codex")],
             terminal: crate::protocol::ids::TerminalId::new("term-pane"),
             incarnation: "inc".into(),
             binding_generation: None,
@@ -2024,6 +2026,302 @@ fn batch_window_ignores_human_waived_receipts_and_clears_last_required_waiver() 
         0
     );
     drop(db);
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
+/// The one connected binding's wake target, read back from the store.
+fn sole_target(store: &SqliteStore, harness: &str) -> crate::ports::WakeTarget {
+    let (id, pid): (String, Option<i64>) = store
+        .context
+        .open_writer()
+        .unwrap()
+        .query_row(
+            "SELECT binding_id,liveness_pid FROM occupant_bindings",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    crate::ports::WakeTarget {
+        binding: crate::protocol::ids::BindingId::new(id),
+        harness: harness.into(),
+        fingerprint_pid: pid.map(|pid| u32::try_from(pid).unwrap()),
+    }
+}
+
+/// One binding row of the multi-binding fixture.
+struct Row {
+    id: &'static str,
+    harness: &'static str,
+    role: &'static str,
+    connected: bool,
+    pid: Option<i64>,
+}
+const fn row(id: &'static str, harness: &'static str, pid: i64) -> Row {
+    Row {
+        id,
+        harness,
+        role: "top_level",
+        connected: true,
+        pid: Some(pid),
+    }
+}
+
+/// A resolved seat `s` on a fresh target with a pending invitation and the given bindings, all
+/// placed on that target's current generation, terminal and incarnation.
+fn multi_store(rows: &[Row]) -> (SqliteStore, std::path::PathBuf) {
+    let (store, path) = bound_seat_store("claude");
+    let db = store.context.open_writer().unwrap();
+    db.execute("DELETE FROM occupant_bindings", []).unwrap();
+    for (n, r) in rows.iter().enumerate() {
+        db.execute(
+            "INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation,binding_id,role,liveness,disconnected_at,disconnect_reason,liveness_pid,liveness_start) VALUES ('s',1,1,'pane','host',0,?1,?2,'self-reported','cooperative_top_level',0,0,'term-pane','inc',?3,?4,?5,?6,?7,?8,?9)",
+            rusqlite::params![
+                r.harness,
+                format!("session-{n}"),
+                r.id,
+                r.role,
+                if r.connected { "connected" } else { "disconnected" },
+                (!r.connected).then_some(5_i64),
+                (!r.connected).then_some("ended"),
+                r.pid,
+                r.pid.map(|_| 1_i64),
+            ],
+        )
+        .unwrap();
+    }
+    drop(db);
+    (store, path)
+}
+
+fn target_ids(reservation: &crate::ports::WakeReservation) -> Vec<String> {
+    reservation
+        .authority
+        .targets()
+        .iter()
+        .map(|t| t.binding.as_str().to_owned())
+        .collect()
+}
+
+/// Kills: reading "the" open binding (the first row) instead of every connected top-level
+/// binding: both Claude bindings must be targets of the one seat-level reservation.
+#[test]
+fn two_connected_claude_bindings_both_get_mod_wakes() {
+    let (store, path) = multi_store(&[row("a", "claude", 10), row("b", "claude", 20)]);
+    let candidate = StorePort::wake_candidates(&store, PageRequest::default(), &budget())
+        .unwrap()
+        .items
+        .remove(0);
+    let ids: Vec<_> = candidate
+        .targets
+        .iter()
+        .map(|t| t.binding.as_str())
+        .collect();
+    assert_eq!(
+        ids,
+        ["a", "b"],
+        "the candidate names both for the channel pre-check"
+    );
+    let reservation = StorePort::reserve_wake(&store, &candidate, &budget())
+        .unwrap()
+        .expect("reserved");
+    assert_eq!(target_ids(&reservation), ["a", "b"]);
+    assert_eq!(
+        reservation.authority.targets()[1].fingerprint_pid,
+        Some(20),
+        "the fingerprint pid rides along for the composer rule"
+    );
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
+/// Kills: waking subagents (they read through hooks and `inbox`) and human bindings.
+#[test]
+fn subagents_and_humans_are_never_targets() {
+    let (store, path) = multi_store(&[
+        row("top", "claude", 10),
+        Row {
+            role: "subagent",
+            ..row("sub", "claude", 11)
+        },
+    ]);
+    let reservation = {
+        let candidate = StorePort::wake_candidates(&store, PageRequest::default(), &budget())
+            .unwrap()
+            .items
+            .remove(0);
+        StorePort::reserve_wake(&store, &candidate, &budget())
+            .unwrap()
+            .expect("reserved")
+    };
+    assert_eq!(target_ids(&reservation), ["top"]);
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
+/// Kills: a disconnected binding (its process ended; stale placement) counting as a target, and
+/// a seat with only disconnected bindings still being woken.
+#[test]
+fn disconnected_bindings_are_never_woken() {
+    let gone = |id, pid| Row {
+        connected: false,
+        ..row(id, "claude", pid)
+    };
+    let (store, path) = multi_store(&[gone("old", 10), row("live", "claude", 20)]);
+    let candidate = StorePort::wake_candidates(&store, PageRequest::default(), &budget())
+        .unwrap()
+        .items
+        .remove(0);
+    assert_eq!(
+        candidate
+            .targets
+            .iter()
+            .map(|t| t.binding.as_str())
+            .collect::<Vec<_>>(),
+        ["live"]
+    );
+    let reservation = StorePort::reserve_wake(&store, &candidate, &budget())
+        .unwrap()
+        .expect("the live binding is woken");
+    assert_eq!(target_ids(&reservation), ["live"]);
+    drop(store);
+    let _ = std::fs::remove_file(path);
+
+    let (store, path) = multi_store(&[gone("old", 10), gone("older", 20)]);
+    let candidate = StorePort::wake_candidates(&store, PageRequest::default(), &budget())
+        .unwrap()
+        .items
+        .remove(0);
+    assert!(candidate.targets.is_empty());
+    assert!(
+        StorePort::reserve_wake(&store, &candidate, &budget())
+            .unwrap()
+            .is_none(),
+        "no connected top-level binding, no wake authority"
+    );
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
+/// Kills: a binding placed on another terminal or incarnation (a stale pane) being woken
+/// because a sibling matches.
+#[test]
+fn only_bindings_placed_on_the_observed_terminal_are_targets() {
+    let (store, path) = multi_store(&[row("here", "claude", 10), row("moved", "claude", 20)]);
+    store
+        .context
+        .open_writer()
+        .unwrap()
+        .execute(
+            "UPDATE occupant_bindings SET terminal_id='term-other' WHERE binding_id='moved'",
+            [],
+        )
+        .unwrap();
+    let candidate = StorePort::wake_candidates(&store, PageRequest::default(), &budget())
+        .unwrap()
+        .items
+        .remove(0);
+    let reservation = StorePort::reserve_wake(&store, &candidate, &budget())
+        .unwrap()
+        .expect("reserved");
+    assert_eq!(target_ids(&reservation), ["here"]);
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
+/// Kills: waking a person: a human binding on the seat keeps it out of the wake path even when
+/// agent bindings share it.
+#[test]
+fn human_seat_is_never_woken() {
+    let (store, path) = multi_store(&[
+        row("agent", "claude", 10),
+        Row {
+            pid: None,
+            ..row("person", "human", 0)
+        },
+    ]);
+    let candidates = StorePort::wake_candidates(&store, PageRequest::default(), &budget())
+        .unwrap()
+        .items;
+    assert!(
+        candidates.is_empty(),
+        "a seat that holds a human binding is not a wake candidate"
+    );
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
+/// Kills: a foreground predicate that guesses (latest touch, first row) instead of requiring
+/// exactly one connected top-level binding whose fingerprint pid is the foreground pid.
+#[test]
+fn foreground_binding_is_the_unique_fingerprint_pid_match() {
+    let (store, path) = multi_store(&[
+        row("a", "claude", 10),
+        row("b", "codex", 20),
+        row("dup1", "claude", 30),
+        row("dup2", "claude", 30),
+        Row {
+            role: "subagent",
+            ..row("sub", "claude", 40)
+        },
+        Row {
+            connected: false,
+            ..row("gone", "claude", 50)
+        },
+    ]);
+    let db = store.context.open_writer().unwrap();
+    let seat = SeatId::new("s");
+    let found = |pid| {
+        crate::store::wake::foreground_binding(&db, &seat, pid)
+            .unwrap()
+            .map(|row| row.binding_id.as_str().to_owned())
+    };
+    assert_eq!(found(10).as_deref(), Some("a"));
+    assert_eq!(found(20).as_deref(), Some("b"));
+    assert_eq!(found(30), None, "two bindings share the pid: ambiguous");
+    assert_eq!(found(40), None, "a subagent is never the foreground agent");
+    assert_eq!(
+        found(50),
+        None,
+        "a disconnected binding is never the foreground agent"
+    );
+    assert_eq!(found(99), None);
+    drop(db);
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
+/// Kills: a per-binding fence. The reserved wake stays valid when a new binding enrolls or one
+/// reads its mail (the target list is a frozen plan), and is voided by a rebind (the seat's
+/// mapping generation moves).
+#[test]
+fn wake_fence_is_the_mapping_generation() {
+    let (store, path) = multi_store(&[row("a", "claude", 10)]);
+    let candidate = StorePort::wake_candidates(&store, PageRequest::default(), &budget())
+        .unwrap()
+        .items
+        .remove(0);
+    let reservation = StorePort::reserve_wake(&store, &candidate, &budget())
+        .unwrap()
+        .expect("reserved");
+    assert!(StorePort::validate_wake_reservation(&store, &reservation, &budget()).unwrap());
+    let db = store.context.open_writer().unwrap();
+    db.execute(
+        "INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation,binding_id,liveness_pid,liveness_start) VALUES ('s',1,1,'pane','host',0,'codex','session-new','self-reported','cooperative_top_level',0,0,'term-pane','inc','new',77,1)",
+        [],
+    )
+    .unwrap();
+    assert!(
+        StorePort::validate_wake_reservation(&store, &reservation, &budget()).unwrap(),
+        "a new binding enrolling does not cancel the reserved wake"
+    );
+    db.execute("UPDATE seats SET generation=2 WHERE id='s'", [])
+        .unwrap();
+    drop(db);
+    assert!(
+        !StorePort::validate_wake_reservation(&store, &reservation, &budget()).unwrap(),
+        "a rebind (new mapping generation) cancels it"
+    );
     drop(store);
     let _ = std::fs::remove_file(path);
 }
