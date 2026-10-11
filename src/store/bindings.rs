@@ -665,15 +665,52 @@ pub fn apply_liveness(
     let current = liveness_candidates(tx, None)?;
     let mut changed = 0;
     for decision in decisions {
-        let still = current.iter().any(|c| {
+        let Some(candidate) = current.iter().find(|c| {
             c.binding.binding_id == decision.binding
                 && c.binding.fingerprint == decision.fingerprint
-        });
-        if still && disconnect(tx, &decision.binding, decision.reason, now)? {
+        }) else {
+            continue;
+        };
+        if decision.reason == DisconnectReason::Superseded
+            && !is_superseded_now(&current, candidate)
+        {
+            continue;
+        }
+        if disconnect(tx, &decision.binding, decision.reason, now)? {
             changed += 1;
         }
     }
     Ok(changed)
+}
+
+/// The winner key of a same-process group: the latest lifecycle claim, ties by ordinal. The
+/// liveness worker's `service::liveness::classify` must use the same ordering (it still carries
+/// its own copy of this key).
+fn supersede_rank(candidate: &LivenessCandidate) -> (i64, i64) {
+    (candidate.claimed_at, candidate.binding.ordinal)
+}
+
+/// Re-runs the winner selection against the candidates read inside the write transaction: a
+/// `Superseded` verdict was judged on an unlocked read, and the judged loser may have checked in
+/// since (spec §3: "the most recent lifecycle claimer wins"). True only while `candidate` shares
+/// its process with another top-level candidate that out-ranks it.
+fn is_superseded_now(current: &[LivenessCandidate], candidate: &LivenessCandidate) -> bool {
+    if candidate.binding.role != BindingRole::TopLevel || candidate.binding.fingerprint.is_none() {
+        return false;
+    }
+    let Some(winner) = current
+        .iter()
+        .filter(|c| {
+            c.binding.role == BindingRole::TopLevel
+                && c.instance == candidate.instance
+                && c.binding.harness == candidate.binding.harness
+                && c.binding.fingerprint == candidate.binding.fingerprint
+        })
+        .max_by_key(|c| supersede_rank(c))
+    else {
+        return false;
+    };
+    winner.binding.binding_id != candidate.binding.binding_id
 }
 
 /// Enroll hook: an enrollment or lifecycle check-in by a top-level binding disconnects
@@ -1469,3 +1506,7 @@ fn seat_is_resolved(db: &Connection, seat: &SeatId) -> Result<bool, ApiError> {
 #[cfg(test)]
 #[path = "../../tests/store/bindings.rs"]
 pub(crate) mod tests;
+
+#[cfg(test)]
+#[path = "../../tests/store/liveness_apply.rs"]
+mod liveness_apply_tests;
