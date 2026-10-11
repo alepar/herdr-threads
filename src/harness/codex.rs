@@ -1290,9 +1290,73 @@ impl super::adapter::CanaryStrategy for CodexCanary {
         }
     }
 }
+fn argv0_basename(record: &crate::ports::ProcessRecord) -> &str {
+    let argv0 = record.argv.first().map_or("", String::as_str);
+    argv0.rsplit('/').next().unwrap_or(argv0)
+}
+
+/// A process shaped like Codex beyond an argv[0] of exactly `codex`: a `codex-*` binary or the
+/// npm launcher.
+fn is_codex_shape(record: &crate::ports::ProcessRecord) -> bool {
+    argv0_basename(record).starts_with("codex-")
+        || record
+            .argv
+            .iter()
+            .any(|a| a.ends_with("/codex.js") || a.contains("@openai/codex"))
+}
+
+/// A `codex app-server --managed-daemon` process: no pane, so no pane-bound caller can sit under it.
+fn is_managed_daemon(record: &crate::ports::ProcessRecord) -> bool {
+    (argv0_basename(record) == "codex" || is_codex_shape(record))
+        && record.argv.iter().any(|a| a == "app-server")
+        && record.argv.iter().any(|a| a == "--managed-daemon")
+}
+
+fn managed_daemon_refusal(pid: u32) -> String {
+    format!(
+        "this command runs under `codex app-server --managed-daemon` (pid {pid}), which has \
+         no pane; keep Codex in its pane (the pane-env block from branch codex-daemon-env) \
+         or run Codex with --no-daemon"
+    )
+}
+
+/// Codex names a subagent by `CODEX_THREAD_ID` differing from the session id. An empty or equal
+/// value is top-level; a distinct unparseable one is refused, never read as top-level.
+fn caller_session(session: &str, env: &dyn Fn(&str) -> Option<String>) -> CallerSession {
+    match env("CODEX_THREAD_ID").filter(|thread| !thread.is_empty() && thread != session) {
+        None => CallerSession::TopLevel,
+        Some(thread) if crate::protocol::ids::AgentId::parse(thread.clone()).is_ok() => {
+            CallerSession::Marked { agent: thread }
+        }
+        Some(_) => CallerSession::MalformedMarker {
+            var: "CODEX_THREAD_ID",
+        },
+    }
+}
+
 impl HarnessAdapter for CodexAdapter {
     fn installer_policy(&self) -> Option<&dyn InstallerPolicy> {
         Some(self)
+    }
+    fn caller_env(&self) -> Option<CallerEnvShape> {
+        Some(CallerEnvShape {
+            process_names: &["codex"],
+            session_var: "CODEX_SESSION_ID",
+            role: Some(caller_session),
+            process_match: Some(is_codex_shape),
+            pid_var: None,
+            paneless: Some(PanelessProcess {
+                matches: is_managed_daemon,
+                refusal: managed_daemon_refusal,
+            }),
+        })
+    }
+    fn required_hook_events(&self) -> Vec<&'static str> {
+        DECLARATION
+            .owned_hooks
+            .iter()
+            .map(|hook| hook.event)
+            .collect()
     }
     fn receipt_admission_summary(&self) -> Option<String> {
         Some("declared".into())

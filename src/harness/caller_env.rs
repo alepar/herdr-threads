@@ -1,11 +1,12 @@
 //! Caller claim derivation from the process environment and ancestry (spec §1, decisions 9, 12, 15).
 //!
 //! Pure: the environment and the process table are injected. The innermost harness wins: the
-//! nearest ancestor shaped like claude, codex or hermes, or like a registered adapter that
-//! declares a [`CallerEnvShape`], selects the harness and its own session variable; variables an
-//! outer harness left in the environment are ignored. Nothing here is
+//! nearest ancestor shaped like a registered adapter's declared [`CallerEnvShape`] selects the
+//! harness and its own session variable; variables an outer harness left in the environment are
+//! ignored. Nothing here is
 //! adversarially verified (TRUST-POLICY: cooperative, same-user).
 use crate::harness::adapter::{CallerEnvShape, CallerSession};
+use crate::harness::registry::builtins;
 use crate::ports::{ProcessInfo, ProcessRecord};
 use crate::protocol::authority::{
     COOPERATIVE_ENV_SESSION_PROVENANCE, COOPERATIVE_HOOK_AGENT_PROVENANCE, CallerRole, Harness,
@@ -16,10 +17,13 @@ use crate::protocol::ids::{AgentId, NativeSessionId};
 /// Ancestry hops examined before giving up (cycle and runaway-chain bound).
 const MAX_HOPS: usize = 64;
 
+/// The caller's environment lookup.
+pub type EnvLookup<'a> = &'a dyn Fn(&str) -> Option<String>;
+
 pub struct EnvInputs<'a> {
     pub env: &'a dyn Fn(&str) -> Option<String>,
     pub self_pid: u32,
-    /// `--agent-id` from the CLI (`ParsedCli::agent_id`); honoured only when the innermost harness is Claude.
+    /// `--agent-id` from the CLI (`ParsedCli::agent_id`); honoured only when the innermost harness's binding policy takes a hook-passed agent id.
     pub agent_id: Option<AgentId>,
     pub processes: &'a dyn ProcessInfo,
 }
@@ -34,7 +38,7 @@ pub struct EnvClaim {
     /// A subagent shares its parent's fingerprint on purpose: that is why same-pid supersede
     /// (ht-54r.10) keys on role, so a subagent sharing its parent's pid is never a session switch.
     pub fingerprint: LivenessFingerprint,
-    /// `COOPERATIVE_HOOK_AGENT_PROVENANCE` for a Claude `--agent-id`, else `COOPERATIVE_ENV_SESSION_PROVENANCE`.
+    /// `COOPERATIVE_HOOK_AGENT_PROVENANCE` for a hook-passed `--agent-id`, else `COOPERATIVE_ENV_SESSION_PROVENANCE`.
     pub provenance: &'static str,
 }
 
@@ -79,9 +83,10 @@ impl EnvRefusal {
 
     pub fn message(&self) -> String {
         match self {
-            Self::NoHarness => {
-                "no claude, codex, hermes or other registered agent harness process among this process's ancestors".into()
-            }
+            Self::NoHarness => format!(
+                "no {} or other registered agent harness process among this process's ancestors",
+                caller_harness_names()
+            ),
             Self::MissingSession { harness, var } => format!(
                 "{harness} caller has no session id: {var} is not set in this process's environment \
                  ({harness} did not export {var} to this process: restart the agent - a harness \
@@ -99,11 +104,18 @@ impl EnvRefusal {
                 "{harness} caller's session cannot be attributed to a top-level session or a \
                  subagent: {detail}; the call is refused rather than attributed to the top-level session"
             ),
-            Self::ManagedDaemon { pid } => format!(
-                "this command runs under `codex app-server --managed-daemon` (pid {pid}), which has \
-                 no pane; keep Codex in its pane (the pane-env block from branch codex-daemon-env) \
-                 or run Codex with --no-daemon"
-            ),
+            Self::ManagedDaemon { pid } => builtins()
+                .caller_shapes()
+                .find_map(|(_, shape)| shape.paneless)
+                .map_or_else(
+                    || {
+                        format!(
+                            "this command runs under a paneless harness daemon (pid {pid}); run \
+                             the agent in its pane"
+                        )
+                    },
+                    |paneless| (paneless.refusal)(*pid),
+                ),
         }
     }
 }
@@ -112,83 +124,48 @@ fn basename(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }
 
-fn is_codex(record: &ProcessRecord) -> bool {
-    let argv0 = record.argv.first().map_or("", |a| basename(a));
-    argv0 == "codex"
-        || argv0.starts_with("codex-")
-        || record
-            .argv
-            .iter()
-            .any(|a| a.ends_with("/codex.js") || a.contains("@openai/codex"))
+/// The ids of the registered harnesses that declare a caller shape, sorted and joined with `, `.
+pub fn caller_harness_names() -> String {
+    let mut ids: Vec<&str> = builtins().caller_shapes().map(|(id, _)| id).collect();
+    ids.sort_unstable();
+    ids.join(", ")
 }
 
-/// A `codex app-server --managed-daemon` process: no pane, so no pane-bound caller can sit under it.
+/// A paneless harness process (a managed daemon): no pane-bound caller can sit under it.
 pub fn is_managed_daemon(record: &ProcessRecord) -> bool {
-    is_codex(record)
-        && record.argv.iter().any(|a| a == "app-server")
-        && record.argv.iter().any(|a| a == "--managed-daemon")
-}
-
-/// The registered adapter (other than the three built into this module) whose declared caller
-/// shape names this process, with that shape.
-fn registered_shape(record: &ProcessRecord) -> Option<(&'static str, CallerEnvShape)> {
-    let argv0 = record.argv.first().map_or("", |a| basename(a));
-    crate::harness::registry::builtins()
-        .registrations()
-        .iter()
-        .find_map(|registration| {
-            let shape = registration.caller_env()?;
-            shape
-                .process_names
-                .contains(&argv0)
-                .then_some((registration.metadata().id, shape))
-        })
+    builtins()
+        .caller_shapes()
+        .any(|(_, shape)| shape.paneless.is_some_and(|p| (p.matches)(record)))
 }
 
 /// The declared caller shape of the registered adapter `id`.
 fn shape_of(id: &str) -> Option<CallerEnvShape> {
-    crate::harness::registry::builtins()
-        .registrations()
-        .iter()
-        .find(|registration| registration.metadata().id == id)
-        .and_then(|registration| registration.caller_env())
+    builtins()
+        .caller_shapes()
+        .find_map(|(shape_id, shape)| (shape_id == id).then_some(shape))
 }
 
-/// Which harness a process looks like: `claude`, `codex`, `hermes`, or the id of a registered
-/// adapter whose [`CallerEnvShape`] names the process.
-pub fn classify(record: &ProcessRecord, claude_pid: Option<u32>) -> Option<&'static str> {
+/// The pid a harness exported in its `pid_var`, when the environment names one.
+fn exported_pid(shape: &CallerEnvShape, env: &dyn Fn(&str) -> Option<String>) -> Option<u32> {
+    env(shape.pid_var?)?.trim().parse().ok()
+}
+
+/// Which registered harness a process looks like: the first declared shape whose exported pid is
+/// this process (looked up in `env`), whose process names include its argv[0] basename, or whose
+/// process match accepts it.
+pub fn classify(record: &ProcessRecord, env: Option<EnvLookup<'_>>) -> Option<&'static str> {
     let argv0 = record.argv.first().map_or("", |a| basename(a));
-    if Some(record.pid) == claude_pid
-        || argv0 == "claude"
-        || record
-            .argv
-            .iter()
-            .any(|a| a.contains("@anthropic-ai/claude-code"))
-    {
-        return Some("claude");
-    }
-    if is_codex(record) {
-        return Some("codex");
-    }
-    // The `.hermes/bin/hermes` launcher execs `python3 -I -c '<script>' "$@"`.
-    if argv0 == "hermes"
-        || (argv0.starts_with("python")
-            && record
-                .argv
-                .iter()
-                .any(|a| a.contains("hermes_cli") || a.contains("/.hermes/")))
-    {
-        return Some("hermes");
-    }
-    registered_shape(record).map(|(id, _)| id)
+    builtins().caller_shapes().find_map(|(id, shape)| {
+        let exported = env.and_then(|env| exported_pid(&shape, env));
+        (Some(record.pid) == exported
+            || shape.process_names.contains(&argv0)
+            || shape.process_match.is_some_and(|matches| matches(record)))
+        .then_some(id)
+    })
 }
 
 fn env_var(inputs: &EnvInputs<'_>, name: &str) -> Option<String> {
     (inputs.env)(name).filter(|v| !v.is_empty())
-}
-
-fn claude_pid(inputs: &EnvInputs<'_>) -> Option<u32> {
-    env_var(inputs, "CLAUDE_PID")?.trim().parse().ok()
 }
 
 /// Nearest ancestor. `want == None`: the innermost harness of any kind. `Some(h)`: the nearest of `h`.
@@ -196,7 +173,6 @@ fn walk(
     inputs: &EnvInputs<'_>,
     want: Option<&str>,
 ) -> Result<(&'static str, ProcessRecord), EnvRefusal> {
-    let claude = claude_pid(inputs);
     let own =
         inputs
             .processes
@@ -208,24 +184,19 @@ fn walk(
                     inputs.self_pid
                 ),
             })?;
-    // Test builds: a stand-in agent. `HT_TEST_HARNESS=claude|codex|hermes` makes the spawning test
+    // Test builds: a stand-in agent. `HT_TEST_HARNESS=<registered harness id>` makes the spawning test
     // process (this one's parent) the harness, so a test that drives the binary with
     // `--cooperative-*` flags need not build a real process tree (see `test_support::isolation::
     // as_agent`). Never compiled into a release binary.
     #[cfg(any(test, feature = "test-support"))]
     if let Some(kind) = env_var(inputs, "HT_TEST_HARNESS") {
         // A hook names its own harness, which may be a synthetic registered adapter.
-        let registered = crate::harness::registry::builtins()
-            .registrations()
-            .iter()
-            .find(|r| r.metadata().id == kind && r.caller_env().is_some())
-            .map(|r| r.metadata().id);
-        let kind: &'static str = match (kind.as_str(), want, registered) {
-            ("claude", _, _) => "claude",
-            ("codex", _, _) => "codex",
-            ("hermes", _, _) => "hermes",
-            (_, _, Some(id)) => id,
-            (_, Some(_), None) => "stand-in",
+        let registered = builtins()
+            .caller_shapes()
+            .find_map(|(id, _)| (id == kind).then_some(id));
+        let kind: &'static str = match (want, registered) {
+            (_, Some(id)) => id,
+            (Some(_), None) => "stand-in",
             _ => return Err(EnvRefusal::NoHarness),
         };
         // `HT_TEST_HARNESS_PID` names a long-lived stand-in process for this caller's session
@@ -264,7 +235,7 @@ fn walk(
         if is_managed_daemon(&record) {
             return Err(EnvRefusal::ManagedDaemon { pid });
         }
-        if let Some(kind) = classify(&record, claude)
+        if let Some(kind) = classify(&record, Some(inputs.env))
             && want.is_none_or(|w| w == kind)
         {
             return Ok((kind, record));
@@ -279,14 +250,11 @@ fn fingerprint_for(
     kind: &'static str,
     ancestor: &ProcessRecord,
 ) -> Result<LivenessFingerprint, EnvRefusal> {
-    // Claude exports its own pid; prefer that record when it still exists.
-    let record = if kind == "claude" {
-        claude_pid(inputs)
-            .and_then(|pid| inputs.processes.process(pid))
-            .unwrap_or_else(|| ancestor.clone())
-    } else {
-        ancestor.clone()
-    };
+    // A harness that exports its own pid: prefer that record when it still exists.
+    let record = shape_of(kind)
+        .and_then(|shape| exported_pid(&shape, inputs.env))
+        .and_then(|pid| inputs.processes.process(pid))
+        .unwrap_or_else(|| ancestor.clone());
     if record.pid == 0 {
         return Err(EnvRefusal::NoFingerprint {
             harness: kind,
@@ -308,66 +276,49 @@ fn session(
 
 pub fn derive(inputs: &EnvInputs<'_>) -> Result<EnvClaim, EnvRefusal> {
     let (kind, ancestor) = walk(inputs, None)?;
-    let (harness, native_session, agent_id) = match kind {
-        "claude" => (
-            Harness::Claude,
-            session(inputs, "claude", "CLAUDE_CODE_SESSION_ID")?,
-            inputs.agent_id.clone(),
-        ),
-        "codex" => {
-            let native = session(inputs, "codex", "CODEX_SESSION_ID")?;
+    // The harness's declared shape: its session variable, and its local evidence of the
+    // session's role (a child names its parent; undecidable fails toward child).
+    let shape = shape_of(kind).ok_or(EnvRefusal::NoHarness)?;
+    let agent = builtins().agent(kind).map_err(|_| EnvRefusal::NoHarness)?;
+    let harness = Harness::Agent(agent);
+    let native = session(inputs, kind, shape.session_var)?;
+    let unattributed = |detail: String| EnvRefusal::UnattributedSession {
+        harness: kind,
+        detail,
+    };
+    let hook_agent = builtins()
+        .binding_policy(kind)
+        .hook_agent_id
+        .then(|| inputs.agent_id.clone())
+        .flatten();
+    let from_hook = hook_agent.is_some();
+    let (native_session, agent_id) = if let Some(agent_id) = hook_agent {
+        (native, Some(agent_id))
+    } else {
+        match shape.role.map(|role| role(native.as_str(), inputs.env)) {
+            None | Some(CallerSession::TopLevel) => (native, None),
+            Some(CallerSession::Subagent { parent }) => {
+                let parent = NativeSessionId::parse(parent)
+                    .map_err(|_| unattributed("invalid parent session id".into()))?;
+                let child = AgentId::parse(native.as_str().to_owned())
+                    .map_err(|_| unattributed("child session id is not a valid agent id".into()))?;
+                (parent, Some(child))
+            }
             // Fail closed: a distinct but unparseable marker is refused, never downgraded to
             // the top-level session.
-            let agent = match env_var(inputs, "CODEX_THREAD_ID")
-                .filter(|thread| thread != native.as_str())
-            {
-                Some(thread) => Some(AgentId::parse(thread).map_err(|_| {
-                    EnvRefusal::MalformedSubagentMarker {
-                        harness: "codex",
-                        var: "CODEX_THREAD_ID",
-                    }
-                })?),
-                None => None,
-            };
-            (Harness::Codex, native, agent)
-        }
-        "hermes" => (
-            Harness::Agent(
-                crate::harness::registry::builtins()
-                    .agent("hermes")
-                    .expect("hermes is a builtin adapter"),
-            ),
-            session(inputs, "hermes", "HERMES_SESSION_ID")?,
-            None,
-        ),
-        // A registered adapter's declared shape: its session variable, and its local evidence of
-        // the session's role (a child names its parent; undecidable fails toward child).
-        registered => {
-            let shape = shape_of(registered).ok_or(EnvRefusal::NoHarness)?;
-            let agent = crate::harness::registry::builtins()
-                .agent(registered)
-                .map_err(|_| EnvRefusal::NoHarness)?;
-            let native = session(inputs, registered, shape.session_var)?;
-            let unattributed = |detail: String| EnvRefusal::UnattributedSession {
-                harness: registered,
-                detail,
-            };
-            match shape.role.map(|role| role(native.as_str(), inputs.env)) {
-                None | Some(CallerSession::TopLevel) => (Harness::Agent(agent), native, None),
-                Some(CallerSession::Subagent { parent }) => {
-                    let parent = NativeSessionId::parse(parent)
-                        .map_err(|_| unattributed("invalid parent session id".into()))?;
-                    let child = AgentId::parse(native.as_str().to_owned()).map_err(|_| {
-                        unattributed("child session id is not a valid agent id".into())
-                    })?;
-                    (Harness::Agent(agent), parent, Some(child))
-                }
-                Some(CallerSession::Unattributable(detail)) => return Err(unattributed(detail)),
+            Some(CallerSession::Marked { agent }) => {
+                let agent = AgentId::parse(agent)
+                    .map_err(|_| unattributed("subagent id is not a valid agent id".into()))?;
+                (native, Some(agent))
             }
+            Some(CallerSession::MalformedMarker { var }) => {
+                return Err(EnvRefusal::MalformedSubagentMarker { harness: kind, var });
+            }
+            Some(CallerSession::Unattributable(detail)) => return Err(unattributed(detail)),
         }
     };
     let fingerprint = fingerprint_for(inputs, kind, &ancestor)?;
-    let provenance = if kind == "claude" && agent_id.is_some() {
+    let provenance = if from_hook {
         COOPERATIVE_HOOK_AGENT_PROVENANCE
     } else {
         COOPERATIVE_ENV_SESSION_PROVENANCE
@@ -398,7 +349,7 @@ pub fn derive_current(agent_id: Option<AgentId>) -> Result<EnvClaim, EnvRefusal>
     })
 }
 
-/// The nearest ancestor of the given harness (`claude` | `codex` | `hermes`): hooks know their
+/// The nearest ancestor of the given harness (a registered harness id): hooks know their
 /// harness and session from the payload and need only the fingerprint.
 pub fn harness_fingerprint(
     inputs: &EnvInputs<'_>,

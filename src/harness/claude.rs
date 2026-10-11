@@ -937,6 +937,38 @@ impl HarnessAdapter for ClaudeAdapter {
     fn installer_policy(&self) -> Option<&dyn InstallerPolicy> {
         Some(self)
     }
+    /// Claude exports its own pid as `CLAUDE_PID` and its session as `CLAUDE_CODE_SESSION_ID`.
+    fn caller_env(&self) -> Option<CallerEnvShape> {
+        Some(CallerEnvShape {
+            process_names: &["claude"],
+            session_var: "CLAUDE_CODE_SESSION_ID",
+            role: None,
+            process_match: Some(|record| {
+                record
+                    .argv
+                    .iter()
+                    .any(|a| a.contains("@anthropic-ai/claude-code"))
+            }),
+            pid_var: Some("CLAUDE_PID"),
+            paneless: None,
+        })
+    }
+    /// Claude's hook passes a subagent's id to the CLI as `--agent-id`.
+    fn binding_policy(&self) -> BindingPolicy {
+        BindingPolicy {
+            hook_agent_id: true,
+            ..BindingPolicy::default()
+        }
+    }
+    fn required_hook_events(&self) -> Vec<&'static str> {
+        declared_hook_groups("")
+            .into_iter()
+            .map(|(event, _)| event)
+            .collect()
+    }
+    fn rewrite_hook_output(&self, input: &[u8], existing_stdout: &[u8]) -> Option<Vec<u8>> {
+        subagent_rewrite_output(input, existing_stdout)
+    }
     fn receipt_admission_summary(&self) -> Option<String> {
         Some("declared".into())
     }

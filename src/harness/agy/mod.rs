@@ -75,6 +75,9 @@ impl HarnessAdapter for AgyAdapter {
             process_names: &["agy", "antigravity", "antigravity-cli"],
             session_var: "ANTIGRAVITY_CONVERSATION_ID",
             role: Some(witness::caller_session),
+            process_match: None,
+            pid_var: None,
+            paneless: None,
         })
     }
     fn output_policy(&self) -> OutputPolicy {

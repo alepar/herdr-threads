@@ -102,11 +102,12 @@ impl Drop for ActiveGuard {
 /// The stable error for a refused origin (decision 15; exit statuses in `exit.rs`).
 pub(super) fn refusal_error(refusal: &EnvRefusal) -> RunError {
     let api = match refusal {
-        EnvRefusal::NoHarness => ApiError::session_claim_required(
-            "an agent harness environment marker is set, but no claude, codex or hermes process \
-             is among this process's ancestors, so the call cannot be attributed to a harness \
-             session; run herdr-threads from the agent's own shell tool",
-        ),
+        EnvRefusal::NoHarness => ApiError::session_claim_required(format!(
+            "an agent harness environment marker is set, but no {} or other registered agent \
+             harness process is among this process's ancestors, so the call cannot be \
+             attributed to a harness session; run herdr-threads from the agent's own shell tool",
+            crate::harness::caller_env::caller_harness_names()
+        )),
         EnvRefusal::MissingSession { .. }
         | EnvRefusal::MalformedSubagentMarker { .. }
         | EnvRefusal::UnattributedSession { .. } => {

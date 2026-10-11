@@ -774,9 +774,52 @@ fn observe_executable(
     Ok(None)
 }
 
+/// Hermes bridge callbacks. `on_session_end` fires after every turn and is NOT an end event;
+/// `on_session_finalize` is the session teardown (spec §3).
+pub const REQUIRED_HOOK_EVENTS: &[&str] = &[
+    "pre_llm_call",
+    "post_tool_call",
+    "on_session_start",
+    "on_session_reset",
+    "on_session_finalize",
+    "subagent_start",
+    "subagent_stop",
+];
+
+/// The `.hermes/bin/hermes` launcher execs `python3 -I -c '<script>' "$@"`.
+fn is_hermes_launcher(record: &crate::ports::ProcessRecord) -> bool {
+    let argv0 = record.argv.first().map_or("", String::as_str);
+    let argv0 = argv0.rsplit('/').next().unwrap_or(argv0);
+    argv0.starts_with("python")
+        && record
+            .argv
+            .iter()
+            .any(|a| a.contains("hermes_cli") || a.contains("/.hermes/"))
+}
+
 impl HarnessAdapter for HermesAdapter {
     fn canary_strategy(&self) -> Option<&dyn CanaryStrategy> {
         Some(&HermesCanary)
+    }
+    fn caller_env(&self) -> Option<CallerEnvShape> {
+        Some(CallerEnvShape {
+            process_names: &["hermes"],
+            session_var: "HERMES_SESSION_ID",
+            role: None,
+            process_match: Some(is_hermes_launcher),
+            pid_var: None,
+            paneless: None,
+        })
+    }
+    /// The parent registers a Hermes child session as a subagent binding keyed by the child.
+    fn binding_policy(&self) -> BindingPolicy {
+        BindingPolicy {
+            registered_child_sessions: true,
+            ..BindingPolicy::default()
+        }
+    }
+    fn required_hook_events(&self) -> Vec<&'static str> {
+        REQUIRED_HOOK_EVENTS.to_vec()
     }
 
     type Admission = HermesAdmission;
@@ -3520,5 +3563,40 @@ mod companion_boundary_tests {
         assert!(descriptor.model_key_env.is_none());
         assert_eq!(descriptor.artifact_schema_version, 1);
         assert_eq!(descriptor.companion, "scripts/canary/adapters/hermes.py");
+    }
+}
+
+#[cfg(test)]
+mod required_events_tests {
+    use super::REQUIRED_HOOK_EVENTS;
+    use std::collections::BTreeSet;
+
+    /// The callback names the embedded Hermes bridge registers: the names in its `HOOKS` tuple (the
+    /// bridge registers every one through `ctx.register_hook(name, ...)` in a loop).
+    fn hermes_bridge_hooks() -> BTreeSet<String> {
+        let source =
+            String::from_utf8(include_bytes!("../../integrations/hermes/__init__.py").to_vec())
+                .unwrap();
+        let start = source.find("\nHOOKS = (").expect("bridge HOOKS tuple") + "\nHOOKS = (".len();
+        let end = start + source[start..].find(')').expect("bridge HOOKS tuple end");
+        source[start..end]
+            .split(',')
+            .map(|name| name.trim().trim_matches('"'))
+            .filter(|name| !name.is_empty() && !name.starts_with('#'))
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// The bridge registers exactly the required callbacks. `on_session_end` fires every turn, so
+    /// it is never one of them.
+    #[test]
+    fn hermes_bridge_registers_exactly_the_required_callbacks() {
+        let bridge = hermes_bridge_hooks();
+        let required: BTreeSet<String> = REQUIRED_HOOK_EVENTS
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect();
+        assert_eq!(bridge, required);
+        assert!(!required.contains("on_session_end"));
     }
 }

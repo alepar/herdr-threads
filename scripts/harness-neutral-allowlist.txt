@@ -45,6 +45,7 @@ src/harness/launch.rs:codex_guard — frozen-wire: V1 bootstrap grammar, a froze
 src/harness/mod.rs:pub mod agy; — registration: adapter module declaration (permanent registration)
 src/harness/mod.rs:pub mod claude; — registration: adapter module declaration (permanent registration)
 src/harness/mod.rs:pub mod claude_mod; — registration: adapter module declaration (permanent registration)
+src/harness/mod.rs:pub mod claude_rewrite; — registration: adapter module declaration (permanent registration)
 src/harness/mod.rs:pub mod codex; — registration: adapter module declaration (permanent registration)
 src/harness/mod.rs:pub mod codex_config; — registration: adapter module declaration (permanent registration)
 src/harness/mod.rs:pub mod codex_evidence; — registration: adapter module declaration (permanent registration)

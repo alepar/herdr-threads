@@ -734,8 +734,8 @@ impl CallerFailure {
 }
 
 /// The watch child's caller. The mod passes the session it serves as `--session` (spec D3), so
-/// the harness's session variable is not needed: a Claude ancestor with the variable unset is
-/// that session, fingerprinted by its own process.
+/// the harness's session variable is not needed: an ancestor of a push-channel harness with the
+/// variable unset is that session, fingerprinted by its own process.
 fn watch_origin(
     parsed: &super::commands::ParsedCli,
     session: &str,
@@ -746,10 +746,17 @@ fn watch_origin(
         protocol::authority::{COOPERATIVE_ENV_SESSION_PROVENANCE, CallerRole},
     };
     let origin = super::caller::derive(parsed);
-    let Some(CallerOrigin::Refused(EnvRefusal::MissingSession {
-        harness: "claude", ..
-    })) = &origin
-    else {
+    let Some(CallerOrigin::Refused(EnvRefusal::MissingSession { harness, .. })) = &origin else {
+        return origin;
+    };
+    let harness: &'static str = harness;
+    if !crate::delivery::declares(
+        harness,
+        crate::harness::adapter::DeliveryMechanism::PushChannel,
+    ) {
+        return origin;
+    }
+    let Ok(agent) = crate::harness::registry::builtins().agent(harness) else {
         return origin;
     };
     let env = |name: &str| std::env::var(name).ok();
@@ -760,11 +767,11 @@ fn watch_origin(
         processes: &crate::host::process_table::HostProcessTable,
     };
     match (
-        caller_env::harness_fingerprint(&inputs, "claude"),
+        caller_env::harness_fingerprint(&inputs, harness),
         NativeSessionId::parse(session.to_owned()),
     ) {
         (Ok(fingerprint), Ok(native_session)) => CallerOrigin::Agent(EnvClaim {
-            harness: crate::protocol::authority::Harness::Claude,
+            harness: crate::protocol::authority::Harness::Agent(agent),
             native_session,
             agent_id: None,
             role: CallerRole::TopLevel,
@@ -858,7 +865,6 @@ fn own_session_claim(
     claim.native_session =
         NativeSessionId::parse(session.to_owned()).map_err(|_| CallerFailure::Other)?;
     claim.role = crate::protocol::authority::CallerRole::TopLevel;
-    claim.harness = crate::protocol::authority::Harness::Claude;
     claim.agent_id = None;
     if liveness.is_some() {
         claim.liveness = liveness;
