@@ -388,11 +388,12 @@ fn agent_facing_machine_text_is_compact() {
         "{show}"
     );
     assert!(
-        show.contains(&format!("{hatter_seat} joined self\n")),
+        show.contains(&format!("{hatter_seat} joined active self\n")),
         "{show}"
     );
     assert!(!show.contains("native_observation"), "{show}");
-    let canonical = format!("participants\n{alice_seat} joined\n{hatter_seat} joined self\n");
+    let canonical =
+        format!("participants\n{alice_seat} joined active\n{hatter_seat} joined active self\n");
     assert!(participants.starts_with(&canonical), "{participants}");
     let hints: Vec<_> = participants[canonical.len()..].lines().collect();
     assert_eq!(hints.len(), 2, "{participants}");

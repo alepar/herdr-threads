@@ -705,8 +705,10 @@ fn snake<T: serde::Serialize>(value: &T) -> String {
         .unwrap_or_default()
 }
 
-/// `SEAT STATE [self] [required invitation=I requirement=R revision=N]
-/// [retired]`.
+/// `SEAT STATE active|inactive [self] [required invitation=I requirement=R
+/// revision=N] [retired] [cleanup:S]`. `active` is the store's presence
+/// (a connected binding); every row names one so neither group is implied
+/// by absence.
 fn participant_row(participant: &Participant, out: &mut String) {
     out.push_str(participant.seat.as_str());
     out.push(' ');
@@ -717,6 +719,11 @@ fn participant_row(participant: &Participant, out: &mut String) {
             snake(&participant.physical_state)
         ));
     }
+    out.push_str(if participant.active {
+        " active"
+    } else {
+        " inactive"
+    });
     if participant.is_self {
         out.push_str(" self");
     }
