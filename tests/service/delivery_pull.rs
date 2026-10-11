@@ -6053,9 +6053,19 @@ fn assert_v2_offer_window_reclaimed(watch: bool, lazy: bool) {
             emitted |= page.offered.contains(&successor);
         }
         if n == 0 {
-            let work = window.f.service.presentation.last_work.lock().unwrap().unwrap();
+            let work = window
+                .f
+                .service
+                .presentation
+                .last_work
+                .lock()
+                .unwrap()
+                .unwrap();
             assert_eq!(work.offer_reconciliation_visits, 256);
-            assert_eq!(work.offer_reconciliation_probes, if lazy { 768 } else { 1024 });
+            assert_eq!(
+                work.offer_reconciliation_probes,
+                if lazy { 768 } else { 1024 }
+            );
         }
         if emitted {
             break;
@@ -6170,7 +6180,11 @@ fn presentation_reclamation_preserves_pending_truncated_and_reoffer_history() {
             assert!(!page.offered.contains(&sent[256]));
         }
     }
-    assert_eq!(window.offers(), second, "the fresh identity cannot evict pending offers at capacity");
+    assert_eq!(
+        window.offers(),
+        second,
+        "the fresh identity cannot evict pending offers at capacity"
+    );
     // Manual ACK is allowed after the body continuation was read, including
     // the previously truncated identity. Keep one short offer canonically pending.
     window.ack(&sent[..255], false, false, "offer-window-manual-settle");
@@ -6306,11 +6320,29 @@ fn presentation_reclamation_legacy_terminal_delta_has_exact_bounded_work_on_unch
     use crate::protocol::delivery::DeliveryPullReplyV2;
     let f = fixture(257);
     let recipient = pull_seat(&f);
-    f.db.execute("UPDATE receipts SET state='acked' WHERE seat_id='s'", []).unwrap();
-    let known = (1..=256).map(|n| MessageId::new(format!("m{n}"))).collect::<Vec<_>>();
-    let output = f.store.presentation_pull(offer_reconciliation_input(&f, &recipient, known.clone()), &budget()).unwrap();
-    assert!(matches!(output.reply, DeliveryPullReplyV2::Unchanged { .. }));
-    assert_eq!(output.reclaimed_messages.into_iter().collect::<std::collections::BTreeSet<_>>(), known.into_iter().collect());
+    f.db.execute("UPDATE receipts SET state='acked' WHERE seat_id='s'", [])
+        .unwrap();
+    let known = (1..=256)
+        .map(|n| MessageId::new(format!("m{n}")))
+        .collect::<Vec<_>>();
+    let output = f
+        .store
+        .presentation_pull(
+            offer_reconciliation_input(&f, &recipient, known.clone()),
+            &budget(),
+        )
+        .unwrap();
+    assert!(matches!(
+        output.reply,
+        DeliveryPullReplyV2::Unchanged { .. }
+    ));
+    assert_eq!(
+        output
+            .reclaimed_messages
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>(),
+        known.into_iter().collect()
+    );
     assert_eq!(output.work.offer_reconciliation_visits, 256);
     assert_eq!(output.work.offer_reconciliation_probes, 1280);
     assert_eq!(output.work.ordinary_publication_visits, 0);
@@ -6322,11 +6354,18 @@ fn presentation_reclamation_legacy_terminal_delta_has_exact_bounded_work_on_unch
 fn presentation_reclamation_keeps_pending_missing_and_deduplicates_snapshot_work() {
     let f = fixture(2);
     let recipient = pull_seat(&f);
-    f.db.execute("UPDATE receipts SET state='recipient_retired' WHERE message_id='m2' AND seat_id='s'", []).unwrap();
-    let output = f.store.presentation_pull(
-        offer_reconciliation_input(&f, &recipient, ids(&["m1", "m2", "missing", "m2"])),
-        &budget(),
-    ).unwrap();
+    f.db.execute(
+        "UPDATE receipts SET state='recipient_retired' WHERE message_id='m2' AND seat_id='s'",
+        [],
+    )
+    .unwrap();
+    let output = f
+        .store
+        .presentation_pull(
+            offer_reconciliation_input(&f, &recipient, ids(&["m1", "m2", "missing", "m2"])),
+            &budget(),
+        )
+        .unwrap();
     assert_eq!(output.reclaimed_messages, ids(&["m2"]));
     assert_eq!(output.work.offer_reconciliation_visits, 3);
     assert_eq!(output.work.offer_reconciliation_probes, 11);
@@ -6358,8 +6397,18 @@ fn presentation_reclamation_preserves_logical_precedence_and_explicit_waiver_fla
         if waiver == "prepared" {
             f.db.execute("UPDATE prepared_recipients SET ack_required=0 WHERE seat_id='s' AND preparation_id=(SELECT preparation_id FROM send_manifests WHERE message_id=?1)",[message.as_str()]).unwrap();
         }
-        let output = f.store.presentation_pull(offer_reconciliation_input(f, &window.recipient, vec![message.clone()]), &budget()).unwrap();
-        assert_eq!(output.reclaimed_messages, if want {vec![message]} else {vec![]}, "state={state:?} waiver={waiver} legacy_required={legacy_required}");
+        let output = f
+            .store
+            .presentation_pull(
+                offer_reconciliation_input(f, &window.recipient, vec![message.clone()]),
+                &budget(),
+            )
+            .unwrap();
+        assert_eq!(
+            output.reclaimed_messages,
+            if want { vec![message] } else { vec![] },
+            "state={state:?} waiver={waiver} legacy_required={legacy_required}"
+        );
         assert_eq!(output.work.offer_reconciliation_visits, 1);
         assert_eq!(output.work.offer_reconciliation_probes, 4);
     }
@@ -6367,8 +6416,18 @@ fn presentation_reclamation_preserves_logical_precedence_and_explicit_waiver_fla
     // evidence when no manifest addressed authority exists.
     let f = fixture(1);
     let recipient = pull_seat(&f);
-    f.db.execute("UPDATE receipts SET ack_required=0 WHERE message_id='m1' AND seat_id='s'", []).unwrap();
-    let output = f.store.presentation_pull(offer_reconciliation_input(&f, &recipient, ids(&["m1"])), &budget()).unwrap();
+    f.db.execute(
+        "UPDATE receipts SET ack_required=0 WHERE message_id='m1' AND seat_id='s'",
+        [],
+    )
+    .unwrap();
+    let output = f
+        .store
+        .presentation_pull(
+            offer_reconciliation_input(&f, &recipient, ids(&["m1"])),
+            &budget(),
+        )
+        .unwrap();
     assert_eq!(output.reclaimed_messages, ids(&["m1"]));
     assert_eq!(output.work.offer_reconciliation_probes, 5);
 }
@@ -6379,15 +6438,34 @@ fn presentation_reclamation_preserves_logical_precedence_and_explicit_waiver_fla
 fn presentation_reclamation_requires_published_addressed_lazy_completion() {
     let f = fixture(0);
     let recipient = pull_seat(&f);
-    for id in ["msg-old-pending", "msg-old-displayed", "msg-unpublished-displayed"] {
+    for id in [
+        "msg-old-pending",
+        "msg-old-displayed",
+        "msg-unpublished-displayed",
+    ] {
         lazy_message(&f, id, "retained lazy body");
     }
     f.db.execute("UPDATE lazy_recipients SET state='displayed' WHERE seat_id='s' AND message_id!='msg-old-pending'", []).unwrap();
-    f.db.execute("DELETE FROM send_manifests WHERE message_id='msg-unpublished-displayed'", []).unwrap();
-    let output = f.store.presentation_pull(
-        offer_reconciliation_input(&f, &recipient, ids(&["msg-old-pending", "msg-old-displayed", "msg-unpublished-displayed"])),
-        &budget(),
-    ).unwrap();
+    f.db.execute(
+        "DELETE FROM send_manifests WHERE message_id='msg-unpublished-displayed'",
+        [],
+    )
+    .unwrap();
+    let output = f
+        .store
+        .presentation_pull(
+            offer_reconciliation_input(
+                &f,
+                &recipient,
+                ids(&[
+                    "msg-old-pending",
+                    "msg-old-displayed",
+                    "msg-unpublished-displayed",
+                ]),
+            ),
+            &budget(),
+        )
+        .unwrap();
     assert_eq!(output.reclaimed_messages, ids(&["msg-old-displayed"]));
     assert_eq!(output.work.offer_reconciliation_visits, 3);
     assert_eq!(output.work.offer_reconciliation_probes, 9);
@@ -6401,11 +6479,27 @@ fn presentation_reclamation_replay_returns_delta_and_refusals_do_no_reconciliati
     use crate::protocol::delivery::DeliveryPullReplyV2;
     let f = fixture(1);
     let recipient = pull_seat(&f);
-    let inviter = check_in(&f, claim("x", "px", fourth(), "reclamation-inviter", 0), "reclamation-inviter-ci");
+    let inviter = check_in(
+        &f,
+        claim("x", "px", fourth(), "reclamation-inviter", 0),
+        "reclamation-inviter-ci",
+    );
     canonical_lazy_invitation_backlog(&f, &recipient, &inviter, 1, "reclamation-replay");
-    f.db.execute("UPDATE receipts SET state='acked' WHERE message_id='m1' AND seat_id='s'", []).unwrap();
-    let first = f.store.presentation_pull(offer_reconciliation_input(&f, &recipient, vec![]), &budget()).unwrap();
-    assert!(matches!(first.reply, DeliveryPullReplyV2::Page(ref page) if page.presentation_token.is_some()));
+    f.db.execute(
+        "UPDATE receipts SET state='acked' WHERE message_id='m1' AND seat_id='s'",
+        [],
+    )
+    .unwrap();
+    let first = f
+        .store
+        .presentation_pull(
+            offer_reconciliation_input(&f, &recipient, vec![]),
+            &budget(),
+        )
+        .unwrap();
+    assert!(
+        matches!(first.reply, DeliveryPullReplyV2::Page(ref page) if page.presentation_token.is_some())
+    );
     let input = offer_reconciliation_input(&f, &recipient, ids(&["m1"]));
     assert!(input.frozen_render.is_some());
     let replay = f.store.presentation_pull(input.clone(), &budget()).unwrap();
@@ -6434,18 +6528,40 @@ fn presentation_reclamation_replay_returns_delta_and_refusals_do_no_reconciliati
 fn presentation_reclamation_refuses_oversize_hints_before_effects() {
     let f = fixture(0);
     let recipient = pull_seat(&f);
-    let count = || f.db.query_row("SELECT count(*) FROM invitation_presentation_consumers", [], |r| r.get::<_,i64>(0)).unwrap();
+    let count = || {
+        f.db.query_row(
+            "SELECT count(*) FROM invitation_presentation_consumers",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap()
+    };
     let before = count();
     for field in ["known", "blocked", "slots"] {
         let mut input = offer_reconciliation_input(&f, &recipient, vec![]);
         match field {
-            "known" => input.known_messages = (0..257).map(|n| MessageId::new(format!("unknown-{n}"))).collect(),
-            "blocked" => input.blocked_messages = (0..257).map(|n| MessageId::new(format!("unknown-{n}"))).collect(),
+            "known" => {
+                input.known_messages = (0..257)
+                    .map(|n| MessageId::new(format!("unknown-{n}")))
+                    .collect()
+            }
+            "blocked" => {
+                input.blocked_messages = (0..257)
+                    .map(|n| MessageId::new(format!("unknown-{n}")))
+                    .collect()
+            }
             _ => input.new_message_slots = 257,
         }
         let error = f.store.presentation_pull(input, &budget()).unwrap_err();
-        assert_eq!(error.code, crate::protocol::results::ErrorCode::InvalidRequest);
-        assert_eq!(count(), before, "{field} overflow must not mutate presentation state");
+        assert_eq!(
+            error.code,
+            crate::protocol::results::ErrorCode::InvalidRequest
+        );
+        assert_eq!(
+            count(),
+            before,
+            "{field} overflow must not mutate presentation state"
+        );
     }
 }
 

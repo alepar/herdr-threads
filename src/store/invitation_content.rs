@@ -1675,7 +1675,11 @@ fn reclaim_terminal_offers(
         return Err(ApiError::invalid_request("ordinary offer snapshot bound"));
     }
     let claim = &input.pull.claim;
-    let mut known = input.known_messages.iter().cloned().collect::<std::collections::BTreeSet<_>>();
+    let mut known = input
+        .known_messages
+        .iter()
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
     let mut reclaimed = Vec::new();
     for id in &known {
         work.offer_reconciliation_visits += 1;
@@ -1722,10 +1726,16 @@ fn reclaim_terminal_offers(
             reclaimed.push(id.clone());
         }
     }
-    for id in &reclaimed { known.remove(id); }
+    for id in &reclaimed {
+        known.remove(id);
+    }
     // The delta follows the sorted snapshot; membership needs no quadratic walk.
-    input.blocked_messages.retain(|id| reclaimed.binary_search(id).is_err());
-    input.new_message_slots = input.new_message_slots.saturating_add(reclaimed.len())
+    input
+        .blocked_messages
+        .retain(|id| reclaimed.binary_search(id).is_err());
+    input.new_message_slots = input
+        .new_message_slots
+        .saturating_add(reclaimed.len())
         .min(MAX_OFFERS_PER_SEAT - known.len());
     input.known_messages = known.into_iter().collect();
     Ok(reclaimed)
@@ -2291,7 +2301,11 @@ fn finish(
     work.output_bytes = sizer.work.output_bytes;
     work.rpc_passes = sizer.work.rpc_passes;
     work.rpc_bytes = sizer.work.rpc_bytes;
-    Ok(PresentationOutput { reply, work, reclaimed_messages })
+    Ok(PresentationOutput {
+        reply,
+        work,
+        reclaimed_messages,
+    })
 }
 
 /// Canonical, independent passive maintenance. Each call inspects at most
