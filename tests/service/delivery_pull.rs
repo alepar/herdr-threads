@@ -10645,3 +10645,128 @@ fn presentation_owner_replay_standalone_unrenderable_attempt_is_finite_and_local
     assert!(page.truncated.contains(&id));
     assert_eq!(window.offers(), stamps);
 }
+
+// Kills dropping active recovery context on a real deferred control-only call.
+// A full real invitation page defers Attention; its old token is normally
+// confirmed before this separate control opportunity and ordinary replay.
+#[test]
+fn presentation_owner_replay_deferred_control_only_preserves_current_outlook() {
+    use crate::protocol::{
+        commands::{CreateThread, DeliveryMode, InvitationConfirmation, Invite},
+        delivery::{DeliveryPullReplyV2, PresentationItemV2},
+    };
+    for more in [false, true] {
+        let mut window = OfferWindowFixture::new(true);
+        let id = window.send(
+            0,
+            DeliveryMode::Ordinary,
+            "pending through deferred control",
+        );
+        window.drain(1);
+        for _ in 0..4 {
+            window.pull();
+        }
+        canonical_lazy_invitation_backlog(
+            &window.f,
+            &window.recipient,
+            &window.sender,
+            32,
+            "owner-control-passive",
+        );
+        let CommandResult::ThreadCreated(thread) = window
+            .f
+            .service
+            .handle(
+                Command::CreateThread(CreateThread {
+                    name: None,
+                    topic: "confirming owner control".into(),
+                    goal: "review".into(),
+                    operation: OperationId::new("owner-control-thread"),
+                    claim: window.sender.clone(),
+                }),
+                peer(),
+                &budget(),
+            )
+            .unwrap()
+        else {
+            panic!("real thread")
+        };
+        window
+            .f
+            .service
+            .handle(
+                Command::Invite(Invite {
+                    confirmation: Some(InvitationConfirmation::RequireAck),
+                    thread,
+                    seat: window.recipient.seat.clone(),
+                    deadline_millis: Some(60_000),
+                    operation: OperationId::new("owner-control-invite"),
+                    claim: window.sender.clone(),
+                }),
+                peer(),
+                &budget(),
+            )
+            .unwrap();
+        let DeliveryPullReplyV2::Page(full) = window.raw_watch_pull() else {
+            panic!("full invitation output")
+        };
+        assert_eq!(full.items.len(), 32);
+        assert!(full.emitted_controls.is_empty());
+        assert!(window.f.db.query_row("SELECT json_extract(control_state,'$.fresh_since_control') FROM invitation_presentation_consumers WHERE seat_id='c' AND consumer='watch'", [], |r|r.get::<_,bool>(0)).unwrap(), "actual full page deferred Attention");
+        {
+            let mut ledger = window.f.state.lock();
+            let entry = ledger
+                .seat_mut(
+                    &window.recipient.seat,
+                    window.recipient.binding_generation,
+                    window.recipient.native_session.as_str(),
+                )
+                .unwrap();
+            entry.more_pending = more;
+            entry.read_attention = Some(777);
+            entry.whole_read = Some(888);
+        }
+        let outlook = owner_outlook(&window);
+        let stamps = window.offers();
+        window.replace_watch();
+        let replay = window.raw_watch_pull();
+        assert!(
+            matches!(&replay,DeliveryPullReplyV2::Page(page) if page.presentation_token == full.presentation_token && page.more)
+        );
+        window.confirm_nonmessage_presentation(&replay);
+        let control = window.raw_watch_pull();
+        let DeliveryPullReplyV2::Page(page) = &control else {
+            panic!("separate deferred Attention")
+        };
+        assert_eq!(page.items.len(), 1);
+        assert!(matches!(
+            &page.items[0],
+            PresentationItemV2::Attention { .. }
+        ));
+        assert!(
+            page.more,
+            "owner recovery debt survives control-only allocation"
+        );
+        assert!(page.offered.is_empty() && page.truncated.is_empty());
+        assert_eq!(
+            window
+                .f
+                .service
+                .presentation
+                .last_work
+                .lock()
+                .unwrap()
+                .unwrap()
+                .ordinary,
+            0
+        );
+        assert_eq!(owner_outlook(&window), outlook);
+        assert_eq!(window.offers(), stamps);
+        window.confirm_nonmessage_presentation(&control);
+        let DeliveryPullReplyV2::Page(body) = window.raw_watch_pull() else {
+            panic!("continued physical body")
+        };
+        assert!(body.offered.contains(&id));
+        assert_eq!(window.offers(), stamps);
+    }
+}
