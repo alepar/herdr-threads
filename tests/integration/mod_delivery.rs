@@ -30,10 +30,10 @@ use serde_json::{Value, json};
 use std::{
     collections::VecDeque,
     fs,
-    io::{BufRead, BufReader, Write},
+    io::{BufRead, BufReader, Read, Write},
     os::unix::{
-        fs::{DirBuilderExt, PermissionsExt},
-        net::UnixListener,
+        fs::{DirBuilderExt, MetadataExt, PermissionsExt},
+        net::{UnixListener, UnixStream},
     },
     path::PathBuf,
     process::Stdio,
@@ -1028,6 +1028,8 @@ struct Watch {
     reader: Option<JoinHandle<()>>,
     error_reader: Option<JoinHandle<()>>,
     errors: Arc<Mutex<String>>,
+    /// Exact child bytes, including newline boundaries, for activation evidence.
+    stdout: Arc<Mutex<Vec<u8>>>,
 }
 impl Watch {
     fn spawn(mut command: std::process::Command) -> Self {
@@ -1049,13 +1051,25 @@ impl Watch {
             }
         });
         let (tx, lines) = mpsc::channel();
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let sink = captured.clone();
         let reader = std::thread::spawn(move || {
-            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                if let Ok(value) = serde_json::from_str::<Value>(&line)
+            let mut reader = BufReader::new(stdout);
+            let mut line = Vec::new();
+            while reader.read_until(b'\n', &mut line).is_ok_and(|len| len != 0) {
+                {
+                    let mut bytes = sink.lock().unwrap();
+                    // Only the activation proof reads this bounded evidence.
+                    if bytes.len() + line.len() <= 131_072 {
+                        bytes.extend_from_slice(&line);
+                    }
+                }
+                if let Ok(value) = serde_json::from_slice::<Value>(&line)
                     && tx.send(value).is_err()
                 {
                     return;
                 }
+                line.clear();
             }
         });
         Self {
@@ -1066,6 +1080,7 @@ impl Watch {
             reader: Some(reader),
             error_reader: Some(error_reader),
             errors,
+            stdout: captured,
         }
     }
 
@@ -1188,6 +1203,537 @@ impl Drop for Watch {
             let _ = reader.join();
         }
     }
+}
+
+// --------------------------------------------------- activation observation
+
+/// This relay forwards real frames unchanged. The only local routing change is
+/// the isolated descriptor's socket inode, restored before the rig shuts down.
+/// It never supplies capabilities, leases, pages, or confirmation results.
+#[derive(Clone)]
+struct ObservedExchange {
+    request: Value,
+    reply: Option<Value>,
+}
+
+#[derive(Clone, Copy)]
+enum ConfirmFault {
+    None,
+    BeforeCommit,
+    LoseReply,
+}
+
+struct ActivationRelay {
+    endpoint: PathBuf,
+    upstream: PathBuf,
+    descriptor: PathBuf,
+    original_descriptor: Vec<u8>,
+    stop: Arc<AtomicBool>,
+    release: Arc<AtomicBool>,
+    exchanges: Arc<Mutex<Vec<ObservedExchange>>>,
+    open: Arc<Mutex<Vec<UnixStream>>>,
+    worker: Option<JoinHandle<()>>,
+}
+
+fn activation_read(stream: &mut UnixStream) -> std::io::Result<Vec<u8>> {
+    let mut prefix = [0; 4];
+    stream.read_exact(&mut prefix)?;
+    let len = u32::from_be_bytes(prefix) as usize;
+    if len == 0 || len > herdr_threads::protocol::wire::MAX_WIRE_FRAME_BYTES {
+        return Err(std::io::Error::other("activation frame bound"));
+    }
+    let mut body = vec![0; len];
+    stream.read_exact(&mut body)?;
+    Ok(body)
+}
+
+fn activation_write(stream: &mut UnixStream, body: &[u8]) -> std::io::Result<()> {
+    stream.write_all(&(body.len() as u32).to_be_bytes())?;
+    stream.write_all(body)
+}
+
+impl ActivationRelay {
+    fn start(rig: &Rig, hold: bool, fault: ConfirmFault) -> Self {
+        let endpoint = rig.paths.socket_path.clone();
+        let upstream = rig.root.join("activation-upstream.sock");
+        let descriptor = rig.paths.descriptor_path.clone();
+        let original_descriptor = fs::read(&descriptor).unwrap();
+        fs::rename(&endpoint, &upstream).unwrap();
+        let listener = UnixListener::bind(&endpoint).unwrap();
+        fs::set_permissions(&endpoint, fs::Permissions::from_mode(0o600)).unwrap();
+        let meta = fs::metadata(&endpoint).unwrap();
+        let mut routed: Value = serde_json::from_slice(&original_descriptor).unwrap();
+        routed["socket_device"] = json!(meta.dev());
+        routed["socket_inode"] = json!(meta.ino());
+        fs::write(&descriptor, serde_json::to_vec(&routed).unwrap()).unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let release = Arc::new(AtomicBool::new(!hold));
+        let exchanges: Arc<Mutex<Vec<ObservedExchange>>> = Arc::default();
+        let open: Arc<Mutex<Vec<UnixStream>>> = Arc::default();
+        let used = Arc::new(AtomicBool::new(false));
+        let (stopped, released, log, sockets, target) = (
+            stop.clone(), release.clone(), exchanges.clone(), open.clone(), upstream.clone(),
+        );
+        let worker = std::thread::spawn(move || {
+            let mut threads = Vec::new();
+            for incoming in listener.incoming() {
+                if stopped.load(Ordering::SeqCst) {
+                    break;
+                }
+                let Ok(mut downstream) = incoming else { break };
+                let Ok(mut upstream) = UnixStream::connect(&target) else { break };
+                {
+                    let mut open = sockets.lock().unwrap();
+                    open.push(downstream.try_clone().unwrap());
+                    open.push(upstream.try_clone().unwrap());
+                }
+                let (stopped, released, log, used) = (
+                    stopped.clone(), released.clone(), log.clone(), used.clone(),
+                );
+                threads.push(std::thread::spawn(move || {
+                    let mut serve = || -> std::io::Result<()> {
+                        let request_bytes = activation_read(&mut downstream)?;
+                        let request: Value = serde_json::from_slice(&request_bytes)?;
+                        let control_confirm = request["command"]["kind"]
+                            == "delivery_presentation_confirm_v2"
+                            && request["command"]["args"]["emitted_controls"]
+                                .as_array().is_some_and(|stamps| !stamps.is_empty());
+                        let first = control_confirm && !used.swap(true, Ordering::SeqCst);
+                        let index = {
+                            let mut log = log.lock().unwrap();
+                            let index = log.len();
+                            // Purpose-specific bounded capture, never a traffic dump.
+                            if index >= 256 {
+                                return Err(std::io::Error::other("activation exchange bound"));
+                            }
+                            log.push(ObservedExchange { request, reply: None });
+                            index
+                        };
+                        if first && matches!(fault, ConfirmFault::BeforeCommit) {
+                            return Ok(());
+                        }
+                        if first && matches!(fault, ConfirmFault::None) {
+                            while !released.load(Ordering::SeqCst) {
+                                if stopped.load(Ordering::SeqCst) { return Ok(()) }
+                                std::thread::sleep(Duration::from_millis(5));
+                            }
+                        }
+                        activation_write(&mut upstream, &request_bytes)?;
+                        let reply_bytes = activation_read(&mut upstream)?;
+                        log.lock().unwrap()[index].reply =
+                            Some(serde_json::from_slice(&reply_bytes)?);
+                        if first && matches!(fault, ConfirmFault::LoseReply) {
+                            // Keep the real child/owner live until the test replays
+                            // the committed request, then simulate the lost response.
+                            while !released.load(Ordering::SeqCst) {
+                                if stopped.load(Ordering::SeqCst) { return Ok(()) }
+                                std::thread::sleep(Duration::from_millis(5));
+                            }
+                            return Ok(());
+                        }
+                        activation_write(&mut downstream, &reply_bytes)?;
+                        // Only Watch has further frames on this connection.
+                        if log.lock().unwrap()[index].request.get("watch").is_some() {
+                            loop {
+                                let body = activation_read(&mut upstream)?;
+                                activation_write(&mut downstream, &body)?;
+                            }
+                        }
+                        Ok(())
+                    };
+                    let _ = serve();
+                    let _ = downstream.shutdown(std::net::Shutdown::Both);
+                    let _ = upstream.shutdown(std::net::Shutdown::Both);
+                }));
+            }
+            for thread in threads { let _ = thread.join(); }
+        });
+        Self {
+            endpoint, upstream, descriptor, original_descriptor, stop, release,
+            exchanges, open, worker: Some(worker),
+        }
+    }
+
+    fn snapshot(&self) -> Vec<ObservedExchange> {
+        self.exchanges.lock().unwrap().clone()
+    }
+
+    fn control_confirm(&self, replied: bool) -> ObservedExchange {
+        wait_until("the real child's nonempty control Confirm", STEP, || {
+            self.snapshot().into_iter().find(|entry| {
+                entry.request["command"]["kind"] == "delivery_presentation_confirm_v2"
+                    && entry.request["command"]["args"]["emitted_controls"]
+                        .as_array().is_some_and(|stamps| !stamps.is_empty())
+                    && (!replied || entry.reply.is_some())
+            })
+        })
+    }
+
+    fn release(&self) {
+        self.release.store(true, Ordering::SeqCst);
+    }
+
+    /// A separate explicit recovery call, never the selected-consumer positive.
+    fn replay(&self, captured: &ObservedExchange, change: impl FnOnce(&mut Value)) -> Value {
+        let mut request = captured.request.clone();
+        request["request_id"] = json!(uuid::Uuid::new_v4().to_string());
+        change(&mut request);
+        let mut socket = UnixStream::connect(&self.upstream).unwrap();
+        socket.set_read_timeout(Some(STEP)).unwrap();
+        socket.set_write_timeout(Some(STEP)).unwrap();
+        activation_write(&mut socket, &serde_json::to_vec(&request).unwrap()).unwrap();
+        serde_json::from_slice(&activation_read(&mut socket).unwrap()).unwrap()
+    }
+}
+
+impl Drop for ActivationRelay {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        self.release();
+        let _ = UnixStream::connect(&self.endpoint);
+        for socket in self.open.lock().unwrap().iter() {
+            let _ = socket.shutdown(std::net::Shutdown::Both);
+        }
+        if let Some(worker) = self.worker.take() { let _ = worker.join(); }
+        let _ = fs::remove_file(&self.endpoint);
+        let _ = fs::rename(&self.upstream, &self.endpoint);
+        let _ = fs::write(&self.descriptor, &self.original_descriptor);
+    }
+}
+
+/// Check the actual discovery response and SAME child's registration, never a
+/// separately opened raw Watch which would replace the child's owner.
+fn activation_owner(relay: &ActivationRelay) -> String {
+    let log = relay.snapshot();
+    let capabilities = log.iter().find(|entry| {
+        entry.request["command"]["kind"] == "capabilities" && entry.reply.is_some()
+    }).expect("the watch child must discover capabilities");
+    let response: herdr_threads::protocol::wire::WireResponse =
+        serde_json::from_value(capabilities.reply.clone().unwrap()).unwrap();
+    let Ok(herdr_threads::protocol::results::CommandResult::Capabilities(list)) = response.result
+        else { panic!("real capability route refused") };
+    assert!(list.capabilities.iter().any(|name| {
+        name == herdr_threads::protocol::capabilities::DELIVERY_PRESENTATION_V2
+    }), "elected daemon must advertise presentation V2 before activation proof");
+    let accepted = log.iter().find(|entry| entry.request.get("watch").is_some())
+        .expect("same child Watch registration");
+    let lease = accepted.reply.as_ref().unwrap()["outcome"]["args"]["presentation_lease"]
+        .as_str().expect("advertised same-child Accepted lease").to_owned();
+    assert!(herdr_threads::protocol::delivery::valid_presentation_token(&lease));
+    let log = wait_until("the advertised child's selected V2 Pull", STEP, || {
+        let log = relay.snapshot();
+        log.iter().any(|entry| entry.request["command"]["kind"] == "delivery_pull_v2")
+            .then_some(log)
+    });
+    for entry in log.iter().filter(|entry| matches!(
+        entry.request["command"]["kind"].as_str(),
+        Some("delivery_pull_v2" | "delivery_presentation_confirm_v2")
+    )) {
+        assert_eq!(entry.request["command"]["args"]["claim"], accepted.request["watch"]["claim"]);
+        assert_eq!(entry.request["command"]["args"]["presentation_lease"], lease);
+    }
+    assert!(log.iter().any(|entry| entry.request["command"]["kind"] == "delivery_pull_v2"));
+    assert!(!log.iter().any(|entry| entry.request["command"]["kind"] == "inbox_batch_v2"));
+    lease
+}
+
+fn activation_page(relay: &ActivationRelay, confirm: &ObservedExchange) -> Value {
+    let token = &confirm.request["command"]["args"]["token"];
+    relay.snapshot().into_iter().filter_map(|entry| entry.reply)
+        .find_map(|reply| {
+            let result = &reply["result"]["Ok"];
+            (result["kind"] == "delivery_pulled_v2"
+                && result["data"]["kind"] == "page"
+                && result["data"]["args"]["presentation_token"] == *token)
+                .then(|| result["data"]["args"].clone())
+        }).expect("actual Pull page matching child's Confirm token")
+}
+
+fn activation_pending(rig: &Rig) -> (Option<String>, Option<String>, i64) {
+    rig.db().query_row(
+        "SELECT outbox_token,last_token,last_confirmed_mask FROM invitation_presentation_consumers WHERE seat_id=?1 AND consumer='watch'",
+        [&rig.b], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    ).unwrap()
+}
+
+fn activation_confirm_result(reply: &Value, status: &str, controls: &Value) {
+    let result = &reply["result"]["Ok"];
+    assert_eq!(result["kind"], "delivery_presentation_confirmed_v2", "{reply}");
+    assert_eq!(result["data"]["status"], status, "{reply}");
+    assert_eq!(&result["data"]["acknowledged_controls"], controls, "{reply}");
+}
+
+fn activation_invitation(rig: &Rig) -> String {
+    let thread = rig.cli(
+        Some((&rig.a, PANE_A)), &["thread", "create", "--topic", "activation invitation"],
+    ).text("activation thread");
+    rig.cli(Some((&rig.a, PANE_A)), &["invite", &thread, "--seat", &rig.b])
+        .data("activation invitation");
+    thread
+}
+
+fn activation_warn(rig: &Rig) {
+    use herdr_threads::{
+        client::service::{PersistentServiceClient, ServiceIntentJournal},
+        daemon::ownership::{read_descriptor, read_existing_namespace},
+        protocol::{
+            ids::{OperationId, SeatId, ThreadId},
+            service::{EnsureManagedThread, InvitationConstraint, NotificationSeverity,
+                ServiceInvite, ServiceNotify, ServiceOperation},
+            time::CallBudget,
+        },
+    };
+    let descriptor = read_descriptor(&rig.paths,
+        read_existing_namespace(&rig.paths).unwrap().unwrap()).unwrap();
+    let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
+    let client = PersistentServiceClient::new(
+        descriptor.endpoint, clock.clone(), descriptor.instance_uuid, Some(descriptor.boot_id),
+        ServiceIntentJournal::open(rig.root.join("activation-intents")).unwrap(),
+    );
+    let budget = || CallBudget {
+        deadline: MonoInstant(clock.monotonic_now().0 + 10_000),
+        cancellation: Cancellation::default(),
+    };
+    let thread = ThreadId::new("activation-warn");
+    tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
+        .block_on(async {
+            client.register(&budget()).await.unwrap();
+            client.submit(ServiceOperation::EnsureThread(EnsureManagedThread {
+                thread: thread.clone(), topic: "activation Warn".into(),
+                goal: "observe canonical notice".into(), operation: OperationId::new("ensure"),
+            }), &budget()).await.unwrap();
+            client.submit(ServiceOperation::Invite(ServiceInvite {
+                thread: thread.clone(), seat: SeatId::new(rig.b.clone()),
+                constraint: InvitationConstraint::Ordinary, deadline_millis: Some(300_000),
+                operation: OperationId::new("invite"),
+            }), &budget()).await.unwrap();
+            rig.cli(Some((&rig.b, PANE_B)), &["accept", thread.as_str()]).data("accept Warn thread");
+            client.submit(ServiceOperation::Notify(ServiceNotify {
+                thread: thread.clone(), severity: NotificationSeverity::Warn,
+                event_json: json!({"kind":"activation", "detail":"actual Warn notice"}),
+                operation: OperationId::new("notify"),
+            }), &budget()).await.unwrap();
+        });
+    wait_until("the actual Warn notice projection", STEP, || {
+        let count: i64 = rig.db().query_row(
+            "SELECT count(*) FROM digest_programmatic_warnings WHERE seat_id=?1 AND thread_id=?2",
+            [&rig.b, thread.as_str()], |row| row.get(0),
+        ).unwrap();
+        (count > 0).then_some(())
+    });
+}
+
+/// Every selected page is observed on the real child's stdout before its exact
+/// Confirm reaches the daemon. Removing advertisement must fail at discovery.
+#[test]
+fn activation_v2_elected_watch_capabilities_lease_output_confirm() {
+    let rig = Rig::new();
+    activation_warn(&rig);
+    let invitation = activation_invitation(&rig);
+    let lazy = rig.send_lazy("activation passive lazy");
+    let ordinary = rig.send_ordinary("activation ordinary ACK candidate");
+    let relay = ActivationRelay::start(&rig, true, ConfirmFault::None);
+    let mut watch = rig.watch(SESSION_B);
+    watch.wait_connected();
+    let lease = activation_owner(&relay);
+    let confirm = relay.control_confirm(false);
+    let page = activation_page(&relay, &confirm);
+    let token = confirm.request["command"]["args"]["token"].as_str().unwrap();
+    assert_eq!(confirm.request["command"]["args"]["emitted_controls"], page["emitted_controls"]);
+    assert!(!page["emitted_controls"].as_array().unwrap().is_empty());
+    assert_eq!(page["render"]["kind"], "watch_json_lines_v1");
+    let items = page["items"].as_array().unwrap();
+    assert!(!items.is_empty() && items.len() <= 32);
+    for kind in ["message", "invitation", "notice", "attention"] {
+        assert!(items.iter().any(|item| item["kind"] == kind), "missing {kind}: {page}");
+    }
+    assert!(items.iter().any(|item| item["id"] == lazy && item["lazy"] == true));
+    assert!(items.iter().any(|item| item["id"] == ordinary && item["lazy"] == false));
+    watch.wait_attention_marker();
+    let bytes = watch.stdout.lock().unwrap().clone();
+    let emitted: Vec<&[u8]> = bytes.split_inclusive(|byte| *byte == b'\n').skip(1).collect();
+    assert_eq!(emitted.len(), items.len(), "one ordered line per captured item");
+    assert_eq!(emitted.iter().map(|line| line.len()).sum::<usize>(), page["output_bytes"].as_u64().unwrap() as usize);
+    assert!(page["output_bytes"].as_u64().unwrap() <= 65_536);
+    for (item, bytes) in items.iter().zip(emitted) {
+        let line: Value = serde_json::from_slice(bytes).unwrap();
+        match item["kind"].as_str().unwrap() {
+            "message" => {
+                assert_eq!(line["id"], item["id"]);
+                assert_eq!(line["kind"], if item["lazy"] == true { "lazy" } else { "message" });
+                assert_eq!(line["body"], item["content"]["body"]);
+                assert_eq!(line["ack_required"], item["content"]["ack_required"]);
+            }
+            "invitation" => {
+                assert_eq!(line["kind"], "invitation");
+                assert_eq!(line["id"], format!("invitation:{}", item["id"].as_str().unwrap()));
+                assert_eq!(line["body"], item["content"]["body"]);
+                assert_eq!(line["wakes"], false);
+            }
+            "notice" => {
+                assert_eq!(line["kind"], "notice");
+                assert_eq!(line["body"], item["body"]);
+                assert_eq!(line["thread"], "activation-warn");
+            }
+            "attention" => {
+                assert_eq!(line["kind"], "attention");
+                assert_eq!(line["presentation_epoch"], item["epoch"]);
+                assert_eq!(line["attention_version"], item["attention_version"]);
+            }
+            other => panic!("unexpected initial activation item {other}"),
+        }
+    }
+    assert_eq!(activation_pending(&rig).0.as_deref(), Some(token), "stdout alone does not retire outbox");
+    assert_eq!(rig.receipt_state(&ordinary), "pending");
+    assert_eq!(rig.lazy_state(&lazy), "pending");
+    let before = activation_pending(&rig);
+    let unseen = relay.replay(&confirm, |request| {
+        request["command"]["args"]["emitted_controls"][0]["epoch"] = json!("18446744073709551615");
+    });
+    assert_eq!(unseen["result"]["Err"]["code"], "invalid_request", "{unseen}");
+    assert_eq!(activation_pending(&rig), before, "invalid subset cannot retire unseen output");
+    let mark = rig.host.mark();
+    relay.release();
+    let committed = relay.control_confirm(true);
+    activation_confirm_result(committed.reply.as_ref().unwrap(), "confirmed", &page["emitted_controls"]);
+    wait_until("canonical presentation retirement", STEP, || {
+        let (current, last, mask) = activation_pending(&rig);
+        (current.is_none() && last.as_deref() == Some(token) && mask != 0).then_some(())
+    });
+    assert_eq!(rig.receipt_state(&ordinary), "pending", "presentation is not ACK");
+    assert_eq!(rig.lazy_state(&lazy), "pending", "presentation is not lazy consumption");
+    let pending: i64 = rig.db().query_row(
+        "SELECT count(*) FROM digest_pending_invitations WHERE seat_id=?1 AND thread_id=?2",
+        [&rig.b, invitation.as_str()], |row| row.get(0),
+    ).unwrap();
+    assert_eq!(pending, 1, "presentation is not acceptance");
+    rig.assert_no_prompt(mark, QUIET);
+    // ACK and acceptance are later explicit actions; the real Watch then emits
+    // a scoped clear. Keep these separate from presentation's passive effects.
+    assert_eq!(rig.ack_result(SESSION_B, "context", &ordinary)["result"], "settled");
+    rig.cli(Some((&rig.b, PANE_B)), &["accept", &invitation]).data("accept activation invitation");
+    let clear = watch.wait_line("the active scoped clear", STEP, |line| line["kind"] == "attention_cleared");
+    assert!(clear["presentation_epoch"].as_str().is_some());
+    assert_eq!(rig.channel_state().as_deref(), Some("live"));
+    assert_eq!(lease.len(), 32);
+    if let Some(path) = std::env::var_os("HT_ACTIVATION_CAPTURE_PATH") {
+        // Optional downstream replay evidence. Correctness never reads this file.
+        let bytes = watch.stdout.lock().unwrap().clone();
+        assert!(bytes.len() <= 65_536 * 2);
+        fs::write(path, bytes).unwrap();
+    }
+}
+
+/// An actual advertised consumer still treats a lazy-only page as passive.
+#[test]
+fn activation_v2_watch_lazy_only_page_is_passive() {
+    let rig = Rig::new();
+    let relay = ActivationRelay::start(&rig, false, ConfirmFault::None);
+    let mut watch = rig.watch(SESSION_B);
+    watch.wait_connected();
+    activation_owner(&relay);
+    let mark = rig.host.mark();
+    let lazy = rig.send_lazy("activation lazy-only page");
+    let line = watch.wait_item(&lazy);
+    assert_eq!(line["kind"], "lazy");
+    assert_eq!(line["ack_required"], false);
+    let confirm = wait_until("the actual lazy-only page Confirm", STEP, || {
+        relay.snapshot().into_iter().find(|entry| {
+            entry.request["command"]["kind"] == "delivery_presentation_confirm_v2"
+                && entry.reply.is_some()
+                && relay.snapshot().into_iter().filter_map(|pull| pull.reply).any(|reply| {
+                    let page = &reply["result"]["Ok"]["data"]["args"];
+                    page["presentation_token"] == entry.request["command"]["args"]["token"]
+                        && page["items"].as_array().is_some_and(|items| {
+                            items.iter().any(|item| item["id"] == lazy)
+                        })
+                })
+        })
+    });
+    let page = activation_page(&relay, &confirm);
+    assert_eq!(page["items"].as_array().unwrap().len(), 1);
+    assert_eq!(page["emitted_controls"], json!([]));
+    activation_confirm_result(confirm.reply.as_ref().unwrap(), "confirmed", &json!([]));
+    assert_eq!(rig.lazy_state(&lazy), "pending");
+    assert_eq!(rig.mod_ack_events(), 0);
+    watch.assert_no_line("passive page attention", QUIET, |line| line["kind"] == "attention");
+    assert_eq!(rig.host.prompts_since(mark, PANE_B), 0);
+    // Crossing the health timeout cannot close a purely passive channel.
+    rig.advance(11 * MINUTE_MS);
+    assert_eq!(rig.channel_state().as_deref(), Some("live"));
+    assert!(watch.running());
+}
+
+/// A lost pre-dispatch Confirm cannot consume bytes; replacement must physically
+/// emit the page and may only confirm using its own freshly accepted lease.
+#[test]
+fn activation_v2_watch_replacement_replays_uncommitted_output() {
+    let rig = Rig::new();
+    let invitation = activation_invitation(&rig);
+    let relay = ActivationRelay::start(&rig, false, ConfirmFault::BeforeCommit);
+    let mut old = rig.watch(SESSION_B);
+    old.wait_connected();
+    let old_lease = activation_owner(&relay);
+    let old_confirm = relay.control_confirm(false);
+    let page = activation_page(&relay, &old_confirm);
+    old.wait_attention_marker();
+    assert_eq!(old.exit_code(STEP), 1);
+    assert_eq!(activation_pending(&rig).0, Some(old_confirm.request["command"]["args"]["token"].as_str().unwrap().to_owned()));
+    let mark = relay.snapshot().len();
+    let mut replacement = rig.watch(SESSION_B);
+    replacement.wait_connected();
+    replacement.wait_attention_marker();
+    let new_accepted = relay.snapshot().into_iter().skip(mark)
+        .find(|entry| entry.request.get("watch").is_some()).unwrap();
+    let new_lease = &new_accepted.reply.unwrap()["outcome"]["args"]["presentation_lease"];
+    assert_ne!(new_lease, &json!(old_lease));
+    let new_confirm = wait_until("replacement's own exact Confirm", STEP, || {
+        relay.snapshot().into_iter().skip(mark).find(|entry| {
+            entry.request["command"]["kind"] == "delivery_presentation_confirm_v2"
+                && entry.reply.is_some()
+        })
+    });
+    assert_eq!(&new_confirm.request["command"]["args"]["presentation_lease"], new_lease);
+    assert_eq!(new_confirm.request["command"]["args"]["emitted_controls"], page["emitted_controls"]);
+    activation_confirm_result(new_confirm.reply.as_ref().unwrap(), "confirmed", &page["emitted_controls"]);
+    let stale = relay.replay(&old_confirm, |_| {});
+    activation_confirm_result(&stale, "stale_binding", &json!([]));
+    let invitations: Vec<_> = old.seen.iter().filter(|line| line["kind"] == "invitation").collect();
+    for line in invitations {
+        assert!(replacement.seen.iter().any(|new| new == line), "replacement physically emits invitation bytes");
+    }
+    assert!(replacement.seen.iter().any(|line| line["kind"] == "invitation" && line["thread"] == invitation));
+}
+
+/// A committed response lost in transit permits exact idempotent recovery on
+/// the still-current owner. Foreign controls and empty subsets invent no ACK.
+#[test]
+fn activation_v2_watch_lost_confirm_response_replays_exact_subset() {
+    let rig = Rig::new();
+    activation_invitation(&rig);
+    let relay = ActivationRelay::start(&rig, true, ConfirmFault::LoseReply);
+    let mut watch = rig.watch(SESSION_B);
+    watch.wait_connected();
+    activation_owner(&relay);
+    watch.wait_attention_marker();
+    let confirm = relay.control_confirm(true);
+    let controls = &confirm.request["command"]["args"]["emitted_controls"];
+    activation_confirm_result(confirm.reply.as_ref().unwrap(), "confirmed", controls);
+    assert!(watch.running(), "response held while the real child owns the lease");
+    let before = activation_pending(&rig);
+    let exact = relay.replay(&confirm, |_| {});
+    activation_confirm_result(&exact, "already_confirmed", controls);
+    let subset = relay.replay(&confirm, |request| {
+        request["command"]["args"]["emitted_controls"] = json!([]);
+    });
+    activation_confirm_result(&subset, "already_confirmed", &json!([]));
+    let foreign = relay.replay(&confirm, |request| {
+        request["command"]["args"]["emitted_controls"][0]["epoch"] = json!("18446744073709551615");
+    });
+    assert_eq!(foreign["result"]["Err"]["code"], "invalid_request", "{foreign}");
+    assert_eq!(activation_pending(&rig), before, "replay/subset/refusal cannot consume another page");
+    relay.release();
+    assert_eq!(watch.exit_code(STEP), 1, "lost completion remains truthful at consumer");
 }
 
 // -------------------------------------------------------------------- tests

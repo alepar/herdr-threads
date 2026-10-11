@@ -1820,6 +1820,50 @@ fn watch_carries_a_passive_invitation_as_invitation_content_never_a_message() {
     assert!(value.get("ack_required").is_none(), "not a message receipt");
 }
 
+/// Either missing negotiation leg must retain the historical consumer.
+#[test]
+fn presentation_watch_requires_both_capability_and_valid_accepted_lease() {
+    for (capability, lease) in [
+        (false, Some("0123456789abcdef0123456789abcdef")),
+        (true, None),
+        (true, Some("not-a-presentation-lease")),
+    ] {
+        let server = Server::start(move |stream, request| {
+            write_frame(
+                stream,
+                &reply(
+                    &request,
+                    WatchOutcome::Accepted(crate::protocol::watch::WatchAccepted {
+                        attention_version: 7,
+                        presentation_lease: lease.map(str::to_owned),
+                    }),
+                ),
+            );
+        });
+        let mut client = FakeClient::new(|command| match command {
+            Command::InboxBatchV2(_) => Ok(CommandResult::InboxBatchV2(page(
+                vec![whole("historical-item", "historical body")],
+                None,
+            ))),
+            other => panic!("inactive negotiation issued {other:?}"),
+        });
+        client.presentation_capability = capability;
+        let clock = clock();
+        let mut out = Vec::new();
+        assert_eq!(
+            run_session(session(&client, &clock, &server.socket), &mut out, || true),
+            0
+        );
+        assert_eq!(
+            lines(&out).into_iter().map(|line| line.id).collect::<Vec<_>>(),
+            ["status:0", "historical-item", "status:1"],
+            "capability={capability}, lease={lease:?}"
+        );
+        assert!(matches!(client.calls().as_slice(), [Command::InboxBatchV2(_)]));
+        server.finish();
+    }
+}
+
 #[test]
 fn capable_watch_streams_ordered_v2_then_explicitly_confirms_captured_controls() {
     use crate::protocol::delivery::{

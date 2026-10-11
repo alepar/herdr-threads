@@ -619,14 +619,17 @@ async fn presentation_owner_accepted_wire_carries_the_registered_lease() {
     );
     assert_eq!(
         advertised_presentation_lease(true, Some(lease.clone())),
-        Some(lease)
+        Some(lease.clone())
     );
-    if !active {
-        assert_eq!(
-            serde_json::to_string(&reply.outcome).unwrap(),
-            r#"{"kind":"accepted","args":{"attention_version":7}}"#
-        );
-    }
+    // Historical omission remains byte-locked even in an active build.
+    let inactive = WatchOutcome::Accepted(WatchAccepted {
+        attention_version: 7,
+        presentation_lease: advertised_presentation_lease(false, Some(lease)),
+    });
+    assert_eq!(
+        serde_json::to_string(&inactive).unwrap(),
+        r#"{"kind":"accepted","args":{"attention_version":7}}"#
+    );
     drop(served.client);
     served.task.await.unwrap().unwrap();
 }
