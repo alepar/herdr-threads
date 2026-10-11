@@ -277,7 +277,11 @@ pub(crate) fn validate_selected_child_phase(
             matches!(&identity.payload.handoff.channel,HandoffChannel::New{name,topic,goal} if name==&v.name && topic==&v.topic && goal==&v.goal)
         }
         PermitMutation::Invite(v) => {
-            v.seat == attachment.resolved_seat && v.deadline_millis.is_none()
+            // Historical linked payloads freeze no confirmation policy. Task10
+            // replaces this guard together with its frozen policy comparison.
+            v.seat == attachment.resolved_seat
+                && v.deadline_millis.is_none()
+                && v.confirmation.is_none()
         }
         PermitMutation::SendMessage(v) => {
             v.delivery_mode.is_ordinary()

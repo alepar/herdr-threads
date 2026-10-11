@@ -326,6 +326,20 @@ Declared subagents cannot reject. Required invitations remain service-owner cont
 ask that owner to release the requirement and reread its current state before attempting rejection.
 Reinvitation creates a fresh episode; replay of an old rejection cannot reject that new invitation.
 
+Ordinary agent invitation confirmation is an immutable episode policy. Modern Lazy invitations remain
+pending and discoverable at ordinary inbox/hook opportunities, with no acceptance timer or native/mod
+wake. Their inherited physical duration/deadline columns retain legacy storage timing only; no canonical
+deadline, event, diagnostic or wake projection interprets that timing as a confirmation obligation.
+Explicit RequireAck, and historical invitations whose policy is absent, retain a frozen deadline from
+canonical creation. Registration and launch never accept an invitation or reset its deadline. Only the
+addressed seat's explicit accountable acceptance settles participation; rejection, requirement release
+and retirement retain their existing distinct terminal outcomes. Duplicate pending invitations preserve
+the first policy, timing and inviter; an already joined target creates no new invitation. Required service
+memberships retain their timed participation contract: imposing a requirement on a pending Lazy
+voluntary invitation creates a fresh timed episode and preserves the old invitation, origin and keyed
+outcome. Releasing that requirement leaves the original Lazy invitation discoverable without a timer.
+Explicit human/operator invitation semantics remain separate and unchanged.
+
 **Voluntary self-join.** An explicit `join THREAD` enrolls the caller's seat in an active
 thread of its instance under the ordinary A2 deciding transaction and its existing
 `cooperative_top_level` or `operator_human` claim. The immutable native-authored join
@@ -425,9 +439,14 @@ response loss can lose an informational offer after commitment, and an explicit 
 can present the retained result again. Delivery is neither invitation acceptance nor receipt ACK,
 agreement, adoption or task completion. Logical publication tokens stay unchanged by projection;
 an advertised read-only delivery hint lets hooks drain newly attributed and remaining notice pages.
-Delivery is not a wake. A built-in transition wakes only the affected seat of a still-open
-condition (the hard-deadline backstop for the obligation that seat owes); a clear, and every
-transition about another seat, waits for the member's next check-in offer. Accepted limit: an idle
+Delivery is not a wake. A built-in transition wakes the affected seat of a still-open
+condition (the hard-deadline backstop for the obligation that seat owes). An invitation deadline-missed
+open transition also wakes its originally recorded native inviter under the same host, composer and mod
+admission guards, even after that inviter leaves the thread. The episode freezes that address; historical
+rows use only their exact canonical invitation-creation event's recorded inviter, never a current member
+or later duplicate caller. Unknown historical/service/operator origins do not manufacture a native seat.
+A clear remains passive, as do transitions about another seat for other observers; they wait for the
+recipient's next check-in offer. Accepted limit: an idle
 member learns of another seat's overdue or cleared obligation only when its pane next checks in. When
 more than the bounded window of pending warnings or unoffered notices is visible, narrowing cannot rule
 out an older waking notice (such as a service notice), so the wake keeps its unnarrowed answer and the

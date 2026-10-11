@@ -329,11 +329,11 @@ fn invite(
             },
         ));
     }
-    let pending:Option<(String,i64,i64)>=tx.query_row(
-        "SELECT i.id,i.episode,i.created_decision_seq FROM invitations i WHERE i.thread_id=?1 AND i.seat_id=?2 AND i.state='pending' AND NOT EXISTS (SELECT 1 FROM invitation_cancellations c WHERE c.invitation_id=i.id) AND NOT EXISTS(SELECT 1 FROM invitation_rejections rejection WHERE rejection.invitation_id=i.id) AND NOT EXISTS (SELECT 1 FROM requirement_episodes r WHERE r.invitation_id=i.id AND r.created_decision_seq=i.created_decision_seq) ORDER BY i.episode DESC LIMIT 1",
-        params![v.thread.as_str(),v.seat.as_str()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(store_error)?;
+    let pending:Option<(String,i64,i64,bool)>=tx.query_row(
+        "SELECT i.id,i.episode,i.created_decision_seq,COALESCE(i.confirmation='lazy',0) FROM invitations i WHERE i.thread_id=?1 AND i.seat_id=?2 AND i.state='pending' AND NOT EXISTS (SELECT 1 FROM invitation_cancellations c WHERE c.invitation_id=i.id) AND NOT EXISTS(SELECT 1 FROM invitation_rejections rejection WHERE rejection.invitation_id=i.id) AND NOT EXISTS (SELECT 1 FROM requirement_episodes r WHERE r.invitation_id=i.id AND r.created_decision_seq=i.created_decision_seq) ORDER BY i.episode DESC LIMIT 1",
+        params![v.thread.as_str(),v.seat.as_str()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional().map_err(store_error)?;
     if v.constraint == InvitationConstraint::Ordinary
-        && let Some((id, _, _)) = pending
+        && let Some((id, _, _, _)) = pending
     {
         let requirement = service_substrate::current_requirement(tx, &v.thread, &v.seat)?
             .filter(|current| current.invitation.as_str() == id);
@@ -350,7 +350,12 @@ fn invite(
             "invitation duration must be positive",
         ));
     }
-    let new_invitation = pending.is_none() || voluntary == VoluntaryMembershipState::Joined;
+    // A required membership needs its own timed episode when the voluntary
+    // invitation is Lazy. Preserve that invitation's frozen policy and replay.
+    let new_invitation = pending.is_none()
+        || voluntary == VoluntaryMembershipState::Joined
+        || (v.constraint == InvitationConstraint::Required
+            && pending.as_ref().is_some_and(|(_, _, _, lazy)| *lazy));
     let (invitation, episode, created_seq) = if new_invitation {
         let episode = next_invitation_episode(tx, &v.thread, &v.seat)?;
         if v.constraint == InvitationConstraint::Required {
@@ -379,7 +384,7 @@ fn invite(
             params![id.as_str(),v.thread.as_str(),v.seat.as_str(),episode,at.0,seq,duration,deadline.0]).map_err(store_error)?;
         (id, episode, seq)
     } else {
-        let (id, episode, seq) = pending.expect("existing pending invitation");
+        let (id, episode, seq, _) = pending.expect("existing pending invitation");
         (InvitationId::new(id), episode, seq)
     };
     let requirement = if v.constraint == InvitationConstraint::Required {

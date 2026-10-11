@@ -3943,8 +3943,8 @@ fn diagnostics(
         }
         match phase {
             SearchPhase::Topic => {
-                type Row = (i64, String, String, String, String, i64);
-                let row:Option<Row>=db.query_row("SELECT i.ordinal,i.id,i.thread_id,i.seat_id,CASE WHEN EXISTS(SELECT 1 FROM invitation_rejections rejection WHERE rejection.invitation_id=i.id) THEN 'rejected' WHEN c.invitation_id IS NOT NULL THEN 'cancelled' ELSE i.state END,i.deadline_at FROM invitations i LEFT JOIN invitation_cancellations c ON c.invitation_id=i.id WHERE i.ordinal>?1 AND i.ordinal<=?2 ORDER BY i.ordinal LIMIT 1",params![invitation_after as i64,invitation_high as i64],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).optional().map_err(|e|db.map_error(e))?;
+                type Row = (i64, String, String, String, String, Option<i64>);
+                let row:Option<Row>=db.query_row("SELECT i.ordinal,i.id,i.thread_id,i.seat_id,CASE WHEN EXISTS(SELECT 1 FROM invitation_rejections rejection WHERE rejection.invitation_id=i.id) THEN 'rejected' WHEN c.invitation_id IS NOT NULL THEN 'cancelled' ELSE i.state END,CASE WHEN i.confirmation='lazy' THEN NULL ELSE i.deadline_at END FROM invitations i LEFT JOIN invitation_cancellations c ON c.invitation_id=i.id WHERE i.ordinal>?1 AND i.ordinal<=?2 ORDER BY i.ordinal LIMIT 1",params![invitation_after as i64,invitation_high as i64],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).optional().map_err(|e|db.map_error(e))?;
                 let Some((ordinal, id, thread, seat, state, deadline)) = row else {
                     phase = SearchPhase::Body;
                     continue;
@@ -3959,7 +3959,7 @@ fn diagnostics(
                     .map_err(|e| db.map_error(e))?;
                 if belongs
                     && state == "pending"
-                    && deadline <= now.0
+                    && deadline.is_some_and(|deadline| deadline <= now.0)
                     && q.seat.as_ref().is_none_or(|s| s.as_str() == seat)
                     && q.thread.as_ref().is_none_or(|t| t.as_str() == thread)
                 {
@@ -3973,7 +3973,10 @@ fn diagnostics(
                     if !retired {
                         let item = Diagnostic {
                             subject: format!("overdue_invitation:{id}"),
-                            detail_data: format!("thread={thread} seat={seat} deadline={deadline}"),
+                            detail_data: format!(
+                                "thread={thread} seat={seat} deadline={}",
+                                deadline.unwrap()
+                            ),
                         };
                         let raw = diagnostics_cursor(
                             instance,
@@ -5015,6 +5018,40 @@ fn batch_topic(db: &Connection, thread: &str) -> Result<String, ApiError> {
     .map_err(store_error)
 }
 
+/// Point-read immutable modern invitation metadata after bounded selection.
+/// Legacy rows preserve their old payload shape; Lazy storage timing is inert.
+fn invitation_confirmation_metadata(
+    db: &Connection,
+    invitation: &str,
+) -> Result<
+    (
+        Option<crate::protocol::commands::InvitationConfirmation>,
+        Option<UtcMillis>,
+    ),
+    ApiError,
+> {
+    use crate::protocol::commands::InvitationConfirmation;
+    let (mode, deadline): (Option<String>, i64) = db
+        .query_row(
+            "SELECT confirmation,deadline_at FROM invitations WHERE id=?1",
+            [invitation],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(store_error)?;
+    match mode.as_deref() {
+        None => Ok((None, None)),
+        Some("lazy") => Ok((Some(InvitationConfirmation::Lazy), None)),
+        Some("require_ack") => Ok((
+            Some(InvitationConfirmation::RequireAck),
+            Some(UtcMillis(deadline)),
+        )),
+        Some(_) => Err(api_error(
+            ErrorCode::StoreCorrupt,
+            "invalid invitation confirmation policy",
+        )),
+    }
+}
+
 /// One read-only page. The phase walks indexed invitations, effective receipts
 /// and active warning sources with source-specific captured high waters. A
 /// receipt's physical projection can appear later without changing its
@@ -5184,11 +5221,15 @@ fn inbox_batch(
                                 |r| Ok((r.get(0)?, r.get(1)?)),
                             )
                             .map_err(store_error)?;
+                        let (confirmation, deadline_at) =
+                            invitation_confirmation_metadata(db, &id)?;
                         Some(InboxBatchItem::Invitation {
                             thread: ThreadId::new(thread),
                             topic_data,
                             goal_data: Some(goal_data),
                             invitation: crate::protocol::ids::InvitationId::new(id),
+                            confirmation,
+                            deadline_at,
                             required_service,
                         })
                     } else {
@@ -6191,10 +6232,13 @@ mod inbox_v2 {
                         r.state == crate::protocol::service::RequirementState::Pending
                             && r.invitation.as_str() == id
                     });
+                    let (confirmation, deadline_at) = invitation_confirmation_metadata(db, &id)?;
                     Some(Item::Invitation {
                         thread: ThreadId::new(&thread),
                         topic_data: batch_topic(db, &thread)?,
                         invitation: crate::protocol::ids::InvitationId::new(id),
+                        confirmation,
+                        deadline_at,
                         required_service,
                     })
                 } else {

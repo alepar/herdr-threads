@@ -1524,14 +1524,27 @@ pub fn invite(
     mut permit: MutationPermit,
     installation_default_ms: Option<u64>,
 ) -> Result<CommandResult, ApiError> {
-    // Activation boundary: replace this refusal only when the canonical lifecycle
-    // honors confirmation and advertises INVITATION_CONFIRMATION_V1.
-    if command.confirmation.is_some() {
+    if command.confirmation == Some(crate::protocol::commands::InvitationConfirmation::Lazy)
+        && command.deadline_millis.is_some()
+    {
         return Err(api_error(
-            ErrorCode::Unsupported,
-            "invitation confirmation lifecycle is not active",
+            ErrorCode::InvalidRequest,
+            "lazy invitation conflicts with deadline",
         ));
     }
+    if command.confirmation == Some(crate::protocol::commands::InvitationConfirmation::RequireAck)
+        && command.claim.harness == crate::protocol::authority::Harness::Human
+    {
+        return Err(api_error(
+            ErrorCode::InvalidRequest,
+            "human invitation cannot require agent confirmation",
+        ));
+    }
+    let confirmation = command.confirmation.map(|mode| match mode {
+        crate::protocol::commands::InvitationConfirmation::Lazy => "lazy",
+        crate::protocol::commands::InvitationConfirmation::RequireAck => "require_ack",
+    });
+    let timed = confirmation != Some("lazy");
     let duration = command
         .deadline_millis
         .or(installation_default_ms)
@@ -1652,10 +1665,17 @@ pub fn invite(
                         "invitation decision sequence exhausted",
                     )
                 })?;
-            tx.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at) VALUES (?1,?2,?3,?4,'pending',?5,?6,?7,?8)",
-                params![invitation.as_str(), command.thread.as_str(), command.seat.as_str(), episode, decision.utc.0, created_decision_seq, duration, deadline.0]).map_err(store_error)?;
-            let payload = serde_json::json!({"action":"invite", "actor_seat":caller.as_str(), "seat":command.seat.as_str(),
-                "invitation":invitation.as_str(), "deadline_at":deadline.0}).to_string();
+            tx.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at,confirmation,inviter_seat_id) VALUES (?1,?2,?3,?4,'pending',?5,?6,?7,?8,?9,?10)",
+                params![invitation.as_str(), command.thread.as_str(), command.seat.as_str(), episode, decision.utc.0, created_decision_seq, duration, deadline.0,confirmation,caller.as_str()]).map_err(store_error)?;
+            let mut payload = serde_json::json!({"action":"invite", "actor_seat":caller.as_str(), "seat":command.seat.as_str(),
+                "invitation":invitation.as_str()});
+            if timed {
+                payload["deadline_at"] = serde_json::json!(deadline.0);
+            }
+            if let Some(mode) = confirmation {
+                payload["confirmation"] = serde_json::json!(mode);
+            }
+            let payload = payload.to_string();
             schema::append_event_once(
                 tx,
                 EventInput {
@@ -1669,7 +1689,9 @@ pub fn invite(
                 },
             )?;
             schema::bump_membership_revision(tx, &command.thread)?;
-            tx.execute("INSERT INTO wake_work(seat_id,reason_bits,attention_version) VALUES (?1,1,1) ON CONFLICT(seat_id) DO UPDATE SET reason_bits=reason_bits|1,attention_version=attention_version+1", [command.seat.as_str()]).map_err(store_error)?;
+            if timed {
+                tx.execute("INSERT INTO wake_work(seat_id,reason_bits,attention_version) VALUES (?1,1,1) ON CONFLICT(seat_id) DO UPDATE SET reason_bits=reason_bits|1,attention_version=attention_version+1", [command.seat.as_str()]).map_err(store_error)?;
+            }
             let instance: String = tx
                 .query_row(
                     "SELECT instance_id FROM seats WHERE id=?1",

@@ -1052,6 +1052,12 @@ pub enum InboxBatchItem {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         goal_data: Option<String>,
         invitation: InvitationId,
+        /// Frozen modern policy; absent for historical invitation payloads.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        confirmation: Option<crate::protocol::commands::InvitationConfirmation>,
+        /// Effective modern confirmation deadline; Lazy has no timer.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        deadline_at: Option<UtcMillis>,
         required_service: Option<RequiredMembership>,
     },
     Message {
@@ -1090,6 +1096,12 @@ pub enum InboxBatchV2Item {
         thread: ThreadId,
         topic_data: String,
         invitation: InvitationId,
+        /// Frozen modern policy; absent for historical invitation payloads.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        confirmation: Option<crate::protocol::commands::InvitationConfirmation>,
+        /// Effective modern confirmation deadline; Lazy has no timer.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        deadline_at: Option<UtcMillis>,
         required_service: Option<RequiredMembership>,
     },
     Message {

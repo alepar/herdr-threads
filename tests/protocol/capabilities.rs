@@ -1733,3 +1733,24 @@ fn public_operation_status_cannot_bypass_send_time_capability_guard() {
     assert_eq!(error.code, ErrorCode::Unauthorized);
     assert_eq!(error.detail, "verified operation scope required");
 }
+
+#[test]
+fn invitation_confirmation_capability_is_advertised_with_active_lifecycle() {
+    let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
+    let CommandResult::Capabilities(reply) = handler
+        .handle(
+            Command::Capabilities,
+            PeerIdentity::from_kernel(501),
+            &budget(),
+        )
+        .unwrap()
+    else {
+        panic!()
+    };
+    assert!(
+        reply
+            .capabilities
+            .iter()
+            .any(|value| value == INVITATION_CONFIRMATION_V1)
+    );
+}
