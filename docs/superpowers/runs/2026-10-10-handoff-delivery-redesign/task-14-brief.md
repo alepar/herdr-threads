@@ -4,7 +4,7 @@ filesTouched: ["tests/cli/direct_send.rs", "tests/cli/handoff.rs", "tests/cli/ha
 
 bead: ht-0lo.8.3
 
-Dependencies: ht-0lo.8.2
+Dependencies: ht-0lo.8.2, ht-0lo.8.4
 
 ### Proposed full bead body (coordinator persistence required)
 
@@ -82,3 +82,8 @@ and operator repair. Read it before changing anything in `src/identity/`, `src/s
 ### Composition execution boundary
 
 Serial distinct task branches reuse one owned warm validation slot in isolated .8 candidate workspace with exact branch/source/test provenance. No simultaneous writer or Cargo lane. Source frozen during builds; preflight actual schema/caller/membership/binding/permit/serializer/cutpoint before first meaningfulRED. Wake completionbool is restoration, Text versusJSON explicit, nonzero selection mandatory. New target only for actual need with explicit registration/test-support feature and scoped coordinator admission. Never alter runstate/ledger from task worktrees. Parent owns final PR roast followed by exact-tip defaultfeature/expensive readiness; this task does not certify later tasks or authorize rootintegration before whole A/B/C review.
+
+
+### Latest AGY composition cutpoint and ownership supersession
+
+Consume upstream-composition-refinement.md latest mainab2291c5 ruling. Released29..31 exact; redesign32..38 and automaticcapacity39, genuine oldmain31 upgrade. Previous provisional numbers are historical only. Task15 .8.4 depends on Task12 .8.1 and solely owns shared cli/harness launch-readiness source plus AGY neutralbridge/pull-ledger semantics; Task13 .8.2 remains afterA with no B-Dedge. Task14 .8.3 depends BOTH B andD, including actual Lazyinvitation/Unchanged/whole_read/departedorigin/passiveclear proof. Parent wire-preflight notes remain intact; numeric scopedresponse cap awaits actualfixtures. Latest AGENTS requires check-harness-neutral, truthful Outside-adapter trailer on EVERYnewcommit, no real ~/.gemini. Prepared briefs do notauthorizeexecution or provisionalrootpromotion.
