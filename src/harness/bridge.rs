@@ -779,6 +779,10 @@ pub fn run_hook_event_with_reason<C: LocalClient + ?Sized, W: Write>(
 pub struct Presented {
     pub notices: crate::protocol::results::NoticeOffer,
     pub overview: Option<super::OverviewRows>,
+    /// The offer's first-contact or fast-forward lines (spec §2), rendered at presentation time
+    /// and kept out of the offer text: the native hook places them before the digest in its
+    /// budgeted context and trims them separately.
+    pub history: Vec<String>,
 }
 
 /// `run_hook_event_with_reason`, also reporting what the offer presented in
@@ -923,9 +927,24 @@ fn run_hook_event_reporting_inner<C: LocalClient + ?Sized, W: Write>(
     let CommandResult::CheckedIn(check) = &result else {
         return Err(ContextError::Invalid.into());
     };
+    let now = clock.utc_now();
+    let mut history = Vec::new();
+    if let Some(first_contact) = &check.first_contact {
+        history.extend(crate::store::first_contact::render_first_contact(
+            first_contact,
+            now,
+        ));
+    }
+    if let Some(fast_forward) = &check.fast_forward {
+        history.extend(crate::store::first_contact::render_fast_forward(
+            fast_forward,
+            now,
+        ));
+    }
     *presented = Some(Presented {
         notices: check.notices.clone(),
         overview: None,
+        history,
     });
     // The store always reports its offer frontier; with nothing to offer that
     // frontier alone is routine no-change output.
@@ -944,6 +963,11 @@ fn run_hook_event_reporting_inner<C: LocalClient + ?Sized, W: Write>(
         write_hook(&hook, writer)?;
         journal.complete_operation(&OperationId::new(request.operation_id.to_string()))?;
         return Ok(());
+    }
+    // The history rides in `Presented`, never twice in the offer text.
+    if let CommandResult::CheckedIn(check) = &mut result {
+        check.first_contact = None;
+        check.fast_forward = None;
     }
     let selected = encode_selected(&result, output).map_err(BridgeError::Api)?;
     let reference_argv;

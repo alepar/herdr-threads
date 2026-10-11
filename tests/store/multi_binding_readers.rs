@@ -270,6 +270,8 @@ fn offer(claim: &CallerClaim) -> CommandResult {
         warnings: empty(),
         notices: Default::default(),
         inbox: empty(),
+        first_contact: None,
+        fast_forward: None,
     })
 }
 

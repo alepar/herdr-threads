@@ -6680,6 +6680,31 @@ mod inbox_v2 {
         }
         let initial = state.clone();
         let mut items = Vec::new();
+        // A session the daemon has not enrolled yet reads the page a fresh binding would get,
+        // with the history stats it would start from (spec §2 First-contact stats). Only the
+        // first page, and only when it leaves room for mail; the CLI's advance right after the
+        // display enrolls the binding, so it is shown once.
+        if matches!(reader, Reader::Unknown) && q.page.cursor.is_none() && q.page.limit >= 2 {
+            let first_contact = super::super::first_contact::first_contact(db, seat, &|thread| {
+                super::super::read_cursors::seed_preview(db, seat, thread).unwrap_or(0)
+            })?;
+            if !first_contact.threads.is_empty() {
+                let item = Item::FirstContact(first_contact);
+                let alone = page_v2(
+                    vec![item.clone()],
+                    Some(&state),
+                    instance,
+                    &q.page,
+                    output,
+                    StopReason::Bytes,
+                )?;
+                if encode_selected(&CommandResult::InboxBatchV2(alone), output)?.len()
+                    <= q.page.max_bytes as usize / 2
+                {
+                    items.push(item);
+                }
+            }
+        }
         let mut visited = 0;
         let mut stop = StopReason::Complete;
         while !done(&state) {

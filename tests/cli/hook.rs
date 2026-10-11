@@ -1531,7 +1531,7 @@ fn final_fallback_never_exceeds_max_context() {
         );
     }
     // Every budget yields a result within it, cut only at line boundaries.
-    let (notice_line, digest_lines) =
+    let (notice_line, history_lines, digest_lines) =
         split_summary(Some("attention digest: x\noffered notices: 1"));
     let parts = ContextParts {
         instruction: &instruction,
@@ -1540,6 +1540,7 @@ fn final_fallback_never_exceeds_max_context() {
         rows: overview.rows.clone(),
         fallback: &prefix(&state),
         notice_line,
+        history_lines,
         digest_lines,
         recovery_line: None,
         hot_rows: &[],
@@ -4928,6 +4929,9 @@ mod mod_channel_live {
         calls: Mutex<Vec<&'static str>>,
         /// Every CheckIn the hook sent: its mode and claim.
         check_ins: Mutex<Vec<(WireMode, crate::protocol::authority::CallerClaim)>>,
+        /// What the lifecycle check-in reports for the binding (ht-54r.8).
+        first_contact: Mutex<Option<crate::protocol::results::FirstContact>>,
+        fast_forward: Mutex<Option<crate::protocol::results::FastForward>>,
     }
     impl Daemon {
         fn calls(&self) -> Vec<&'static str> {
@@ -5000,6 +5004,8 @@ mod mod_channel_live {
                         warnings: empty(),
                         notices: Default::default(),
                         inbox: empty(),
+                        first_contact: self.first_contact.lock().unwrap().clone(),
+                        fast_forward: self.fast_forward.lock().unwrap().clone(),
                     }))
                 }
                 other => panic!("unexpected hook call {other:?}"),
@@ -5099,6 +5105,161 @@ mod mod_channel_live {
     }
     fn seat() -> SeatId {
         SeatId::new("seat-1")
+    }
+
+    fn history(
+        thread: &str,
+        name: &str,
+        earlier: u64,
+        from_people: u64,
+        open: u64,
+    ) -> crate::protocol::results::ThreadHistory {
+        crate::protocol::results::ThreadHistory {
+            thread: ThreadId::new(thread),
+            name: Some(name.into()),
+            earlier,
+            from_people,
+            open_requests: open,
+            last_at: crate::protocol::time::UtcMillis(0),
+        }
+    }
+
+    // Kills: first-contact stats missing from the lifecycle context, shown twice (once from the
+    // offer text and once from the summary), or placed after the attention digest.
+    #[test]
+    fn session_start_output_shows_first_contact_lines() {
+        let pane = Pane::new();
+        let daemon = Daemon::default();
+        *daemon.first_contact.lock().unwrap() = Some(crate::protocol::results::FirstContact {
+            threads: vec![
+                history("t1", "proj", 5, 2, 1),
+                history("t2", "other", 9, 0, 0),
+            ],
+            more: 3,
+        });
+        let ev = start();
+        let done = pane
+            .call(&daemon)
+            .check_in_seat(&ev, &seat(), 0)
+            .map_err(describe)
+            .expect("check-in");
+        let context = stdout(&ev, &done);
+        for want in [
+            "history: #proj (t1): 5 earlier messages, 2 from people (1 open requests), last ",
+            "m ago — herdr-threads summary t1",
+            "history: #other (t2): 9 earlier messages, 0 from people (0 open requests), last ",
+            "history: +3 more threads (herdr-threads thread list --joined)",
+        ] {
+            assert_eq!(context.matches(want).count(), 1, "{want}: {context}");
+        }
+        assert!(
+            context.find("history: #proj").unwrap() < context.find("receipts=1").unwrap(),
+            "history comes before the digest: {context}"
+        );
+        // Nothing for a binding without first contact.
+        let other_pane = Pane::new();
+        let plain = Daemon::default();
+        let ev = start();
+        let done = other_pane
+            .call(&plain)
+            .check_in_seat(&ev, &seat(), 0)
+            .map_err(describe)
+            .expect("check-in");
+        assert!(!stdout(&ev, &done).contains("history:"));
+    }
+
+    // Kills: a fast-forward that is not reported to the resumed agent, one without its gap
+    // counts, last message or summary pointer.
+    #[test]
+    fn resume_output_shows_fast_forward_summary() {
+        let pane = Pane::new();
+        let daemon = Daemon::default();
+        let mut last = crate::protocol::results::MessageSummary {
+            user_intent: None,
+            message: crate::protocol::ids::MessageId::new("m-last"),
+            thread: ThreadId::new("t1"),
+            author: Some(SeatId::new("peer")),
+            event_author: None,
+            author_role: None,
+            relays_user: false,
+            author_role_backfilled: false,
+            kind: crate::protocol::results::MessageKind::Ordinary,
+            sequence: 41,
+            created_at: crate::protocol::time::UtcMillis(0),
+            actor_label: None,
+            preview_data: "ship it\nnow".into(),
+            preview_omitted: false,
+            preview_detail_argv: None,
+        };
+        last.relays_user = true;
+        *daemon.fast_forward.lock().unwrap() = Some(crate::protocol::results::FastForward {
+            skipped: 40,
+            threads: vec![crate::protocol::results::FastForwardThread {
+                history: history("t1", "proj", 40, 4, 2),
+                last_message: Some(last),
+            }],
+            more: 0,
+        });
+        let ev = start();
+        let done = pane
+            .call(&daemon)
+            .check_in_seat(&ev, &seat(), 0)
+            .map_err(describe)
+            .expect("check-in");
+        let context = stdout(&ev, &done);
+        for want in [
+            "history: resumed past 40 messages:",
+            "history: #proj (t1): 40 earlier messages, 4 from people (2 open requests), last ",
+            "— herdr-threads summary t1",
+            "history:   last: #41 peer",
+            ": ship it now",
+        ] {
+            assert_eq!(context.matches(want).count(), 1, "{want}: {context}");
+        }
+        assert!(
+            context.find("history: resumed").unwrap() < context.find("receipts=1").unwrap(),
+            "{context}"
+        );
+    }
+
+    // Kills: history lines that vanish whole under a tight budget (the summary pointer must
+    // survive), or that crowd out the pinned commands.
+    #[test]
+    fn trimmed_history_keeps_its_summary_pointers() {
+        let instruction = "instruction".to_owned();
+        let long = format!(
+            "history: #{} (t1): 5 earlier messages, 2 from people (1 open requests), last 3m ago — herdr-threads summary t1",
+            "n".repeat(300)
+        );
+        let summary = format!(
+            "{long}\nhistory: +4 more threads (herdr-threads thread list --joined)\nattention digest: receipts=1"
+        );
+        let (notice_line, history_lines, digest_lines) = split_summary(Some(&summary));
+        assert_eq!(history_lines.len(), 2);
+        let fallback = vec!["herdr-threads".to_owned(), "inbox".to_owned()];
+        let parts = ContextParts {
+            instruction: &instruction,
+            actions: None,
+            overview: None,
+            rows: vec![],
+            fallback: &fallback,
+            notice_line,
+            history_lines,
+            digest_lines,
+            recovery_line: None,
+            hot_rows: &[],
+        };
+        let full = fit_context(&parts, 10_000);
+        assert!(full.contains(&"n".repeat(300)), "{full}");
+        // Too small for the long line, big enough for the pointer.
+        let tight = fit_context(&parts, 330);
+        assert!(!tight.contains(&"n".repeat(300)), "{tight}");
+        assert!(
+            tight.contains("history: herdr-threads summary t1"),
+            "{tight}"
+        );
+        assert!(!tight.contains("more threads"), "{tight}");
+        assert!(tight.len() <= 330);
     }
 
     // Kills: a SessionStart that still shows the digest line, the ready
@@ -5756,6 +5917,8 @@ mod enum_callback {
                         warnings: empty(),
                         notices: Default::default(),
                         inbox: empty(),
+                        first_contact: None,
+                        fast_forward: None,
                     }))
                 }
                 _ => Err(crate::test_support::unserved(
@@ -6475,6 +6638,8 @@ mod registered_resume {
                         warnings: empty(),
                         notices: Default::default(),
                         inbox: empty(),
+                        first_contact: None,
+                        fast_forward: None,
                     }))
                 }
                 Command::AttentionDigest(_) => {

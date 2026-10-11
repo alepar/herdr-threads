@@ -585,6 +585,19 @@ never moves past an unshown message the seat can receive, and a read never enrol
 send it only causes redisplay (at least once). Only a top-level binding's display ACK settles the seat's
 obligation; other bindings see that message in their own stream marked settled.
 
+**First-contact stats and fast-forward.** Two bounded, informational summaries ride on the response that
+creates or resumes a binding; neither is authority and neither writes a receipt. The lifecycle check-in that
+*enrolls* a binding carries per-thread history counts (at most 8 threads and one count, no summary text), once;
+an inbox read of a session the daemon has not enrolled carries the same counts and enrolls nothing (the CLI's
+following `AdvanceCursors`, possibly empty, enrolls it). A lifecycle check-in that *reconnects or reopens* an
+existing binding whose unread backlog exceeds one ordinary inbox page jumps that binding's own cursors to the
+thread heads and reports the gap per thread. This is the one place a cursor passes unshown mail the seat can
+receive; it is decided in the daemon in the check-in's transaction, never on enrollment, a plain touch or a
+supersede-induced disconnect (the superseded binding's cursors are untouched until it itself resumes), and it
+moves only the resumed binding's cursors. The seat's still-pending ACK obligations are not cursor-bound: the
+inbox keeps listing them until they are settled, so a fast-forward never hides or settles one, and a subagent
+binding's fast-forward moves only its own cursors.
+
 ## Accepted limits
 
 Delivery-only cleanup recovery retains a private, bounded versioned terminal record after

@@ -171,6 +171,8 @@ impl crate::ports::LocalClient for Client {
                     warnings: empty(),
                     notices: Default::default(),
                     inbox: empty(),
+                    first_contact: None,
+                    fast_forward: None,
                 }))
             }
             other => Ok((self.reply)(&other)),

@@ -1175,10 +1175,9 @@ impl Command {
             }
             Self::AdvanceCursors(advance) => {
                 advance.claim.validate_binding_fields()?;
-                if advance.displayed.is_empty()
-                    || advance.displayed.len() > MAX_BATCH_ITEMS
-                    || has_duplicate(&advance.displayed)
-                {
+                // An empty batch only enrolls the caller's binding (a read that showed history
+                // stats and no message): it moves no cursor.
+                if advance.displayed.len() > MAX_BATCH_ITEMS || has_duplicate(&advance.displayed) {
                     return Err("invalid cursor advance batch");
                 }
                 Ok(())

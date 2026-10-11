@@ -179,6 +179,8 @@ fn selected_first_lifecycle_fixture(replace_human: bool) {
                         warnings: empty(),
                         notices: Default::default(),
                         inbox: empty(),
+                        first_contact: None,
+                        fast_forward: None,
                     }))
                 }
                 Command::Ack(c) => Ok(CommandResult::Acknowledged(AckResult {
@@ -383,6 +385,8 @@ fn completed_predecessor_replays_after_successor_without_a_new_check_in() {
                         warnings: empty(),
                         notices: Default::default(),
                         inbox: empty(),
+                        first_contact: None,
+                        fast_forward: None,
                     });
                     *self.saved.lock().unwrap() = Some((c.operation, result.clone()));
                     if self.lose_response.swap(false, Ordering::SeqCst) {
@@ -3550,6 +3554,8 @@ fn actor_prerequisite_lifecycle_guard_uses_its_selected_initial_seed() {
                 warnings: empty(),
                 notices: Default::default(),
                 inbox: empty(),
+                first_contact: None,
+                fast_forward: None,
             }))
         }
     }

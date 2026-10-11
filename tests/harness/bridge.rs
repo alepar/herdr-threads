@@ -210,6 +210,8 @@ impl crate::ports::LocalClient for Transport {
                 warnings: empty(),
                 notices: Default::default(),
                 inbox: empty(),
+                first_contact: None,
+                fast_forward: None,
             },
         ))
     }
@@ -1446,6 +1448,8 @@ fn offer(
         warnings: empty(),
         notices: Default::default(),
         inbox: page,
+        first_contact: None,
+        fast_forward: None,
     }
 }
 fn inbox_item(thread: &str, invitations: u64, pending: u64) -> crate::protocol::results::InboxItem {

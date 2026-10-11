@@ -828,7 +828,7 @@ fn cooperative_offer_failure_rolls_back_binding_anchor_frontier_and_operation() 
         None,
         permit,
         &budget(),
-        |_, _, _| {
+        |_, _, _, _| {
             Err(super::connection::api_error(
                 ErrorCode::InvalidBudget,
                 "bounded offer failed",
@@ -3583,7 +3583,7 @@ fn human_guidance_check_in_continuation_before_page_fit() {
 
 /// A claim for one harness session. Each session is its own process, so its fingerprint is
 /// distinct: sessions sharing one would supersede each other (same process, new session).
-fn session_claim(session: &str, execution: &str) -> CallerClaim {
+pub(crate) fn session_claim(session: &str, execution: &str) -> CallerClaim {
     let pid = 1000 + session.bytes().map(u32::from).sum::<u32>();
     CallerClaim {
         native_session: NativeSessionId::new(session),

@@ -476,6 +476,8 @@ impl crate::ports::LocalClient for HumanClient {
                     warnings: page(vec![]),
                     notices: Default::default(),
                     inbox: page(vec![]),
+                    first_contact: None,
+                    fast_forward: None,
                 }))
             }
             _ => Err(ApiError::unknown_outcome(

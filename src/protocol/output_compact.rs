@@ -66,6 +66,19 @@ pub(super) fn render(result: &CommandResult, spec: &OutputSpec) -> Option<String
             for item in &page.items {
                 let lazy = matches!(item, InboxBatchV2Item::LazyMessage { .. });
                 let ordinary = match item {
+                    InboxBatchV2Item::FirstContact(first_contact) => {
+                        // Fixed plugin-composed lines (thread names escaped to one line); the
+                        // prefix keeps them from posing as a row or a command line.
+                        for line in crate::store::first_contact::render_first_contact(
+                            first_contact,
+                            super::render_now(),
+                        ) {
+                            out.push_str("first contact: ");
+                            out.push_str(&line);
+                            out.push('\n');
+                        }
+                        continue;
+                    }
                     InboxBatchV2Item::Invitation {
                         thread,
                         topic_data,

@@ -548,6 +548,8 @@ pub(crate) fn drain(
         };
         for item in page.items {
             match item {
+                // Presentation only; the watch channel has nothing to emit for it.
+                InboxBatchV2Item::FirstContact(_) => {}
                 InboxBatchV2Item::Invitation { .. }
                 | InboxBatchV2Item::Warning {
                     informational: false,

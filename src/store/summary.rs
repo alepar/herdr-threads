@@ -9,11 +9,12 @@ use crate::protocol::{
     summary::{
         AuthorRole, Block, BlockHeader, BlockProvenance, BundleMessage, ChildNarrative, CoverSizes,
         Fold, Identifier, ItemBody, ItemStatus, JobBundle, JobRef, JobTicket, LEASE_MAX_MS,
-        LEASE_MIN_MS, LedgerItem, Level0Records, NewStatus, P99_CLAMP_MAX_MS, P99_CLAMP_MIN_MS,
-        P99_MIN_SAMPLES, P99_SAMPLE_WINDOW, PinnedText, RESERVATION_LAPSE_MS, RuleChange,
-        SUBMISSION_SCHEMA, SeqRange, SubmitOutcome, SummaryJobOutcome, SummaryJobRequest,
-        SummaryOutcome, SummaryReady, SummaryRequest, SummarySettings, SummarySubmitRequest,
-        SummaryWork, Transition, UserIntent, is_priority, submission_budget_bytes,
+        LEASE_MIN_MS, LedgerItem, Level0Records, NewStatus, OpenItemKind, P99_CLAMP_MAX_MS,
+        P99_CLAMP_MIN_MS, P99_MIN_SAMPLES, P99_SAMPLE_WINDOW, PinnedText, RESERVATION_LAPSE_MS,
+        RuleChange, SUBMISSION_SCHEMA, SeqRange, SubmitOutcome, SummaryJobOutcome,
+        SummaryJobRequest, SummaryOutcome, SummaryReady, SummaryRequest, SummarySettings,
+        SummarySubmitRequest, SummaryWork, Transition, UserIntent, is_priority,
+        submission_budget_bytes,
     },
     time::UtcMillis,
 };
@@ -513,6 +514,80 @@ fn new_id(prefix: &str) -> String {
     format!("{prefix}-{}", uuid::Uuid::new_v4())
 }
 
+/// The one SQL form of the spec §1 priority predicate on `messages`: an ordinary message with a
+/// human author or a cooperative relay of a person. A recorded `user_intent` is only ever stored
+/// on such a message (the `messages_user_intent_insert` guard), so it needs no clause of its own.
+pub(crate) const PRIORITY_WHERE: &str =
+    "kind='ordinary' AND (author_role='human' OR relays_user=1)";
+
+/// Messages from people in `thread` with `after_seq < sequence <= up_to_seq` (first-contact and
+/// fast-forward stats): the priority predicate, counted.
+pub fn people_message_count(
+    conn: &Connection,
+    thread: &ThreadId,
+    after_seq: u64,
+    up_to_seq: u64,
+) -> Result<u64, ApiError> {
+    let count: i64 = conn
+        .query_row(
+            &format!(
+                "SELECT COUNT(*) FROM messages WHERE thread_id=?1 AND sequence>?2 AND sequence<=?3 AND {PRIORITY_WHERE}"
+            ),
+            params![thread.as_str(), to_i64(after_seq), to_i64(up_to_seq)],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    seq_u64(count)
+}
+
+/// Open request and question items of the thread's summary ledger through `up_to_seq`: model
+/// `ask` and `question` open items, and a person's `query` or `request` instructions, still open
+/// in the ledger fold. Reads the stored level-0 records of the thread's newest chunking version
+/// (settings are not needed); a thread nothing has summarized yet has none.
+pub fn open_request_count(
+    conn: &Connection,
+    thread: &ThreadId,
+    up_to_seq: u64,
+) -> Result<u64, ApiError> {
+    let version: Option<String> = conn
+        .query_row(
+            "SELECT chunking_version FROM summary_blocks WHERE thread_id=?1 AND level=0 \
+             ORDER BY created_at DESC, rowid DESC LIMIT 1",
+            [thread.as_str()],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(store_error)?;
+    let Some(version) = version else {
+        return Ok(0);
+    };
+    let stored = load_level0_records(conn, thread, &version, up_to_seq)?;
+    let inputs: Vec<BlockRecords<'_>> = stored
+        .iter()
+        .map(|(range, records)| BlockRecords {
+            range: *range,
+            records,
+        })
+        .collect();
+    let priority = priority_sequences(conn, thread, up_to_seq)?;
+    let state = fold::compute(&inputs, up_to_seq, &|seq| priority.contains(&seq));
+    let open = state
+        .entries
+        .iter()
+        .filter(|entry| entry.status == ItemStatus::Open)
+        .filter(|entry| match &entry.item.body {
+            ItemBody::OpenItem { kind, .. } => {
+                matches!(kind, OpenItemKind::Ask | OpenItemKind::Question)
+            }
+            ItemBody::UserInstruction { user_intent, .. } => {
+                matches!(user_intent, Some(UserIntent::Query | UserIntent::Request))
+            }
+            ItemBody::Decision { .. } => false,
+        })
+        .count();
+    Ok(open as u64)
+}
+
 /// Every priority message of the thread up to `up_to_seq` (spec §1 predicate),
 /// as bundle messages in sequence order.
 fn priority_messages(
@@ -521,10 +596,10 @@ fn priority_messages(
     up_to_seq: u64,
 ) -> Result<Vec<BundleMessage>, ApiError> {
     let mut stmt = conn
-        .prepare(
+        .prepare(&format!(
             "SELECT id, sequence FROM messages WHERE thread_id=?1 AND sequence<=?2 \
-             AND kind='ordinary' AND (author_role='human' OR relays_user=1) ORDER BY sequence",
-        )
+                 AND {PRIORITY_WHERE} ORDER BY sequence"
+        ))
         .map_err(store_error)?;
     let rows: Vec<(String, i64)> = stmt
         .query_map(params![thread.as_str(), to_i64(up_to_seq)], |r| {

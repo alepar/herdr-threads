@@ -1447,10 +1447,27 @@ fn run_display_inbox<C: LocalClient + ?Sized, W: Write>(
         // (every role, subagents included), before any top-level settlement. A failure only means
         // the messages are offered again.
         if binding_cursors {
-            for batch in candidates
-                .displayed
-                .chunks(crate::protocol::commands::MAX_BATCH_ITEMS)
-            {
+            // A page that showed first-contact history for a session the daemon had not
+            // enrolled yet still sends the (possibly empty) advance: it enrolls the binding, so
+            // the history is shown once (ht-54r.8).
+            let showed_history = output_spec.format == crate::protocol::output::OutputFormat::Text
+                && matches!(
+                    &result,
+                    CommandResult::InboxBatchV2(page) if page.items.iter().any(|item| matches!(
+                        item,
+                        crate::protocol::results::InboxBatchV2Item::FirstContact(_)
+                    ))
+                );
+            let empty: [MessageId; 0] = [];
+            let batches: Vec<&[MessageId]> = if candidates.displayed.is_empty() && showed_history {
+                vec![&empty[..]]
+            } else {
+                candidates
+                    .displayed
+                    .chunks(crate::protocol::commands::MAX_BATCH_ITEMS)
+                    .collect()
+            };
+            for batch in batches {
                 let _ = client.call(
                     Command::AdvanceCursors(crate::protocol::commands::AdvanceCursors {
                         claim: claim.clone(),
