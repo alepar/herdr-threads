@@ -3841,20 +3841,59 @@ fn receipt_discovery_coalesced_origins_survive_offers_departure_and_partial_ack(
             .iter()
             .find(|c| c.seat.as_str() == seat)
             .unwrap();
-        let reservation = crate::store::wake::reserve(
-            &context,
-            &mut db,
-            "i",
-            refreshed,
-            uuid::Uuid::new_v4(),
-            30000,
-        )
-        .unwrap();
+        let daemon_boot = uuid::Uuid::new_v4();
+        let reservation =
+            crate::store::wake::reserve(&context, &mut db, "i", refreshed, daemon_boot, 30000)
+                .unwrap();
         assert!(
             reservation.is_some(),
             "each actual discovered original sender must reserve independently"
         );
+        let reservation = reservation.unwrap();
+        // The bool reports refused-ladder restoration, not completion.
+        assert!(
+            !crate::store::wake::complete(
+                &context,
+                &mut db,
+                &reservation.attempt,
+                &daemon_boot,
+                crate::ports::WakeOutcome::Submitted,
+                None,
+                &budget
+            )
+            .unwrap()
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT reservation_id,last_outcome FROM wake_work WHERE seat_id=?1",
+                [seat],
+                |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, String>(1)?))
+            )
+            .unwrap(),
+            (None, "submitted".into())
+        );
     }
+    // Preserve every column of the preexisting immutable source/warning rows.
+    let immutable_messages = |db: &Connection| {
+        let mut stmt=db.prepare("SELECT * FROM messages WHERE id IN ('origin-1','origin-2','origin-3',?1) ORDER BY id").unwrap();
+        let columns = stmt.column_count();
+        stmt.query_map([&warning], |r| {
+            (0..columns)
+                .map(|c| r.get::<_, rusqlite::types::Value>(c))
+                .collect::<rusqlite::Result<Vec<_>>>()
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap()
+    };
+    let messages_before = immutable_messages(&db);
+    let mut expected_receipts = (1..=3)
+        .map(|n| {
+            crate::store::effective::effective_receipt(&db, &format!("origin-{n}"), "c")
+                .unwrap()
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
     db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES ('c',1,'pc','b',1,1,'codex','nc','00000000-0000-4000-8000-0000000000cc','cooperative_top_level',0,'term-pc','inc')",[]).unwrap();
     for (n, remaining) in [(1, 2), (2, 1), (3, 0)] {
         let mut request = ack_request(vec![MessageId::new(format!("origin-{n}"))]);
@@ -3886,10 +3925,87 @@ fn receipt_discovery_coalesced_origins_survive_offers_departure_and_partial_ack(
             crate::store::effective::effective_receipt(&db, &format!("origin-{n}"), "c")
                 .unwrap()
                 .unwrap();
+        let expected_observation=serde_json::json!({"harness":"codex","session":"nc","execution":"00000000-0000-4000-8000-0000000000cc","host_boot":"b","binding_generation":1,"target_generation":1,"provenance":"cooperative_top_level","observed_at":2000,"decided_at":2000}).to_string();
         assert_eq!(effective.ack_actor_seat_id.as_deref(), Some("c"));
-        assert!(
-            effective.ack_observation.is_some(),
-            "canonical ACK observation is retained for both physical and published-manifest sources"
+        assert_eq!(effective.ack_generation, Some(1));
+        assert_eq!(
+            effective.ack_observation.as_deref(),
+            Some(expected_observation.as_str())
+        );
+        let expected = &mut expected_receipts[n as usize - 1];
+        expected.state = crate::store::effective::EffectiveReceiptState::Acknowledged;
+        expected.ack_actor_seat_id = Some("c".into());
+        expected.ack_generation = Some(1);
+        expected.ack_observation = Some(expected_observation);
+        expected.acked_at = Some(2000);
+        for (index, expected) in expected_receipts.iter().enumerate() {
+            assert_eq!(
+                &crate::store::effective::effective_receipt(
+                    &db,
+                    &format!("origin-{}", index + 1),
+                    "c"
+                )
+                .unwrap()
+                .unwrap(),
+                expected,
+                "all prior receipt clock/marker/provenance history survives ACK{n}"
+            );
+        }
+        assert_eq!(
+            immutable_messages(&db),
+            messages_before,
+            "ACK{n} preserves every preexisting message column"
+        );
+        let found =
+            crate::store::discover_wake_candidates(&db, "i", 0, high, 100, &|| Ok(())).unwrap();
+        for seat in ["a", "b"] {
+            let waking = attention::wake_seat_attention(&db, seat).unwrap();
+            assert!(
+                !waking.attention.has_pending_invitation && !waking.attention.has_pending_receipt,
+                "no unrelated waking source may mask warning lifetime"
+            );
+            assert_eq!(waking.attention.latest_warning_seq.is_some(), remaining > 0);
+            let loaded = crate::store::wake::load_candidate(
+                &db,
+                "i",
+                &SeatId::new(seat),
+                &waking.attention,
+                waking.decision_seq,
+            )
+            .unwrap();
+            assert_eq!(
+                loaded.has_actionable_work(),
+                remaining > 0,
+                "actual loader after ACK{n}: {seat}"
+            );
+            assert_eq!(
+                found
+                    .items
+                    .iter()
+                    .any(|candidate| candidate.seat.as_str() == seat
+                        && candidate.has_actionable_work()),
+                remaining > 0,
+                "actual upstream discovery after ACK{n}: {seat}"
+            );
+            let view = crate::store::seats::mod_seat_view(&db, "i", &SeatId::new(seat))
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                view.fingerprint.other_pending,
+                u64::from(remaining > 0),
+                "warning-only mod attention after ACK{n}: {seat}"
+            );
+        }
+        assert_eq!(db.query_row("SELECT count(*) FROM wake_work WHERE seat_id IN ('a','b') AND reservation_id IS NOT NULL",[],|r|r.get::<_,i64>(0)).unwrap(),0,"absence after final ACK cannot be masked by outstanding reservations");
+        assert_eq!(
+            db.query_row(
+                "SELECT count(*) FROM messages WHERE kind='warn' AND json_extract(event_json,'$.event')='warning_cleared'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            i64::from(remaining == 0),
+            "exactly one passive clear, only after B1"
         );
         assert_eq!(
             db.query_row("SELECT count(*) FROM receipt_warning_origins", [], |r| r

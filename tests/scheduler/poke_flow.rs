@@ -1070,5 +1070,147 @@ fn receipt_discovery_original_senders_use_actual_native_guard_and_recovery_path(
             1,
             "successful notification is not a receipt ACK"
         );
+        // Settle through the real cooperative ACK decision with a canonical
+        // recipient binding; native notification is never synthesized as ACK.
+        let mut db = fx.conn();
+        db.execute_batch("UPDATE seats SET state='resolved',target_id='recipient-pane',generation=1,target_generation=1 WHERE id='recipient';
+            INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','recipient-pane','host',1,1,0,'fresh','recipient-terminal','inc','native_current_target',1);
+            INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('recipient',1,1,'recipient-pane','host',1,'codex','recipient-session','00000000-0000-4000-8000-0000000000cc','cooperative_top_level',0,0,'recipient-terminal','inc');").unwrap();
+        let request = crate::protocol::commands::Ack {
+            messages: vec![
+                crate::protocol::ids::MessageId::new("source-1"),
+                crate::protocol::ids::MessageId::new("source-2"),
+            ],
+            operation: crate::protocol::ids::OperationId::new("final-original-sender-ack"),
+            claim: crate::protocol::authority::CallerClaim {
+                instance: "i".into(),
+                seat: SeatId::new("recipient"),
+                binding_generation: 1,
+                role: crate::protocol::authority::CallerRole::TopLevel,
+                harness: Harness::Codex,
+                native_session: crate::protocol::ids::NativeSessionId::new("recipient-session"),
+                execution: ExecutionId::new("00000000-0000-4000-8000-0000000000cc"),
+                target: HostTargetId::new("recipient-pane"),
+            },
+        };
+        let mut permit = crate::protocol::authority::MutationPermit::cooperative(
+            request.claim.clone(),
+            request.operation.clone(),
+            crate::protocol::authority::ObligationRef::CheckIn(request.claim.seat.clone()),
+            crate::store::schema::canonical_digest(&crate::store::receipts::ack_payload(&request))
+                .unwrap(),
+            fx.clock.monotonic_now(),
+            (1, 0),
+            budget(&fx),
+        );
+        let context = StoreContext::new(fx.path.clone(), fx.clock.clone());
+        crate::store::receipts::ack(&context, &mut db, &budget(&fx), &request, &mut permit)
+            .unwrap();
+        assert_eq!(
+            db.query_row(
+                "SELECT count(*) FROM messages WHERE kind='warn' AND json_extract(event_json,'$.event')='warning_cleared'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+        let high = db
+            .query_row("SELECT max(ordinal) FROM seats", [], |r| r.get::<_, i64>(0))
+            .unwrap() as u64;
+        let candidates =
+            crate::store::discover_wake_candidates(&db, "i", 0, high, 100, &|| Ok(())).unwrap();
+        for seat in ["s", "s2"] {
+            assert!(
+                !candidates
+                    .items
+                    .iter()
+                    .any(|c| c.seat.as_str() == seat && c.has_actionable_work())
+            );
+            let attention = crate::store::attention::wake_seat_attention(&db, seat).unwrap();
+            assert!(
+                !attention.attention.has_pending_invitation
+                    && !attention.attention.has_pending_receipt
+                    && attention.attention.latest_warning_seq.is_none(),
+                "final clear has no other waking source"
+            );
+            let loaded = crate::store::wake::load_candidate(
+                &db,
+                "i",
+                &SeatId::new(seat),
+                &attention.attention,
+                attention.decision_seq,
+            )
+            .unwrap();
+            assert!(!loaded.has_actionable_work());
+            assert_eq!(
+                crate::store::seats::mod_seat_view(&db, "i", &SeatId::new(seat))
+                    .unwrap()
+                    .unwrap()
+                    .fingerprint
+                    .other_pending,
+                0
+            );
+        }
+        assert_eq!(db.query_row("SELECT count(*) FROM wake_work WHERE seat_id IN ('s','s2') AND reservation_id IS NOT NULL",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+        let settled = (1..=2)
+            .map(|n| {
+                crate::store::effective::effective_receipt(&db, &format!("source-{n}"), "recipient")
+                    .unwrap()
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        let canonical_history = |db: &Connection| {
+            let mut stmt = db
+                .prepare("SELECT * FROM messages ORDER BY ordinal")
+                .unwrap();
+            let columns = stmt.column_count();
+            stmt.query_map([], |r| {
+                (0..columns)
+                    .map(|c| r.get::<_, rusqlite::types::Value>(c))
+                    .collect::<rusqlite::Result<Vec<_>>>()
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+        };
+        let before_reset = canonical_history(&db);
+        // Negative control: clear only the two scheduling dedup frontiers.
+        // Canonical history, receipt provenance and binding generations stay
+        // exact, so no-submit cannot pass because of old submitted frontiers.
+        db.execute("UPDATE wake_work SET last_warning_seq=NULL,last_warning_offset=NULL WHERE seat_id IN ('s','s2')",[]).unwrap();
+        assert_eq!(canonical_history(&db), before_reset);
+        assert_eq!(db.query_row("SELECT count(*) FROM occupant_bindings WHERE seat_id IN ('s','s2','recipient') AND generation=1 AND ended_at IS NULL",[],|r|r.get::<_,i64>(0)).unwrap(),3);
+        for (n, receipt) in settled.iter().enumerate() {
+            assert_eq!(
+                &crate::store::effective::effective_receipt(
+                    &db,
+                    &format!("source-{}", n + 1),
+                    "recipient"
+                )
+                .unwrap()
+                .unwrap(),
+                receipt
+            );
+        }
+        drop(db);
+        host.clear();
+        for _ in 0..3 {
+            flow.drive_wakes(&budget(&fx)).unwrap();
+        }
+        assert!(
+            host.prompts().is_empty(),
+            "final passive clear submits no native prompt even with scheduling dedup removed"
+        );
+        assert_eq!(
+            fx.conn()
+                .query_row(
+                    "SELECT count(*) FROM messages WHERE kind='warn' AND json_extract(event_json,'$.event')='warning_cleared'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+            1
+        );
     }
 }
