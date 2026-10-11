@@ -1553,6 +1553,7 @@ fn direct_thread_guarded_runtime_refuses_missing_target_without_effects() {
         .unwrap()
     });
     let ensure = Command::EnsureDirectThread(EnsureDirectThread {
+        creation_policy: None,
         recipient: SeatId::new("peer"),
         operation: OperationId::new("ensure"),
         claim: caller.clone(),
@@ -1597,6 +1598,7 @@ fn direct_thread_real_service_ensure_and_lazy_send() {
     db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES('peer','i','resolved','native','peer-pane',1,1,0)",[]).unwrap();
     db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES('i','peer-pane','b',1,1,0,'fresh','term-peer','inc','coherent_enumeration',1)",[]).unwrap();
     let ensure = Command::EnsureDirectThread(EnsureDirectThread {
+        creation_policy: None,
         recipient: SeatId::new("peer"),
         operation: OperationId::new("service-direct"),
         claim: caller.clone(),

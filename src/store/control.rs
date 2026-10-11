@@ -563,6 +563,11 @@ pub fn ensure_direct_thread(
     mut permit: MutationPermit,
     installation_default_ms: Option<u64>,
 ) -> Result<CommandResult, ApiError> {
+    if let Some(policy) = &command.creation_policy {
+        policy
+            .validate()
+            .map_err(|e| api_error(ErrorCode::InvalidRequest, e))?;
+    }
     let caller = permit.seat_for_replay_scope().clone();
     let scope = format!("seat:{}", caller.as_str());
     let cooperative = permit.cooperative_metadata();
@@ -593,6 +598,7 @@ pub fn ensure_direct_thread(
                 &command.claim.instance,
                 &caller,
                 &command.recipient,
+                command.creation_policy.as_ref(),
                 installation_default_ms,
             )
             .map(CommandResult::ThreadCreated)
@@ -608,6 +614,7 @@ pub(crate) fn resolve_direct_pair(
     instance: &str,
     caller: &SeatId,
     recipient: &SeatId,
+    creation_policy: Option<&crate::protocol::commands::EnsureCreationPolicy>,
     installation_default_ms: Option<u64>,
 ) -> Result<ThreadId, ApiError> {
     if caller == recipient {
@@ -636,8 +643,23 @@ pub(crate) fn resolve_direct_pair(
         require_pair_lifecycle(tx, &thread, caller, recipient)?;
         return Ok(thread);
     }
-    let duration = i64::try_from(installation_default_ms.unwrap_or(300_000))
-        .map_err(|_| api_error(ErrorCode::InvalidRequest, "invitation duration too large"))?;
+    if let Some(policy) = creation_policy {
+        policy
+            .validate()
+            .map_err(|e| api_error(ErrorCode::InvalidRequest, e))?;
+    }
+    let confirmation = creation_policy.map(|p| match p.confirmation {
+        crate::protocol::commands::InvitationConfirmation::Lazy => "lazy",
+        crate::protocol::commands::InvitationConfirmation::RequireAck => "require_ack",
+    });
+    let timed = confirmation != Some("lazy");
+    let duration = i64::try_from(
+        creation_policy
+            .and_then(|p| p.deadline_millis)
+            .or(installation_default_ms)
+            .unwrap_or(300_000),
+    )
+    .map_err(|_| api_error(ErrorCode::InvalidRequest, "invitation duration too large"))?;
     if duration <= 0 {
         return Err(api_error(
             ErrorCode::InvalidRequest,
@@ -682,8 +704,15 @@ pub(crate) fn resolve_direct_pair(
     )?);
     let invited_seq = schema::next_decision_seq(tx, instance)?;
     tx.execute("INSERT INTO memberships(thread_id,seat_id,episode,state,voluntary_state) VALUES(?1,?2,1,'invited','invited')",params![thread.as_str(),recipient.as_str()]).map_err(store_error)?;
-    tx.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at) VALUES(?1,?2,?3,1,'pending',?4,?5,?6,?7)",params![invitation.as_str(),thread.as_str(),recipient.as_str(),decision.utc.0,invited_seq as i64,duration,deadline.0]).map_err(store_error)?;
-    let payload=serde_json::json!({"action":"invite","actor_seat":caller.as_str(),"seat":recipient.as_str(),"invitation":invitation.as_str(),"deadline_at":deadline.0}).to_string();
+    tx.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at,confirmation,inviter_seat_id) VALUES(?1,?2,?3,1,'pending',?4,?5,?6,?7,?8,?9)",params![invitation.as_str(),thread.as_str(),recipient.as_str(),decision.utc.0,invited_seq as i64,duration,deadline.0,confirmation,creation_policy.map(|_| caller.as_str())]).map_err(store_error)?;
+    let mut payload = serde_json::json!({"action":"invite","actor_seat":caller.as_str(),"seat":recipient.as_str(),"invitation":invitation.as_str()});
+    if timed {
+        payload["deadline_at"] = serde_json::json!(deadline.0);
+    }
+    if let Some(mode) = confirmation {
+        payload["confirmation"] = serde_json::json!(mode);
+    }
+    let payload = payload.to_string();
     schema::append_event_once(
         tx,
         EventInput {
@@ -708,7 +737,9 @@ pub(crate) fn resolve_direct_pair(
         bump_member_directory(tx, instance, seat)?;
         schema::bump_filter_revision(tx, instance, "inbox", seat.as_str())?;
     }
-    tx.execute("INSERT INTO wake_work(seat_id,reason_bits,attention_version) VALUES(?1,1,1) ON CONFLICT(seat_id) DO UPDATE SET reason_bits=reason_bits|1,attention_version=attention_version+1",[recipient.as_str()]).map_err(store_error)?;
+    if timed {
+        tx.execute("INSERT INTO wake_work(seat_id,reason_bits,attention_version) VALUES(?1,1,1) ON CONFLICT(seat_id) DO UPDATE SET reason_bits=reason_bits|1,attention_version=attention_version+1",[recipient.as_str()]).map_err(store_error)?;
+    }
     Ok(thread)
 }
 

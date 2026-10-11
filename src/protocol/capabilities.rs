@@ -28,6 +28,7 @@ pub const PARTICIPANT_LOCATIONS: &str = "participants.locations_v1";
 
 /// Canonical pair resolution and the independent SendMessage direct audience marker.
 /// Advertise only after transactional pair, enrollment and audience guards are installed.
+pub const ENSURE_CREATION_POLICY_V1: &str = "direct_threads.ensure_creation_policy_v1";
 pub const DIRECT_THREADS_V1: &str = "thread.direct_v1";
 /// Automatic handoff channel selection and exact canonical Ensure child attachment.
 /// Advertise only with the complete automatic handoff deciding adapters.
@@ -82,6 +83,7 @@ pub const ADVERTISED: &[&str] = &[
     INVITATION_REJECT,
     THREAD_JOIN,
     DIRECT_THREADS_V1,
+    ENSURE_CREATION_POLICY_V1,
     PARTICIPANT_LOCATIONS,
     PICKER_DIRECTORY_V1,
     ATTENTION_NOTICE_DELIVERY,

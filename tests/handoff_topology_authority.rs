@@ -806,6 +806,7 @@ fn ordinary_unlinked_direct_ensure_send_reaches_selected_bootstrap_runtime() {
     f.db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES('peer','i','resolved','native','peer-pane',1,1,0)",[]).unwrap();
     f.db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES('i','peer-pane','b',1,1,0,'fresh','term-peer','inc','coherent_enumeration',1)",[]).unwrap();
     let ensure = Command::EnsureDirectThread(EnsureDirectThread {
+        creation_policy: None,
         recipient: SeatId::new("peer"),
         operation: OperationId::new("direct-runtime-ensure"),
         claim: caller.clone(),
@@ -2342,6 +2343,7 @@ fn automatic_canonical_selected_runtime_keeps_active_unlinked_direct_send() {
     let request = automatic_request(&f);
     let CommandResult::ThreadCreated(thread) = f
         .call(Command::EnsureDirectThread(EnsureDirectThread {
+            creation_policy: None,
             recipient: request.plan().recipient.clone(),
             operation: OperationId::new("unlinked-ensure"),
             claim: request.claim.clone(),

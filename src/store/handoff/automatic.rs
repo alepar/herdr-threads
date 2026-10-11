@@ -433,6 +433,7 @@ pub(crate) fn mutate(
                         &request.claim.instance,
                         &request.claim.seat,
                         &v.recipient,
+                        v.creation_policy.as_ref(),
                         installation_default_ms,
                     )?;
                     super::attach_created_legacy(

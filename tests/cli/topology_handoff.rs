@@ -5954,6 +5954,9 @@ mod live {
                         crate::protocol::results::CapabilityList {
                             capabilities: vec![
                                 crate::protocol::capabilities::AUTOMATIC_HANDOFF_V1.into(),
+                                crate::protocol::capabilities::ENSURE_CREATION_POLICY_V1.into(),
+                                crate::protocol::capabilities::SEND_TIME_RECEIPTS_V1.into(),
+                                crate::protocol::capabilities::INVITATION_CONFIRMATION_V1.into(),
                             ],
                         },
                     )),
@@ -6613,6 +6616,63 @@ mod live {
                     .get::<_, i64>(0))
                     .unwrap(),
                 invitations_before + 1
+            );
+        }
+
+        #[test]
+        fn modern_automatic_large_diagnostics_preserve_full_local_report_and_complete_summary() {
+            let peer = AutoPeer::new();
+            let mut launcher = DownstreamLauncher {
+                report_padding: 3 * 1024 * 1024,
+                ..Default::default()
+            };
+            let mut output = Vec::new();
+            let result = resume_automatic_to_writer(
+                &peer.base.journal,
+                &peer.reference,
+                super::super::super::super::actor_route::InvocationActor::Agent,
+                peer.ns(),
+                &peer,
+                &peer,
+                &mut launcher,
+                &peer.base.clock,
+                BootstrapSubmissionInputs {
+                    witness: &peer.base.witness,
+                    context: &peer.base.context,
+                },
+                &crate::protocol::output::OutputSpec {
+                    format: crate::protocol::output::OutputFormat::Json,
+                    ..Default::default()
+                },
+                &mut output,
+            );
+            assert!(
+                result.is_ok(),
+                "large diagnostics stranded a started automatic handoff: {result:?}"
+            );
+            assert_eq!(launcher.starts, 1);
+            let completed = peer.status().completed.unwrap();
+            assert_eq!(completed.report["format"], "automatic_launch_summary_v1");
+            assert!(completed.report.get("padding").is_none());
+            let path = peer.base.journal.root().join(format!(
+                "automatic-diagnostics-{}.json",
+                peer.reference.operation.as_str()
+            ));
+            let bytes = std::fs::read(&path).unwrap();
+            let full: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(full["padding"].as_str().unwrap().len(), 3 * 1024 * 1024);
+            use sha2::{Digest, Sha256};
+            assert_eq!(
+                completed.report["full_report_digest"],
+                format!("{:x}", Sha256::digest(&bytes))
+            );
+            let historical = peer.historical_retry(peer.ns()).unwrap();
+            assert!(historical.0);
+            assert_eq!(launcher.starts, 1);
+            std::fs::remove_file(path).unwrap();
+            assert!(
+                peer.historical_retry(peer.ns()).unwrap().0,
+                "optional diagnostics must not gate canonical Completed replay"
             );
         }
 

@@ -668,6 +668,7 @@ fn start_automatic<C: LocalClient + ?Sized, W: Write>(
         ));
     }
     super::handoff_delivery::require_automatic_capability(client, clock)?;
+    super::handoff_delivery::require_policy_capabilities(client, clock, request.policy.as_ref())?;
     let namespace = HandoffNamespace {
         instance: claim.instance.clone(),
         state_dir: output
@@ -700,6 +701,7 @@ fn start_automatic<C: LocalClient + ?Sized, W: Write>(
         OperationId::new(uuid::Uuid::new_v4().to_string()),
         request.body,
     )
+    .and_then(|payload| payload.with_policy(request.policy.clone()))
     .map_err(super::invalid_request)?;
     let delivery =
         AutomaticDeliveryPlan::new(payload, prepared.recipient).map_err(super::invalid_request)?;

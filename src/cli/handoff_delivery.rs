@@ -50,6 +50,7 @@ pub fn run_automatic_existing<C: LocalClient + ?Sized, W: Write>(
     writer: &mut W,
 ) -> Result<(), RunError> {
     require_automatic_capability(inputs.client, inputs.clock)?;
+    require_policy_capabilities(inputs.client, inputs.clock, request.policy.as_ref())?;
     let claim = inputs.claim.clone();
     let namespace = inputs.namespace.clone();
     let clock = inputs.clock;
@@ -95,6 +96,23 @@ pub(crate) fn require_automatic_capability<C: LocalClient + ?Sized>(
         )),
         Err(error) => Err(error.into()),
     }
+}
+
+pub(crate) fn require_policy_capabilities<C: LocalClient + ?Sized>(
+    client: &C,
+    clock: &dyn Clock,
+    policy: Option<&crate::protocol::handoff::HandoffPolicy>,
+) -> Result<(), RunError> {
+    super::require_handoff_capabilities(client, clock, policy)?;
+    if policy.is_some() {
+        super::require_mutation_capability(
+            client,
+            clock,
+            crate::protocol::capabilities::ENSURE_CREATION_POLICY_V1,
+            "freezing direct invitation creation policy",
+        )?;
+    }
+    Ok(())
 }
 
 pub(crate) fn automatic_envelope(
@@ -189,6 +207,7 @@ pub(crate) fn prepare_automatic<C: LocalClient + ?Sized>(
         OperationId::new(uuid::Uuid::new_v4().to_string()),
         request.body.clone(),
     )
+    .and_then(|payload| payload.with_policy(request.policy.clone()))
     .map_err(fail)?;
     crate::protocol::handoff::AutomaticDeliveryPlan::new(payload, recipient).map_err(fail)
 }
@@ -1678,6 +1697,18 @@ fn retry_automatic_inner<C: LocalClient + ?Sized, W: Write>(
         File::open(journal.root())?.sync_all()?;
         terminal
     } else {
+        if original.delivery().payload.policy.is_some() {
+            let mut query = envelope.clone();
+            query.action = crate::protocol::handoff::AutomaticDeliveryAction::Status;
+            let completed = matches!(call(query), Ok(CommandResult::Handoff(s)) if s.state == HandoffState::Completed);
+            if !completed {
+                require_policy_capabilities(
+                    client,
+                    clock,
+                    original.delivery().payload.policy.as_ref(),
+                )?;
+            }
+        }
         let exact_original = journal.snapshot_automatic_origin(reference)?;
         let mut progress: AutomaticProgress = handoff::load_progress(journal, reference)?;
         if progress.possible_start && progress.launch.is_none() {

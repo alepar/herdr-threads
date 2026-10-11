@@ -375,6 +375,9 @@ pub(crate) fn resolve_automatic_new_selectors<C: LocalClient + ?Sized>(
     caller: impl FnOnce() -> Result<Option<crate::protocol::ids::HostTargetId>, ApiError>,
 ) -> Result<(), RunError> {
     topology_runtime::require_automatic_capability(client, clock)?;
+    if let CliAction::TopologyHandoff(request) = &parsed.action {
+        handoff_delivery::require_policy_capabilities(client, clock, request.policy.as_ref())?;
+    }
     panes::resolve_cli_targets(parsed, topology, caller)?;
     Ok(())
 }
@@ -1039,10 +1042,24 @@ where
         CliAction::Handoff(request) => {
             let (_, client) = connection.get()?;
             require_handoff_capabilities(client, clock.as_ref(), request.policy.as_ref())?;
+            if request.automatic {
+                handoff_delivery::require_policy_capabilities(
+                    client,
+                    clock.as_ref(),
+                    request.policy.as_ref(),
+                )?;
+            }
         }
         CliAction::TopologyHandoff(request) => {
             let (_, client) = connection.get()?;
             require_handoff_capabilities(client, clock.as_ref(), request.policy.as_ref())?;
+            if request.automatic {
+                handoff_delivery::require_policy_capabilities(
+                    client,
+                    clock.as_ref(),
+                    request.policy.as_ref(),
+                )?;
+            }
         }
         _ => {}
     }

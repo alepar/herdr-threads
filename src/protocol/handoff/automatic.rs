@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 pub const AUTOMATIC_PLAN_VERSION: u32 = 2;
-pub(crate) const MAX_AUTOMATIC_ORIGINAL_BYTES: usize = 131072;
+pub(crate) const MAX_AUTOMATIC_ORIGINAL_BYTES: usize = 524288;
 
 /// Automatic selection has one Ensure child and no independent invitation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -66,6 +66,9 @@ impl AutomaticHandoffKeys {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AutomaticHandoffPayload {
+    /// Omission preserves the released V2 original and its digest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy: Option<super::HandoffPolicy>,
     pub namespace: HandoffNamespace,
     pub keys: AutomaticHandoffKeys,
     pub channel: HandoffChannel,
@@ -78,6 +81,7 @@ impl AutomaticHandoffPayload {
         body: String,
     ) -> Result<Self, &'static str> {
         let payload = Self {
+            policy: None,
             namespace,
             keys: AutomaticHandoffKeys::new(compound),
             channel: HandoffChannel::Automatic,
@@ -86,10 +90,32 @@ impl AutomaticHandoffPayload {
         payload.validate()?;
         Ok(payload)
     }
+    pub fn with_policy(
+        mut self,
+        policy: Option<super::HandoffPolicy>,
+    ) -> Result<Self, &'static str> {
+        self.policy = policy;
+        self.validate()?;
+        Ok(self)
+    }
+    pub fn creation_policy(&self) -> Option<crate::protocol::commands::EnsureCreationPolicy> {
+        self.policy
+            .as_ref()
+            .map(|p| crate::protocol::commands::EnsureCreationPolicy {
+                confirmation: p.invitation_confirmation,
+                deadline_millis: p.invite_deadline_millis,
+            })
+    }
     pub fn validate(&self) -> Result<(), &'static str> {
+        if let Some(policy) = &self.policy {
+            policy.validate()?;
+        }
         self.namespace.validate()?;
         self.keys.validate()?;
-        if self.channel != HandoffChannel::Automatic || !bounded_text(&self.body, 1024) {
+        if self.channel != HandoffChannel::Automatic
+            || self.body.is_empty()
+            || self.body.len() > 65536
+        {
             return Err("invalid automatic handoff payload");
         }
         Ok(())
@@ -264,6 +290,7 @@ impl AutomaticDeliveryMutation {
     pub fn ensure(&self) -> Self {
         let mut request = self.clone();
         request.action = AutomaticDeliveryAction::Ensure(EnsureDirectThread {
+            creation_policy: self.plan().payload.creation_policy(),
             recipient: self.plan().recipient.clone(),
             operation: self.plan().payload.keys.ensure.clone(),
             claim: self.claim.clone(),
@@ -279,7 +306,12 @@ impl AutomaticDeliveryMutation {
             body: self.plan().payload.body.clone(),
             direct_recipient: Some(self.plan().recipient.clone()),
             invited_recipients: vec![self.plan().recipient.clone()],
-            deadline_millis: None,
+            deadline_millis: self
+                .plan()
+                .payload
+                .policy
+                .as_ref()
+                .and_then(|p| p.deadline_millis),
             operation: self.plan().payload.keys.send.clone(),
             claim: self.claim.clone(),
             relays_user: false,
@@ -301,7 +333,7 @@ impl AutomaticDeliveryMutation {
         normalized.action = AutomaticDeliveryAction::Prepare;
         let bytes = serde_json::to_vec(&normalized).map_err(|_| "invalid automatic original")?;
         if bytes.len() > MAX_AUTOMATIC_ORIGINAL_BYTES {
-            return Err("automatic original exceeds 128 KiB storage bound");
+            return Err("automatic original exceeds 512 KiB storage bound");
         }
         Ok(bytes)
     }
@@ -329,6 +361,7 @@ impl AutomaticDeliveryMutation {
                 value.claim == self.claim
                     && value.operation == keys.ensure
                     && value.recipient == plan.recipient
+                    && value.creation_policy == plan.payload.creation_policy()
             }
             AutomaticDeliveryAction::Send(value) => {
                 value.claim == self.claim
@@ -337,7 +370,8 @@ impl AutomaticDeliveryMutation {
                     && value.body == plan.payload.body
                     && value.direct_recipient.as_ref() == Some(&plan.recipient)
                     && value.invited_recipients == [plan.recipient.clone()]
-                    && value.deadline_millis.is_none()
+                    && value.deadline_millis
+                        == plan.payload.policy.as_ref().and_then(|p| p.deadline_millis)
                     && !value.relays_user
                     && value.user_intent.is_none()
             }

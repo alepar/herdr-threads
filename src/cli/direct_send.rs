@@ -35,6 +35,8 @@ use std::io::{self, Write};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Plan {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub creation_policy: Option<crate::protocol::commands::EnsureCreationPolicy>,
     pub namespace: HandoffNamespace,
     pub request: Request,
     pub ensure_key: OperationId,
@@ -46,6 +48,9 @@ fn invalid(detail: &str) -> io::Error {
 impl Plan {
     pub fn validate(&self) -> io::Result<()> {
         self.namespace.validate().map_err(invalid)?;
+        if let Some(policy) = &self.creation_policy {
+            policy.validate().map_err(invalid)?;
+        }
         let r = &self.request;
         if r.body.is_empty()
             || r.body.len() > super::input::MAX_BODY_BYTES
@@ -160,12 +165,17 @@ fn capability<C: LocalClient + ?Sized>(
     client: &C,
     clock: &dyn Clock,
     lazy: bool,
+    modern: bool,
 ) -> Result<(), RunError> {
     match client.call(Command::Capabilities, &super::cooperative_budget(clock)) {
         Ok(CommandResult::Capabilities(c))
             if c.capabilities
                 .iter()
                 .any(|v| v == crate::protocol::capabilities::DIRECT_THREADS_V1)
+                && (!modern
+                    || c.capabilities.iter().any(|v| {
+                        v == crate::protocol::capabilities::ENSURE_CREATION_POLICY_V1
+                    }))
                 && (!lazy
                     || c.capabilities
                         .iter()
@@ -231,13 +241,22 @@ pub(crate) fn start<C: LocalClient + ?Sized, W: Write>(
     writer: &mut W,
 ) -> Result<(), RunError> {
     let p = Plan {
+        creation_policy: Some(crate::protocol::commands::EnsureCreationPolicy {
+            confirmation: crate::protocol::commands::InvitationConfirmation::Lazy,
+            deadline_millis: None,
+        }),
         namespace: namespace(&claim.instance, &output.context)?,
         request,
         ensure_key: OperationId::new(uuid::Uuid::new_v4().to_string()),
         send_key: OperationId::new(uuid::Uuid::new_v4().to_string()),
     };
     p.validate_claim(&claim)?;
-    capability(client, clock, p.request.delivery_mode == DeliveryMode::Lazy)?;
+    capability(
+        client,
+        clock,
+        p.request.delivery_mode == DeliveryMode::Lazy,
+        p.creation_policy.is_some(),
+    )?;
     let caller = inspect(client, clock, &claim.seat)?;
     if caller.summary.generation != claim.binding_generation
         || caller.summary.target.as_ref() != Some(&claim.target)
@@ -346,9 +365,15 @@ pub(crate) fn retry<C: LocalClient + ?Sized, W: Write>(
     let result = (|| -> Result<(), RunError> {
         let mut progress: Progress = super::handoff::load_progress(journal, reference)?;
         progress.validate(p, claim)?;
-        capability(client, clock, p.request.delivery_mode == DeliveryMode::Lazy)?;
+        capability(
+            client,
+            clock,
+            p.request.delivery_mode == DeliveryMode::Lazy,
+            p.creation_policy.is_some(),
+        )?;
         let ensured = client.call(
             Command::EnsureDirectThread(EnsureDirectThread {
+                creation_policy: p.creation_policy.clone(),
                 recipient: p.request.target.clone(),
                 operation: p.ensure_key.clone(),
                 claim: claim.clone(),

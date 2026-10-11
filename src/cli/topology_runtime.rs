@@ -308,6 +308,7 @@ pub(crate) fn try_run_automatic_new_with_ports(
         return Ok(false);
     }
     agent_claim(claim)?;
+    super::handoff_delivery::require_policy_capabilities(client, clock, request.policy.as_ref())?;
     let topology = automatic_before_topology(client, clock, topology)?;
     let identity = super::topology_handoff::prepare_automatic(
         request,

@@ -143,6 +143,7 @@ pub fn prepare_automatic<C: crate::ports::LocalClient + ?Sized>(
         OperationId::new(uuid::Uuid::new_v4().to_string()),
         request.body.clone(),
     )
+    .and_then(|payload| payload.with_policy(request.policy.clone()))
     .map_err(fail)?;
     let scope = super::journal::IntentScope::Cooperative {
         instance: inputs.claim.instance.clone(),

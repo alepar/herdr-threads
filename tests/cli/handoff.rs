@@ -53,7 +53,12 @@ impl LocalClient for AutomaticClient {
             Command::Capabilities => Ok(CommandResult::Capabilities(
                 crate::protocol::results::CapabilityList {
                     capabilities: if self.supported {
-                        vec![crate::protocol::capabilities::AUTOMATIC_HANDOFF_V1.into()]
+                        vec![
+                            crate::protocol::capabilities::AUTOMATIC_HANDOFF_V1.into(),
+                            crate::protocol::capabilities::ENSURE_CREATION_POLICY_V1.into(),
+                            crate::protocol::capabilities::SEND_TIME_RECEIPTS_V1.into(),
+                            crate::protocol::capabilities::INVITATION_CONFIRMATION_V1.into(),
+                        ]
                     } else {
                         vec![]
                     },

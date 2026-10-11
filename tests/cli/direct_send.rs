@@ -29,6 +29,7 @@ struct Fixture {
 struct Client {
     service: DomainService,
     supported: bool,
+    omit_creation_policy: bool,
     lose: Mutex<Option<&'static str>>,
     calls: Mutex<Vec<Command>>,
 }
@@ -51,6 +52,10 @@ impl LocalClient for Client {
                 capabilities: if self.supported {
                     herdr_threads::protocol::capabilities::ADVERTISED
                         .iter()
+                        .filter(|name| {
+                            !self.omit_creation_policy
+                                || **name != "direct_threads.ensure_creation_policy_v1"
+                        })
                         .map(|name| (*name).into())
                         .collect()
                 } else {
@@ -138,6 +143,7 @@ impl Fixture {
             client: Client {
                 service,
                 supported: true,
+                omit_creation_policy: false,
                 lose: Mutex::new(None),
                 calls: Mutex::new(vec![]),
             },
@@ -949,4 +955,66 @@ fn public_completed_retry_missing_endpoint_retains_files_and_one_frozen_hint() {
             );
         }
     }
+}
+
+#[test]
+fn old_direct_peer_with_lazy_support_refuses_creation_policy_before_any_effect() {
+    let mut f = Fixture::new(false);
+    f.client.omit_creation_policy = true;
+    let result = f.run(
+        &["send", "--seat", "seat-b", "--body", "hello"],
+        &mut vec![],
+    );
+    assert!(
+        matches!(result, Err(RunError::Api(ref e)) if e.code == herdr_threads::protocol::results::ErrorCode::Unsupported),
+        "old direct peer unexpectedly accepted modern creation policy: {result:?}"
+    );
+    assert!(
+        f.journal
+            .page(&Default::default())
+            .unwrap()
+            .items
+            .is_empty()
+    );
+    assert_eq!(f.count("direct_threads"), 0);
+    assert_eq!(f.count("invitations"), 0);
+    assert_eq!(f.count("messages"), 0);
+    assert!(
+        !f.client
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|c| matches!(c, Command::EnsureDirectThread(_) | Command::SendMessage(_)))
+    );
+}
+
+#[test]
+fn modern_direct_send_creates_lazy_pending_invitation_without_invitation_wake() {
+    let f = Fixture::new(false);
+    f.run(
+        &["send", "--seat", "seat-b", "--body", "hello"],
+        &mut vec![],
+    )
+    .unwrap();
+    let row: (Option<String>, String, Option<String>) =
+        f.db.query_row(
+            "SELECT confirmation,state,inviter_seat_id FROM invitations",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        row,
+        (Some("lazy".into()), "pending".into(), Some("seat-a".into()))
+    );
+    assert_eq!(
+        f.db.query_row(
+            "SELECT count(*) FROM wake_work WHERE seat_id='seat-b' AND reason_bits&1!=0",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
 }
