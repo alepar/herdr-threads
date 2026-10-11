@@ -1110,6 +1110,24 @@ fn dormant_upgrade_actual_v31_backfill32_reopens_and_rolls_back_without_recaptur
                 .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)?, r.get::<_, Option<String>>(4)?)))
                 .unwrap().map(Result::unwrap).collect::<Vec<_>>()
         };
+        let full_catalog = |db: &Connection| {
+            db.prepare(
+                "SELECT type,name,tbl_name,rootpage,sql FROM sqlite_master ORDER BY type,name",
+            )
+            .unwrap()
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, i64>(3)?,
+                    r.get::<_, Option<String>>(4)?,
+                ))
+            })
+            .unwrap()
+            .map(Result::unwrap)
+            .collect::<Vec<_>>()
+        };
         // V39 rebuilds exactly these four body-bearing tables and their implicit indexes.
         // Compare their exact transformed DDL while retaining rootpages for every other object.
         let normalize_capacity = |rows: &mut Vec<(String, String, String, i64, Option<String>)>| {
@@ -1168,6 +1186,89 @@ fn dormant_upgrade_actual_v31_backfill32_reopens_and_rolls_back_without_recaptur
                 )
                 .unwrap(),
         );
+        // Derive the declared40/41 objects independently of initialize's output.
+        // The scratch schema needs only historical table declarations and the
+        // separately excluded38 origin table; no current catalog is an oracle.
+        for row in &expected_catalog {
+            if row.0 == "table"
+                && !["warning_conditions", "sqlite_sequence"].contains(&row.1.as_str())
+            {
+                expected.execute_batch(row.4.as_deref().unwrap()).unwrap();
+            }
+        }
+        expected
+            .execute_batch(
+                include_str!("../../migrations/0038_receipt_warning_origins.sql")
+                    .split("CREATE INDEX receipt_warning_origins_seat")
+                    .next()
+                    .unwrap(),
+            )
+            .unwrap();
+        let before_presentation: std::collections::HashSet<_> =
+            catalog(&expected).into_iter().map(|row| row.1).collect();
+        expected
+            .execute_batch(include_str!(
+                "../../migrations/0040_invitation_presentation.sql"
+            ))
+            .unwrap();
+        expected
+            .execute_batch(include_str!(
+                "../../migrations/0041_presentation_relevance.sql"
+            ))
+            .unwrap();
+        let mut presentation_objects: Vec<_> = catalog(&expected)
+            .into_iter()
+            .filter(|row| !before_presentation.contains(&row.1))
+            .collect();
+        assert_eq!(presentation_objects.len(), 118);
+        for (kind, count) in [("table", 6), ("index", 16), ("trigger", 96)] {
+            assert_eq!(
+                presentation_objects
+                    .iter()
+                    .filter(|row| row.0 == kind)
+                    .count(),
+                count,
+                "declared40/41 {kind}"
+            );
+        }
+        let new_names: std::collections::HashSet<_> = presentation_objects
+            .iter()
+            .map(|row| row.1.clone())
+            .collect();
+        // New page allocation is unconstrained; old pages retain their exact
+        // witness, apart from the existing four-table39 rebuild exception.
+        let normalize_new_pages =
+            |rows: &mut Vec<(String, String, String, i64, Option<String>)>| {
+                for row in rows {
+                    if new_names.contains(&row.1) {
+                        row.3 = 0;
+                    }
+                }
+            };
+        normalize_new_pages(&mut presentation_objects);
+        expected_catalog
+            .iter_mut()
+            .find(|row| row.1 == "invitations")
+            .unwrap()
+            .4 = Some(
+            expected
+                .query_row(
+                    "SELECT sql FROM sqlite_master WHERE name='invitations'",
+                    [],
+                    |r| r.get::<_, String>(0),
+                )
+                .unwrap(),
+        );
+        expected_catalog.extend(presentation_objects);
+        expected_catalog.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
+        let mut expected_rows = before.clone();
+        for (table, rows) in tables.iter().zip(&mut expected_rows) {
+            if *table == "invitations" {
+                for row in rows {
+                    row.push(rusqlite::types::Value::Integer(0));
+                }
+            }
+        }
         // CREATE main table succeeds, but INSERT resolves to the obstructing
         // temp view. Failure must roll back the newly created main table too.
         db.execute_batch("CREATE TEMP VIEW receipt_deadline_backfill AS SELECT 1 AS singleton")
@@ -1194,6 +1295,13 @@ fn dormant_upgrade_actual_v31_backfill32_reopens_and_rolls_back_without_recaptur
             0
         );
         assert_eq!(catalog(&db), old_catalog);
+        for (table, retained) in tables.iter().zip(&before) {
+            assert_eq!(
+                &receipt_upgrade_snapshot(&db, table),
+                retained,
+                "rollback {table}"
+            );
+        }
         drop(db); // Physical reopen clears only this connection's temp obstruction.
         let db = Connection::open(&path).unwrap();
         db.pragma_update(None, "foreign_keys", foreign_keys)
@@ -1209,16 +1317,19 @@ fn dormant_upgrade_actual_v31_backfill32_reopens_and_rolls_back_without_recaptur
                 .unwrap(),
             schema::LATEST_VERSION
         );
+        let initialized_catalog = catalog(&db);
+        let initialized_full_catalog = full_catalog(&db);
         assert_eq!(
             {
-                let mut rows = catalog(&db);
+                let mut rows = initialized_catalog.clone();
                 normalize_capacity(&mut rows);
+                normalize_new_pages(&mut rows);
                 rows
             },
             expected_catalog,
-            "composed additive32..35 preserves old definitions/rootpages and adds exact origin columns"
+            "composed32..41 preserves historical definitions/pages with exact declared additions and39 rebuilds"
         );
-        for (table, retained) in tables.iter().zip(&before) {
+        for (table, retained) in tables.iter().zip(&expected_rows) {
             assert_eq!(&receipt_upgrade_snapshot(&db, table), retained, "{table}");
         }
         assert_eq!(db.query_row("SELECT historical_decision_seq FROM receipt_send_time_cutovers WHERE instance_id='i'", [], |r| r.get::<_, i64>(0)).unwrap(), 12);
@@ -1239,10 +1350,23 @@ fn dormant_upgrade_actual_v31_backfill32_reopens_and_rolls_back_without_recaptur
             receipt_upgrade_snapshot(&db, "receipt_send_time_cutovers"),
             before[7]
         );
+        for (table, retained) in tables.iter().zip(&expected_rows) {
+            assert_eq!(
+                &receipt_upgrade_snapshot(&db, table),
+                retained,
+                "reopened {table}"
+            );
+        }
+        assert_eq!(
+            full_catalog(&db),
+            initialized_full_catalog,
+            "reopen preserves all objects and newly allocated pages too"
+        );
         assert_eq!(
             {
                 let mut rows = catalog(&db);
                 normalize_capacity(&mut rows);
+                normalize_new_pages(&mut rows);
                 rows
             },
             expected_catalog
