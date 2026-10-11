@@ -1125,4 +1125,263 @@ mod binding_presentation {
             "presentation does not advance either binding cursor"
         );
     }
+    fn continued_body_fixture() -> (Fixture, CallerClaim, String) {
+        use herdr_threads::protocol::pagination::{InboxBatchV2CursorState, InboxBatchV2Source};
+        let f = Fixture::new();
+        f.ordinary_body(&"z".repeat(65_536));
+        let mut claim = f.claim("b");
+        claim.execution = ExecutionId::new("11111111-1111-4111-8111-111111111111");
+        f.db.execute(
+            "UPDATE occupant_bindings SET execution_id=?1 WHERE binding_id='b'",
+            [claim.execution.as_str()],
+        )
+        .unwrap();
+        let initial = f
+            .store
+            .presentation_pull(f.input_for_claim("b", claim.clone()), &budget())
+            .unwrap();
+        assert!(initial.work.ordinary > 0);
+        let cursor: String = f.db.query_row("SELECT ordinary_cursor FROM invitation_presentation_consumers WHERE binding_id='b' AND consumer='watch'", [], |r| r.get(0)).unwrap();
+        let state = InboxBatchV2CursorState::decode_for(&cursor, "i", &claim.seat).unwrap();
+        assert_eq!(state.source, InboxBatchV2Source::Unread);
+        assert_eq!(state.body.as_ref().unwrap().message.as_str(), "m");
+        (f, claim, cursor)
+    }
+    fn read_complete_body_and_advance(f: &Fixture, claim: &CallerClaim, operation: &str) {
+        use herdr_threads::{
+            ports::ReadContext,
+            protocol::{
+                commands::{AdvanceCursors, BodyReadRequest, Command, MessageQuery},
+                ids::{MessageId, OperationId},
+                results::{CommandResult, MessageContent},
+            },
+        };
+        let read = ReadContext {
+            instance: "i".into(),
+            output: Default::default(),
+            operation_scope: None,
+        };
+        let mut cursor = None;
+        let mut text = String::new();
+        let mut completed = false;
+        for _ in 0..4 {
+            let result = f
+                .store
+                .query(
+                    &Command::Message(MessageQuery {
+                        message: MessageId::new("m"),
+                        body: BodyReadRequest {
+                            cursor,
+                            offset: None,
+                            max_bytes: 65_536,
+                        },
+                    }),
+                    &read,
+                    &budget(),
+                )
+                .unwrap();
+            let CommandResult::Message(message) = result else {
+                panic!("body response")
+            };
+            let MessageContent::Ordinary {
+                body_data,
+                body_complete,
+                body_next_cursor,
+                ..
+            } = message.content
+            else {
+                panic!("ordinary body")
+            };
+            text.push_str(&body_data);
+            if body_complete {
+                completed = true;
+                break;
+            }
+            cursor = Some(body_next_cursor.unwrap());
+        }
+        assert!(completed);
+        assert_eq!(text, "z".repeat(65_536));
+        f.store
+            .advance_cursors(
+                &AdvanceCursors {
+                    claim: claim.clone(),
+                    operation: OperationId::new(operation),
+                    displayed: vec![MessageId::new("m")],
+                },
+                &budget(),
+            )
+            .unwrap();
+    }
+    #[test]
+    fn continued_body_retirement_is_private_and_charged_once() {
+        use herdr_threads::{
+            ports::ReadContext,
+            protocol::{
+                commands::{Command, InboxQuery},
+                pagination::{InboxBatchV2CursorState, PageRequest},
+                results::ErrorCode,
+            },
+        };
+        let (f, claim, cursor) = continued_body_fixture();
+        read_complete_body_and_advance(&f, &claim, "private-retire");
+        let public = f
+            .store
+            .query(
+                &Command::InboxBatchV2(InboxQuery {
+                    seat: Some(claim.seat.clone()),
+                    claim: Some(claim.clone()),
+                    page: PageRequest {
+                        cursor: Some(cursor.clone()),
+                        limit: 32,
+                        max_bytes: 65_536,
+                    },
+                }),
+                &ReadContext {
+                    instance: "i".into(),
+                    output: Default::default(),
+                    operation_scope: None,
+                },
+                &budget(),
+            )
+            .unwrap_err();
+        assert_eq!(
+            public.code,
+            ErrorCode::InvalidCursor,
+            "public cursor eligibility remains strict"
+        );
+        // Isolate the one continued candidate: the other captured sources have
+        // no pending items, and this control marks their existing walks complete.
+        let mut state = InboxBatchV2CursorState::decode_for(&cursor, "i", &claim.seat).unwrap();
+        state.attention.receipts_done = true;
+        state.attention.next_manifest_warning = true;
+        let isolated = state.encode("i").unwrap();
+        f.db.execute("UPDATE invitation_presentation_consumers SET ordinary_cursor=?1 WHERE binding_id='b' AND consumer='watch'", [&isolated]).unwrap();
+        let result = f
+            .store
+            .presentation_pull(f.input_for_claim("b", claim), &budget())
+            .unwrap();
+        assert_eq!(
+            result.work.ordinary, 1,
+            "retirement consumes exactly one existing source visit"
+        );
+        assert_eq!(result.work.ordinary_due_key_probes, 0);
+        assert_eq!(result.work.ordinary_carry_key_probes, 0);
+        let (cursor, partial, skip, done): (Option<String>, String, Option<String>, i64) = f.db.query_row("SELECT ordinary_cursor,ordinary_partial,ordinary_skip_body,ordinary_done FROM invitation_presentation_consumers WHERE binding_id='b' AND consumer='watch'", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).unwrap();
+        assert_eq!(
+            (cursor, partial.as_str(), skip, done),
+            (None, "{}", None, 1)
+        );
+    }
+    #[test]
+    fn continued_pending_body_survives_own_display_cursor() {
+        use herdr_threads::protocol::pagination::InboxBatchV2CursorState;
+        let (f, claim, cursor) = continued_body_fixture();
+        // A valid sub-8KiB private accumulator isolates a still-Pending
+        // continued body after the captured receipt walk already completed.
+        let mut state = InboxBatchV2CursorState::decode_for(&cursor, "i", &claim.seat).unwrap();
+        state.body.as_mut().unwrap().offset = 4096;
+        state.attention.receipts_done = true;
+        state.attention.next_manifest_warning = true;
+        let cursor = state.encode("i").unwrap();
+        let partial = serde_json::json!({"m":"z".repeat(4096)}).to_string();
+        f.db.execute("UPDATE invitation_presentation_consumers SET ordinary_cursor=?1,ordinary_partial=?2,ordinary_skip_body=NULL WHERE binding_id='b' AND consumer='watch'", rusqlite::params![cursor, partial]).unwrap();
+        f.db.execute("UPDATE receipt_state SET state='pending',acked_at=NULL,ack_binding_id=NULL,ack_actor_seat_id=NULL,ack_generation=NULL,ack_observation=NULL WHERE message_id='m'", []).unwrap();
+        read_complete_body_and_advance(&f, &claim, "pending-retained");
+        let result = f
+            .store
+            .presentation_pull(f.input_for_claim("b", claim), &budget())
+            .unwrap();
+        let DeliveryPullReplyV2::Page(page) = result.reply else {
+            panic!("pending continuation remains model-visible")
+        };
+        assert!(page.items.iter().any(|item| matches!(item, PresentationItemV2::Message { id, content, .. } if id.as_str()=="m" && content.ack_required)));
+        assert_eq!(
+            f.db.query_row(
+                "SELECT state FROM receipt_state WHERE message_id='m'",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+            "pending"
+        );
+    }
+    #[test]
+    fn continued_unread_body_survives_sibling_full_read() {
+        let (f, claim, _) = continued_body_fixture();
+        let mut sibling = f.claim("a");
+        sibling.execution = ExecutionId::new("22222222-2222-4222-8222-222222222222");
+        f.db.execute(
+            "UPDATE occupant_bindings SET execution_id=?1 WHERE binding_id='a'",
+            [sibling.execution.as_str()],
+        )
+        .unwrap();
+        read_complete_body_and_advance(&f, &sibling, "sibling-read");
+        let result = f
+            .store
+            .presentation_pull(f.input_for_claim("b", claim), &budget())
+            .unwrap();
+        assert!(result.work.ordinary > 0);
+        assert_eq!(
+            f.db.query_row(
+                "SELECT seq FROM binding_cursors WHERE binding_id='b'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0
+        );
+    }
+    #[test]
+    fn continued_body_refuses_corrupt_accumulator_and_missing_authority_without_progress() {
+        use herdr_threads::protocol::results::ErrorCode;
+        for missing_authority in [false, true] {
+            let (f, claim, cursor) = continued_body_fixture();
+            read_complete_body_and_advance(&f, &claim, "guard-read");
+            if missing_authority {
+                f.db.execute(
+                    "DELETE FROM prepared_recipients WHERE preparation_id='prep' AND seat_id='s'",
+                    [],
+                )
+                .unwrap();
+            } else {
+                f.db.execute("UPDATE invitation_presentation_consumers SET ordinary_skip_body=NULL,ordinary_partial=?1 WHERE binding_id='b' AND consumer='watch'", [r#"{"m":"short"}"#]).unwrap();
+            }
+            let before: (String, String, Option<String>) = f.db.query_row("SELECT ordinary_cursor,ordinary_partial,ordinary_skip_body FROM invitation_presentation_consumers WHERE binding_id='b' AND consumer='watch'", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
+            let error = f
+                .store
+                .presentation_pull(f.input_for_claim("b", claim), &budget())
+                .unwrap_err();
+            assert_eq!(
+                error.code,
+                if missing_authority {
+                    ErrorCode::InvalidCursor
+                } else {
+                    ErrorCode::StoreCorrupt
+                }
+            );
+            let after: (String, String, Option<String>) = f.db.query_row("SELECT ordinary_cursor,ordinary_partial,ordinary_skip_body FROM invitation_presentation_consumers WHERE binding_id='b' AND consumer='watch'", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
+            assert_eq!(after, before);
+            assert_eq!(after.0, cursor);
+        }
+    }
+    #[test]
+    fn continued_body_retirement_rolls_back_when_final_state_write_fails() {
+        let (f, claim, cursor) = continued_body_fixture();
+        read_complete_body_and_advance(&f, &claim, "rollback-read");
+        f.db.execute_batch("CREATE TRIGGER refuse_continuation_save BEFORE UPDATE ON invitation_presentation_consumers WHEN NEW.binding_id='b' AND NEW.ordinary_cursor IS NOT OLD.ordinary_cursor BEGIN SELECT RAISE(ABORT,'test late presentation save'); END;").unwrap();
+        assert!(
+            f.store
+                .presentation_pull(f.input_for_claim("b", claim.clone()), &budget())
+                .is_err()
+        );
+        assert_eq!(f.db.query_row("SELECT ordinary_cursor FROM invitation_presentation_consumers WHERE binding_id='b' AND consumer='watch'", [], |r| r.get::<_,String>(0)).unwrap(), cursor);
+        assert_eq!(f.db.query_row("SELECT ordinary_skip_body FROM invitation_presentation_consumers WHERE binding_id='b' AND consumer='watch'", [], |r| r.get::<_,String>(0)).unwrap(), "m");
+        f.db.execute_batch("DROP TRIGGER refuse_continuation_save;")
+            .unwrap();
+        let retried = f
+            .store
+            .presentation_pull(f.input_for_claim("b", claim), &budget())
+            .unwrap();
+        assert!(retried.work.ordinary <= 100);
+    }
 }

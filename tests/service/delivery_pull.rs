@@ -7450,6 +7450,83 @@ impl Drop for OfferWindowFixture {
     }
 }
 
+// Read the public body continuation completely before claiming display of an
+// identity whose V2 frame was truncated. No ledger or cursor SQL is written.
+fn reclamation_read_full_body(f: &Fixture, message: &MessageId) -> String {
+    use crate::protocol::{
+        commands::{BodyReadRequest, MessageQuery},
+        results::MessageContent,
+    };
+    let mut cursor = None;
+    let mut complete = String::new();
+    for _ in 0..16 {
+        let CommandResult::Message(read) = f
+            .service
+            .handle(
+                Command::Message(MessageQuery {
+                    message: message.clone(),
+                    body: BodyReadRequest {
+                        cursor,
+                        offset: None,
+                        max_bytes: 4096,
+                    },
+                }),
+                peer(),
+                &budget(),
+            )
+            .unwrap()
+        else {
+            panic!("public body continuation")
+        };
+        let MessageContent::Ordinary {
+            body_data,
+            body_offset,
+            body_total_bytes,
+            body_complete,
+            body_next_cursor,
+            ..
+        } = read.content
+        else {
+            panic!("ordinary body")
+        };
+        assert_eq!(body_offset as usize, complete.len());
+        complete.push_str(&body_data);
+        if body_complete {
+            assert!(body_next_cursor.is_none());
+            assert_eq!(complete.len() as u64, body_total_bytes);
+            return complete;
+        }
+        cursor = Some(body_next_cursor.expect("bounded continuation makes progress"));
+    }
+    panic!("fixture full body exceeds bounded continuation reads")
+}
+
+fn reclamation_advance_displayed(
+    f: &Fixture,
+    claim: &CallerClaim,
+    displayed: &[MessageId],
+    operation: &str,
+) {
+    for (n, batch) in displayed.chunks(100).enumerate() {
+        let CommandResult::CursorsAdvanced(advanced) = f
+            .service
+            .handle(
+                Command::AdvanceCursors(crate::protocol::commands::AdvanceCursors {
+                    claim: claim.clone(),
+                    operation: OperationId::new(format!("{operation}-{n}")),
+                    displayed: batch.to_vec(),
+                }),
+                peer(),
+                &budget(),
+            )
+            .unwrap()
+        else {
+            panic!("public binding display progress")
+        };
+        assert_eq!(advanced, batch);
+    }
+}
+
 fn assert_v2_offer_window_reclaimed(watch: bool, lazy: bool) {
     use crate::{
         delivery::ledger::MAX_OFFERS_PER_BINDING,
@@ -7470,7 +7547,45 @@ fn assert_v2_offer_window_reclaimed(watch: bool, lazy: bool) {
         256,
         "real V2 issuance filled live capacity"
     );
+    let before_ack = window.offers();
+    let binding = binding_for_claim(&window.f, &window.recipient);
+    let cursor = || {
+        window
+            .f
+            .db
+            .query_row::<i64, _, _>(
+                "SELECT seq FROM binding_cursors WHERE binding_id=?1 AND thread_id='t'",
+                [binding.as_str()],
+                |row| row.get(0),
+            )
+            .unwrap()
+    };
+    let before_cursor = cursor();
     window.ack(&sent, watch, lazy, "offer-window-settle");
+    if !watch {
+        assert_eq!(
+            cursor(),
+            before_cursor,
+            "manual seat ACK does not claim body display"
+        );
+        window.pull();
+        assert_eq!(
+            window.offers(),
+            before_ack,
+            "seat settlement alone preserves this binding's unread offer stamps"
+        );
+        assert!(
+            before_ack.values().all(|stamp| !stamp.truncated),
+            "all 256 V2 bodies were actually complete"
+        );
+        reclamation_advance_displayed(
+            &window.f,
+            &window.recipient,
+            &sent,
+            "offer-window-full-display",
+        );
+        assert!(cursor() > before_cursor);
+    }
     for id in &sent {
         let state: String = window
             .f
@@ -7507,7 +7622,7 @@ fn assert_v2_offer_window_reclaimed(watch: bool, lazy: bool) {
             assert_eq!(work.offer_reconciliation_visits, 256);
             assert_eq!(
                 work.offer_reconciliation_probes,
-                if lazy { 768 } else { 1024 }
+                if lazy { 2048 } else { 2304 }
             );
         }
         if emitted {
@@ -7630,9 +7745,26 @@ fn presentation_reclamation_preserves_pending_truncated_and_reoffer_history() {
         second,
         "the fresh identity cannot evict pending offers at capacity"
     );
-    // Manual ACK is allowed after the body continuation was read, including
-    // the previously truncated identity. Keep one short offer canonically pending.
+    // Manual ACK settles the seat; the public body continuation and explicit
+    // display below advance this binding. Keep one short offer canonically pending.
     window.ack(&sent[..255], false, false, "offer-window-manual-settle");
+    assert_eq!(
+        window.offers(),
+        second,
+        "manual ACK has not fabricated display or changed offer history"
+    );
+    assert_eq!(reclamation_read_full_body(&window.f, &sent[0]), big);
+    reclamation_advance_displayed(
+        &window.f,
+        &window.recipient,
+        &sent[..255],
+        "offer-window-continuation-displayed",
+    );
+    assert_eq!(
+        window.offers(),
+        second,
+        "only the next admitted pull reconciles the display-complete keys"
+    );
     let mut emitted = false;
     for _ in 0..16 {
         if let DeliveryPullReplyV2::Page(page) = window.pull() {
@@ -7952,10 +8084,32 @@ fn presentation_full_pending_carry_serves_due_known_offers_without_admitting_fre
         false,
         "capacity-resume",
     );
+    // Reading the short ACKed identity cannot jump over the earlier truncated
+    // body. Read its public continuation, then report exactly this full prefix.
+    assert_eq!(
+        reclamation_read_full_body(&window.f, &sent[0]),
+        "x".repeat(WATCH_BODY_LIMIT_BYTES + 1)
+    );
+    reclamation_advance_displayed(
+        &window.f,
+        &window.recipient,
+        &sent[..2],
+        "capacity-resume-full-prefix",
+    );
+    assert_eq!(window.f.db.query_row::<i64, _, _>(
+        "SELECT count(*) FROM receipt_state WHERE message_id=?1 AND seat_id='c' AND state='acked'",
+        [sent[0].as_str()], |row| row.get(0),
+    ).unwrap(), 0, "reading the prior truncated body does not ACK it");
+    let retained = window.offers();
     let DeliveryPullReplyV2::Page(resumed) = window.pull() else {
         panic!("same-call reclaimed slot");
     };
     assert!(resumed.offered.contains(&sent[256]));
+    assert_eq!(
+        window.offers()[&sent[0]],
+        retained[&sent[0]],
+        "read but still pending predecessor keeps its complete count-three stamp"
+    );
 }
 
 fn offer_reconciliation_input(
@@ -8099,6 +8253,7 @@ fn presentation_reclamation_preserves_logical_precedence_and_explicit_waiver_fla
         (None, "", 0, false),
     ] {
         let window = OfferWindowFixture::new(false);
+        let sibling = second_binding(&window.f);
         let message = window.send(0, DeliveryMode::Ordinary, "logical authority");
         let f = &window.f;
         f.db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,ack_required) VALUES (?1,'t','s','acked',300000,?2)",params![message.as_str(),legacy_required]).unwrap();
@@ -8108,20 +8263,49 @@ fn presentation_reclamation_preserves_logical_precedence_and_explicit_waiver_fla
         if waiver == "prepared" {
             f.db.execute("UPDATE prepared_recipients SET ack_required=0 WHERE seat_id='s' AND preparation_id=(SELECT preparation_id FROM send_manifests WHERE message_id=?1)",[message.as_str()]).unwrap();
         }
-        let output = f
-            .store
-            .presentation_pull(
-                offer_reconciliation_input(f, &window.recipient, vec![message.clone()]),
-                &budget(),
-            )
-            .unwrap();
+        let reconcile = |claim: &CallerClaim| {
+            f.store
+                .presentation_pull(
+                    offer_reconciliation_input(f, claim, vec![message.clone()]),
+                    &budget(),
+                )
+                .unwrap()
+        };
+        let expected_probes = if want { 9 } else { 4 };
+        for claim in [&window.recipient, &sibling] {
+            let unread = reconcile(claim);
+            assert!(
+                unread.reclaimed_messages.is_empty(),
+                "seat authority does not complete either binding's unread body: state={state:?} waiver={waiver}"
+            );
+            assert_eq!(unread.work.offer_reconciliation_visits, 1);
+            assert_eq!(unread.work.offer_reconciliation_probes, expected_probes);
+        }
+        assert_eq!(reclamation_read_full_body(f, &message), "logical authority");
+        reclamation_advance_displayed(
+            f,
+            &window.recipient,
+            std::slice::from_ref(&message),
+            "logical-authority-full-display",
+        );
+        let output = reconcile(&window.recipient);
         assert_eq!(
             output.reclaimed_messages,
-            if want { vec![message] } else { vec![] },
+            if want { vec![message.clone()] } else { vec![] },
             "state={state:?} waiver={waiver} legacy_required={legacy_required}"
         );
         assert_eq!(output.work.offer_reconciliation_visits, 1);
-        assert_eq!(output.work.offer_reconciliation_probes, 4);
+        assert_eq!(output.work.offer_reconciliation_probes, expected_probes);
+        let still_unread = reconcile(&sibling);
+        assert!(
+            still_unread.reclaimed_messages.is_empty(),
+            "only the fully displayed binding may reclaim a seat-terminal identity"
+        );
+        assert_eq!(still_unread.work.offer_reconciliation_visits, 1);
+        assert_eq!(
+            still_unread.work.offer_reconciliation_probes,
+            expected_probes
+        );
     }
     // Legacy waiver flags are themselves canonical materialized terminal
     // evidence when no manifest addressed authority exists.
@@ -8140,7 +8324,7 @@ fn presentation_reclamation_preserves_logical_precedence_and_explicit_waiver_fla
         )
         .unwrap();
     assert_eq!(output.reclaimed_messages, ids(&["m1"]));
-    assert_eq!(output.work.offer_reconciliation_probes, 5);
+    assert_eq!(output.work.offer_reconciliation_probes, 10);
 }
 
 // Kills: confusing staged or uncompleted lazy rows with canonically published
@@ -8292,7 +8476,7 @@ fn presentation_reclamation_replay_returns_delta_and_refusals_do_no_reconciliati
     assert!(replay.work.replay > 0);
     assert_eq!(replay.reclaimed_messages, ids(&["m1"]));
     assert_eq!(replay.work.offer_reconciliation_visits, 1);
-    assert_eq!(replay.work.offer_reconciliation_probes, 5);
+    assert_eq!(replay.work.offer_reconciliation_probes, 10);
     for scope_refusal in [true, false] {
         let mut refused = input.clone();
         if scope_refusal {
