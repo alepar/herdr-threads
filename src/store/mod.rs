@@ -1856,7 +1856,7 @@ impl StorePort for SqliteStore {
             request.operator.as_ref(),
             permit,
             budget,
-            |tx, seat, seq, history| {
+            |tx, seat, seq, history, binding| {
                 let _namespace = crate::protocol::output::CommandNamespaceGuard::enter(
                     request.command.claim.harness == crate::protocol::authority::Harness::Human
                         || request.operator.is_some(),
@@ -1876,10 +1876,11 @@ impl StorePort for SqliteStore {
                     self.context.clock(),
                 )?;
                 let (warning_count, warning_count_has_more) =
-                    queries::pending_warning_count_in_transaction(
+                    queries::pending_warning_count_for_binding_in_transaction(
                         tx,
                         &self.instance,
                         seat,
+                        binding,
                         budget,
                         self.context.clock(),
                     )?;
@@ -1911,9 +1912,10 @@ impl StorePort for SqliteStore {
                 // The capped page of programmatic notices above the current
                 // occupant's offered frontier, oldest first; the writer
                 // settles exactly the prefix this offer carries.
-                let mut notices = crate::store::attention::notice_offer_page(
+                let mut notices = crate::store::attention::notice_offer_page_for(
                     tx,
                     seat.as_str(),
+                    binding,
                     crate::protocol::results::MAX_NOTICE_PAGE_ITEMS + 1,
                 )?
                 .into_iter()

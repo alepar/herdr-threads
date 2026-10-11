@@ -725,6 +725,7 @@ fn direct_socket_hook_keeps_selected_check_in_and_directory_continuations() {
         role: Role::TopLevel,
         event_id: "selected-socket-start".into(),
         capability: Capability::SourceSupported,
+        agent_id: None,
     };
     let first = OutputSpec {
         format: OutputFormat::Text,

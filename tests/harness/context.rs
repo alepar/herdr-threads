@@ -631,62 +631,108 @@ fn stale_current_is_retired_only_when_unchanged_and_idle() {
     fs::remove_dir_all(path).unwrap();
 }
 
-// Kills: an attention mark shared across executions (a new execution would
-// inherit the old frontier and suppress its first offer).
+fn private_write(path: &std::path::Path, contents: &str) {
+    fs::write(path, contents).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+}
+
+// Kills: one attention mark for the whole pane (a second session's write would erase the first's
+// and re-present its attention), a mark keyed by anything but the binding key (the session and
+// agent id of a subagent would share their parent's mark), a read-modify-write that drops the
+// other keys, and a mark that is not last-writer-wins per key.
 #[test]
-fn attention_mark_is_per_execution_last_writer_wins() {
+fn attention_marks_are_kept_per_binding_key() {
     let path = dir();
-    let i = Uuid::new_v4();
-    let j = journal(&path, i);
-    let a = Uuid::new_v4();
-    let b = Uuid::new_v4();
-    assert_eq!(j.attention_mark(a), None);
-    let items = crate::protocol::attention::AttentionToken {
-        lazy: None,
+    let j = journal(&path, Uuid::new_v4());
+    let parent = attention_mark_key("claude", "session-1", None);
+    let child = attention_mark_key("claude", "session-1", Some("agent-7"));
+    let other = attention_mark_key("claude", "session-2", None);
+    assert_eq!(parent, "claude:session-1:");
+    assert_eq!(child, "claude:session-1:agent-7");
+    assert_ne!(parent, child);
+    assert_eq!(j.attention_mark(&parent), None);
+    let first = crate::protocol::attention::AttentionToken {
+        receipt: Some((7, 0)),
+        unavailability_episode: 1,
+        binding: Some(11),
+        ..Default::default()
+    };
+    let second = crate::protocol::attention::AttentionToken {
+        receipt: Some((9, 0)),
+        mail: Some((9, 4)),
+        unavailability_episode: 1,
+        binding: Some(22),
+        ..Default::default()
+    };
+    j.set_attention_mark(&parent, &first).unwrap();
+    j.set_attention_mark(&other, &second).unwrap();
+    // The second session's write left the first's mark alone.
+    assert_eq!(j.attention_mark(&parent), Some(first));
+    assert_eq!(j.attention_mark(&other), Some(second));
+    assert_eq!(j.attention_mark(&child), None, "a subagent has its own key");
+    // Last writer wins per key.
+    j.set_attention_mark(&parent, &second).unwrap();
+    assert_eq!(j.attention_mark(&parent), Some(second));
+    assert_eq!(j.attention_mark(&other), Some(second));
+    // An OccupantContext names the same key a claim of its session does.
+    let ctx = context(Uuid::new_v4(), Uuid::new_v4(), 1);
+    assert_eq!(ctx.mark_key(), "codex:same-session:");
+    // The marks are not the journal: pending/current/completed are untouched.
+    assert_eq!(j.pending().unwrap(), None);
+    assert_eq!(j.completed_len().unwrap(), 0);
+    fs::remove_dir_all(path).unwrap();
+}
+
+// Kills: a reader that errors (or panics) on the retired single-mark files, a legacy mark that is
+// trusted for some other session, and a first write that fails to replace a retired file or
+// keeps its content.
+#[test]
+fn legacy_single_mark_file_is_read_without_error() {
+    let path = dir();
+    let j = journal(&path, Uuid::new_v4());
+    let key = attention_mark_key("codex", "same-session", None);
+    let execution = Uuid::new_v4();
+    // Version 1 (the retired client-side frontier) and the version-2 single mark both read as
+    // absent: marks are hints, and absence only re-presents what is pending.
+    for legacy in [
+        format!(r#"{{"version":1,"execution":"{execution}","items":["r:m1"]}}"#),
+        format!(r#"{{"version":2,"execution":"{execution}","token":"v1._.7-0._.1"}}"#),
+        "not json at all".to_owned(),
+    ] {
+        private_write(&path.join("attention.json"), &legacy);
+        assert_eq!(j.attention_mark(&key), None, "{legacy}");
+    }
+    // The current shape under a retired version number is rejected by the version gate itself.
+    private_write(
+        &path.join("attention.json"),
+        r#"{"version":2,"marks":{"codex:same-session:":{"token":"v1._.7-0._.1","at":1}}}"#,
+    );
+    assert_eq!(j.attention_mark(&key), None);
+    // The first write replaces the legacy file with the per-binding shape.
+    private_write(
+        &path.join("attention.json"),
+        &format!(r#"{{"version":2,"execution":"{execution}","token":"v1._.7-0._.1"}}"#),
+    );
+    let token = crate::protocol::attention::AttentionToken {
         receipt: Some((7, 0)),
         unavailability_episode: 1,
         ..Default::default()
     };
-    j.set_attention_mark(a, &items).unwrap();
-    assert_eq!(j.attention_mark(a), Some(items));
-    assert_eq!(j.attention_mark(b), None);
-    j.set_attention_mark(b, &Default::default()).unwrap();
-    assert_eq!(j.attention_mark(a), None);
-    assert_eq!(j.attention_mark(b), Some(Default::default()));
-    // A retired version-1 frontier file reads as absent, never as a mark.
-    fs::write(
-        path.join("attention.json"),
-        format!(r#"{{"version":1,"execution":"{b}","items":["r:m1"]}}"#),
-    )
-    .unwrap();
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(
-            path.join("attention.json"),
-            fs::Permissions::from_mode(0o600),
-        )
-        .unwrap();
-    }
-    assert_eq!(j.attention_mark(b), None);
-    // The current shape under the retired version number is rejected by the
-    // version gate itself.
-    fs::write(
-        path.join("attention.json"),
-        format!(r#"{{"version":1,"execution":"{b}","token":"v1._.7-0._.1"}}"#),
-    )
-    .unwrap();
-    assert_eq!(j.attention_mark(b), None);
-    // The same file at the current version is read (the rejections above are
-    // the version gate and the shape, not the file's metadata).
-    fs::write(
-        path.join("attention.json"),
-        format!(r#"{{"version":2,"execution":"{b}","token":"v1._.7-0._.1"}}"#),
-    )
-    .unwrap();
-    assert_eq!(j.attention_mark(b), Some(items));
-    // The mark is not the journal: pending/current/completed are untouched.
-    assert_eq!(j.pending().unwrap(), None);
-    assert_eq!(j.completed_len().unwrap(), 0);
+    j.set_attention_mark(&key, &token).unwrap();
+    assert_eq!(j.attention_mark(&key), Some(token));
+    let written = fs::read_to_string(path.join("attention.json")).unwrap();
+    assert!(written.contains(r#""version":3"#) && !written.contains("execution"));
+    // The same file at the current version is read (the rejections above are the version gate
+    // and the shape, not the file's metadata).
+    private_write(
+        &path.join("attention.json"),
+        r#"{"version":3,"marks":{"codex:same-session:":{"token":"v1._.7-0._.1","at":1}}}"#,
+    );
+    assert_eq!(j.attention_mark(&key), Some(token));
     fs::remove_dir_all(path).unwrap();
 }
 

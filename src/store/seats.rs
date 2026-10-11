@@ -18,7 +18,7 @@ use crate::{
             OperatorActor,
         },
         commands::CheckIn,
-        ids::{ExecutionId, HostBootId, HostTargetId, SeatId, TerminalId, prefix},
+        ids::{BindingId, ExecutionId, HostBootId, HostTargetId, SeatId, TerminalId, prefix},
         results::{ApiError, CheckInResult, CommandResult, ErrorCode},
         time::{CallBudget, UtcMillis},
     },
@@ -4408,6 +4408,7 @@ pub fn register_available(
         &SeatId,
         u64,
         super::first_contact::OfferHistory,
+        &BindingId,
     ) -> Result<CheckInResult, ApiError>,
 ) -> Result<CommandResult, ApiError> {
     let claim = &command.claim;
@@ -4529,9 +4530,11 @@ pub fn register_available(
                     tx.execute("INSERT INTO allocation_decisions(instance_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation,operator_label) VALUES (?1,?2,?3,'operator_human_override',?4,?5,?6,?7,?8)",
                         params![claim.instance,claim.target.as_str(),seat.as_str(),at.utc.0,mapping.boot,mapping.epoch as i64,mapping.revision as i64,actor.audit_label()]).map_err(store_error)?;
                 }
+                // A lifecycle check-in starts this session's offer frontier over; the seat's other
+                // bindings keep theirs (ht-54r.9).
                 tx.execute(
-                    "DELETE FROM warning_offer WHERE seat_id=?1",
-                    [seat.as_str()],
+                    "DELETE FROM warning_offer WHERE binding_id=?1",
+                    [binding_id.as_str()],
                 )
                 .map_err(store_error)?;
             } else {
@@ -4583,6 +4586,7 @@ pub fn register_available(
                     first_contact,
                     fast_forward,
                 },
+                &binding_id,
             )?;
             if offer.seat != *seat {
                 return Err(api_error(
@@ -4596,15 +4600,14 @@ pub fn register_available(
                 .inbox
                 .validate()
                 .map_err(|e| api_error(ErrorCode::InvalidBudget, e))?;
-            tx.execute("INSERT INTO warning_offer(seat_id,binding_generation,execution_id,offered_through_seq) VALUES (?1,?2,?3,?4) ON CONFLICT(seat_id) DO UPDATE SET binding_generation=excluded.binding_generation,execution_id=excluded.execution_id,offered_through_seq=MAX(warning_offer.offered_through_seq,excluded.offered_through_seq)",
-                params![seat.as_str(),generation,claim.execution.as_str(),seq as i64]).map_err(store_error)?;
+            tx.execute("INSERT INTO warning_offer(binding_id,seat_id,offered_through_seq) VALUES (?1,?2,?3) ON CONFLICT(binding_id) DO UPDATE SET offered_through_seq=MAX(warning_offer.offered_through_seq,excluded.offered_through_seq)",
+                params![binding_id.as_str(),seat.as_str(),seq as i64]).map_err(store_error)?;
             // Lifecycle and Current offers alike settle only the notices
-            // they carry (wave-2 fix2 root decision (a)).
+            // they carry (wave-2 fix2 root decision (a)), on this binding's own frontier.
             super::attention::settle_carried_notices(
                 tx,
                 seat.as_str(),
-                generation,
-                claim.execution.as_str(),
+                &binding_id,
                 &offer.notices.items,
             )?;
             Ok(CommandResult::CheckedIn(offer))

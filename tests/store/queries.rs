@@ -964,7 +964,15 @@ fn inbox_batch_keeps_open_and_clear_transition_visible_before_recipient_projecti
         .collect();
     assert_eq!(ids, vec!["warning-open-full", "warning-clear-full"]);
     bind_query_agent(&db);
-    db.execute("INSERT INTO warning_offer(seat_id,binding_generation,execution_id,offered_through_seq) VALUES ('s',1,'exec',2)", []).unwrap();
+    db.execute("INSERT INTO warning_offer(binding_id,seat_id,offered_through_seq) SELECT binding_id,'s',2 FROM occupant_bindings WHERE seat_id='s' AND execution_id='exec'", []).unwrap();
+    let binding = crate::protocol::ids::BindingId::new(
+        db.query_row(
+            "SELECT binding_id FROM occupant_bindings WHERE seat_id='s' AND execution_id='exec'",
+            [],
+            |r| r.get::<_, String>(0),
+        )
+        .unwrap(),
+    );
     let inbox = || {
         let CommandResult::InboxBatch(batch) = query(
             &store,
@@ -1002,14 +1010,14 @@ fn inbox_batch_keeps_open_and_clear_transition_visible_before_recipient_projecti
     db.execute_batch("INSERT INTO warning_recipients(warning_id,seat_id,generation) VALUES ('warning-open-full','s',1),('warning-clear-full','s',1);").unwrap();
     let offered = crate::store::attention::notice_offer_page(&db, "s", 1).unwrap();
     assert_eq!(offered[0].notice.warning.as_str(), "warning-open-full");
-    crate::store::attention::settle_offered_notices(&db, "s", 1, "exec", &offered).unwrap();
+    crate::store::attention::settle_offered_notices(&db, "s", &binding, &offered).unwrap();
     assert_eq!(
         inbox().iter().map(MessageId::as_str).collect::<Vec<_>>(),
         vec!["warning-clear-full"],
         "only the exact carried open event settles"
     );
     let offered = crate::store::attention::notice_offer_page(&db, "s", 1).unwrap();
-    crate::store::attention::settle_offered_notices(&db, "s", 1, "exec", &offered).unwrap();
+    crate::store::attention::settle_offered_notices(&db, "s", &binding, &offered).unwrap();
     assert!(inbox().is_empty(), "both exact carried events leave inbox");
 }
 

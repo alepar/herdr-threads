@@ -107,6 +107,18 @@ impl EventKind {
     }
 }
 impl OccupantContext {
+    /// The key of this session's attention mark (see [`attention_mark_key`]). A context is a
+    /// top-level session's, so it has no agent id.
+    pub fn mark_key(&self) -> String {
+        match &self.session {
+            SessionReference::Native(session) => {
+                attention_mark_key(self.harness.as_str(), session, None)
+            }
+            SessionReference::PluginContext(id) => {
+                attention_mark_key(self.harness.as_str(), &format!("plugin_context:{id}"), None)
+            }
+        }
+    }
     /// The context of an agent session's own lifecycle event: same execution (the session's),
     /// the event's native session. The caller's session is its environment's, so it never
     /// changes here.
@@ -319,17 +331,31 @@ struct Abandoned {
     event_id: String,
     operation_id: Uuid,
 }
-/// Attention token last delivered to one execution (the join of every token
-/// it was shown). Last writer wins; deliberately outside the journal and never
-/// replayed. Version 1 (the retired client-side frontier) reads as absent.
+/// The attention tokens last delivered to each binding of the seat (the join of every token that
+/// binding was shown), keyed by binding key (see [`attention_mark_key`]): two sessions of one pane
+/// each keep their own mark, and a display by one never moves the other's (ht-54r.9). Deliberately
+/// outside the journal and never replayed; a client-local hint, never authority. Versions 1 (the
+/// retired client-side frontier) and 2 (one mark for one execution) read as absent.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct AttentionMark {
+struct AttentionMarks {
     version: u32,
-    execution: Uuid,
-    token: crate::protocol::attention::AttentionToken,
+    marks: std::collections::BTreeMap<String, AttentionMarkEntry>,
 }
-const ATTENTION_MARK_VERSION: u32 = 2;
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AttentionMarkEntry {
+    token: crate::protocol::attention::AttentionToken,
+    /// Write order: the least recently written marks are dropped past `MAX_ATTENTION_MARKS`.
+    at: u64,
+}
+const ATTENTION_MARK_VERSION: u32 = 3;
+const MAX_ATTENTION_MARKS: usize = 64;
+/// The key of one binding's attention mark: `<harness>:<native session>:<agent id or empty>`,
+/// the binding key (spec §1) without the seat.
+pub fn attention_mark_key(harness: &str, session: &str, agent_id: Option<&str>) -> String {
+    format!("{harness}:{session}:{}", agent_id.unwrap_or(""))
+}
 /// The person's `me init --operator` override for one human execution
 /// (TRUST-POLICY A4): recorded only after the daemon accepted the operator
 /// check-in; a client-local hint that skips the advisory agent-evidence
@@ -1506,12 +1532,15 @@ impl ContextJournal {
         self.save(&state)?;
         Ok(true)
     }
-    /// Attention token last delivered to `execution`; `None` when absent,
-    /// unreadable, of another version or recorded for another execution.
-    pub fn attention_mark(
-        &self,
-        execution: Uuid,
-    ) -> Option<crate::protocol::attention::AttentionToken> {
+    /// Attention token last delivered to the binding `key` (see [`attention_mark_key`]); `None`
+    /// when absent, unreadable, or of another version (a version 2 single mark included).
+    pub fn attention_mark(&self, key: &str) -> Option<crate::protocol::attention::AttentionToken> {
+        self.read_attention_marks()?
+            .marks
+            .remove(key)
+            .map(|entry| entry.token)
+    }
+    fn read_attention_marks(&self) -> Option<AttentionMarks> {
         let path = self.directory.join("attention.json");
         private_metadata(&path, false).ok()?;
         let mut options = OpenOptions::new();
@@ -1524,9 +1553,8 @@ impl ContextJournal {
             .take((MAX_BYTES + 1) as u64)
             .read_to_end(&mut bytes)
             .ok()?;
-        let mark: AttentionMark = serde_json::from_slice(&bytes).ok()?;
-        (mark.version == ATTENTION_MARK_VERSION && mark.execution == execution)
-            .then_some(mark.token)
+        let marks: AttentionMarks = serde_json::from_slice(&bytes).ok()?;
+        (marks.version == ATTENTION_MARK_VERSION).then_some(marks)
     }
     /// Execution the person recorded with `me init --operator`; `None` when
     /// absent, unreadable or of another version.
@@ -1579,25 +1607,49 @@ impl ContextJournal {
         }
         operation
     }
-    /// Replace the attention mark atomically (last writer wins).
+    /// Replace the attention mark of the binding `key` atomically (last writer wins per key).
+    /// The other bindings' marks are kept; a file of another version is replaced.
     pub fn set_attention_mark(
         &self,
-        execution: Uuid,
+        key: &str,
         token: &crate::protocol::attention::AttentionToken,
     ) -> Result<(), ContextError> {
-        if execution.is_nil() {
+        if key.is_empty() || key.len() > 1024 {
             return Err(ContextError::Invalid);
         }
-        let bytes = serde_json::to_vec(&AttentionMark {
+        private_metadata(&self.directory, true)?;
+        // Read-modify-write under the journal lock, so two sessions of one pane never lose each
+        // other's marks.
+        let _lock = self.lock()?;
+        let mut marks = self.read_attention_marks().unwrap_or(AttentionMarks {
             version: ATTENTION_MARK_VERSION,
-            execution,
-            token: *token,
-        })
-        .map_err(|_| ContextError::Invalid)?;
+            marks: Default::default(),
+        });
+        let at = marks
+            .marks
+            .values()
+            .map(|entry| entry.at)
+            .max()
+            .unwrap_or(0)
+            + 1;
+        marks
+            .marks
+            .insert(key.to_owned(), AttentionMarkEntry { token: *token, at });
+        while marks.marks.len() > MAX_ATTENTION_MARKS {
+            let Some(oldest) = marks
+                .marks
+                .iter()
+                .min_by_key(|(_, entry)| entry.at)
+                .map(|(key, _)| key.clone())
+            else {
+                break;
+            };
+            marks.marks.remove(&oldest);
+        }
+        let bytes = serde_json::to_vec(&marks).map_err(|_| ContextError::Invalid)?;
         if bytes.len() > MAX_BYTES {
             return Err(ContextError::TooLarge);
         }
-        private_metadata(&self.directory, true)?;
         let temp = self
             .directory
             .join(format!(".attention-{}.tmp", Uuid::new_v4()));

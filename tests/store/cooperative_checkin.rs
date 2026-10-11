@@ -834,7 +834,7 @@ fn cooperative_offer_failure_rolls_back_binding_anchor_frontier_and_operation() 
         None,
         permit,
         &budget(),
-        |_, _, _, _| {
+        |_, _, _, _, _| {
             Err(super::connection::api_error(
                 ErrorCode::InvalidBudget,
                 "bounded offer failed",
@@ -2341,6 +2341,7 @@ fn builtin_warning_dedup_recipients_and_successor_have_independent_frontiers() {
     }
     let mut successor = a.context.clone();
     successor.execution = ExecutionId::new("00000000-0000-4000-8000-000000000098");
+    successor.native_session = NativeSessionId::new("successor-session");
     let replaced = check_in(&store, lifecycle(successor, "dedup-successor")).unwrap();
     assert_eq!(
         carried(&replaced),
@@ -2840,8 +2841,10 @@ fn programmatic_notices_settle_page_by_page_for_the_current_occupant() {
     // Replacement: the successor's frontier is its own, starting empty.
     let mut replacement = first.context.clone();
     replacement.execution = ExecutionId::new("00000000-0000-4000-8000-000000000002");
+    replacement.native_session = NativeSessionId::new("successor-session");
     let successor = check_in(&store, lifecycle(replacement, "successor")).unwrap();
-    // ht-54r.3: the same session re-registers; the mapping generation does not move.
+    // ht-54r.3: a new session adds a binding with a frontier of its own (ht-54r.9); the
+    // mapping generation does not move.
     assert_eq!(successor.context.binding_generation, 0);
     assert_eq!(
         (successor.warning_count, successor.warning_count_has_more),

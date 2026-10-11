@@ -547,6 +547,12 @@ pub struct AttentionDigestQuery {
     /// rows never enter the wake frontier either way.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub lazy: bool,
+    /// The reading binding's claim (ht-54r.9). With it the daemon computes the digest for that
+    /// binding: its own unread mail and its own notice frontier, and a token carrying the
+    /// binding. Sent only to a daemon advertising `attention.binding_digest_v1`. A claim whose
+    /// session has no binding yet reads the seat-level digest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claim: Option<CallerClaim>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1103,6 +1109,11 @@ impl Command {
         }
         let claim = self.accountable_claim();
         if let Some(claim) = claim {
+            claim.validate_binding_fields()?;
+        }
+        if let Self::AttentionDigest(query) | Self::AttentionDigestDelivery(query) = self
+            && let Some(claim) = &query.claim
+        {
             claim.validate_binding_fields()?;
         }
         if claim.is_some_and(|v| v.role == crate::protocol::authority::CallerRole::Subagent) {

@@ -364,6 +364,7 @@ fn startup_tells_top_level_agent_how_to_accept_required_membership() {
         warnings: Default::default(),
         unavailability_open: false,
         mod_channel_live: false,
+        mail: None,
     };
     let prefix = ["herdr-threads".to_owned()];
     let plain = crate::harness::next_actions(&prefix, Some(&digest));

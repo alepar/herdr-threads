@@ -271,6 +271,7 @@ fn capability_constants_are_stable() {
     assert_eq!(INBOX_BATCH, "inbox.batch_v1");
     assert_eq!(LAZY_HOOK_DELIVERY, "hook.lazy_delivery_v1");
     assert_eq!(BINDING_CURSORS, "inbox.binding_cursors_v1");
+    assert_eq!(BINDING_DIGEST, "attention.binding_digest_v1");
     assert_eq!(
         ADVERTISED,
         &[
@@ -293,7 +294,8 @@ fn capability_constants_are_stable() {
             "inbox.batch_v2",
             "mod.watch_v1",
             "hook.lazy_delivery_v1",
-            "inbox.binding_cursors_v1"
+            "inbox.binding_cursors_v1",
+            "attention.binding_digest_v1"
         ]
     );
 }
@@ -361,6 +363,7 @@ fn every_advertised_capability_has_a_handler() {
                     crate::protocol::commands::AttentionDigestQuery {
                         seat: crate::protocol::ids::SeatId::new("s"),
                         lazy: false,
+                        claim: None,
                     },
                 );
                 assert!(command.validate().is_ok());
@@ -383,6 +386,7 @@ fn every_advertised_capability_has_a_handler() {
                     crate::protocol::commands::AttentionDigestQuery {
                         seat: crate::protocol::ids::SeatId::new("s"),
                         lazy: true,
+                        claim: None,
                     },
                 );
                 assert!(command.validate().is_ok());
@@ -397,6 +401,39 @@ fn every_advertised_capability_has_a_handler() {
                 );
             }
             BINDING_CURSORS => probe_binding_cursors(),
+            BINDING_DIGEST => {
+                // A claimed digest request round-trips and is routed to the store's seat-scoped
+                // read: an unknown seat is NotFound, whoever the claim names.
+                let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
+                let command =
+                    Command::AttentionDigest(crate::protocol::commands::AttentionDigestQuery {
+                        seat: crate::protocol::ids::SeatId::new("s"),
+                        lazy: false,
+                        claim: Some(crate::protocol::authority::CallerClaim {
+                            instance: "probe-instance".into(),
+                            seat: crate::protocol::ids::SeatId::new("s"),
+                            binding_generation: 1,
+                            role: crate::protocol::authority::CallerRole::Subagent,
+                            harness: crate::protocol::authority::Harness::Claude,
+                            native_session: crate::protocol::ids::NativeSessionId::new("n"),
+                            execution: crate::protocol::ids::ExecutionId::new("e"),
+                            target: crate::protocol::ids::HostTargetId::new("p"),
+                            agent_id: Some(crate::protocol::ids::AgentId::new("ag")),
+                            liveness: None,
+                        }),
+                    });
+                // A subagent may read its own digest: validation does not refuse the role.
+                assert!(command.validate().is_ok());
+                let json = serde_json::to_value(&command).unwrap();
+                assert_eq!(serde_json::from_value::<Command>(json).unwrap(), command);
+                assert_eq!(
+                    handler
+                        .handle(command, PeerIdentity::from_kernel(501), &budget())
+                        .unwrap_err()
+                        .code,
+                    ErrorCode::NotFound
+                );
+            }
             other => panic!("{other} is advertised but has no handler probe here"),
         }
     }
@@ -565,7 +602,8 @@ fn bare_daemon_advertises_legacy_capabilities_without_v2_recorder() {
             "inbox.batch_v2",
             "mod.watch_v1",
             "hook.lazy_delivery_v1",
-            "inbox.binding_cursors_v1"
+            "inbox.binding_cursors_v1",
+            "attention.binding_digest_v1"
         ]
     );
     let caps = Capabilities::from_list(advertised.capabilities);

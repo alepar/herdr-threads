@@ -1440,6 +1440,7 @@ fn pending_event(pending: &PendingCheckIn) -> LifecycleEvent {
         role: pending.context.role,
         event_id: pending.event_id.clone(),
         capability: Capability::SourceSupported,
+        agent_id: None,
     }
 }
 
@@ -1464,30 +1465,30 @@ struct CheckedIn {
     link: Option<super::hook_inbox::CompletionLink>,
 }
 
-/// The attention token delivered to one execution. Committed only after stdout
-/// is written, so a lost output can never suppress an offer.
+/// The attention token delivered to one binding (`key`, see
+/// `harness::context::attention_mark_key`). Committed only after stdout is written, so a lost
+/// output can never suppress an offer.
 pub struct AttentionCommit {
     contexts: crate::harness::context::ContextJournal,
-    execution: uuid::Uuid,
+    key: String,
     token: crate::protocol::attention::AttentionToken,
 }
 impl AttentionCommit {
     pub fn commit(self) -> Result<(), ContextError> {
-        self.contexts
-            .set_attention_mark(self.execution, &self.token)
+        self.contexts.set_attention_mark(&self.key, &self.token)
     }
 }
 impl std::fmt::Debug for AttentionCommit {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AttentionCommit")
-            .field("execution", &self.execution)
+            .field("key", &self.key)
             .field("token", &self.token)
             .finish()
     }
 }
 impl PartialEq for AttentionCommit {
     fn eq(&self, other: &Self) -> bool {
-        self.execution == other.execution && self.token == other.token
+        self.key == other.key && self.token == other.token
     }
 }
 impl Eq for AttentionCommit {}
@@ -2232,6 +2233,9 @@ impl PaneCall<'_> {
                     link: None,
                 });
             }
+            if let Some(done) = self.subagent_notice(event, seat, generation, &fallback) {
+                return Ok(done);
+            }
             return Ok(CheckedIn {
                 prepared_kind: None,
                 command_routing: None,
@@ -2273,13 +2277,13 @@ impl PaneCall<'_> {
                     self.inbox_offer(
                         &contexts,
                         event,
-                        boundary.mark.map(|(execution, _)| execution),
+                        boundary.mark.as_ref().map(|(key, _)| key.as_str()),
                     )
                 })
                 .flatten();
-            let attention = boundary.mark.map(|(execution, token)| AttentionCommit {
+            let attention = boundary.mark.map(|(key, token)| AttentionCommit {
                 contexts,
-                execution,
+                key,
                 token,
             });
             return Ok(CheckedIn {
@@ -2320,13 +2324,80 @@ impl PaneCall<'_> {
         // read and found no live mod channel seeds a mark; only then does the
         // hook add a page, under exactly the execution that check-in
         // registered.
-        if let Some(execution) = done.attention.as_ref().map(|mark| mark.execution) {
+        if let Some(key) = done.attention.as_ref().map(|mark| mark.key.clone()) {
             done.lazy = self
                 .session_journal(event, seat, generation)
                 .ok()
-                .and_then(|contexts| self.inbox_offer(&contexts, event, Some(execution)));
+                .and_then(|contexts| self.inbox_offer(&contexts, event, Some(key.as_str())));
         }
         Ok(done)
+    }
+
+    /// A subagent's routine tool call: its own read-only notice (ht-54r.9). The subagent never
+    /// checks in, so this reads the digest of its own binding and compares it with its own mark;
+    /// the parent's marks and frontiers are never touched. Any failure is silence.
+    fn subagent_notice(
+        &self,
+        event: &LifecycleEvent,
+        seat: &SeatId,
+        generation: u64,
+        fallback: &[String],
+    ) -> Option<CheckedIn> {
+        if event.kind != EventKind::Tool || event.source == "SubagentStart" {
+            return None;
+        }
+        let native = event.native_session.as_deref()?;
+        let agent = event.agent_id.as_deref()?;
+        let contexts = super::seat_contexts(self.paths, self.instance, seat).ok()?;
+        let current = OccupantContext {
+            format_version: 1,
+            instance: self.instance,
+            seat: seat.as_str().into(),
+            target: self.target.as_str().into(),
+            harness: event.harness,
+            binding_generation: generation,
+            execution: crate::harness::context::session_execution(
+                self.instance,
+                event.harness,
+                native,
+                Some(agent),
+            ),
+            session: SessionReference::Native(native.to_owned()),
+            role: Role::TopLevel,
+        };
+        let mut claim = bridge::caller_claim(&current).ok()?;
+        claim.role = crate::protocol::authority::CallerRole::Subagent;
+        claim.agent_id = Some(crate::protocol::ids::AgentId::parse(agent).ok()?);
+        let seen = bridge::subagent_boundary(
+            &contexts,
+            &claim,
+            self.client,
+            &budget(self.deadline, self.clock.as_ref()),
+            true,
+        )
+        .ok()?;
+        let text = if seen.summary.is_some() {
+            render_context(Role::Subagent, &[], true).ok()?.into_bytes()
+        } else {
+            Vec::new()
+        };
+        Some(CheckedIn {
+            prepared_kind: None,
+            command_routing: None,
+            text,
+            fallback: fallback.to_vec(),
+            summary: seen.summary,
+            actions: None,
+            overview: None,
+            recovery: None,
+            attention: seen.mark.map(|(key, token)| AttentionCommit {
+                contexts,
+                key,
+                token,
+            }),
+            lazy: None,
+            link: None,
+        })
     }
 
     /// The seat's context journal acting as the session this hook event names. The payload is
@@ -2375,13 +2446,13 @@ impl PaneCall<'_> {
         &self,
         contexts: &crate::harness::context::ContextJournal,
         event: &LifecycleEvent,
-        execution: Option<uuid::Uuid>,
+        mark_key: Option<&str>,
     ) -> Option<super::hook_inbox::InboxOffer> {
         let saved = contexts.current().ok()??;
-        // The claim must be the execution this event presented for, never a
+        // The claim must be the session this event presented for, never a
         // context that replaced it in between.
         if saved.harness != event.harness
-            || execution.is_some_and(|execution| execution != saved.execution)
+            || mark_key.is_some_and(|key| key != saved.mark_key())
             || event
                 .native_session
                 .as_ref()
@@ -2712,13 +2783,13 @@ fn lifecycle_check_in(
             bridge::join_summaries(seeded.as_ref().map(|(_, digest)| digest.summary()), notices),
         );
         let actions = next_actions(&prefix, seeded.as_ref().map(|(_, digest)| digest));
-        let attention = seeded.map(|(execution, digest)| {
+        let attention = seeded.map(|(key, digest)| {
             let token = owned
-                .attention_mark(execution)
+                .attention_mark(&key)
                 .map_or(digest.token, |mark| mark.join(&digest.token));
             AttentionCommit {
                 contexts: owned,
-                execution,
+                key,
                 token,
             }
         });
@@ -3233,7 +3304,14 @@ fn run_admitted_hook_since(
             lazy: None,
         };
     }
-    if !decoded.can_check_in() || !matches!(decoded.delivery, DeliveryEligibility::Context) {
+    // A subagent's routine tool call reads its own binding's notices (ht-54r.9); nothing else
+    // of a subagent event checks in.
+    let subagent_notice = matches!(decoded.role, EventRole::Subagent)
+        && matches!(decoded.intent, EventIntent::Current)
+        && decoded.metadata.agent_id.is_some();
+    if (!decoded.can_check_in() && !subagent_notice)
+        || !matches!(decoded.delivery, DeliveryEligibility::Context)
+    {
         if matches!(decoded.role, EventRole::Subagent)
             && registration.output_policy().child_requires_endpoint
             && !child_endpoint_available(args)
@@ -3373,9 +3451,10 @@ fn run_admitted_hook_since(
                 lazy,
             }
         }
+        // A subagent's routine call is never worth a diagnostic of its own.
         Err(Failure::Quiet(detail)) => HookOutcome {
             stdout: Vec::new(),
-            diagnostic: Some(detail),
+            diagnostic: (event.role == Role::TopLevel).then_some(detail),
             attention: None,
             lazy: None,
         },
@@ -3405,7 +3484,7 @@ fn run_admitted_hook_since(
                 } else {
                     Vec::new()
                 },
-                diagnostic: Some(detail),
+                diagnostic: (event.role == Role::TopLevel).then_some(detail),
                 attention: None,
                 lazy: None,
             }

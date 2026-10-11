@@ -38,6 +38,10 @@ pub const LAZY_HOOK_DELIVERY: &str = "hook.lazy_delivery_v1";
 /// `Command::AdvanceCursors` moves them (ht-54r.7).
 pub const BINDING_CURSORS: &str = "inbox.binding_cursors_v1";
 
+/// Per-binding attention digest: `AttentionDigestQuery.claim` selects the reading binding's own
+/// unread mail and notice frontier, and the digest token carries the binding (ht-54r.9).
+pub const BINDING_DIGEST: &str = "attention.binding_digest_v1";
+
 pub const INBOX_BATCH: &str = "inbox.batch_v1";
 pub const ATTENTION_NOTICE_DELIVERY: &str = "attention.notice_delivery_v1";
 
@@ -75,6 +79,7 @@ pub const ADVERTISED: &[&str] = &[
     MOD_WATCH,
     LAZY_HOOK_DELIVERY,
     BINDING_CURSORS,
+    BINDING_DIGEST,
 ];
 
 /// The capability set a daemon advertised to this client session. The empty set

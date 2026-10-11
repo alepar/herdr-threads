@@ -2849,6 +2849,7 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
                 role,
                 event_id: uuid::Uuid::new_v4().to_string(),
                 capability: Capability::SourceSupported,
+                agent_id: None,
             };
             bridge::run_event(
                 journal,
@@ -2895,6 +2896,7 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
                 role,
                 event_id,
                 capability: Capability::SourceSupported,
+                agent_id: None,
             };
             bridge::run_event_as(
                 journal,
@@ -3000,6 +3002,7 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
                     role,
                     event_id: event_id.clone(),
                     capability: Capability::SourceSupported,
+                    agent_id: None,
                 };
                 bridge::run_event_as(
                     journal,

@@ -604,7 +604,6 @@ fn startup_rejects_missing_or_altered_digest_projection() {
         "DROP INDEX digest_open_warnings_affected",
         "DROP INDEX digest_programmatic_warnings_seat",
         "DROP TRIGGER digest_programmatic_warning_projected",
-        "DROP TABLE digest_notice_offer",
         "DROP TRIGGER digest_manifest_receipt_materialized",
         "DROP TRIGGER digest_open_warning_closed",
         "DROP TRIGGER digest_invitation_created; CREATE TRIGGER digest_invitation_created AFTER INSERT ON invitations BEGIN SELECT 1; END",
@@ -5762,11 +5761,13 @@ fn user_intent_schema22_fresh_and_v21_upgrade() {
     // Forward24 intentionally rebuilds these three tables and adds three evidence tables.
     // Every other historical table must retain its original root page.
     // V29 adds binding_cursors; occupant_bindings is rebuilt again by V29.
-    // V31 rebuilds catch_up (per-binding rows).
+    // V31 rebuilds catch_up (per-binding rows). V32 rebuilds the two attention frontier tables.
     let adapter_tables = [
         "occupant_bindings",
         "binding_cursors",
         "catch_up",
+        "warning_offer",
+        "digest_notice_offer",
         "harness_version_evidence",
         "harness_unattributed",
         "harness_runtime_identities",
@@ -6279,7 +6280,7 @@ fn v28_upgrade_migrates_bindings_to_session_keyed_v29() {
             .unwrap(),
         schema::LATEST_VERSION
     );
-    assert_eq!(schema::LATEST_VERSION, 31);
+    assert_eq!(schema::LATEST_VERSION, 32);
     // ordinals, sequence and archival guards survive the rebuild
     assert_eq!(
         db.query_row(
@@ -6610,7 +6611,7 @@ fn v30_to_v31_carries_lazy_and_catch_up_state() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        31
+        schema::LATEST_VERSION
     );
     // Only the published, still pending row is legacy pending: the displayed row and the
     // staged (unpublished) one are not.
@@ -6907,6 +6908,128 @@ fn v31_startup_rejects_altered_catch_up_and_lazy_objects() {
     }
 }
 
+/// `v30_delivery_fixture` with the V31 step applied by hand, plus the seat-keyed attention
+/// frontiers a V31 database holds: `agent`'s offer names its open migrated binding; `human`'s
+/// names its human binding; `launch`'s names an occupant that has no binding row; `idle` has no
+/// binding row at all.
+fn v31_attention_fixture() -> Connection {
+    let db = v30_delivery_fixture();
+    db.execute_batch("BEGIN IMMEDIATE").unwrap();
+    db.execute_batch(include_str!(
+        "../../migrations/0031_binding_delivery_state.sql"
+    ))
+    .unwrap();
+    db.pragma_update(None, "user_version", 31).unwrap();
+    db.execute_batch("COMMIT").unwrap();
+    db.execute_batch(
+        "INSERT INTO warning_offer(seat_id,binding_generation,execution_id,offered_through_seq) VALUES
+           ('agent',3,'e3',17),('human',1,'human',5),('launch',1,'predecessor',4),('idle',1,'x',9);
+         INSERT INTO digest_notice_offer(seat_id,binding_generation,execution_id,offered_ordinal) VALUES
+           ('agent',3,'e3',8),('plugin',1,'e9',3),('idle',1,'x',2),('launch',2,'e-other',6);",
+    )
+    .unwrap();
+    db
+}
+
+#[test]
+fn v31_to_v32_moves_attention_frontiers_to_bindings() {
+    let db = v31_attention_fixture();
+    let (agent, human, plugin) = (
+        binding_id_of(&db, 3),
+        binding_id_of(&db, 4),
+        binding_id_of(&db, 9),
+    );
+    schema::initialize(&db, || UtcMillis(900)).unwrap();
+    assert_eq!(
+        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        32
+    );
+    let rows = |sql: &str| -> Vec<(String, String, i64)> {
+        db.prepare(sql)
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    };
+    // Each row moved to the binding of the occupant it named. A row whose occupant has no binding
+    // row (`launch`'s predecessor, `idle`) is dropped: the old rules already read a frontier
+    // recorded for another occupant as covering nothing.
+    assert_eq!(
+        rows("SELECT binding_id,seat_id,offered_through_seq FROM warning_offer ORDER BY seat_id"),
+        vec![
+            (agent.clone(), "agent".into(), 17),
+            (human, "human".into(), 5),
+        ]
+    );
+    assert_eq!(
+        rows("SELECT binding_id,seat_id,offered_ordinal FROM digest_notice_offer ORDER BY seat_id"),
+        vec![(agent, "agent".into(), 8), (plugin, "plugin".into(), 3)]
+    );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+            .get::<_, i64>(
+            0
+        ))
+        .unwrap(),
+        0
+    );
+    // The generation/execution pair is gone: the binding id replaces it.
+    for table in ["warning_offer", "digest_notice_offer"] {
+        assert!(!column_exists(&db, table, "binding_generation"), "{table}");
+        assert!(!column_exists(&db, table, "execution_id"), "{table}");
+        assert!(column_exists(&db, table, "binding_id"), "{table}");
+    }
+    // Two bindings of one seat each hold a row; one binding holds one.
+    let other = binding_id_of(&db, 2);
+    db.execute(
+        "INSERT INTO warning_offer(binding_id,seat_id,offered_through_seq) VALUES (?1,'agent',1)",
+        [&other],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO warning_offer(binding_id,seat_id,offered_through_seq) VALUES (?1,'agent',2)",
+        [&other],
+    )
+    .expect_err("one row per binding");
+    // Reopening audits the V32 shape without migrating again.
+    schema::initialize(&db, || UtcMillis(901)).unwrap();
+}
+
+#[test]
+fn v32_fresh_matches_upgraded_catalog_with_attention_data() {
+    let upgraded = v31_attention_fixture();
+    schema::initialize(&upgraded, || UtcMillis(1)).unwrap();
+    let fresh = fresh_db();
+    let catalog = |db: &Connection| {
+        db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name").unwrap()
+        .query_map([], |r| Ok((r.get::<_,String>(0)?, r.get::<_,String>(1)?, r.get::<_,String>(2)?, r.get::<_,String>(3)?.split_whitespace().collect::<String>().replace('"', "")))).unwrap().map(Result::unwrap).collect::<Vec<_>>()
+    };
+    assert_eq!(catalog(&upgraded), catalog(&fresh));
+}
+
+#[test]
+fn v32_startup_rejects_altered_attention_frontier_objects() {
+    for alteration in [
+        "DROP TABLE digest_notice_offer",
+        "DROP TABLE warning_offer",
+        "DROP INDEX warning_offer_seat",
+        "DROP INDEX digest_notice_offer_seat",
+        "DROP INDEX warning_offer_seat; CREATE INDEX warning_offer_seat ON warning_offer(binding_id)",
+        "DROP TABLE warning_offer; CREATE TABLE warning_offer(seat_id TEXT PRIMARY KEY REFERENCES seats(id), binding_generation INTEGER NOT NULL, execution_id TEXT NOT NULL, offered_through_seq INTEGER NOT NULL DEFAULT 0) STRICT; CREATE INDEX warning_offer_seat ON warning_offer(seat_id)",
+        "DROP TABLE digest_notice_offer; CREATE TABLE digest_notice_offer(binding_id TEXT PRIMARY KEY, seat_id TEXT NOT NULL, offered_ordinal INTEGER NOT NULL) STRICT; CREATE INDEX digest_notice_offer_seat ON digest_notice_offer(seat_id)",
+    ] {
+        let db = fresh_db();
+        db.execute_batch(alteration).unwrap();
+        assert_eq!(
+            schema::initialize(&db, || UtcMillis(0)).unwrap_err().code,
+            ErrorCode::IncompatibleSchema,
+            "{alteration}"
+        );
+    }
+}
+
 // Catches an altered current table or missing retention index accepted at v24.
 #[test]
 fn task3_versionless_schema24_rejects_altered_table_and_missing_index() {
@@ -6986,13 +7109,15 @@ fn absorption_main24_and25_to26_preserves_diagnostics_and_matches_fresh_catalog(
         // (a new seat is in no channel) and recreates the other four fences in place (net -1).
         // V31 deltas: +3 indexes (catch_up_seat, lazy_recipients_legacy,
         // lazy_recipients_seat_ordinal); catch_up and its triggers are rebuilt one for one.
+        // V32 deltas: +2 indexes (warning_offer_seat, digest_notice_offer_seat); the two
+        // frontier tables are rebuilt one for one.
         assert_eq!(
             catalog(&fresh).iter().filter(|r| r.0 == "table").count(),
             75
         );
         assert_eq!(
             catalog(&fresh).iter().filter(|r| r.0 == "index").count(),
-            144
+            146
         );
         assert_eq!(
             catalog(&fresh).iter().filter(|r| r.0 == "trigger").count(),

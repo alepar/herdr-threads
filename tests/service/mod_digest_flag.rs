@@ -96,6 +96,7 @@ fn flags(service: &DomainService, seat: &str) -> (bool, bool) {
     let query = || AttentionDigestQuery {
         seat: SeatId::new(seat),
         lazy: false,
+        claim: None,
     };
     let peer = || PeerIdentity::from_kernel(501);
     let plain = match service

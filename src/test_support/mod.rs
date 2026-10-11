@@ -357,6 +357,7 @@ pub mod synthetic_fourth {
                     domain: ContractDomain::Native,
                     native_event: payload.event,
                     shape_fields: vec![],
+                    agent_id: None,
                 },
                 delivery: if observer {
                     DeliveryEligibility::ObserverOnly

@@ -526,8 +526,14 @@ effective deadline.
 
 **A7. Informational warning delivery.** Service notices and canonical built-in warning open/clear
 events have separate delivery rows for their frozen recipients. A committed check-in settles only
-the bounded prefix of attributed events it carries to the exact current binding generation and
-execution. A global decision watermark cannot settle uncarried events, including late attribution.
+the bounded prefix of attributed events it carries to the exact checking-in binding: the notice
+frontier and the warning offer frontier are kept per binding (ht-54r.9), so another session's
+check-in or lifecycle start neither settles nor resets them, and a binding's digest token names that
+binding. A subagent binding never checks in and settles nothing: its hook reads its own binding's
+digest (unread mail past its own cursor, notices above its parent's frontier) and presents it with
+read-only wording, compared only with its own client-local mark (a hint keyed by the binding key,
+never authority). Seat-level readers (wake, receipts, the mod channel) follow the seat's newest
+open top-level binding, a connected one first. A global decision watermark cannot settle uncarried events, including late attribution.
 History and immutable operation results remain readable. A successor occupant gets its own offers;
 response loss can lose an informational offer after commitment, and an explicit operation retry
 can present the retained result again. Delivery is neither invitation acceptance nor receipt ACK,

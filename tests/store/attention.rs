@@ -612,7 +612,8 @@ fn projections_hold_only_pending_rows_through_settlement_and_upgrade() {
     .unwrap();
     let backfill: String = include_str!("../../migrations/0008_digest_pending_paths.sql")
         .split("\n\n")
-        .filter(|s| s.trim_start().starts_with("INSERT"))
+        // The notice frontier backfill is the V8 table's shape; V32 owns the table now.
+        .filter(|s| s.trim_start().starts_with("INSERT") && !s.contains("INTO digest_notice_offer"))
         .collect::<Vec<_>>()
         .join("\n");
     db.execute_batch(&backfill).unwrap();
@@ -1485,12 +1486,12 @@ const LONG_MILLIS: u64 = 864_000_000;
 
 /// Deliver every projected notice to `rcv`'s current occupant: the state
 /// after successive check-in offers have carried the whole backlog page by
-/// page (each advancing the occupant-scoped `digest_notice_offer` frontier
+/// page (each advancing the binding-scoped `digest_notice_offer` frontier
 /// over the page it carried; wave-2 fix2 (a)). No projection row is deleted.
 fn offer_to_current_occupant(db: &Connection) {
     db.execute_batch("\
         BEGIN IMMEDIATE;\
-        INSERT INTO digest_notice_offer(seat_id,binding_generation,execution_id,offered_ordinal) SELECT 'rcv',s.generation,b.execution_id,(SELECT MAX(ordinal) FROM digest_programmatic_warnings WHERE seat_id='rcv') FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id AND b.generation=s.generation AND b.ended_at IS NULL WHERE s.id='rcv';\
+        INSERT INTO digest_notice_offer(binding_id,seat_id,offered_ordinal) SELECT b.binding_id,'rcv',(SELECT MAX(ordinal) FROM digest_programmatic_warnings WHERE seat_id='rcv') FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id AND b.generation=s.generation AND b.ended_at IS NULL WHERE s.id='rcv';\
         COMMIT;\
     ").unwrap();
 }
@@ -1762,22 +1763,23 @@ fn offer_writes(db: &Connection) -> (Vec<String>, i64, u64) {
             .take(MAX_NOTICE_PAGE_ITEMS)
             .map(|offered| offered.notice)
             .collect();
-    let (generation, execution): (i64, String) = db
-        .query_row(
-            "SELECT s.generation,b.execution_id FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id AND b.generation=s.generation AND b.ended_at IS NULL WHERE s.id='rcv'",
+    let binding = crate::protocol::ids::BindingId::new(
+        db.query_row(
+            "SELECT b.binding_id FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id AND b.generation=s.generation AND b.ended_at IS NULL WHERE s.id='rcv'",
             [],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| r.get::<_, String>(0),
         )
-        .unwrap();
+        .unwrap(),
+    );
     let total = |db: &Connection| -> i64 {
         db.query_row("SELECT total_changes()", [], |r| r.get(0))
             .unwrap()
     };
     let before = total(db);
     let ((), units) = vm_units(db, || {
-        db.execute("INSERT INTO warning_offer(seat_id,binding_generation,execution_id,offered_through_seq) SELECT 'rcv',?1,?2,decision_seq FROM host_instances WHERE id='i' ON CONFLICT(seat_id) DO UPDATE SET binding_generation=excluded.binding_generation,execution_id=excluded.execution_id,offered_through_seq=MAX(warning_offer.offered_through_seq,excluded.offered_through_seq)",
-            rusqlite::params![generation, execution]).unwrap();
-        settle_carried_notices(db, "rcv", generation, &execution, &carried).unwrap();
+        db.execute("INSERT INTO warning_offer(binding_id,seat_id,offered_through_seq) SELECT ?1,'rcv',decision_seq FROM host_instances WHERE id='i' ON CONFLICT(binding_id) DO UPDATE SET offered_through_seq=MAX(warning_offer.offered_through_seq,excluded.offered_through_seq)",
+            rusqlite::params![binding.as_str()]).unwrap();
+        settle_carried_notices(db, "rcv", &binding, &carried).unwrap();
     });
     let changed = total(db) - before;
     db.execute_batch("COMMIT").unwrap();
@@ -1909,7 +1911,8 @@ fn recipients_backfill_covers_existing_warnings() {
     assert!(ids(&digest(&db, "s").digest.warnings).is_empty());
     let backfill: String = include_str!("../../migrations/0008_digest_pending_paths.sql")
         .split("\n\n")
-        .filter(|s| s.trim_start().starts_with("INSERT"))
+        // The notice frontier backfill is the V8 table's shape; V32 owns the table now.
+        .filter(|s| s.trim_start().starts_with("INSERT") && !s.contains("INTO digest_notice_offer"))
         .collect::<Vec<_>>()
         .join("\n");
     db.execute_batch(&backfill).unwrap();
@@ -1985,4 +1988,217 @@ fn saturated_other_seat_transitions_do_not_hide_an_older_waking_notice() {
         wake.attention
     );
     assert!(seat_has_pending_wake_notices(&db, "s").unwrap());
+}
+
+// ---- Per-binding attention (ht-54r.9) ------------------------------------------------------
+
+use crate::protocol::ids::{BindingId, ThreadId};
+
+/// Seat `s` holds two top-level sessions (bindings `bind-A`, `bind-B`, B the newer) and a subagent
+/// of A (`bind-C`), all joined to thread `t` with a cursor at 0.
+fn per_binding() -> Connection {
+    let db = empty();
+    db.execute_batch("\
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','a','g',0,0);\
+        INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES ('t','s','joined',1);\
+        INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,binding_id) VALUES \
+            ('s',1,1,'pane-s','host',1,'claude','sess-A','ea','cooperative_top_level',0,0,'bind-A'),\
+            ('s',1,1,'pane-s','host',1,'claude','sess-B','eb','cooperative_top_level',0,0,'bind-B');\
+        INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,binding_id,role,parent_binding,agent_id) VALUES \
+            ('s',1,1,'pane-s','host',1,'claude','sess-A','ec','cooperative_hook_agent',0,0,'bind-C','subagent','bind-A','ag');\
+        INSERT INTO binding_cursors(binding_id,thread_id,seq) VALUES ('bind-A','t',0),('bind-B','t',0),('bind-C','t',0);\
+    ").unwrap();
+    db
+}
+
+/// One ordinary message `m{n}` (thread sequence n) published to seat `s`.
+fn deliver(db: &Connection, n: i64) {
+    db.execute_batch(&format!("\
+        INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES ('p{n}','i','actor','op{n}',zeroblob(32),'t',0,0,0,0,0,0,1,'sealed');\
+        INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES ('p{n}','t','s',1,300,0);\
+        INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('m{n}','i','t',{n},'ordinary','b',0,{d});\
+        INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('p{n}','m{n}','i','t',{d},0,{n},0,1,0);\
+    ", d = 10 + n)).unwrap();
+}
+
+/// One informational notice `n{n}` projected for seat `s`.
+fn notice(db: &Connection, n: i64) {
+    db.execute_batch(&format!("\
+        INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_at,decision_seq,event_offset) VALUES ('n{n}','i','t',{seq},'warn','{{}}',0,{d},1);\
+        INSERT INTO digest_programmatic_warnings(seat_id,warning_id,thread_id,event_seq,event_offset) VALUES ('s','n{n}','t',{d},1);\
+    ", seq = 100 + n, d = 20 + n)).unwrap();
+}
+
+fn bdigest(db: &Connection, binding: &str) -> DigestRun {
+    db.execute_batch("BEGIN DEFERRED").unwrap();
+    let run = binding_digest(db, "i", &BindingId::new(binding), &no_budget).unwrap();
+    db.execute_batch("COMMIT").unwrap();
+    run
+}
+
+fn mail_ids(run: &DigestRun) -> Vec<&str> {
+    run.digest.mail.as_ref().map_or_else(Vec::new, ids)
+}
+
+/// A binding displays what it was shown: its cursor moves over the thread and its notice frontier
+/// over the offered page.
+fn display(db: &Connection, binding: &str, through: u64) {
+    let binding = BindingId::new(binding);
+    crate::store::read_cursors::advance(db, &binding, &ThreadId::new("t"), through).unwrap();
+    let page = notice_offer_page_for(db, "s", &binding, 16).unwrap();
+    settle_offered_notices(db, "s", &binding, &page).unwrap();
+}
+
+// Kills: a digest that is seat-wide (a second binding would see no mail of its own), a mail walk
+// that ignores the binding's cursor, and a notice frontier shared by the seat's sessions. Two
+// sessions of one seat each get a notice for one new message, and their tokens name their own
+// binding so neither is ever compared with the other's mark.
+#[test]
+fn two_bindings_both_get_a_notice_for_one_new_message() {
+    let db = per_binding();
+    deliver(&db, 1);
+    notice(&db, 1);
+    let a = bdigest(&db, "bind-A");
+    let b = bdigest(&db, "bind-B");
+    for run in [&a, &b] {
+        assert_eq!(run.digest.validate(), Ok(()));
+        assert_eq!(mail_ids(run), ["m1"]);
+        assert_eq!(run.digest.mail.as_ref().unwrap().count, 1);
+        assert_eq!(ids(&run.digest.warnings), ["n1"]);
+        assert_eq!(run.digest.token.mail, Some((11, 1)));
+        assert!(!run.digest.is_empty());
+        assert!(run.digest.summary().contains("mail=1 [m1@t]"));
+    }
+    assert!(a.digest.token.binding.is_some() && b.digest.token.binding.is_some());
+    assert_ne!(a.digest.token.binding, b.digest.token.binding);
+    // A token read for one binding is never compared with the other's mark: against it, the
+    // pending mail counts as new.
+    assert!(b.digest.token.advanced_beyond(&a.digest.token));
+    assert!(!a.digest.token.advanced_beyond(&a.digest.token));
+    // The seat-level digest carries neither the mail class nor a binding.
+    let seat = digest(&db, "s");
+    assert!(seat.digest.mail.is_none() && seat.digest.token.binding.is_none());
+}
+
+// Kills: a display that settles the seat's frontier or moves a shared cursor (clearing the other
+// session's notice), and a frontier write that is not keyed by binding.
+#[test]
+fn display_by_one_binding_does_not_clear_the_others_notice() {
+    let db = per_binding();
+    deliver(&db, 1);
+    notice(&db, 1);
+    display(&db, "bind-A", 1);
+    let a = bdigest(&db, "bind-A");
+    assert!(mail_ids(&a).is_empty(), "A displayed the mail");
+    assert!(
+        ids(&a.digest.warnings).is_empty(),
+        "A was offered the notice"
+    );
+    let b = bdigest(&db, "bind-B");
+    assert_eq!(mail_ids(&b), ["m1"], "B's mail is untouched");
+    assert_eq!(ids(&b.digest.warnings), ["n1"], "B's notice is untouched");
+    let frontier = |binding: &str| binding_notice_frontier(&db, binding).unwrap();
+    assert!(frontier("bind-A") > 0);
+    assert_eq!(frontier("bind-B"), 0);
+    // The notice stays settled for A when a newer one arrives for both.
+    notice(&db, 2);
+    assert_eq!(ids(&bdigest(&db, "bind-A").digest.warnings), ["n2"]);
+    assert_eq!(ids(&bdigest(&db, "bind-B").digest.warnings), ["n2", "n1"]);
+    // The seat view follows the newest top-level session (B), which still owes both.
+    assert_eq!(notice_frontier(&db, "s").unwrap(), 0);
+}
+
+// Kills: a subagent that reads the seat's mail through its parent's cursor, one that writes the
+// parent's frontier or cursor (its own reads advance nothing), and one that sees notices its
+// parent was already offered.
+#[test]
+fn subagent_gets_its_own_notices_and_never_advances_the_parents() {
+    let db = per_binding();
+    deliver(&db, 1);
+    notice(&db, 1);
+    let rows = |sql: &str| -> Vec<(String, i64)> {
+        let mut stmt = db.prepare(sql).unwrap();
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    display(&db, "bind-A", 1);
+    let cursors_before = rows("SELECT binding_id,seq FROM binding_cursors ORDER BY binding_id");
+    let frontiers_before =
+        rows("SELECT binding_id,offered_ordinal FROM digest_notice_offer ORDER BY binding_id");
+    assert_eq!(frontiers_before.len(), 1, "only the parent has a frontier");
+    // The parent displayed both, the subagent has seen neither: its own stream is still unread,
+    // but the notice its parent was already offered is not repeated to it.
+    let c = bdigest(&db, "bind-C");
+    assert_eq!(mail_ids(&c), ["m1"]);
+    assert!(ids(&c.digest.warnings).is_empty());
+    notice(&db, 2);
+    let c = bdigest(&db, "bind-C");
+    assert_eq!(
+        ids(&c.digest.warnings),
+        ["n2"],
+        "a new notice reaches the subagent"
+    );
+    assert!(binding_has_pending_notices(&db, &BindingId::new("bind-C")).unwrap());
+    // Its token names its own binding, never the parent's.
+    let a = bdigest(&db, "bind-A");
+    assert_ne!(c.digest.token.binding, a.digest.token.binding);
+    // Reading the subagent's digest (any number of times) moved nothing of the parent's.
+    bdigest(&db, "bind-C");
+    assert_eq!(
+        rows("SELECT binding_id,seq FROM binding_cursors ORDER BY binding_id"),
+        cursors_before
+    );
+    assert_eq!(
+        rows("SELECT binding_id,offered_ordinal FROM digest_notice_offer ORDER BY binding_id"),
+        frontiers_before
+    );
+    // A prospective digest (a subagent that has not enrolled) reads the same frontier by hash.
+    let hash = crate::protocol::attention::binding_token_hash("s", "claude", "sess-A", "ag");
+    let parent = binding_notice_frontier(&db, "bind-A").unwrap();
+    let prospective = prospective_digest(&db, "i", &SeatId::new("s"), hash, parent, &no_budget)
+        .unwrap()
+        .digest;
+    assert_eq!(prospective.token.binding, c.digest.token.binding);
+    assert_eq!(ids(&prospective.warnings), ["n2"]);
+    assert!(
+        prospective
+            .mail
+            .as_ref()
+            .is_some_and(|mail| mail.count == 0)
+    );
+}
+
+// Kills: a mail walk that ignores the catch-up hold (spec §7): ordinary messages above an active
+// row's frontier are not pushed to any binding of the seat, and take the row's release key once it
+// ends, so the release makes them new attention again.
+#[test]
+fn held_mail_is_not_pushed_until_the_catch_up_releases_it() {
+    let db = per_binding();
+    db.execute(
+        "INSERT INTO catch_up(binding_id,seat_id,thread_id,frontier_seq,entered_at,state) VALUES ('bind-A','s','t',0,0,'active')",
+        [],
+    )
+    .unwrap();
+    deliver(&db, 1);
+    for binding in ["bind-A", "bind-B"] {
+        let run = bdigest(&db, binding);
+        assert!(mail_ids(&run).is_empty(), "{binding} is held");
+        assert!(run.digest.token.mail.is_none(), "{binding}");
+    }
+    db.execute(
+        "UPDATE catch_up SET state='ended',end_reason='ready',ended_at=5,release_seq=30 WHERE binding_id='bind-A'",
+        [],
+    )
+    .unwrap();
+    for binding in ["bind-A", "bind-B"] {
+        let run = bdigest(&db, binding);
+        assert_eq!(mail_ids(&run), ["m1"], "{binding} is released");
+        assert_eq!(
+            run.digest.token.mail,
+            Some((30, 0)),
+            "{binding}: the release key"
+        );
+    }
 }

@@ -521,6 +521,7 @@ fn lazy_publication_does_not_create_recovery_recency() {
                     role: context::Role::TopLevel,
                     event_id: uuid::Uuid::new_v4().to_string(),
                     capability: Capability::ObservedInput,
+                    agent_id: None,
                 };
                 let output = encode_native(&event, b"", &[], None, None, None, recovery.as_ref());
                 let output = String::from_utf8(output).unwrap();

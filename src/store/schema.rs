@@ -67,7 +67,8 @@ const V28: &str = include_str!("../../migrations/0028_handoff_topology.sql");
 const V29: &str = include_str!("../../migrations/0029_session_bindings.sql");
 const V30: &str = include_str!("../../migrations/0030_archival_scan_scope.sql");
 const V31: &str = include_str!("../../migrations/0031_binding_delivery_state.sql");
-pub(crate) const LATEST_VERSION: i64 = 31;
+const V32: &str = include_str!("../../migrations/0032_binding_attention_frontiers.sql");
+pub(crate) const LATEST_VERSION: i64 = 32;
 
 /// Decode only persisted results, after the caller's digest has matched. Live
 /// protocol responses still require disposition. Missing original context
@@ -177,6 +178,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
                 .and_then(|_| conn.execute_batch(V29))
                 .and_then(|_| conn.execute_batch(V30))
                 .and_then(|_| conn.execute_batch(V31))
+                .and_then(|_| conn.execute_batch(V32))
                 .and_then(|_| conn.pragma_update(None, "user_version", LATEST_VERSION));
             match result {
                 Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
@@ -417,7 +419,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             verify_existing(conn)
         }
         17 => verify_existing(conn),
-        18..=31 => verify_existing(conn),
+        18..=32 => verify_existing(conn),
         _ => Err(api_error(
             ErrorCode::IncompatibleSchema,
             format!("unsupported schema version {version}"),
@@ -597,7 +599,48 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
     if (1..=30).contains(&version) {
         migrate_v30_to_v31(conn)?;
     }
-    verify_existing_v31(conn)
+    verify_existing_v31(conn)?;
+    if (1..=31).contains(&version) {
+        migrate_v31_to_v32(conn)?;
+    }
+    verify_existing_v32(conn)
+}
+
+/// V32 (ht-54r.9): the warning offer and notice frontiers move from one row per seat to one row
+/// per binding. One transaction.
+fn migrate_v31_to_v32(conn: &Connection) -> Result<(), ApiError> {
+    conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
+    let result = conn
+        .execute_batch(V32)
+        .map_err(store_error)
+        .and_then(|_| verify_existing_v32(conn))
+        .and_then(|_| {
+            conn.pragma_update(None, "user_version", 32)
+                .map_err(store_error)
+        });
+    match result {
+        Ok(()) => conn.execute_batch("COMMIT").map_err(store_error),
+        Err(error) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(error)
+        }
+    }
+}
+
+/// Objects V32 creates or rebuilds, audited exactly as written (see `V29_AUDITED`).
+const V32_AUDITED: [(&str, &str, &str); 4] = [
+    ("table", "warning_offer_v32", "warning_offer"),
+    ("index", "warning_offer_seat", "warning_offer_seat"),
+    ("table", "digest_notice_offer_v32", "digest_notice_offer"),
+    (
+        "index",
+        "digest_notice_offer_seat",
+        "digest_notice_offer_seat",
+    ),
+];
+
+fn verify_existing_v32(conn: &Connection) -> Result<(), ApiError> {
+    audit_rebuilt_objects(conn, V32, &V32_AUDITED, "binding attention frontier")
 }
 
 /// V30 (ht-54r.15): archival scan scope. Narrows the mutation-revision triggers so the revision
@@ -2134,6 +2177,10 @@ fn verify_existing_v8(conn: &Connection) -> Result<(), ApiError> {
             .next()
             .filter(|name| !name.is_empty())
             .ok_or_else(|| api_error(ErrorCode::IncompatibleSchema, "invalid digest DDL"))?;
+        // V32 rebuilds the notice frontier per binding; its own audit owns it from then on.
+        if name == "digest_notice_offer" && schema_version(conn)? >= 32 {
+            continue;
+        }
         let installed: Option<String> = conn
             .query_row(
                 "SELECT sql FROM sqlite_master WHERE type=?1 AND name=?2",

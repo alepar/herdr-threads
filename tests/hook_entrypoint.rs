@@ -1838,7 +1838,8 @@ fn lazy_mail_moves_the_digest_and_the_next_tool_hook_injects_inbox_rows() {
     assert_eq!(displayed(), 1);
     quiet("after lazy completion");
 
-    // 2. A subagent call neither shows nor completes pending lazy mail.
+    // 2. A subagent call gets its own read-only notice that lazy mail is pending (ht-54r.9), but
+    // neither shows the row nor completes it: that stays with the top level.
     let second = lazy("lazy for the top level only");
     let child = fx.hook(
         "w9:p1",
@@ -1848,11 +1849,19 @@ fn lazy_mail_moves_the_digest_and_the_next_tool_hook_injects_inbox_rows() {
             .bytes(),
     );
     assert_eq!(child.code, Some(0), "{}", child.stderr);
+    let notice = context_of(&child);
     assert!(
-        child.stdout.is_empty(),
-        "{}",
-        String::from_utf8_lossy(&child.stdout)
+        notice.contains(&format!("lazy=1 [{second}@{thread}]")),
+        "{notice}"
     );
+    assert!(
+        notice.contains(
+            "new mail (read-only: you may read and summarize; your parent session ACKs and replies)"
+        ),
+        "{notice}"
+    );
+    assert!(!notice.contains(INBOX_HEADER), "{notice}");
+    assert!(!notice.contains("lazy for the top level only"), "{notice}");
     assert_eq!(displayed(), 1);
 
     // 3. Ordinary and lazy together: both rows injected, the ACK-required
@@ -3357,15 +3366,17 @@ impl Fixture {
             16 * k
         ))
     }
-    /// `seat`'s offered notice frontier (its binding generation and ordinal)
-    /// and the notices above it.
+    /// The offered notice frontier of `seat`'s newest open top-level binding (the seat's
+    /// generation while that binding holds a frontier, else -1; the ordinal) and the notices
+    /// above it. Each session holds its own frontier (ht-54r.9).
     fn notice_frontier(&self) -> (i64, i64, i64) {
-        let generation = self.count(
-            "SELECT COALESCE((SELECT binding_generation FROM digest_notice_offer WHERE seat_id='seat'),-1)",
-        );
-        let frontier = self.count(
-            "SELECT COALESCE((SELECT offered_ordinal FROM digest_notice_offer WHERE seat_id='seat'),0)",
-        );
+        const NEWEST: &str = "(SELECT binding_id FROM occupant_bindings WHERE seat_id='seat' AND ended_at IS NULL AND role='top_level' ORDER BY ordinal DESC LIMIT 1)";
+        let generation = self.count(&format!(
+            "SELECT COALESCE((SELECT s.generation FROM seats s JOIN digest_notice_offer o ON o.binding_id={NEWEST} WHERE s.id='seat'),-1)"
+        ));
+        let frontier = self.count(&format!(
+            "SELECT COALESCE((SELECT offered_ordinal FROM digest_notice_offer WHERE binding_id={NEWEST}),0)"
+        ));
         let above = self.count(&format!(
             "SELECT count(*) FROM digest_programmatic_warnings WHERE seat_id='seat' AND ordinal>{frontier}"
         ));

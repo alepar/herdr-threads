@@ -297,22 +297,15 @@ pub(super) fn query_with_output_for_caller(
         Command::InboxBatch(q) => inbox_batch(&db, store, instance, q, output, budget),
         Command::InboxBatchV2(q) => inbox_v2::query(&db, store, instance, q, output, budget),
         Command::AttentionDigest(q) => {
-            let mut digest =
-                super::attention::seat_digest(&db, instance, &q.seat, &|| db.check_budget())?
-                    .digest;
-            if q.lazy {
-                super::attention::add_lazy(&db, instance, &mut digest)?;
-            }
+            let (digest, _) = attention_digest(&db, instance, q)?;
             Ok(CommandResult::AttentionDigest(digest))
         }
         Command::AttentionDigestDelivery(q) => {
-            let mut digest =
-                super::attention::seat_digest(&db, instance, &q.seat, &|| db.check_budget())?
-                    .digest;
-            if q.lazy {
-                super::attention::add_lazy(&db, instance, &mut digest)?;
-            }
-            let notices_pending = super::attention::seat_has_pending_notices(&db, q.seat.as_str())?;
+            let (digest, binding) = attention_digest(&db, instance, q)?;
+            let notices_pending = match &binding {
+                Some(binding) => super::attention::binding_has_pending_notices(&db, binding)?,
+                None => super::attention::seat_has_pending_notices(&db, q.seat.as_str())?,
+            };
             Ok(CommandResult::AttentionDigestDelivery {
                 digest,
                 notices_pending,
@@ -324,6 +317,87 @@ pub(super) fn query_with_output_for_caller(
         )),
     };
     result.map_err(|error| query_error(error, &active_budget, store.clock(), command, output))
+}
+
+/// The attention digest of an `AttentionDigest` query. A claim whose session holds an open binding
+/// of the seat reads that binding's digest (ht-54r.9: its own unread mail and notice frontier, and
+/// a token carrying the binding); no claim, a human claim, or a session with no binding yet reads
+/// the seat-level digest. Returns the binding that was read, if any.
+fn attention_digest(
+    db: &QueryConnection,
+    instance: &str,
+    q: &crate::protocol::commands::AttentionDigestQuery,
+) -> Result<
+    (
+        crate::protocol::attention::AttentionDigest,
+        Option<crate::protocol::ids::BindingId>,
+    ),
+    ApiError,
+> {
+    let check = || db.check_budget();
+    let claim = q
+        .claim
+        .as_ref()
+        .filter(|claim| claim.harness != crate::protocol::authority::Harness::Human);
+    let mut binding = None;
+    let mut digest = match claim {
+        None => super::attention::seat_digest(db, instance, &q.seat, &check)?.digest,
+        Some(claim) => {
+            if claim.seat != q.seat {
+                return Err(api_error(
+                    ErrorCode::InvalidRequest,
+                    "digest claim is for another seat",
+                ));
+            }
+            let key = super::bindings::BindingKey::from_claim(claim);
+            match super::bindings::match_claim(db, &key)? {
+                Some(row) => {
+                    let run =
+                        super::attention::binding_digest(db, instance, &row.binding_id, &check)?;
+                    binding = Some(row.binding_id);
+                    run.digest
+                }
+                None => {
+                    // No binding yet: the digest its binding will start from. A subagent that has
+                    // not enrolled reads its parent session's notice frontier.
+                    let frontier = if claim.is_subagent() {
+                        let parent = super::bindings::BindingKey {
+                            agent_id: None,
+                            ..key.clone()
+                        };
+                        match super::bindings::match_claim(db, &parent)? {
+                            Some(row) => super::attention::binding_notice_frontier(
+                                db,
+                                row.binding_id.as_str(),
+                            )?,
+                            None => 0,
+                        }
+                    } else {
+                        0
+                    };
+                    let hash = crate::protocol::attention::binding_token_hash(
+                        claim.seat.as_str(),
+                        &key.harness,
+                        claim.native_session.as_str(),
+                        claim.agent_id.as_ref().map_or("", |a| a.as_str()),
+                    );
+                    super::attention::prospective_digest(
+                        db, instance, &q.seat, hash, frontier, &check,
+                    )?
+                    .digest
+                }
+            }
+        }
+    };
+    if q.lazy {
+        match &binding {
+            Some(binding) => {
+                super::attention::add_binding_lazy(db, instance, binding, &mut digest)?
+            }
+            None => super::attention::add_lazy(db, instance, &mut digest)?,
+        }
+    }
+    Ok((digest, binding))
 }
 
 /// The author-scoped `DeliveryInspect` behind the service `Receipts` read: the
@@ -4661,6 +4735,30 @@ pub fn pending_warning_count_in_transaction(
     budget: &CallBudget,
     clock: &dyn Clock,
 ) -> Result<(u64, bool), ApiError> {
+    pending_warning_count(db, instance, seat, None, budget, clock)
+}
+
+/// `pending_warning_count_in_transaction` for one binding: notices already offered to that
+/// binding are not counted, whatever the seat's other sessions were offered (ht-54r.9).
+pub fn pending_warning_count_for_binding_in_transaction(
+    db: &Connection,
+    instance: &str,
+    seat: &SeatId,
+    binding: &crate::protocol::ids::BindingId,
+    budget: &CallBudget,
+    clock: &dyn Clock,
+) -> Result<(u64, bool), ApiError> {
+    pending_warning_count(db, instance, seat, Some(binding), budget, clock)
+}
+
+fn pending_warning_count(
+    db: &Connection,
+    instance: &str,
+    seat: &SeatId,
+    binding: Option<&crate::protocol::ids::BindingId>,
+    budget: &CallBudget,
+    clock: &dyn Clock,
+) -> Result<(u64, bool), ApiError> {
     let check = || {
         if budget.is_exhausted(clock) {
             Err(api_error(
@@ -4682,7 +4780,14 @@ pub fn pending_warning_count_in_transaction(
     if !owned {
         return Err(api_error(ErrorCode::NotFound, "seat not found"));
     }
-    Ok(super::attention::seat_pending_warnings(db, seat.as_str(), &check)?.count())
+    let pending = match binding {
+        Some(binding) => {
+            let frontier = super::attention::binding_notice_frontier(db, binding.as_str())?;
+            super::attention::seat_pending_warnings_above(db, seat.as_str(), frontier, &check)?
+        }
+        None => super::attention::seat_pending_warnings(db, seat.as_str(), &check)?,
+    };
+    Ok(pending.count())
 }
 
 fn warning_cursor(
@@ -5110,10 +5215,18 @@ fn inbox_batch(
     let current_agent = current_harness
         .as_deref()
         .is_some_and(|harness| crate::harness::registry::builtins().agent(harness).is_ok());
-    let offered_warning_through: i64 = db.query_row(
-        "SELECT o.offered_through_seq FROM warning_offer o JOIN seats s ON s.id=o.seat_id WHERE o.seat_id=?1 AND o.binding_generation=s.generation AND EXISTS(SELECT 1 FROM occupant_bindings b WHERE b.seat_id=s.id AND b.ended_at IS NULL AND b.execution_id=o.execution_id)",
-        [seat.as_str()], |r| r.get(0),
-    ).optional().map_err(store_error)?.unwrap_or(0);
+    let offered_warning_through: i64 = db
+        .query_row(
+            &format!(
+                "SELECT o.offered_through_seq FROM warning_offer o WHERE o.binding_id=({})",
+                super::attention::SEAT_NOTICE_BINDING_SQL
+            ),
+            [seat.as_str()],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(store_error)?
+        .unwrap_or(0);
     let filter = digest(&(seat.as_str(), "inbox_batch_v1"))?;
     let mut cursor = match decode_cursor(
         &q.page,
@@ -6132,7 +6245,18 @@ mod inbox_v2 {
             )
             .map_err(store_error)
         };
-        let offered=db.query_row("SELECT o.offered_through_seq FROM warning_offer o JOIN seats s ON s.id=o.seat_id WHERE o.seat_id=?1 AND o.binding_generation=s.generation AND EXISTS(SELECT 1 FROM occupant_bindings b WHERE b.seat_id=s.id AND b.ended_at IS NULL AND b.execution_id=o.execution_id)",[seat.as_str()],|r|r.get(0)).optional().map_err(store_error)?.unwrap_or(0);
+        let offered = db
+            .query_row(
+                &format!(
+                    "SELECT o.offered_through_seq FROM warning_offer o WHERE o.binding_id=({})",
+                    super::super::attention::SEAT_NOTICE_BINDING_SQL
+                ),
+                [seat.as_str()],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(store_error)?
+            .unwrap_or(0);
         Ok(State {
             seat: seat.clone(),
             binding_generation: generation,
