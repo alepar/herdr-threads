@@ -504,7 +504,7 @@ fn archival_protected_occupants_and_work_remain_unchanged() {
                 db.execute_batch("INSERT INTO service_authors(id,instance_id,created_at) VALUES('service','i',0); INSERT INTO service_notification_preparations(id,instance_id,author_id,operation_key,digest,thread_id,membership_revision,lifecycle_revision,interval_high_water,requirement_high_water,status) VALUES('prep','i','service','op',zeroblob(32),'t',0,0,0,0,'building')").unwrap();
             }
             "catchup" => {
-                db.execute_batch("INSERT INTO catch_up(seat_id,thread_id,frontier_seq,binding_generation,execution_id,entered_at,state) VALUES('s','t',0,1,'execution',0,'active')").unwrap();
+                db.execute_batch("INSERT INTO catch_up(binding_id,seat_id,thread_id,frontier_seq,entered_at,state) SELECT binding_id,'s','t',0,0,'active' FROM occupant_bindings WHERE seat_id='s'").unwrap();
             }
             "summary_lease" => {
                 db.execute_batch("INSERT INTO summary_jobs(id,instance_id,thread_id,chunking_version,level,idx,first_seq,last_seq,lease_seat_id,lease_token,lease_until,created_at) VALUES('job','i','t','v1',0,0,1,2,'s','token',300000,0)").unwrap();

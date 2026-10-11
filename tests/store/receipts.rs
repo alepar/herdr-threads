@@ -2990,10 +2990,27 @@ fn catch_up_row(
         ("ended", Some("ready"), Some(10))
     };
     conn.execute(
-        "INSERT INTO catch_up(seat_id,thread_id,frontier_seq,binding_generation,execution_id,entered_at,extension_until,state,end_reason,ended_at) VALUES (?1,?2,0,1,'e',0,?3,?4,?5,?6)",
+        "INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) SELECT ?1,1,'p','b',0,'codex','catch-up-row','e','cooperative_top_level',0,'tm','inc' WHERE NOT EXISTS(SELECT 1 FROM occupant_bindings WHERE seat_id=?1)",
+        params![seat],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO catch_up(binding_id,seat_id,thread_id,frontier_seq,entered_at,extension_until,state,end_reason,ended_at) SELECT binding_id,?1,?2,0,0,?3,?4,?5,?6 FROM occupant_bindings WHERE seat_id=?1 ORDER BY ordinal DESC LIMIT 1",
         params![seat, thread, extension_until, state, reason, ended],
     )
     .unwrap();
+}
+
+fn binding_id(conn: &Connection, seat: &str) -> crate::protocol::ids::BindingId {
+    crate::protocol::ids::BindingId::parse(
+        conn.query_row(
+            "SELECT binding_id FROM occupant_bindings WHERE seat_id=?1 ORDER BY ordinal DESC LIMIT 1",
+            [seat],
+            |r| r.get::<_, String>(0),
+        )
+        .unwrap(),
+    )
+    .unwrap()
 }
 
 fn extension_of(conn: &Connection, seat: &str, thread: &str) -> Option<i64> {
@@ -3088,7 +3105,7 @@ fn entry_sets_entry_plus_p99_never_lowering() {
     let tx = conn.transaction().unwrap();
     receipts::extension_on_entry(
         &tx,
-        &SeatId::new("b"),
+        &binding_id(&tx, "b"),
         &ThreadId::new("t"),
         UtcMillis(100),
         90,
@@ -3102,7 +3119,7 @@ fn entry_sets_entry_plus_p99_never_lowering() {
     let tx = conn.transaction().unwrap();
     receipts::extension_on_entry(
         &tx,
-        &SeatId::new("b"),
+        &binding_id(&tx, "b"),
         &ThreadId::new("t"),
         UtcMillis(100),
         90,
@@ -3137,7 +3154,7 @@ fn exit_sets_now_plus_grace() {
     let tx = conn.transaction().unwrap();
     receipts::extension_on_exit(
         &tx,
-        &SeatId::new("b"),
+        &binding_id(&tx, "b"),
         &ThreadId::new("t"),
         UtcMillis(300),
         60,
@@ -3265,17 +3282,24 @@ fn warning_fires_on_the_frozen_deadline_after_stall_and_reentry() {
     let (context, mut conn, clock) = setup();
     legacy_receipt(&conn, "ml", "t", 1, 200_000);
     let (seat, thread) = (SeatId::new("b"), ThreadId::new("t"));
-    let execution = ExecutionId::new("00000000-0000-4000-8000-0000000000bb");
+    let binding = crate::protocol::ids::BindingId::parse(
+        conn.query_row(
+            "SELECT binding_id FROM occupant_bindings WHERE seat_id='b'",
+            [],
+            |r| r.get::<_, String>(0),
+        )
+        .unwrap(),
+    )
+    .unwrap();
     let enter = |conn: &mut Connection, now: i64| {
         let tx = conn.transaction().unwrap();
         catch_up::enter_or_keep(
             &tx,
             &catch_up::CatchUpEntry {
+                binding: &binding,
                 seat: &seat,
                 thread: &thread,
                 frontier_seq: 1,
-                binding_generation: 1,
-                execution: &execution,
                 now: UtcMillis(now),
             },
             &SummarySettings::default(),

@@ -208,7 +208,7 @@ const INSERTS: &[(&str, &str)] = &[
     ),
     (
         "catch_up",
-        "INSERT INTO catch_up(seat_id,thread_id,frontier_seq,binding_generation,execution_id,entered_at,state) VALUES ('s1','t',1,0,'e',0,'active')",
+        "INSERT INTO catch_up(binding_id,seat_id,thread_id,frontier_seq,entered_at,state) VALUES ('b1','s1','t',1,0,'active')",
     ),
 ];
 

@@ -812,6 +812,20 @@ pub fn list_connected(db: &Connection, seat: &SeatId) -> Result<Vec<BindingRow>,
     )
 }
 
+/// The seat's open top-level bindings, oldest first.
+pub fn list_open_top_level(db: &Connection, seat: &SeatId) -> Result<Vec<BindingId>, ApiError> {
+    Ok(query_rows(
+        db,
+        &format!(
+            "SELECT {COLUMNS} FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL AND role='top_level' ORDER BY ordinal"
+        ),
+        &[&seat.as_str()],
+    )?
+    .into_iter()
+    .map(|b| b.binding_id)
+    .collect())
+}
+
 pub fn parent_of(db: &Connection, binding: &BindingId) -> Result<Option<BindingId>, ApiError> {
     let parent: Option<Option<String>> = db
         .query_row(

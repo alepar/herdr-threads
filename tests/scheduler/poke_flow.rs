@@ -21,7 +21,7 @@ use crate::{
     },
     protocol::{
         authority::Harness,
-        ids::{ExecutionId, HostBootId, HostCallId, HostTargetId, SeatId, TerminalId, ThreadId},
+        ids::{HostBootId, HostCallId, HostTargetId, SeatId, TerminalId, ThreadId},
         results::ApiError,
         summary::SummarySettings,
         time::{CallBudget, Cancellation, Clock, MonoInstant, UtcMillis},
@@ -372,16 +372,24 @@ impl Fixture {
         };
         let seat = SeatId::new("s");
         let thread = ThreadId::new(thread);
+        let binding = crate::protocol::ids::BindingId::parse(
+            conn.query_row(
+                "SELECT binding_id FROM occupant_bindings WHERE seat_id='s'",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .unwrap(),
+        )
+        .unwrap();
         self.clock.set(enter);
         let tx = conn.transaction().unwrap();
         catch_up::enter_or_keep(
             &tx,
             &catch_up::CatchUpEntry {
+                binding: &binding,
                 seat: &seat,
                 thread: &thread,
                 frontier_seq: 0,
-                binding_generation: 1,
-                execution: &ExecutionId::new("self-reported"),
                 now: UtcMillis(enter),
             },
             &settings,
@@ -391,7 +399,7 @@ impl Fixture {
         self.clock.set(ready);
         let tx = conn.transaction().unwrap();
         assert!(
-            catch_up::on_ready(&tx, &seat, &thread, 1, UtcMillis(ready), &settings).unwrap(),
+            catch_up::on_ready(&tx, &binding, &thread, UtcMillis(ready), &settings).unwrap(),
             "the active row ends on a Ready answer"
         );
         tx.commit().unwrap();

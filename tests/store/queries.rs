@@ -4238,7 +4238,7 @@ fn pending_receipts_show_frozen_effective_and_deferral_during_catch_up() {
     assert!(plain.overdue);
     assert_eq!(plain.effective_deadline, None);
     assert_eq!(plain.deferred_until, None);
-    db.execute("INSERT INTO catch_up(seat_id,thread_id,frontier_seq,binding_generation,execution_id,entered_at,extension_until,state) VALUES ('s','t',0,1,'e',0,500,'active')", []).unwrap();
+    db.execute_batch("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) SELECT 's',1,'p','b',0,'codex','catch-up-row','e','cooperative_top_level',0,'tm','inc' WHERE NOT EXISTS(SELECT 1 FROM occupant_bindings WHERE seat_id='s' AND ended_at IS NULL); INSERT INTO catch_up(binding_id,seat_id,thread_id,frontier_seq,entered_at,extension_until,state) SELECT binding_id,'s','t',0,0,500,'active' FROM occupant_bindings WHERE seat_id='s'").unwrap();
     let extended = pending_for_s(&store);
     assert_eq!(extended.deadline, Some(UtcMillis(50)));
     assert_eq!(extended.effective_deadline, Some(UtcMillis(500)));
@@ -4256,7 +4256,7 @@ fn pending_receipts_show_frozen_effective_and_deferral_during_catch_up() {
 #[test]
 fn delivery_inspect_and_recipients_show_the_same_deferral() {
     let (store, db) = extended_receipt_fixture();
-    db.execute("INSERT INTO catch_up(seat_id,thread_id,frontier_seq,binding_generation,execution_id,entered_at,extension_until,state) VALUES ('s','t',0,1,'e',0,500,'active')", []).unwrap();
+    db.execute_batch("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) SELECT 's',1,'p','b',0,'codex','catch-up-row','e','cooperative_top_level',0,'tm','inc' WHERE NOT EXISTS(SELECT 1 FROM occupant_bindings WHERE seat_id='s' AND ended_at IS NULL); INSERT INTO catch_up(binding_id,seat_id,thread_id,frontier_seq,entered_at,extension_until,state) SELECT binding_id,'s','t',0,0,500,'active' FROM occupant_bindings WHERE seat_id='s'").unwrap();
     let q = Command::DeliveryInspect(DeliveryInspectQuery {
         message: MessageId::new("m1"),
         page: page(None),
@@ -4297,7 +4297,7 @@ fn diagnostics_overdue_listing_uses_the_effective_deadline() {
             .collect::<Vec<_>>()
     };
     assert_eq!(subjects(&store), vec!["overdue_receipt:m1:s"]);
-    db.execute("INSERT INTO catch_up(seat_id,thread_id,frontier_seq,binding_generation,execution_id,entered_at,extension_until,state) VALUES ('s','t',0,1,'e',0,500,'active')", []).unwrap();
+    db.execute_batch("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) SELECT 's',1,'p','b',0,'codex','catch-up-row','e','cooperative_top_level',0,'tm','inc' WHERE NOT EXISTS(SELECT 1 FROM occupant_bindings WHERE seat_id='s' AND ended_at IS NULL); INSERT INTO catch_up(binding_id,seat_id,thread_id,frontier_seq,entered_at,extension_until,state) SELECT binding_id,'s','t',0,0,500,'active' FROM occupant_bindings WHERE seat_id='s'").unwrap();
     assert!(subjects(&store).is_empty());
 }
 

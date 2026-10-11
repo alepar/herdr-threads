@@ -5,7 +5,7 @@ use crate::{
     protocol::{
         authority::{COOPERATIVE_MOD_DELIVERY_PROVENANCE, Harness, MutationPermit, ObligationRef},
         commands::{Ack, AckModDelivered},
-        ids::{MessageId, SeatId, ThreadId},
+        ids::{BindingId, MessageId, SeatId, ThreadId},
         results::{AckResult, ApiError, CommandResult, ErrorCode},
         time::UtcMillis,
         watch::{ModAckItem, ModAckOutcome, ModAckReason, ModAckReport, WATCH_BODY_LIMIT_BYTES},
@@ -69,6 +69,7 @@ fn plan_mod_ack(
     tx: &Transaction<'_>,
     instance: &str,
     seat: &SeatId,
+    binding: Option<&BindingId>,
     id: &MessageId,
 ) -> Result<ModAckPlan, ApiError> {
     let row: Option<(String, i64)> = tx
@@ -90,7 +91,7 @@ fn plan_mod_ack(
         == Some(crate::protocol::commands::DeliveryMode::Lazy)
     {
         return Ok(
-            match super::lazy_delivery::lazy_completion_state(tx, instance, seat, id)? {
+            match super::lazy_delivery::lazy_completion_state(tx, instance, seat, binding, id)? {
                 super::lazy_delivery::LazyCompletion::NotAddressed => {
                     refuse(ModAckReason::NotAddressed)
                 }
@@ -186,9 +187,14 @@ pub fn ack_mod_delivered(
                 &ObligationRef::CheckIn(seat.clone()),
                 &digest,
             )?;
+            let binding = super::bindings::match_claim(
+                tx,
+                &super::bindings::BindingKey::from_claim(&request.claim),
+            )?
+            .map(|b| b.binding_id);
             let mut plans = Vec::with_capacity(request.messages.len());
             for id in &request.messages {
-                plans.push(plan_mod_ack(tx, &instance, &seat, id)?);
+                plans.push(plan_mod_ack(tx, &instance, &seat, binding.as_ref(), id)?);
             }
             let settle: Vec<MessageId> = request
                 .messages
@@ -217,7 +223,13 @@ pub fn ack_mod_delivered(
                 let (result, reason) = match plan {
                     ModAckPlan::Settle => (ModAckOutcome::Settled, None),
                     ModAckPlan::Complete => {
-                        super::lazy_delivery::complete_addressed(tx, &instance, &seat, id)?;
+                        super::lazy_delivery::complete_for_binding(
+                            tx,
+                            &instance,
+                            &seat,
+                            binding.as_ref(),
+                            std::slice::from_ref(id),
+                        )?;
                         (ModAckOutcome::Settled, None)
                     }
                     ModAckPlan::Done(result, reason) => (result, reason),
@@ -649,7 +661,7 @@ pub fn effective_deadline_for(
     };
     let extension: Option<i64> = conn
         .query_row(
-            "SELECT extension_until FROM catch_up WHERE seat_id=?1 AND thread_id=?2",
+            "SELECT MAX(extension_until) FROM catch_up WHERE seat_id=?1 AND thread_id=?2",
             params![seat, thread],
             |r| r.get(0),
         )
@@ -669,14 +681,14 @@ fn extension_end(base: UtcMillis, add_ms: u64) -> i64 {
 /// the lifecycle skips it on re-entry after a stall with no block stored since.
 pub fn extension_on_entry(
     tx: &Transaction<'_>,
-    seat: &SeatId,
+    binding: &BindingId,
     thread: &ThreadId,
     entered_at: UtcMillis,
     p99_ms: u64,
 ) -> Result<(), ApiError> {
     tx.execute(
-        "UPDATE catch_up SET extension_until=MAX(COALESCE(extension_until,0),?3) WHERE seat_id=?1 AND thread_id=?2",
-        params![seat.as_str(), thread.as_str(), extension_end(entered_at, p99_ms)],
+        "UPDATE catch_up SET extension_until=MAX(COALESCE(extension_until,0),?3) WHERE binding_id=?1 AND thread_id=?2",
+        params![binding.as_str(), thread.as_str(), extension_end(entered_at, p99_ms)],
     )
     .map_err(store_error)?;
     Ok(())
@@ -700,15 +712,15 @@ pub fn extension_on_progress(
 /// Exit: the grace window after the row ends is set (spec §7), not raised.
 pub fn extension_on_exit(
     tx: &Transaction<'_>,
-    seat: &SeatId,
+    binding: &BindingId,
     thread: &ThreadId,
     now: UtcMillis,
     exit_grace_ms: u64,
 ) -> Result<(), ApiError> {
     tx.execute(
-        "UPDATE catch_up SET extension_until=?3 WHERE seat_id=?1 AND thread_id=?2",
+        "UPDATE catch_up SET extension_until=?3 WHERE binding_id=?1 AND thread_id=?2",
         params![
-            seat.as_str(),
+            binding.as_str(),
             thread.as_str(),
             extension_end(now, exit_grace_ms)
         ],

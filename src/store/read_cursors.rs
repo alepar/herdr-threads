@@ -165,17 +165,17 @@ pub fn has_unread(db: &Connection, binding: &BindingId) -> Result<bool, ApiError
     let Some(seat) = seat_of(db, binding)? else {
         return Ok(false);
     };
-    db.query_row(
-        &format!(
-            "SELECT EXISTS(SELECT 1 FROM {RECEIVABLE_FROM} WHERE {RECEIVABLE_WHERE} {UNREAD_EXTRA}) \
-             OR EXISTS(SELECT 1 FROM lazy_recipients lr \
-               JOIN send_manifests sm ON sm.preparation_id=lr.preparation_id AND sm.message_id=lr.message_id \
-               WHERE lr.seat_id=?1 AND lr.state='pending')"
-        ),
-        params![seat.as_str(), binding.as_str()],
-        |r| r.get(0),
-    )
-    .map_err(store_error)
+    let ordinary: bool = db
+        .query_row(
+            &format!("SELECT EXISTS(SELECT 1 FROM {RECEIVABLE_FROM} WHERE {RECEIVABLE_WHERE} {UNREAD_EXTRA})"),
+            params![seat.as_str(), binding.as_str()],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    if ordinary {
+        return Ok(true);
+    }
+    super::lazy_delivery::binding_has_unread_lazy(db, binding)
 }
 
 /// Advance `binding`'s cursor in `thread` over the longest prefix of messages past the cursor
@@ -195,6 +195,7 @@ pub fn advance_through_displayed(
     let mut stmt = tx
         .prepare(&format!(
             "SELECT x.sequence, EXISTS(SELECT 1 FROM {RECEIVABLE_FROM} WHERE {RECEIVABLE_WHERE} AND m.id=x.id) \
+             OR EXISTS(SELECT 1 FROM lazy_recipients lr WHERE lr.message_id=x.id AND lr.seat_id=?1) \
              FROM messages x WHERE x.thread_id=?2 AND x.sequence>?3 ORDER BY x.sequence"
         ))
         .map_err(store_error)?;

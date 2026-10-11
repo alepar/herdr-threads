@@ -25,7 +25,7 @@ fn lazy_schema_upgrade25_defaults_existing_messages_to_ordinary() {
     assert_eq!(
         db.pragma_query_value::<i64, _>(None, "user_version", |r| r.get(0))
             .unwrap(),
-        30
+        31
     );
 }
 
@@ -149,7 +149,7 @@ fn lazy_pending_scan_bounds_unpublished_work() {
     assert_index(
         &db,
         lazy_delivery::PENDING_CANDIDATES_SQL,
-        "lazy_recipients_pending_seat_ordinal",
+        "lazy_recipients_seat_ordinal",
     );
 }
 fn assert_index(db: &Connection, sql: &str, index: &str) {
@@ -178,8 +178,10 @@ fn lazy_pending_scan_skips_large_displayed_history() {
         stage(&db, n);
         publish(&db, n);
     }
+    // The binding's cursor has passed all but the last message (V31: display state is the
+    // cursor, not the recipient row's state).
     db.execute(
-        "UPDATE lazy_recipients SET state='displayed' WHERE ordinal<=1199",
+        "INSERT INTO binding_cursors(binding_id,thread_id,seq) SELECT binding_id,'t',1199 FROM occupant_bindings WHERE seat_id='s'",
         [],
     )
     .unwrap();
@@ -193,12 +195,10 @@ fn lazy_pending_scan_skips_large_displayed_history() {
     assert_eq!(page.recipients[0].message, MessageId::new("msg-1200"));
     assert!(!page.has_more);
     let tx = db.transaction().unwrap();
-    assert!(
-        lazy_delivery::complete_addressed(&tx, "i", &seat, &MessageId::new("msg-1200")).unwrap()
-    );
-    assert!(
-        lazy_delivery::complete_addressed(&tx, "i", &seat, &MessageId::new("msg-1200")).unwrap()
-    );
+    for _ in 0..2 {
+        lazy_delivery::complete_for_binding(&tx, "i", &seat, None, &[MessageId::new("msg-1200")])
+            .unwrap();
+    }
     tx.commit().unwrap();
     assert_eq!(
         lazy_delivery::pending_page(&db, "i", &seat, 0, high, 2)
@@ -209,7 +209,7 @@ fn lazy_pending_scan_skips_large_displayed_history() {
     assert_index(
         &db,
         lazy_delivery::PENDING_CANDIDATES_SQL,
-        "lazy_recipients_pending_seat_ordinal",
+        "lazy_recipients_seat_ordinal",
     );
 }
 

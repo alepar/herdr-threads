@@ -214,7 +214,7 @@ fn fingerprint_changes_on_each_call_site() {
     conn.execute_batch(
         "INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('m9','i','t2',2,'ordinary','b',0,6);\
          INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('m9','t2','s','pending',100);\
-         INSERT INTO catch_up(seat_id,thread_id,frontier_seq,binding_generation,execution_id,entered_at,state) VALUES ('s','t2',0,0,'e',0,'active');",
+         INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) SELECT 's',1,'p','b',0,'codex','catch-up-row','e','cooperative_top_level',0,'tm','inc' WHERE NOT EXISTS(SELECT 1 FROM occupant_bindings WHERE seat_id='s' AND ended_at IS NULL); INSERT INTO catch_up(binding_id,seat_id,thread_id,frontier_seq,entered_at,state) SELECT binding_id,'s','t2',0,0,'active' FROM occupant_bindings WHERE seat_id='s';",
     )
     .unwrap();
     assert_eq!(fp(&store).pending_receipts, 0, "held by catch-up");
@@ -300,7 +300,8 @@ fn lazy_row_changes_the_fingerprint_when_it_publishes_not_when_it_stages() {
     let (store, conn, _) = fixture();
     base(&conn);
     conn.execute_batch(
-        "INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t2','s','joined');\
+        "INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES ('s',0,'p','b',0,'codex','lazy-session','e','cooperative_top_level',0,'tm','inc');\
+         INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t2','s','joined');\
          INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('t2','s',1,1);\
          INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES('prep-1','i','scope','prep-1',zeroblob(32),'t2',0,0,0,0,0,0,0,'building','lazy');",
     )
@@ -325,8 +326,8 @@ fn lazy_row_changes_the_fingerprint_when_it_publishes_not_when_it_stages() {
     changes(
         &store,
         &conn,
-        "lazy row displayed",
-        "UPDATE lazy_recipients SET state='displayed';",
+        "lazy row displayed (the binding's cursor passes it)",
+        "INSERT INTO binding_cursors(binding_id,thread_id,seq) SELECT binding_id,'t2',1 FROM occupant_bindings WHERE seat_id='s'; UPDATE lazy_recipients SET legacy_pending=legacy_pending;",
     );
     assert_eq!(fp(&store).lazy_pending, 0);
 }

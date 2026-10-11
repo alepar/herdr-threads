@@ -131,7 +131,7 @@ pub(crate) fn begin_retirement_fence(
             super::bindings::DisconnectReason::SeatRetired,
             cutover,
         )?;
-        super::catch_up::supersede_stale(tx, &seat, cutover)?;
+        super::catch_up::supersede_ended_bindings(tx, &seat, cutover)?;
         tx.execute(
             "DELETE FROM warning_offer WHERE seat_id=?1",
             [seat.as_str()],
@@ -2004,9 +2004,20 @@ pub fn complete_inbox_delivery(
                 &ObligationRef::CheckIn(seat.clone()),
                 &digest,
             )?;
-            for id in &request.messages {
-                super::lazy_delivery::complete_addressed(tx, &request.claim.instance, seat, id)?;
-            }
+            // The display counts for the claim's binding; a claim matching no open binding (a
+            // pre-binding client) completes for the whole seat, as before V31.
+            let binding = super::bindings::match_claim(
+                tx,
+                &super::bindings::BindingKey::from_claim(&request.claim),
+            )?
+            .map(|b| b.binding_id);
+            super::lazy_delivery::complete_for_binding(
+                tx,
+                &request.claim.instance,
+                seat,
+                binding.as_ref(),
+                &request.messages,
+            )?;
             Ok(CommandResult::InboxDeliveryCompleted(
                 request.messages.clone(),
             ))

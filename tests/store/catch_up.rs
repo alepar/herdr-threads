@@ -3,6 +3,7 @@
 //! passed as `now`; the production-path tests drive a settable clock.
 use super::*;
 use crate::ports::LogicalAttentionFrontier;
+use crate::protocol::ids::{BindingId, ExecutionId};
 use crate::{
     ports::{
         CooperativePermitRequest, DuePhaseProgress, DueScanRequest, DueScanState, ReadContext,
@@ -52,23 +53,51 @@ fn seat(id: &str) -> SeatId {
 fn thread() -> ThreadId {
     ThreadId::new("t")
 }
-fn execution_of(seat: &str) -> ExecutionId {
-    ExecutionId::new(format!("exec-{seat}"))
+/// The seat's newest open binding.
+fn binding_of(db: &Connection, seat: &str) -> BindingId {
+    BindingId::parse(
+        db.query_row(
+            "SELECT binding_id FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL ORDER BY ordinal DESC LIMIT 1",
+            [seat],
+            |r| r.get::<_, String>(0),
+        )
+        .unwrap(),
+    )
+    .unwrap()
+}
+
+/// A second open top-level binding of `seat` (another session), returned.
+fn add_binding(db: &Connection, seat: &str, session: &str) -> BindingId {
+    db.execute(
+        "INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES (?1,1,'pane-'||?1,'host',1,'codex',?2,'exec-'||?2,'cooperative_top_level',0,'tm','inc')",
+        [seat, session],
+    )
+    .unwrap();
+    binding_of(db, seat)
 }
 
 fn enter(db: &mut Connection, seat_id: &str, frontier: u64, now: UtcMillis) -> u64 {
+    let binding = binding_of(db, seat_id);
+    enter_as(db, &binding, seat_id, frontier, now)
+}
+
+fn enter_as(
+    db: &mut Connection,
+    binding: &BindingId,
+    seat_id: &str,
+    frontier: u64,
+    now: UtcMillis,
+) -> u64 {
     let tx = db.transaction().unwrap();
     let seat = seat(seat_id);
     let thread = thread();
-    let execution = execution_of(seat_id);
     let frontier = enter_or_keep(
         &tx,
         &CatchUpEntry {
+            binding,
             seat: &seat,
             thread: &thread,
             frontier_seq: frontier,
-            binding_generation: 1,
-            execution: &execution,
             now,
         },
         &SummarySettings::default(),
@@ -90,9 +119,17 @@ struct Row {
 }
 
 fn row(db: &Connection, seat: &str) -> Row {
+    row_where(db, "seat_id", seat)
+}
+
+fn row_of(db: &Connection, binding: &BindingId) -> Row {
+    row_where(db, "binding_id", binding.as_str())
+}
+
+fn row_where(db: &Connection, column: &str, key: &str) -> Row {
     db.query_row(
-        "SELECT state,frontier_seq,end_reason,ended_at,release_seq,last_progress_at,extension_until FROM catch_up WHERE seat_id=?1 AND thread_id='t'",
-        [seat],
+        &format!("SELECT state,frontier_seq,end_reason,ended_at,release_seq,last_progress_at,extension_until FROM catch_up WHERE {column}=?1 AND thread_id='t'"),
+        [key],
         |r| {
             Ok(Row {
                 state: r.get(0)?,
@@ -127,22 +164,28 @@ fn enter_opens_row_at_frontier_and_keep_never_moves_it() {
 }
 
 #[test]
-fn stale_claim_enters_nothing() {
+fn entry_requires_an_open_binding_of_the_seat() {
     let mut db = db();
     let before = decision_seq(&db);
+    let ended = add_binding(&db, "s", "gone");
+    db.execute(
+        "UPDATE occupant_bindings SET ended_at=1 WHERE binding_id=?1",
+        [ended.as_str()],
+    )
+    .unwrap();
     let tx = db.transaction().unwrap();
     let thread = thread();
     let s = seat("s");
-    for (generation, execution) in [(2, "exec-s"), (1, "exec-other"), (0, "exec-s")] {
-        let execution = ExecutionId::new(execution);
+    let others = binding_of(&tx, "p");
+    let unknown = BindingId::parse("no-such-binding").unwrap();
+    for binding in [&ended, &others, &unknown] {
         let error = enter_or_keep(
             &tx,
             &CatchUpEntry {
+                binding,
                 seat: &s,
                 thread: &thread,
                 frontier_seq: 4,
-                binding_generation: generation,
-                execution: &execution,
                 now: NOW,
             },
             &SummarySettings::default(),
@@ -151,37 +194,12 @@ fn stale_claim_enters_nothing() {
         assert_eq!(error.code, ErrorCode::CallerUnverified);
         assert_eq!(
             error.detail,
-            "catch-up entry requires the seat's current binding"
+            "catch-up entry requires an open binding of the seat"
         );
     }
     tx.commit().unwrap();
     assert_eq!(catch_up_rows(&db), 0);
     assert_eq!(decision_seq(&db), before);
-    // No open binding at all enters nothing either.
-    db.execute(
-        "UPDATE occupant_bindings SET ended_at=1 WHERE seat_id='s'",
-        [],
-    )
-    .unwrap();
-    let tx = db.transaction().unwrap();
-    let execution = execution_of("s");
-    assert!(
-        enter_or_keep(
-            &tx,
-            &CatchUpEntry {
-                seat: &s,
-                thread: &thread,
-                frontier_seq: 4,
-                binding_generation: 1,
-                execution: &execution,
-                now: NOW,
-            },
-            &SummarySettings::default(),
-        )
-        .is_err()
-    );
-    tx.commit().unwrap();
-    assert_eq!(catch_up_rows(&db), 0);
 }
 
 fn catch_up_rows(db: &Connection) -> i64 {
@@ -189,17 +207,14 @@ fn catch_up_rows(db: &Connection) -> i64 {
         .unwrap()
 }
 
-fn ready(db: &mut Connection, seat_id: &str, generation: u64, now: UtcMillis) -> bool {
+fn ready(db: &mut Connection, seat_id: &str, now: UtcMillis) -> bool {
+    let binding = binding_of(db, seat_id);
+    ready_as(db, &binding, now)
+}
+
+fn ready_as(db: &mut Connection, binding: &BindingId, now: UtcMillis) -> bool {
     let tx = db.transaction().unwrap();
-    let ended = on_ready(
-        &tx,
-        &seat(seat_id),
-        &thread(),
-        generation,
-        now,
-        &SummarySettings::default(),
-    )
-    .unwrap();
+    let ended = on_ready(&tx, binding, &thread(), now, &SummarySettings::default()).unwrap();
     tx.commit().unwrap();
     ended
 }
@@ -208,12 +223,14 @@ fn ready(db: &mut Connection, seat_id: &str, generation: u64, now: UtcMillis) ->
 fn on_ready_ends_and_releases() {
     let mut db = db();
     enter(&mut db, "s", 10, UtcMillis(100));
+    let main = binding_of(&db, "s");
     let before = decision_seq(&db);
-    // A different binding generation leaves the row active.
-    assert!(!ready(&mut db, "s", 2, NOW));
+    // A Ready answer to another binding leaves the row active.
+    let other = add_binding(&db, "s", "other");
+    assert!(!ready_as(&mut db, &other, NOW));
     assert_eq!(row(&db, "s").state, "active");
     assert_eq!(decision_seq(&db), before);
-    assert!(ready(&mut db, "s", 1, NOW));
+    assert!(ready_as(&mut db, &main, NOW));
     let ended = row(&db, "s");
     assert_eq!(ended.state, "ended");
     assert_eq!(ended.end_reason.as_deref(), Some("ready"));
@@ -221,7 +238,7 @@ fn on_ready_ends_and_releases() {
     assert_eq!(ended.release_seq, Some(before + 1));
     assert_eq!(decision_seq(&db), before + 1);
     // Idempotent: a second Ready ends nothing and allocates nothing.
-    assert!(!ready(&mut db, "s", 1, NOW));
+    assert!(!ready_as(&mut db, &main, NOW));
     assert_eq!(row(&db, "s"), ended);
     assert_eq!(decision_seq(&db), before + 1);
     assert_eq!(held_above(&db, &seat("s"), &thread()).unwrap(), None);
@@ -231,7 +248,7 @@ fn on_ready_ends_and_releases() {
 fn reentry_after_end_reopens() {
     let mut db = db();
     enter(&mut db, "s", 10, UtcMillis(100));
-    assert!(ready(&mut db, "s", 1, UtcMillis(200)));
+    assert!(ready(&mut db, "s", UtcMillis(200)));
     let release = row(&db, "s").release_seq.unwrap();
     assert_eq!(enter(&mut db, "s", 30, UtcMillis(300)), 30);
     let reopened = row(&db, "s");
@@ -242,47 +259,34 @@ fn reentry_after_end_reopens() {
     assert_eq!(reopened.last_progress_at, None);
     // The old release key stays until the next end.
     assert_eq!(reopened.release_seq, Some(release));
-    assert!(ready(&mut db, "s", 1, UtcMillis(400)));
+    assert!(ready(&mut db, "s", UtcMillis(400)));
     assert!(row(&db, "s").release_seq.unwrap() > release);
 }
 
 #[test]
-fn entry_with_another_binding_supersedes_the_old_row_first() {
+fn replacement_binding_opens_its_own_row_and_the_old_one_is_superseded() {
     let mut db = db();
     enter(&mut db, "s", 10, UtcMillis(100));
-    // The seat's binding is replaced (generation 2); the old row is stale.
+    let old = binding_of(&db, "s");
+    // The seat's binding is replaced; the old row is stale.
     db.execute_batch(
         "UPDATE seats SET generation=2 WHERE id='s';\
-         UPDATE occupant_bindings SET ended_at=150 WHERE seat_id='s';\
-         INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES ('s',2,'pane-s','host',1,'codex','n','exec-s2','cooperative_top_level',0,'tm','inc');",
+         UPDATE occupant_bindings SET ended_at=150 WHERE seat_id='s';",
     )
     .unwrap();
+    let new = add_binding(&db, "s", "n2");
     let before = decision_seq(&db);
     let tx = db.transaction().unwrap();
-    let (s, t, e) = (seat("s"), thread(), ExecutionId::new("exec-s2"));
-    let frontier = enter_or_keep(
-        &tx,
-        &CatchUpEntry {
-            seat: &s,
-            thread: &t,
-            frontier_seq: 25,
-            binding_generation: 2,
-            execution: &e,
-            now: NOW,
-        },
-        &SummarySettings::default(),
-    )
-    .unwrap();
+    assert_eq!(supersede_stale(&tx, &old, NOW).unwrap(), 1);
     tx.commit().unwrap();
-    assert_eq!(frontier, 25);
-    let reopened = row(&db, "s");
-    assert_eq!((reopened.state.as_str(), reopened.frontier), ("active", 25));
+    let superseded = row_of(&db, &old);
+    assert_eq!(superseded.end_reason.as_deref(), Some("superseded"));
     // The superseded row was released (a decision key was allocated).
-    assert_eq!(reopened.release_seq, Some(before + 1));
-    let generation: i64 = db
-        .query_row("SELECT binding_generation FROM catch_up", [], |r| r.get(0))
-        .unwrap();
-    assert_eq!(generation, 2);
+    assert_eq!(superseded.release_seq, Some(before + 1));
+    assert_eq!(enter_as(&mut db, &new, "s", 25, NOW), 25);
+    let opened = row_of(&db, &new);
+    assert_eq!((opened.state.as_str(), opened.frontier), ("active", 25));
+    assert_eq!(row_of(&db, &old), superseded, "the old row is untouched");
 }
 
 #[test]
@@ -291,10 +295,10 @@ fn on_progress_marks_every_active_row_on_the_thread() {
     enter(&mut db, "s", 10, UtcMillis(100));
     enter(&mut db, "p", 10, UtcMillis(100));
     enter(&mut db, "q", 10, UtcMillis(100));
-    assert!(ready(&mut db, "q", 1, UtcMillis(150)));
+    assert!(ready(&mut db, "q", UtcMillis(150)));
     // A row on another thread is never touched.
     db.execute(
-        "INSERT INTO catch_up(seat_id,thread_id,frontier_seq,binding_generation,execution_id,entered_at,state) VALUES ('s','u',1,1,'exec-s',0,'active')",
+        "INSERT INTO catch_up(binding_id,seat_id,thread_id,frontier_seq,entered_at,state) SELECT binding_id,'s','u',1,0,'active' FROM occupant_bindings WHERE seat_id='s'",
         [],
     )
     .unwrap();
@@ -324,7 +328,7 @@ fn lifecycle_writes_extension_through_the_hooks() {
     on_progress(&tx, &thread(), UtcMillis(200), &SummarySettings::default()).unwrap();
     tx.commit().unwrap();
     assert_eq!(row(&db, "s").extension_until, Some(200 + 90_000));
-    assert!(ready(&mut db, "s", 1, UtcMillis(300)));
+    assert!(ready(&mut db, "s", UtcMillis(300)));
     assert_eq!(row(&db, "s").extension_until, Some(300 + 60_000));
 }
 
@@ -373,7 +377,7 @@ fn reentry_after_stall_extends_nothing_until_progress_is_stored() {
 fn reentry_after_ready_or_supersession_extends_again() {
     let mut db = db();
     enter(&mut db, "s", 10, UtcMillis(100));
-    assert!(ready(&mut db, "s", 1, UtcMillis(200)));
+    assert!(ready(&mut db, "s", UtcMillis(200)));
     assert_eq!(row(&db, "s").extension_until, Some(200 + 60_000));
     // A later catch-up (say after the next compaction) earns a fresh p99.
     enter(&mut db, "s", 30, UtcMillis(300_000));
@@ -383,29 +387,18 @@ fn reentry_after_ready_or_supersession_extends_again() {
     assert_eq!(row(&db, "s").extension_until, Some(300_000 + 90_000));
     // A successor binding (after /clear) supersedes the active row and its
     // entry is eligible too.
+    let old = binding_of(&db, "s");
     db.execute_batch(
         "UPDATE seats SET generation=2 WHERE id='s';\
-         UPDATE occupant_bindings SET ended_at=1 WHERE seat_id='s';\
-         INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES ('s',2,'pane-s','host',1,'codex','n','exec-s2','cooperative_top_level',0,'tm','inc');",
+         UPDATE occupant_bindings SET ended_at=1 WHERE seat_id='s';",
     )
     .unwrap();
+    let new = add_binding(&db, "s", "n2");
     let tx = db.transaction().unwrap();
-    let (s, t, e) = (seat("s"), thread(), ExecutionId::new("exec-s2"));
-    enter_or_keep(
-        &tx,
-        &CatchUpEntry {
-            seat: &s,
-            thread: &t,
-            frontier_seq: 40,
-            binding_generation: 2,
-            execution: &e,
-            now: UtcMillis(400_000),
-        },
-        &SummarySettings::default(),
-    )
-    .unwrap();
+    assert_eq!(supersede_stale(&tx, &old, UtcMillis(390_000)).unwrap(), 1);
     tx.commit().unwrap();
-    let reopened = row(&db, "s");
+    enter_as(&mut db, &new, "s", 40, UtcMillis(400_000));
+    let reopened = row_of(&db, &new);
     assert_eq!((reopened.state.as_str(), reopened.frontier), ("active", 40));
     assert_eq!(reopened.extension_until, Some(400_000 + 90_000));
 }
@@ -636,7 +629,7 @@ fn bypasses() {
     assert_eq!(receipt_key(&wake_frontier(&db, "s")), Some((16, 0)));
     assert_eq!(receipt_key(&run.frontier), Some((16, 0)));
     // The priority messages keep their own keys after a release as well.
-    assert!(ready(&mut db, "s", 1, NOW));
+    assert!(ready(&mut db, "s", NOW));
     let after = digest(&db, "s");
     assert_eq!(after.digest.receipts.count, 6);
     assert_eq!(thread_receipts(&db, "t"), 5);
@@ -725,9 +718,8 @@ fn release_pushes_held_items_above_the_mark_on_ready() {
             assert!(
                 on_ready(
                     tx,
-                    &seat("s"),
+                    &binding_of(tx, "s"),
                     &thread(),
-                    1,
                     NOW,
                     &SummarySettings::default()
                 )
@@ -754,12 +746,14 @@ fn release_pushes_held_items_above_the_mark_on_stall() {
 fn release_pushes_held_items_above_the_mark_on_supersession() {
     assert_release_pushes(
         |tx| {
-            tx.execute_batch(
-                "UPDATE occupant_bindings SET ended_at=150 WHERE seat_id='s';\
-                 INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES ('s',2,'pane-s','host',1,'codex','n','exec-s2','cooperative_top_level',0,'tm','inc');",
+            let old = binding_of(tx, "s");
+            tx.execute(
+                "UPDATE occupant_bindings SET ended_at=150 WHERE seat_id='s'",
+                [],
             )
             .unwrap();
-            assert_eq!(supersede_stale(tx, &seat("s"), NOW).unwrap(), 1);
+            add_binding(tx, "s", "n2");
+            assert_eq!(supersede_stale(tx, &old, NOW).unwrap(), 1);
         },
         "superseded",
     );
@@ -770,22 +764,76 @@ fn supersede_stale_leaves_current_rows_and_other_seats_alone() {
     let mut db = db();
     enter(&mut db, "s", 10, UtcMillis(100));
     enter(&mut db, "p", 10, UtcMillis(100));
+    let (bs, bp) = (binding_of(&db, "s"), binding_of(&db, "p"));
     let tx = db.transaction().unwrap();
-    assert_eq!(supersede_stale(&tx, &seat("s"), NOW).unwrap(), 0);
+    assert_eq!(supersede_stale(&tx, &bs, NOW).unwrap(), 0);
+    assert_eq!(supersede_ended_bindings(&tx, &seat("s"), NOW).unwrap(), 0);
     tx.commit().unwrap();
     assert_eq!(row(&db, "s").state, "active");
-    // Ending only p's binding ends only p's row (and every row when no
-    // binding is open).
+    // Ending only p's binding ends only p's row.
     db.execute(
         "UPDATE occupant_bindings SET ended_at=1 WHERE seat_id='p'",
         [],
     )
     .unwrap();
     let tx = db.transaction().unwrap();
-    assert_eq!(supersede_stale(&tx, &seat("p"), NOW).unwrap(), 1);
+    assert_eq!(supersede_stale(&tx, &bs, NOW).unwrap(), 0);
+    assert_eq!(supersede_stale(&tx, &bp, NOW).unwrap(), 1);
     tx.commit().unwrap();
     assert_eq!(row(&db, "p").end_reason.as_deref(), Some("superseded"));
     assert_eq!(row(&db, "s").state, "active");
+}
+
+#[test]
+fn supersede_stale_only_touches_its_binding() {
+    let mut db = db();
+    let a = binding_of(&db, "s");
+    let b = add_binding(&db, "s", "second");
+    enter_as(&mut db, &a, "s", 10, UtcMillis(100));
+    enter_as(&mut db, &b, "s", 12, UtcMillis(100));
+    // Both bindings end; superseding A's rows leaves B's alone.
+    db.execute(
+        "UPDATE occupant_bindings SET ended_at=1 WHERE seat_id='s'",
+        [],
+    )
+    .unwrap();
+    let tx = db.transaction().unwrap();
+    assert_eq!(supersede_stale(&tx, &a, NOW).unwrap(), 1);
+    tx.commit().unwrap();
+    assert_eq!(row_of(&db, &a).end_reason.as_deref(), Some("superseded"));
+    assert_eq!(row_of(&db, &b).state, "active");
+    // The seat-level call picks up what is left.
+    let tx = db.transaction().unwrap();
+    assert_eq!(supersede_ended_bindings(&tx, &seat("s"), NOW).unwrap(), 1);
+    tx.commit().unwrap();
+    assert_eq!(row_of(&db, &b).end_reason.as_deref(), Some("superseded"));
+}
+
+#[test]
+fn catch_up_survives_another_bindings_check_in() {
+    let mut db = db();
+    let a = binding_of(&db, "s");
+    enter_as(&mut db, &a, "s", 10, UtcMillis(100));
+    // Binding B checks in on the same seat; the transaction that ends replaced bindings runs the
+    // seat-level supersede, and A (still open) keeps its row.
+    let b = add_binding(&db, "s", "second");
+    let tx = db.transaction().unwrap();
+    assert_eq!(supersede_ended_bindings(&tx, &seat("s"), NOW).unwrap(), 0);
+    assert_eq!(supersede_stale(&tx, &b, NOW).unwrap(), 0);
+    tx.commit().unwrap();
+    assert_eq!(row_of(&db, &a).state, "active");
+    assert_eq!(held_above(&db, &seat("s"), &thread()).unwrap(), Some(10));
+    // B enters its own row at its own frontier; ending B's row leaves A held.
+    enter_as(&mut db, &b, "s", 20, UtcMillis(200));
+    assert_eq!(
+        held_above(&db, &seat("s"), &thread()).unwrap(),
+        Some(10),
+        "the lowest active frontier holds"
+    );
+    assert!(ready_as(&mut db, &b, NOW));
+    assert_eq!(row_of(&db, &a).state, "active");
+    assert_eq!(row_of(&db, &b).state, "ended");
+    assert_eq!(held_above(&db, &seat("s"), &thread()).unwrap(), Some(10));
 }
 
 // ---------------------------------------------------------------------------
@@ -907,17 +955,17 @@ fn check_in(store: &SqliteStore, execution: &str, expected_generation: u64) -> u
     result.context.binding_generation
 }
 
-fn enter_in_store(conn: &mut Connection, execution: &str, generation: u64) {
+fn enter_in_store(conn: &mut Connection) {
+    let binding = binding_of(conn, "s");
     let tx = conn.transaction().unwrap();
-    let (s, t, e) = (seat("s"), thread(), ExecutionId::new(execution));
+    let (s, t) = (seat("s"), thread());
     enter_or_keep(
         &tx,
         &CatchUpEntry {
+            binding: &binding,
             seat: &s,
             thread: &t,
             frontier_seq: 7,
-            binding_generation: generation,
-            execution: &e,
             now: UtcMillis(150),
         },
         &SummarySettings::default(),
@@ -930,38 +978,28 @@ const EXEC_1: &str = "00000000-0000-4000-8000-000000000001";
 const EXEC_2: &str = "00000000-0000-4000-8000-000000000002";
 
 #[test]
-fn binding_replacement_supersedes() {
+fn rechecking_in_on_a_new_execution_keeps_the_bindings_catch_up() {
     let mut f = store();
     let generation = check_in(&f.store, EXEC_1, 0);
     // ht-54r.3: a check-in keeps the seat's mapping generation; it never bumps it.
     assert_eq!(generation, 0);
-    enter_in_store(&mut f.conn, EXEC_1, generation);
+    enter_in_store(&mut f.conn);
     assert_eq!(row(&f.conn, "s").state, "active");
-    let before = decision_seq(&f.conn);
-    // A fresh lifecycle check-in with a new execution re-registers the session's binding on the
-    // new execution, so the catch-up row of the old execution is superseded.
+    let binding = binding_of(&f.conn, "s");
+    // A fresh lifecycle check-in with a new execution refreshes the same session binding: the
+    // row follows the binding_id, so nothing is superseded.
     assert_eq!(check_in(&f.store, EXEC_2, 0), 0);
-    let superseded = row(&f.conn, "s");
-    assert_eq!(superseded.state, "ended");
-    assert_eq!(superseded.end_reason.as_deref(), Some("superseded"));
-    assert!(superseded.release_seq.unwrap() > before);
-    // The wake reasons were re-derived by the same decision.
-    let bits: i64 = f
-        .conn
-        .query_row(
-            "SELECT reason_bits FROM wake_work WHERE seat_id='s'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(bits & 1, 1);
+    assert_eq!(binding_of(&f.conn, "s"), binding);
+    let kept = row(&f.conn, "s");
+    assert_eq!(kept.state, "active");
+    assert_eq!(kept.release_seq, None, "nothing was released");
 }
 
 #[test]
 fn retirement_supersedes() {
     let mut f = store();
-    let generation = check_in(&f.store, EXEC_1, 0);
-    enter_in_store(&mut f.conn, EXEC_1, generation);
+    check_in(&f.store, EXEC_1, 0);
+    enter_in_store(&mut f.conn);
     let tx = f.conn.transaction().unwrap();
     crate::store::control::begin_retirement_fence(
         &tx,
@@ -985,8 +1023,8 @@ fn retirement_supersedes() {
 #[test]
 fn due_phase_runs_the_stall_scan() {
     let mut f = store();
-    let generation = check_in(&f.store, EXEC_1, 0);
-    enter_in_store(&mut f.conn, EXEC_1, generation);
+    check_in(&f.store, EXEC_1, 0);
+    enter_in_store(&mut f.conn);
     f.conn
         .execute("UPDATE catch_up SET extension_until=50", [])
         .unwrap();
@@ -1025,13 +1063,15 @@ fn due_phase_runs_the_stall_scan() {
 #[test]
 fn due_phase_continuation_clears_with_many_ended_lapsed_rows() {
     let f = store();
+    check_in(&f.store, EXEC_1, 0);
+    let binding = binding_of(&f.conn, "s");
     for n in 0..250 {
         let thread = format!("x{n:03}");
         f.conn
             .execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES (?1,'i','topic','goal',0,0)", [&thread])
             .unwrap();
         f.conn
-            .execute("INSERT INTO catch_up(seat_id,thread_id,frontier_seq,binding_generation,execution_id,entered_at,extension_until,state,end_reason,ended_at) VALUES ('s',?1,0,1,'e',0,?2,'ended','ready',10)", rusqlite::params![thread, 1 + n])
+            .execute("INSERT INTO catch_up(binding_id,seat_id,thread_id,frontier_seq,entered_at,extension_until,state,end_reason,ended_at) VALUES (?3,'s',?1,0,0,?2,'ended','ready',10)", rusqlite::params![thread, 1 + n, binding.as_str()])
             .unwrap();
     }
     let mut state = DueScanState::default();
