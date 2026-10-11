@@ -6258,11 +6258,11 @@ fn absorption_main24_and25_to26_preserves_diagnostics_and_matches_fresh_catalog(
         );
         assert_eq!(
             catalog(&fresh).iter().filter(|r| r.0 == "index").count(),
-            139
+            140
         );
         assert_eq!(
             catalog(&fresh).iter().filter(|r| r.0 == "trigger").count(),
-            181
+            183
         );
     }
 }
@@ -6449,4 +6449,46 @@ fn adapter_upgrade_rejects_tampered_diagnostics_from_main25_and_lazy26() {
             );
         }
     }
+}
+
+#[test]
+fn invitation_confirmation_schema_migrates_legacy_and_retains_frozen_origin() {
+    let db = v11_populated_database();
+    db.execute_batch("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0); INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at) VALUES ('old','t','s',1,'pending',1,10,30,40);").unwrap();
+    schema::initialize(&db, || UtcMillis(900)).unwrap();
+    let legacy: (Option<String>, Option<String>, i64, i64) = db.query_row("SELECT confirmation,inviter_seat_id,frozen_duration_ms,deadline_at FROM invitations WHERE id='old'", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).unwrap();
+    assert_eq!(legacy, (None, None, 30, 40));
+    db.execute_batch("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,confirmation,inviter_seat_id) VALUES ('modern','t','s',2,'pending',2,100,50,150,'require_ack','s'),('quiet','t','s',3,'pending',3,100,50,150,'lazy','s');").unwrap();
+    assert!(db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,confirmation) VALUES ('missing-origin','t','s',4,'pending',4,100,50,150,'lazy')", []).is_err());
+    schema::initialize(&db, || UtcMillis(1000)).unwrap();
+    let modern: (String,String,i64,i64) = db.query_row("SELECT confirmation,inviter_seat_id,frozen_duration_ms,deadline_at FROM invitations WHERE id='modern'", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).unwrap();
+    assert_eq!(modern, ("require_ack".into(), "s".into(), 50, 150));
+    let ids = db.prepare("SELECT id FROM invitations INDEXED BY invitations_confirmation_due WHERE state='pending' AND warning_message_id IS NULL AND reject_recorded=0 AND (confirmation IS NULL OR confirmation='require_ack') ORDER BY deadline_at,ordinal").unwrap().query_map([],|r|r.get::<_,String>(0)).unwrap().map(Result::unwrap).collect::<Vec<_>>();
+    assert_eq!(ids, ["old", "modern"]);
+    assert!(
+        db.execute(
+            "UPDATE invitations SET inviter_seat_id=NULL WHERE id='modern'",
+            []
+        )
+        .is_err()
+    );
+    assert!(
+        db.execute(
+            "UPDATE invitations SET confirmation='lazy' WHERE id='modern'",
+            []
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn invitation_confirmation_schema_refuses_missing_policy_guard() {
+    let db = Connection::open_in_memory().unwrap();
+    schema::initialize(&db, || UtcMillis(0)).unwrap();
+    db.execute_batch("DROP TRIGGER invitations_confirmation_immutable")
+        .unwrap();
+    assert_eq!(
+        schema::initialize(&db, || UtcMillis(0)).unwrap_err().code,
+        ErrorCode::IncompatibleSchema
+    );
 }

@@ -675,6 +675,7 @@ fn rerunning_send_attention_producer_does_not_reenqueue() {
     permitted(
         store,
         PermitMutation::Invite(Invite {
+            confirmation: None,
             thread: thread.clone(),
             seat: SeatId::new("s2"),
             deadline_millis: Some(1000),

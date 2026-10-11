@@ -664,12 +664,23 @@ pub struct CreateThread {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Invite {
+    /// Absence preserves the historical timed invitation and its operation digest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirmation: Option<InvitationConfirmation>,
     pub thread: ThreadId,
     pub seat: SeatId,
     pub deadline_millis: Option<u64>,
     pub operation: OperationId,
     pub claim: CallerClaim,
 }
+/// Explicit modern invitation policy; the duration remains `deadline_millis`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InvitationConfirmation {
+    Lazy,
+    RequireAck,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Join {
@@ -1086,6 +1097,18 @@ impl Command {
                 change.name.as_deref().map_or(Ok(()), validate_thread_name)
             }
             Self::ResolveThread(query) => validate_thread_name(&query.selector),
+            Self::Invite(invite)
+                if invite.confirmation == Some(InvitationConfirmation::Lazy)
+                    && invite.deadline_millis.is_some() =>
+            {
+                Err("lazy invitation conflicts with deadline")
+            }
+            Self::Invite(invite)
+                if invite.confirmation == Some(InvitationConfirmation::RequireAck)
+                    && invite.claim.harness == crate::protocol::authority::Harness::Human =>
+            {
+                Err("human invitation cannot require agent confirmation")
+            }
             Self::Invite(invite) if invite.deadline_millis == Some(0) => {
                 Err("deadline must be positive")
             }

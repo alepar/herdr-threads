@@ -994,6 +994,7 @@ fn canonical_factory_matches_invite_topic_archive_reopen_and_leave_decisions() {
     conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('other','i','resolved','native','other-target',0,0,0)",[]).unwrap();
     assert!(matches!(
         run(PermitMutation::Invite(Invite {
+            confirmation: None,
             claim: first.context.clone(),
             thread: thread.clone(),
             seat: SeatId::new("other"),

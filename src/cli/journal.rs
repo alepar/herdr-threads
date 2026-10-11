@@ -145,6 +145,8 @@ pub enum SemanticMutation {
         goal: String,
     },
     Invite {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        confirmation: Option<InvitationConfirmation>,
         thread: ThreadId,
         seat: SeatId,
         deadline_millis: Option<u64>,
@@ -296,6 +298,13 @@ impl SemanticMutation {
         frozen.validate()?;
         Ok(frozen)
     }
+    pub fn has_invitation_confirmation(&self) -> bool {
+        match self {
+            Self::Frozen { mutation, .. } => mutation.has_invitation_confirmation(),
+            Self::Invite { confirmation, .. } => confirmation.is_some(),
+            _ => false,
+        }
+    }
     pub fn is_lazy_send(&self) -> bool {
         match self {
             Self::Frozen { mutation, .. } => mutation.is_lazy_send(),
@@ -408,6 +417,11 @@ impl SemanticMutation {
                 .validate()
                 .map_err(invalid)
             }
+            Self::Invite {
+                confirmation: Some(InvitationConfirmation::Lazy),
+                deadline_millis: Some(_),
+                ..
+            } => Err(invalid("lazy invitation conflicts with deadline")),
             Self::Invite {
                 deadline_millis: Some(0),
                 ..
@@ -583,10 +597,12 @@ impl SemanticMutation {
                 claim: native()?,
             }),
             Self::Invite {
+                confirmation,
                 thread,
                 seat,
                 deadline_millis,
             } => Command::Invite(Invite {
+                confirmation: *confirmation,
                 thread: thread.clone(),
                 seat: seat.clone(),
                 deadline_millis: *deadline_millis,

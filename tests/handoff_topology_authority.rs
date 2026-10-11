@@ -547,6 +547,7 @@ fn live_cached_replay(phase: &str) {
             })
         } else if phase == "invite" {
             DeliveryAction::Invite(herdr_threads::protocol::commands::Invite {
+                confirmation: None,
                 thread: request.plan.payload.channel.thread().unwrap().clone(),
                 seat: request.plan.recipient.clone(),
                 deadline_millis: None,

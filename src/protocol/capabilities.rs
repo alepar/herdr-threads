@@ -25,6 +25,9 @@ pub const PARTICIPANT_LOCATIONS: &str = "participants.locations_v1";
 
 pub const THREAD_JOIN: &str = "thread.join_v1";
 
+/// Advertise only once canonical invitation lifecycle handlers honor this policy.
+pub const INVITATION_CONFIRMATION_V1: &str = "invitation.confirmation_v1";
+
 pub const INVITATION_REJECT: &str = "invitation.reject_v1";
 
 pub const LAZY_SEND: &str = "send.lazy_v1";

@@ -230,6 +230,7 @@ fn explicit_send_accept_and_ack_are_separate_sqlite_decisions() {
     service
         .handle(
             Command::Invite(Invite {
+                confirmation: None,
                 thread: created.clone(),
                 seat: SeatId::new("recipient"),
                 deadline_millis: None,
@@ -1000,6 +1001,7 @@ fn sends_succeed_after_host_outage_epoch_advance_and_reconfirmation() {
     service
         .handle(
             Command::Invite(Invite {
+                confirmation: None,
                 thread: thread.clone(),
                 seat: SeatId::new("recipient"),
                 deadline_millis: None,
@@ -1209,6 +1211,7 @@ fn send_before_first_pass_to_structurally_continuous_seat_has_no_warning() {
         (
             "invite",
             Command::Invite(Invite {
+                confirmation: None,
                 thread: thread.clone(),
                 seat: SeatId::new("recipient"),
                 deadline_millis: None,

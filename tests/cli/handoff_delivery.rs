@@ -645,6 +645,7 @@ fn canonical_invitation_loss_and_old_replay_leave_new_episode_pending() {
     let next = client
         .canonical(
             Command::Invite(crate::protocol::commands::Invite {
+                confirmation: None,
                 thread: ThreadId::new(thread.clone()),
                 seat: SeatId::new("recipient"),
                 deadline_millis: None,
@@ -779,6 +780,7 @@ fn canonical_pending_invitation_is_reused_in_existing_channel() {
     let initial = client
         .canonical(
             Command::Invite(crate::protocol::commands::Invite {
+                confirmation: None,
                 thread: thread.clone(),
                 seat: SeatId::new("recipient"),
                 deadline_millis: None,
