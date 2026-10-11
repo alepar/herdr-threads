@@ -43,6 +43,10 @@ pub struct SeatOffers {
     pub native_session: String,
     /// The last page stopped at a bound, so more is pending behind it.
     pub more_pending: bool,
+    /// The last pull left informational notices pending (a full notice page, a refused settle or a failed
+    /// notice read). It defeats the `Unchanged` reply so the next pull carries them, but it is never wake
+    /// work: notices never wake, so [`Self::next_pull`] ignores it.
+    pub notices_pending: bool,
     /// The seat's wake attention counter at the last pull of this process that read the whole pending set. `None` on
     /// a new entry (a new process, an evicted seat and a rotated generation all start there).
     pub read_attention: Option<u64>,
@@ -56,7 +60,8 @@ impl SeatOffers {
         self.offers.values().any(|offer| offer.is_due(now))
     }
 
-    /// What the seat's next pull would show at `now`, given the wake attention counter.
+    /// What the seat's next pull would show at `now`, given the wake attention counter. Leftover informational
+    /// notices (`notices_pending`) are not counted: they never wake.
     pub fn next_pull(&self, attention_version: u64, now: UtcMillis) -> NextPull {
         if self.read_attention != Some(attention_version)
             || self.more_pending
@@ -164,6 +169,7 @@ impl OfferedLedger {
                     generation,
                     native_session: native_session.to_owned(),
                     more_pending: false,
+                    notices_pending: false,
                     read_attention: None,
                     offers: BTreeMap::new(),
                     touched,

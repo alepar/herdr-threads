@@ -888,6 +888,61 @@ fn the_hook_pull_outlook_follows_offers_reoffers_and_parking() {
 
 // ---- informational notices on the pull (ht-poh.53) ----
 
+// Kills: leftover notices counted as wake work (final review 9 N1). Notices never wake: an offered id
+// shown 10 s ago holds the wake until its re-offer is due, even with notices left over; the next pull
+// still carries those notices and does not re-show the id.
+#[test]
+fn leftover_notices_do_not_bring_a_held_wake_forward() {
+    let f = fixture(1);
+    let context = pull_seat(&f);
+    let seat = SeatId::new("s");
+    let generation = context.binding_generation;
+    let total = crate::protocol::results::MAX_NOTICE_PAGE_ITEMS + 2;
+    for n in 0..total {
+        service_notice(&f, &format!("w-{n:02}"));
+    }
+    let offered_at = UtcMillis(f.clock.0.load(Ordering::SeqCst));
+    let first = page(pull(&f, &context, None));
+    assert_eq!(first.offered, ids(&["m1"]));
+    assert_eq!(
+        first.text.matches("] notice w-").count(),
+        16,
+        "{}",
+        first.text
+    );
+    advance(&f, 10_000);
+    let outlook = |f: &Fixture| {
+        f.state.next_pull(
+            &seat,
+            generation,
+            wake_attention(f),
+            UtcMillis(f.clock.0.load(Ordering::SeqCst)),
+        )
+    };
+    assert_eq!(
+        outlook(&f),
+        NextPull::ReofferAt(UtcMillis(offered_at.0 + REOFFER_AFTER_MS)),
+        "leftover notices are not wake work"
+    );
+    let second = page(pull(&f, &context, Some(first.attention_version)));
+    assert!(
+        second.text.contains("notice w-16") && second.text.contains("notice w-17"),
+        "{}",
+        second.text
+    );
+    assert!(second.offered.is_empty(), "m1's re-offer is not due yet");
+    assert_eq!(
+        outlook(&f),
+        NextPull::ReofferAt(UtcMillis(offered_at.0 + REOFFER_AFTER_MS))
+    );
+    assert!(matches!(
+        pull(&f, &context, Some(second.attention_version)),
+        DeliveryPullReply::Unchanged { .. }
+    ));
+    advance(&f, REOFFER_AFTER_MS - 10_000);
+    assert_eq!(outlook(&f), NextPull::Delivers, "the re-offer is due");
+}
+
 /// A projected informational notice for `s`: an overdue transition about
 /// another seat (`x`), which never wakes `s` (TRUST-POLICY A7).
 fn service_notice(f: &Fixture, id: &str) {

@@ -200,6 +200,30 @@ fn next_pull_waits_for_the_earliest_due_reoffer() {
 }
 
 #[test]
+fn pending_notices_are_not_wake_work() {
+    let mut ledger = OfferedLedger::new();
+    let entry = ledger.seat_mut(&seat(1), 1, "n");
+    entry.read_attention = Some(7);
+    entry.notices_pending = true;
+    assert_eq!(
+        entry.next_pull(7, at(0)),
+        NextPull::Nothing,
+        "notices alone never wake"
+    );
+    entry.record(&id(1), at(0), false);
+    assert_eq!(
+        entry.next_pull(7, at(10_000)),
+        NextPull::ReofferAt(at(REOFFER_AFTER_MS)),
+        "notices do not bring a held re-offer forward"
+    );
+    let entry = ledger.seat_mut(&seat(1), 2, "n");
+    assert!(
+        !entry.notices_pending,
+        "a rotated generation starts without the flag"
+    );
+}
+
+#[test]
 fn next_pull_is_nothing_once_every_offer_is_parked() {
     let mut ledger = OfferedLedger::new();
     let entry = ledger.seat_mut(&seat(1), 1, "n");
