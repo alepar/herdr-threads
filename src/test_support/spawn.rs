@@ -78,6 +78,18 @@ pub fn tag(command: &mut Command) -> &mut Command {
     if !command.get_envs().any(|(key, _)| key == durability) {
         command.env(durability, "1");
     }
+    // The runner's own harness (the developer's Codex or Claude Code) is not this child's caller:
+    // its markers and session variables go (ht-54r.95), unless the test sets or removes them.
+    crate::test_support::isolation::remove_ambient_harness_env(
+        command,
+        std::env::vars_os().map(|(key, _)| key),
+    );
+    // Caller attribution's ancestry walk ends at the test process, not at the harness above it.
+    // A nested test process hands its own pid down: an inherited value is not on the command.
+    let floor = "HT_TEST_ANCESTRY_FLOOR_PID";
+    if !command.get_envs().any(|(key, _)| key == floor) {
+        command.env(floor, std::process::id().to_string());
+    }
     command
 }
 
