@@ -8532,15 +8532,32 @@ fn continuity_successor_survives_a_liveness_pass_before_its_first_touch() {
         }
     }
     let (context, mut conn, path) = c1_fixture();
+    // The reattach of the last unresolved seat lifts the holds, as production's does.
+    b5_set_marker_to_recovery(&conn);
     let command = c1_command("held-pane", "sess-1", "c1-liveness");
     c1_decide(&context, &mut conn, &command, "match").unwrap();
+    assert_eq!(
+        b5_hold_state(&conn),
+        (0, 0),
+        "the instance is no longer held"
+    );
+    let seat_state: String = conn
+        .query_row("SELECT state FROM seats WHERE id='s1'", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(seat_state, "resolved");
     // No touch and no further check-in: the pass lands between the reattach and the first touch.
     let candidates = crate::store::bindings::liveness_candidates(&conn, None).unwrap();
-    assert!(
-        candidates
-            .iter()
-            .any(|c| c.binding.fingerprint.is_some_and(|f| f.pid == 4242)),
-        "the successor is a candidate of the pass: {candidates:?}"
+    let successor = candidates
+        .iter()
+        .find(|c| c.binding.seat.as_str() == "s1")
+        .unwrap_or_else(|| panic!("the successor is a candidate of the pass: {candidates:?}"));
+    assert_eq!(
+        successor.binding.fingerprint,
+        Some(crate::protocol::authority::LivenessFingerprint {
+            pid: 4242,
+            start: 7
+        }),
+        "the successor carries the resume's fingerprint (ht-54r.70)"
     );
     let state = |conn: &Connection| -> (String, Option<String>) {
         conn.query_row(
@@ -8568,6 +8585,60 @@ fn continuity_successor_survives_a_liveness_pass_before_its_first_touch() {
         state(&conn),
         ("disconnected".into(), Some("liveness_process_exit".into()))
     );
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn continuity_successor_is_not_judged_while_its_instance_is_held() {
+    let (context, mut conn, path) = c1_fixture();
+    b5_set_marker_to_recovery(&conn);
+    c1_unresolved_seat(&conn, "s3", "claude", "sess-3");
+    c1_decide(
+        &context,
+        &mut conn,
+        &c1_command("held-pane", "sess-1", "c1-held"),
+        "match",
+    )
+    .unwrap();
+    assert_eq!(b5_hold_state(&conn), (1, 0));
+    let candidates = crate::store::bindings::liveness_candidates(&conn, None).unwrap();
+    assert!(
+        candidates.iter().all(|c| c.binding.seat.as_str() != "s1"),
+        "a held instance is never judged: {candidates:?}"
+    );
+    let binding: String = conn
+        .query_row(
+            "SELECT binding_id FROM occupant_bindings WHERE seat_id='s1' AND ended_at IS NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let decision = crate::store::bindings::LivenessDecision {
+        binding: crate::protocol::ids::BindingId::new(binding),
+        fingerprint: Some(crate::protocol::authority::LivenessFingerprint {
+            pid: 4242,
+            start: 7,
+        }),
+        reason: crate::store::bindings::DisconnectReason::ProcessExit,
+    };
+    let tx = conn.transaction().unwrap();
+    let changed = crate::store::bindings::apply_liveness(
+        &tx,
+        &[decision],
+        crate::protocol::time::UtcMillis(1_000),
+    )
+    .unwrap();
+    tx.commit().unwrap();
+    assert_eq!(changed, 0, "apply_liveness re-reads the candidates");
+    let liveness: String = conn
+        .query_row(
+            "SELECT liveness FROM occupant_bindings WHERE seat_id='s1' AND ended_at IS NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(liveness, "connected");
     drop(conn);
     let _ = std::fs::remove_file(path);
 }
