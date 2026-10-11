@@ -1422,7 +1422,21 @@
       "docs/dev/outside-adapter-report.md",
       "integrations/skill/SKILL.md",
       "TRUST-POLICY.md",
-      "src/ports.rs"
+      "src/ports.rs",
+      "src/cli/watch.rs",
+      "src/protocol/watch.rs",
+      "integrations/claude/mod/hooks/register.js",
+      "integrations/claude/mod/tests/delivery.test.ts",
+      "tests/cli/watch.rs",
+      "tests/protocol/watch.rs",
+      "src/scheduler/mod.rs",
+      "src/harness/agy/paths.rs",
+      "tests/fixtures/agy/plugin/hooks.json",
+      "src/service/mod_channels.rs",
+      "tests/service/mod_channels.rs",
+      "src/protocol/results.rs",
+      "tests/protocol/lazy_inbox_v2.rs",
+      "tests/store/queries.rs"
     ]
   }
 ]

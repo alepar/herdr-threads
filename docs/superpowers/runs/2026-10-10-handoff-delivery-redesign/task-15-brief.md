@@ -152,3 +152,27 @@ Read task-15-preflight.md before first regression build. Canonical pending_invit
 ### Passive invitation version interface admission
 
 Admit src/ports.rs narrowly for canonical passive invitation change metadata on ModSeatView, independent of wake ModFingerprint. No unbounded pending-invitation scan/hash; actual canonical bounded source must invalidate after arrivals and removals even when latest pending key unchanged. Actual cached service pull tests cover these transitions. Preserve no Lazy ordinary native wake.
+
+### Passive invitation channel producer/consumer admission
+
+Admit src/cli/watch.rs, src/protocol/watch.rs, integrations/claude/mod/hooks/register.js plus integrations/claude/mod/tests/delivery.test.ts, tests/cli/watch.rs and focused tests/protocol/watch.rs for additive passive invitation content. Preserve all existing message frames/confirm semantics and main unprefixed Claude log. Actual whole invitation content must reach modern service pull/turn hooks and channel consumers without synthetic message ACK, acceptance or idle submit. Historical consumers that ignore unknown kinds safely lack this new content until plugin upgrade; document that accepted mixed-version limitation honestly, never claim older consumer completeness. Narrow serialization compatibility and real createCore/watch tests required.
+
+Preferred passive signature uses existing bounded recipient canonical pending-invitations WINDOW (1001 indexed candidates), hashing actual visible item identities/publication keys plus saturation, independent of wake fingerprint; no global decision-sequence churn. Verify actual inspected bound, acceptance/rejection/retirement, older removal under saturated window, promotion into visible window and unchanged unrelated decisions. Whole-display ledger bounded per binding, truncated content never marked complete.
+
+### Persistent original-sender condition versus consumed presentation
+
+A repeated identical-version pull MAY return Unchanged after the full open-origin warning was offered, PROVIDED canonical mod/native discovery remains actionable while the condition is open. Whole-display ledger consumes presentation, never the persistent condition or native eligibility. Derive native warning eligibility independently of NextPull/items-to-display; retain presence/idle/backoff/coalescing, no repeated context flood or forced wake on every pull. Follow actual consumer contract: if NextPull must encode eligibility, return a truthful actionable hint without reprinting content.
+
+Real tests use partial/final ACK actual dispatch, full warning offer then identical-version Unchanged, open mod/native eligibility persisting for departed original senders, and unrelated/observer passivity. Final settlement passively clears eligibility with exact generation/history unchanged and no timer reset. Parent settled this consumer-contract clarification before D source.
+
+Current D source moved from native .worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.8.4 into SAME retained warm slot .worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2. Branch task-ht-0lo.8.4/baseee1e and all7modifiedfiles preserved. Package/all7targets/cache verified task-15-warm-metadata.json; exact target is <current D source>/target. Cargo lease now D, no commands in old moved path. B works separately parked; serial cache reuse resource is not semantic dependency.
+
+### Concrete scheduler and AGY stable-entry producer admission
+
+Admit src/scheduler/mod.rs narrowly to preserve canonical waking-open warning eligibility independently of presentation NextPull. Use actual actionable unoffered warning predicate, not every retained warning sequence; preserve mod suppression, native presence/idle/backoff/coalescing and all other gates. Real service ledger→actual scheduler behavior required. Admit src/harness/agy/paths.rs and tests/fixtures/agy/plugin/hooks.json for proven stable per-event owned AGY native registration producer, using already admitted tests/harness/agy_setup.rs. Prove current defect through actual installed command/equivalent reinstall/exact ownership/legacy migration regression before producer changes; no speculative adapter rewrite.
+
+### Canonical invitation goal in bounded V2 context
+
+Canonical invitation goal is relevant decision context. Add V2 Invitation goal_data Option<String> with serde default/skipNone, preserving historical omission and unknown-field compatibility. Match bounded V1 canonical producer, no unbounded/N+1 hydration. Offer goal when it fits; older-daemon/page-budget omission requires explicit usable inspection continuation BEFORE acceptance, never imply full goal was displayed. Preserve page/frame limits and no synthetic accept/messageACK. Actual V2 goal positive, old-omitted exact bytes, byte-constrained continuation and real hook/pull bookkeeping tests required. D owns results.rs Invitation field and query producer; B automatic results.rs edits remain independent but composed blob needs serialized integration and semantic review. Narrow tests/protocol/lazy_inbox_v2.rs and tests/store/queries.rs admitted.
+
+Admit src/service/mod_channels.rs and tests/service/mod_channels.rs for bounded separate per-channel passive-content change observation/drain, preserving wake fingerprint/last_attention_push/stall/eligibility. Existing Attention wire frame may remain a drain signal; new invitation line is passive. Require actual channel discovery RED, not emitter-only proof.

@@ -1,0 +1,318 @@
+{
+  "branch": "task-ht-0lo.8.2",
+  "head": "4cb157ba1ad5eedfff1632e7986d2878a5af7da8",
+  "status": " M src/cli/handoff.rs\n M src/cli/handoff_delivery.rs\n M src/cli/topology_handoff/automatic.rs\n M src/protocol/handoff/automatic_bootstrap.rs\n M tests/cli/topology_handoff.rs\n M tests/daemon/transport.rs\n",
+  "metadata": {
+    "packages": [
+      {
+        "name": "herdr-threads",
+        "version": "0.8.0",
+        "id": "path+file:///Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2#herdr-threads@0.8.0",
+        "license": "MIT OR Apache-2.0",
+        "license_file": null,
+        "description": null,
+        "source": null,
+        "dependencies": [
+          {
+            "name": "clap",
+            "source": "registry+https://github.com/rust-lang/crates.io-index",
+            "req": "=4.6.4",
+            "kind": null,
+            "rename": null,
+            "optional": false,
+            "uses_default_features": true,
+            "features": [
+              "derive"
+            ],
+            "target": null,
+            "registry": null
+          },
+          {
+            "name": "libc",
+            "source": "registry+https://github.com/rust-lang/crates.io-index",
+            "req": "=0.2.189",
+            "kind": null,
+            "rename": null,
+            "optional": false,
+            "uses_default_features": true,
+            "features": [],
+            "target": null,
+            "registry": null
+          },
+          {
+            "name": "rusqlite",
+            "source": "registry+https://github.com/rust-lang/crates.io-index",
+            "req": "=0.39.0",
+            "kind": null,
+            "rename": null,
+            "optional": false,
+            "uses_default_features": true,
+            "features": [
+              "bundled"
+            ],
+            "target": null,
+            "registry": null
+          },
+          {
+            "name": "serde",
+            "source": "registry+https://github.com/rust-lang/crates.io-index",
+            "req": "=1.0.229",
+            "kind": null,
+            "rename": null,
+            "optional": false,
+            "uses_default_features": true,
+            "features": [
+              "derive"
+            ],
+            "target": null,
+            "registry": null
+          },
+          {
+            "name": "serde_json",
+            "source": "registry+https://github.com/rust-lang/crates.io-index",
+            "req": "=1.0.151",
+            "kind": null,
+            "rename": null,
+            "optional": false,
+            "uses_default_features": true,
+            "features": [],
+            "target": null,
+            "registry": null
+          },
+          {
+            "name": "sha2",
+            "source": "registry+https://github.com/rust-lang/crates.io-index",
+            "req": "=0.10.9",
+            "kind": null,
+            "rename": null,
+            "optional": false,
+            "uses_default_features": true,
+            "features": [],
+            "target": null,
+            "registry": null
+          },
+          {
+            "name": "shlex",
+            "source": "registry+https://github.com/rust-lang/crates.io-index",
+            "req": "=2.0.1",
+            "kind": null,
+            "rename": null,
+            "optional": false,
+            "uses_default_features": true,
+            "features": [],
+            "target": null,
+            "registry": null
+          },
+          {
+            "name": "tokio",
+            "source": "registry+https://github.com/rust-lang/crates.io-index",
+            "req": "=1.53.1",
+            "kind": null,
+            "rename": null,
+            "optional": false,
+            "uses_default_features": true,
+            "features": [
+              "rt-multi-thread",
+              "macros",
+              "net",
+              "io-util",
+              "time",
+              "sync",
+              "signal"
+            ],
+            "target": null,
+            "registry": null
+          },
+          {
+            "name": "toml_edit",
+            "source": "registry+https://github.com/rust-lang/crates.io-index",
+            "req": "=0.25.13",
+            "kind": null,
+            "rename": null,
+            "optional": false,
+            "uses_default_features": false,
+            "features": [
+              "parse",
+              "display"
+            ],
+            "target": null,
+            "registry": null
+          },
+          {
+            "name": "unicode-width",
+            "source": "registry+https://github.com/rust-lang/crates.io-index",
+            "req": "=0.2.2",
+            "kind": null,
+            "rename": null,
+            "optional": false,
+            "uses_default_features": false,
+            "features": [
+              "cjk"
+            ],
+            "target": null,
+            "registry": null
+          },
+          {
+            "name": "uuid",
+            "source": "registry+https://github.com/rust-lang/crates.io-index",
+            "req": "=1.24.0",
+            "kind": null,
+            "rename": null,
+            "optional": false,
+            "uses_default_features": true,
+            "features": [
+              "v4",
+              "serde"
+            ],
+            "target": null,
+            "registry": null
+          }
+        ],
+        "targets": [
+          {
+            "kind": [
+              "lib"
+            ],
+            "crate_types": [
+              "lib"
+            ],
+            "name": "herdr_threads",
+            "src_path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/src/lib.rs",
+            "edition": "2024",
+            "doc": true,
+            "doctest": true,
+            "test": true
+          },
+          {
+            "kind": [
+              "bin"
+            ],
+            "crate_types": [
+              "bin"
+            ],
+            "name": "herdr-threads",
+            "src_path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/src/main.rs",
+            "edition": "2024",
+            "doc": true,
+            "doctest": false,
+            "test": true
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "crate_types": [
+              "bin"
+            ],
+            "name": "combined",
+            "src_path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/tests/combined.rs",
+            "edition": "2024",
+            "required-features": [
+              "test-support"
+            ],
+            "doc": false,
+            "doctest": false,
+            "test": true
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "crate_types": [
+              "bin"
+            ],
+            "name": "hook_entrypoint",
+            "src_path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/tests/hook_entrypoint.rs",
+            "edition": "2024",
+            "required-features": [
+              "test-support"
+            ],
+            "doc": false,
+            "doctest": false,
+            "test": true
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "crate_types": [
+              "bin"
+            ],
+            "name": "integration",
+            "src_path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/tests/integration.rs",
+            "edition": "2024",
+            "required-features": [
+              "test-support"
+            ],
+            "doc": false,
+            "doctest": false,
+            "test": true
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "crate_types": [
+              "bin"
+            ],
+            "name": "package",
+            "src_path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/tests/package.rs",
+            "edition": "2024",
+            "required-features": [
+              "test-support"
+            ],
+            "doc": false,
+            "doctest": false,
+            "test": true
+          },
+          {
+            "kind": [
+              "test"
+            ],
+            "crate_types": [
+              "bin"
+            ],
+            "name": "service",
+            "src_path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/tests/service.rs",
+            "edition": "2024",
+            "required-features": [
+              "test-support"
+            ],
+            "doc": false,
+            "doctest": false,
+            "test": true
+          }
+        ],
+        "features": {
+          "test-support": []
+        },
+        "manifest_path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/Cargo.toml",
+        "metadata": null,
+        "publish": null,
+        "authors": [],
+        "categories": [],
+        "keywords": [],
+        "readme": "README.md",
+        "repository": null,
+        "homepage": null,
+        "documentation": null,
+        "edition": "2024",
+        "links": null,
+        "default_run": null,
+        "rust_version": null
+      }
+    ],
+    "workspace_members": [
+      "path+file:///Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2#herdr-threads@0.8.0"
+    ],
+    "workspace_default_members": [
+      "path+file:///Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2#herdr-threads@0.8.0"
+    ],
+    "resolve": null,
+    "target_directory": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target",
+    "build_directory": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target",
+    "version": 1,
+    "workspace_root": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2",
+    "metadata": null
+  }
+}
