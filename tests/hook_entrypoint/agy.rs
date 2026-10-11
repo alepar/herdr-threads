@@ -817,7 +817,9 @@ mod activation {
         recipient: CallerClaim,
     }
     impl Elected {
+        #[track_caller]
         fn start() -> Self {
+            let startup_caller = std::panic::Location::caller();
             let fx = continuity::Fixture::start(
                 &[
                     (PANE, continuity::Agent::NoSession),
@@ -851,14 +853,19 @@ mod activation {
             let startup = Self::invoke(&fx, &home, &state, "SessionStart", false);
             assert_eq!(startup.code, Some(0), "{}", startup.stderr);
             assert!(!startup.stdout.is_empty(), "{}", startup.stderr);
-            let recipient = observer
-                .take()
-                .into_iter()
-                .find_map(|exchange| match exchange.result {
-                    Some(Ok(CommandResult::CheckedIn(checked))) => Some(checked.context),
+            let exchanges = observer.take();
+            let recipient = exchanges
+                .iter()
+                .find_map(|exchange| match &exchange.result {
+                    Some(Ok(CommandResult::CheckedIn(checked))) => Some(checked.context.clone()),
                     _ => None,
                 })
-                .expect("installed SessionStart reaches canonical CheckIn");
+                .unwrap_or_else(|| {
+                    panic!(
+                        "installed SessionStart reaches canonical CheckIn; {}",
+                        startup_observation(&exchanges, &startup, root, startup_caller)
+                    )
+                });
             drop(observer);
             Self {
                 fx,
@@ -1083,6 +1090,129 @@ mod activation {
                 "actual ordinary obligation stays pending; presentation is not ACK"
             );
         }
+    }
+
+    /// Isolated SessionStart failure evidence only; never log a delivery hook's
+    /// output, claims, request payloads, tokens, environment or full argv.
+    fn startup_observation(
+        exchanges: &[Exchange],
+        hook: &Hook,
+        root: &Path,
+        caller: &std::panic::Location<'_>,
+    ) -> String {
+        fn snippet(bytes: &[u8], root: &Path, limit: usize) -> String {
+            let text = String::from_utf8_lossy(bytes)
+                .replace(root.to_string_lossy().as_ref(), "<fixture>");
+            let mut encoded = String::from("\"");
+            let mut consumed = 0;
+            for character in text.chars() {
+                let escaped = serde_json::to_string(&character.to_string()).unwrap();
+                let escaped = &escaped[1..escaped.len() - 1];
+                if encoded.len() + escaped.len() > limit - 64 {
+                    break;
+                }
+                encoded.push_str(escaped);
+                consumed += character.len_utf8();
+            }
+            encoded.push('"');
+            encoded.push_str(&format!(
+                " [omitted_redacted_bytes={}]",
+                text.len() - consumed
+            ));
+            encoded
+        }
+        let command_tag = |command: &Command| match command {
+            Command::Health => "Health",
+            Command::Capabilities => "Capabilities",
+            Command::ResolveSeat(_) => "ResolveSeat",
+            Command::ContinuityCheckIn(_) => "ContinuityCheckIn",
+            Command::CheckIn(_) => "CheckIn",
+            Command::OperatorCheckIn(_) => "OperatorCheckIn",
+            Command::SeatInspect(_) => "SeatInspect",
+            Command::Seats(_) => "Seats",
+            Command::HarnessEvidence(_) => "HarnessEvidence",
+            Command::HarnessEvidenceV2(_) => "HarnessEvidenceV2",
+            Command::HookParseFailure(_) => "HookParseFailure",
+            Command::AttentionDigest(_) => "AttentionDigest",
+            Command::AttentionDigestDelivery(_) => "AttentionDigestDelivery",
+            Command::HotThreads(_) => "HotThreads",
+            Command::DeliveryPull(_) => "DeliveryPull",
+            Command::DeliveryPullV2(_) => "DeliveryPullV2",
+            Command::DeliveryPresentationConfirmV2(_) => "DeliveryPresentationConfirmV2",
+            Command::DeliveryConfirm(_) => "DeliveryConfirm",
+            Command::CompleteInboxDelivery(_) => "CompleteInboxDelivery",
+            _ => "other",
+        };
+        let result_tag = |result: &CommandResult| match result {
+            CommandResult::Health(_) => "Health",
+            CommandResult::Capabilities(_) => "Capabilities",
+            CommandResult::SeatResolved(_) => "SeatResolved",
+            CommandResult::ContinuityReattached(_) => "ContinuityReattached",
+            CommandResult::CheckedIn(_) => "CheckedIn",
+            CommandResult::CachedCheckInPage(_) => "CachedCheckInPage",
+            CommandResult::SeatInspect(_) => "SeatInspect",
+            CommandResult::Seats(_) => "Seats",
+            CommandResult::HarnessEvidenceRecorded { .. } => "HarnessEvidenceRecorded",
+            CommandResult::HarnessEvidenceV2Recorded(_) => "HarnessEvidenceV2Recorded",
+            CommandResult::HookParseFailureRecorded => "HookParseFailureRecorded",
+            CommandResult::AttentionDigest(_) => "AttentionDigest",
+            CommandResult::AttentionDigestDelivery { .. } => "AttentionDigestDelivery",
+            CommandResult::HotThreads(_) => "HotThreads",
+            CommandResult::DeliveryPulled(_) => "DeliveryPulled",
+            CommandResult::DeliveryPulledV2(_) => "DeliveryPulledV2",
+            CommandResult::DeliveryPresentationConfirmedV2(_) => "DeliveryPresentationConfirmedV2",
+            CommandResult::DeliveryConfirmed(_) => "DeliveryConfirmed",
+            CommandResult::InboxDeliveryCompleted(_) => "InboxDeliveryCompleted",
+            _ => "other",
+        };
+        let indices: Vec<_> = if exchanges.len() <= 12 {
+            (0..exchanges.len()).collect()
+        } else {
+            (0..6).chain(exchanges.len() - 6..exchanges.len()).collect()
+        };
+        let trace: Vec<_> = indices
+            .iter()
+            .map(|&index| {
+                let exchange = &exchanges[index];
+                let result = match &exchange.result {
+                    None => "no-response".to_owned(),
+                    Some(Err(error)) => format!("Err({:?})", error.code),
+                    Some(Ok(result)) => result_tag(result).to_owned(),
+                };
+                format!("{index}:{}->{result}", command_tag(&exchange.command))
+            })
+            .collect();
+        let thread = std::thread::current();
+        let test = snippet(thread.name().unwrap_or("unnamed").as_bytes(), root, 192);
+        let mut evidence = format!(
+            "stdout={} stderr={}\nexchanges(total={},omitted={},indexed=[{}]); stage=Elected::start/SessionStart startup_fault=None iteration=unrecorded caller={}:{} test={} child(code={:?},elapsed_ms={},stdout_bytes={},stderr_captured_utf8_bytes={})",
+            snippet(&hook.stdout, root, 1536),
+            snippet(hook.stderr.as_bytes(), root, 1536),
+            exchanges.len(),
+            exchanges.len() - indices.len(),
+            trace.join(", "),
+            caller.file(),
+            caller.line(),
+            test,
+            hook.code,
+            hook.elapsed.as_millis(),
+            hook.stdout.len(),
+            hook.stderr.len(),
+        );
+        // Reserve 128 bytes for the assertion prefix within the 6 KiB record;
+        // retain the decisive stage and final exchanges if framing ever grows.
+        let limit = 6 * 1024 - 128;
+        if evidence.len() > limit {
+            let mut start = evidence.len() - (limit - 64);
+            while !evidence.is_char_boundary(start) {
+                start += 1;
+            }
+            evidence = format!(
+                "[diagnostic_leading_bytes_omitted={start}] {}",
+                &evidence[start..]
+            );
+        }
+        evidence
     }
 
     /// Failure-only evidence, capped at 3 KiB without message bodies or full
