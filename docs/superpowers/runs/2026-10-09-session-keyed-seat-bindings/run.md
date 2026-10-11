@@ -1,7 +1,7 @@
 # super-auto run — 2026-10-09-session-keyed-seat-bindings
 
 flags: planOneShot=f skipPlanRoast=f skipCodeRoast=f autonomous=t
-phase: report
+phase: finish
 codeMechanism: Workflow
 
 idea: Goal: implement the new herdr-threads seat-bindings model we designed in this session, absorbing the Hermes global-enrollment work (ht-4ne, branch super-auto/hermes-global-enrollment, unmerged) it sprang from. Flags: planOneShot=false (interactive Mode A design for remaining questions), skipPlanRoast=false, skipCodeRoast=false, autonomous=true from after the design. The Codex CODEX_EXEC_SERVER_URL pane-env installer step runs separately on branch codex-daemon-env and is out of scope here.
