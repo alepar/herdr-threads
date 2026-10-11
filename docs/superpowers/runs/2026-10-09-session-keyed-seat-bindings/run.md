@@ -66,3 +66,4 @@ parked:
 sweepFix-prefiled: scripts/check-harness-neutral 68 violations → ht-54r.71 (filed with the regression-only pass, same super-code re-entry)
 sweepFix: 4 failing → ht-54r.72 ht-54r.73 ht-54r.74 ht-54r.75 · re-run abe1bf03 — 5471 passed, 0 failed, 0 errors, 44 skipped; failing: none; command: nice cargo nextest run --locked --all-targets --all-features --no-fail-fast (+ scripts/check-harness-neutral exit 0, check-no-leaked-processes clean, wall 258s) @ abe1bf03
 friction: 12 events
+feedback: parked — docs/superpowers/runs/2026-10-09-session-keyed-seat-bindings/upstream-feedback-draft.md (not filed; deliver via Herdr superpowers tab on approval)

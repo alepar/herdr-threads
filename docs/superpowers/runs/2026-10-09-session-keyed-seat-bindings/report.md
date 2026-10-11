@@ -2,7 +2,7 @@
 
 ```
 status: completed with 0 unresolved Blocking, 8 escalations [degraded: design roast exit: converged at round 2 (Should-fix 9, 0 Blocking); punch list applied inline to spec + beads, not re-roasted, code findings parked, final review: not ready (final review 4 @ 212dbd0c: continuity reattach inserts binding without cursors → history unread after Herdr restart; cursor stuck after mod/hook-pull ACK of ordinary msg; agy hook delivery lost after upgrade (SessionMismatch on disconnected); S3 continuity_candidates newest-row; S4 Hermes child pre-subagent_start supersedes parent; S5 provenance-gated mod channel + overwrite; single-target composer wake ignores foreground PID; stale TRUST-POLICY/SKILL/CHILD_RESTRICTION text)]
-metrics: pending (upstream-feedback not yet run)
+metrics: parked draft docs/superpowers/runs/2026-10-09-session-keyed-seat-bindings/upstream-feedback-draft.md (6 defects, 2 design questions, 1 doc gap; not filed)
 ```
 
 ## Implemented
