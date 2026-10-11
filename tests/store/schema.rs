@@ -6771,7 +6771,9 @@ fn presentation_populated_v39() -> Connection {
     presentation_populated_v39_with_confirmations(false)
 }
 fn presentation_populated_v39_with_confirmations(mixed: bool) -> Connection {
-    let db = Connection::open_in_memory().unwrap();
+    presentation_populate_v39(Connection::open_in_memory().unwrap(), mixed)
+}
+fn presentation_populate_v39(db: Connection, mixed: bool) -> Connection {
     db.pragma_update(None, "foreign_keys", true).unwrap();
     let mut migrations = std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations"))
         .unwrap()
@@ -6817,11 +6819,61 @@ fn presentation_retained_rows(db: &Connection) -> Vec<Vec<rusqlite::types::Value
     .collect::<Result<Vec<_>, _>>()
     .unwrap()
 }
+// Read every old table through its old columns, including WITHOUT ROWID
+// tables. This also preserves exact retained private JSON/blob bytes.
+struct PresentationRetainedTable {
+    sql: String,
+    rows: Vec<Vec<rusqlite::types::Value>>,
+}
+fn presentation_query_rows(db: &Connection, sql: &str) -> Vec<Vec<rusqlite::types::Value>> {
+    let mut statement = db.prepare(sql).unwrap();
+    let columns = statement.column_count();
+    statement
+        .query_map([], |row| (0..columns).map(|n| row.get(n)).collect())
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+}
+fn presentation_retained_tables(db: &Connection) -> Vec<PresentationRetainedTable> {
+    let names: Vec<String> = db
+        .prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    names.into_iter().map(|name| {
+        let quoted = format!("\"{}\"", name.replace('"', "\"\""));
+        let statement = db.prepare(&format!("SELECT * FROM {quoted}")).unwrap();
+        let columns = statement.column_names().into_iter()
+            .map(|column| format!("\"{}\"", column.replace('"', "\"\"")))
+            .collect::<Vec<_>>().join(",");
+        let sql = format!("SELECT {columns} FROM {quoted} ORDER BY {columns}");
+        PresentationRetainedTable { rows: presentation_query_rows(db, &sql), sql }
+    }).collect()
+}
+fn presentation_assert_retained_tables(db: &Connection, tables: &[PresentationRetainedTable]) {
+    for table in tables {
+        assert_eq!(presentation_query_rows(db, &table.sql), table.rows, "{}", table.sql);
+    }
+}
+fn presentation_assert_foreign_keys(db: &Connection) {
+    assert!(db.pragma_query_value(None, "foreign_keys", |row| row.get::<_, bool>(0)).unwrap());
+    assert!(presentation_query_rows(db, "PRAGMA foreign_key_check").is_empty());
+}
+fn presentation_reopen(path: &std::path::Path) -> Connection {
+    let db = Connection::open(path).unwrap();
+    db.pragma_update(None, "foreign_keys", true).unwrap();
+    db
+}
 #[test]
 fn presentation_schema_populated_v39_upgrade_is_additive_and_reopens() {
     // Policies are immutable: construct legacy NULL, timed and Lazy rows at
     // insertion, never rewrite a released episode for the bootstrap fixture.
-    let db = presentation_populated_v39_with_confirmations(true);
+    let file = ScratchStore::new("presentation-v39-upgrade");
+    let db = presentation_populate_v39(Connection::open(file.path()).unwrap(), true);
+    let retained = presentation_retained_tables(&db);
+    presentation_assert_foreign_keys(&db);
     let before = presentation_retained_rows(&db);
     let catalog = presentation_schema_catalog(&db);
     let pending: i64 = db
@@ -6913,9 +6965,17 @@ fn presentation_schema_populated_v39_upgrade_is_additive_and_reopens() {
         .unwrap(),
         0
     );
+    presentation_assert_retained_tables(&db, &retained);
+    let upgraded = presentation_retained_tables(&db);
+    db.close().unwrap();
+    let db = presentation_reopen(file.path());
+    assert_eq!(db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 41);
     schema::initialize(&db, || UtcMillis(20000)).unwrap();
     assert_eq!(presentation_retained_rows(&db), after);
     assert_eq!(presentation_schema_catalog(&db), after_catalog);
+    presentation_assert_retained_tables(&db, &upgraded);
+    presentation_assert_foreign_keys(&db);
+    db.close().unwrap();
 }
 #[test]
 fn presentation_schema_populated_v39_failed_ddl_rolls_back_epoch_and_catalog() {
@@ -6994,7 +7054,8 @@ fn presentation_schema_pending_index_build_work_tracks_only_pending_projection()
 
 #[test]
 fn presentation_schema_populated_v40_failed_v41_rolls_back_bootstrap_and_catalog() {
-    let db = presentation_populated_v39_with_confirmations(true);
+    let file = ScratchStore::new("presentation-v40-failed-v41");
+    let db = presentation_populate_v39(Connection::open(file.path()).unwrap(), true);
     db.execute_batch(include_str!(
         "../../migrations/0040_invitation_presentation.sql"
     ))
@@ -7003,6 +7064,8 @@ fn presentation_schema_populated_v40_failed_v41_rolls_back_bootstrap_and_catalog
     // Fail at the final41 trigger, after projection bootstrap and earlier fence
     // objects, to prove the entire41 step rolls back to the durable40 boundary.
     db.execute_batch("CREATE TRIGGER presentation_fence_warning_close_sweeps_delete AFTER DELETE ON warning_close_sweeps BEGIN SELECT 1; END;").unwrap();
+    let retained = presentation_retained_tables(&db);
+    presentation_assert_foreign_keys(&db);
     let before = presentation_retained_rows(&db);
     let catalog = presentation_schema_catalog(&db);
     let error = schema::initialize(&db, || UtcMillis(10000)).unwrap_err();
@@ -7029,11 +7092,34 @@ fn presentation_schema_populated_v40_failed_v41_rolls_back_bootstrap_and_catalog
         .unwrap(),
         0
     );
+    presentation_assert_retained_tables(&db, &retained);
+    db.close().unwrap();
+    let db = presentation_reopen(file.path());
+    assert_eq!(db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 40);
+    assert_eq!(presentation_schema_catalog(&db), catalog);
+    presentation_assert_retained_tables(&db, &retained);
+    presentation_assert_foreign_keys(&db);
+    // The injected collision remains durable, and no41 bootstrap survived.
+    // Removing only that test obstruction permits the real40 ->41 retry.
+    db.execute_batch("DROP TRIGGER presentation_fence_warning_close_sweeps_delete").unwrap();
+    schema::initialize(&db, || UtcMillis(10001)).unwrap();
+    presentation_assert_retained_tables(&db, &retained);
+    let upgraded = presentation_retained_tables(&db);
+    let upgraded_catalog = presentation_schema_catalog(&db);
+    db.close().unwrap();
+    let db = presentation_reopen(file.path());
+    schema::initialize(&db, || UtcMillis(10002)).unwrap();
+    assert_eq!(db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 41);
+    assert_eq!(presentation_schema_catalog(&db), upgraded_catalog);
+    presentation_assert_retained_tables(&db, &upgraded);
+    presentation_assert_foreign_keys(&db);
+    db.close().unwrap();
 }
 
 #[test]
 fn presentation_schema_populated_v40_consumers_upgrade_revised_v41_and_reopen() {
-    let db = presentation_populated_v39_with_confirmations(true);
+    let file = ScratchStore::new("presentation-v40-consumers-upgrade");
+    let db = presentation_populate_v39(Connection::open(file.path()).unwrap(), true);
     db.execute_batch(include_str!(
         "../../migrations/0040_invitation_presentation.sql"
     ))
@@ -7065,7 +7151,7 @@ fn presentation_schema_populated_v40_consumers_upgrade_revised_v41_and_reopen() 
         "INSERT INTO invitation_presentation_consumers({names}) VALUES({values})"
     ))
     .unwrap();
-    let read_old = || {
+    let read_old = |db: &Connection| {
         db.query_row(
             &format!("SELECT {names} FROM invitation_presentation_consumers"),
             [],
@@ -7077,10 +7163,13 @@ fn presentation_schema_populated_v40_consumers_upgrade_revised_v41_and_reopen() 
         )
         .unwrap()
     };
-    let before = read_old();
+    let before = read_old(&db);
+    let retained = presentation_retained_tables(&db);
+    let catalog = presentation_schema_catalog(&db);
+    presentation_assert_foreign_keys(&db);
     schema::initialize(&db, || UtcMillis(10000)).unwrap();
     assert_eq!(
-        read_old(),
+        read_old(&db),
         before,
         "all retained40 presentation bytes preserved"
     );
@@ -7094,6 +7183,23 @@ fn presentation_schema_populated_v40_consumers_upgrade_revised_v41_and_reopen() 
         .unwrap(),
         0
     );
+    presentation_assert_retained_tables(&db, &retained);
+    let upgraded = presentation_retained_tables(&db);
+    let upgraded_catalog = presentation_schema_catalog(&db);
+    for (kind, name, table, root, sql) in &catalog {
+        let new = upgraded_catalog.iter().find(|row| &row.0 == kind && &row.1 == name).unwrap();
+        assert_eq!((&new.2, new.3), (table, *root), "old40 object/rootpage {name}");
+        if name != "invitation_presentation_consumers" {
+            assert_eq!(&new.4, sql, "old40 object DDL {name}");
+        }
+    }
+    db.close().unwrap();
+    let db = presentation_reopen(file.path());
+    assert_eq!(db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 41);
     schema::initialize(&db, || UtcMillis(10001)).unwrap();
-    assert_eq!(read_old(), before);
+    assert_eq!(read_old(&db), before);
+    assert_eq!(presentation_schema_catalog(&db), upgraded_catalog);
+    presentation_assert_retained_tables(&db, &upgraded);
+    presentation_assert_foreign_keys(&db);
+    db.close().unwrap();
 }

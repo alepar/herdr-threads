@@ -2794,6 +2794,26 @@ fn presentation_relevance_coverage_reserves_fallback_progress_under_source_load(
     );
 }
 
+fn relevance_seed_stale_sources(db: &Connection, count: u32) {
+    for n in 0..count {
+        let first = 2 * n + 1;
+        let second = first + 1;
+        let first_event = first + 1;
+        let second_event = second + 1;
+        db.execute_batch(&format!("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('relevance-stale-a-{n}','i','relevance-thread',{first},'ordinary','stale',0,{first_event}),('relevance-stale-b-{n}','i','relevance-thread',{second},'ordinary','stale',0,{second_event});
+        INSERT INTO warning_conditions(condition_kind,thread_id,condition_id,affected_seat_id,open_warning_id,opened_seq,invitation_originator_instance_id,invitation_originator_seat_id) VALUES ('invitation','relevance-thread','stale-invitation-{n}','s','relevance-stale-a-{n}',{first_event},'i','s');
+        INSERT INTO receipt_warning_origins(instance_id,seat_id,warning_id,source_message_id) VALUES ('i','s','relevance-stale-a-{n}','relevance-stale-b-{n}');
+        INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id,status) VALUES ('relevance-stale-a-{n}',{first_event},'relevance-thread',0,'s','invitation','stale-invitation-{n}','pending'),('relevance-stale-b-{n}',{second_event},'relevance-thread',0,'s','invitation','stale-invitation-{n}','failed');
+        INSERT OR IGNORE INTO digest_open_warnings(source,source_ordinal,warning_id,thread_id,affected_seat_id,condition_kind,condition_id) SELECT 'job',ordinal,warning_id,thread_id,'s',condition_kind,condition_id FROM warning_jobs WHERE warning_id IN ('relevance-stale-a-{n}','relevance-stale-b-{n}');
+        INSERT OR IGNORE INTO digest_open_warning_recipients(seat_id,warning_id,thread_id,source,source_ordinal) SELECT 's',warning_id,thread_id,'job',ordinal FROM warning_jobs WHERE warning_id IN ('relevance-stale-a-{n}','relevance-stale-b-{n}');
+        INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES ('prep-relevance-stale-{n}','i','seat:o','stale-{n}',zeroblob(32),'relevance-thread',0,0,0,0,0,0,0,'sealed');
+        INSERT INTO prepared_unavailable_warnings(preparation_id,warning_key,warning_id,affected_seat_id,unavailability_episode,warning_offset,event_json) VALUES ('prep-relevance-stale-{n}','stale-prepared-{n}','relevance-stale-prepared-{n}','s',1,1,'{{}}');
+        INSERT OR IGNORE INTO digest_open_warnings(source,source_ordinal,warning_id,thread_id,affected_seat_id,condition_kind,condition_id,episode) SELECT 'prepared',ordinal,warning_id,'relevance-thread','s','unavailable',warning_key,1 FROM prepared_unavailable_warnings WHERE preparation_id='prep-relevance-stale-{n}';
+        INSERT OR IGNORE INTO digest_open_warning_recipients(seat_id,warning_id,thread_id,source,source_ordinal) SELECT 's',warning_id,'relevance-thread','prepared',ordinal FROM prepared_unavailable_warnings WHERE preparation_id='prep-relevance-stale-{n}';
+        INSERT INTO work_jobs(id,kind,subject_id,high_water,status) VALUES ('relevance-stale-work-a-{n}','send_attention','service-notify:relevance-stale-notify-a-{n}',0,'pending'),('relevance-stale-work-b-{n}','send_attention','service-notify:relevance-stale-notify-b-{n}',0,'failed');")).unwrap();
+    }
+}
+
 #[test]
 fn presentation_relevance_all_thirteen_physical_sources_progress_through_stale_candidates() {
     use crate::store::presentation_relevance::Relevance;
@@ -2801,18 +2821,8 @@ fn presentation_relevance_all_thirteen_physical_sources_progress_through_stale_c
     // Deliberately stale derived/source candidates: immutable ordinary message
     // identities cannot be current warnings. This exercises physical source
     // rotation, not a fabricated canonical swept invitation/programmatic warn.
-    db.execute_batch("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('relevance-stale-a','i','relevance-thread',1,'ordinary','stale',0,2),('relevance-stale-b','i','relevance-thread',2,'ordinary','stale',0,3);
-        INSERT INTO warning_conditions(condition_kind,thread_id,condition_id,affected_seat_id,open_warning_id,opened_seq,invitation_originator_instance_id,invitation_originator_seat_id) VALUES ('invitation','relevance-thread','stale-invitation','s','relevance-stale-a',2,'i','s');
-        INSERT INTO receipt_warning_origins(instance_id,seat_id,warning_id,source_message_id) VALUES ('i','s','relevance-stale-a','relevance-stale-b');
-        INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id,status) VALUES ('relevance-stale-a',2,'relevance-thread',0,'s','invitation','stale-invitation','pending'),('relevance-stale-b',3,'relevance-thread',0,'s','invitation','stale-invitation','failed');
-        INSERT OR IGNORE INTO digest_open_warnings(source,source_ordinal,warning_id,thread_id,affected_seat_id,condition_kind,condition_id) SELECT 'job',ordinal,warning_id,thread_id,'s',condition_kind,condition_id FROM warning_jobs;
-        INSERT OR IGNORE INTO digest_open_warning_recipients(seat_id,warning_id,thread_id,source,source_ordinal) SELECT 's',warning_id,thread_id,'job',ordinal FROM warning_jobs;
-        INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES ('prep-relevance-stale','i','seat:o','stale',zeroblob(32),'relevance-thread',0,0,0,0,0,0,0,'sealed');
-        INSERT INTO prepared_unavailable_warnings(preparation_id,warning_key,warning_id,affected_seat_id,unavailability_episode,warning_offset,event_json) VALUES ('prep-relevance-stale','stale-prepared','relevance-stale-prepared','s',1,1,'{}');
-        INSERT OR IGNORE INTO digest_open_warnings(source,source_ordinal,warning_id,thread_id,affected_seat_id,condition_kind,condition_id,episode) SELECT 'prepared',ordinal,warning_id,'relevance-thread','s','unavailable',warning_key,1 FROM prepared_unavailable_warnings;
-        INSERT OR IGNORE INTO digest_open_warning_recipients(seat_id,warning_id,thread_id,source,source_ordinal) SELECT 's',warning_id,'relevance-thread','prepared',ordinal FROM prepared_unavailable_warnings;
-        INSERT INTO work_jobs(id,kind,subject_id,high_water,status) VALUES ('relevance-stale-work-a','send_attention','service-notify:relevance-stale-notify-a',0,'pending'),('relevance-stale-work-b','send_attention','service-notify:relevance-stale-notify-b',0,'failed');").unwrap();
-    assert_eq!(db.query_row("SELECT count(*) FROM digest_programmatic_warnings WHERE seat_id='s' AND warning_id='relevance-stale-a'",[],|r|r.get::<_,i64>(0)).unwrap(),1,"canonical source7 projection already exists");
+    relevance_seed_stale_sources(&db, 1);
+    assert_eq!(db.query_row("SELECT count(*) FROM digest_programmatic_warnings WHERE seat_id='s' AND warning_id='relevance-stale-a-0'",[],|r|r.get::<_,i64>(0)).unwrap(),1,"canonical source7 projection already exists");
     let mut absent = false;
     let mut rows = 0u64;
     for _ in 0..13 {
@@ -2841,6 +2851,198 @@ fn presentation_relevance_all_thirteen_physical_sources_progress_through_stale_c
         );
         assert_eq!(slot["exhausted"], true);
         assert!(slot["after"]["ordinal"].as_i64().unwrap() > 0);
+    }
+}
+
+// Observe the actual advance() statements; no test copy of the walker's SQL.
+// A missing source, unbounded MAX/range scan, or sort must fail this matrix.
+#[derive(Default)]
+struct RelevanceStatementWork {
+    sql: String,
+    first_expanded: String,
+    last_expanded: String,
+    executions: u64,
+    rows: u64,
+    max_vm: i32,
+    max_scan: i32,
+    max_sort: i32,
+}
+#[derive(Default)]
+struct RelevanceTraceState {
+    work: std::collections::BTreeMap<String, RelevanceStatementWork>,
+    rows: u64,
+    panicked: bool,
+}
+struct RelevanceTrace<'a> {
+    db: &'a Connection,
+    state: Box<std::cell::RefCell<RelevanceTraceState>>,
+}
+impl<'a> RelevanceTrace<'a> {
+    fn install(db: &'a Connection) -> Self {
+        let state = Box::new(std::cell::RefCell::new(RelevanceTraceState::default()));
+        // The box stays at this address until the callback is unregistered.
+        assert_eq!(unsafe {
+            rusqlite::ffi::sqlite3_trace_v2(
+                db.handle(),
+                rusqlite::ffi::SQLITE_TRACE_STMT | rusqlite::ffi::SQLITE_TRACE_ROW | rusqlite::ffi::SQLITE_TRACE_PROFILE,
+                Some(relevance_statement_trace),
+                (&*state as *const std::cell::RefCell<RelevanceTraceState>).cast_mut().cast(),
+            )
+        }, rusqlite::ffi::SQLITE_OK);
+        Self { db, state }
+    }
+    fn finish(self) -> Vec<RelevanceStatementWork> {
+        self.unregister();
+        let mut state = self.state.borrow_mut();
+        assert!(!state.panicked, "SQLite trace callback panicked");
+        std::mem::take(&mut state.work).into_values().collect()
+    }
+    fn unregister(&self) {
+        unsafe {
+            rusqlite::ffi::sqlite3_trace_v2(self.db.handle(), 0, None, std::ptr::null_mut());
+        }
+    }
+}
+impl Drop for RelevanceTrace<'_> {
+    fn drop(&mut self) {
+        self.unregister();
+    }
+}
+unsafe extern "C" fn relevance_statement_trace(
+    event: u32,
+    data: *mut std::ffi::c_void,
+    statement: *mut std::ffi::c_void,
+    _: *mut std::ffi::c_void,
+) -> i32 {
+    use rusqlite::ffi;
+    let state = unsafe { &*data.cast::<std::cell::RefCell<RelevanceTraceState>>() };
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let stmt = statement.cast::<ffi::sqlite3_stmt>();
+        let raw = unsafe { ffi::sqlite3_sql(stmt) };
+        if raw.is_null() {
+            return;
+        }
+        let sql = unsafe { std::ffi::CStr::from_ptr(raw) }.to_string_lossy();
+        let head = sql.starts_with("SELECT COALESCE(MAX(") && sql.contains(" INDEXED BY ");
+        let range = sql.starts_with("SELECT ") && sql.contains(",rowid FROM ");
+        if !head && !range {
+            return;
+        }
+        let mut state = state.borrow_mut();
+        if event == ffi::SQLITE_TRACE_STMT {
+            state.rows = 0;
+            for metric in [ffi::SQLITE_STMTSTATUS_VM_STEP, ffi::SQLITE_STMTSTATUS_FULLSCAN_STEP, ffi::SQLITE_STMTSTATUS_SORT] {
+                unsafe { ffi::sqlite3_stmt_status(stmt, metric, 1); }
+            }
+        } else if event == ffi::SQLITE_TRACE_ROW {
+            state.rows += 1;
+        } else if event == ffi::SQLITE_TRACE_PROFILE {
+            let expanded = unsafe { ffi::sqlite3_expanded_sql(stmt) };
+            assert!(!expanded.is_null(), "expanded production SQL unavailable");
+            let expanded_sql = unsafe { std::ffi::CStr::from_ptr(expanded) }.to_string_lossy().into_owned();
+            unsafe { ffi::sqlite3_free(expanded.cast()); }
+            let rows = state.rows;
+            let entry = state.work.entry(sql.into_owned()).or_default();
+            if entry.executions == 0 {
+                entry.sql = unsafe { std::ffi::CStr::from_ptr(raw) }.to_string_lossy().into_owned();
+                entry.first_expanded = expanded_sql.clone();
+            }
+            entry.last_expanded = expanded_sql;
+            entry.executions += 1;
+            entry.rows += rows;
+            entry.max_vm = entry.max_vm.max(unsafe { ffi::sqlite3_stmt_status(stmt, ffi::SQLITE_STMTSTATUS_VM_STEP, 0) });
+            entry.max_scan = entry.max_scan.max(unsafe { ffi::sqlite3_stmt_status(stmt, ffi::SQLITE_STMTSTATUS_FULLSCAN_STEP, 0) });
+            entry.max_sort = entry.max_sort.max(unsafe { ffi::sqlite3_stmt_status(stmt, ffi::SQLITE_STMTSTATUS_SORT, 0) });
+        }
+    }));
+    if result.is_err() {
+        state.borrow_mut().panicked = true;
+    }
+    0
+}
+
+#[test]
+fn presentation_relevance_all_thirteen_actual_source_heads_and_ranges_have_bounded_plans_and_vm() {
+    use crate::store::presentation_relevance::Relevance;
+    // Independent physical-row geometry for one stale fixture group. Two job
+    // rows feed each job projection; every other source contributes one row.
+    let sources = [
+        ("warning_conditions", "affected_seat_id=?1", 1),
+        ("warning_conditions", "invitation_originator_instance_id=?2", 1),
+        ("receipt_warning_origins", "instance_id=?2 AND seat_id=?1", 1),
+        ("digest_open_warning_recipients", "source='job'", 2),
+        ("digest_open_warning_recipients", "source='prepared'", 1),
+        ("digest_open_warnings", "source='job'", 2),
+        ("digest_open_warnings", "source='prepared'", 1),
+        ("digest_programmatic_warnings", "seat_id=?1", 1),
+        ("warning_jobs", "status='pending'", 1),
+        ("warning_jobs", "status='failed'", 1),
+        ("work_jobs", "status='pending'", 1),
+        ("work_jobs", "status='failed'", 1),
+        ("prepared_unavailable_warnings", " WHERE 1 AND ", 1),
+    ];
+    let mut measurements = Vec::new();
+    for count in [32u32, 512] {
+        let db = relevance_db();
+        relevance_seed_stale_sources(&db, count);
+        let trace = RelevanceTrace::install(&db);
+        let mut absent = false;
+        let mut charged_rows = 0u64;
+        let mut charged_seeks = 0u64;
+        for _ in 0..count * 4 {
+            let proof = relevance_pull(&db);
+            charged_rows += u64::from(proof.work.sources);
+            charged_seeks += u64::from(proof.work.highwater_seeks);
+            assert_ne!(proof.relevance, Relevance::Open, "stale candidates cannot confer authority");
+            if proof.relevance == Relevance::Absent {
+                absent = true;
+                break;
+            }
+        }
+        let work = trace.finish();
+        assert!(absent, "finite retained source union must finish");
+        assert_eq!(work.len(), 26, "thirteen actual heads and thirteen actual ranges");
+        assert_eq!(charged_rows, 15 * u64::from(count));
+        assert_eq!(work.iter().map(|entry| entry.executions).sum::<u64>(), charged_seeks,
+            "every source seek is observed; this stale fixture has no coverage seeks");
+        let mut matrix = Vec::new();
+        for (table, predicate, multiplier) in sources {
+            for head in [true, false] {
+                let entries: Vec<_> = work.iter().filter(|entry| {
+                    entry.sql.contains(&format!(" FROM {table} INDEXED BY "))
+                        && entry.sql.contains(predicate)
+                        && entry.sql.starts_with("SELECT COALESCE(MAX(") == head
+                }).collect();
+                assert_eq!(entries.len(), 1, "one actual query form: {table}/{predicate}, head={head}");
+                let entry = entries[0];
+                if head {
+                    assert_eq!((entry.executions, entry.rows), (1, 1), "one captured highwater");
+                } else {
+                    assert_eq!(entry.rows, multiplier * u64::from(count), "physical rows: {table}/{predicate}");
+                    assert!(entry.executions <= entry.rows + 1, "at most one terminal empty seek");
+                }
+                assert_eq!(entry.max_scan, 0, "full scan: {}", entry.sql);
+                assert_eq!(entry.max_sort, 0, "sort: {}", entry.sql);
+                assert!(entry.max_vm <= 100, "bounded statement work: {} VM={}", entry.sql, entry.max_vm);
+                for expanded in [&entry.first_expanded, &entry.last_expanded] {
+                    let plan: Vec<String> = db.prepare(&format!("EXPLAIN QUERY PLAN {expanded}"))
+                        .unwrap().query_map([], |row| row.get(3)).unwrap()
+                        .collect::<Result<_, _>>().unwrap();
+                    assert!(plan.iter().any(|line| line.contains("SEARCH ") && line.contains(table)),
+                        "actual head/range must seek source: {plan:?}");
+                    assert!(plan.iter().all(|line| !line.contains("SCAN ") && !line.contains("TEMP B-TREE")),
+                        "actual head/range must not scan/sort: {plan:?}");
+                    eprintln!("retained_groups={count} {table}/{predicate} head={head} executions={} rows={} max_vm={} plan={plan:?}",
+                        entry.executions, entry.rows, entry.max_vm);
+                }
+                matrix.push((entry.sql.clone(), entry.max_vm));
+            }
+        }
+        measurements.push(matrix);
+    }
+    for ((small_sql, small_vm), (large_sql, large_vm)) in measurements[0].iter().zip(&measurements[1]) {
+        assert_eq!(small_sql, large_sql, "same observed statement form at both scales");
+        assert!(large_vm <= &(small_vm + 8), "source statement work must stay flat across 16x history: {small_sql} VM={small_vm}/{large_vm}");
     }
 }
 
