@@ -113,7 +113,9 @@
       "tests/store/schema.rs",
       "tests/store/effective.rs",
       "tests/store/materialization.rs",
-      "tests/store/receipts.rs"
+      "tests/store/receipts.rs",
+      "migrations/0031_receipt_deadline_backfill.sql",
+      "src/store/receipts.rs"
     ]
   },
   {
@@ -143,7 +145,10 @@
       "tests/store/lazy_inbox.rs",
       "tests/store/topology_attachment_guard.rs",
       "tests/protocol/capabilities.rs",
-      "migrations/0030_invitation_lifecycle.sql"
+      "migrations/0030_invitation_lifecycle.sql",
+      "tests/cli/watch.rs",
+      "tests/cli/lazy_display.rs",
+      "migrations/0031_invitation_warning_origin.sql"
     ]
   },
   {
@@ -181,7 +186,9 @@
       "tests/cli/commands.rs",
       "tests/cli/output.rs",
       "tests/cli/skill.rs",
-      "tests/cli/guidance.rs"
+      "tests/cli/guidance.rs",
+      "src/cli/watch.rs",
+      "src/cli/hook_inbox.rs"
     ]
   },
   {

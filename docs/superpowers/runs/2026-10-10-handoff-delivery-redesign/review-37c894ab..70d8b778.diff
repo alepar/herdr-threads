@@ -1,0 +1,713 @@
+# Review package: 37c894ab944c516007735c60285761d179c79a39..70d8b778
+
+## Commits
+70d8b778 feat(hooks): add stable registered native event entrypoints
+
+## Files changed
+ src/cli/hook.rs             |  52 ++++++++++--
+ src/harness/claude_mod.rs   |  30 +++++--
+ src/harness/setup.rs        |  20 +++++
+ tests/cli/hook.rs           | 189 ++++++++++++++++++++++++++++++++++++++------
+ tests/harness/claude_mod.rs |  25 ++++++
+ tests/hook_entrypoint.rs    | 115 +++++++++++++++++++++++++++
+ 6 files changed, 391 insertions(+), 40 deletions(-)
+
+## Diff
+diff --git a/src/cli/hook.rs b/src/cli/hook.rs
+index e022525b..17496a41 100644
+--- a/src/cli/hook.rs
++++ b/src/cli/hook.rs
+@@ -55,20 +55,22 @@ use std::{
+     io::{self, Read, Write},
+     path::{Path, PathBuf},
+     sync::{
+         Arc, Mutex,
+         atomic::{AtomicBool, AtomicU64, Ordering},
+     },
+     time::{Duration, Instant},
+ };
+ 
+ pub const SUBCOMMAND: &str = "hook";
++/// Stable per-event native callback surface.
++pub const EVENT_SUBCOMMAND: &str = "hook-event";
+ /// Ordinary tool/turn check-in budget, end to end.
+ pub const TOOL_BUDGET: Duration = Duration::from_millis(1500);
+ /// Startup/resume/clear ensure plus check-in budget, end to end.
+ pub const LIFECYCLE_BUDGET: Duration = Duration::from_millis(5000);
+ /// Native input bound shared with the adapters.
+ pub const MAX_STDIN: usize = 65_536;
+ /// Encoded `additionalContext` bound shared with the adapter branches.
+ pub const MAX_CONTEXT: usize = 4096;
+ const WATCHDOG_MARGIN: Duration = Duration::from_millis(150);
+ 
+@@ -97,20 +99,39 @@ pub fn installed_argv(
+         argv.extend(["--state-dir".to_owned(), state.to_owned()]);
+     }
+     if let Some(host) = host_endpoint {
+         argv.extend(["--host-endpoint".to_owned(), host.to_owned()]);
+     }
+     argv.push(SUBCOMMAND.to_owned());
+     argv.push(harness.as_str().to_owned());
+     argv
+ }
+ 
++/// Complete stable native event argv. Routes must already be canonical, as
++/// supplied by setup's instance resolution. Executable spelling is preserved.
++/// No installation identity or shell ownership marker belongs in these bytes.
++pub fn installed_event_argv(
++    executable: &str,
++    state_dir: Option<&str>,
++    host_endpoint: Option<&str>,
++    harness: Harness,
++    event: &str,
++) -> Result<Vec<String>, String> {
++    let mut argv = installed_argv(executable, state_dir, host_endpoint, harness);
++    let command = argv.len() - 2;
++    argv[command] = EVENT_SUBCOMMAND.to_owned();
++    argv.push(event.to_owned());
++    let words = argv.iter().map(OsString::from).collect::<Vec<_>>();
++    parse_hook_argv(&words).ok_or_else(|| "invalid native event argv".to_owned())??;
++    Ok(argv)
++}
++
+ /// `None` when argv does not select the hook subcommand (ordinary CLI parsing
+ /// then applies). `Some(Err)` is still a hook invocation and must not block.
+ ///
+ /// P8 (native Claude demo 4): argv is classified as a hook invocation only once
+ /// the `hook` word is reached. A conflicting global flag seen before that is
+ /// held back, so `--state-dir /x --state-dir /y ack ...` returns `None` and the
+ /// ordinary CLI refuses it with a nonzero exit instead of the fail-open hook.
+ pub fn parse_hook_argv(args: &[OsString]) -> Option<Result<HookArgs, String>> {
+     parse_hook_argv_registered(args, builtins())
+ }
+@@ -153,54 +174,73 @@ pub(crate) fn parse_hook_argv_registered(
+             // P7: a repeat is accepted only with the identical value.
+             if slot.as_ref().is_some_and(|seen| *seen != value) {
+                 conflict.get_or_insert_with(|| format!("{flag} was given conflicting values"));
+             } else {
+                 *slot = Some(value);
+             }
+             continue;
+         }
+         match text {
+             Some("--json") => index += 1,
+-            Some(SUBCOMMAND) => break,
++            Some(SUBCOMMAND | EVENT_SUBCOMMAND) => break,
+             _ => return None,
+         }
+     }
+     if let Some(conflict) = conflict {
+         return Some(Err(conflict));
+     }
++    let dedicated = args[index] == EVENT_SUBCOMMAND;
+     let rest = &args[index + 1..];
+     let usage = || {
+         format!(
+-            "usage: herdr-threads hook {} [--event NAME]",
++            "usage: herdr-threads hook-event {} EVENT (legacy: hook HARNESS [--event NAME])",
+             registry
+                 .registrations()
+                 .iter()
+                 .map(|r| r.metadata().id)
+                 .collect::<Vec<_>>()
+                 .join("|")
+         )
+     };
+     let words = rest.iter().map(|w| w.to_str()).collect::<Vec<_>>();
+     let (id, event) = match words[..] {
+-        [Some(id)] => (id, None),
++        [Some(id)] if !dedicated => (id, None),
++        [Some(id), Some(name)] if dedicated => (id, Some(name.to_owned())),
+         [Some(id), Some("--event"), Some(name)]
+-            if (1..=63).contains(&name.len())
++            if !dedicated
++                && (1..=63).contains(&name.len())
+                 && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') =>
+         {
+             (id, Some(name.to_owned()))
+         }
+         _ => return Some(Err(usage())),
+     };
+-    let harness = match registry.agent(id) {
+-        Ok(id) => crate::harness::registry::OccupantHarness::Agent(id).into(),
++    let agent = match registry.agent(id) {
++        Ok(agent) => agent,
+         Err(_) => return Some(Err(usage())),
+     };
++    let registered = match registry.by_id(agent) {
++        Ok(registered) => registered,
++        Err(_) => return Some(Err(usage())),
++    };
++    let harness = crate::harness::registry::OccupantHarness::Agent(agent).into();
++    if let Some(event) = &event
++        && !registered.contracts().iter().any(|descriptor| {
++            descriptor
++                .contract
++                .events
++                .iter()
++                .any(|declared| declared.event == event)
++        })
++    {
++        return Some(Err(format!("undeclared hook event {id}/{event}")));
++    }
+     Some(Ok(HookArgs {
+         state_dir,
+         host_endpoint,
+         harness,
+         event,
+     }))
+ }
+ 
+ /// Pane identity comes only from the Herdr-provided environment.
+ #[derive(Debug, Clone, Default)]
+diff --git a/src/harness/claude_mod.rs b/src/harness/claude_mod.rs
+index b96262bd..cb6a7868 100644
+--- a/src/harness/claude_mod.rs
++++ b/src/harness/claude_mod.rs
+@@ -76,31 +76,45 @@ pub fn mod_dir(state_dir: &Path) -> PathBuf {
+ }
+ 
+ /// The published path of the module that launches `watch`.
+ const REGISTER_JS: &str = "hooks/register.js";
+ /// The repo copy's marker line starts with this; `setup claude` replaces the
+ /// whole line with [`LAUNCH_SUFFIX`] appended after the rendered JSON.
+ const LAUNCH_MARKER: &str = "const LAUNCH = null // herdr-threads:launch";
+ const LAUNCH_PREFIX: &str = "const LAUNCH = ";
+ const LAUNCH_SUFFIX: &str = " // herdr-threads:launch (written by setup claude)";
+ 
+-/// The mod's launch prefix from the hooks' argv: the hooks' invocation minus
+-/// the trailing `hook claude`. The mod appends `watch ...` / `watch ack ...`.
++/// Extract the canonical invocation route from a known Claude callback argv.
++/// Stable event and legacy event registrations must never pass their event to
++/// the mod's `watch` command. Parser validation rejects malformed routes/pairs.
+ pub fn launch_prefix(hook_argv: &[String]) -> Result<Vec<String>, SetupError> {
+-    match hook_argv {
+-        [prefix @ .., hook, claude]
+-            if hook == "hook" && claude == "claude" && !prefix.is_empty() =>
++    let words = hook_argv
++        .iter()
++        .map(std::ffi::OsString::from)
++        .collect::<Vec<_>>();
++    let parsed = crate::cli::hook::parse_hook_argv(&words)
++        .ok_or(SetupError::Invalid)?
++        .map_err(|_| SetupError::Invalid)?;
++    if parsed.harness != super::context::Harness::Claude {
++        return Err(SetupError::Invalid);
++    }
++    let tail = match hook_argv {
++        [.., command, harness, _event] if command == "hook-event" && harness == "claude" => 3,
++        [.., command, harness, flag, _event]
++            if command == "hook" && harness == "claude" && flag == "--event" =>
+         {
+-            Ok(prefix.to_vec())
++            4
+         }
+-        _ => Err(SetupError::Invalid),
+-    }
++        [.., command, harness] if command == "hook" && harness == "claude" => 2,
++        _ => return Err(SetupError::Invalid),
++    };
++    Ok(hook_argv[..hook_argv.len() - tail].to_vec())
+ }
+ 
+ /// The embedded bytes of `path`, with the launch line rendered into
+ /// `hooks/register.js` when `launch` is given. Every other file, and the
+ /// `None` case, is the embedded content as is.
+ fn rendered(path: &str, content: &'static str, launch: Option<&[String]>) -> Cow<'static, str> {
+     let (REGISTER_JS, Some(prefix)) = (path, launch) else {
+         return Cow::Borrowed(content);
+     };
+     let Ok(json) = serde_json::to_string(&serde_json::json!({ "argv": prefix })) else {
+diff --git a/src/harness/setup.rs b/src/harness/setup.rs
+index 05f88704..0879c03b 100644
+--- a/src/harness/setup.rs
++++ b/src/harness/setup.rs
+@@ -70,20 +70,40 @@ pub fn shell_command(argv: &[String]) -> Result<String, SetupError> {
+     }
+     let mut words = Vec::new();
+     for word in argv {
+         if word.is_empty() || word.len() > 4096 || word.chars().any(char::is_control) {
+             return Err(SetupError::Invalid);
+         }
+         words.push(format!("'{}'", word.replace('\'', "'\\''")));
+     }
+     Ok(words.join(" "))
+ }
++/// Quote one complete stable event argv produced by
++/// [`crate::cli::hook::installed_event_argv`]. This never appends an event,
++/// canonicalizes an executable spelling, or adds an installation owner marker.
++pub fn native_event_command(event_argv: &[String]) -> Result<String, SetupError> {
++    let words = event_argv
++        .iter()
++        .map(std::ffi::OsString::from)
++        .collect::<Vec<_>>();
++    let parsed = crate::cli::hook::parse_hook_argv(&words)
++        .ok_or(SetupError::Invalid)?
++        .map_err(|_| SetupError::Invalid)?;
++    if parsed.event.is_none()
++        || event_argv.len() < 4
++        || event_argv[event_argv.len() - 3] != crate::cli::hook::EVENT_SUBCOMMAND
++    {
++        return Err(SetupError::Invalid);
++    }
++    shell_command(event_argv)
++}
++
+ /// The owner marker suffix a marked hook command carries.
+ const OWNER_MARKER: &str = " # herdr-threads-owner:";
+ 
+ /// The hook command registered for `event`: the base command with the two words
+ /// `'--event' '<event>'` inserted after the harness word, which is before the owner
+ /// marker when there is one (else appended).
+ pub(crate) fn event_command(base: &str, event: &str) -> String {
+     let pair = format!(" '--event' '{event}'");
+     match base.find(OWNER_MARKER) {
+         Some(at) => format!("{}{pair}{}", &base[..at], &base[at..]),
+diff --git a/tests/cli/hook.rs b/tests/cli/hook.rs
+index c3fba380..392bc04f 100644
+--- a/tests/cli/hook.rs
++++ b/tests/cli/hook.rs
+@@ -52,41 +52,43 @@ fn installed_argv_and_hook_parser_are_one_contract() {
+             assert_eq!(entry.group["hooks"][0]["command"], registered, "{entry:?}");
+             let mut evented = argv.clone();
+             evented.extend(["--event".to_owned(), entry.event.clone()]);
+             assert_eq!(shell_command(&evented).unwrap(), registered);
+             let words: Vec<OsString> = evented.iter().map(OsString::from).collect();
+             assert_eq!(
+                 parse_hook_argv(&words).unwrap().unwrap().event.as_deref(),
+                 Some(entry.event.as_str())
+             );
+         }
+-        let codex = crate::harness::setup::plan_codex_for_version(
+-            &[],
+-            &argv,
+-            &crate::harness::codex::InstalledVersion::pinned_for_test(),
+-        )
+-        .unwrap();
+-        assert_eq!(
+-            codex.owned.len(),
+-            crate::harness::codex::DECLARATION.owned_hooks.len()
+-        );
+-        for entry in &codex.owned {
+-            let registered = crate::harness::setup::event_command(&command, &entry.event);
+-            assert_eq!(entry.group["hooks"][0]["command"], registered, "{entry:?}");
+-            let mut evented = argv.clone();
+-            evented.extend(["--event".to_owned(), entry.event.clone()]);
+-            assert_eq!(shell_command(&evented).unwrap(), registered);
+-            let words: Vec<OsString> = evented.iter().map(OsString::from).collect();
++        if harness == Harness::Codex {
++            let codex = crate::harness::setup::plan_codex_for_version(
++                &[],
++                &argv,
++                &crate::harness::codex::InstalledVersion::pinned_for_test(),
++            )
++            .unwrap();
+             assert_eq!(
+-                parse_hook_argv(&words).unwrap().unwrap().event.as_deref(),
+-                Some(entry.event.as_str())
++                codex.owned.len(),
++                crate::harness::codex::DECLARATION.owned_hooks.len()
+             );
++            for entry in &codex.owned {
++                let registered = crate::harness::setup::event_command(&command, &entry.event);
++                assert_eq!(entry.group["hooks"][0]["command"], registered, "{entry:?}");
++                let mut evented = argv.clone();
++                evented.extend(["--event".to_owned(), entry.event.clone()]);
++                assert_eq!(shell_command(&evented).unwrap(), registered);
++                let words: Vec<OsString> = evented.iter().map(OsString::from).collect();
++                assert_eq!(
++                    parse_hook_argv(&words).unwrap().unwrap().event.as_deref(),
++                    Some(entry.event.as_str())
++                );
++            }
+         }
+     }
+     assert_eq!(
+         parse_hook_argv(&os(&[
+             "b",
+             "--host-endpoint",
+             "/h",
+             "--json",
+             "hook",
+             "codex"
+@@ -168,20 +170,158 @@ fn installed_argv_and_hook_parser_are_one_contract() {
+             harness: Harness::Claude,
+             event: None,
+         }))
+     );
+     assert!(matches!(
+         parse_hook_argv(&os(&["b", "--state-dir=/s", "--state-dir=/t", "hook", "codex"])),
+         Some(Err(e)) if e.contains("--state-dir")
+     ));
+ }
+ 
++// Catches dedicated entrypoints falling through to clap, cross-harness events,
++// and unregistered event names reaching daemon preparation.
++#[test]
++fn native_event_entrypoints_validate_registered_pairs_and_keep_legacy_syntax() {
++    for (harness, event) in [
++        ("claude", "SessionStart"),
++        ("claude", "PreToolUse"),
++        ("codex", "SessionStart"),
++        ("codex", "SubagentStart"),
++        ("codex", "PreToolUse"),
++    ] {
++        let dedicated = parse_hook_argv(&os(&[
++            "ht",
++            "--state-dir",
++            "/state",
++            "--host-endpoint",
++            "/host",
++            "hook-event",
++            harness,
++            event,
++        ]))
++        .expect("dedicated event must select hook entrypoint")
++        .unwrap();
++        let legacy = parse_hook_argv(&os(&[
++            "ht",
++            "--state-dir",
++            "/state",
++            "--host-endpoint",
++            "/host",
++            "hook",
++            harness,
++            "--event",
++            event,
++        ]))
++        .unwrap()
++        .unwrap();
++        assert_eq!(dedicated, legacy);
++        assert_eq!(dedicated.event.as_deref(), Some(event));
++    }
++    for words in [
++        vec!["ht", "hook-event", "claude", "SubagentStart"],
++        vec!["ht", "hook-event", "codex", "Bogus"],
++        vec!["ht", "hook-event", "human", "SessionStart"],
++        vec!["ht", "hook-event", "claude"],
++        vec!["ht", "hook-event", "claude", "--event", "SessionStart"],
++        vec!["ht", "hook", "claude", "--event", "SubagentStart"],
++    ] {
++        assert!(
++            matches!(parse_hook_argv(&os(&words)), Some(Err(_))),
++            "{words:?}"
++        );
++    }
++}
++
++// Catches unstable ownership suffixes, route loss, double-appended events,
++// quoting mistakes, and accepting legacy/invalid argv as a stable command.
++#[test]
++fn native_event_commands_preserve_exact_route_and_executable_spelling() {
++    use crate::harness::setup::native_event_command;
++    let command = || {
++        let argv = installed_event_argv(
++            "/opt/ht bin",
++            Some("/state"),
++            Some("/host"),
++            Harness::Claude,
++            "SessionStart",
++        )
++        .unwrap();
++        native_event_command(&argv).unwrap()
++    };
++    let expected = "'/opt/ht bin' '--state-dir' '/state' '--host-endpoint' '/host' 'hook-event' 'claude' 'SessionStart'";
++    assert_eq!(command(), expected);
++    assert_eq!(command(), expected);
++    for (exe, state, host, harness, event) in [
++        (
++            "/opt/other",
++            "/state",
++            "/host",
++            Harness::Claude,
++            "SessionStart",
++        ),
++        (
++            "/opt/ht bin",
++            "/other",
++            "/host",
++            Harness::Claude,
++            "SessionStart",
++        ),
++        (
++            "/opt/ht bin",
++            "/state",
++            "/other",
++            Harness::Claude,
++            "SessionStart",
++        ),
++        (
++            "/opt/ht bin",
++            "/state",
++            "/host",
++            Harness::Codex,
++            "SessionStart",
++        ),
++        (
++            "/opt/ht bin",
++            "/state",
++            "/host",
++            Harness::Claude,
++            "PreToolUse",
++        ),
++    ] {
++        let argv = installed_event_argv(exe, Some(state), Some(host), harness, event).unwrap();
++        assert_ne!(native_event_command(&argv).unwrap(), expected);
++    }
++    let quoted = installed_event_argv(
++        "/opt/it's ht",
++        Some("/state space"),
++        Some("/host's socket"),
++        Harness::Codex,
++        "SubagentStart",
++    )
++    .unwrap();
++    assert_eq!(
++        shlex::split(&native_event_command(&quoted).unwrap()).unwrap(),
++        quoted
++    );
++    assert!(installed_event_argv("ht", None, None, Harness::Claude, "SubagentStart").is_err());
++    assert!(native_event_command(&installed_argv("ht", None, None, Harness::Claude)).is_err());
++    assert!(
++        native_event_command(&[
++            "ht".into(),
++            "hook-event".into(),
++            "codex".into(),
++            "Bogus".into()
++        ])
++        .is_err()
++    );
++}
++
+ fn claude() -> InstalledHarness {
+     InstalledHarness::DeclaredClaude(crate::harness::operational::ClaudeContract::registered())
+ }
+ 
+ // Rejects a PATH-dependent hook admission and probes of managed wrappers.
+ #[test]
+ fn versionless_hook_contracts_decode_without_path_or_probes() {
+     use std::os::unix::fs::PermissionsExt;
+     let root = private_root();
+     let log = root.join("invocations");
+@@ -4047,27 +4187,24 @@ fn hook_argv_accepts_an_optional_event_registration() {
+         );
+         assert_eq!(
+             parse_hook_argv(&os(&["b", "hook", word]))
+                 .unwrap()
+                 .unwrap()
+                 .event,
+             None
+         );
+     }
+     let long = "A".repeat(63);
+-    assert_eq!(
+-        parse_hook_argv(&os(&["b", "hook", "claude", "--event", &long]))
+-            .unwrap()
+-            .unwrap()
+-            .event,
+-        Some(long)
+-    );
++    assert!(matches!(
++        parse_hook_argv(&os(&["b", "hook", "claude", "--event", &long])),
++        Some(Err(error)) if error.contains("undeclared hook event")
++    ));
+     let too_long = "A".repeat(64);
+     for bad in [
+         &["b", "hook", "claude", "--event"][..],
+         &["b", "hook", "claude", "--event", ""],
+         &["b", "hook", "claude", "--event", "a b"],
+         &["b", "hook", "claude", "--event", "a-b"],
+         &["b", "hook", "claude", "--event", "X", "extra"],
+         &["b", "hook", "claude", "--evnt", "X"],
+         &["b", "hook", "claude", "--event", &too_long],
+         &["b", "hook", "--event", "X", "claude"],
+diff --git a/tests/harness/claude_mod.rs b/tests/harness/claude_mod.rs
+index 7fab1aa3..622683e9 100644
+--- a/tests/harness/claude_mod.rs
++++ b/tests/harness/claude_mod.rs
+@@ -554,20 +554,45 @@ fn embedded_register_js_has_exactly_one_launch_marker() {
+     let launches = content
+         .lines()
+         .filter(|line| line.starts_with(LAUNCH_PREFIX))
+         .count();
+     assert_eq!(
+         launches, 1,
+         "no other line could be mistaken for the launch"
+     );
+ }
+ 
++// Catches event words leaking into the watch argv and route selectors being
++// dropped when setup switches to stable native event registrations.
++#[test]
++fn launch_prefix_accepts_stable_and_legacy_event_routes() {
++    for tail in [
++        vec!["hook-event", "claude", "SessionStart"],
++        vec!["hook-event", "claude", "PreToolUse"],
++        vec!["hook", "claude", "--event", "SessionStart"],
++    ] {
++        let mut hooks = prefix("/abs/ht");
++        hooks.extend(tail.into_iter().map(str::to_owned));
++        assert_eq!(launch_prefix(&hooks).unwrap(), prefix("/abs/ht"));
++    }
++    for tail in [
++        vec!["hook-event", "codex", "SessionStart"],
++        vec!["hook-event", "claude", "SubagentStart"],
++        vec!["hook-event", "claude"],
++        vec!["hook", "claude", "--event", "Unknown"],
++    ] {
++        let mut hooks = prefix("/abs/ht");
++        hooks.extend(tail.into_iter().map(str::to_owned));
++        assert_eq!(launch_prefix(&hooks), Err(SetupError::Invalid));
++    }
++}
++
+ #[test]
+ fn launch_prefix_strips_the_hook_tail() {
+     let hooks = argv(&[
+         "/abs/ht",
+         "--state-dir",
+         "/state",
+         "--host-endpoint",
+         "/host.sock",
+         "hook",
+         "claude",
+diff --git a/tests/hook_entrypoint.rs b/tests/hook_entrypoint.rs
+index 6149792d..2a0cf1e9 100644
+--- a/tests/hook_entrypoint.rs
++++ b/tests/hook_entrypoint.rs
+@@ -6004,20 +6004,135 @@ fn clear_and_codex_compact_emit_recovery_text_but_startup_and_tool_calls_do_not(
+         br#"{"session_id":"cx-sess","turn_id":"t2","hook_event_name":"SessionStart","source":"compact"}"#,
+     );
+     assert_eq!(compact.code, Some(0), "{}", compact.stderr);
+     assert_eq!(
+         compact.context()["hookSpecificOutput"]["hookEventName"],
+         "SessionStart"
+     );
+     assert_recovery("codex compact", &context_of(&compact));
+ }
+ 
++// Catches stable shell commands missing the actual native entrypoint/codec,
++// and undeclared pairs touching the daemon before being refused.
++#[test]
++fn native_event_entrypoints_dispatch_declared_codecs_and_refuse_invalid_pairs_before_effects() {
++    use herdr_threads::cli::hook::installed_event_argv;
++    use herdr_threads::harness::setup::native_event_command;
++    let fx = Fixture::start();
++    let command = |harness, event| {
++        native_event_command(
++            &installed_event_argv(
++                BIN,
++                Some(fx.state.to_str().unwrap()),
++                Some(fx.host.to_str().unwrap()),
++                harness,
++                event,
++            )
++            .unwrap(),
++        )
++        .unwrap()
++    };
++    for (harness, pane, session, payload) in [
++        (
++            Harness::Claude,
++            "w9:p1",
++            "stable-claude",
++            start("stable-claude"),
++        ),
++        (
++            Harness::Codex,
++            "w9:p3",
++            "stable-codex",
++            Payload::session_start("stable-codex", "startup")
++                .codex("turn")
++                .bytes(),
++        ),
++    ] {
++        let before = fx.check_ins.load(Ordering::SeqCst);
++        let started = run_hook(&command(harness, "SessionStart"), pane, &fx.host, &payload);
++        assert_eq!(started.code, Some(0), "{}", started.stderr);
++        assert!(!started.stdout.is_empty(), "{}", started.stderr);
++        assert!(fx.check_ins.load(Ordering::SeqCst) > before);
++        let payload = if harness == Harness::Claude {
++            tool(session)
++        } else {
++            Payload::pre_tool_use(session, "ls").codex("turn").bytes()
++        };
++        let before = fx.digests.load(Ordering::SeqCst);
++        let tool = run_hook(&command(harness, "PreToolUse"), pane, &fx.host, &payload);
++        assert_eq!(tool.code, Some(0), "{}", tool.stderr);
++        assert!(tool.stderr.is_empty(), "{}", tool.stderr);
++        assert!(fx.digests.load(Ordering::SeqCst) > before);
++    }
++    let child = serde_json::to_vec(&serde_json::json!({
++        "hook_event_name":"SubagentStart", "session_id":"stable-child", "turn_id":"child-turn",
++        "agent_id":"child", "agent_type":"worker", "transcript_path":null,
++        "cwd":"/tmp", "model":"gpt-test", "permission_mode":"default",
++    }))
++    .unwrap();
++    let child_command = command(Harness::Codex, "SubagentStart");
++    let child_result = run_hook(&child_command, "w9:p3", &fx.host, &child);
++    assert_eq!(child_result.code, Some(0));
++    assert!(child_result.stderr.is_empty(), "{}", child_result.stderr);
++    // Malforming a required child field proves this surface reaches the child
++    // codec, rather than quietly ignoring every payload for the event.
++    let mut malformed: serde_json::Value = serde_json::from_slice(&child).unwrap();
++    malformed.as_object_mut().unwrap().remove("agent_id");
++    let refused = run_hook(
++        &child_command,
++        "w9:p3",
++        &fx.host,
++        &serde_json::to_vec(&malformed).unwrap(),
++    );
++    assert!(
++        refused.stderr.contains("unsupported hook payload"),
++        "{}",
++        refused.stderr
++    );
++
++    let before = (
++        fx.check_ins.load(Ordering::SeqCst),
++        fx.digests.load(Ordering::SeqCst),
++        fx.parse_failures.load(Ordering::SeqCst),
++    );
++    for (harness, event) in [("claude", "SubagentStart"), ("codex", "Bogus")] {
++        let argv = [
++            BIN,
++            "--state-dir",
++            fx.state.to_str().unwrap(),
++            "--host-endpoint",
++            fx.host.to_str().unwrap(),
++            "hook-event",
++            harness,
++            event,
++        ]
++        .map(str::to_owned);
++        let raw = herdr_threads::harness::setup::shell_command(&argv).unwrap();
++        let refused = run_hook(&raw, "w9:p1", &fx.host, &start("invalid"));
++        assert_eq!(refused.code, Some(0));
++        assert!(refused.stdout.is_empty());
++        assert!(
++            refused.stderr.contains("undeclared hook event"),
++            "{}",
++            refused.stderr
++        );
++    }
++    assert_eq!(
++        before,
++        (
++            fx.check_ins.load(Ordering::SeqCst),
++            fx.digests.load(Ordering::SeqCst),
++            fx.parse_failures.load(Ordering::SeqCst)
++        )
++    );
++}
++
+ // Catches PATH admission in real callbacks and routing mismatches that mutate executions.
+ #[test]
+ fn versionless_native_callbacks_without_path_refuse_registered_event_mismatch() {
+     let fx = Fixture::start();
+     let invoke = |harness: &str, pane: &str, registered: &str, payload: &[u8]| {
+         let mut child = scrubbed_command(BIN)
+             .args([
+                 "--state-dir",
+                 fx.state.to_str().unwrap(),
+                 "--host-endpoint",
