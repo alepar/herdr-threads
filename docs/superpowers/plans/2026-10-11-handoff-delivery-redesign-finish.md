@@ -62,6 +62,14 @@ Important distinctions and planning corrections:
 
 This assessment is source-based. No Cargo/test command was run during planning, and this document is not a whole-branch review verdict or a PR roast.
 
+## Execution refinements as of 2026-10-11
+
+Task1 frozen74-path whole/schema/interface audits are complete; all initially found issues, with explicit coverage-depth limits. Private IDs/replay defects have actual RED→GREEN evidence. The adjacent passive Watch private reader is also repaired. Genuine file-backed39/40 upgrades and all13-source query matrix pass. A scoped successor schema/private review at7322 is clean, not cumulative D clearance.
+
+The audits additionally found offer-ledger exhaustion after canonical settlement. Independently reviewed bounded reclamation is applied; real actual ACK/manual ACK/lazy-completion positives pass at3520. Affected105 sweep is104PASS/1legacy quiet-fixture failure; corrected finite-walk fixture now passes at7db6f13c. The original mixed pending history exposed a separate load-bearing full-capacity continuation/due-reoffer defect. Both focused real257-send regressions now fail at their intended assertions. This is part of Task2 and blocks source clearance/activation, not an accepted limit. A concrete bounded design refinement and independent review precede source implementation. Preserve433 discovery/256 offer capacity/155731 carry/49415 partial/352 sizing limits; any new exact-key work must be declared and proved separately.
+
+Prepared Watch/elected AGY activation tests are being compiled on the inactive source while design review proceeds. This preparation does not authorize advertisement or mark Task3 complete. Task2 corrected-source whole/schema/interface clearance still precedes the production capability change.
+
 ## Workspace and ownership map
 
 Let ROOT be `/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign`.
@@ -79,10 +87,10 @@ Let ROOT be `/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-red
 
 **Interfaces:** Consumes exact D base/head/tree and accepted contracts. Produces a complete findings ledger and requirement-to-source/test mapping; preparation and final verdicts remain distinct.
 
-- [ ] Recheck branch names, clean state, main SHA and tree hashes with `git status --short --branch`, `git rev-parse HEAD HEAD^{tree}`, and `git worktree list --porcelain`. Check current processes without stopping foreign work. Preserve counters and existing epic rather than creating a replacement run.
-- [ ] Inventory every changed production/test path from `git diff --name-only ee1e598c 4c4988d9`. Map each accepted requirement to its source, actual registered test name, source SHA/log and remaining gap. Mark unsupported earlier generic-Attention assertions as explicitly superseded, not passing tests.
-- [ ] Recreate fresh whole/schema/interface review roles on the full cumulative frozen package. Whole review also inspects actual restored attention test bodies; schema review covers genuine upgrades, private loaders, all writers and query/serializer bounds; interface review covers actual Hook/Watch/AGY/mod consumers, omission compatibility and post-flush confirmation. Finish all coverage before calling a final verdict.
-- [ ] Record the two confirmed open defects, any additional supported findings, and source-fixed preparation findings separately. New evidence is required to reopen accepted design limits.
+- [x] Recheck branch names, clean state, main SHA and tree hashes with `git status --short --branch`, `git rev-parse HEAD HEAD^{tree}`, and `git worktree list --porcelain`. Check current processes without stopping foreign work. Preserve counters and existing epic rather than creating a replacement run.
+- [x] Inventory every changed production/test path from `git diff --name-only ee1e598c 4c4988d9`. Map each accepted requirement to its source, actual registered test name, source SHA/log and remaining gap. Mark unsupported earlier generic-Attention assertions as explicitly superseded, not passing tests.
+- [x] Recreate fresh whole/schema/interface review roles on the full cumulative frozen package. Whole review also inspects actual restored attention test bodies; schema review covers genuine upgrades, private loaders, all writers and query/serializer bounds; interface review covers actual Hook/Watch/AGY/mod consumers, omission compatibility and post-flush confirmation. Finish all coverage before calling a final verdict.
+- [x] Record the two confirmed open defects, any additional supported findings, and source-fixed preparation findings separately. New evidence is required to reopen accepted design limits.
 
 **Exit:** Every changed path is assigned review coverage; all discovered defects have dispositions; no preparation report is mislabeled CLEAN. This is the input to the single D repair batch.
 
