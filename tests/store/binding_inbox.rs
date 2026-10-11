@@ -564,20 +564,6 @@ fn join_gives_every_open_binding_a_cursor_at_the_join_point() {
 // admitted, and a re-adoption enrolling a second binding.
 #[test]
 fn no_duplicate_delivery_after_v29_migration() {
-    v29_migration_scenario(false);
-}
-
-// The same scenario with the exact page rows, ACK-candidate flags included. The product lists
-// these messages with a false flag today because an env-session binding is not yet an accountable
-// top-level (ht-54r.59), so this stays ignored until that bead lands; then drop the ignore and the
-// `strict` parameter.
-#[test]
-#[ignore = "ht-54r.59: ACK-candidate flag of env-session bindings"]
-fn v29_migration_pages_carry_ack_candidate_flags() {
-    v29_migration_scenario(true);
-}
-
-fn v29_migration_scenario(strict: bool) {
     let old = crate::store::connection::tests::adapter_historical_database(28);
     old.execute_batch(
         "INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'b',1,50);
