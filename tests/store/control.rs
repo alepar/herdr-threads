@@ -11020,3 +11020,164 @@ fn invitation_confirmation_mod_open_condition_survives_committed_notice_offer() 
 fn invitation_confirmation_discovery_survives_committed_notice_offer_and_completed_attribution() {
     invitation_origin_wake_after_notice_offer(false, true);
 }
+
+#[test]
+fn invitation_confirmation_late_lazy_accept_has_no_overdue_condition_or_wake() {
+    use crate::protocol::commands::InvitationConfirmation;
+    let (context, mut conn, path, clock, thread, invitation) =
+        rejection_offer_with_policy(Harness::Codex, Some(InvitationConfirmation::Lazy));
+    clock.0.store(400_000, Ordering::SeqCst);
+    let budget = crate::protocol::time::CallBudget {
+        deadline: MonoInstant(u64::MAX),
+        cancellation: Default::default(),
+    };
+    let command = Accept {
+        thread: thread.clone(),
+        claim: claim("s2"),
+        operation: OperationId::new("late-lazy-accept"),
+    };
+    let hash = cooperative_payload_hash("accept", &command).unwrap();
+    assert!(matches!(
+        accept(
+            &context,
+            &mut conn,
+            &budget,
+            &command,
+            permit(
+                "s2",
+                "late-lazy-accept",
+                ObligationRef::Invitation(invitation.clone()),
+                hash,
+                400_000
+            )
+        )
+        .unwrap(),
+        CommandResult::Accepted(_)
+    ));
+    let stored: (String, i64, String, i64) = conn.query_row(
+        "SELECT state,accepted_at,accepted_actor_seat_id,accepted_generation FROM invitations WHERE id=?1",
+        [invitation.as_str()], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).unwrap();
+    assert_eq!(stored, ("accepted".into(), 400_000, "s2".into(), 1));
+    assert_eq!(
+        conn.query_row(
+            "SELECT state FROM memberships WHERE thread_id=?1 AND seat_id='s2'",
+            [thread.as_str()],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
+        "joined"
+    );
+    assert_no_lazy_overdue_effects(&conn, &invitation);
+    drop(conn);
+    drop(context);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn invitation_confirmation_late_lazy_retirement_has_no_overdue_condition_or_wake() {
+    use crate::{
+        ports::{ClosureEvidence, WorkAdmission},
+        protocol::commands::InvitationConfirmation,
+    };
+    let (context, mut conn, path, clock, _, invitation) =
+        rejection_offer_with_policy(Harness::Codex, Some(InvitationConfirmation::Lazy));
+    clock.0.store(400_000, Ordering::SeqCst);
+    let job = begin_retirement(
+        &context,
+        &mut conn,
+        SeatId::new("s2"),
+        ClosureEvidence {
+            host_boot: HostBootId::new("b"),
+            epoch: 1,
+            target: HostTargetId::new("s2"),
+            generation: 1,
+        },
+    )
+    .unwrap();
+    let budget = crate::protocol::time::CallBudget {
+        deadline: MonoInstant(u64::MAX),
+        cancellation: Default::default(),
+    };
+    let mut complete = false;
+    for _ in 0..20 {
+        let progress = advance_retirement(
+            &context,
+            &mut conn,
+            job.id.clone(),
+            WorkAdmission::Background,
+            &budget,
+        )
+        .unwrap();
+        assert!(progress.last_error.is_none());
+        if progress.complete {
+            complete = true;
+            break;
+        }
+    }
+    assert!(complete, "the real bounded retirement route must finish");
+    assert_eq!(
+        conn.query_row(
+            "SELECT state,retired_at FROM invitations WHERE id=?1",
+            [invitation.as_str()],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+        )
+        .unwrap(),
+        ("recipient_retired".into(), 400_000)
+    );
+    assert_eq!(
+        conn.query_row("SELECT state FROM seats WHERE id='s2'", [], |r| r
+            .get::<_, String>(0))
+            .unwrap(),
+        "retired"
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM invitations WHERE id=?1 AND accepted_at IS NOT NULL",
+            [invitation.as_str()],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    assert_no_lazy_overdue_effects(&conn, &invitation);
+    drop(conn);
+    drop(context);
+    let _ = std::fs::remove_file(path);
+}
+
+fn assert_no_lazy_overdue_effects(conn: &Connection, invitation: &InvitationId) {
+    assert_eq!(conn.query_row("SELECT count(*) FROM warning_conditions WHERE condition_kind='invitation' AND condition_id=?1",[invitation.as_str()],|r|r.get::<_,i64>(0)).unwrap(),0);
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM messages WHERE kind='warn' AND source_invitation_id=?1",
+            [invitation.as_str()],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM wake_work WHERE seat_id='s1' AND reason_bits!=0",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    assert!(
+        crate::store::attention::wake_seat_attention(conn, "s1")
+            .unwrap()
+            .attention
+            .latest_warning_seq
+            .is_none()
+    );
+    assert_eq!(
+        crate::store::seats::mod_seat_view(conn, "i", &SeatId::new("s1"))
+            .unwrap()
+            .unwrap()
+            .fingerprint
+            .other_pending,
+        0
+    );
+}

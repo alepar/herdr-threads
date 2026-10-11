@@ -3634,9 +3634,9 @@ pub(crate) fn clear_warning_condition_at_snapshot(
     decision_at: UtcMillis,
     snapshot: Option<(i64, i64)>,
 ) -> Result<(), ApiError> {
-    let (kind,thread,affected,open): (String,String,String,String) = tx.query_row(
-        "SELECT condition_kind,thread_id,affected_seat_id,open_warning_id FROM warning_conditions WHERE ordinal=?1 AND clear_warning_id IS NULL",
-        [ordinal], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)),
+    let (kind,thread,affected,open,condition_id): (String,String,String,String,String) = tx.query_row(
+        "SELECT condition_kind,thread_id,affected_seat_id,open_warning_id,condition_id FROM warning_conditions WHERE ordinal=?1 AND clear_warning_id IS NULL",
+        [ordinal], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)),
     ).map_err(store_error)?;
     let thread_id = ThreadId::new(&thread);
     let key = format!("warning-clear:{open}");
@@ -3688,6 +3688,13 @@ pub(crate) fn clear_warning_condition_at_snapshot(
         &kind,
         snapshot.map(|(cutoff, _)| cutoff),
     )?;
+    // The original inviter retains the informational clear even after leaving.
+    // Unlike an open condition this projection does not enqueue wake work.
+    if kind == "invitation"
+        && let Some(origin) = super::effective::invitation_originator(tx, &condition_id)?
+    {
+        tx.execute("INSERT OR IGNORE INTO warning_recipients(warning_id,seat_id,generation) SELECT ?1,id,?3 FROM seats WHERE id=?2 AND state!='retired'",params![clear.as_str(),origin,seq]).map_err(store_error)?;
+    }
     Ok(())
 }
 
@@ -3815,9 +3822,9 @@ fn record_overdue_inner(
     let (thread, seat, deadline, state, source_message, source_invitation, key, manifest_receipt) =
         match obligation {
             ObligationRef::Invitation(id) => {
-                let row: (String, String, i64, String) = tx
+                let row: (String, String, Option<i64>, String) = tx
                 .query_row(
-                    "SELECT i.thread_id, i.seat_id, i.deadline_at, CASE WHEN EXISTS(SELECT 1 FROM invitation_rejections rejection WHERE rejection.invitation_id=i.id) THEN 'rejected' WHEN c.invitation_id IS NOT NULL THEN 'cancelled' ELSE i.state END FROM invitations i LEFT JOIN invitation_cancellations c ON c.invitation_id=i.id WHERE i.id=?1",
+                    "SELECT i.thread_id, i.seat_id, CASE WHEN i.confirmation='lazy' THEN NULL ELSE i.deadline_at END, CASE WHEN EXISTS(SELECT 1 FROM invitation_rejections rejection WHERE rejection.invitation_id=i.id) THEN 'rejected' WHEN c.invitation_id IS NOT NULL THEN 'cancelled' ELSE i.state END FROM invitations i LEFT JOIN invitation_cancellations c ON c.invitation_id=i.id WHERE i.id=?1",
                     [id.as_str()],
                     |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
                 )
@@ -3825,7 +3832,7 @@ fn record_overdue_inner(
                 (
                     ThreadId::new(row.0),
                     SeatId::new(row.1),
-                    Some(row.2),
+                    row.2,
                     row.3,
                     None,
                     Some(id.clone()),
@@ -4060,8 +4067,13 @@ fn record_overdue_inner(
                 |r| r.get(0),
             )
             .map_err(store_error)?;
-        tx.execute("INSERT INTO warning_conditions(condition_kind,thread_id,condition_id,affected_seat_id,open_warning_id,opened_seq) VALUES (?1,?2,?3,?4,?5,?6)",
-            params![condition.0,thread.as_str(),condition.1,seat.as_str(),warning.as_str(),event_seq]).map_err(store_error)?;
+        let origin = source_invitation
+            .as_ref()
+            .map(|id| super::effective::invitation_originator(tx, id.as_str()))
+            .transpose()?
+            .flatten();
+        tx.execute("INSERT INTO warning_conditions(condition_kind,thread_id,condition_id,affected_seat_id,open_warning_id,opened_seq,invitation_originator_instance_id,invitation_originator_seat_id) VALUES (?1,?2,?3,?4,?5,?6,CASE WHEN ?7 IS NOT NULL THEN (SELECT instance_id FROM threads WHERE id=?2) END,?7)",
+            params![condition.0,thread.as_str(),condition.1,seat.as_str(),warning.as_str(),event_seq,origin]).map_err(store_error)?;
         enqueue_transition_warning(
             tx,
             warning.as_str(),
@@ -4072,6 +4084,10 @@ fn record_overdue_inner(
             condition.0,
             None,
         )?;
+        if let Some(origin) = origin {
+            tx.execute("INSERT OR IGNORE INTO warning_recipients(warning_id,seat_id,generation) SELECT ?1,id,?3 FROM seats WHERE id=?2 AND state!='retired'",params![warning.as_str(),origin,event_seq]).map_err(store_error)?;
+            tx.execute("INSERT INTO wake_work(seat_id,reason_bits,attention_version) SELECT id,4,1 FROM seats WHERE id=?1 AND state!='retired' ON CONFLICT(seat_id) DO UPDATE SET reason_bits=reason_bits|4,attention_version=attention_version+1",[origin]).map_err(store_error)?;
+        }
     }
     Ok(OverdueOutcome {
         warning: Some(warning),
