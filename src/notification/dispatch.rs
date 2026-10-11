@@ -253,11 +253,14 @@ impl<H: HostPort + ?Sized, C: ReservationCheck + ?Sized> NativeWakeDispatcher<'_
             {
                 return refuse(RefusalCause::Unsafe, WakeOutcome::Unsafe);
             }
-            let foreground = match self.host.foreground_pid(&reservation.target, &read_context) {
-                Ok(pid) => pid,
+            let foreground = match self
+                .host
+                .foreground_pids(&reservation.target, &read_context)
+            {
+                Ok(pids) => pids,
                 Err(err) => return refuse_error(err),
             };
-            match reservation.authority.composer_choice(foreground) {
+            match reservation.authority.composer_choice(&foreground) {
                 ComposerChoice::Binding(chosen) => composer_harness = Some(chosen.harness.clone()),
                 ComposerChoice::NoMatch | ComposerChoice::Unspecified => {
                     return refuse(RefusalCause::Unsafe, WakeOutcome::Unsafe);

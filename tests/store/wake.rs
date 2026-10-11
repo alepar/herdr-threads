@@ -2281,7 +2281,7 @@ fn composer_choice_over_wake_targets_is_the_unique_fingerprint_pid_match() {
         harness: None,
         targets,
     };
-    let found = |pid| match authority.composer_choice(Some(pid)) {
+    let found = |pid| match authority.composer_choice(&[pid]) {
         crate::ports::ComposerChoice::Binding(t) => Some(t.binding.as_str().to_owned()),
         _ => None,
     };
@@ -2296,9 +2296,30 @@ fn composer_choice_over_wake_targets_is_the_unique_fingerprint_pid_match() {
     );
     assert_eq!(found(99), None);
     assert_eq!(
-        authority.composer_choice(None),
+        authority.composer_choice(&[]),
         crate::ports::ComposerChoice::NoMatch,
         "no foreground pid, no composer wake"
+    );
+    // The foreground is a set (an npm `codex`: node launcher 20 + native child 21): the unique
+    // fingerprint among its members is the target (ht-54r.89); several, or none, are no match.
+    let found_in = |pids: &[u32]| match authority.composer_choice(pids) {
+        crate::ports::ComposerChoice::Binding(t) => Some(t.binding.as_str().to_owned()),
+        _ => None,
+    };
+    assert_eq!(
+        found_in(&[15, 10]).as_deref(),
+        Some("a"),
+        "a fingerprint among several foreground pids"
+    );
+    assert_eq!(
+        authority.composer_choice(&[10, 20]),
+        crate::ports::ComposerChoice::NoMatch,
+        "two bindings in the set: ambiguous"
+    );
+    assert_eq!(
+        authority.composer_choice(&[15, 99]),
+        crate::ports::ComposerChoice::NoMatch,
+        "no binding in the set"
     );
     drop(db);
     drop(store);
@@ -2316,14 +2337,14 @@ fn composer_choice_over_wake_targets_is_the_unique_fingerprint_pid_match() {
         targets,
     };
     assert!(
-        matches!(single.composer_choice(Some(30)), crate::ports::ComposerChoice::Binding(t) if t.binding.as_str() == "only")
+        matches!(single.composer_choice(&[30]), crate::ports::ComposerChoice::Binding(t) if t.binding.as_str() == "only")
     );
     assert_eq!(
-        single.composer_choice(Some(10)),
+        single.composer_choice(&[10]),
         crate::ports::ComposerChoice::NoMatch
     );
     assert_eq!(
-        single.composer_choice(None),
+        single.composer_choice(&[]),
         crate::ports::ComposerChoice::NoMatch
     );
     let none = crate::ports::ReservedWakeAuthority::Cooperative {
@@ -2334,7 +2355,7 @@ fn composer_choice_over_wake_targets_is_the_unique_fingerprint_pid_match() {
         targets: Vec::new(),
     };
     assert_eq!(
-        none.composer_choice(None),
+        none.composer_choice(&[]),
         crate::ports::ComposerChoice::Unspecified,
         "a reservation naming no targets keeps the legacy single-harness rule"
     );

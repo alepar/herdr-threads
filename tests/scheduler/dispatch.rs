@@ -4770,16 +4770,12 @@ fn pre_send_errors_are_refusals_by_class_and_never_reach_submit() {
 struct CooperativeRecordingHost {
     observation: HostObservation,
     prompted: std::sync::Mutex<Vec<SafeWakeTarget>>,
-    /// What `foreground_pid` answers (Herdr's pane foreground process).
-    foreground: Option<u32>,
+    /// What `foreground_pids` answers (Herdr's pane foreground processes).
+    foreground: Vec<u32>,
 }
 impl HostPort for CooperativeRecordingHost {
-    fn foreground_pid(
-        &self,
-        _: &HostTargetId,
-        _: &HostCallContext,
-    ) -> Result<Option<u32>, ApiError> {
-        Ok(self.foreground)
+    fn foreground_pids(&self, _: &HostTargetId, _: &HostCallContext) -> Result<Vec<u32>, ApiError> {
+        Ok(self.foreground.clone())
     }
     fn observe_current_target_for_archival(
         &self,
@@ -4882,7 +4878,7 @@ fn dispatcher_passes_bound_harness_to_prompt_target() {
         let host = CooperativeRecordingHost {
             observation,
             prompted: std::sync::Mutex::new(vec![]),
-            foreground: None,
+            foreground: Vec::new(),
         };
         let check = FakeReservationCheck {
             current: true,
@@ -4933,7 +4929,7 @@ fn cooperative_reservation_without_harness_is_not_prompted() {
     let host = CooperativeRecordingHost {
         observation,
         prompted: std::sync::Mutex::new(vec![]),
-        foreground: None,
+        foreground: Vec::new(),
     };
     let check = FakeReservationCheck {
         current: true,
@@ -4963,6 +4959,15 @@ fn composer_wake(
     ui: HostUiState,
     foreground: Option<u32>,
 ) -> (WakeOutcome, Vec<SafeWakeTarget>) {
+    composer_wake_among(targets, ui, foreground.as_slice())
+}
+
+/// [`composer_wake`] with the pane's whole foreground set (a launcher and its native child).
+fn composer_wake_among(
+    targets: Vec<crate::ports::WakeTarget>,
+    ui: HostUiState,
+    foreground: &[u32],
+) -> (WakeOutcome, Vec<SafeWakeTarget>) {
     let clock = FakeClock(AtomicU64::new(0));
     let context = HostCallContext {
         budget: CallBudget {
@@ -4988,7 +4993,7 @@ fn composer_wake(
     let host = CooperativeRecordingHost {
         observation,
         prompted: std::sync::Mutex::new(vec![]),
-        foreground,
+        foreground: foreground.to_vec(),
     };
     let check = FakeReservationCheck {
         current: true,
@@ -5058,6 +5063,74 @@ fn no_foreground_match_means_no_composer_wake() {
             outcome,
             WakeOutcome::Refused(RefusalCause::Unsafe),
             "{label}: a pre-send refusal, the ladder does not climb"
+        );
+        assert!(prompted.is_empty(), "{label}");
+    }
+}
+
+/// Kills: a composer wake lost because the pane's foreground is a set: `codex` installed with
+/// npm runs a `node` launcher (20) and the native `codex` child (21, the harness process the
+/// binding fingerprints) in one foreground process group (ht-54r.89, evidence/ht-54r.89).
+#[test]
+fn composer_wake_matches_a_fingerprint_among_several_foreground_processes() {
+    for (label, targets, ui) in [
+        (
+            "one target",
+            vec![binding_target("a", "codex", Some(21))],
+            HostUiState::Unknown,
+        ),
+        (
+            "several targets",
+            vec![
+                binding_target("a", "codex", Some(21)),
+                binding_target("b", "claude", Some(30)),
+            ],
+            HostUiState::Idle,
+        ),
+    ] {
+        let (outcome, prompted) = composer_wake_among(targets, ui, &[20, 21]);
+        assert_eq!(outcome, WakeOutcome::Submitted, "{label}");
+        assert_eq!(prompted.len(), 1, "{label}: at most one composer wake");
+        assert_eq!(
+            prompted[0].bound_harness.as_deref(),
+            Some("codex"),
+            "{label}"
+        );
+    }
+}
+
+/// Kills: a guess when several bindings have a fingerprint in the foreground set (20 and 21):
+/// the match is ambiguous, so no composer wake; also a foreground set holding no fingerprint.
+#[test]
+fn composer_wake_refuses_an_ambiguous_or_absent_match_in_the_foreground_set() {
+    for (label, targets, foreground) in [
+        (
+            "two bindings in the set",
+            vec![
+                binding_target("a", "codex", Some(20)),
+                binding_target("b", "claude", Some(21)),
+            ],
+            vec![20, 21],
+        ),
+        (
+            "no binding in the set",
+            vec![
+                binding_target("a", "codex", Some(10)),
+                binding_target("b", "claude", Some(30)),
+            ],
+            vec![20, 21],
+        ),
+        (
+            "one target outside the set",
+            vec![binding_target("a", "codex", Some(10))],
+            vec![20, 21],
+        ),
+    ] {
+        let (outcome, prompted) = composer_wake_among(targets, HostUiState::Idle, &foreground);
+        assert_eq!(
+            outcome,
+            WakeOutcome::Refused(RefusalCause::Unsafe),
+            "{label}: a pre-send refusal"
         );
         assert!(prompted.is_empty(), "{label}");
     }
@@ -5162,7 +5235,7 @@ impl ComposerReadHost {
             inner: CooperativeRecordingHost {
                 observation,
                 prompted: std::sync::Mutex::new(vec![]),
-                foreground: None,
+                foreground: Vec::new(),
             },
             plain_reads: AtomicU64::new(0),
             poke_reads: AtomicU64::new(0),

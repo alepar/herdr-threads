@@ -2073,14 +2073,15 @@ pub struct WakeTarget {
 }
 
 /// Who the pane-level composer wake (typing) may reach, from a reservation's targets and
-/// Herdr's pane foreground pid (TRUST-POLICY A4 wake rows).
+/// Herdr's pane foreground pids (TRUST-POLICY A4 wake rows).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ComposerChoice<'a> {
     /// The reservation names no targets: the legacy single-harness rule applies.
     Unspecified,
-    /// The one target whose process is the pane's foreground process.
+    /// The one target whose process is among the pane's foreground processes.
     Binding(&'a WakeTarget),
-    /// No unique foreground match (one target or several): no composer wake.
+    /// No unique foreground match (none, or several targets in the foreground set): no
+    /// composer wake.
     NoMatch,
 }
 
@@ -2121,16 +2122,18 @@ impl ReservedWakeAuthority {
         }
     }
 
-    /// The composer-wake target: a unique `fingerprint_pid == foreground_pid` match among the
-    /// targets (one target or several), no heuristic fallback.
-    pub fn composer_choice(&self, foreground_pid: Option<u32>) -> ComposerChoice<'_> {
+    /// The composer-wake target: the one target whose `fingerprint_pid` is among Herdr's pane
+    /// foreground pids (one target or several; a launcher and its native child are both
+    /// foreground, ht-54r.89). Zero or several matching targets are no match; no heuristic
+    /// fallback.
+    pub fn composer_choice(&self, foreground: &[u32]) -> ComposerChoice<'_> {
         match self.targets() {
             [] => ComposerChoice::Unspecified,
             many => {
-                let Some(pid) = foreground_pid else {
-                    return ComposerChoice::NoMatch;
-                };
-                let mut matching = many.iter().filter(|t| t.fingerprint_pid == Some(pid));
+                let mut matching = many.iter().filter(|t| {
+                    t.fingerprint_pid
+                        .is_some_and(|pid| foreground.contains(&pid))
+                });
                 match (matching.next(), matching.next()) {
                     (Some(found), None) => ComposerChoice::Binding(found),
                     _ => ComposerChoice::NoMatch,
@@ -3533,15 +3536,15 @@ pub trait HostPort: Send + Sync {
     ) -> Result<HostObservation, ApiError> {
         self.observe_current_target(target, context)
     }
-    /// Pid of the one process Herdr reports in the pane's foreground (not its shell), for the
-    /// composer wake of a seat with wake targets (spec §3 Wake). `None` when Herdr reports
-    /// none or several, or the adapter cannot ask: the composer wake then does not fire.
-    fn foreground_pid(
+    /// Pids of the processes Herdr reports in the pane's foreground (not its shell), for the
+    /// composer wake of a seat with wake targets (spec §3 Wake). Empty when Herdr reports none
+    /// or the adapter cannot ask: the composer wake then does not fire.
+    fn foreground_pids(
         &self,
         _target: &HostTargetId,
         _context: &HostCallContext,
-    ) -> Result<Option<u32>, ApiError> {
-        Ok(None)
+    ) -> Result<Vec<u32>, ApiError> {
+        Ok(Vec::new())
     }
     /// Archival requires an explicit composer-aware adapter. Each adapter must
     /// provide composer evidence or explicitly refuse this observation; ordinary

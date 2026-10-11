@@ -119,12 +119,8 @@ impl RecordingHost {
 impl HostPort for RecordingHost {
     /// The pane's foreground process is the fixture binding's process (`liveness_pid`), the
     /// composer-wake match a single-target seat needs (ht-54r.82).
-    fn foreground_pid(
-        &self,
-        _: &HostTargetId,
-        _: &HostCallContext,
-    ) -> Result<Option<u32>, ApiError> {
-        Ok(Some(4242))
+    fn foreground_pids(&self, _: &HostTargetId, _: &HostCallContext) -> Result<Vec<u32>, ApiError> {
+        Ok(vec![4242])
     }
     fn observe_current_target_for_archival(
         &self,
