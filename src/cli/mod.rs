@@ -1430,6 +1430,22 @@ fn select_display_inbox_page<C: LocalClient + ?Sized>(
     Ok((command, result))
 }
 
+/// A subagent's own identity: the agent id from the caller environment and the native session of
+/// the occupant context. `None` when either is missing (the subagent has no stream of its own).
+fn subagent_identity(
+    context: &crate::harness::context::OccupantContext,
+) -> Option<(crate::protocol::ids::AgentId, String)> {
+    let Some(caller::CallerOrigin::Agent(env)) = caller::active() else {
+        return None;
+    };
+    match (env.agent_id, &context.session) {
+        (Some(agent), crate::harness::context::SessionReference::Native(native)) => {
+            Some((agent, native.clone()))
+        }
+        _ => None,
+    }
+}
+
 /// The caller's claim for `context`: top-level as built, or, for a subagent, in the shape the
 /// hook builds (agent id, per-agent execution), never the parent's.
 fn role_claim(
@@ -1446,12 +1462,7 @@ fn role_claim(
             "subagents may read and summarize; only top-level agents check in, accept or ACK",
         )
     };
-    let Some(caller::CallerOrigin::Agent(env)) = caller::active() else {
-        return Err(refused());
-    };
-    let (Some(agent), crate::harness::context::SessionReference::Native(native)) =
-        (env.agent_id, &context.session)
-    else {
+    let Some((agent, native)) = subagent_identity(context) else {
         return Err(refused());
     };
     claim.role = crate::protocol::authority::CallerRole::Subagent;
@@ -1459,7 +1470,7 @@ fn role_claim(
         crate::harness::context::session_execution(
             context.instance,
             context.harness,
-            native,
+            &native,
             Some(agent.as_str()),
         )
         .to_string(),
@@ -1487,8 +1498,19 @@ fn run_display_inbox<C: LocalClient + ?Sized, W: Write>(
         .ok_or_else(|| {
             caller_not_located("context missing; explicit lifecycle check-in required")
         })?;
-    let claim = role_claim(contexts, &context, role)?;
     let subagent = role != crate::harness::context::Role::TopLevel;
+    // A subagent without its own stream (no agent identity, or a daemon without per-binding
+    // cursors) reads read-only: no claim, no cursor, nothing settled.
+    if subagent && subagent_identity(&context).is_none() {
+        return run_wire(
+            Command::Inbox(query.clone()),
+            output_spec,
+            client,
+            &|| cooperative_budget(clock),
+            writer,
+        );
+    }
+    let claim = role_claim(contexts, &context, role)?;
     let mut request = query.clone();
     request.seat = Some(claim.seat.clone());
     let capabilities = match client.call(Command::Capabilities, &cooperative_budget(clock)) {
@@ -1520,10 +1542,15 @@ fn run_display_inbox<C: LocalClient + ?Sized, W: Write>(
             .iter()
             .any(|name| name == crate::protocol::capabilities::BINDING_CURSORS);
     if subagent && !binding_cursors {
-        // Without per-binding cursors a subagent cannot display without settling: read-only.
-        return Err(unsupported(
-            "subagents may read and summarize; only top-level agents check in, accept or ACK",
-        ));
+        // A subagent without its own stream (no agent identity, or a daemon without per-binding
+        // cursors) reads read-only: no claim, no cursor, nothing settled.
+        return run_wire(
+            Command::Inbox(query.clone()),
+            output_spec,
+            client,
+            &|| cooperative_budget(clock),
+            writer,
+        );
     }
     if binding_cursors {
         request.claim = Some(claim.clone());
