@@ -104,6 +104,29 @@ fn codex_subagent_when_thread_differs() {
     assert_eq!(claim.fingerprint.pid, 80);
 }
 
+/// Kills: a malformed `CODEX_THREAD_ID` silently downgraded to a top-level claim (a subagent
+/// would then act, and display, as its parent).
+#[test]
+fn codex_malformed_subagent_marker_is_refused_not_downgraded() {
+    for bad in ["has space", &"x".repeat(129)] {
+        let env = [("CODEX_SESSION_ID", "c1"), ("CODEX_THREAD_ID", bad)];
+        let refusal = run(&codex_table(), &env, None).unwrap_err();
+        assert_eq!(
+            refusal,
+            EnvRefusal::MalformedSubagentMarker {
+                harness: "codex",
+                var: "CODEX_THREAD_ID"
+            }
+        );
+        assert_eq!(refusal.code(), "malformed_subagent_marker");
+        assert!(refusal.message().contains("CODEX_THREAD_ID"));
+    }
+    // An empty marker still means "no subagent".
+    let env = [("CODEX_SESSION_ID", "c1"), ("CODEX_THREAD_ID", "")];
+    let claim = run(&codex_table(), &env, None).unwrap();
+    assert_eq!(claim.role, CallerRole::TopLevel);
+}
+
 #[test]
 fn codex_managed_daemon_ancestor_is_refused() {
     let table = FakeTable(vec![

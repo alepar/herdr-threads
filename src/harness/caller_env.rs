@@ -50,6 +50,11 @@ pub enum EnvRefusal {
     ManagedDaemon {
         pid: u32,
     },
+    /// A subagent marker is present but unparseable: refused, never read as top-level.
+    MalformedSubagentMarker {
+        harness: &'static str,
+        var: &'static str,
+    },
 }
 
 impl EnvRefusal {
@@ -59,6 +64,7 @@ impl EnvRefusal {
             Self::MissingSession { .. } => "missing_session",
             Self::NoFingerprint { .. } => "no_fingerprint",
             Self::ManagedDaemon { .. } => "managed_daemon",
+            Self::MalformedSubagentMarker { .. } => "malformed_subagent_marker",
         }
     }
 
@@ -76,6 +82,10 @@ impl EnvRefusal {
             Self::NoFingerprint { harness, detail } => {
                 format!("{harness} caller has no liveness fingerprint: {detail}")
             }
+            Self::MalformedSubagentMarker { harness, var } => format!(
+                "{harness} caller has a malformed subagent marker in {var}: the call is refused \
+                 rather than attributed to the top-level session"
+            ),
             Self::ManagedDaemon { pid } => format!(
                 "this command runs under `codex app-server --managed-daemon` (pid {pid}), which has \
                  no pane; keep Codex in its pane (the pane-env block from branch codex-daemon-env) \
@@ -261,9 +271,19 @@ pub fn derive(inputs: &EnvInputs<'_>) -> Result<EnvClaim, EnvRefusal> {
         ),
         "codex" => {
             let native = session(inputs, "codex", "CODEX_SESSION_ID")?;
-            let agent = env_var(inputs, "CODEX_THREAD_ID")
+            // Fail closed: a distinct but unparseable marker is refused, never downgraded to
+            // the top-level session.
+            let agent = match env_var(inputs, "CODEX_THREAD_ID")
                 .filter(|thread| thread != native.as_str())
-                .and_then(|thread| AgentId::parse(thread).ok());
+            {
+                Some(thread) => Some(AgentId::parse(thread).map_err(|_| {
+                    EnvRefusal::MalformedSubagentMarker {
+                        harness: "codex",
+                        var: "CODEX_THREAD_ID",
+                    }
+                })?),
+                None => None,
+            };
             (Harness::Codex, native, agent)
         }
         _ => (

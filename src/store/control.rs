@@ -1925,14 +1925,9 @@ pub(crate) fn decide_accountable(
         digest,
     )?;
     let binding = resolution.binding();
-    // Defence in depth for a binding that resolved to a subagent row (a Hermes registered
-    // child, ht-54r.11): the wire-level check in dispatch only sees the claim.
-    if binding.role == super::bindings::BindingRole::Subagent {
-        return Err(api_error(
-            ErrorCode::SubagentReadOnly,
-            crate::protocol::authority::SUBAGENT_READ_ONLY_DETAIL,
-        ));
-    }
+    // The daemon decides read-only from the resolved binding's role (TRUST-POLICY A2); the
+    // claim-shape check in dispatch is only an early refusal.
+    require_top_level_binding(binding)?;
     Ok(AccountableActor {
         harness: claim.harness,
         native_session: claim.native_session.clone(),
@@ -1945,6 +1940,19 @@ pub(crate) fn decide_accountable(
         binding_id: binding.binding_id.clone(),
         binding_connected: binding.liveness == super::bindings::Liveness::Connected,
     })
+}
+
+/// The resolved binding must be top-level: a subagent binding is read-only (spec decision 13).
+pub(crate) fn require_top_level_binding(
+    binding: &super::bindings::BindingRow,
+) -> Result<(), ApiError> {
+    if binding.role == super::bindings::BindingRole::Subagent {
+        return Err(api_error(
+            ErrorCode::SubagentReadOnly,
+            crate::protocol::authority::SUBAGENT_READ_ONLY_DETAIL,
+        ));
+    }
+    Ok(())
 }
 
 /// Complete cooperative control digest.
@@ -2064,6 +2072,7 @@ pub fn advance_cursors(
         |tx| super::seats::cooperative_mapping(tx, claim, None).map(|_| ()),
         |tx, at| {
             let mapping = super::seats::cooperative_mapping(tx, claim, None)?;
+            // Own stream (spec §2), allowed for subagent bindings.
             let binding = super::seats::resolve_cooperative(tx, at, claim, None, &mapping)?
                 .binding()
                 .binding_id
@@ -2143,6 +2152,7 @@ pub fn binding_event(
                         Some(child) => {
                             super::seats::attach_registered_child(tx, at, claim, child, &mapping)?
                         }
+                        // Own stream (spec §2), allowed for subagent bindings: enrolment only.
                         None => matches!(
                             super::seats::resolve_cooperative(tx, at, claim, None, &mapping)?,
                             super::bindings::Resolution::Enrolled { .. }

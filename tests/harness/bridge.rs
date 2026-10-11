@@ -1323,6 +1323,7 @@ fn cooperative_typed_rejection_discards_intent_but_transport_failure_keeps_it() 
     const DISCARDED: &[ErrorCode] = &[
         ErrorCode::InvalidRequest,
         ErrorCode::Unauthorized,
+        ErrorCode::SubagentReadOnly,
         ErrorCode::Archived,
         ErrorCode::Conflict,
         ErrorCode::OperationPayloadMismatch,

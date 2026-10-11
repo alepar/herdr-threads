@@ -2099,6 +2099,84 @@ fn hermes_child_start_registers_the_child_session_and_its_cli_claim_is_read_only
     );
 }
 
+/// Kills: read-only decided from the claim's shape alone. A Hermes child's CLI claim is
+/// top-level-shaped but resolves to its registered subagent row; a check-in under it must be
+/// refused (no availability row, child row untouched) while its own cursor advance still works.
+#[test]
+fn hermes_child_check_in_is_refused_read_only() {
+    use crate::protocol::commands::{AdvanceCursors, BindingEventKind::SubagentStart};
+    let (service, db) = fixture();
+    let peer = PeerIdentity::from_kernel(501);
+    let parent = with_fingerprint(CallerClaim {
+        harness: hermes(),
+        native_session: NativeSessionId::new("hermes-parent"),
+        ..claim()
+    });
+    assert_eq!(
+        recorded(
+            &service,
+            binding_event(parent.clone(), SubagentStart, Some("hermes-child"), "start")
+        ),
+        1
+    );
+    let child_cli = CallerClaim {
+        native_session: NativeSessionId::new("hermes-child"),
+        execution: ExecutionId::new("00000000-0000-4000-8000-000000000002"),
+        ..parent.clone()
+    };
+    type Snapshot = (i64, Vec<(String, Option<String>, String)>, i64);
+    let snapshot = |db: &Connection| -> Snapshot {
+        let availability = db
+            .query_row("SELECT COUNT(*) FROM seat_availability", [], |r| r.get(0))
+            .unwrap();
+        let rows = db
+            .prepare(
+                "SELECT native_session,CAST(registered_at AS TEXT),observation_provenance \
+                 FROM occupant_bindings ORDER BY ordinal",
+            )
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        let cursors = db
+            .query_row("SELECT COUNT(*) FROM binding_cursors", [], |r| r.get(0))
+            .unwrap();
+        (availability, rows, cursors)
+    };
+    let before = snapshot(&db);
+    let error = service
+        .handle(
+            lifecycle(child_cli.clone(), "child-check-in"),
+            peer,
+            &budget(),
+        )
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::SubagentReadOnly, "{error:?}");
+    assert_eq!(
+        snapshot(&db),
+        before,
+        "the refused check-in changed nothing"
+    );
+    // Its own stream is still readable: the advance succeeds and moves no other binding.
+    let advanced = service
+        .handle(
+            Command::AdvanceCursors(AdvanceCursors {
+                claim: child_cli,
+                operation: OperationId::new("child-advance"),
+                displayed: vec![],
+            }),
+            peer,
+            &budget(),
+        )
+        .unwrap();
+    assert!(
+        matches!(advanced, CommandResult::CursorsAdvanced(_)),
+        "{advanced:?}"
+    );
+    assert_eq!(snapshot(&db).1, before.1);
+}
+
 /// Kills: a binding event whose claim shape contradicts its kind being accepted (a session end
 /// carrying an agent id would name a subagent binding; a subagent event naming neither an agent id
 /// nor a child session would name nothing; a Hermes child event under a subagent claim has two
