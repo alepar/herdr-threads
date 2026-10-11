@@ -144,3 +144,7 @@ src/service/delivery_pull.rs::hook_pull_view validates top-level instance/liveco
 ### Lazy invitation positive delivery acceptance clarification
 
 Lazy invitation confirmation/nativewake suppression MUST NOT suppress in-turn pages, turn-hook/channel context or bookkeeping/discoverability (R9/R17). Preserve full display/completeness: whole(item) is not actionability. Give Lazy invitation proper informational classification while carrying it through actual delivery::Assembler and public turn-hook/service DeliveryPull output. Add positive actual Lazy invitation page/context/bookkeeping assertions AND nativewake/confirmationtimer absence under ordinary wake_on policy, with explicit wake_on policy behavior retained. RequireAck and historical None retain their timed attention. Preserve independent departed canonical sender/inviter warning visibility through ledgerUnchanged/whole_read/noticefrontier and final passiveclear; never remove rows just to suppress attention.
+
+### Actual fixture preflight
+
+Read task-15-preflight.md before first regression build. Canonical pending_invitation fixture is historicaltimed/manualwake, AGY sweep bootstrap assumes timedinvitationwake; neither proves modernLazy behavior unchanged. Real DomainService pull/registeredhook and actualcanonicalorigin/wake paths required.
