@@ -465,6 +465,47 @@ class Strategy(unittest.TestCase):
                 os.environ["PATH"] = old_path
             self.assertEqual(incomplete["status"], "inconclusive", incomplete)
 
+    def test_npm_strategy_reads_a_version_listing_past_64_kib(self):
+        # @openai/codex's listing passed the 64 KiB companion bound and every scheduled run reported it as
+        # an npm infra error; a large listing is ordinary input, and a real failure names its cause.
+        with tempfile.TemporaryDirectory() as d:
+            root = pathlib.Path(d) / "repo"
+            companions = root / "scripts/canary/adapters"
+            companions.mkdir(parents=True)
+            a = adapter(kind="npm_release")
+            r = result()
+            (companions / "third.py").write_text(
+                "import json,sys,pathlib\n"
+                "a=dict(zip(sys.argv[1::2],sys.argv[2::2]))\n"
+                "v=json.loads(pathlib.Path(a['--work-dir'],'request.json').read_text())['version']\n"
+                "r=" + repr(r) + "\n"
+                "r['attempt']=a['--attempt']\n"
+                "r['identity']={'key':'release:'+v,'source':'npm','release_version':v,"
+                "'base_version':None,'derived_version':None,'commit':None,'dirty':None,'distance':None}\n"
+                "print(json.dumps(r))\n")
+            listing = ["1.0.0"] + ["1.0.1-alpha.%d" % i for i in range(8000)] + ["1.0.1"]
+            self.assertGreater(len(json.dumps(listing)), 65536 * 2)
+            npm = pathlib.Path(d) / "npm"
+            npm.write_text("#!" + sys.executable + "\nimport sys\n"
+                           "sys.stdout.write(" + repr(json.dumps(listing)) + ")\n")
+            npm.chmod(0o755)
+            old_path = os.environ["PATH"]
+            os.environ["PATH"] = str(pathlib.Path(d)) + os.pathsep + old_path
+            baseline = {"rows": [{"harness": "third", "version": "1.0.0", "status": "verified"}]}
+            try:
+                block = runner.run_strategy(a, pathlib.Path(d) / "out", "/bin/false", root, model_tier="off",
+                                            versions_mode="latest", baseline_doc=baseline)
+                npm.write_text("#!" + sys.executable + "\nimport sys\n"
+                               "sys.stderr.write('npm error code E503\\n')\nsys.exit(1)\n")
+                failed = runner.run_strategy(a, pathlib.Path(d) / "failed", "/bin/false", root, model_tier="off",
+                                             versions_mode="latest", baseline_doc=baseline)
+            finally:
+                os.environ["PATH"] = old_path
+            self.assertEqual(block["status"], "all_pass", block)
+            self.assertEqual(block["candidates"], ["1.0.1"])
+            self.assertEqual(failed["status"], "infra_error", failed)
+            self.assertEqual(failed["reason"], "npm view failed after three attempts (last: exit 1: npm error code E503)")
+
     def test_legacy_index_keeps_tier0_stdin_and_argv(self):
         self.assertTrue(callable(getattr(runner, "index_legacy_captures", None)),
                         "owned legacy tier0 captures are not indexed")
