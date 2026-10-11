@@ -1,7 +1,7 @@
 # super-auto run — 2026-10-10-automatic-one-to-one-threads
 
 flags: planOneShot=true skipPlanRoast=false skipCodeRoast=false autonomous=true
-phase: roast-code
+phase: code
 
 idea: Use $super-auto, fully autonomous end to end with both roasts on, to implement this feature in this repo: automatic 1:1 threads. An agent can send a message to another agent by giving only a target seat ID, without specifying a thread. The plugin automatically creates (or reuses an existing) "1:1" thread with exactly two participants, the sender and the recipient, which otherwise behaves like a normal thread. The handoff command gets the same treatment: if no thread is specified, the handoff goes through the 1:1 thread. When the integration branch is ready for merge, run `herdr-threads join dev-herdr-threads` (thread taQXwBH7X) and send a --nudge message there stating that this feature is ready for integration into main.
 branch: super-auto/automatic-one-to-one-threads
@@ -28,7 +28,7 @@ codeBuckets:
   pendingRetry:
   parked:
   stalled: false
-  review: CLEAN
+  review: PENDING
 
 Code phase started: ht-e99.6 is closed design-only repair at ce11790f, with no implementation merge.
 
@@ -43,3 +43,5 @@ scopeFilter-round-1:
 scope-filter: 0 in-scope · 1 punch-listed
 
 PR roast disposition: clean (1 nits), 12/12 scouts, 5 raw → 4 deduped → 3 panels/1 spot, 10/10 judge seats, no escalation or caps. Fresh scope filter routes the Nit to the final out-of-scope punch list; no fix bead or second round required. Full-suite verification is next; phase remains roast-code until its gate completes.
+
+Post-roast verification failure: exact d137e530 full nextest ran 4621 tests: 4619 passed, 1 failed (channel_activation current schema 30 versus stale28), 1 timed out (release failpoint proof at300s); wall325.384s exceeds300s. Scoped leak check passed. Required fixture repair and release-preparation investigation reopen the code phase; prior roast remains preserved, final readiness withheld. Logs: `.superpowers/sdd/ht-e99-plan/root-verification/full-d137e530e6a2-8c0ec368-0d76-40cb-a030-af4f4b0ed6d7.{log,json,leaks.log}`.
