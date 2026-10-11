@@ -442,7 +442,10 @@ an advertised read-only delivery hint lets hooks drain newly attributed and rema
 Delivery is not a wake. A built-in transition wakes the affected seat of a still-open
 condition (the hard-deadline backstop for the obligation that seat owes). An invitation deadline-missed
 open transition also wakes its originally recorded native inviter under the same host, composer and mod
-admission guards, even after that inviter leaves the thread. The episode freezes that address; historical
+admission guards, even after that inviter leaves the thread or its informational notice was already
+carried by a committed offer. A separate bounded open-condition projection preserves this wake until
+canonical closure; the informational offer remains settled and creates no repeated delivery obligation.
+The open episode freezes its instance and original inviter address; historical
 rows use only their exact canonical invitation-creation event's recorded inviter, never a current member
 or later duplicate caller. Unknown historical/service/operator origins do not manufacture a native seat.
 A clear remains passive, as do transitions about another seat for other observers; they wait for the

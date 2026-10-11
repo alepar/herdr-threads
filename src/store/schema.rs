@@ -70,7 +70,8 @@ const V30: &str = include_str!("../../migrations/0030_receipt_send_time.sql");
 const V31: &str = include_str!("../../migrations/0031_handoff_body_bounds.sql");
 const V32: &str = include_str!("../../migrations/0032_receipt_deadline_backfill.sql");
 const V33: &str = include_str!("../../migrations/0033_invitation_lifecycle.sql");
-pub(crate) const LATEST_VERSION: i64 = 33;
+const V34: &str = include_str!("../../migrations/0034_invitation_warning_origin.sql");
+pub(crate) const LATEST_VERSION: i64 = 34;
 
 /// Decode only persisted results, after the caller's digest has matched. Live
 /// protocol responses still require disposition. Missing original context
@@ -413,7 +414,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             verify_existing(conn)
         }
         17 => verify_existing(conn),
-        18..=33 => verify_existing(conn),
+        18..=34 => verify_existing(conn),
         _ => Err(api_error(
             ErrorCode::IncompatibleSchema,
             format!("unsupported schema version {version}"),
@@ -637,8 +638,76 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             Err(error) => { let _ = conn.execute_batch("ROLLBACK"); return Err(error); }
         }
     }
-    verify_invitation_lifecycle_schema(conn)
+    verify_invitation_lifecycle_schema(conn)?;
+    if version <= 33 {
+        conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
+        let result = conn.execute_batch(V34).map_err(store_error)
+            .and_then(|_| verify_invitation_warning_origin_schema(conn))
+            .and_then(|_| conn.pragma_update(None, "user_version", 34).map_err(store_error));
+        match result {
+            Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
+            Err(error) => { let _ = conn.execute_batch("ROLLBACK"); return Err(error); }
+        }
+    }
+    verify_invitation_warning_origin_schema(conn)
 }
+
+fn verify_invitation_warning_origin_schema(conn: &Connection) -> Result<(), ApiError> {
+    let table: String = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='warning_conditions'",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    for column in [
+        "invitation_originator_instance_id TEXT REFERENCES host_instances(id)",
+        "invitation_originator_seat_id TEXT REFERENCES seats(id)",
+    ] {
+        if !table.contains(column) {
+            return Err(api_error(
+                ErrorCode::IncompatibleSchema,
+                "missing invitation warning origin column",
+            ));
+        }
+    }
+    let index = V34
+        .split("CREATE INDEX ")
+        .nth(1)
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap();
+    let trigger = V34
+        .split("CREATE TRIGGER ")
+        .nth(1)
+        .unwrap()
+        .trim()
+        .trim_end_matches(';');
+    for (kind, sql) in [
+        ("index", format!("CREATE INDEX {index}")),
+        ("trigger", format!("CREATE TRIGGER {trigger}")),
+    ] {
+        let name = sql.split_whitespace().nth(2).unwrap();
+        let actual: Option<String> = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type=?1 AND name=?2",
+                params![kind, name],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(store_error)?;
+        if actual.as_deref().map(str::trim) != Some(sql.trim()) {
+            return Err(api_error(
+                ErrorCode::IncompatibleSchema,
+                format!("missing or altered invitation warning origin {kind} {name}"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+
 
 fn verify_invitation_lifecycle_schema(conn: &Connection) -> Result<(), ApiError> {
     let ddl = V33

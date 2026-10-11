@@ -6267,11 +6267,11 @@ fn absorption_main24_and25_to26_preserves_diagnostics_and_matches_fresh_catalog(
         );
         assert_eq!(
             catalog(&fresh).iter().filter(|r| r.0 == "index").count(),
-            143
+            144
         );
         assert_eq!(
             catalog(&fresh).iter().filter(|r| r.0 == "trigger").count(),
-            183
+            184
         );
     }
 }

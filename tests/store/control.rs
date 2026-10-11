@@ -10786,3 +10786,173 @@ fn invitation_confirmation_duplicate_caller_cannot_change_origin_policy_deadline
     drop(context);
     let _ = std::fs::remove_file(path);
 }
+
+fn invitation_origin_wake_after_notice_offer(mod_path: bool) {
+    use crate::protocol::commands::InvitationConfirmation;
+    use crate::store::attention;
+    let (context, mut conn, path, clock, thread, invitation) =
+        rejection_offer_with_policy(Harness::Codex, Some(InvitationConfirmation::RequireAck));
+    let budget = crate::protocol::time::CallBudget {
+        deadline: MonoInstant(u64::MAX),
+        cancellation: Default::default(),
+    };
+    let leave_command = Leave {
+        thread: thread.clone(),
+        claim: claim("s1"),
+        operation: OperationId::new("offered-origin-left"),
+    };
+    let hash = cooperative_payload_hash("leave", &leave_command).unwrap();
+    leave(
+        &context,
+        &mut conn,
+        &budget,
+        &leave_command,
+        permit(
+            "s1",
+            "offered-origin-left",
+            ObligationRef::Control(thread.clone()),
+            hash,
+            100,
+        ),
+    )
+    .unwrap();
+    clock.0.store(110, Ordering::SeqCst);
+    assert_eq!(
+        crate::store::invitation_due::scan_invitation_due_batch(&context, &mut conn, None, 100)
+            .unwrap()
+            .warnings_added,
+        1
+    );
+    let carried: Vec<_> = attention::notice_offer_page(&conn, "s1", 10)
+        .unwrap()
+        .into_iter()
+        .map(|row| row.notice)
+        .collect();
+    assert_eq!(carried.len(), 1);
+    let tx = conn.transaction().unwrap();
+    tx.execute("INSERT INTO warning_offer(seat_id,binding_generation,execution_id,offered_through_seq) SELECT 's1',1,'00000000-0000-4000-8000-000000000001',decision_seq FROM host_instances WHERE id='i'", []).unwrap();
+    attention::settle_carried_notices(
+        &tx,
+        "s1",
+        1,
+        "00000000-0000-4000-8000-000000000001",
+        &carried,
+    )
+    .unwrap();
+    tx.commit().unwrap();
+    assert!(
+        attention::notice_offer_page(&conn, "s1", 10)
+            .unwrap()
+            .is_empty(),
+        "committed informational offer must stay settled"
+    );
+    assert!(
+        attention::seat_pending_warnings(&conn, "s1", &|| Ok(()))
+            .unwrap()
+            .items
+            .is_empty(),
+        "open waking condition must not revive informational delivery"
+    );
+    let origin = SeatId::new("s1");
+    if mod_path {
+        let view = crate::store::seats::mod_seat_view(&conn, "i", &origin)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            view.fingerprint.other_pending, 1,
+            "mod retains original inviter open condition after notice offer"
+        );
+    } else {
+        let scan = attention::wake_seat_attention(&conn, "s1").unwrap();
+        assert!(
+            scan.attention.latest_warning_seq.is_some(),
+            "native attention retains original inviter open condition after notice offer"
+        );
+        let candidate = crate::store::wake::load_candidate(
+            &conn,
+            "i",
+            &origin,
+            &scan.attention,
+            scan.decision_seq,
+        )
+        .unwrap();
+        assert!(
+            candidate.has_actionable_work(),
+            "committed notice offer cannot gate open condition wake"
+        );
+        assert!(
+            crate::store::wake::reserve(
+                &context,
+                &mut conn,
+                "i",
+                &candidate,
+                uuid::Uuid::new_v4(),
+                30_000
+            )
+            .unwrap()
+            .is_some(),
+            "existing cooperative authority admits the open condition wake"
+        );
+    }
+    clock.0.store(200, Ordering::SeqCst);
+    let acceptance = Accept {
+        thread,
+        claim: claim("s2"),
+        operation: OperationId::new("offered-late-accept"),
+    };
+    let hash = cooperative_payload_hash("accept", &acceptance).unwrap();
+    assert!(matches!(
+        accept(
+            &context,
+            &mut conn,
+            &budget,
+            &acceptance,
+            permit(
+                "s2",
+                "offered-late-accept",
+                ObligationRef::Invitation(invitation),
+                hash,
+                200
+            )
+        )
+        .unwrap(),
+        CommandResult::Accepted(_)
+    ));
+    assert!(
+        attention::wake_seat_attention(&conn, "s1")
+            .unwrap()
+            .attention
+            .latest_warning_seq
+            .is_none(),
+        "late explicit acceptance clears native condition attention"
+    );
+    assert_eq!(
+        crate::store::seats::mod_seat_view(&conn, "i", &origin)
+            .unwrap()
+            .unwrap()
+            .fingerprint
+            .other_pending,
+        0,
+        "clear is passive for mod attention"
+    );
+    let clears = attention::notice_offer_page(&conn, "s1", 10).unwrap();
+    assert_eq!(
+        clears.len(),
+        1,
+        "only the fresh passive clear notice remains deliverable"
+    );
+    assert_ne!(clears[0].notice.warning, carried[0].warning);
+    drop(conn);
+    drop(context);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn invitation_confirmation_native_open_condition_survives_committed_notice_offer() {
+    invitation_origin_wake_after_notice_offer(false);
+}
+
+#[test]
+fn invitation_confirmation_mod_open_condition_survives_committed_notice_offer() {
+    invitation_origin_wake_after_notice_offer(true);
+}

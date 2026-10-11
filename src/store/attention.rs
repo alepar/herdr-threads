@@ -1126,10 +1126,8 @@ pub fn warning_wakes_seat(
     if effective::is_invitation_rejection_notice(db, warning_id)? {
         return Ok(false);
     }
-    let invitation:Option<String>=db.query_row("SELECT condition_id FROM warning_conditions WHERE open_warning_id=?1 AND condition_kind='invitation' AND clear_warning_id IS NULL",[warning_id],|r|r.get(0)).optional().map_err(store_error)?;
-    if let Some(invitation) = invitation
-        && effective::invitation_originator(db, &invitation)?.as_deref() == Some(seat_id)
-    {
+    let origin: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM warning_conditions WHERE open_warning_id=?1 AND condition_kind='invitation' AND clear_warning_id IS NULL AND invitation_originator_seat_id=?2)",params![warning_id,seat_id],|r|r.get(0)).map_err(store_error)?;
+    if origin {
         return Ok(true);
     }
     db.query_row(
@@ -1138,6 +1136,44 @@ pub fn warning_wakes_seat(
         |r| r.get(0),
     )
     .map_err(store_error)
+}
+
+/// Open invitation conditions addressed to their frozen original inviter.
+/// This separate bounded source ignores informational notice offers. The
+/// instance/seat/ordinal partial index excludes all closed historical rows.
+pub fn open_invitation_origin_warnings(
+    db: &Connection,
+    seat_id: &str,
+) -> Result<PendingSet, ApiError> {
+    let instance: Option<String> = db
+        .query_row(
+            "SELECT instance_id FROM seats WHERE id=?1 AND state!='retired'",
+            [seat_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(store_error)?;
+    let Some(instance) = instance else {
+        return Ok(PendingSet::default());
+    };
+    let window: Vec<PendingItem> = rows(
+        db,
+        "SELECT c.open_warning_id,c.thread_id,c.opened_seq,m.event_offset FROM (SELECT open_warning_id,thread_id,opened_seq FROM warning_conditions INDEXED BY warning_conditions_invitation_origin WHERE invitation_originator_instance_id=?1 AND invitation_originator_seat_id=?2 AND condition_kind='invitation' AND clear_warning_id IS NULL AND invitation_originator_seat_id IS NOT NULL ORDER BY ordinal DESC LIMIT ?3) c JOIN messages m ON m.id=c.open_warning_id",
+        params![instance, seat_id, WINDOW_SQL],
+        |r| {
+            Ok(PendingItem {
+                id: r.get(0)?,
+                thread_id: r.get(1)?,
+                key: (r.get(2)?, r.get(3)?),
+            })
+        },
+    )?;
+    let mut gather = Gather::default();
+    gather.window(window.len());
+    for item in window {
+        gather.add(item);
+    }
+    Ok(gather.finish())
 }
 
 /// Narrow a seat's pending-warning set to the warnings that wake it
@@ -1161,7 +1197,14 @@ pub fn wake_warnings(
     if !(wakes.is_empty() && warnings.saturated) {
         warnings.items = wakes;
     }
-    Ok(warnings)
+    let origins = open_invitation_origin_warnings(db, seat_id)?;
+    let mut gather = Gather {
+        steps: warnings.work_steps + origins.work_steps,
+        ..Gather::default()
+    };
+    gather.merge(&warnings);
+    gather.merge(&origins);
+    Ok(gather.finish())
 }
 
 /// The wake attention of one seat, from the newest-first per-source walks

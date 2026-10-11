@@ -614,3 +614,134 @@ fn invitation_backlog_restart_reconstructs_progress_without_recipient_activity()
         "discovery never requires registration"
     );
 }
+
+#[test]
+fn invitation_confirmation_prior_schema_upgrade_preserves_exact_open_origins() {
+    let path =
+        std::env::temp_dir().join(format!("invitation-origin-v30-{}.db", uuid::Uuid::new_v4()));
+    let conn = Connection::open(&path).unwrap();
+    conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+    let mut migrations: Vec<_> =
+        std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.file_name().unwrap().to_str().unwrap()[..4]
+                    .parse::<u32>()
+                    .is_ok_and(|version| version <= 30)
+            })
+            .collect();
+    migrations.sort();
+    assert_eq!(migrations.len(), 30);
+    for migration in migrations {
+        conn.execute_batch(&std::fs::read_to_string(migration).unwrap())
+            .unwrap();
+    }
+    conn.pragma_update(None, "user_version", 30).unwrap();
+    conn.execute(
+        "INSERT INTO host_instances(id,created_at,decision_seq) VALUES ('host',0,10)",
+        [],
+    )
+    .unwrap();
+    for seat in ["origin", "legacy", "unknown", "seat"] {
+        conn.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES (?1,'host','resolved','native',1,0)", [seat]).unwrap();
+    }
+    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('thread','host','topic','goal',0,0)", []).unwrap();
+    for (ordinal, id, recorded, actor) in [
+        (1, "stored", Some("origin"), None),
+        (2, "historical", None, Some("legacy")),
+        (3, "unattributed", None, None),
+    ] {
+        conn.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,inviter_seat_id) VALUES (?1,'thread','seat',?2,'pending',1,0,100,100,?3)", params![id,ordinal,recorded]).unwrap();
+        if let Some(actor) = actor {
+            crate::store::schema::append_event_once(&conn, crate::store::schema::EventInput {
+                thread: &crate::protocol::ids::ThreadId::new("thread"), key: &format!("invite:{id}"), kind: "info",
+                payload_json: &serde_json::json!({"action":"invite","actor_seat":actor,"seat":"seat","invitation":id}).to_string(), decision_at: UtcMillis(0), source_message: None, source_invitation: Some(&InvitationId::new(id)),
+            }).unwrap();
+        }
+        let (warning, _) = crate::store::schema::append_event_once(
+            &conn,
+            crate::store::schema::EventInput {
+                thread: &crate::protocol::ids::ThreadId::new("thread"),
+                key: &format!("overdue:{id}"),
+                kind: "warn",
+                payload_json: "{}",
+                decision_at: UtcMillis(100),
+                source_message: None,
+                source_invitation: Some(&InvitationId::new(id)),
+            },
+        )
+        .unwrap();
+        let seq: i64 = conn
+            .query_row(
+                "SELECT decision_seq FROM messages WHERE id=?1",
+                [warning.as_str()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        conn.execute("INSERT INTO warning_conditions(condition_kind,thread_id,condition_id,affected_seat_id,open_warning_id,opened_seq) VALUES ('invitation','thread',?1,'seat',?2,?3)", params![id, warning.as_str(),seq]).unwrap();
+    }
+    let before: Vec<(String, String)> = {
+        let mut query = conn
+            .prepare("SELECT id,event_json FROM messages ORDER BY ordinal")
+            .unwrap();
+        query
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    drop(conn);
+    let context = StoreContext::new(path.clone(), Arc::new(TestClock(AtomicI64::new(200))));
+    let conn = context.open_writer().unwrap();
+    for origin in ["origin", "legacy"] {
+        assert!(
+            crate::store::attention::wake_seat_attention(&conn, origin)
+                .unwrap()
+                .attention
+                .latest_warning_seq
+                .is_some(),
+            "prior-schema open origin {origin} must survive upgrade"
+        );
+    }
+    assert!(
+        crate::store::attention::wake_seat_attention(&conn, "unknown")
+            .unwrap()
+            .attention
+            .latest_warning_seq
+            .is_none(),
+        "unknown historical evidence cannot attribute a member"
+    );
+    let after: Vec<(String, String)> = {
+        let mut query = conn
+            .prepare("SELECT id,event_json FROM messages ORDER BY ordinal")
+            .unwrap();
+        query
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    };
+    assert_eq!(before, after, "upgrade never rewrites historical events");
+    let mut conn = conn;
+    let tx = conn.transaction().unwrap();
+    tx.execute("UPDATE invitations SET state='accepted',accepted_at=200,accepted_actor_seat_id='seat',accepted_generation=1,accepted_observation='test-observation' WHERE id='stored'", []).unwrap();
+    crate::store::schema::clear_warning_condition_for_invitation(&tx, "stored", UtcMillis(200))
+        .unwrap();
+    tx.commit().unwrap();
+    conn.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,inviter_seat_id) VALUES ('next-episode','thread','seat',4,'pending',10,100,100,200,'legacy')", []).unwrap();
+    assert!(
+        scan_invitation_due_batch(&context, &mut conn, None, 100)
+            .unwrap()
+            .warnings_added
+            > 0
+    );
+    let next_origin: String = conn.query_row("SELECT invitation_originator_seat_id FROM warning_conditions WHERE condition_id='next-episode' AND clear_warning_id IS NULL", [], |r|r.get(0)).unwrap();
+    assert_eq!(
+        next_origin, "legacy",
+        "new open episode resolves its own origin rather than retaining the prior origin"
+    );
+    drop(conn);
+    drop(context);
+    let _ = std::fs::remove_file(path);
+}

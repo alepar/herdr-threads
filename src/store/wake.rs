@@ -191,7 +191,12 @@ pub fn load_candidate(
                 }
             }
         }
-        if unoffered {
+        // An open origin-addressed condition remains waking after its
+        // informational delivery was carried. Delivery settlement is separate.
+        let open_origin = !super::attention::open_invitation_origin_warnings(db, seat.as_str())?
+            .items
+            .is_empty();
+        if unoffered || open_origin {
             warning_offer = None;
         }
     }
