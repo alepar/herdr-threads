@@ -4877,6 +4877,18 @@ mod continuity {
     impl Drop for Fixture {
         fn drop(&mut self) {
             self.stop_daemon();
+            // run_elected redirected process stdio into this private log. Its
+            // joined shutdown restores the descriptors and drains the reader;
+            // only then replay a failure diagnostic before deleting the root.
+            if std::thread::panicking()
+                && let Ok(log) = fs::read(self.instance_dir.join("daemon.log"))
+            {
+                let tail = &log[log.len().saturating_sub(8 * 1024)..];
+                let mut stderr = std::io::stderr().lock();
+                let _ = stderr.write_all(b"elected daemon.log tail:\n");
+                let _ = stderr.write_all(tail);
+                let _ = stderr.write_all(b"\n");
+            }
             let _ = fs::remove_dir_all(&self.root);
         }
     }
