@@ -1,0 +1,20 @@
+{
+  "head": "7c3edc2d5d6131258d4f0dfca7e1788ecbe3a4e4",
+  "ht_leak_run_id": "b8e90951-750e-4b98-b7dc-0fff6a2ee02e",
+  "selected": 3,
+  "passed": 0,
+  "failed": 3,
+  "runtime_seconds": 21.481,
+  "finding": "Existing ordinary/lazy/native-only mod cases fail same shared Rig native-wake setup at mod_delivery1020",
+  "scoped_leak_exit": 0,
+  "logs": [
+    {
+      "path": "/private/tmp/ht-finish-active-existing-mod.log",
+      "sha256": "f2dacdfcfb06a33baaf2618dc20c9f6feff0dadeb41e386510026ac08f3473ac"
+    },
+    {
+      "path": "/private/tmp/ht-finish-active-existing-mod-leaks.log",
+      "sha256": "87e8218c7e39ad3f7c328894df8a3c19809b0772116e37ea6d9e45195ffd6a4e"
+    }
+  ]
+}

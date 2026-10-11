@@ -1,0 +1,30 @@
+{
+  "head": "7c3edc2d5d6131258d4f0dfca7e1788ecbe3a4e4",
+  "tree": "71d69644a7e1247d5ccb14adbaa40b72bf79dc47",
+  "ht_leak_run_id": "0efd58be-48be-404c-a215-41ad14b92cc6",
+  "nextest_run_id": "232a3171-f0e4-4cbb-92d8-96fd70b9a548",
+  "selected": 32,
+  "passed": 23,
+  "failed": 9,
+  "skipped": 4598,
+  "compile_seconds": 29.88,
+  "runtime_seconds": 42.445,
+  "failed_groups": {
+    "protocol_expected_list": 1,
+    "hook_observed_capability_or_discovery": 3,
+    "watch_shared_native_wake_setup": 5
+  },
+  "capture": "NOT PRODUCED",
+  "active_clearance": false,
+  "logs": [
+    {
+      "path": "/private/tmp/ht-finish-first-active.log",
+      "sha256": "543b376d36eb9f070e9c6569c917415570609aff09e2aa196234d19c2dd3818e"
+    },
+    {
+      "path": "/private/tmp/ht-finish-first-active-leaks.log",
+      "sha256": "87e8218c7e39ad3f7c328894df8a3c19809b0772116e37ea6d9e45195ffd6a4e"
+    }
+  ],
+  "scoped_leak_exit": 0
+}

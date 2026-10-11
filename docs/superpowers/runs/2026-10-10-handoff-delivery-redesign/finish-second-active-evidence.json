@@ -1,0 +1,34 @@
+{
+  "head": "f8c25103a6ba1b2834e09b97cd2fca2924f0ce14",
+  "tree": "c78989b49c8c3801537e34b4e4b93bd7450bb228",
+  "ht_leak_run_id": "93e92ae5-49ab-402f-8529-23814d201bb0",
+  "selected": 35,
+  "passed": 32,
+  "failed": 3,
+  "skipped": 4595,
+  "runtime_seconds": 25.091,
+  "green_scopes": [
+    "protocol capabilities22",
+    "registeredAGY5",
+    "Watchlazy-onlypassive",
+    "Watchfullpendingcapacity",
+    "existingmod3controls"
+  ],
+  "remaining_watch": [
+    "lostconfirmresponse actualpassiveinvitationonly/noAttention",
+    "replacement waitingnonemptycontrolConfirm",
+    "positive waitingcanonicalretirement"
+  ],
+  "capture": "NOT PRODUCED",
+  "scoped_leak_exit": 0,
+  "logs": [
+    {
+      "path": "/private/tmp/ht-finish-second-active.log",
+      "sha256": "67b1adcda3a31b5b3bf8f66398f6b6cc6d9b24d37f201f4175a7558620e5fe02"
+    },
+    {
+      "path": "/private/tmp/ht-finish-second-active-leaks.log",
+      "sha256": "87e8218c7e39ad3f7c328894df8a3c19809b0772116e37ea6d9e45195ffd6a4e"
+    }
+  ]
+}

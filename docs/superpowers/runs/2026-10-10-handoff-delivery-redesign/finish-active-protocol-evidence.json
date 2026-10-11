@@ -1,0 +1,20 @@
+{
+  "head": "b85607172df8a2a223951afd221ee8d1bcad7043",
+  "selected": 22,
+  "passed": 22,
+  "failed": 0,
+  "skipped": 4329,
+  "runtime_seconds": 0.916,
+  "ht_leak_run_id": "0d2d20d6-3e94-4f93-9c6b-3cd60c349211",
+  "scoped_leak_exit": 0,
+  "logs": [
+    {
+      "path": "/private/tmp/ht-finish-active-protocol.log",
+      "sha256": "90a74058b2eafee826f7a75a41445e556371083ef4162d5070e27b479e615429"
+    },
+    {
+      "path": "/private/tmp/ht-finish-active-protocol-leaks.log",
+      "sha256": "87e8218c7e39ad3f7c328894df8a3c19809b0772116e37ea6d9e45195ffd6a4e"
+    }
+  ]
+}

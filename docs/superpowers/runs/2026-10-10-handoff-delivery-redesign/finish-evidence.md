@@ -19,3 +19,12 @@ Initial frozen D4c/tree1589136; root coordination cd2fe167; composition3ad; Main
 |Main+B+D/C/PR/final readiness|Pending.|
 
 Exact execution sourcepoints/log hashes are in frozen-baseline.json, checkpoint-evidence.json and capacity-red-evidence.json in the plan workspace; durable final manifests will be promoted before readiness. These are focused selections, not a full-suite or readiness verdict. Earlier fixture-route failures remain historical evidence and are not counted as meaningful capacity RED.
+
+
+## Active checkpoint f8c25103 (2026-10-11)
+
+Inactive cumulative production source31e passed whole/schema/interface review across80paths, with explicit61-blob reuse and19fresh-path depth. The sole prepared lazy-only oracle issue was fixed and independently rereviewed. Separate one-file capability activation is applied. Active source interface and three fixture corrections are independently SpecPASS/QualityPASS; production is unchanged after7c3.
+
+Actual second active sweep on f8c25103 is32PASS/3FAIL out of35, compile6.53s/runtime25.091s, scoped leaks0. All22capability tests, all5registered AGY cases, existing3mod controls and Watchlazy-only/fullcapacity parking pass. Three later Watch attention/confirmation assertions remain under diagnosis. No positive Watch capture exists yet; plugin captured-stream tests remain pending. The earlier fallback failure did not recur in the diagnostic run, five bounded exact repetitions or second active sweep; its original cause remains unknown and is not claimed repaired.
+
+Source-only review does not clear active runtime, cumulative D completion, Main/B composition, C, PR roast or final readiness. Fresh artifacts use finish-active-/finish-second-active-/finish-*-diagnostic names; historical failure evidence remains intact.
