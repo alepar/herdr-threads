@@ -2700,6 +2700,24 @@ fn activation_v2_watch_full_pending_capacity_parks_until_real_channel_input() {
         "full pending capacity must reach a terminal reply; empty Page.more is not runnable work",
     );
     assert_eq!(offered, sent[..256].iter().cloned().collect());
+    // Diagnostic-only snapshots while the existing relay holds each real
+    // response. Fixed metadata and bounded descriptor identities omit bodies.
+    let diagnostic_state = || {
+        let db = rig.db();
+        let metadata = |sql: &str| -> Value {
+            match db.query_row(sql, [&rig.b], |row| row.get::<_, String>(0)) {
+                Ok(raw) => serde_json::from_str(&raw)
+                    .unwrap_or_else(|error| json!({"decode_error": error.to_string()})),
+                Err(error) => json!({"query_error": error.to_string()}),
+            }
+        };
+        json!({
+            "consumer": metadata("SELECT json_object('control',substr(control_state,1,2048),'outbox_more',outbox_more,'token',outbox_token,'retired',outbox_retired_mask,'confirmed',outbox_confirmed_mask,'descriptor_count',json_array_length(outbox_descriptors),'descriptors',json((SELECT json_group_array(json_object('kind',json_extract(value,'$.item.kind'),'id',json_extract(value,'$.item.id'),'warning',json_extract(value,'$.item.warning'),'epoch',json_extract(value,'$.item.epoch'),'version',json_extract(value,'$.item.attention_version'))) FROM (SELECT value FROM json_each(outbox_descriptors) LIMIT 32))),'publication_after',ordinary_publication_after,'publication_high',ordinary_publication_high,'passive_generation',ordinary_passive_generation,'initial_after',initial_after,'initial_high',initial_high,'context_after',context_after_seq,'context_high',context_high,'context_thread',substr(context_thread,1,128),'context_invitation_after',context_invitation_after,'context_invitation_high',context_invitation_high,'dirty_after',dirty_after,'dirty_high',dirty_high,'revisit_after_bytes',revisit_after_bytes,'revisit_after_ordinal',revisit_after_ordinal,'revisit_high_bytes',revisit_high_bytes,'revisit_high_ordinal',revisit_high_ordinal,'ordinary_done',ordinary_done,'ordinary_version',ordinary_version,'carry_count',json_array_length(ordinary_pending,'$.items'),'partial_bytes',length(ordinary_partial),'rotation',rotation) FROM invitation_presentation_consumers WHERE seat_id=?1 AND consumer='watch'"),
+            "relevance": metadata("SELECT COALESCE((SELECT json_object('fence',json_extract(proof_json,'$.fence'),'frontier',json_extract(proof_json,'$.frontier'),'native_version',json_extract(proof_json,'$.native_version'),'absent',json_extract(proof_json,'$.absent'),'witness',substr(COALESCE(json_extract(proof_json,'$.witness'),'null'),1,512),'slots',substr(COALESCE(json_extract(proof_json,'$.slots'),'null'),1,8192),'source_rotation',json_extract(proof_json,'$.source_rotation'),'fallback_rotation',json_extract(proof_json,'$.fallback_rotation')) FROM presentation_warning_proofs WHERE seat_id=?1 AND consumer='watch'),'{}')"),
+            "canonical": metadata("SELECT json_object('fence',(SELECT version FROM presentation_warning_fence WHERE singleton=1),'notice_frontier',(SELECT offered_ordinal FROM digest_notice_offer WHERE seat_id=?1),'confirming_invitations',(SELECT count(*) FROM presentation_confirming_invitations WHERE seat_id=?1),'pending_invitations',(SELECT count(*) FROM digest_pending_invitations WHERE seat_id=?1),'physical_pending_receipts',(SELECT count(*) FROM receipts WHERE seat_id=?1 AND state='pending'),'host_decision_max',(SELECT max(decision_seq) FROM host_instances))")
+        })
+    };
+    let diagnostic_before = diagnostic_state();
     let before = capacity_normal_snapshot(&rig);
     let carry: Value = serde_json::from_str(before["carry"].as_str().unwrap()).unwrap();
     let retained = carry["items"]
@@ -2728,8 +2746,28 @@ fn activation_v2_watch_full_pending_capacity_parks_until_real_channel_input() {
         "page" => {
             let page = &result["args"];
             assert_eq!(
-                page["more"], false,
-                "stable full-capacity response must return to stream waiting"
+                page["more"],
+                false,
+                "stable full-capacity response must return to stream waiting; diagnostic={}",
+                json!({
+                    "terminal_ordinal": terminal,
+                    "resumed_ordinal": resumed,
+                    "reply": {
+                        "kind": result["kind"], "more": page["more"],
+                        "offered_count": page["offered"].as_array().map(Vec::len),
+                        "truncated_count": page["truncated"].as_array().map(Vec::len),
+                        "token": page["presentation_token"],
+                        "attention_version": page["attention_version"],
+                        "output_bytes": page["output_bytes"],
+                        "items": page["items"].as_array().map(|items| items.iter().take(32).map(|item| json!({
+                            "kind": item["kind"], "id": item["id"], "warning": item["warning"],
+                            "epoch": item["epoch"], "version": item["attention_version"]
+                        })).collect::<Vec<_>>()),
+                        "controls": page["emitted_controls"].as_array().map(|controls| controls.iter().take(32).cloned().collect::<Vec<_>>()),
+                    },
+                    "before": diagnostic_before,
+                    "after": diagnostic_state(),
+                })
             );
             assert_eq!(page["offered"], json!([]));
             assert_eq!(page["truncated"], json!([]));
