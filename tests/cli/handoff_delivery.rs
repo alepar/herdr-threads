@@ -3407,3 +3407,181 @@ fn handoff_policy_completed_canonical_status_bypasses_missing_capabilities_but_p
     );
     assert_eq!(base.counts(), before);
 }
+
+// Catches conflating acceptance with ACK, or clearing both origin warnings when
+// only one of a timed handoff's independent obligations has been settled.
+#[test]
+fn timed_handoff_acceptance_and_ack_clear_only_their_own_overdue_condition() {
+    use crate::protocol::{
+        commands::{Accept, Ack, InvitationConfirmation},
+        handoff::HandoffPolicy,
+    };
+    struct At(i64);
+    impl Clock for At {
+        fn utc_now(&self) -> UtcMillis {
+            UtcMillis(self.0)
+        }
+        fn monotonic_now(&self) -> MonoInstant {
+            MonoInstant(1)
+        }
+    }
+    for accept_first in [true, false] {
+        let tmp = TempRoot::new();
+        let journal = Journal::open(tmp.0.join("intents")).unwrap();
+        let mut p = plan();
+        p.payload.channel = HandoffChannel::New {
+            name: None,
+            topic: "timed review".into(),
+            goal: "independent obligations".into(),
+        };
+        let mut client = GuardedCanonical::new(&tmp.0);
+        p.payload.policy = Some(HandoffPolicy {
+            deadline_millis: Some(7000),
+            invitation_confirmation: InvitationConfirmation::RequireAck,
+            invite_deadline_millis: Some(11000),
+        });
+        let reference = record(&journal, p.clone());
+        guarded_retry(&journal, &reference, &p, &client, true, &mut vec![]).unwrap();
+        let (mode, duration, invitation_deadline, receipt) =
+            handoff_policy_canonical_values(&client);
+        assert_eq!(
+            (mode.as_str(), duration, invitation_deadline),
+            ("require_ack", 11000, 11001)
+        );
+        assert_eq!(receipt.deadline_at, Some(7001));
+        assert_eq!(receipt.available_at, None);
+        let context_at = |time| {
+            crate::store::connection::StoreContext::new(
+                tmp.0.join("canonical.db"),
+                std::sync::Arc::new(At(time)),
+            )
+        };
+        let early = context_at(7001);
+        let mut db = early.open_writer().unwrap();
+        handoff_policy_advance_work(&early, &mut db);
+        let mut cursor = crate::store::receipts::ReceiptDueCursor::default();
+        for _ in 0..16 {
+            crate::store::receipts::scan_due(&early, &mut db, 100, &mut cursor).unwrap();
+        }
+        crate::store::invitation_due::scan_invitation_due_batch(&early, &mut db, None, 100)
+            .unwrap();
+        let message_warning =
+            crate::store::effective::effective_receipt(&db, &receipt.message_id, "recipient")
+                .unwrap()
+                .unwrap()
+                .warning_message_id
+                .unwrap();
+        let invitation_warning = |db: &rusqlite::Connection| {
+            db.query_row("SELECT warning_message_id FROM invitations", [], |r| {
+                r.get::<_, Option<String>>(0)
+            })
+            .unwrap()
+        };
+        assert_eq!(
+            invitation_warning(&db),
+            None,
+            "message expiry must not expire the invitation early"
+        );
+        let late = context_at(11001);
+        crate::store::invitation_due::scan_invitation_due_batch(&late, &mut db, None, 100).unwrap();
+        let invitation_warning =
+            invitation_warning(&db).expect("invitation expires independently without registration");
+        assert_ne!(message_warning, invitation_warning);
+        assert_eq!(db.query_row("SELECT count(*) FROM occupant_bindings WHERE seat_id='recipient' AND registered_at IS NOT NULL", [], |r|r.get::<_,i64>(0)).unwrap(), 0);
+        let cleared = |warning: &str| {
+            db.query_row("SELECT clear_warning_id IS NOT NULL FROM warning_conditions WHERE open_warning_id=?1", [warning], |r|r.get::<_,bool>(0)).unwrap()
+        };
+        assert!(!cleared(&message_warning));
+        assert!(!cleared(&invitation_warning));
+        assert_eq!(
+            db.query_row(
+                "SELECT seat_id FROM receipt_warning_origins WHERE warning_id=?1",
+                [&message_warning],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+            "sender"
+        );
+        let sender_attention = || {
+            crate::store::attention::wake_seat_attention(&db, "sender")
+                .unwrap()
+                .attention
+                .latest_warning_seq
+        };
+        assert!(sender_attention().is_some());
+        client.base.store =
+            crate::store::SqliteStore::new(context_at(11002), "i", Default::default()).unwrap();
+        let mut recipient = canonical_claim();
+        recipient.seat = SeatId::new("recipient");
+        recipient.target = crate::protocol::ids::HostTargetId::new("w1:p2");
+        let thread = ThreadId::new(
+            db.query_row("SELECT id FROM threads", [], |r| r.get::<_, String>(0))
+                .unwrap(),
+        );
+        let accept = Command::Accept(Accept {
+            thread,
+            operation: OperationId::new("independent-accept"),
+            claim: recipient.clone(),
+        });
+        let ack = Command::Ack(Ack {
+            messages: vec![MessageId::new(&receipt.message_id)],
+            operation: OperationId::new("independent-ack"),
+            claim: recipient,
+        });
+        let (first, second) = if accept_first {
+            (accept, ack)
+        } else {
+            (ack, accept)
+        };
+        let budget = CallBudget {
+            deadline: MonoInstant(u64::MAX),
+            cancellation: Default::default(),
+        };
+        client.base.canonical(first, &budget).unwrap();
+        assert_eq!(cleared(&invitation_warning), accept_first);
+        assert_eq!(cleared(&message_warning), !accept_first);
+        assert!(
+            sender_attention().is_some(),
+            "the other open condition must retain sender attention"
+        );
+        let partial =
+            crate::store::effective::effective_receipt(&db, &receipt.message_id, "recipient")
+                .unwrap()
+                .unwrap();
+        assert_eq!(
+            partial.state,
+            if accept_first {
+                crate::store::effective::EffectiveReceiptState::Pending
+            } else {
+                crate::store::effective::EffectiveReceiptState::Acknowledged
+            }
+        );
+        client.base.canonical(second, &budget).unwrap();
+        assert!(cleared(&invitation_warning));
+        assert!(cleared(&message_warning));
+        assert_eq!(sender_attention(), None, "final clears are passive");
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM warning_conditions", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            db.query_row("SELECT state FROM invitations", [], |r| r
+                .get::<_, String>(0))
+                .unwrap(),
+            "accepted"
+        );
+        let final_receipt =
+            crate::store::effective::effective_receipt(&db, &receipt.message_id, "recipient")
+                .unwrap()
+                .unwrap();
+        assert_eq!(
+            final_receipt.state,
+            crate::store::effective::EffectiveReceiptState::Acknowledged
+        );
+        assert_eq!(final_receipt.deadline_at, Some(7001));
+        assert_eq!(final_receipt.frozen_duration_ms, 7000);
+        assert_eq!(client.counts(), (1, 1, 1));
+    }
+}

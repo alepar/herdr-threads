@@ -1,9 +1,9 @@
 //! Informational warning transitions (another seat's overdue receipt opening
 //! or clearing) are delivered to every member as notices on the next check-in
-//! (TRUST-POLICY A7). They must not wake a member who owes nothing: the wake
-//! prompt sends that member to an inbox with no actionable item. The affected
-//! seat's own open overdue warning stays wake-eligible (the hard-deadline
-//! backstop). Real canonical store mutations; no daemon or global state.
+//! (TRUST-POLICY A7). Unrelated observers remain passive. The recipient and
+//! canonical original sender retain independent open-condition wake attention;
+//! carrying an informational offer settles neither obligation nor sender attention.
+//! Real canonical store mutations; no daemon or global state.
 use herdr_threads::{
     ports::{
         DueScanRequest, DueScanState, DurableWorkAdmission, ReadContext, RegisterAvailableRequest,
@@ -304,12 +304,23 @@ fn other_seat_overdue_transitions_never_wake_members_who_owe_nothing() {
     let [(open, opened_clear)]: [(String, Option<String>); 1] =
         f.conditions().try_into().expect("one overdue condition");
     assert_eq!(opened_clear, None);
-    for seat in ["author", "bystander"] {
+    {
+        let seat = "bystander";
         assert!(f.candidate(seat).is_none(), "{seat} owes nothing");
         assert_eq!(f.wake_warning(seat), None, "{seat}");
         // Still delivered as a notice (TRUST-POLICY A7), not dropped.
         assert_eq!(f.digest_warnings(seat), 1, "{seat}");
     }
+    let sender = f
+        .candidate("author")
+        .expect("the original sender is notified");
+    assert!(!sender.has_pending_receipt);
+    assert!(sender.actionable_warning_seq.is_some());
+    assert_eq!(
+        f.wake_warning("author"),
+        sender.actionable_warning_seq.map(|s| s as i64)
+    );
+    assert_eq!(f.digest_warnings("author"), 1);
     let affected = f.candidate("agent").expect("the late recipient is woken");
     assert!(affected.has_pending_receipt);
     assert!(
@@ -328,6 +339,10 @@ fn other_seat_overdue_transitions_never_wake_members_who_owe_nothing() {
     assert_eq!(
         notice_ids(&f.check("author", "check-open")),
         std::slice::from_ref(&open)
+    );
+    assert!(
+        f.candidate("author").is_some(),
+        "informational delivery does not settle original-sender attention"
     );
 
     f.ack("agent", &message, "ack-agent-late");
@@ -397,6 +412,10 @@ fn another_seats_transitions_do_not_rearm_a_carried_warning() {
     let candidate = f.candidate("agent").expect("the pending receipt remains");
     assert!(candidate.has_pending_receipt);
     assert_eq!(candidate.actionable_warning_seq, None, "{candidate:?}");
-    assert!(f.candidate("author").is_none());
+    let sender = f
+        .candidate("author")
+        .expect("agent's open condition still notifies the original sender");
+    assert!(!sender.has_pending_receipt);
+    assert!(sender.actionable_warning_seq.is_some());
     assert!(f.candidate("bystander").is_none());
 }
