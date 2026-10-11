@@ -28,6 +28,6 @@ codeBuckets:
   pendingRetry:
   parked:
   stalled: false
-  review: PENDING
+  review: NEEDS_FIX (1 Important)
 
 Code phase started: ht-e99.6 is closed design-only repair at ce11790f, with no implementation merge.
