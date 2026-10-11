@@ -5154,3 +5154,175 @@ fn permission_consent_grants_revokes_and_unsetup_restores() {
     assert_eq!(unsetup.status.code(), Some(0), "{}", text(&unsetup.stderr));
     assert_eq!(fs::read(s.settings()).unwrap(), ORIGINAL);
 }
+
+// ---------------------------------------------------------------------------
+// Stale installs (ht-54r.24): an install that lacks a required hook event is
+// flagged by `doctor` and `setup-status`, and `doctor fix` re-runs the owned
+// setup.
+
+/// Rewrites a finished install into the shape an earlier release wrote: `events` leave the
+/// manifest's owned entries and the harness file.
+fn drop_installed_events(s: &Scratch, kind: &str, file: &Path, events: &[&str]) {
+    let manifest = fs::read_dir(s.state.join("setup"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| {
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            name.starts_with(&format!("{kind}-user-"))
+                && name.ends_with(".json")
+                && !name.ends_with(".created.json")
+        })
+        .expect("setup manifest");
+    let mut recorded: serde_json::Value =
+        serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
+    recorded["owned"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|entry| !events.contains(&entry["event"].as_str().unwrap()));
+    fs::write(&manifest, serde_json::to_vec(&recorded).unwrap()).unwrap();
+    let mut settings: serde_json::Value = serde_json::from_slice(&fs::read(file).unwrap()).unwrap();
+    for event in events {
+        settings["hooks"].as_object_mut().unwrap().remove(*event);
+    }
+    fs::write(file, serde_json::to_vec(&settings).unwrap()).unwrap();
+}
+
+fn stale_scratch_claude() -> Scratch {
+    let s = Scratch::new();
+    s.harness("claude", "2.1.284 (Claude Code)");
+    fs::create_dir(&s.state).unwrap();
+    let setup = s.run(&["setup", "claude"]);
+    assert_eq!(setup.status.code(), Some(0), "{}", text(&setup.stderr));
+    s
+}
+
+#[test]
+fn doctor_flags_claude_install_missing_subagent_groups() {
+    let s = stale_scratch_claude();
+    drop_installed_events(
+        &s,
+        "claude",
+        &s.settings(),
+        &["SubagentStart", "SubagentStop"],
+    );
+    let doctor = json_doctor(&s);
+    let stale = &doctor["hooks"]["claude"]["stale_install"];
+    assert_eq!(
+        stale["missing"],
+        serde_json::json!(["SubagentStart", "SubagentStop"]),
+        "{doctor}"
+    );
+    assert_eq!(stale["fix"], "herdr-threads setup claude");
+    assert!(
+        doctor["limitations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|line| line
+                .as_str()
+                .unwrap()
+                .contains("re-run `herdr-threads setup claude`")),
+        "{doctor}"
+    );
+}
+
+#[test]
+fn doctor_flags_codex_install_missing_subagent_stop_and_session_end() {
+    let s = Scratch::new();
+    s.harness("codex", "codex-cli 0.158.0");
+    fs::create_dir(&s.codex_home).unwrap();
+    let setup = s.run(&["setup", "codex"]);
+    assert_eq!(setup.status.code(), Some(0), "{}", text(&setup.stderr));
+    let doctor = json_doctor(&s);
+    let stale = &doctor["hooks"]["codex"]["stale_install"];
+    assert_eq!(
+        stale["missing"],
+        serde_json::json!(["SubagentStop", "SessionEnd"]),
+        "{doctor}"
+    );
+    assert_eq!(stale["fix"], "herdr-threads setup codex");
+}
+
+#[test]
+fn setup_status_reports_the_same_findings() {
+    let s = stale_scratch_claude();
+    drop_installed_events(&s, "claude", &s.settings(), &["SubagentStop"]);
+    let status = json(&s.run(&["--json", "setup-status", "claude"]));
+    assert_eq!(
+        status["stale_install"]["missing"],
+        serde_json::json!(["SubagentStop"]),
+        "{status}"
+    );
+    assert_eq!(status["stale_install"]["fix"], "herdr-threads setup claude");
+    let doctor = json_doctor(&s);
+    assert_eq!(
+        doctor["hooks"]["claude"]["stale_install"]["missing"],
+        status["stale_install"]["missing"]
+    );
+    let text_status = text(&s.run(&["setup-status", "claude"]).stdout);
+    assert!(
+        text_status.contains("herdr-threads setup claude"),
+        "{text_status}"
+    );
+
+    let c = Scratch::new();
+    c.harness("codex", "codex-cli 0.158.0");
+    fs::create_dir(&c.codex_home).unwrap();
+    assert_eq!(c.run(&["setup", "codex"]).status.code(), Some(0));
+    let codex = json(&c.run(&["--json", "setup-status", "codex"]));
+    assert_eq!(
+        codex["stale_install"]["missing"],
+        json_doctor(&c)["hooks"]["codex"]["stale_install"]["missing"]
+    );
+}
+
+#[test]
+fn doctor_fix_reruns_owned_setup_and_clears_the_finding() {
+    let s = stale_scratch_claude();
+    struct Stop<'a>(&'a Scratch);
+    impl Drop for Stop<'_> {
+        fn drop(&mut self) {
+            let _ = self.0.run(&["daemon", "stop"]);
+        }
+    }
+    let _stop = Stop(&s);
+    drop_installed_events(
+        &s,
+        "claude",
+        &s.settings(),
+        &["SubagentStart", "SubagentStop"],
+    );
+    assert!(!json_doctor(&s)["hooks"]["claude"]["stale_install"].is_null());
+    let fix = s.run(&["doctor", "fix", "--json"]);
+    let fix: serde_json::Value = serde_json::from_slice(&fix.stdout)
+        .unwrap_or_else(|e| panic!("{e}: {}", text(&fix.stderr)));
+    assert!(
+        fix["doctor"]["repairs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["action"] == "setup claude" && row["outcome"] == "attempted"),
+        "{fix}"
+    );
+    assert!(
+        fix["doctor"]["hooks"]["claude"]["stale_install"].is_null(),
+        "{fix}"
+    );
+    let settings = text(&fs::read(s.settings()).unwrap());
+    assert!(
+        settings.contains("SubagentStart") && settings.contains("SubagentStop"),
+        "{settings}"
+    );
+}
+
+#[test]
+fn current_installs_report_no_finding() {
+    let s = stale_scratch_claude();
+    let doctor = json_doctor(&s);
+    assert!(
+        doctor["hooks"]["claude"]["stale_install"].is_null(),
+        "{doctor}"
+    );
+    let status = json(&s.run(&["--json", "setup-status", "claude"]));
+    assert!(status.get("stale_install").is_none(), "{status}");
+}

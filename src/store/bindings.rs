@@ -868,7 +868,9 @@ pub fn admit_agent_claim(claim: &CallerClaim, creates_or_connects: bool) -> Resu
     if placeholder {
         return Err(api_error(
             ErrorCode::SessionClaimRequired,
-            "agent call without a harness session id",
+            "agent call without a harness session id (an old hook or a pre-upgrade CLI in a \
+             long-lived pane): restart the agent, or re-run `herdr-threads setup` if its hooks \
+             are stale",
         ));
     }
     if creates_or_connects && claim.liveness.is_none() {
@@ -1115,7 +1117,8 @@ fn resolve_claim_inner(
             "cooperative occupant context changed".to_owned(),
         ));
     }
-    let creates_or_connects = request.lifecycle || found.is_none();
+    let readopts = found.as_ref().is_some_and(is_migrated_disconnected);
+    let creates_or_connects = request.lifecycle || found.is_none() || readopts;
     if !human {
         admit_agent_claim(claim, creates_or_connects)?;
     }
@@ -1135,6 +1138,36 @@ fn resolve_claim_inner(
         ..request.placement.clone()
     };
     if let Some(existing) = found {
+        if !request.lifecycle && readopts {
+            // The one plain call that reconnects (TRUST-POLICY A4): a V29-migrated binding whose
+            // stored session is the claim's key. Structural match, cursors kept.
+            connect(
+                tx,
+                &existing.binding_id,
+                claim.liveness,
+                ConnectTrigger::Lifecycle,
+                now,
+            )?;
+            let provenance = (existing.role == BindingRole::TopLevel).then_some(top_provenance);
+            refresh_placement(tx, &existing.binding_id, request.placement, provenance)?;
+            read_cursors::seed(tx, &existing.binding_id, SeedMode::Readopt)?;
+            let binding = get(tx, &existing.binding_id)?
+                .ok_or_else(|| corrupt("readopted binding vanished"))?;
+            run_enroll_hooks(
+                tx,
+                &EnrollEvent {
+                    binding: &binding,
+                    trigger: EnrollTrigger::PlainCall,
+                    created: false,
+                },
+                now,
+                hooks,
+            )?;
+            return Ok(Resolution::Existing {
+                binding,
+                reconnected: true,
+            });
+        }
         if !request.lifecycle {
             touch(tx, &existing.binding_id, claim.liveness, now)?;
             let binding = get(tx, &existing.binding_id)?
@@ -1298,6 +1331,13 @@ fn resolve_claim_inner(
             reconnected: false,
         },
     })
+}
+
+/// A binding the V29 migration created and nothing has reconnected yet.
+fn is_migrated_disconnected(binding: &BindingRow) -> bool {
+    binding.migrated
+        && binding.liveness == Liveness::Disconnected
+        && binding.disconnect_reason.as_deref() == Some(DisconnectReason::Migrated.as_str())
 }
 
 fn seat_is_resolved(db: &Connection, seat: &SeatId) -> Result<bool, ApiError> {

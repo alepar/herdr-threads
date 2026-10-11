@@ -702,6 +702,7 @@ pub(crate) fn legacy_claude_projection(
     // Codex sandbox warning. Each makes the result `degraded`.
 
     let claude_binary = super::hook::resolve_on_path("claude", path.as_deref());
+    let mut stale = None;
     match super::setup::user_inspection(Harness::Claude, &env) {
         Ok((settings, inspection)) => {
             if let Some(binary) = &claude_binary
@@ -713,6 +714,13 @@ pub(crate) fn legacy_claude_projection(
                     binary.display(),
                     settings.display()
                 ));
+            }
+            stale = crate::harness::required_hooks::stale_install_json(
+                "claude",
+                &inspection.missing_required_events,
+            );
+            if let Some(stale) = &stale {
+                limitations.push(scalar(&stale["detail"]));
             }
             claude["setup"] = json!({
                 "settings": settings.display().to_string(),
@@ -746,6 +754,8 @@ pub(crate) fn legacy_claude_projection(
     let claude_installed = installed_declared("claude", path.as_deref());
     let claude_warning: Option<String> = None;
     claude["installed"] = json!(claude_installed);
+    let claude_stale = stale.is_some();
+    claude["stale_install"] = stale.unwrap_or(Value::Null);
     // With the daemon's answer the PATH version's verdict is the
     // detected-version line of the harness block; without it the admission
     // warning stands as before.
@@ -757,7 +767,7 @@ pub(crate) fn legacy_claude_projection(
 
     let mut projected = daemon.clone();
     projected["hooks"] = json!({"claude": claude});
-    let safe_repairs = if repair_plan(&projected).contains(&Repair::SetupClaude) {
+    let safe_repairs = if claude_stale || repair_plan(&projected).contains(&Repair::SetupClaude) {
         vec![LocalRepair::InstallOwned]
     } else {
         vec![]
@@ -790,6 +800,15 @@ pub(crate) fn legacy_codex_projection(
     let path = request.environment.path.clone();
     let mut limitations = Vec::new();
     let codex_inspection = super::setup::user_inspection(Harness::Codex, &env);
+    let codex_stale = codex_inspection.as_ref().ok().and_then(|(_, inspection)| {
+        crate::harness::required_hooks::stale_install_json(
+            "codex",
+            &inspection.missing_required_events,
+        )
+    });
+    if let Some(stale) = &codex_stale {
+        limitations.push(scalar(&stale["detail"]));
+    }
     let codex_setup = match &codex_inspection {
         Ok((file, inspection)) => json!({
             "hooks_file": file.display().to_string(),
@@ -843,6 +862,7 @@ pub(crate) fn legacy_codex_projection(
         "permissions": crate::harness::codex::setup::permission_status_json(&env),
         "trust": codex_trust,
         "recipes": crate::harness::recipe::describe(crate::harness::codex::RECIPES),
+        "stale_install": codex_stale.clone().unwrap_or(Value::Null),
         "installed": installed,
         "sandbox_warning": sandbox_warning,
         "socket_policy_validation": socket_policy_validation,
@@ -870,7 +890,11 @@ pub(crate) fn legacy_codex_projection(
         hooks,
         limitations,
         manual_repairs,
-        safe_repairs: vec![],
+        safe_repairs: if codex_stale.is_some() {
+            vec![LocalRepair::RepairOwned]
+        } else {
+            vec![]
+        },
         repair_options: Default::default(),
     }
 }

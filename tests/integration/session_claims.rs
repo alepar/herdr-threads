@@ -308,6 +308,28 @@ fn agent_call_without_session_id_is_refused_reads_included() {
     );
 }
 
+// Kills: a refusal that only says the variable is missing - the pre-upgrade agent must be told
+// the fix (restart the agent / re-run setup), and must never be silently attributed to the pane.
+#[test]
+fn claimless_agent_call_gets_the_actionable_refusal() {
+    let world = World::new(false);
+    for (harness, var) in [
+        ("claude", "CLAUDE_CODE_SESSION_ID"),
+        ("codex", "CODEX_SESSION_ID"),
+        ("hermes", "HERMES_SESSION_ID"),
+    ] {
+        let out = world.agent(harness, None, "w1:p1", &["inbox"]);
+        assert_eq!(out.status.code(), Some(REFUSED), "{harness}: {out:?}");
+        let text = stderr(&out);
+        assert!(
+            text.contains(&format!("did not export {var}")),
+            "{harness}: {text}"
+        );
+        assert!(text.contains("restart the agent"), "{harness}: {text}");
+        assert!(text.contains("herdr-threads setup"), "{harness}: {text}");
+    }
+}
+
 // Kills: a client that treats a managed-daemon Codex ancestor as an ordinary Codex, and a refusal
 // without the pane hint.
 #[test]

@@ -238,7 +238,7 @@ model open work, and summary closure never changes receipt state or installs glo
   nothing moves or merges (cross-pane resume). Lineage (copy-before-supersede of a predecessor's cursors) is
   named here and implemented by ht-54r.20 and ht-54r.17. A person and an agent still never hold a seat
   together and the first agent lifecycle check-in replaces `managed_launch` (both below, ended as
-  `replaced`, through the enroll-hook registry and the one disconnect transition; ht-54r.4). A plain human call never enrolls a binding.
+  `replaced`, through the enroll-hook registry and the one disconnect transition; ht-54r.4). A plain human call never enrolls a binding. The one exception to "a plain call never reconnects" is re-adoption (ht-54r.24): a V29-migrated binding (`migrated`, disconnected for reason `migrated`) is reconnected, its fingerprint recorded and its cursors kept, by any agent call whose claim matches its stored session exactly (the key the migration kept); a claim with another session enrolls its own binding and nothing is matched by heuristic.
 - *Binding liveness (ht-54r.10)*: a binding is connected or disconnected. Disconnection never ends a
   binding, moves a seat or merges seats, and every disconnect (end event, process exit, pane close,
   supersede, seat retirement or unresolve) goes through the one `store::bindings::disconnect`

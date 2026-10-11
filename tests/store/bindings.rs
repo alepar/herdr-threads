@@ -433,6 +433,108 @@ mod resolution {
         db.query_row(sql, [], |r| r.get(0)).unwrap()
     }
 
+    /// The state the V29 migration leaves an agent binding in: open, `migrated`, disconnected for
+    /// reason `migrated`, no fingerprint, keyed by its pre-upgrade session.
+    fn migrate(db: &Connection, id: &BindingId, session: &str) {
+        db.execute(
+            "UPDATE occupant_bindings SET migrated=1, migrated_session=?2, liveness='disconnected', disconnected_at=1, disconnect_reason='migrated', liveness_pid=NULL, liveness_start=NULL WHERE binding_id=?1",
+            rusqlite::params![id.as_str(), session],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn migrated_binding_is_readopted_by_a_plain_call_with_its_session() {
+        let db = db();
+        let id = resolve(&db, &claim("sess-A", None), true)
+            .unwrap()
+            .binding()
+            .binding_id
+            .clone();
+        migrate(&db, &id, "sess-A");
+        db.execute(
+            "UPDATE binding_cursors SET seq=1 WHERE binding_id=?1",
+            [id.as_str()],
+        )
+        .unwrap();
+        // Mail that arrived while the binding was disconnected: a re-seed at head would skip it.
+        db.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i','m3','t',3,'ordinary','b',3,3)", []).unwrap();
+        let r = resolve(&db, &claim("sess-A", None), false).unwrap();
+        let Resolution::Existing {
+            binding,
+            reconnected,
+        } = r
+        else {
+            panic!("expected Existing, got {r:?}");
+        };
+        assert!(reconnected);
+        assert_eq!(binding.binding_id, id, "the same binding, not a new one");
+        assert_eq!(binding.liveness, Liveness::Connected);
+        assert_eq!(binding.disconnect_reason, None);
+        assert_eq!(
+            read_cursors::cursor_for(&db, &id, &thread()).unwrap(),
+            Some(1),
+            "cursors are kept"
+        );
+        assert_eq!(count(&db, "SELECT count(*) FROM occupant_bindings"), 1);
+    }
+
+    #[test]
+    fn migrated_binding_with_another_session_is_not_readopted() {
+        let db = db();
+        let id = resolve(&db, &claim("sess-A", None), true)
+            .unwrap()
+            .binding()
+            .binding_id
+            .clone();
+        migrate(&db, &id, "sess-A");
+        let r = resolve(&db, &other_process("sess-B"), false).unwrap();
+        assert!(matches!(r, Resolution::Enrolled { .. }), "{r:?}");
+        let old = get(&db, &id).unwrap().unwrap();
+        assert_eq!(old.liveness, Liveness::Disconnected);
+        assert_eq!(old.disconnect_reason.as_deref(), Some("migrated"));
+        assert_eq!(count(&db, "SELECT count(*) FROM occupant_bindings"), 2);
+    }
+
+    #[test]
+    fn readoption_records_the_fingerprint() {
+        let db = db();
+        let id = resolve(&db, &claim("sess-A", None), true)
+            .unwrap()
+            .binding()
+            .binding_id
+            .clone();
+        migrate(&db, &id, "sess-A");
+        assert_eq!(get(&db, &id).unwrap().unwrap().fingerprint, None);
+        let r = resolve(&db, &claim("sess-A", None), false).unwrap();
+        assert_eq!(r.binding().fingerprint, Some(FP));
+        assert_eq!(get(&db, &id).unwrap().unwrap().fingerprint, Some(FP));
+        // Re-adoption without a fingerprint would leave a connected binding nothing can verify.
+        let id2 = resolve(&db, &other_process("sess-C"), true)
+            .unwrap()
+            .binding()
+            .binding_id
+            .clone();
+        migrate(&db, &id2, "sess-C");
+        let mut bare = claim("sess-C", None);
+        bare.liveness = None;
+        let err = resolve(&db, &bare, false).unwrap_err();
+        assert_eq!(err.code, ErrorCode::LivenessFingerprintRequired);
+        assert_eq!(
+            get(&db, &id2).unwrap().unwrap().liveness,
+            Liveness::Disconnected
+        );
+    }
+
+    #[test]
+    fn placeholder_session_refusal_names_the_fix() {
+        let db = db();
+        let err = resolve(&db, &claim("plugin_context:x", None), false).unwrap_err();
+        assert_eq!(err.code, ErrorCode::SessionClaimRequired);
+        assert!(err.detail.contains("restart the agent"), "{}", err.detail);
+        assert!(err.detail.contains("herdr-threads setup"), "{}", err.detail);
+    }
+
     #[test]
     fn plain_call_of_an_unknown_session_enrolls_with_env_provenance() {
         let db = db();

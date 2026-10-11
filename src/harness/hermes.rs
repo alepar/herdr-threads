@@ -1070,6 +1070,28 @@ impl HarnessAdapter for HermesAdapter {
             Err(e) => SetupStatus::Failed(e),
         }
     }
+    /// A stale bridge (or one missing required callbacks) is repaired by re-running the owned
+    /// setup; a current or absent bridge keeps the default projection.
+    fn doctor_projection(
+        &self,
+        request: &StatusRequest,
+        _: &serde_json::Value,
+        budget: &CallBudget,
+    ) -> Option<DoctorProjection> {
+        let SetupStatus::Detailed(status) = self.status(request, budget) else {
+            return None;
+        };
+        let stale = status.projection["stale_install"].clone();
+        let detail = stale["detail"].as_str()?.to_owned();
+        Some(DoctorProjection {
+            hooks: status.projection.clone(),
+            status: Some(SetupStatus::Detailed(status)),
+            limitations: vec![detail],
+            manual_repairs: vec![],
+            safe_repairs: vec![LocalRepair::RepairOwned],
+            repair_options: Default::default(),
+        })
+    }
     fn launch_policy(&self) -> Option<&dyn LaunchPolicy> {
         Some(&launch::POLICY)
     }
@@ -1096,6 +1118,19 @@ impl HarnessAdapter for HermesAdapter {
 }
 fn asset_projection(s: &assets::AssetStatus) -> serde_json::Value {
     let mut projection = serde_json::json!({"installed":s.installed,"configured_enabled":s.configured_enabled,"repairable":s.repairable,"manual_argv":s.manual_argv,"native_acceptance":"unmet","bridge_current":s.bridge_current});
+    if s.bridge_current == Some(false) || !s.bridge_missing_events.is_empty() {
+        let fix = format!("herdr-threads setup hermes --profile {}", s.profile);
+        projection["stale_install"] = serde_json::json!({
+            "harness": "hermes",
+            "missing": s.bridge_missing_events,
+            "bridge_current": s.bridge_current,
+            "fix": fix,
+            "detail": format!(
+                "the installed Hermes bridge is stale or lacks required callbacks ({}): re-run `{fix}`",
+                s.bridge_missing_events.join(", ")
+            ),
+        });
+    }
     if s.bridge_current == Some(false) {
         projection["stale_bridge"] = serde_json::json!({
             "reason": "installed Hermes bridge is from an older herdr-threads generation",

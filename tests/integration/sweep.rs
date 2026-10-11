@@ -771,7 +771,18 @@ fn cooperative_setup_sweep_reports_healthy_daemon_and_pending_codex_review() {
         "{doctor}"
     );
     let limitations = doctor["doctor"]["limitations"].as_array().unwrap();
-    assert_eq!(limitations.len(), 1, "{doctor}");
+    // The stale-install line is the Codex end events (SubagentStop, SessionEnd) the declared
+    // install does not yet hold; it goes away when ht-54r.11 declares them.
+    let stale: Vec<_> = limitations
+        .iter()
+        .filter(|line| {
+            line.as_str()
+                .unwrap()
+                .contains("re-run `herdr-threads setup codex`")
+        })
+        .collect();
+    assert_eq!(stale.len(), 1, "{doctor}");
+    assert_eq!(limitations.len(), 2, "{doctor}");
     assert!(
         limitations.iter().any(|line| line
             .as_str()

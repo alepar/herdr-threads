@@ -27,6 +27,9 @@ pub struct AssetStatus {
     pub installed: bool,
     /// Whether the installed bridge is this build's bridge; None when not installed.
     pub bridge_current: Option<bool>,
+    /// `HERMES_REQUIRED_HOOK_EVENTS` callbacks the installed bridge never names; empty when not
+    /// installed.
+    pub bridge_missing_events: Vec<String>,
     pub repairable: bool,
     /// Effective-config enable lists only, never discovered/activated.
     pub configured_enabled: Option<bool>,
@@ -880,6 +883,7 @@ pub fn status(o: &ProfileObservation, state: &Path) -> Result<AssetStatus, Setup
     let mut result = AssetStatus {
         profile: o.profile.clone(),
         bridge_current: None,
+        bridge_missing_events: Vec::new(),
         installed: false,
         repairable: false,
         configured_enabled: o.configured_enabled(),
@@ -901,6 +905,13 @@ pub fn status(o: &ProfileObservation, state: &Path) -> Result<AssetStatus, Setup
         if result.installed {
             let bridge = m.assets.get("__init__.py").ok_or(SetupError::Conflict)?;
             result.bridge_current = Some(bridge.digest == fingerprint(EMBEDDED_BRIDGE));
+            let text = String::from_utf8_lossy(&bridge.bytes);
+            result.bridge_missing_events =
+                crate::harness::required_hooks::HERMES_REQUIRED_HOOK_EVENTS
+                    .iter()
+                    .filter(|event| !text.contains(&format!("\"{event}\"")))
+                    .map(|event| (*event).to_owned())
+                    .collect();
             let settings: LaunchAssetSettings =
                 serde_json::from_slice(&m.assets["bridge_config.json"].bytes)
                     .map_err(|_| SetupError::Conflict)?;
@@ -1158,6 +1169,60 @@ mod tests {
         assert_eq!(config["bridge_schema_version"], 1);
         assert!(!f.home.join("config.yaml").exists());
     }
+    // Kills: a stale-install finding keyed only on the digest (an older bridge that names every
+    // required callback is still stale), one that drops the missing-callback list, and a fix
+    // without the profile.
+    #[test]
+    fn doctor_flags_stale_hermes_bridge() {
+        let f = Fixture::new();
+        let required = crate::harness::required_hooks::HERMES_REQUIRED_HOOK_EVENTS;
+        let all_named = required
+            .iter()
+            .map(|event| format!("# \"{event}\"\n"))
+            .collect::<String>();
+        f.install_bridge(
+            &[
+                EMBEDDED_BRIDGE,
+                b"\n# older generation\n",
+                all_named.as_bytes(),
+            ]
+            .concat(),
+        )
+        .unwrap();
+        let s = status(&f.observation(), &f.state).unwrap();
+        assert_eq!(s.bridge_current, Some(false));
+        let finding = crate::harness::hermes::asset_projection(&s)["stale_install"].clone();
+        assert_eq!(finding["harness"], "hermes", "{finding}");
+        assert_eq!(
+            finding["fix"],
+            "herdr-threads setup hermes --profile default"
+        );
+        assert_eq!(
+            finding["missing"],
+            serde_json::json!([]),
+            "digest-only staleness"
+        );
+        // A bridge that never names the subagent callbacks lists them.
+        f.install_bridge(&[EMBEDDED_BRIDGE, b"\n# older generation\n"].concat())
+            .unwrap();
+        let s = status(&f.observation(), &f.state).unwrap();
+        let finding = crate::harness::hermes::asset_projection(&s)["stale_install"].clone();
+        let missing: Vec<&str> = finding["missing"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|event| event.as_str().unwrap())
+            .collect();
+        for event in ["subagent_start", "subagent_stop", "on_session_finalize"] {
+            assert!(missing.contains(&event), "{event} in {missing:?}");
+        }
+        assert!(!missing.contains(&"pre_llm_call"), "{missing:?}");
+        // Not installed: nothing to flag.
+        let g = Fixture::new();
+        let s = status(&g.observation(), &g.state).unwrap();
+        assert!(crate::harness::hermes::asset_projection(&s)["stale_install"].is_null());
+    }
+
     #[test]
     fn status_reports_older_bridge_generation_stale_until_resetup() {
         let f = Fixture::new();

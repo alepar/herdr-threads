@@ -69,8 +69,9 @@ impl EnvRefusal {
             }
             Self::MissingSession { harness, var } => format!(
                 "{harness} caller has no session id: {var} is not set in this process's environment \
-                 (herdr-threads attributes agent calls to the harness session; restart the agent \
-                 from a harness version that exports {var})"
+                 ({harness} did not export {var} to this process: restart the agent - a harness \
+                 that predates session-keyed bindings must be restarted after the upgrade - or \
+                 re-run `herdr-threads setup` if its hooks are stale)"
             ),
             Self::NoFingerprint { harness, detail } => {
                 format!("{harness} caller has no liveness fingerprint: {detail}")
