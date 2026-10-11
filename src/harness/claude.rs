@@ -979,7 +979,7 @@ impl HarnessAdapter for ClaudeAdapter {
             }
         }
         parse_event_for_contract(&input.bytes, &uuid::Uuid::new_v4().to_string(), admitted)
-            .map(DecodedEvent::from_native)
+            .map(|event| DecodedEvent::from_native_payload(event, &input.bytes))
             .map_err(DecodeFailure::Native)
     }
     fn encode(

@@ -1634,6 +1634,20 @@ impl StorePort for SqliteStore {
         let mut writer = self.writer(budget)?;
         control::advance_cursors(&self.context, &mut writer, budget, request)
     }
+    fn binding_event(
+        &self,
+        request: &crate::protocol::commands::BindingEvent,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        if request.claim.instance != self.instance {
+            return Err(api_error(
+                ErrorCode::CallerUnverified,
+                "binding event instance mismatch",
+            ));
+        }
+        let mut writer = self.writer(budget)?;
+        control::binding_event(&self.context, &mut writer, budget, request)
+    }
     fn prepare_send_step(
         &self,
         request: &SendMessage,

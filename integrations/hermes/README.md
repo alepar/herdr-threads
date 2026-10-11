@@ -49,7 +49,13 @@ older bridge keeps launch-only behavior, and `setup-status` reports it as stale 
 shows whether each profile's bridge is enabled and current (TRUST-POLICY accepted
 limits). Native `delegate_task`
 children run with platform `subagent`; their parented `pre_llm_call` gets the
-subagent restriction locally and every other subagent callback is ignored.
+subagent restriction locally and every other subagent callback is ignored, except the delegate
+lifecycle: the bridge forwards `subagent_start` and `subagent_stop` (the child session and its
+`parent_session_id`) and the session teardown `on_session_finalize`, so the daemon registers a
+delegate child as a subagent binding of its parent and disconnects bindings when they end. A
+`herdr-threads` call made under a registered child's session acts as that read-only subagent
+binding. `on_session_end` fires after every turn, so it is never forwarded and never an end
+event. Re-run `setup hermes --profile NAME` to install the updated bridge.
 
 The plugin also registers a `pre_tool_call` person gate, independent of the bridge
 (it stays registered when the bridge cannot start): a terminal command that runs

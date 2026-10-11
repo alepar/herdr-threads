@@ -1202,9 +1202,12 @@ mod tests {
             serde_json::json!([]),
             "digest-only staleness"
         );
-        // A bridge that never names the subagent callbacks lists them.
-        f.install_bridge(&[EMBEDDED_BRIDGE, b"\n# older generation\n"].concat())
-            .unwrap();
+        // A bridge that never names the subagent callbacks lists them (an install from before
+        // ht-54r.11: the shipped bridge now names every required callback).
+        f.install_bridge(
+            b"# older generation\nHOOKS = (\"pre_llm_call\", \"post_tool_call\", \"on_session_start\", \"on_session_reset\")\n",
+        )
+        .unwrap();
         let s = status(&f.observation(), &f.state).unwrap();
         let finding = crate::harness::hermes::asset_projection(&s)["stale_install"].clone();
         let missing: Vec<&str> = finding["missing"]

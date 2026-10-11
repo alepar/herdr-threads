@@ -366,6 +366,7 @@ pub mod synthetic_fourth {
                 runtime: RuntimeAttribution::Unavailable {
                     diagnostic: "synthetic_runtime_unavailable".into(),
                 },
+                binding_event: None,
             })
         }
         fn encode(

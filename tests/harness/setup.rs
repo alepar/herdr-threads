@@ -2416,7 +2416,16 @@ fn codex_setup_registers_event_per_group() {
         manifest.installation_id
     );
     let events: Vec<&str> = manifest.owned.iter().map(|e| e.event.as_str()).collect();
-    assert_eq!(events, ["SessionStart", "SubagentStart", "PreToolUse"]);
+    assert_eq!(
+        events,
+        [
+            "SessionStart",
+            "SubagentStart",
+            "PreToolUse",
+            "SubagentStop",
+            "SessionEnd"
+        ]
+    );
     assert_event_per_group(&manifest.owned, &base);
     fs::remove_dir_all(dir).unwrap();
 }
@@ -2426,14 +2435,20 @@ fn codex_session_plan_registers_event_per_group() {
     let argv: Vec<String> = vec!["/x/herdr-threads".into(), "hook".into(), "codex".into()];
     let plan = plan_codex_for_version(&[], &argv, &pinned()).unwrap();
     let base = shell_command(&argv).unwrap();
-    assert_eq!(plan.owned.len(), 3);
+    assert_eq!(plan.owned.len(), 5);
     for entry in &plan.owned {
         assert_eq!(command_of(entry), event_command(&base, &entry.event));
         assert!(command_of(entry).ends_with(&format!(" '--event' '{}'", entry.event)));
     }
     // The session `-c` overrides carry the evented commands.
     let flags = plan.session_config.join("\n");
-    for event in ["SessionStart", "SubagentStart", "PreToolUse"] {
+    for event in [
+        "SessionStart",
+        "SubagentStart",
+        "PreToolUse",
+        "SubagentStop",
+        "SessionEnd",
+    ] {
         assert!(
             flags.contains(&format!("'hook' 'codex' '--event' '{event}'")),
             "{event}: {flags}"

@@ -41,6 +41,11 @@ pub enum CommandResult {
     InboxDeliveryCompleted(Vec<MessageId>),
     /// The messages the caller binding's cursors now cover (`AdvanceCursors`).
     CursorsAdvanced(Vec<MessageId>),
+    /// A harness lifecycle event was applied to the caller's bindings (`BindingEvent`); `changed`
+    /// is how many bindings it enrolled or disconnected (zero for a replayed or unknown one).
+    BindingEventRecorded {
+        changed: u32,
+    },
     Warnings(Page<WarningRef>),
     ActiveWarnings(Page<WarningRef>),
     Thread(ThreadDetails),

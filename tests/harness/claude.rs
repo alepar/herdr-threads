@@ -1092,6 +1092,56 @@ fn lifecycle_hint_cap_clamps_caller_budget_above_max_hook_output() {
     assert!(life.len() <= 4096);
 }
 
+/// Kills: SubagentStart not enrolling (no binding event), SubagentStop not disconnecting (it decoded
+/// as a silent observer with no event), a stop taking its agent id from anywhere but the payload, a
+/// subagent event without an agent id being accepted, and a top-level payload being read as a binding
+/// event.
+#[test]
+fn claude_subagent_start_and_stop_decode_to_binding_events() {
+    use crate::harness::adapter::{BindingEventDecode, DecodedEvent, DeliveryEligibility};
+    use crate::protocol::commands::BindingEventKind;
+    let payload = |event: &str| {
+        serde_json::to_vec(&json!({"hook_event_name":event,"session_id":"sess-1",
+            "agent_id":"agent-3","agent_type":"worker"}))
+        .unwrap()
+    };
+    for (event, kind) in [
+        ("SubagentStart", BindingEventKind::SubagentStart),
+        ("SubagentStop", BindingEventKind::SubagentStop),
+    ] {
+        let bytes = payload(event);
+        let parsed = claude::parse_versioned_event(&bytes, "2.1.286", "event").unwrap();
+        assert_eq!(parsed.source, event);
+        assert_eq!(parsed.role, Role::Subagent);
+        assert_eq!(parsed.native_session.as_deref(), Some("sess-1"));
+        let decoded = DecodedEvent::from_native_payload(parsed, &bytes);
+        assert_eq!(
+            decoded.binding_event,
+            Some(BindingEventDecode {
+                kind,
+                agent_id: Some("agent-3".into()),
+                child_session: None,
+                claim_session: None,
+            }),
+            "{event}"
+        );
+        // A stop is quiet bookkeeping; a start still renders its child guidance.
+        assert_eq!(
+            matches!(decoded.delivery, DeliveryEligibility::Ineligible),
+            event == "SubagentStop",
+            "{event}"
+        );
+    }
+    // No agent id, no subagent event; and an ordinary top-level payload reports none.
+    let bare = br#"{"hook_event_name":"SubagentStop","session_id":"sess-1"}"#;
+    assert!(claude::parse_versioned_event(bare, "2.1.286", "event").is_err());
+    let parsed = claude::parse_versioned_event(START, "2.1.286", "event").unwrap();
+    assert_eq!(
+        DecodedEvent::from_native_payload(parsed, START).binding_event,
+        None
+    );
+}
+
 #[test]
 fn claude_declared_groups_are_the_single_source_for_the_hook_object() {
     let command = "'/tmp/hook' # herdr-threads-owner:x";

@@ -402,6 +402,11 @@ class BridgeTests(unittest.TestCase):
             "top_turn_empty_platform": ("pre_llm_call", {**qualified, "turn_id": "fixture-turn-2", "platform": ""}),
             "post_tool": ("post_tool_call", {**cb["tool"], "session_id": "fixture-session", "turn_id": "fixture-turn"}),
             "reset": ("on_session_reset", {**cb["reset"], "session_id": "fixture-session"}),
+            "session_finalize": ("on_session_finalize", {"session_id": "fixture-session", "platform": "cli"}),
+            "subagent_start": ("subagent_start", {"parent_session_id": "fixture-session",
+                                                  "child_session_id": "fixture-child", "child_role": "leaf"}),
+            "subagent_stop": ("subagent_stop", {"parent_session_id": "fixture-session",
+                                                "child_session_id": "fixture-child", "child_status": "completed"}),
         }
         self.assertEqual(set(fixture), set(drives))
         self.load()
@@ -411,8 +416,58 @@ class BridgeTests(unittest.TestCase):
             sent = self.requests()
             self.assertEqual(len(sent), before + 1, row)
             emitted, pinned = sent[-1]["request"], fixture[row]
-            for key in ("callback", "platform", "role_association"):
+            for key in ("callback", "platform", "role_association", "session_id", "parent_session_id", "shape"):
                 self.assertEqual(emitted[key], pinned[key], f"{row}.{key}")
+
+    def test_end_event_callbacks_forward_session_and_child_ids_and_per_turn_end_is_not_forwarded(self):
+        self.load()
+        for name in ("on_session_finalize", "subagent_start", "subagent_stop"):
+            self.assertTrue(callable(self.ctx.hooks[name]), name)
+        # The teardown of a CLI session: the session id, no parent, no association.
+        before = len(self.requests())
+        self.assertIsNone(self.request("on_session_finalize", {"session_id": "top-1", "platform": "cli"}))
+        sent = self.requests()
+        self.assertEqual(len(sent), before + 1, "on_session_finalize must reach the child")
+        envelope = sent[-1]["request"]
+        self.assertEqual((envelope["callback"], envelope["session_id"], envelope["parent_session_id"]),
+                         ("on_session_finalize", "top-1", None))
+        self.assertIsNone(envelope["role_association"])
+        self.assertEqual(envelope["bridge_schema_contract_id"], self.callbacks["bridge_schema_contract_id"])
+        # A gateway session teardown is not a CLI session end: nothing is forwarded.
+        self.assertIsNone(self.request("on_session_finalize", {"session_id": "top-2", "platform": "telegram"}))
+        self.assertEqual(len(self.requests()), before + 1)
+        # Delegate children: the child is the event's session, the parent its parent_session_id,
+        # whichever of `child_session_id` / `session_id` Hermes names the child with.
+        for callback in ("subagent_start", "subagent_stop"):
+            for child_kwargs in ({"child_session_id": "child-1"}, {"session_id": "child-1", "platform": "subagent"}):
+                before = len(self.requests())
+                payload = {"parent_session_id": "top-1", "child_role": "leaf", "task_id": "t",
+                           "telemetry_schema_version": "hermes.observer.v1", **child_kwargs}
+                self.assertIsNone(self.request(callback, payload))
+                sent = self.requests()
+                self.assertEqual(len(sent), before + 1, f"{callback} {child_kwargs}")
+                envelope = sent[-1]["request"]
+                self.assertEqual((envelope["callback"], envelope["session_id"], envelope["parent_session_id"]),
+                                 (callback, "child-1", "top-1"))
+                self.assertIsNone(envelope["role_association"])
+                self.assertIsNone(envelope["platform"], "a delegate's platform is not an envelope fact")
+                self.assertNotIn("PRIVATE", json.dumps(envelope))
+        # Without a parent, or with the child as its own parent, a delegate event is refused.
+        before = len(self.requests())
+        for payload in ({"child_session_id": "child-1"}, {"child_session_id": "child-1", "parent_session_id": ""},
+                        {"child_session_id": "same", "parent_session_id": "same"},
+                        {"parent_session_id": "top-1"}):
+            self.assertIsNone(self.request("subagent_start", payload))
+        self.assertEqual(len(self.requests()), before)
+
+    def test_on_session_end_stays_a_per_turn_callback_that_is_never_forwarded(self):
+        # The bridge does not register `on_session_end`, and the registered end events are exactly
+        # the teardown and delegate callbacks.
+        self.load()
+        self.assertNotIn("on_session_end", self.ctx.hooks)
+        self.assertEqual(set(self.module.HOOKS) - {"pre_llm_call", "post_tool_call", "on_session_start", "on_session_reset"},
+                         {"on_session_finalize", "subagent_start", "subagent_stop"})
+        self.assertFalse(hasattr(self.ctx.hooks["pre_llm_call"].__self__, "on_session_end"))
 
     def requests(self):
         path = self.state / "requests"
@@ -433,7 +488,10 @@ class BridgeTests(unittest.TestCase):
     def test_bridge_callback_privacy_role_cache_deadlines_and_owned_child_reaping(self):
         self.load()
         self.assertEqual(set(self.ctx.hooks), {"pre_tool_call", "pre_llm_call", "post_tool_call",
-                                              "on_session_start", "on_session_reset"})
+                                              "on_session_start", "on_session_reset",
+                                              "on_session_finalize", "subagent_start", "subagent_stop"})
+        # `on_session_end` fires after every turn: it is never a registered end event.
+        self.assertNotIn("on_session_end", self.ctx.hooks)
         self.assertEqual(self.request(), {"context": "bounded cooperative context"})
         captured = self.requests()[0]
         self.assertEqual(captured["argv"], ["--state-dir", str(self.state), "--host-endpoint", self.settings["host_endpoint"], "hook", "hermes"])

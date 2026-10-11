@@ -1804,3 +1804,340 @@ fn subagent_reads_and_advance_cursors_are_allowed() {
         "{read:?}"
     );
 }
+
+// ---- Binding events (ht-54r.11): harness start/stop/end events enroll and disconnect ----
+
+fn binding_event(
+    claim: CallerClaim,
+    kind: crate::protocol::commands::BindingEventKind,
+    child_session: Option<&str>,
+    operation: &str,
+) -> Command {
+    Command::BindingEvent(crate::protocol::commands::BindingEvent {
+        claim,
+        kind,
+        child_session: child_session.map(NativeSessionId::new),
+        operation: OperationId::new(operation),
+    })
+}
+fn recorded(service: &DomainService, command: Command) -> u32 {
+    match service
+        .handle(command, PeerIdentity::from_kernel(501), &budget())
+        .unwrap()
+    {
+        CommandResult::BindingEventRecorded { changed } => changed,
+        other => panic!("unexpected {other:?}"),
+    }
+}
+/// `(agent_id, role, liveness, disconnect_reason, ended)` of every binding, in ordinal order.
+type BindingState = (String, String, String, Option<String>, bool);
+fn binding_states(db: &Connection) -> Vec<BindingState> {
+    db.prepare("SELECT agent_id,role,liveness,disconnect_reason,ended_at IS NOT NULL FROM occupant_bindings ORDER BY ordinal")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+fn with_fingerprint(claim: CallerClaim) -> CallerClaim {
+    CallerClaim {
+        liveness: Some(crate::protocol::authority::LivenessFingerprint::TEST),
+        ..claim
+    }
+}
+
+#[test]
+fn subagent_start_enrolls_and_stop_disconnects() {
+    use crate::protocol::commands::BindingEventKind::{SubagentStart, SubagentStop};
+    let (service, db) = fixture();
+    let top = with_fingerprint(checked(&service, lifecycle(claim(), "top")).context);
+    let sub = subagent_of(&top);
+    assert_eq!(
+        recorded(
+            &service,
+            binding_event(sub.clone(), SubagentStart, None, "start")
+        ),
+        1
+    );
+    let states = binding_states(&db);
+    assert_eq!(states.len(), 2, "{states:?}");
+    assert_eq!(
+        (
+            states[1].0.as_str(),
+            states[1].1.as_str(),
+            states[1].2.as_str()
+        ),
+        ("agent-1", "subagent", "connected")
+    );
+    let parent: String = db
+        .query_row(
+            "SELECT p.binding_id FROM occupant_bindings p WHERE p.role='top_level'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let recorded_parent: String = db
+        .query_row(
+            "SELECT parent_binding FROM occupant_bindings WHERE role='subagent'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(recorded_parent, parent);
+    // A replayed start is one decision; a second start of the same agent enrolls nothing.
+    assert_eq!(
+        recorded(
+            &service,
+            binding_event(sub.clone(), SubagentStart, None, "start")
+        ),
+        1
+    );
+    assert_eq!(
+        recorded(
+            &service,
+            binding_event(sub.clone(), SubagentStart, None, "start-2")
+        ),
+        0
+    );
+    assert_eq!(binding_states(&db).len(), 2);
+    assert_eq!(
+        recorded(
+            &service,
+            binding_event(sub.clone(), SubagentStop, None, "stop")
+        ),
+        1
+    );
+    let states = binding_states(&db);
+    assert_eq!(
+        (states[1].2.as_str(), states[1].3.as_deref()),
+        ("disconnected", Some("liveness_end_event"))
+    );
+    assert_eq!(states[0].2, "connected", "the parent stays connected");
+    // Stopping again changes nothing.
+    assert_eq!(
+        recorded(&service, binding_event(sub, SubagentStop, None, "stop-2")),
+        0
+    );
+}
+
+#[test]
+fn session_end_disconnects_the_root_and_its_subagents() {
+    use crate::protocol::commands::BindingEventKind::{SessionEnd, SubagentStart};
+    let (service, db) = fixture();
+    let top = with_fingerprint(checked(&service, lifecycle(claim(), "top")).context);
+    for (n, agent) in ["agent-1", "agent-2"].into_iter().enumerate() {
+        let sub = CallerClaim {
+            agent_id: Some(AgentId::new(agent)),
+            ..subagent_of(&top)
+        };
+        recorded(
+            &service,
+            binding_event(sub, SubagentStart, None, &format!("start-{n}")),
+        );
+    }
+    assert_eq!(binding_states(&db).len(), 3);
+    assert_eq!(
+        recorded(&service, binding_event(top, SessionEnd, None, "end")),
+        3
+    );
+    for state in binding_states(&db) {
+        assert_eq!(
+            (state.2.as_str(), state.3.as_deref()),
+            ("disconnected", Some("liveness_end_event")),
+            "{state:?}"
+        );
+    }
+}
+
+#[test]
+fn stop_for_an_unknown_binding_is_a_noop() {
+    use crate::protocol::commands::BindingEventKind::{SessionEnd, SubagentStop};
+    let (service, db) = fixture();
+    let top = with_fingerprint(claim());
+    assert_eq!(
+        recorded(
+            &service,
+            binding_event(subagent_of(&top), SubagentStop, None, "stop")
+        ),
+        0
+    );
+    assert_eq!(
+        recorded(&service, binding_event(top, SessionEnd, None, "end")),
+        0
+    );
+    assert_eq!(binding_states(&db), Vec::<BindingState>::new());
+}
+
+#[test]
+fn end_events_never_end_a_binding() {
+    use crate::protocol::commands::BindingEventKind::{SessionEnd, SubagentStart, SubagentStop};
+    let (service, db) = fixture();
+    let top = with_fingerprint(checked(&service, lifecycle(claim(), "top")).context);
+    let sub = subagent_of(&top);
+    recorded(
+        &service,
+        binding_event(sub.clone(), SubagentStart, None, "start"),
+    );
+    recorded(&service, binding_event(sub, SubagentStop, None, "stop"));
+    recorded(&service, binding_event(top, SessionEnd, None, "end"));
+    let states = binding_states(&db);
+    assert_eq!(states.len(), 2);
+    assert!(
+        states.iter().all(|state| !state.4),
+        "ended_at must stay NULL: {states:?}"
+    );
+}
+
+#[test]
+fn subagent_claims_may_report_binding_events() {
+    // A binding event is no accountable seat write, so a subagent claim is not refused
+    // (SubagentReadOnly) the way an ACK or send is.
+    use crate::protocol::commands::BindingEventKind::SubagentStart;
+    let (service, _db) = fixture();
+    let top = with_fingerprint(checked(&service, lifecycle(claim(), "top")).context);
+    recorded(
+        &service,
+        binding_event(subagent_of(&top), SubagentStart, None, "start"),
+    );
+}
+
+fn hermes() -> Harness {
+    Harness::Agent(
+        crate::harness::registry::builtins()
+            .agent("hermes")
+            .expect("hermes is a builtin adapter"),
+    )
+}
+
+#[test]
+fn hermes_child_start_registers_the_child_session_and_its_cli_claim_is_read_only() {
+    use crate::protocol::commands::BindingEventKind::{SessionEnd, SubagentStart, SubagentStop};
+    let (service, db) = fixture();
+    let peer = PeerIdentity::from_kernel(501);
+    let parent = with_fingerprint(CallerClaim {
+        harness: hermes(),
+        native_session: NativeSessionId::new("hermes-parent"),
+        ..claim()
+    });
+    // The child's start enrolls the parent first, then registers the child as its subagent.
+    assert_eq!(
+        recorded(
+            &service,
+            binding_event(parent.clone(), SubagentStart, Some("hermes-child"), "start")
+        ),
+        1
+    );
+    let rows: Vec<(String, String, String, String)> = db
+        .prepare(
+            "SELECT native_session,agent_id,role,harness FROM occupant_bindings ORDER BY ordinal",
+        )
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(
+        rows,
+        vec![
+            (
+                "hermes-parent".into(),
+                "".into(),
+                "top_level".into(),
+                "hermes".into()
+            ),
+            (
+                "hermes-child".into(),
+                "hermes-child".into(),
+                "subagent".into(),
+                "hermes".into()
+            ),
+        ]
+    );
+    // The child's own CLI claim (its session, no agent id) resolves to the subagent binding, so
+    // a write is refused as a subagent write and no top-level binding is enrolled for it.
+    let child_cli = CallerClaim {
+        native_session: NativeSessionId::new("hermes-child"),
+        ..parent.clone()
+    };
+    let error = service
+        .handle(
+            Command::CreateThread(CreateThread {
+                name: None,
+                topic: "t".into(),
+                goal: "g".into(),
+                operation: OperationId::new("child-thread"),
+                claim: child_cli,
+            }),
+            peer,
+            &budget(),
+        )
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::SubagentReadOnly, "{error:?}");
+    assert_eq!(
+        binding_states(&db).len(),
+        2,
+        "the child enrolled no top-level binding"
+    );
+    // The child's stop disconnects only the child.
+    assert_eq!(
+        recorded(
+            &service,
+            binding_event(parent.clone(), SubagentStop, Some("hermes-child"), "stop")
+        ),
+        1
+    );
+    let states = binding_states(&db);
+    assert_eq!(
+        (states[0].2.as_str(), states[1].2.as_str()),
+        ("connected", "disconnected")
+    );
+    assert_eq!(states[1].3.as_deref(), Some("liveness_end_event"));
+    // The parent's session end disconnects the parent.
+    assert_eq!(
+        recorded(&service, binding_event(parent, SessionEnd, None, "end")),
+        1
+    );
+}
+
+/// Kills: a binding event whose claim shape contradicts its kind being accepted (a session end
+/// carrying an agent id would name a subagent binding; a subagent event naming neither an agent id
+/// nor a child session would name nothing; a Hermes child event under a subagent claim has two
+/// owners), and an unusable liveness fingerprint.
+#[test]
+fn binding_event_claim_shapes_are_validated() {
+    use crate::protocol::commands::BindingEventKind::{SessionEnd, SubagentStart, SubagentStop};
+    let top = with_fingerprint(claim());
+    let sub = subagent_of(&top);
+    let valid = [
+        binding_event(sub.clone(), SubagentStart, None, "a"),
+        binding_event(sub.clone(), SubagentStop, None, "b"),
+        binding_event(top.clone(), SessionEnd, None, "c"),
+        binding_event(top.clone(), SubagentStart, Some("child"), "d"),
+        binding_event(top.clone(), SubagentStop, Some("child"), "e"),
+    ];
+    for command in &valid {
+        assert_eq!(command.validate(), Ok(()), "{command:?}");
+    }
+    let invalid = [
+        binding_event(top.clone(), SubagentStart, None, "f"),
+        binding_event(top.clone(), SubagentStop, None, "g"),
+        binding_event(sub.clone(), SessionEnd, None, "h"),
+        binding_event(sub.clone(), SubagentStart, Some("child"), "i"),
+        binding_event(top.clone(), SessionEnd, Some("child"), "j"),
+        binding_event(
+            CallerClaim {
+                liveness: Some(crate::protocol::authority::LivenessFingerprint {
+                    pid: 0,
+                    start: 1,
+                }),
+                ..sub
+            },
+            SubagentStart,
+            None,
+            "k",
+        ),
+    ];
+    for command in &invalid {
+        assert!(command.validate().is_err(), "{command:?}");
+    }
+}
