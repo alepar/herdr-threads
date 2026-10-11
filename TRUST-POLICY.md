@@ -532,8 +532,8 @@ check-in or lifecycle start neither settles nor resets them, and a binding's dig
 binding. A subagent binding never checks in and settles nothing: its hook reads its own binding's
 digest (unread mail past its own cursor, notices above its parent's frontier) and presents it with
 read-only wording, compared only with its own client-local mark (a hint keyed by the binding key,
-never authority). Seat-level readers (wake, receipts, the mod channel) follow the seat's newest
-open top-level binding, a connected one first. A global decision watermark cannot settle uncarried events, including late attribution.
+never authority). Seat-level readers (wake, receipts) follow the seat's newest
+open top-level binding, a connected one first. The mod channel is held per connected top-level Claude binding, not per seat. A global decision watermark cannot settle uncarried events, including late attribution.
 History and immutable operation results remain readable. A successor occupant gets its own offers;
 response loss can lose an informational offer after commitment, and an explicit operation retry
 can present the retained result again. Delivery is neither invitation acceptance nor receipt ACK,
