@@ -24,9 +24,7 @@ pub(crate) fn agent_caller(
         cli::caller::{CallerOrigin, fix_origin},
         harness::caller_env::EnvClaim,
         protocol::{
-            authority::{
-                COOPERATIVE_ENV_SESSION_PROVENANCE, CallerRole, Harness, LivenessFingerprint,
-            },
+            authority::{COOPERATIVE_ENV_SESSION_PROVENANCE, CallerRole, Harness},
             ids::NativeSessionId,
         },
     };
@@ -38,7 +36,9 @@ pub(crate) fn agent_caller(
         native_session: NativeSessionId::new(session),
         agent_id: None,
         role: CallerRole::TopLevel,
-        fingerprint: LivenessFingerprint::TEST,
+        // One live process per session: a shared fingerprint would supersede across sessions,
+        // and a dead one is disconnected by the liveness worker.
+        fingerprint: herdr_threads::test_support::isolation::stand_in_fingerprint(harness, session),
         provenance: COOPERATIVE_ENV_SESSION_PROVENANCE,
     }))
 }

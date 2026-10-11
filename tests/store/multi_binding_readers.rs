@@ -21,7 +21,7 @@ use crate::{
         time::{CallBudget, Cancellation, Clock, MonoInstant, UtcMillis},
     },
     store::{
-        bindings::{self, BindingPlacement, FingerprintRule, ResolveRequest, resolve_claim},
+        bindings::{self, BindingPlacement, ResolveRequest, resolve_claim},
         catch_up::{self, CatchUpEntry},
         connection::StoreContext,
         effective, materialization, schema, seats, summary,
@@ -113,7 +113,6 @@ fn enroll(db: &Connection, session: &str) -> bindings::BindingRow {
             placement: &place,
             lineage: None,
         },
-        FingerprintRule::Required,
         UtcMillis(50),
     )
     .unwrap()

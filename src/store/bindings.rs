@@ -1086,7 +1086,7 @@ pub(crate) fn resolve_claim_with_hooks(
     now: UtcMillis,
     hooks: &[(&str, EnrollHook)],
 ) -> Result<Resolution, ApiError> {
-    let resolution = resolve_claim_inner(tx, request, rule, now, hooks)?;
+    let resolution = resolve_claim_inner(tx, request, now, hooks)?;
     if request.claim.harness != crate::protocol::authority::Harness::Human {
         end_human_binding(tx, &request.claim.seat, now)?;
     }
@@ -1096,7 +1096,6 @@ pub(crate) fn resolve_claim_with_hooks(
 fn resolve_claim_inner(
     tx: &Connection,
     request: &ResolveRequest<'_>,
-    rule: FingerprintRule,
     now: UtcMillis,
     hooks: &[(&str, EnrollHook)],
 ) -> Result<Resolution, ApiError> {

@@ -502,21 +502,13 @@ fn ended_uuid_wrong_instance_child_and_exact_payload_reuse_are_fenced() {
     let mut replacement = first.context.clone();
     replacement.execution = ExecutionId::new("00000000-0000-4000-8000-000000000002");
     let second = check_in(&store, lifecycle(replacement, "second")).unwrap();
-    // ht-54r.3: a lifecycle check-in re-registers the session's binding in place, so the first
-    // execution it replaced is the ended one: a tool-boundary call under it is served as
-    // historical context, never as the current one.
-    let ended = check_in(
-        &store,
-        CheckIn {
-            mode: CheckInMode::Current,
-            claim: first.context.clone(),
-            operation: OperationId::new("ended"),
-        },
-    )
-    .unwrap();
+    // ht-54r.3: a lifecycle check-in re-registers the session's binding in place and the binding
+    // is keyed by session, so the replaced execution is not fenced: the same session checking in
+    // under it again is served as the current context (the fingerprint it carries is the proof).
+    let again = check_in(&store, lifecycle(first.context.clone(), "ended")).unwrap();
     assert_eq!(
-        ended.context_disposition,
-        crate::protocol::results::CheckInContextDisposition::Historical
+        again.context_disposition,
+        crate::protocol::results::CheckInContextDisposition::Current
     );
     let mut wrong_instance = first_command.clone();
     wrong_instance.claim.instance = "another-instance".into();
@@ -3589,10 +3581,14 @@ fn human_guidance_check_in_continuation_before_page_fit() {
 
 // ---- ht-54r.3: bindings are keyed by session; check-ins add and refresh them ----
 
+/// A claim for one harness session. Each session is its own process, so its fingerprint is
+/// distinct: sessions sharing one would supersede each other (same process, new session).
 fn session_claim(session: &str, execution: &str) -> CallerClaim {
+    let pid = 1000 + session.bytes().map(u32::from).sum::<u32>();
     CallerClaim {
         native_session: NativeSessionId::new(session),
         execution: ExecutionId::new(execution),
+        liveness: Some(crate::protocol::authority::LivenessFingerprint { pid, start: 1 }),
         ..claim()
     }
 }
@@ -3698,6 +3694,11 @@ fn cross_pane_resume_creates_a_new_binding_on_the_second_seat() {
     moved.seat = SeatId::new("s2");
     moved.target = HostTargetId::new("q");
     moved.execution = ExecutionId::new("00000000-0000-4000-8000-0000000000a2");
+    // The resumed session runs in a new process: the same fingerprint would supersede the first.
+    moved.liveness = Some(crate::protocol::authority::LivenessFingerprint {
+        pid: 4242,
+        start: 1,
+    });
     check_in(&store, lifecycle(moved, "on-b")).unwrap();
     assert_eq!(row("s2").len(), 1);
     assert_eq!(row("s"), first, "the first seat's binding is untouched");

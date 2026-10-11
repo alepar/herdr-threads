@@ -683,6 +683,8 @@ fn explicit_cooperative_cli_check_in_reaches_elected_service_over_socket() {
     let next_claim = herdr_threads::protocol::authority::CallerClaim {
         native_session: herdr_threads::protocol::ids::NativeSessionId::new("direct-successor"),
         execution: herdr_threads::protocol::ids::ExecutionId::new(Uuid::new_v4().to_string()),
+        // Its own (live) process: sharing the CLI session's fingerprint would supersede it.
+        liveness: Some(other_live_process_fingerprint()),
         ..prior.clone()
     };
     let next_result = herdr_threads::ports::LocalClient::call(
@@ -2709,4 +2711,13 @@ fn elected_daemon_reports_startup_binding_evidence_counts_in_health_and_log() {
     assert!(join.daemon.take().unwrap().join().unwrap().unwrap());
     let log = fs::read_to_string(paths.instance_dir.join("daemon.log")).unwrap();
     assert!(log.contains(expected), "{log}");
+}
+
+/// The fingerprint of a live process that is not this one (the test runner's parent).
+fn other_live_process_fingerprint() -> herdr_threads::protocol::authority::LivenessFingerprint {
+    use herdr_threads::ports::ProcessInfo;
+    let record = herdr_threads::host::process_table::HostProcessTable
+        .process(std::os::unix::process::parent_id())
+        .expect("the parent process is in the process table");
+    herdr_threads::protocol::authority::LivenessFingerprint::of(&record)
 }

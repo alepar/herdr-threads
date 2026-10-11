@@ -979,7 +979,6 @@ mod exclusivity {
                 placement: &place,
                 lineage: None,
             },
-            FingerprintRule::Required,
             UtcMillis(50),
         )
         .unwrap()
@@ -1693,7 +1692,6 @@ mod lineage {
                 placement: &place,
                 lineage,
             },
-            FingerprintRule::Required,
             UtcMillis(50),
         )
         .unwrap()

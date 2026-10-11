@@ -298,7 +298,7 @@ impl World {
         };
         let mut shell = crate::scrubbed_command("/bin/sh");
         // The installed hook runs under its harness (the test process stands in for it).
-        herdr_threads::test_support::isolation::as_agent(&mut shell, harness, "hook-session");
+        herdr_threads::test_support::isolation::as_agent(&mut shell, harness, session_of(pane));
         let mut child = shell
             .arg("-c")
             .arg(command)

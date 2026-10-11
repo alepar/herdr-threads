@@ -435,7 +435,12 @@ impl World {
         };
         let mut shell = Command::new("/bin/sh");
         // The installed hook runs under its harness (the test process stands in for it).
-        herdr_threads::test_support::isolation::as_agent(&mut shell, harness, "hook-session");
+        // The hook's process is its harness session's: the session named in the payload.
+        let session = serde_json::from_slice::<Value>(stdin)
+            .ok()
+            .and_then(|payload| payload["session_id"].as_str().map(str::to_owned))
+            .unwrap_or_else(|| "hook-session".to_owned());
+        herdr_threads::test_support::isolation::as_agent(&mut shell, harness, &session);
         let mut child = shell
             .envs([herdr_threads::daemon::lifecycle::test_owner_env()])
             .arg("-c")

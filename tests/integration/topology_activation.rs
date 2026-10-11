@@ -1944,14 +1944,11 @@ fn current_main_registered_original_caller_preserves_bootstrap_and_delivery_clai
         native_session: NativeSessionId::new("session"),
         execution: ExecutionId::new(execution),
         agent_id: None,
-        // The CLI's harness is this test process (`as_agent`), whose fingerprint it sends.
-        liveness: Some(herdr_threads::protocol::authority::LivenessFingerprint::of(
-            &herdr_threads::ports::ProcessInfo::process(
-                &herdr_threads::host::process_table::HostProcessTable,
-                std::process::id(),
-            )
-            .unwrap(),
-        )),
+        // The CLI's harness is the stand-in process of its session (`as_agent`), whose
+        // fingerprint it sends.
+        liveness: Some(
+            herdr_threads::test_support::isolation::stand_in_fingerprint("hermes", "session"),
+        ),
     };
     let setup = f.cli(
         &["setup", "codex", "--harness-binary", "/usr/bin/true"],

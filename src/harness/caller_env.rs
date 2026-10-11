@@ -172,8 +172,13 @@ fn walk(
             (_, Some(_)) => "stand-in",
             _ => return Err(EnvRefusal::NoHarness),
         };
+        // `HT_TEST_HARNESS_PID` names a long-lived stand-in process for this caller's session
+        // (`test_support::isolation::as_agent`), so two sessions are two processes.
+        let stand_in = env_var(inputs, "HT_TEST_HARNESS_PID")
+            .and_then(|pid| pid.trim().parse::<u32>().ok())
+            .or(own.parent);
         if (kind == "stand-in" || want.is_none_or(|w| w == kind))
-            && let Some(parent) = own.parent.and_then(|pid| inputs.processes.process(pid))
+            && let Some(parent) = stand_in.and_then(|pid| inputs.processes.process(pid))
         {
             return Ok((kind, parent));
         }

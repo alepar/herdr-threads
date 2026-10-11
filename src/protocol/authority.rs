@@ -65,6 +65,16 @@ impl LivenessFingerprint {
     /// on every claim that creates or connects a binding). It names no real process.
     #[cfg(any(test, feature = "test-support"))]
     pub const TEST: Self = Self { pid: 1, start: 1 };
+    /// The fingerprint of this very process, for tests whose daemon runs the liveness worker: a
+    /// binding carrying [`Self::TEST`] is judged an exited process and disconnected there.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn current_process() -> Self {
+        use crate::ports::ProcessInfo;
+        let record = crate::host::process_table::HostProcessTable
+            .process(std::process::id())
+            .expect("this process is in the process table");
+        Self::of(&record)
+    }
     /// True iff the fingerprinted process still exists with the same start stamp.
     pub fn is_alive(&self, info: &dyn crate::ports::ProcessInfo) -> bool {
         info.process(self.pid)

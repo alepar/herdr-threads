@@ -20,8 +20,9 @@ fn seat_with_two_bindings(
         pane: pane.to_owned(),
     };
     let check_in = |n: u32| {
-        s.ok(
+        s.ok_in_session(
             Some(&caller),
+            Some(&format!("session-{n}")),
             &[
                 "check-in",
                 "--lifecycle-event",
@@ -39,7 +40,7 @@ fn seat_with_two_bindings(
         .unwrap()
         .to_owned();
     s.ok(Some(other), &["invite", &thread, "--seat", &caller.seat]);
-    s.ok(Some(&caller), &["accept", &thread]);
+    s.ok_in_session(Some(&caller), Some("session-1"), &["accept", &thread]);
     check_in(2);
     let bindings = open_bindings(&s.db(), &caller.seat);
     assert_eq!(
