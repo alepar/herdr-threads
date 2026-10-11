@@ -1,7 +1,7 @@
 # super-auto report — 2026-10-09-session-keyed-seat-bindings
 
 ```
-status: completed with 0 unresolved Blocking, 8 escalations [degraded: design roast exit: converged at round 2 (Should-fix 9, 0 Blocking); punch list applied inline to spec + beads, not re-roasted, code findings parked, final review: not ready (final review 4 @ 212dbd0c: continuity reattach inserts binding without cursors → history unread after Herdr restart; cursor stuck after mod/hook-pull ACK of ordinary msg; agy hook delivery lost after upgrade (SessionMismatch on disconnected); S3 continuity_candidates newest-row; S4 Hermes child pre-subagent_start supersedes parent; S5 provenance-gated mod channel + overwrite; single-target composer wake ignores foreground PID; stale TRUST-POLICY/SKILL/CHILD_RESTRICTION text)]
+status: completed with 0 unresolved Blocking, 8 escalations [degraded: design roast exit: converged at round 2 (Should-fix 9, 0 Blocking); punch list applied inline to spec + beads, not re-roasted, code findings parked]
 metrics: parked draft docs/superpowers/runs/2026-10-09-session-keyed-seat-bindings/upstream-feedback-draft.md (6 defects, 2 design questions, 1 doc gap; not filed)
 ```
 
@@ -140,3 +140,16 @@ Other parked escalations:
 - Sweep fix ht-54r.71–.75 re-ran green at abe1bf03 (5471/5471). The smell: final review 4 notes an unexplained config9 failure under load (Task 41); ht-54r.74 made the test cap configurable rather than finding the hang. (run.md sweepFix; code-final-review-4.md)
 - ht-54r.7 conflict resolution was done outside the pipeline. The smell: never seam-reviewed. (code-final-review-4.md)
 - DONE_WITH_CONCERNS implementer reports: none (.superpowers/sdd/ht-54r-plan/task-*-report.md)
+
+## Addendum — post-hand-back fix rounds (2026-10-11)
+
+Main (mljuxaWLC) declined the first hand-back (65b095fd) because final review 4 listed live must-fix defects. The run resolved them in place; every finding's disposition and evidence is in `dispositions.md` (this directory).
+
+- Fix round 1 (ht-54r.76–.84) and round 2 (ht-54r.87–.91) closed final reviews 4–5 must-fix items; final review 6 found no open product defect (code-final-review-5.md, code-final-review-6.md).
+- Spec-settled decisions replace the parked sign-offs: `/clear` wake model stands (spec §1.3/§1.5/§3); single-target composer wake requires the foreground match (§3, ht-54r.82/.89); disconnected-binding ACK follows §3 reconnect rules (ht-54r.81/.87); compact presence shown (ht-54r.83). (run.md decisions)
+- agy run_command attribution verified live: agy 1.3.3 run_command shells carry `ANTIGRAVITY_CONVERSATION_ID` (evidence/ht-54r.84/); agy native gate 15/15 (evidence/ht-54r.88/).
+- Composer wake now matches the binding fingerprint against Herdr's foreground process set; live probes showed the single-PID rule never fired for Claude (MCP/watch children) or npm-installed Codex (ht-54r.89).
+- Main v0.8.1 absorbed (2ef00231, eb28b769). Post-cap audit 2 (2026-10-11-session-keyed-seat-bindings-2-roast-pr-post-cap-audit.md): converged, 0 Blocking, 4 findings fixed (99bc9a63, 25893108, 0160c11e, 14b4a4df) and independently reviewed: no Critical/Important, no security bypass in the flagged bindings.rs/receipts.rs paths; 2 Minor (1 accepted fail-safe, 1 fixed).
+- Sweep: see the status line (run.md codeBuckets.sweep).
+
+Remaining after the addendum: managed-launch placeholder still uses the strict single-foreground read (follow-up); a lost, never-replayed lifecycle check-in leaves a plain-only session losing to its predecessor (accepted limit); performance punch list; real-harness payload shapes, sandboxes and Linux untested; `Outside-adapter:` trailer present on 9 of 156 pre-rule commits (dispositions.md).

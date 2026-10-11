@@ -1,7 +1,7 @@
 # super-auto run — 2026-10-09-session-keyed-seat-bindings
 
 flags: planOneShot=f skipPlanRoast=f skipCodeRoast=f autonomous=t
-phase: report
+phase: finish
 codeMechanism: Workflow
 
 idea: Goal: implement the new herdr-threads seat-bindings model we designed in this session, absorbing the Hermes global-enrollment work (ht-4ne, branch super-auto/hermes-global-enrollment, unmerged) it sprang from. Flags: planOneShot=false (interactive Mode A design for remaining questions), skipPlanRoast=false, skipCodeRoast=false, autonomous=true from after the design. The Codex CODEX_EXEC_SERVER_URL pane-env installer step runs separately on branch codex-daemon-env and is out of scope here.
@@ -38,7 +38,7 @@ codeBuckets:
   parked: ht-54r.5 ht-54r.12 ht-54r.19
   stalled: false
   review: ready (final review 6 @ b35cad5d found no open product defect; its remaining items — doc drift, config9 race, v0.8.1 absorption, spec-settled /clear decision, sweep — resolved: 0a2a220c, 2ef00231/eb28b769, 6abfd4f9; audit-2 post-cap roast converged 0 Blocking, its 4 findings fixed 99bc9a63/25893108/0160c11e/14b4a4df and independently reviewed (2 Minor: 1 accepted fail-safe, 1 fixed); sweep green @ 6529b034)
-  sweep: 6529b034 — 5526 passed, 0 failed, 0 errors, 44 skipped; failing: none; command: nice cargo nextest run --locked --all-targets --all-features --no-fail-fast (+ scripts/check-harness-neutral exit 0, check-no-leaked-processes clean, wall 267s) @ 6529b034
+  sweep: b6bd4817 — 5526 passed, 0 failed, 0 errors, 44 skipped; failing: none; command: nice cargo nextest run --locked --all-targets --all-features --no-fail-fast (+ scripts/check-harness-neutral exit 0, check-no-leaked-processes clean, wall 223s) @ b6bd4817
   slowness: round 1 hook.rs hot-file cap raised to 4; merge queue peaked at 3
   worktreesKept: 
   processSweep: stopped 0 · survived 0
