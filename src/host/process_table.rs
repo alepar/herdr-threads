@@ -15,6 +15,8 @@ impl ProcessInfo for HostProcessTable {
 
 /// The argv of a `KERN_PROCARGS2` buffer: `i32 argc`, the exec path, NUL padding, then `argc`
 /// NUL-terminated arguments. A buffer holding fewer than `argc` arguments yields none.
+/// Only the macOS reader calls it; tests exercise it on every platform.
+#[cfg(any(target_os = "macos", test))]
 pub(crate) fn parse_procargs2(buf: &[u8]) -> Vec<String> {
     let Some(head) = buf.get(..4) else {
         return Vec::new();

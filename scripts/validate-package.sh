@@ -95,8 +95,26 @@ for directory in (home, config, state, runtime):
 (config / "herdr.toml").write_text("")
 socket = root / "h.sock"
 foreign_target = root / "foreign-cargo-target"
-environment = {key: value for key, value in os.environ.items()
-               if not key.startswith("HERDR_") and not key.startswith("GIT_")}
+# The script is the local operator of this private instance. A launching shell inside an agent
+# (Claude Code, Codex, Hermes, agy) leaves that harness's attribution markers in the environment;
+# they describe the launching agent, never the private seat pane, so none reaches the private
+# server, its panes or the CLI calls (otherwise `human me init` refuses the pane, TRUST-POLICY A4).
+# The names are the ones registered adapters declare: person-guard markers (AgentEnvMarker with
+# person_guard: CLAUDECODE, CODEX_SANDBOX, CODEX_SANDBOX_NETWORK_DISABLED, ANTIGRAVITY_AGENT), the
+# output-form marker CODEX_THREAD_ID, and the caller-session variables (CallerEnvShape session_var:
+# CLAUDE_CODE_SESSION_ID, CODEX_SESSION_ID, HERMES_SESSION_ID, ANTIGRAVITY_CONVERSATION_ID), plus
+# the rest of Claude Code's CLAUDE_CODE_* session environment and CLAUDE_PID.
+HARNESS_ATTRIBUTION_ENV = {
+    "CLAUDECODE", "CLAUDE_PID", "CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED", "CODEX_THREAD_ID",
+    "CODEX_SESSION_ID", "HERMES_SESSION_ID", "ANTIGRAVITY_AGENT", "ANTIGRAVITY_CONVERSATION_ID",
+}
+
+
+def inherited(key):
+    return not (key.startswith(("HERDR_", "GIT_", "CLAUDE_CODE_")) or key in HARNESS_ATTRIBUTION_ENV)
+
+
+environment = {key: value for key, value in os.environ.items() if inherited(key)}
 environment.update({
     "HOME": str(home),
     "CLAUDE_CONFIG_DIR": str(home / ".claude"), "CODEX_HOME": str(home / ".codex"),
@@ -481,13 +499,15 @@ try:
     resolved = run([str(binary), "human", "seat", "resolve", "--pane", seat_pane, "--new-seat", "--operator"], env=cli_env)
     seat = field(resolved.stdout, "value")
     check("operator resolves a fresh seat", bool(seat and re.fullmatch(r"s[0-9A-Za-z]{8}", seat)), resolved.stdout)
-    cooperative = ["--cooperative-seat", seat, "--cooperative-target", seat_pane,
-                   "--cooperative-harness", "codex", "--cooperative-role", "top-level"]
-    run([str(binary), "check-in", "--lifecycle-event", f"package-validation-{uuid.uuid4()}", *cooperative],
-        env=dict(cli_env, HERDR_PANE_ID=seat_pane))
+    # The seat's writes are a person's, from the seat pane: an agent call must carry its harness
+    # session id and a live harness process to attribute to (session-keyed bindings), which this
+    # script has none of. `human me init` declares the pane human (operator_human provenance).
+    pane_env = dict(cli_env, HERDR_PANE_ID=seat_pane)
+    person = run([str(binary), "human", "me", "init", "--json"], env=pane_env)
+    context = json.loads(person.stdout)["result"]["data"]["context"]
+    check("seat pane is declared human", context["seat"] == seat and context["harness"] == "human", person.stdout)
     topic = f"package validation survives update {uuid.uuid4().hex[:8]}"
-    created = run([str(binary), "thread", "create", "--topic", topic, *cooperative],
-                  env=dict(cli_env, HERDR_PANE_ID=seat_pane))
+    created = run([str(binary), "human", "thread", "create", "--topic", topic], env=pane_env)
     thread = field(created.stdout, "value")
     check("seat creates a durable thread", bool(thread and re.fullmatch(r"t[0-9A-Za-z]{8}", thread)), created.stdout)
 
@@ -570,7 +590,9 @@ try:
     started_daemons.update(new_daemons)
     view = run([str(binary), "view", "--once"], env=cli_env).stdout
     check("thread survives the source update", thread in view and topic in view.replace("\n", ""), view[-3000:])
-    seats = run([str(binary), "seat", "list"], env=cli_env).stdout
+    # An operator read (`human`): a root command is an agent call, and a launching agent's process
+    # ancestry would make it one without a session claim.
+    seats = run([str(binary), "human", "seat", "list"], env=cli_env).stdout
     check("seat survives the source update", seat in seats, seats)
 
     # -- 8. Explicit shutdown ----------------------------------------------------

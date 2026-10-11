@@ -682,6 +682,67 @@ fn unresolved_recovery_hold_blocks_candidate_continuity_even_with_fresh_target()
     let _ = std::fs::remove_file(path);
 }
 
+/// A seat holds several open bindings (ht-54r.3). The wake candidate's current binding is the
+/// one a seat-level reader follows (`SEAT_NOTICE_BINDING_SQL`): the newest open top-level
+/// binding, a connected one first; never a subagent, never whichever row SQLite returns first.
+#[test]
+fn candidate_binding_is_the_newest_connected_top_level_binding() {
+    let path = std::env::temp_dir().join(format!("herdr-wake-{}.db", uuid::Uuid::new_v4()));
+    let context = StoreContext::new(path.clone(), Arc::new(WakeClock));
+    let db = context.open_writer().unwrap();
+    db.execute_batch("\
+        INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'host',1,1);\
+        INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s','i','resolved','native','pane',1,1,0);\
+    ").unwrap();
+    let bind = |id: &str, session: &str, execution: &str, extra: &str, values: &str| {
+        db.execute(&format!("INSERT INTO occupant_bindings(binding_id,seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation{extra}) VALUES ('{id}','s',1,1,'pane','host',1,'claude','{session}','{execution}','cooperative_top_level',0,0,'term-pane','inc'{values})"),[]).unwrap();
+    };
+    bind("b-old", "s-old", "e-old", "", "");
+    bind("b-new", "s-new", "e-new", "", "");
+    bind(
+        "b-gone",
+        "s-gone",
+        "e-gone",
+        ",liveness,disconnected_at,disconnect_reason",
+        ",'disconnected',0,'exited'",
+    );
+    bind(
+        "b-child",
+        "s-new",
+        "e-child",
+        ",role,parent_binding,agent_id",
+        ",'subagent','b-new','a1'",
+    );
+    for (binding, seq) in [("b-old", 3), ("b-new", 7)] {
+        db.execute(
+            "INSERT INTO warning_offer(binding_id,seat_id,offered_through_seq) VALUES (?1,'s',?2)",
+            params![binding, seq],
+        )
+        .unwrap();
+    }
+    let attention = effective::EffectiveSeatAttention {
+        has_pending_invitation: true,
+        has_pending_receipt: false,
+        latest_warning_seq: None,
+        frontier: Default::default(),
+    };
+    let candidate = wake::load_candidate(&db, "i", &SeatId::new("s"), &attention, 1).unwrap();
+    assert_eq!(candidate.binding_generation, Some(1));
+    assert_eq!(
+        candidate.binding_execution,
+        Some(crate::protocol::ids::ExecutionId::new("e-new"))
+    );
+    let offer = candidate
+        .warning_offer
+        .expect("the current binding's offer");
+    assert_eq!(
+        (offer.execution, offer.offered_through_seq),
+        (crate::protocol::ids::ExecutionId::new("e-new"), 7)
+    );
+    drop(db);
+    let _ = std::fs::remove_file(path);
+}
+
 /// Cooperative native policy (D2 reasoning): a resolved seat whose effective
 /// observation has no verified execution but a terminal in a verified server
 /// incarnation gets a structural Cooperative reservation, registered or not.

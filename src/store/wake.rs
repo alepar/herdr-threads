@@ -79,8 +79,10 @@ pub fn load_candidate(
                 && target_generation == o.structural_generation
         });
     type BindingColumns = Option<(i64, i64, String, String, String, i64, Option<i64>)>;
+    // The binding a seat-level reader follows (newest open top-level, connected first): a seat
+    // holds several open bindings, so "the open binding" is chosen, never left to row order.
     let binding:BindingColumns=db.query_row(
-        "SELECT generation,target_generation,target_id,execution_id,host_boot,host_epoch,registered_at FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL",
+        &format!("SELECT generation,target_generation,target_id,execution_id,host_boot,host_epoch,registered_at FROM occupant_bindings WHERE binding_id=({})",super::attention::SEAT_NOTICE_BINDING_SQL),
         [seat.as_str()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).optional().map_err(store_error)?;
     let current_binding = binding.filter(
         |(bound_generation, bound_target, bound_target_id, _, bound_boot, bound_epoch, _)| {
@@ -431,8 +433,10 @@ fn current_authority(
         return Ok(None);
     }
     type BindingColumns = Option<(i64, i64, String, String, String, i64, Option<i64>)>;
+    // The binding a seat-level reader follows (newest open top-level, connected first): a seat
+    // holds several open bindings, so "the open binding" is chosen, never left to row order.
     let binding:BindingColumns=db.query_row(
-        "SELECT generation,target_generation,target_id,execution_id,host_boot,host_epoch,registered_at FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL",
+        &format!("SELECT generation,target_generation,target_id,execution_id,host_boot,host_epoch,registered_at FROM occupant_bindings WHERE binding_id=({})",super::attention::SEAT_NOTICE_BINDING_SQL),
         [seat.as_str()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).optional().map_err(store_error)?;
     if let Some((
         bound_generation,
