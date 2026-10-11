@@ -2651,6 +2651,28 @@ fn activation_v2_watch_full_pending_capacity_parks_until_real_channel_input() {
         sent.iter().collect::<std::collections::BTreeSet<_>>().len(),
         257
     );
+    // This is a stable-capacity oracle. Finish the actual background source
+    // first: an outstanding send_attention job may otherwise invalidate a
+    // warning-absence proof between the parked response and channel stimulus.
+    // Include bootstrap jobs as well as these 257 sends. Completion is
+    // monotone; no send/notify follows, and UTC remains frozen for deadlines.
+    let (attention_jobs, completed_jobs) = wait_until(
+        "all fixture send_attention jobs to complete before Watch",
+        STEP,
+        || {
+            let (total, complete, outstanding): (i64, i64, i64) = rig.db().query_row(
+                "SELECT count(*),COALESCE(sum(status='complete'),0),COALESCE(sum(status<>'complete'),0) FROM work_jobs WHERE kind='send_attention'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            ).unwrap();
+            (outstanding == 0).then_some((total, complete))
+        },
+    );
+    assert_eq!(attention_jobs, completed_jobs);
+    assert!(
+        attention_jobs >= sent.len() as i64,
+        "the terminal source barrier includes every seeded send, not an empty projection"
+    );
     let watch_start = relay.snapshot().len();
     let mut watch = rig.watch(SESSION_B);
     watch.wait_connected();
