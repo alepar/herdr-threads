@@ -734,6 +734,18 @@ impl Rig {
         let mut shell = spawn::command("/bin/sh");
         // The installed hook runs under its harness (the test process stands in for it).
         herdr_threads::test_support::isolation::as_agent(&mut shell, "claude", "hook-session");
+        // Each session is a process of its own, as in a real run: hooks of several sessions
+        // sharing one fingerprint would supersede one another's bindings, and a disconnected
+        // binding loses its mod channel (spec §3 Wake).
+        if let Some(session) = payload["session_id"].as_str() {
+            let stand_in =
+                herdr_threads::test_support::isolation::stand_in_fingerprint("claude", session)
+                    .pid
+                    .to_string();
+            shell
+                .env("CLAUDE_PID", &stand_in)
+                .env("HT_TEST_HARNESS_PID", &stand_in);
+        }
         let mut child = shell
             .arg("-c")
             .arg(command)

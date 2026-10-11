@@ -4770,17 +4770,20 @@ pub fn record_managed_launch(
 /// not a count anyone presents).
 const MOD_LAZY_COUNT_CAP: i64 = 1000;
 
-/// The seat's A2 state for the mod watch channel (spec D2), read-only. Call it
-/// inside the caller's read transaction. `None`: no such seat in `instance`.
-/// The fingerprint is built from the canonical digest (so it moves with every
-/// attention source the digest knows), with warnings narrowed to those that
-/// wake the seat (`attention::wake_warnings`), and the lazy pending set.
-pub fn mod_seat_view(
+/// The seat's A2 state for the mod watch channel (spec D2), read-only, with one of its bindings
+/// (spec §3 Wake). Call it inside the caller's read transaction. `None`: no such seat in
+/// `instance`. The fingerprint is built from the canonical digest (so it moves with every
+/// attention source the digest knows), with warnings narrowed to those that wake the seat
+/// (`attention::wake_warnings`), plus the binding's own unread: ordinary mail past its cursors
+/// and its lazy rows. `binding` is `None` when the reference resolves to no binding of this seat;
+/// an ended or disconnected binding is returned as it is, with no unread.
+pub fn mod_binding_view(
     db: &Connection,
     instance: &str,
     seat: &SeatId,
+    binding: crate::ports::ModBindingRef<'_>,
 ) -> Result<Option<crate::ports::ModSeatView>, ApiError> {
-    use crate::ports::{ModBindingView, ModFingerprint, ModSeatView};
+    use crate::ports::{ModBindingRef, ModBindingView, ModFingerprint, ModSeatView};
     let row: Option<(String, Option<String>)> = db
         .query_row(
             "SELECT state,target_id FROM seats WHERE id=?1 AND instance_id=?2",
@@ -4802,26 +4805,23 @@ pub fn mod_seat_view(
             .map_err(store_error)?,
         None => false,
     };
-    let binding: Option<(i64, String, String, String)> = db
-        .query_row(
-            "SELECT generation,observation_provenance,harness,native_session FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL",
-            [seat.as_str()],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-        )
-        .optional()
-        .map_err(store_error)?;
-    let binding = binding
-        .map(|(generation, provenance, harness, native_session)| {
-            Ok(ModBindingView {
-                generation: u64::try_from(generation).map_err(|_| {
-                    api_error(ErrorCode::StoreCorrupt, "negative binding generation")
-                })?,
-                provenance,
-                harness,
-                native_session,
-            })
-        })
-        .transpose()?;
+    let row = match binding {
+        ModBindingRef::Id(id) => super::bindings::get(db, id)?,
+        ModBindingRef::Claim(claim) => {
+            super::bindings::match_claim(db, &super::bindings::BindingKey::from_claim(claim))?
+        }
+    }
+    .filter(|row| &row.seat == seat);
+    let binding = row.map(|row| ModBindingView {
+        generation: row.generation,
+        provenance: row.provenance,
+        harness: row.harness,
+        native_session: row.native_session,
+        top_level: row.role == super::bindings::BindingRole::TopLevel,
+        connected: row.liveness == super::bindings::Liveness::Connected,
+        ended_at: row.ended_at,
+        binding_id: row.binding_id,
+    });
     let attention_version: i64 = db
         .query_row(
             "SELECT attention_version FROM wake_work WHERE seat_id=?1",
@@ -4834,10 +4834,31 @@ pub fn mod_seat_view(
     let attention_version = u64::try_from(attention_version)
         .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative attention version"))?;
     let run = super::attention::seat_digest(db, instance, seat, &|| Ok(()))?;
-    // Published rows only: a staged row is invisible to the mod and its publication (manifest +
-    // message) must change the fingerprint. ht-54r.12 later moves the fingerprint per binding.
-    let (lazy_pending, max_lazy_rowid) =
-        super::lazy_delivery::seat_lazy_pending(db, seat, MOD_LAZY_COUNT_CAP)?;
+    // The binding's own unread. Published rows only: a staged row is invisible to the mod and
+    // its publication (manifest + message) must change the fingerprint. An ended or
+    // disconnected binding holds no channel and counts none.
+    let (lazy_pending, max_lazy_rowid, unread, max_unread_rowid) =
+        match binding.as_ref().filter(|held| held.holds_channel()) {
+            Some(held) => {
+                let lazy = super::lazy_delivery::binding_lazy_unread(
+                    db,
+                    &held.binding_id,
+                    MOD_LAZY_COUNT_CAP as usize,
+                )?;
+                let (unread, max_unread_rowid) = super::read_cursors::binding_unread_stats(
+                    db,
+                    &held.binding_id,
+                    MOD_LAZY_COUNT_CAP,
+                )?;
+                (
+                    lazy.len() as u64,
+                    lazy.iter().map(|row| row.ordinal).max().unwrap_or(0),
+                    unread,
+                    max_unread_rowid,
+                )
+            }
+            None => (0, 0, 0, 0),
+        };
     let digest = &run.digest;
     // Only warnings that would wake the seat natively raise mod attention
     // (TRUST-POLICY A7): another seat's overdue transition, and every clear,
@@ -4854,6 +4875,8 @@ pub fn mod_seat_view(
             .map_or(0, |(seq, _)| i64::try_from(seq).unwrap_or(i64::MAX)),
         lazy_pending,
         max_lazy_rowid,
+        unread,
+        max_unread_rowid,
         other_pending: digest.invitations.count + waking_warnings,
         binding_generation: binding.as_ref().map(|b| b.generation),
     };

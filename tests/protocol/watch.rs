@@ -596,12 +596,16 @@ impl ModChannelSink for DropSink {
 fn no_mod_channels_is_inert() {
     let channels = crate::ports::NoModChannels;
     let seat = SeatId::new("s1");
-    assert!(!channels.is_live(&seat, 1));
+    let binding = crate::protocol::ids::BindingId::new("b1");
+    assert!(!channels.is_live(&seat, &binding));
+    assert!(!channels.binding_live(&seat, &binding));
     assert!(!channels.seat_live(&seat));
     assert!(!channels.stalled(&seat, UtcMillis(0)));
+    assert!(!channels.binding_stalled(&seat, &binding, UtcMillis(0)));
     assert!(channels.status().is_none());
     let registration = ModChannelRegistration {
         seat: seat.clone(),
+        binding: binding.clone(),
         binding_generation: 1,
         native_session: NativeSessionId::new("n1"),
         harness: Harness::Claude,
@@ -614,8 +618,8 @@ fn no_mod_channels_is_inert() {
         WatchRefusalReason::Disabled
     );
     channels.notify(&seat, 1);
-    channels.record_attention_push(&seat, 1, UtcMillis(0));
-    channels.record_ack(&seat, 1, UtcMillis(0));
+    channels.record_attention_push(&seat, &binding, UtcMillis(0));
+    channels.record_ack(&seat, &binding, UtcMillis(0));
     channels.unregister(crate::ports::ModChannelId(1), UtcMillis(0));
-    channels.close(&seat, WatchCloseReason::Stopping, UtcMillis(0));
+    channels.close(&binding, WatchCloseReason::Stopping, UtcMillis(0));
 }

@@ -631,7 +631,7 @@ fn binding_covered(
     binding: &BindingId,
     now: UtcMillis,
 ) -> bool {
-    channels.binding_live(seat, binding) && !channels.stalled(seat, now)
+    channels.binding_live(seat, binding) && !channels.binding_stalled(seat, binding, now)
 }
 
 /// Per-binding form of [`mod_suppressed`]: native wake and poke are suppressed only when every

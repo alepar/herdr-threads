@@ -425,12 +425,14 @@ pub struct DisconnectEvent<'a> {
 }
 pub type DisconnectHook = fn(&Connection, &DisconnectEvent<'_>) -> Result<(), ApiError>;
 /// Side effects of a disconnect, run inside the deciding transaction after the row changed.
-/// ht-54r.12 appends ("mod_channel_release", ..); ht-54r.23 appended ("availability_recompute", ..).
+/// ht-54r.23 appended ("availability_recompute", ..); ht-54r.12 appended ("mod_channel_release", ..).
 /// Human bindings (`harness='human'`) are exempt from the liveness sweep (TRUST-POLICY A4): a
 /// person has no process fingerprint, and the seat stays human-held until an agent replaces it;
 /// ht-54r.23's worker skips them.
-pub const DISCONNECT_HOOKS: &[(&str, DisconnectHook)] =
-    &[("availability_recompute", availability_recompute)];
+pub const DISCONNECT_HOOKS: &[(&str, DisconnectHook)] = &[
+    ("availability_recompute", availability_recompute),
+    ("mod_channel_release", mod_channel_release),
+];
 
 /// The only disconnect transition (end event, pane close, re-check, session switch, supersede all
 /// come through here). Connected -> disconnected with reason and time; idempotent. Runs
@@ -577,6 +579,18 @@ fn availability_recompute(db: &Connection, event: &DisconnectEvent<'_>) -> Resul
     }
     super::schema::ensure_unavailability_episode(db, seat)?;
     Ok(())
+}
+
+/// Disconnect hook: the disconnected binding's mod channel must go (spec §3 Wake). The store
+/// cannot reach the daemon's in-memory registry, so the hook bumps the seat's attention version
+/// like any new-attention producer; the registry's observer pass then re-judges every entry of
+/// the seat against its own binding and closes the disconnected one (`BindingChanged`, that
+/// binding only). A human binding holds no channel.
+fn mod_channel_release(db: &Connection, event: &DisconnectEvent<'_>) -> Result<(), ApiError> {
+    if event.binding.harness == "human" {
+        return Ok(());
+    }
+    super::wake::note_new_attention(db, &event.binding.seat)
 }
 
 /// A connected, open, non-human binding the liveness worker may judge, with what the same-process

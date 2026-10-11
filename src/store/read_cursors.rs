@@ -210,6 +210,28 @@ pub fn has_unread(db: &Connection, binding: &BindingId) -> Result<bool, ApiError
     super::lazy_delivery::binding_has_unread_lazy(db, binding)
 }
 
+/// A change detector for the binding's unread ordinary mail (the mod channel fingerprint): the
+/// count of unread receivable messages (at most `cap`, the oldest) and the newest of their
+/// rowids. It moves when the binding's cursor advances or a message arrives for it, and never
+/// when another binding's cursor moves.
+pub fn binding_unread_stats(
+    db: &Connection,
+    binding: &BindingId,
+    cap: i64,
+) -> Result<(u64, i64), ApiError> {
+    let Some(seat) = seat_of(db, binding)? else {
+        return Ok((0, 0));
+    };
+    let (count, newest): (i64, i64) = db
+        .query_row(
+            &format!("SELECT count(*),COALESCE(max(rid),0) FROM (SELECT m.rowid AS rid FROM {RECEIVABLE_FROM} WHERE {RECEIVABLE_WHERE} {UNREAD_EXTRA} ORDER BY m.rowid LIMIT ?3)"),
+            params![seat.as_str(), binding.as_str(), cap],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(store_error)?;
+    Ok((u64::try_from(count).unwrap_or(0), newest))
+}
+
 /// Advance `binding`'s cursor in `thread` over the longest prefix of messages past the cursor
 /// whose sequences are all in `displayed`. Messages the seat cannot receive in that thread (its
 /// own sends, kinds the inbox never shows) count as displayed. Monotonic. Returns the cursor.

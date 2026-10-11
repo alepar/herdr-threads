@@ -930,6 +930,43 @@ fn claim() -> CallerClaim {
     }
 }
 
+#[test]
+fn watch_registers_with_its_own_session_claim() {
+    use crate::protocol::{authority::LivenessFingerprint, ids::AgentId};
+    // The seat context on disk may name another session, a subagent or a stale role: the claim
+    // the watch child registers names the `--session` it serves, as a top-level Claude caller.
+    let mut stale = claim();
+    stale.native_session = NativeSessionId::new("some-other-session");
+    stale.role = CallerRole::Subagent;
+    stale.agent_id = Some(AgentId::new("agent-7"));
+    let own = own_session_claim(stale, "sess-2", Some(LivenessFingerprint::TEST))
+        .ok()
+        .unwrap();
+    assert_eq!(own.native_session, NativeSessionId::new("sess-2"));
+    assert_eq!(own.role, CallerRole::TopLevel);
+    assert_eq!(own.agent_id, None);
+    assert_eq!(own.harness, crate::protocol::authority::Harness::Claude);
+    assert_eq!(own.liveness, Some(LivenessFingerprint::TEST));
+    assert_eq!(own.seat, SeatId::new("me"), "the seat comes from the pane");
+    // Two sessions of one seat register two different binding keys.
+    let a = own_session_claim(claim(), "sess-a", None).ok().unwrap();
+    let b = own_session_claim(claim(), "sess-b", None).ok().unwrap();
+    assert_ne!(
+        crate::store::bindings::BindingKey::from_claim(&a),
+        crate::store::bindings::BindingKey::from_claim(&b)
+    );
+    // Without a fresh fingerprint the claim keeps what the context recorded.
+    let mut recorded = claim();
+    recorded.liveness = Some(LivenessFingerprint::TEST);
+    assert_eq!(
+        own_session_claim(recorded, "sess-a", None)
+            .ok()
+            .unwrap()
+            .liveness,
+        Some(LivenessFingerprint::TEST)
+    );
+}
+
 fn write_frame(stream: &mut UnixStream, value: &impl serde::Serialize) {
     let body = serde_json::to_vec(value).unwrap();
     let mut framed = (body.len() as u32).to_be_bytes().to_vec();

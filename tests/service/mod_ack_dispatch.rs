@@ -29,12 +29,14 @@ impl Clock for FixedClock {
     }
 }
 
-/// Scripted registry: `live` answers `is_live` for every generation; the
-/// generations asked about are recorded, and `record_ack` calls are counted.
+/// Scripted registry: `live` answers `is_live` for every binding except those in `dead`; the
+/// bindings asked about are recorded, and `record_ack` calls are counted per binding.
 #[derive(Default)]
 struct FakeModChannels {
     live: Mutex<bool>,
-    asked: Mutex<Vec<(String, u64)>>,
+    dead: Mutex<Vec<BindingId>>,
+    asked: Mutex<Vec<(String, BindingId)>>,
+    acked: Mutex<Vec<BindingId>>,
     acks: AtomicUsize,
 }
 impl FakeModChannels {
@@ -46,14 +48,15 @@ impl FakeModChannels {
     }
 }
 impl ModChannels for FakeModChannels {
-    fn is_live(&self, seat: &SeatId, generation: u64) -> bool {
+    fn is_live(&self, seat: &SeatId, binding: &BindingId) -> bool {
         self.asked
             .lock()
             .unwrap()
-            .push((seat.as_str().to_string(), generation));
-        *self.live.lock().unwrap()
+            .push((seat.as_str().to_string(), binding.clone()));
+        *self.live.lock().unwrap() && !self.dead.lock().unwrap().contains(binding)
     }
-    fn record_ack(&self, _seat: &SeatId, _generation: u64, _now: UtcMillis) {
+    fn record_ack(&self, _seat: &SeatId, binding: &BindingId, _now: UtcMillis) {
+        self.acked.lock().unwrap().push(binding.clone());
         self.acks.fetch_add(1, Ordering::SeqCst);
     }
 }
@@ -202,6 +205,25 @@ fn state(f: &Fixture, id: &str) -> String {
 fn claude(f: &Fixture, session: &str) -> CallerClaim {
     check_in(f, claim("s", "p", Harness::Claude, session, 0), "ci-1")
 }
+/// The binding the session holds on seat `s`.
+fn binding_of(f: &Fixture, session: &str) -> BindingId {
+    BindingId::new(
+        f.db.query_row(
+            "SELECT binding_id FROM occupant_bindings WHERE seat_id='s' AND native_session=?1 AND agent_id=''",
+            [session],
+            |r| r.get::<_, String>(0),
+        )
+        .unwrap(),
+    )
+}
+fn acked_by(f: &Fixture, id: &str) -> Option<String> {
+    f.db.query_row(
+        "SELECT ack_binding_id FROM receipts WHERE message_id=?1 AND seat_id='s'",
+        [id],
+        |r| r.get(0),
+    )
+    .unwrap()
+}
 
 #[test]
 fn no_live_channel_makes_every_id_retryable_and_settles_nothing() {
@@ -239,15 +261,15 @@ fn reconnect_grace_counts_as_live() {
     assert_eq!(state(&f, "m1"), "acked");
     assert_eq!(
         f.channels.asked.lock().unwrap().last().cloned(),
-        Some(("s".to_string(), context.binding_generation))
+        Some(("s".to_string(), binding_of(&f, "n1")))
     );
 }
 
 #[test]
-fn older_generation_ack_is_stale_generation() {
+fn a_second_session_acks_through_its_own_binding_and_the_older_one_still_does() {
     let f = fixture();
     let first = claude(&f, "n1");
-    // /clear: a new native session rotates the generation.
+    // /clear: a new native session is a binding of its own beside the first.
     let second = check_in(
         &f,
         fresh_execution(
@@ -256,13 +278,76 @@ fn older_generation_ack_is_stale_generation() {
         ),
         "ci-2",
     );
-    // ht-54r.3: a second session is a binding of its own; the mapping generation holds, and the
-    // old session's ack is stale because it is no longer the seat's mod-channel session.
     assert_eq!(second.binding_generation, first.binding_generation);
-    let report = ack(&f, first, &["m1"], "op").unwrap();
-    assert_eq!(all(&report), vec![(ModAckOutcome::StaleGeneration, None)]);
+    let (n1, n2) = (binding_of(&f, "n1"), binding_of(&f, "n2"));
+    assert_ne!(n1, n2);
+    // Each session's ack is decided against its own binding's channel.
+    let report = ack(&f, first, &["m1"], "op-1").unwrap();
+    assert_eq!(all(&report), vec![(ModAckOutcome::Settled, None)]);
+    let report = ack(&f, second, &["m2"], "op-2").unwrap();
+    assert_eq!(all(&report), vec![(ModAckOutcome::Settled, None)]);
+    let asked: Vec<BindingId> = f
+        .channels
+        .asked
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(_, binding)| binding.clone())
+        .collect();
+    assert_eq!(asked, vec![n1.clone(), n2.clone()]);
+    assert_eq!(*f.channels.acked.lock().unwrap(), vec![n1, n2]);
+}
+
+#[test]
+fn mod_ack_settles_as_the_channels_binding() {
+    let f = fixture();
+    let first = claude(&f, "n1");
+    let second = check_in(
+        &f,
+        fresh_execution(
+            claim("s", "p", Harness::Claude, "n2", first.binding_generation),
+            2,
+        ),
+        "ci-2",
+    );
+    let (n1, n2) = (binding_of(&f, "n1"), binding_of(&f, "n2"));
+    // n2's channel settles m1: the receipt is attributed to n2's binding, never to n1's.
+    let report = ack(&f, second, &["m1"], "op-1").unwrap();
+    assert_eq!(all(&report), vec![(ModAckOutcome::Settled, None)]);
+    assert_eq!(acked_by(&f, "m1").as_deref(), Some(n2.as_str()));
+    assert_eq!(*f.channels.acked.lock().unwrap(), vec![n2.clone()]);
+    // n1's channel then acks the same id: the seat's receipt settles once, as n2.
+    let again = ack(&f, first.clone(), &["m1"], "op-2").unwrap();
+    assert_eq!(all(&again), vec![(ModAckOutcome::AlreadySettled, None)]);
+    assert_eq!(acked_by(&f, "m1").as_deref(), Some(n2.as_str()));
+    // And n1 settles what it acks first.
+    ack(&f, first, &["m2"], "op-3").unwrap();
+    assert_eq!(acked_by(&f, "m2").as_deref(), Some(n1.as_str()));
+}
+
+#[test]
+fn an_ack_through_a_binding_without_a_live_channel_is_retryable_while_the_other_settles() {
+    let f = fixture();
+    let first = claude(&f, "n1");
+    let second = check_in(
+        &f,
+        fresh_execution(
+            claim("s", "p", Harness::Claude, "n2", first.binding_generation),
+            2,
+        ),
+        "ci-2",
+    );
+    // Only n1's channel is gone (closed); n2's is live.
+    f.channels.dead.lock().unwrap().push(binding_of(&f, "n1"));
+    let refused = ack(&f, first, &["m1"], "op-1").unwrap();
+    assert_eq!(
+        all(&refused),
+        vec![(ModAckOutcome::Retryable, Some(ModAckReason::NoLiveChannel))]
+    );
     assert_eq!(state(&f, "m1"), "pending");
-    assert_eq!(f.channels.acks(), 0);
+    let settled = ack(&f, second, &["m1"], "op-2").unwrap();
+    assert_eq!(all(&settled), vec![(ModAckOutcome::Settled, None)]);
+    assert_eq!(state(&f, "m1"), "acked");
 }
 
 #[test]
