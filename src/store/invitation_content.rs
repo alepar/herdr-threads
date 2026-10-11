@@ -1743,42 +1743,20 @@ fn reclaim_terminal_offers(
 
 fn validate_due_snapshot(input: &PresentationInput) -> Result<(), ApiError> {
     use crate::delivery::ledger::MAX_OFFERS_PER_SEAT;
-    let Some(snapshot) = &input.ordinary_due_snapshot else {
-        return Ok(());
-    };
-    let known = input
-        .known_messages
-        .iter()
-        .collect::<std::collections::BTreeSet<_>>();
-    let blocked = input
-        .blocked_messages
-        .iter()
-        .collect::<std::collections::BTreeSet<_>>();
+    let Some(snapshot) = &input.ordinary_due_snapshot else { return Ok(()); };
+    let known = input.known_messages.iter().collect::<std::collections::BTreeSet<_>>();
+    let blocked = input.blocked_messages.iter().collect::<std::collections::BTreeSet<_>>();
     if known.len() != input.known_messages.len()
         || blocked.len() != input.blocked_messages.len()
         || !blocked.is_subset(&known)
         || snapshot.stamps.len() > MAX_OFFERS_PER_SEAT
-        || snapshot
-            .stamps
-            .keys()
-            .collect::<std::collections::BTreeSet<_>>()
-            != known
+        || snapshot.stamps.keys().collect::<std::collections::BTreeSet<_>>() != known
         || snapshot.generation != input.pull.claim.binding_generation
         || snapshot.native_session != input.pull.claim.native_session.as_str()
-        || snapshot
-            .cache
-            .scope
-            .as_ref()
-            .is_some_and(|scope| scope.passive_generation > i64::MAX as u64)
-        || snapshot.stamps.values().any(|stamp| {
-            stamp.count == 0 || stamp.count > crate::delivery::ledger::MAX_OFFERS_PER_GENERATION
-        })
+        || snapshot.cache.scope.as_ref().is_some_and(|scope| scope.passive_generation > i64::MAX as u64)
+        || snapshot.stamps.values().any(|stamp| stamp.count == 0)
         || snapshot.cache.deferred.len() > MAX_OFFERS_PER_SEAT
-        || snapshot
-            .cache
-            .deferred
-            .iter()
-            .any(|(id, stamp)| snapshot.stamps.get(id) != Some(stamp))
+        || snapshot.cache.deferred.iter().any(|(id, stamp)| snapshot.stamps.get(id) != Some(stamp))
         || (snapshot.cache.scope.is_none() && !snapshot.cache.deferred.is_empty())
     {
         return Err(ApiError::invalid_request("invalid ordinary due snapshot"));
@@ -1786,21 +1764,12 @@ fn validate_due_snapshot(input: &PresentationInput) -> Result<(), ApiError> {
     Ok(())
 }
 
-fn due_update(
-    input: &PresentationInput,
-    state: &State,
-    render_key: &str,
-) -> Result<Option<crate::delivery::ledger::OrdinaryDueSnapshot>, ApiError> {
-    let Some(mut update) = input.ordinary_due_snapshot.clone() else {
-        return Ok(None);
-    };
+fn due_update(input: &PresentationInput, state: &State, render_key: &str) -> Result<Option<crate::delivery::ledger::OrdinaryDueSnapshot>, ApiError> {
+    let Some(mut update) = input.ordinary_due_snapshot.clone() else { return Ok(None); };
     let mut key = [0; 32];
-    if render_key.len() != 64 || !render_key.is_ascii() {
-        return Err(corrupt("invalid render key"));
-    }
+    if render_key.len() != 64 || !render_key.is_ascii() { return Err(corrupt("invalid render key")); }
     for (n, byte) in key.iter_mut().enumerate() {
-        *byte = u8::from_str_radix(&render_key[n * 2..n * 2 + 2], 16)
-            .map_err(|_| corrupt("invalid render key"))?;
+        *byte = u8::from_str_radix(&render_key[n*2..n*2+2], 16).map_err(|_| corrupt("invalid render key"))?;
     }
     let scope = crate::delivery::ledger::OrdinaryDueScope {
         execution: input.pull.claim.execution.clone(),
@@ -1812,99 +1781,48 @@ fn due_update(
         update.cache.deferred.clear();
         update.cache.scope = Some(scope);
     }
-    update.cache.deferred.retain(|id, stamp| {
-        input.known_messages.contains(id) && update.stamps.get(id) == Some(stamp)
-    });
+    update.cache.deferred.retain(|id, stamp| input.known_messages.contains(id) && update.stamps.get(id) == Some(stamp));
     Ok(Some(update))
 }
 
-fn due_keys(
-    input: &PresentationInput,
-    update: Option<&crate::delivery::ledger::OrdinaryDueSnapshot>,
-    consumed: &[MessageId],
-) -> Vec<MessageId> {
-    if !input.retry_messages {
-        return Vec::new();
-    }
-    let Some(update) = update else {
-        return Vec::new();
-    };
-    input
-        .known_messages
-        .iter()
-        .filter(|id| {
-            !input.blocked_messages.contains(id)
-                && !update.cache.deferred.contains_key(id)
-                && !consumed.contains(id)
-        })
-        .cloned()
-        .collect()
+fn due_keys(input: &PresentationInput, update: Option<&crate::delivery::ledger::OrdinaryDueSnapshot>, consumed: &[MessageId]) -> Vec<MessageId> {
+    if !input.retry_messages { return Vec::new(); }
+    let Some(update) = update else { return Vec::new(); };
+    input.known_messages.iter().filter(|id| !input.blocked_messages.contains(id)
+        && !update.cache.deferred.contains_key(id) && !consumed.contains(id)).cloned().collect()
 }
 
-fn ordinary_runnable(
-    input: &PresentationInput,
-    state: &State,
-    slots: usize,
-    update: Option<&crate::delivery::ledger::OrdinaryDueSnapshot>,
-    consumed: &[MessageId],
+fn ordinary_runnable(input: &PresentationInput, state: &State, slots: usize,
+    update: Option<&crate::delivery::ledger::OrdinaryDueSnapshot>, consumed: &[MessageId],
 ) -> Result<bool, ApiError> {
-    if slots == 0 {
-        return Ok(!due_keys(input, update, consumed).is_empty());
-    }
+    if slots == 0 { return Ok(!due_keys(input, update, consumed).is_empty()); }
     Ok(!ordinary_carry(&state.ordinary_pending)?.items.is_empty()
         || state.ordinary_done == 0
         || state.ordinary_scan_passive_generation != state.ordinary_passive_generation
         || state.ordinary_version != input.ordinary_version.to_string())
 }
 
-fn assemble_message(
-    assembler: &mut Assembler,
-    value: crate::protocol::results::InboxBatchV2Item,
+fn assemble_message(assembler: &mut Assembler, value: crate::protocol::results::InboxBatchV2Item,
     prefix: &[String],
 ) -> Result<Option<PendingMessage>, ApiError> {
-    let marker_lazy = matches!(
-        &value,
-        crate::protocol::results::InboxBatchV2Item::LazyMessage { .. }
-    );
-    if let Assembled::Item(mut item) = assembler
-        .push(value)
-        .map_err(|_| corrupt("invalid ordinary body chunks"))?
-    {
+    let marker_lazy = matches!(&value, crate::protocol::results::InboxBatchV2Item::LazyMessage { .. });
+    if let Assembled::Item(mut item) = assembler.push(value).map_err(|_| corrupt("invalid ordinary body chunks"))? {
         if item.message.truncated {
-            item.message.body =
-                remove_generated_marker(&item.message.body, prefix, &item.id, marker_lazy)?;
+            item.message.body = remove_generated_marker(&item.message.body, prefix, &item.id, marker_lazy)?;
         }
-        Ok(Some(PendingMessage {
-            marker_lazy,
-            content: PresentationMessage {
-                id: item.id,
-                lazy: item.kind == DeliveryKind::Lazy,
-                content: item.message,
-            },
-        }))
-    } else {
-        Ok(None)
-    }
+        Ok(Some(PendingMessage { marker_lazy, content: PresentationMessage {
+            id: item.id, lazy: item.kind == DeliveryKind::Lazy, content: item.message,
+        }}))
+    } else { Ok(None) }
 }
 
-fn message_output(
-    message: &PendingMessage,
-    prefix: &[String],
-) -> crate::protocol::delivery::PresentationItemV2 {
+fn message_output(message: &PendingMessage, prefix: &[String]) -> crate::protocol::delivery::PresentationItemV2 {
     let mut content = message.content.content.clone();
     if content.truncated {
-        content
-            .body
-            .push_str(&crate::protocol::watch::truncation_marker_for(
-                prefix,
-                &message.content.id,
-                message.marker_lazy,
-            ));
+        content.body.push_str(&crate::protocol::watch::truncation_marker_for(prefix, &message.content.id, message.marker_lazy));
     }
     crate::protocol::delivery::PresentationItemV2::Message {
-        id: message.content.id.clone(),
-        lazy: message.content.lazy,
-        content,
+        id: message.content.id.clone(), lazy: message.content.lazy, content,
     }
 }
 
@@ -1982,13 +1900,7 @@ pub(super) fn pull(
     state.control_state = encode(&controls)?;
     let render_key = input.render_profile.render_key(&input.pull.marker_prefix);
     let mut ordinary_due_update = due_update(&input, &state, &render_key)?;
-    let replay_ordinary = ordinary_runnable(
-        &input,
-        &state,
-        input.new_message_slots,
-        ordinary_due_update.as_ref(),
-        &[],
-    )?;
+    let replay_ordinary = ordinary_runnable(&input, &state, input.new_message_slots, ordinary_due_update.as_ref(), &[])?;
     if let Some(reply) = replay(
         db,
         &input,
@@ -1999,13 +1911,7 @@ pub(super) fn pull(
         proof.more || publications.more || replay_ordinary,
     )? {
         save(db, claim, consumer, &state)?;
-        return finish(
-            reply,
-            work,
-            &mut sizer,
-            reclaimed_messages,
-            ordinary_due_update,
-        );
+        return finish(reply, work, &mut sizer, reclaimed_messages, ordinary_due_update);
     }
     if state.render_key != render_key {
         state.render_key = render_key.clone();
@@ -2116,9 +2022,7 @@ pub(super) fn pull(
     // A walk freezes its native/passive tuple at START. A later publication
     // never resets an active body/carry or consumes its next capture signal.
     let normal_mode = input.new_message_slots > 0;
-    if normal_mode
-        && !control_only
-        && state.ordinary_done == 1
+    if normal_mode && !control_only && state.ordinary_done == 1
         && messages.is_empty()
         && (state.ordinary_version != input.ordinary_version.to_string()
             || state.ordinary_scan_passive_generation != state.ordinary_passive_generation
@@ -2231,60 +2135,34 @@ pub(super) fn pull(
         if class == 0 && !normal_mode {
             let candidates = due_keys(&input, ordinary_due_update.as_ref(), &[]);
             if !candidates.is_empty() && outputs.len() < 32 {
-                let due_context = super::queries::ordinary_due_context(
-                    db,
-                    &claim.instance,
-                    &claim.seat,
-                    &mut work,
-                )?;
+                let due_context = super::queries::ordinary_due_context(db, &claim.instance, &claim.seat, &mut work)?;
                 for id in candidates.into_iter().take(100) {
-                    if outputs.len() == 32 || work.ordinary_due_hydrated == 32 {
-                        break;
-                    }
+                    if outputs.len() == 32 || work.ordinary_due_hydrated == 32 { break; }
                     if budget.is_exhausted(context.clock()) {
-                        return Err(api_error(
-                            ErrorCode::ReadBudgetExhausted,
-                            "ordinary due budget exhausted",
-                        ));
+                        return Err(api_error(ErrorCode::ReadBudgetExhausted, "ordinary due budget exhausted"));
                     }
                     work.ordinary += 1;
-                    let value = super::queries::ordinary_presentation_message_by_id(
-                        db,
-                        &claim.instance,
-                        &claim.seat,
-                        &id,
-                        due_context,
-                        &mut work,
-                    )?;
-                    let update = ordinary_due_update
-                        .as_mut()
-                        .expect("due keys require snapshot");
+                    let value = super::queries::ordinary_presentation_message_by_id(db, &claim.instance,
+                        &claim.seat, &id, due_context, &mut work)?;
+                    let update = ordinary_due_update.as_mut().expect("due keys require snapshot");
                     let Some(value) = value else {
                         update.cache.deferred.insert(id.clone(), update.stamps[&id]);
                         continue;
                     };
                     work.ordinary_due_hydrated += 1;
-                    let mut assembler =
-                        Assembler::new(None).with_command_prefix(input.pull.marker_prefix.clone());
-                    let message =
-                        assemble_message(&mut assembler, value, &input.pull.marker_prefix)?
-                            .ok_or_else(|| corrupt("incomplete exact ordinary body"))?;
+                    let mut assembler = Assembler::new(None).with_command_prefix(input.pull.marker_prefix.clone());
+                    let message = assemble_message(&mut assembler, value, &input.pull.marker_prefix)?
+                        .ok_or_else(|| corrupt("incomplete exact ordinary body"))?;
                     let output = message_output(&message, &input.pull.marker_prefix);
                     let mut trial = outputs.clone();
                     trial.push(output.clone());
                     if sizer.measure(&input.render_profile, &trial).is_err() {
-                        if !outputs.is_empty() {
-                            break;
-                        }
+                        if !outputs.is_empty() { break; }
                         update.cache.deferred.insert(id.clone(), update.stamps[&id]);
                         continue;
                     }
                     outputs.push(output);
-                    if message.content.content.truncated {
-                        truncated.push(id);
-                    } else {
-                        offered.push(id);
-                    }
+                    if message.content.content.truncated { truncated.push(id); } else { offered.push(id); }
                 }
             }
         } else if class == 0 {
@@ -2466,19 +2344,8 @@ pub(super) fn pull(
         || work.notices > carried_notices.len()
         || invitation_rows.len() > descriptors.len();
     state.outbox_more = i64::from(nonordinary_more);
-    let consumed = offered
-        .iter()
-        .chain(&truncated)
-        .cloned()
-        .collect::<Vec<_>>();
-    let more = nonordinary_more
-        || ordinary_runnable(
-            &input,
-            &state,
-            message_slots,
-            ordinary_due_update.as_ref(),
-            &consumed,
-        )?;
+    let consumed = offered.iter().chain(&truncated).cloned().collect::<Vec<_>>();
+    let more = nonordinary_more || ordinary_runnable(&input, &state, message_slots, ordinary_due_update.as_ref(), &consumed)?;
     if fresh_output {
         state.rotation = (state.rotation + 1) % 5;
     }
@@ -2502,13 +2369,7 @@ pub(super) fn pull(
         )?
     };
     save(db, claim, consumer, &state)?;
-    finish(
-        reply,
-        work,
-        &mut sizer,
-        reclaimed_messages,
-        ordinary_due_update,
-    )
+    finish(reply, work, &mut sizer, reclaimed_messages, ordinary_due_update)
 }
 fn finish(
     reply: DeliveryPullReplyV2,
