@@ -323,6 +323,27 @@ impl Smoke {
         )
     }
 
+    /// The pane's open Hermes bindings in ordinal order:
+    /// (native session, liveness, disconnect reason, role).
+    fn hermes_rows(&self, pane: &str) -> Vec<(String, String, Option<String>, String)> {
+        let db = self.db();
+        let mut statement = db
+            .prepare(
+                "SELECT b.native_session, b.liveness, b.disconnect_reason, b.role \
+                 FROM occupant_bindings b JOIN seats s ON s.id=b.seat_id \
+                 WHERE s.target_id=?1 AND b.harness='hermes' AND b.ended_at IS NULL \
+                 ORDER BY b.ordinal",
+            )
+            .unwrap();
+        statement
+            .query_map([pane], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    }
+
     fn all_bindings(&self, pane: &str) -> i64 {
         self.count(
             "SELECT COUNT(*) FROM occupant_bindings b JOIN seats s ON s.id=b.seat_id \
@@ -761,8 +782,13 @@ fn hermes_bare_enrollment_configurations_with_daemon_up() {
     assert_seated_turn(&resumed, 0, "startup");
     assert_eq!(smoke.seat_ids(&pane), vec![seat.clone()]);
     assert_eq!(smoke.all_bindings(&pane), 2);
-    assert_eq!(smoke.open_bindings(&pane), 1);
+    assert_eq!(
+        smoke.open_bindings(&pane),
+        2,
+        "a different session in a new process is its own binding; nothing ended it (spec decision 3, section 1)"
+    );
     assert_eq!(smoke.open_session(&pane), "S9-older");
+    assert_open_pair(&smoke.hermes_rows(&pane), "S9", "S9-older");
     // The same session id again in a new process (`hermes --resume S9-older`) is
     // the daemon's Current: it is already checked in, so no context, no new
     // binding and no new seat.
@@ -776,6 +802,7 @@ fn hermes_bare_enrollment_configurations_with_daemon_up() {
     assert!(again.result(0).is_null(), "{}", again.steps[0]);
     assert_eq!(smoke.seat_ids(&pane), vec![seat]);
     assert_eq!(smoke.all_bindings(&pane), 2);
+    assert_eq!(smoke.open_bindings(&pane), 2);
 
     // 11. A /background side agent (platform cli, new session, no parent) in a
     // seated pane: no new seat; it behaves like a launch-created seat (spec D2).
@@ -788,8 +815,24 @@ fn hermes_bare_enrollment_configurations_with_daemon_up() {
     assert_seated_turn(&side, 1, "startup");
     assert_eq!(smoke.seat_ids(&pane), vec![seat]);
     assert_eq!(smoke.all_bindings(&pane), 2);
-    assert_eq!(smoke.open_bindings(&pane), 1);
+    assert_eq!(
+        smoke.open_bindings(&pane),
+        2,
+        "the side agent is its own binding in a new process; nothing ended S11 (spec decision 3, section 1)"
+    );
     assert_eq!(smoke.open_session(&pane), "side-S");
+    assert_open_pair(&smoke.hermes_rows(&pane), "S11", "side-S");
+}
+
+/// Two open bindings from two driver processes: the newer session is connected;
+/// the earlier one stays open and was not superseded (different process, spec
+/// section 3). Its liveness is timing-dependent (worker recheck), so not asserted.
+fn assert_open_pair(rows: &[(String, String, Option<String>, String)], older: &str, newer: &str) {
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert_eq!(rows[0].0, older, "{rows:?}");
+    assert_ne!(rows[0].2.as_deref(), Some("superseded"), "{rows:?}");
+    assert_eq!(rows[1].0, newer, "{rows:?}");
+    assert_eq!(rows[1].1, "connected", "{rows:?}");
 }
 
 #[test]
