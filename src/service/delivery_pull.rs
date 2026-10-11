@@ -234,6 +234,7 @@ impl DomainService {
             if seen_current
                 && entry.read_attention.is_some()
                 && !entry.more_pending
+                && !entry.notices_pending
                 && !entry.any_due(now)
             {
                 return Ok(CommandResult::DeliveryPulled(
@@ -312,10 +313,18 @@ impl DomainService {
         let room = PAGE_MAX_BLOCKS.saturating_sub(blocks.len() + usize::from(with_attention));
         let limit = room.min(crate::protocol::results::MAX_NOTICE_PAGE_ITEMS);
         if !more && limit > 0 && view.newest_pending_notice.is_some() {
-            let mut page = self
-                .store
-                .pull_notice_page(seat, limit + 1, budget)
-                .unwrap_or_default();
+            let mut page = match self.store.pull_notice_page(seat, limit + 1, budget) {
+                Ok(page) => page,
+                Err(error) => {
+                    eprintln!(
+                        "herdr-threads: debug: delivery pull: notice page for seat {} unavailable ({:?}: {}); retried on the next pull",
+                        seat.as_str(),
+                        error.code,
+                        error.detail
+                    );
+                    Vec::new()
+                }
+            };
             notices_has_more = page.len() > limit;
             page.truncate(limit);
             let mut kept = 0;
@@ -352,16 +361,24 @@ impl DomainService {
             }
             page.truncate(kept);
             let carried: Vec<_> = page.iter().map(|p| p.notice.clone()).collect();
-            notices_settled = self
-                .store
-                .settle_pulled_notices(
-                    seat,
-                    binding.generation,
-                    &binding.native_session,
-                    &carried,
-                    budget,
-                )
-                .unwrap_or(false);
+            notices_settled = match self.store.settle_pulled_notices(
+                seat,
+                binding.generation,
+                &binding.native_session,
+                &carried,
+                budget,
+            ) {
+                Ok(settled) => settled,
+                Err(error) => {
+                    eprintln!(
+                        "herdr-threads: debug: delivery pull: notice settle for seat {} failed ({:?}: {}); retried on the next pull",
+                        seat.as_str(),
+                        error.code,
+                        error.detail
+                    );
+                    false
+                }
+            };
             if notices_settled {
                 blocks.append(&mut notice_blocks);
             }
@@ -394,7 +411,8 @@ impl DomainService {
                 // The whole pending set was read: what is no longer in it left.
                 entry.retain_pending(&pending);
             }
-            entry.more_pending = more || notices_left;
+            entry.more_pending = more;
+            entry.notices_pending = notices_left;
             entry.read_attention = (!more).then_some(view.fingerprint.attention_version);
         }
         if blocks.is_empty() {
