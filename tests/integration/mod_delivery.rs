@@ -306,7 +306,9 @@ fn collect(output: std::process::Output) -> Out {
 
 fn diagnostic_text(value: &str, limit: usize) -> Value {
     let mut end = value.len().min(limit);
-    while !value.is_char_boundary(end) { end -= 1; }
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
     json!({"bytes": value.len(), "prefix": &value[..end], "truncated": end < value.len()})
 }
 
@@ -1030,23 +1032,42 @@ impl Rig {
     /// Query errors are data, so diagnostics cannot replace the original panic.
     fn setup_wake_diagnostics(&self) -> Value {
         let db = match rusqlite::Connection::open_with_flags(
-            &self.paths.database_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+            &self.paths.database_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
         ) {
             Ok(db) => db,
-            Err(error) => return json!({"read_error": error.to_string(), "SessionStart": self.setup_hook}),
+            Err(error) => {
+                return json!({"read_error": error.to_string(), "SessionStart": self.setup_hook});
+            }
         };
         let _ = db.busy_timeout(Duration::from_millis(100));
         let mut result = serde_json::Map::new();
         result.insert("SessionStart".into(), self.setup_hook.clone());
         for (name, query) in [
-            ("bootstrap_invitation", "SELECT id,thread_id,seat_id,state,confirmation,deadline_at FROM invitations WHERE seat_id=?1 ORDER BY ordinal DESC LIMIT 2"),
-            ("binding", "SELECT generation,target_generation,target_id,terminal_id,incarnation,host_boot,host_epoch,harness,native_session,observation_provenance,registered_at,ended_at FROM occupant_bindings WHERE seat_id=?1 ORDER BY ordinal DESC LIMIT 2"),
-            ("seat", "SELECT id,state,generation,target_generation,target_id,structural_terminal_id,structural_incarnation,structural_host_boot,structural_host_epoch FROM seats WHERE id=?1 LIMIT 1"),
-            ("wake", "SELECT reason_bits,binding_generation,retry_step,reservation_id,last_outcome,attention_version,checkpoint_version FROM wake_work WHERE seat_id=?1 LIMIT 1"),
+            (
+                "bootstrap_invitation",
+                "SELECT id,thread_id,seat_id,state,confirmation,deadline_at FROM invitations WHERE seat_id=?1 ORDER BY ordinal DESC LIMIT 2",
+            ),
+            (
+                "binding",
+                "SELECT generation,target_generation,target_id,terminal_id,incarnation,host_boot,host_epoch,harness,native_session,observation_provenance,registered_at,ended_at FROM occupant_bindings WHERE seat_id=?1 ORDER BY ordinal DESC LIMIT 2",
+            ),
+            (
+                "seat",
+                "SELECT id,state,generation,target_generation,target_id,structural_terminal_id,structural_incarnation,structural_host_boot,structural_host_epoch FROM seats WHERE id=?1 LIMIT 1",
+            ),
+            (
+                "wake",
+                "SELECT reason_bits,binding_generation,retry_step,reservation_id,last_outcome,attention_version,checkpoint_version FROM wake_work WHERE seat_id=?1 LIMIT 1",
+            ),
         ] {
             let rows = (|| -> rusqlite::Result<Vec<Value>> {
                 let mut statement = db.prepare(query)?;
-                let columns: Vec<_> = statement.column_names().iter().map(|name| (*name).to_owned()).collect();
+                let columns: Vec<_> = statement
+                    .column_names()
+                    .iter()
+                    .map(|name| (*name).to_owned())
+                    .collect();
                 let rows = statement.query_map([&self.b], |row| {
                     let mut fields = serde_json::Map::new();
                     for (index, name) in columns.iter().enumerate() {
@@ -1054,8 +1075,12 @@ impl Rig {
                             rusqlite::types::ValueRef::Null => Value::Null,
                             rusqlite::types::ValueRef::Integer(value) => json!(value),
                             rusqlite::types::ValueRef::Real(value) => json!(value),
-                            rusqlite::types::ValueRef::Text(value) => diagnostic_text(&String::from_utf8_lossy(value), 256),
-                            rusqlite::types::ValueRef::Blob(value) => json!({"blob_bytes": value.len()}),
+                            rusqlite::types::ValueRef::Text(value) => {
+                                diagnostic_text(&String::from_utf8_lossy(value), 256)
+                            }
+                            rusqlite::types::ValueRef::Blob(value) => {
+                                json!({"blob_bytes": value.len()})
+                            }
                         };
                         fields.insert(name.clone(), value);
                     }
@@ -1063,10 +1088,13 @@ impl Rig {
                 })?;
                 rows.collect()
             })();
-            result.insert(name.into(), match rows {
-                Ok(rows) => json!(rows),
-                Err(error) => json!({"read_error": error.to_string()}),
-            });
+            result.insert(
+                name.into(),
+                match rows {
+                    Ok(rows) => json!(rows),
+                    Err(error) => json!({"read_error": error.to_string()}),
+                },
+            );
         }
         Value::Object(result)
     }
@@ -1077,8 +1105,12 @@ impl Rig {
         while self.host.prompts_since(mark, pane) == 0 {
             if Instant::now() >= until {
                 let calls: Vec<_> = self.host.calls.lock().unwrap()[mark..]
-                    .iter().rev().take(8)
-                    .map(|(method, params)| format!("{method} {}", diagnostic_text(&params.to_string(), 512)))
+                    .iter()
+                    .rev()
+                    .take(8)
+                    .map(|(method, params)| {
+                        format!("{method} {}", diagnostic_text(&params.to_string(), 512))
+                    })
                     .collect();
                 panic!(
                     "timed out waiting for a native wake prompt; bounded setup diagnostics: {}; last 8 host calls since the mark: {calls:?}",
