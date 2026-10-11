@@ -2692,13 +2692,19 @@ fn activation_v2_watch_full_pending_capacity_parks_until_real_channel_input() {
         )
     }));
     let (attention_jobs, completed_jobs) = attention_work_result.unwrap_or_else(|failure| {
-        eprintln!(
+        let diagnostic = format!(
             "capacity attention-work timeout diagnostic={}",
             json!({
                 "before": attention_work_before,
                 "after": attention_work_diagnostic(),
             })
         );
+        // The daemon owns stderr until Rig::drop restores it. Preserve this
+        // metadata alongside the fixture's captured original panic instead.
+        rig.panics
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(diagnostic);
         std::panic::resume_unwind(failure)
     });
     assert_eq!(attention_jobs, completed_jobs);
