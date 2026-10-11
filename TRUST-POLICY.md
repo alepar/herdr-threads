@@ -409,7 +409,9 @@ recorded). The pull's settle refuses unless the carried notices are still exactl
 prefix, so a check-in and a pull never carry the same notice, and a notice shows once. The pull's
 version includes the newest pending notice, so an unchanged reply never hides one; notices never wake. A global decision watermark cannot settle uncarried events, including late attribution.
 History and immutable operation results remain readable. A successor occupant gets its own offers;
-response loss can lose an informational offer after commitment, and an explicit operation retry
+response loss can lose an informational offer after commitment, and so can a hook-pull injection
+that the harness accepts but the model never sees (an agy `systemMessage` that silently misses;
+notices are not transcript-confirmed, ht-7jh); an explicit operation retry
 can present the retained result again. Delivery is neither invitation acceptance nor receipt ACK,
 agreement, adoption or task completion. Logical publication tokens stay unchanged by projection;
 an advertised read-only delivery hint lets hooks drain newly attributed and remaining notice pages.
