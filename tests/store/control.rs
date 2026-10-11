@@ -2662,6 +2662,7 @@ fn managed_required_reattach_preserves_upgraded_ordinary_invitation_and_history(
     let inbox = crate::protocol::commands::Command::Inbox(crate::protocol::commands::InboxQuery {
         seat: Some(SeatId::new("s2")),
         page: Default::default(),
+        claim: None,
     });
     let CommandResult::Inbox(page) =
         crate::store::queries::query(&context, "i", &inbox, &budget).unwrap()
