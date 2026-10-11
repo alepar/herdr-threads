@@ -211,11 +211,11 @@ fn channel_activation_real_daemon_loads_fresh_21_and_22_and_owns_archival_lane()
         // and the seat_archival insertion kicks the existing archival lane.
         w.ok(None, &["seat", "resolve", "--pane", "w1:p1"]);
         let db = w.db();
-        // The initializer upgrades each historical input to the current schema32.
+        // The initializer upgrades each historical input to the current schema34.
         assert_eq!(
             db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
                 .unwrap(),
-            32
+            34
         );
         wait("archival worker initialization", || {
             db.query_row(

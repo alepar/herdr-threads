@@ -630,23 +630,39 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
     verify_receipt_deadline_backfill_schema(conn)?;
     if version <= 32 {
         conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
-        let result = conn.execute_batch(V33).map_err(store_error)
+        let result = conn
+            .execute_batch(V33)
+            .map_err(store_error)
             .and_then(|_| verify_invitation_lifecycle_schema(conn))
-            .and_then(|_| conn.pragma_update(None, "user_version", 33).map_err(store_error));
+            .and_then(|_| {
+                conn.pragma_update(None, "user_version", 33)
+                    .map_err(store_error)
+            });
         match result {
             Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
-            Err(error) => { let _ = conn.execute_batch("ROLLBACK"); return Err(error); }
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(error);
+            }
         }
     }
     verify_invitation_lifecycle_schema(conn)?;
     if version <= 33 {
         conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
-        let result = conn.execute_batch(V34).map_err(store_error)
+        let result = conn
+            .execute_batch(V34)
+            .map_err(store_error)
             .and_then(|_| verify_invitation_warning_origin_schema(conn))
-            .and_then(|_| conn.pragma_update(None, "user_version", 34).map_err(store_error));
+            .and_then(|_| {
+                conn.pragma_update(None, "user_version", 34)
+                    .map_err(store_error)
+            });
         match result {
             Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
-            Err(error) => { let _ = conn.execute_batch("ROLLBACK"); return Err(error); }
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(error);
+            }
         }
     }
     verify_invitation_warning_origin_schema(conn)
@@ -707,8 +723,6 @@ fn verify_invitation_warning_origin_schema(conn: &Connection) -> Result<(), ApiE
     Ok(())
 }
 
-
-
 fn verify_invitation_lifecycle_schema(conn: &Connection) -> Result<(), ApiError> {
     let ddl = V33
         .lines()
@@ -734,8 +748,6 @@ fn verify_invitation_lifecycle_schema(conn: &Connection) -> Result<(), ApiError>
     }
     Ok(())
 }
-
-
 
 fn verify_receipt_deadline_backfill_schema(conn: &Connection) -> Result<(), ApiError> {
     let expected = V32

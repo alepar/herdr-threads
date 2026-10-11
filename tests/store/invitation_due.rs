@@ -618,7 +618,7 @@ fn invitation_backlog_restart_reconstructs_progress_without_recipient_activity()
 #[test]
 fn invitation_confirmation_prior_schema_upgrade_preserves_exact_open_origins() {
     let path =
-        std::env::temp_dir().join(format!("invitation-origin-v30-{}.db", uuid::Uuid::new_v4()));
+        std::env::temp_dir().join(format!("invitation-origin-v33-{}.db", uuid::Uuid::new_v4()));
     let conn = Connection::open(&path).unwrap();
     conn.pragma_update(None, "foreign_keys", "ON").unwrap();
     let mut migrations: Vec<_> =
@@ -628,16 +628,24 @@ fn invitation_confirmation_prior_schema_upgrade_preserves_exact_open_origins() {
             .filter(|path| {
                 path.file_name().unwrap().to_str().unwrap()[..4]
                     .parse::<u32>()
-                    .is_ok_and(|version| version <= 30)
+                    .is_ok_and(|version| version <= 33)
             })
             .collect();
     migrations.sort();
-    assert_eq!(migrations.len(), 30);
+    assert_eq!(migrations.len(), 33);
     for migration in migrations {
         conn.execute_batch(&std::fs::read_to_string(migration).unwrap())
             .unwrap();
     }
-    conn.pragma_update(None, "user_version", 30).unwrap();
+    conn.pragma_update(None, "user_version", 33).unwrap();
+    drop(conn);
+    let conn = Connection::open(&path).unwrap();
+    conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+    assert_eq!(
+        conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        33
+    );
     conn.execute(
         "INSERT INTO host_instances(id,created_at,decision_seq) VALUES ('host',0,10)",
         [],
@@ -694,6 +702,11 @@ fn invitation_confirmation_prior_schema_upgrade_preserves_exact_open_origins() {
     drop(conn);
     let context = StoreContext::new(path.clone(), Arc::new(TestClock(AtomicI64::new(200))));
     let conn = context.open_writer().unwrap();
+    assert_eq!(
+        conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        34
+    );
     for origin in ["origin", "legacy"] {
         assert!(
             crate::store::attention::wake_seat_attention(&conn, origin)
@@ -744,4 +757,102 @@ fn invitation_confirmation_prior_schema_upgrade_preserves_exact_open_origins() {
     drop(conn);
     drop(context);
     let _ = std::fs::remove_file(path);
+}
+
+// Exercise both transaction boundaries in the composed chain using real prior32.
+#[test]
+fn invitation_confirmation_actual32_upgrade_rolls_back_reopens_and_preserves_receipt_progress() {
+    for (obstruction, failed_version) in [
+        ("invitations_confirmation_pending_seat", 32),
+        ("warning_conditions_invitation_origin", 33),
+    ] {
+        let path =
+            std::env::temp_dir().join(format!("invitation-chain-{}.db", uuid::Uuid::new_v4()));
+        let db = Connection::open(&path).unwrap();
+        let mut paths = std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations"))
+            .unwrap()
+            .map(|p| p.unwrap().path())
+            .collect::<Vec<_>>();
+        paths.sort();
+        for (index, migration) in paths.iter().take(32).enumerate() {
+            db.execute_batch(&std::fs::read_to_string(migration).unwrap())
+                .unwrap();
+            db.pragma_update(None, "user_version", index as i64 + 1)
+                .unwrap();
+            if index == 28 {
+                db.execute_batch(
+                    "INSERT INTO host_instances(id,created_at,decision_seq) VALUES('host',0,12)",
+                )
+                .unwrap();
+            }
+        }
+        db.execute_batch("UPDATE host_instances SET decision_seq=99; UPDATE receipt_deadline_backfill SET physical_after=2,physical_high_water=7,prepared_after=3,prepared_high_water=9;
+            INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES('seat','host','resolved','native',1,0);
+            INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('thread','host','topic','goal',0,0);
+            INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,confirmation,inviter_seat_id) VALUES('retained','thread','seat',1,'pending',1,0,100,100,'require_ack','seat');").unwrap();
+        db.execute_batch(&format!("CREATE TABLE {obstruction}(value TEXT)"))
+            .unwrap();
+        drop(db);
+        let db = Connection::open(&path).unwrap();
+        db.pragma_update(None, "foreign_keys", true).unwrap();
+        assert_eq!(
+            db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                .unwrap(),
+            32
+        );
+        assert!(crate::store::schema::initialize(&db, || UtcMillis(200)).is_err());
+        assert!(db.is_autocommit());
+        assert_eq!(
+            db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                .unwrap(),
+            failed_version
+        );
+        assert!(
+            db.pragma_query_value(None, "foreign_keys", |r| r.get::<_, bool>(0))
+                .unwrap()
+        );
+        assert_eq!(db.query_row("SELECT count(*) FROM pragma_table_info('warning_conditions') WHERE name LIKE 'invitation_originator_%'", [], |r| r.get::<_,i64>(0)).unwrap(),0);
+        if failed_version == 32 {
+            assert_eq!(
+                db.query_row(
+                    "SELECT count(*) FROM sqlite_master WHERE name='invitations_confirmation_scan'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+                0
+            );
+        }
+        drop(db);
+        let db = Connection::open(&path).unwrap();
+        db.pragma_update(None, "foreign_keys", true).unwrap();
+        assert_eq!(
+            db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                .unwrap(),
+            failed_version
+        );
+        db.execute_batch(&format!("DROP TABLE {obstruction}"))
+            .unwrap();
+        for _ in 0..2 {
+            crate::store::schema::initialize(&db, || UtcMillis(300)).unwrap();
+            assert_eq!(
+                db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                    .unwrap(),
+                34
+            );
+            assert_eq!(db.query_row("SELECT physical_after,physical_high_water,prepared_after,prepared_high_water,completed FROM receipt_deadline_backfill", [], |r| Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?,r.get::<_,i64>(4)?))).unwrap(),(2,7,3,9,0));
+            assert_eq!(db.query_row("SELECT historical_decision_seq FROM receipt_send_time_cutovers WHERE instance_id='host'", [], |r| r.get::<_,i64>(0)).unwrap(),12);
+            assert_eq!(db.query_row("SELECT confirmation,inviter_seat_id,deadline_at FROM invitations WHERE id='retained'", [], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,i64>(2)?))).unwrap(),("require_ack".into(),"seat".into(),100));
+        }
+        drop(db);
+        let db = Connection::open(&path).unwrap();
+        crate::store::schema::initialize(&db, || UtcMillis(400)).unwrap();
+        assert_eq!(
+            db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                .unwrap(),
+            34
+        );
+        drop(db);
+        std::fs::remove_file(path).unwrap();
+    }
 }

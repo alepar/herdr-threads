@@ -1100,11 +1100,36 @@ fn dormant_upgrade_actual_v31_backfill32_reopens_and_rolls_back_without_recaptur
             .map(|table| receipt_upgrade_snapshot(&db, table))
             .collect();
         let catalog = |db: &Connection| {
-            db.prepare("SELECT type,name,tbl_name,rootpage,sql FROM sqlite_master WHERE name!='receipt_deadline_backfill' ORDER BY type,name").unwrap()
+            db.prepare("SELECT type,name,tbl_name,rootpage,sql FROM sqlite_master WHERE name NOT IN ('receipt_deadline_backfill','invitations_confirmation_scan','invitations_confirmation_pending_seat','invitations_confirmation_pending_thread','warning_conditions_invitation_origin','warning_conditions_invitation_origin_immutable') ORDER BY type,name").unwrap()
                 .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)?, r.get::<_, Option<String>>(4)?)))
                 .unwrap().map(Result::unwrap).collect::<Vec<_>>()
         };
         let old_catalog = catalog(&db);
+        // Derive the exact additive warning table declaration from its actual
+        // old DDL. Every old constraint/column and rootpage remains compared.
+        let mut expected_catalog = old_catalog.clone();
+        let warning = expected_catalog
+            .iter_mut()
+            .find(|row| row.1 == "warning_conditions")
+            .unwrap();
+        let expected = Connection::open_in_memory().unwrap();
+        expected
+            .execute_batch(warning.4.as_deref().unwrap())
+            .unwrap();
+        let additions = include_str!("../../migrations/0034_invitation_warning_origin.sql")
+            .split("WITH origins AS")
+            .next()
+            .unwrap();
+        expected.execute_batch(additions).unwrap();
+        warning.4 = Some(
+            expected
+                .query_row(
+                    "SELECT sql FROM sqlite_master WHERE name='warning_conditions'",
+                    [],
+                    |r| r.get::<_, String>(0),
+                )
+                .unwrap(),
+        );
         // CREATE main table succeeds, but INSERT resolves to the obstructing
         // temp view. Failure must roll back the newly created main table too.
         db.execute_batch("CREATE TEMP VIEW receipt_deadline_backfill AS SELECT 1 AS singleton")
@@ -1148,8 +1173,8 @@ fn dormant_upgrade_actual_v31_backfill32_reopens_and_rolls_back_without_recaptur
         );
         assert_eq!(
             catalog(&db),
-            old_catalog,
-            "additive32 preserves every prior object/rootpage"
+            expected_catalog,
+            "composed additive32..34 preserves old definitions/rootpages and adds exact origin columns"
         );
         for (table, retained) in tables.iter().zip(&before) {
             assert_eq!(&receipt_upgrade_snapshot(&db, table), retained, "{table}");
@@ -1172,7 +1197,7 @@ fn dormant_upgrade_actual_v31_backfill32_reopens_and_rolls_back_without_recaptur
             receipt_upgrade_snapshot(&db, "receipt_send_time_cutovers"),
             before[7]
         );
-        assert_eq!(catalog(&db), old_catalog);
+        assert_eq!(catalog(&db), expected_catalog);
         assert_eq!(
             db.pragma_query_value(None, "foreign_keys", |r| r.get::<_, bool>(0))
                 .unwrap(),
