@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v0.6.4
+
+- **Claude mod log prefix.** Delivery notices no longer repeat the plugin name that Claude Code already adds to mod log lines.
+
 ## v0.6.3
 
 - **Thread search discovery.** `thread list --search` now matches case-sensitive literal thread names as well as topics, with rename-safe bounded pagination.
