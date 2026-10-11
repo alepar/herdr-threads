@@ -4264,6 +4264,37 @@ mod hermes_lineage {
         assert_eq!(cursor(&conn, "S"), 2, "never backwards");
     }
 
+    // Main review I2. Kills: a late lineage link MAX-copying the predecessor's cursors onto an
+    // already-enrolled successor, so the successor skips mail the predecessor displayed after the
+    // successor enrolled (spec §1: the later pre_llm_call links lineage without moving cursors).
+    #[test]
+    fn hermes_plain_first_successor_late_link_never_moves_its_cursor() {
+        let (store, conn, _) = fixture();
+        messages(&conn);
+        check_in_with(&store, session_claim("P", 7), "p", None);
+        set_cursor(&conn, "P", 1);
+        // S's first call is a plain one (no lifecycle, no hint): it enrolls at the seat maximum
+        // and supersedes nothing, so P stays connected and keeps displaying.
+        store
+            .advance_cursors(
+                &crate::protocol::commands::AdvanceCursors {
+                    claim: session_claim("S", 7),
+                    operation: OperationId::new("s-plain"),
+                    displayed: Vec::new(),
+                },
+                &budget(),
+            )
+            .unwrap();
+        assert_eq!(cursor(&conn, "S"), 1);
+        assert_eq!(liveness(&conn, "P"), "connected");
+        // P displays m2 after S enrolled.
+        set_cursor(&conn, "P", 2);
+        // S's first lifecycle pre_llm_call names P: lineage is recorded, S's cursor is not moved.
+        check_in_with(&store, session_claim("S", 7), "s-turn", Some("P"));
+        assert_eq!(lineage_from(&conn, "S"), Some(binding_id(&conn, "P")));
+        assert_eq!(cursor(&conn, "S"), 1, "m2 is still unread for S");
+    }
+
     // Kills: /new (no parent hint) inheriting the old session's cursors, and the old session
     // surviving beside it.
     #[test]

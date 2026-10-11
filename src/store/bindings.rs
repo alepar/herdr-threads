@@ -1228,8 +1228,8 @@ pub fn end_open_bindings(
 /// harness and the same process fingerprint (pid and start) as the successor; otherwise the hint
 /// is ignored (fresh seed) - never trusted blindly. Enrolling successor: `resolve_claim` with
 /// `ResolveRequest.lineage` seeds via SeedMode::Lineage (copy, then fill). Already-enrolled
-/// successor (CLI-first, accepted limit): `link_lineage` sets lineage_from and copies with MAX,
-/// so no cursor moves backwards.
+/// successor (CLI-first, accepted limit): `link_lineage` only sets lineage_from; the successor
+/// keeps its own read position (spec §1: a late link moves no cursor).
 pub fn validate_lineage(
     db: &Connection,
     successor_claim: &CallerClaim,
@@ -1250,21 +1250,24 @@ pub fn validate_lineage(
         && prev.fingerprint == Some(fp))
 }
 
-/// Records `predecessor` as the lineage of an already-enrolled `successor` and copies the
-/// predecessor's cursors with MAX (never backwards). The caller validated the pair with
-/// [`validate_lineage`]. A successor keeps the first lineage recorded; a repeat only re-copies.
-/// Returns the number of cursors written.
+/// Records `predecessor` as the lineage of an already-enrolled `successor`. It moves no cursor
+/// (spec §1; main review I2): the successor already has its own read position, and copying the
+/// predecessor's would pass mail the predecessor displayed after the successor enrolled, which
+/// the successor never saw. Only a successor born with the lineage inherits cursors
+/// (`SeedMode::Lineage`). The caller validated the pair with [`validate_lineage`]. A successor
+/// keeps the first lineage recorded. Returns whether lineage was recorded now.
 pub fn link_lineage(
     tx: &Connection,
     successor: &BindingId,
     predecessor: &BindingId,
-) -> Result<usize, ApiError> {
-    tx.execute(
-        "UPDATE occupant_bindings SET lineage_from=?2 WHERE binding_id=?1 AND lineage_from IS NULL",
-        params![successor.as_str(), predecessor.as_str()],
-    )
-    .map_err(store_error)?;
-    read_cursors::copy_lineage(tx, predecessor, successor)
+) -> Result<bool, ApiError> {
+    let changed = tx
+        .execute(
+            "UPDATE occupant_bindings SET lineage_from=?2 WHERE binding_id=?1 AND lineage_from IS NULL",
+            params![successor.as_str(), predecessor.as_str()],
+        )
+        .map_err(store_error)?;
+    Ok(changed > 0)
 }
 
 pub fn resolve_claim(

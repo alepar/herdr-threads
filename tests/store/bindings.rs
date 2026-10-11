@@ -2236,9 +2236,10 @@ mod lineage {
         assert!(!validate_lineage(&db, &same_process, &subagent.binding_id).unwrap());
     }
 
-    // Kills: a link that overwrites a higher successor cursor with the predecessor's lower one.
+    // Kills: a link that overwrites a higher successor cursor with the predecessor's lower one,
+    // or (main review I2) raises a lower one to the predecessor's: a late link moves no cursor.
     #[test]
-    fn link_lineage_never_moves_cursors_backwards() {
+    fn link_lineage_never_moves_cursors() {
         let db = db();
         let predecessor = resolve(&db, &claim("sess-A", 7), None);
         let successor = resolve(&db, &claim("sess-B", 8), None);
@@ -2253,11 +2254,11 @@ mod lineage {
                 .lineage_from,
             Some(predecessor.binding_id.clone())
         );
-        // And a successor behind the predecessor catches up.
+        // A successor behind the predecessor stays behind: it never saw what the predecessor read.
         set_cursor(&db, &predecessor, 2);
         set_cursor(&db, &successor, 1);
         link_lineage(&db, &successor.binding_id, &predecessor.binding_id).unwrap();
-        assert_eq!(cursor(&db, &successor), Some(2));
+        assert_eq!(cursor(&db, &successor), Some(1));
     }
 }
 

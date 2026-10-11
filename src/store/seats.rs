@@ -4394,7 +4394,7 @@ pub(crate) fn resolve_cooperative(
 /// the claim's seat and harness, and is honoured only when `bindings::validate_lineage` holds (same
 /// seat, harness, top-level, same process fingerprint). A successor not yet enrolled seeds from the
 /// predecessor (`ResolveRequest.lineage`); one already enrolled (CLI-first, an accepted limit) links
-/// `lineage_from` once and copies with MAX, so no cursor moves backwards.
+/// `lineage_from` once and moves no cursor (it keeps its own read position).
 pub(crate) fn resolve_cooperative_with_lineage(
     tx: &Transaction<'_>,
     at: DecisionInstant,

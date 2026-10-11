@@ -336,13 +336,16 @@ model open work, and summary closure never changes receipt state or installs glo
 - *Lineage* (ht-54r.20): a successor copies its predecessor's cursors, then supersedes it, only when the
   predecessor is a top-level binding of the same seat and harness with the same process fingerprint (pid
   and start time) as the successor's claim; otherwise the hint is ignored and the successor seeds fresh.
-  Linking an already enrolled successor copies with a maximum, so no cursor moves backwards.
+  Only a successor born with the lineage copies cursors; linking an already enrolled successor records
+  `lineage_from` and moves no cursor (it keeps its own read position, so it never passes mail the
+  predecessor displayed after the successor enrolled; main review I2).
   Hermes transport (ht-54r.17): the hint is the `parent_session_id` of a non-delegate top-level
   `pre_llm_call` (a compression or `/branch` successor), carried as `CheckIn.lineage_parent`. The daemon
   resolves it to the open top-level Hermes binding of that session on the claim's seat and verifies it as
   above; a delegate child (`platform` `subagent`) is answered locally by the bridge and is never lineage,
   and a successor whose first claim is a plain CLI call enrolls at the seat maximum and is linked by its
-  next `pre_llm_call` (accepted limit). Without a parent in the payload, `/new` and compression alike are
+  next `pre_llm_call` without moving its cursors (accepted limit: it inherits the seat maximum, not the
+  predecessor's position). Without a parent in the payload, `/new` and compression alike are
   a new binding.
 - *Shared seat*: memberships, invitations and receipts belong to the seat, so any binding's join or leave
   applies to every binding of the seat. Bindings of one seat are not separate participants.
