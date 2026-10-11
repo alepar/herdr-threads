@@ -258,6 +258,7 @@ pub(super) fn legacy_claude_projection(
     // an installed harness whose hooks are missing. Each makes the result `degraded`.
 
     let claude_binary = crate::cli::hook::resolve_on_path("claude", path.as_deref());
+    let mut stale = None;
     match crate::cli::setup::user_inspection(Harness::Claude, &env) {
         Ok((settings, inspection)) => {
             if let Some(binary) = &claude_binary
@@ -269,6 +270,13 @@ pub(super) fn legacy_claude_projection(
                     binary.display(),
                     settings.display()
                 ));
+            }
+            stale = crate::harness::required_hooks::stale_install_json(
+                "claude",
+                &inspection.missing_required_events,
+            );
+            if let Some(stale) = &stale {
+                limitations.push(scalar(&stale["detail"]));
             }
             claude["setup"] = json!({
                 "settings": settings.display().to_string(),
@@ -305,6 +313,8 @@ pub(super) fn legacy_claude_projection(
     let claude_installed = installed_declared("claude", super::RECIPES[0].id, path.as_deref());
     let claude_warning: Option<String> = None;
     claude["installed"] = json!(claude_installed);
+    let claude_stale = stale.is_some();
+    claude["stale_install"] = stale.unwrap_or(Value::Null);
     // With the daemon's answer the PATH version's verdict is the
     // detected-version line of the harness block; without it the admission
     // warning stands as before.
@@ -314,7 +324,10 @@ pub(super) fn legacy_claude_projection(
         claude_warning
     });
 
-    let safe_repairs = safe_repairs(daemon, &claude);
+    let mut safe_repairs = safe_repairs(daemon, &claude);
+    if claude_stale && safe_repairs.is_empty() {
+        safe_repairs.push(LocalRepair::InstallOwned);
+    }
     let manual_repairs = manual_repairs(&claude);
     DoctorProjection {
         status: Some(captured_legacy_status(request, &claude)),

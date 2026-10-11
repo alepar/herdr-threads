@@ -17,8 +17,8 @@ use crate::{
     ports::LocalClient,
     protocol::{
         authority::{CallerClaim, CallerRole},
-        capabilities::{INBOX_BATCH_V2, LAZY_HOOK_DELIVERY},
-        commands::{Command, CompleteInboxDelivery, InboxQuery, LazyCompletionVia},
+        capabilities::{BINDING_CURSORS, INBOX_BATCH_V2, LAZY_HOOK_DELIVERY},
+        commands::{AdvanceCursors, Command, CompleteInboxDelivery, InboxQuery, LazyCompletionVia},
         ids::{MessageId, OperationId},
         output::{ContinuationContext, OutputFormat, OutputSpec, encode_selected},
         pagination::{Page, PageRequest, StopReason},
@@ -48,6 +48,9 @@ pub const INBOX_HEADER: &str = "herdr-threads inbox contents, read by this hook 
 pub struct InboxOffer {
     pub page: Page<InboxBatchV2Item>,
     pub claim: CallerClaim,
+    /// The daemon keeps per-binding cursors: the page is this binding's own stream, and a full
+    /// display advances them (`AdvanceCursors`).
+    pub cursors: bool,
 }
 
 /// Read the page: top-level claims only, only from a daemon serving the v2
@@ -67,9 +70,11 @@ pub fn read_page<C: LocalClient + ?Sized>(
         format: OutputFormat::Text,
         context: ContinuationContext::default(),
     };
+    let cursors = client.supports_capability(BINDING_CURSORS, budget);
     let CommandResult::InboxBatchV2(page) = client
         .call_with_output(
             Command::InboxBatchV2(InboxQuery {
+                claim: cursors.then(|| claim.clone()),
                 seat: Some(claim.seat.clone()),
                 page: PageRequest {
                     cursor: None,
@@ -84,7 +89,11 @@ pub fn read_page<C: LocalClient + ?Sized>(
     else {
         return None;
     };
-    (!page.items.is_empty()).then_some(InboxOffer { page, claim })
+    (!page.items.is_empty()).then_some(InboxOffer {
+        page,
+        claim,
+        cursors,
+    })
 }
 
 /// Whether `item` is shown complete (bodies from offset zero to their end).
@@ -102,7 +111,9 @@ fn whole(item: &InboxBatchV2Item) -> bool {
             body_len,
             ..
         } => *body_start == 0 && body_end == body_len,
-        InboxBatchV2Item::Invitation { .. } | InboxBatchV2Item::Warning { .. } => true,
+        InboxBatchV2Item::Invitation { .. }
+        | InboxBatchV2Item::Warning { .. }
+        | InboxBatchV2Item::FirstContact(_) => true,
     }
 }
 
@@ -148,6 +159,18 @@ pub fn append(
     prefix: &[String],
     budget: usize,
 ) -> (String, Vec<MessageId>) {
+    let (context, lazy, _) = append_shown(context, offer, prefix, budget);
+    (context, lazy)
+}
+
+/// [`append`], also naming every message shown whole (lazy and ordinary alike): the ones the
+/// binding's cursors may advance over once the output is delivered.
+pub fn append_shown(
+    context: String,
+    offer: &InboxOffer,
+    prefix: &[String],
+    budget: usize,
+) -> (String, Vec<MessageId>, Vec<MessageId>) {
     let items = &offer.page.items;
     let shown_max = items.iter().take_while(|item| whole(item)).count();
     let render = |shown: usize| -> Option<String> {
@@ -203,7 +226,15 @@ pub fn append(
                     _ => None,
                 })
                 .collect();
-            return (joined, lazy);
+            let displayed = items[..shown]
+                .iter()
+                .filter_map(|item| match item {
+                    InboxBatchV2Item::LazyMessage { message, .. }
+                    | InboxBatchV2Item::Message { message, .. } => Some(message.clone()),
+                    _ => None,
+                })
+                .collect();
+            return (joined, lazy, displayed);
         }
     }
     // Nothing whole fits (a large first body): still say so, with the exact
@@ -220,8 +251,8 @@ pub fn append(
         format!("{context}\n{pointer}")
     };
     match fits(joined) {
-        Some(joined) => (joined, Vec::new()),
-        None => (context, Vec::new()),
+        Some(joined) => (joined, Vec::new(), Vec::new()),
+        None => (context, Vec::new(), Vec::new()),
     }
 }
 
@@ -239,6 +270,9 @@ pub struct LazyCommit {
     pub link: CompletionLink,
     pub claim: CallerClaim,
     pub messages: Vec<MessageId>,
+    /// Every message shown whole; with `cursors`, the binding's cursors advance over them.
+    pub displayed: Vec<MessageId>,
+    pub cursors: bool,
     pub deadline: Instant,
 }
 
@@ -259,6 +293,21 @@ impl LazyCommit {
         // Its own small cap: the hook (and a PreToolUse's tool) waits on it.
         let deadline = self.deadline.min(Instant::now() + COMMIT_BUDGET);
         let budget = super::hook::budget(deadline, self.link.clock.as_ref());
+        // The binding's own read position first; a failure only means the messages are offered
+        // again (at least once), so it never blocks the lazy completion.
+        if self.cursors && !self.displayed.is_empty() {
+            let _ = client.call(
+                Command::AdvanceCursors(AdvanceCursors {
+                    claim: self.claim.clone(),
+                    operation: OperationId::new(uuid::Uuid::new_v4().to_string()),
+                    displayed: self.displayed.clone(),
+                }),
+                &budget,
+            );
+        }
+        if self.messages.is_empty() {
+            return Ok(());
+        }
         match client.call(
             Command::CompleteInboxDelivery(CompleteInboxDelivery {
                 messages: self.messages,
@@ -281,12 +330,15 @@ impl std::fmt::Debug for LazyCommit {
         f.debug_struct("LazyCommit")
             .field("seat", &self.claim.seat)
             .field("messages", &self.messages)
+            .field("displayed", &self.displayed)
             .finish()
     }
 }
 impl PartialEq for LazyCommit {
     fn eq(&self, other: &Self) -> bool {
-        self.claim == other.claim && self.messages == other.messages
+        self.claim == other.claim
+            && self.messages == other.messages
+            && self.displayed == other.displayed
     }
 }
 impl Eq for LazyCommit {}

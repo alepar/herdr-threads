@@ -56,7 +56,11 @@ fn run_payload(fx: &Fixture, home: &Path, event: &str, bytes: &[u8]) -> Hook {
 /// `HT_TEST_TIMEOUT_SCALE`), for the test that pins the lifecycle bound itself.
 fn run_payload_with(fx: &Fixture, home: &Path, event: &str, bytes: &[u8], scaled: bool) -> Hook {
     let started = Instant::now();
+    // A native hook runs under its harness, where it takes its liveness fingerprint from
+    // (session-keyed bindings): one long-lived stand-in plays the pane's agy process, so every
+    // conversation of the pane shares it, as a `/clear` or resume inside one agy process does.
     let mut line = scrubbed_command("/bin/sh");
+    herdr_threads::test_support::isolation::as_agent(&mut line, "agy", "agy-process");
     line.arg("-c")
         .arg(command(fx, event))
         .env("HERDR_ENV", "1")
@@ -104,16 +108,19 @@ fn system_message(hook: &Hook) -> String {
 fn generation(fx: &Fixture) -> i64 {
     fx.count("SELECT generation FROM seats WHERE id='seat'")
 }
-/// The seat's live agy binding for `session`, enrolled as a cooperative top-level claim.
+/// The seat's live (open and connected) agy binding for `session`, enrolled as a cooperative
+/// top-level claim.
 fn live_binding(fx: &Fixture, session: &str) -> i64 {
     fx.count(&format!(
         "SELECT count(*) FROM occupant_bindings WHERE seat_id='seat' AND ended_at IS NULL \
-         AND harness='agy' AND native_session='{session}' \
+         AND liveness='connected' AND harness='agy' AND native_session='{session}' \
          AND observation_provenance='cooperative_top_level'"
     ))
 }
+/// Open, connected bindings of the seat (session-keyed bindings: a superseded conversation's
+/// binding stays open, disconnected).
 fn live_bindings(fx: &Fixture) -> i64 {
-    fx.count("SELECT count(*) FROM occupant_bindings WHERE seat_id='seat' AND ended_at IS NULL")
+    fx.count("SELECT count(*) FROM occupant_bindings WHERE seat_id='seat' AND ended_at IS NULL AND liveness='connected'")
 }
 
 #[test]
@@ -135,7 +142,8 @@ fn top_level_session_start_enrolls_and_prints_the_startup_check_in() {
     );
     assert_eq!(live_binding(&fx, TOP), 1);
     assert_eq!(live_bindings(&fx), 1);
-    assert!(generation(&fx) > before);
+    // Session-keyed bindings: enrollment adds a binding; the seat's generation does not move.
+    assert_eq!(generation(&fx), before);
 }
 
 #[test]
@@ -172,15 +180,17 @@ fn clear_rotates_the_generation_and_binds_the_new_conversation() {
         "session-start-after-clear",
     ));
     assert!(text.starts_with("Use inbox"), "{text}");
-    assert!(generation(&fx) > enrolled);
+    // Session-keyed bindings: the new conversation is a new binding at the same seat generation;
+    // the earlier one, of the same agy process, is superseded (disconnected, never ended).
+    assert_eq!(generation(&fx), enrolled);
     assert_eq!(live_binding(&fx, CLEAR), 1);
     assert_eq!(live_bindings(&fx), 1);
     assert_eq!(
         fx.count(&format!(
-            "SELECT count(*) FROM occupant_bindings WHERE seat_id='seat' AND native_session='{TOP}' AND ended_at IS NOT NULL"
+            "SELECT count(*) FROM occupant_bindings WHERE seat_id='seat' AND native_session='{TOP}' AND liveness='disconnected' AND disconnect_reason='superseded'"
         )),
         1,
-        "the earlier conversation's binding ended"
+        "the earlier conversation's binding was superseded"
     );
 }
 
@@ -208,7 +218,11 @@ fn inv0_resume_reattaches_the_seat_by_c1_from_the_first_turn_start() {
         text[LIFECYCLE_PREFIX.len()..].starts_with("Use inbox"),
         "{text}"
     );
-    assert!(generation(&fx) > enrolled);
+    assert_eq!(
+        generation(&fx),
+        enrolled,
+        "session-keyed: the seat generation stays"
+    );
     assert_eq!(live_binding(&fx, RESUME), 1);
     assert_eq!(live_bindings(&fx), 1);
     assert_eq!(
@@ -289,7 +303,11 @@ fn a_resume_of_an_earlier_conversation_with_a_state_file_rebinds_by_c1() {
         text[LIFECYCLE_PREFIX.len()..].starts_with("Use inbox"),
         "{text}"
     );
-    assert!(generation(&fx) > before);
+    assert_eq!(
+        generation(&fx),
+        before,
+        "session-keyed: the seat generation stays"
+    );
     assert_eq!(live_binding(&fx, RESUME), 1);
     assert_eq!(live_bindings(&fx), 1);
     assert!(found[0].exists(), "the fix does not delete the cache file");
@@ -445,6 +463,8 @@ fn cooperative_as(fx: &Fixture, harness: &str, seat: &str, pane: &str, command: 
     ];
     args.extend_from_slice(command);
     let mut out = Vec::new();
+    // The in-process CLI acts as the harness session the hooks registered (decision 15).
+    let _agent = super::agent_origin(harness, if harness == "agy" { TOP } else { "peer-sess" });
     herdr_threads::cli::run(args, &mut out).unwrap();
     serde_json::from_slice(&out).unwrap()
 }
@@ -1007,10 +1027,18 @@ mod activation {
             );
             assert_eq!(startup.code, Some(0), "{}", startup.stderr);
             let db = self.fx.db();
-            let origin: CallerClaim = db.query_row("SELECT seat_id,generation,execution_id FROM occupant_bindings WHERE target_id='w9:p2' AND ended_at IS NULL", [], |row| {
+            let origin: CallerClaim = db.query_row("SELECT seat_id,generation,execution_id,liveness_pid,liveness_start FROM occupant_bindings WHERE target_id='w9:p2' AND harness='claude' AND native_session='origin-session' AND role='top_level' AND agent_id='' AND ended_at IS NULL", [], |row| {
+                let liveness = match (row.get::<_, Option<i64>>(3)?, row.get::<_, Option<i64>>(4)?) {
+                    (Some(pid), Some(start)) => Some(herdr_threads::protocol::authority::LivenessFingerprint {
+                        pid: u32::try_from(pid).expect("canonical binding fingerprint pid is valid"),
+                        start: u64::try_from(start).expect("canonical binding fingerprint start is nonnegative"),
+                    }),
+                    (None, None) => None,
+                    _ => panic!("canonical binding fingerprint is complete or absent"),
+                };
                 Ok(CallerClaim { instance: self.fx.instance.to_string(), seat: herdr_threads::protocol::ids::SeatId::new(row.get::<_,String>(0)?), binding_generation: u64::try_from(row.get::<_, i64>(1)?).expect("canonical binding generation is nonnegative"),
                     role: herdr_threads::protocol::authority::CallerRole::TopLevel, harness: herdr_threads::protocol::authority::Harness::Claude,
-                    native_session: herdr_threads::protocol::ids::NativeSessionId::new("origin-session"), execution: herdr_threads::protocol::ids::ExecutionId::new(row.get::<_,String>(2)?), target: herdr_threads::protocol::ids::HostTargetId::new("w9:p2") })
+                    native_session: herdr_threads::protocol::ids::NativeSessionId::new("origin-session"), execution: herdr_threads::protocol::ids::ExecutionId::new(row.get::<_,String>(2)?), target: herdr_threads::protocol::ids::HostTargetId::new("w9:p2"), agent_id: None, liveness })
             }).unwrap();
             let CommandResult::ThreadCreated(thread) = self
                 .fx

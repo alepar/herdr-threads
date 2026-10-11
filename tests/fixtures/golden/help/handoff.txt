@@ -42,6 +42,8 @@ Options:
           Agent role for the cooperative call [possible values: top-level, subagent]
       --thread <THREAD>
           
+      --agent-id <ID>
+          Subagent agent id, inserted by herdr-threads' Claude PreToolUse hook (spec §1). Carried into the cooperative claim; no behaviour change until session bindings land
       --thread-name <THREAD_NAME>
           
       --topic <TOPIC>

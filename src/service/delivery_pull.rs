@@ -9,14 +9,14 @@ use crate::{
     delivery::{
         self, Assembler, DeliveryItem, DeliveryKind, DrainEvent, FrameItem, MAX_DRAIN_PAGES,
         PAGE_MAX_BYTES, PAGE_MAX_ITEMS, PageError, PageSource, Stop, drain_pages, frame,
-        ledger::{MAX_INVITATION_DISPLAYS_PER_SEAT, MAX_OFFERS_PER_SEAT, Offer, OfferedLedger},
+        ledger::{
+            MAX_INVITATION_DISPLAYS_PER_BINDING, MAX_OFFERS_PER_BINDING, Offer, OfferedLedger,
+        },
     },
     harness::adapter::DeliveryMechanism,
     ports::{ModBindingView, ModFingerprint, ModSeatView, PulledNotice, ReadContext, StorePort},
     protocol::{
-        authority::{
-            COOPERATIVE_TOP_LEVEL_PROVENANCE, CallerClaim, CallerRole, Harness, PeerIdentity,
-        },
+        authority::{CallerClaim, CallerRole, Harness, PeerIdentity},
         commands::{Command, InboxQuery, PermitMutation},
         delivery::{
             DeliveryConfirm, DeliveryConfirmItem, DeliveryConfirmOutcome, DeliveryConfirmReason,
@@ -28,6 +28,7 @@ use crate::{
         results::{ApiError, CommandResult, ErrorCode, InboxBatchV2Item, MAX_NOTICE_PAGE_ITEMS},
         time::CallBudget,
     },
+    store::bindings::DisconnectReason,
 };
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Mutex;
@@ -63,6 +64,8 @@ pub fn attention_version(fingerprint: &ModFingerprint, newest_notice: Option<i64
     feed(fingerprint.max_pending_ordinal as u64);
     feed(fingerprint.lazy_pending);
     feed(fingerprint.max_lazy_rowid as u64);
+    feed(fingerprint.unread);
+    feed(fingerprint.max_unread_rowid as u64);
     feed(fingerprint.other_pending);
     match fingerprint.binding_generation {
         Some(generation) => {
@@ -128,16 +131,22 @@ impl crate::ports::HookPullOutlook for DeliveryPullState {
     fn next_pull(
         &self,
         seat: &crate::protocol::ids::SeatId,
+        targets: &[crate::protocol::ids::BindingId],
         binding_generation: u64,
         attention_version: u64,
         now: crate::protocol::time::UtcMillis,
     ) -> crate::ports::NextPull {
         self.lock()
-            .next_pull(seat, binding_generation, attention_version, now)
+            .next_pull(seat, targets, binding_generation, attention_version, now)
     }
 
-    fn holds_parked(&self, seat: &crate::protocol::ids::SeatId, binding_generation: u64) -> bool {
-        self.lock().holds_parked(seat, binding_generation)
+    fn holds_parked(
+        &self,
+        seat: &crate::protocol::ids::SeatId,
+        targets: &[crate::protocol::ids::BindingId],
+        binding_generation: u64,
+    ) -> bool {
+        self.lock().holds_parked(seat, targets, binding_generation)
     }
 }
 
@@ -147,11 +156,14 @@ struct StorePageSource<'a> {
     read: &'a ReadContext,
     budget: &'a CallBudget,
     seat: &'a crate::protocol::ids::SeatId,
+    /// The pulling binding's claim: every page is that binding's own stream.
+    claim: &'a CallerClaim,
 }
 
 impl PageSource for StorePageSource<'_> {
     fn page(&mut self, cursor: Option<String>) -> Result<Page<InboxBatchV2Item>, PageError> {
         let command = Command::InboxBatchV2(InboxQuery {
+            claim: Some(self.claim.clone()),
             seat: Some(self.seat.clone()),
             page: PageRequest {
                 cursor,
@@ -218,30 +230,88 @@ fn refused(reason: DeliveryRefusalReason) -> Result<CommandResult, ApiError> {
 }
 
 impl DomainService {
-    /// The A2 decision shared by pull and confirm (delivery-policy DP6): one
-    /// store read through `mod_seat_view`, refused in the table's order.
-    pub(super) fn hook_pull_view(
+    /// V1 and physical Hook delivery use the same canonical plain reconnect.
+    fn hook_pull_view(
         &self,
         claim: &CallerClaim,
+        peer: PeerIdentity,
         budget: &CallBudget,
     ) -> Result<(ModSeatView, ModBindingView), DeliveryRefusalReason> {
-        self.hook_pull_view_mode(claim, budget, false, DeliveryMechanism::HookPull)
+        self.hook_pull_view_mode(claim, peer, budget, false)
     }
+
     pub(super) fn hook_presentation_view(
         &self,
         claim: &CallerClaim,
+        peer: PeerIdentity,
         budget: &CallBudget,
     ) -> Result<(ModSeatView, ModBindingView), DeliveryRefusalReason> {
-        self.hook_pull_view_mode(claim, budget, true, DeliveryMechanism::HookPull)
+        self.hook_pull_view_mode(claim, peer, budget, true)
     }
+
+    /// Watch requires an already connected binding; Pull never reconnects it.
     pub(super) fn watch_presentation_view(
         &self,
         claim: &CallerClaim,
         budget: &CallBudget,
     ) -> Result<(ModSeatView, ModBindingView), DeliveryRefusalReason> {
-        self.hook_pull_view_mode(claim, budget, true, DeliveryMechanism::PushChannel)
+        let (view, binding) =
+            self.hook_binding_read(claim, budget, true, DeliveryMechanism::PushChannel)?;
+        if binding.native_session != claim.native_session.as_str() {
+            return Err(DeliveryRefusalReason::SessionMismatch);
+        }
+        if !binding.holds_channel() {
+            return Err(DeliveryRefusalReason::NoBinding);
+        }
+        Ok((view, binding))
     }
+
     fn hook_pull_view_mode(
+        &self,
+        claim: &CallerClaim,
+        peer: PeerIdentity,
+        budget: &CallBudget,
+        presentation: bool,
+    ) -> Result<(ModSeatView, ModBindingView), DeliveryRefusalReason> {
+        use DeliveryRefusalReason as Refusal;
+        let (view, binding) =
+            self.hook_binding_read(claim, budget, presentation, DeliveryMechanism::HookPull)?;
+        if binding.native_session != claim.native_session.as_str() {
+            return Err(Refusal::SessionMismatch);
+        }
+        if binding.holds_channel() {
+            return Ok((view, binding));
+        }
+        if binding.disconnect_reason.as_deref() == Some(DisconnectReason::Superseded.as_str()) {
+            return Err(Refusal::SessionMismatch);
+        }
+        if binding.ended_at.is_some() || !binding.top_level || binding.connected {
+            return Err(Refusal::NoBinding);
+        }
+        match self.store.claim_reconnects_on_plain_call(claim, budget) {
+            Ok(true) => {}
+            Ok(false) => return Err(Refusal::NoBinding),
+            Err(_) => return Err(Refusal::Busy),
+        }
+        let view = match self.hook_plain_reconnect(claim, peer, presentation, budget) {
+            Ok(view) => view,
+            Err(e) if e.code == ErrorCode::ServiceBusy || e.code == ErrorCode::DeadlineExceeded => {
+                return Err(Refusal::Busy);
+            }
+            Err(_) => return Err(Refusal::NoBinding),
+        };
+        let (view, binding) = Self::hook_binding_decide(claim, view, DeliveryMechanism::HookPull)?;
+        if binding.native_session != claim.native_session.as_str() {
+            return Err(Refusal::SessionMismatch);
+        }
+        if binding.holds_channel() {
+            Ok((view, binding))
+        } else {
+            Err(Refusal::NoBinding)
+        }
+    }
+
+    fn hook_binding_read(
         &self,
         claim: &CallerClaim,
         budget: &CallBudget,
@@ -249,15 +319,29 @@ impl DomainService {
         mechanism: DeliveryMechanism,
     ) -> Result<(ModSeatView, ModBindingView), DeliveryRefusalReason> {
         use DeliveryRefusalReason as Refusal;
-        if claim.role != CallerRole::TopLevel || claim.instance != self.instance {
+        if claim.role != CallerRole::TopLevel
+            || claim.is_subagent()
+            || claim.instance != self.instance
+        {
             return Err(Refusal::SessionMismatch);
         }
+        let binding = crate::ports::ModBindingRef::Claim(claim);
         let view = if presentation {
-            self.store.presentation_seat_view(&claim.seat, budget)
+            self.store
+                .presentation_seat_view(&claim.seat, binding, budget)
         } else {
-            self.store.mod_seat_view(&claim.seat, budget)
+            self.store.mod_binding_view(&claim.seat, binding, budget)
         }
         .map_err(|_| Refusal::Busy)?;
+        Self::hook_binding_decide(claim, view, mechanism)
+    }
+
+    fn hook_binding_decide(
+        claim: &CallerClaim,
+        view: Option<ModSeatView>,
+        mechanism: DeliveryMechanism,
+    ) -> Result<(ModSeatView, ModBindingView), DeliveryRefusalReason> {
+        use DeliveryRefusalReason as Refusal;
         let Some(view) = view else {
             return Err(Refusal::Unresolved);
         };
@@ -270,14 +354,11 @@ impl DomainService {
         let Some(binding) = view.binding.clone() else {
             return Err(Refusal::NoBinding);
         };
-        if binding.provenance != COOPERATIVE_TOP_LEVEL_PROVENANCE {
-            return Err(Refusal::NoBinding);
-        }
         if !delivery::declares(&binding.harness, mechanism) {
             return Err(Refusal::NoHookPull);
         }
-        if binding.native_session != claim.native_session.as_str() {
-            return Err(Refusal::SessionMismatch);
+        if binding.harness != claim.harness.as_str() {
+            return Err(Refusal::NoBinding);
         }
         Ok((view, binding))
     }
@@ -287,12 +368,13 @@ impl DomainService {
     pub(super) fn delivery_pull(
         &self,
         pull: DeliveryPull,
+        peer: PeerIdentity,
         budget: &CallBudget,
         read: &ReadContext,
     ) -> Result<CommandResult, ApiError> {
         pull.validate()
             .map_err(|why| error(ErrorCode::InvalidRequest, why))?;
-        let (view, binding) = match self.hook_pull_view(&pull.claim, budget) {
+        let (view, binding) = match self.hook_pull_view(&pull.claim, peer, budget) {
             Ok(decided) => decided,
             Err(reason) => return refused(reason),
         };
@@ -310,7 +392,7 @@ impl DomainService {
         let (known, whole_invitations, truncated_invitations, whole_read_current) = {
             let mut ledger = self.delivery_pull.lock();
             // A newer generation's entry: this request read the binding before a rotation.
-            let Some(entry) = ledger.seat_mut(seat, binding.generation, &binding.native_session)
+            let Some(entry) = ledger.binding_mut(seat, &binding.binding_id, binding.generation)
             else {
                 return refused(DeliveryRefusalReason::Busy);
             };
@@ -348,6 +430,7 @@ impl DomainService {
             read,
             budget,
             seat,
+            claim: &pull.claim,
         };
         let mut assembler = Assembler::new(None).with_command_prefix(pull.marker_prefix.clone());
         let mut blocks: Vec<FrameItem> = Vec::new();
@@ -355,7 +438,7 @@ impl DomainService {
         let mut pending: BTreeSet<MessageId> = BTreeSet::new();
         let mut pending_invitations = BTreeSet::new();
         let mut shown_invitations: Vec<(InvitationId, Option<u64>, bool)> = Vec::new();
-        let mut invitation_capacity = MAX_INVITATION_DISPLAYS_PER_SEAT
+        let mut invitation_capacity = MAX_INVITATION_DISPLAYS_PER_BINDING
             .saturating_sub(whole_invitations.len() + truncated_invitations.len());
         let mut text_bytes = delivery::HEADER.len();
         let mut more = false;
@@ -367,10 +450,12 @@ impl DomainService {
         // the first notice block's bytes. Carried after the message blocks, settled before the reply by the
         // frontier rule.
         let mut notice_page: Vec<PulledNotice> = if view.newest_pending_notice.is_some() {
-            match self
-                .store
-                .pull_notice_page(seat, MAX_NOTICE_PAGE_ITEMS + 1, budget)
-            {
+            match self.store.pull_notice_page(
+                seat,
+                Some(&binding.binding_id),
+                MAX_NOTICE_PAGE_ITEMS + 1,
+                budget,
+            ) {
                 Ok(page) => page,
                 Err(error) => {
                     eprintln!(
@@ -392,7 +477,7 @@ impl DomainService {
         let (reserved_blocks, reserved_bytes) = notice_blocks.first().map_or((0, 0), |first| {
             (1 + usize::from(with_attention), block_bytes(first))
         });
-        let mut room_for_new = MAX_OFFERS_PER_SEAT.saturating_sub(known.len());
+        let mut room_for_new = MAX_OFFERS_PER_BINDING.saturating_sub(known.len());
         let mut withheld = false;
         // A full table whose last whole read saw this same pending set can show only its due offers: the drain stops
         // once it has met them all (or never starts), so it does not walk the backlog. A moved pending set (an
@@ -550,6 +635,7 @@ impl DomainService {
             let carried: Vec<_> = notice_page.iter().map(|p| p.notice.clone()).collect();
             notices_settled = match self.store.settle_pulled_notices(
                 seat,
+                &binding.binding_id,
                 binding.generation,
                 &binding.native_session,
                 &carried,
@@ -603,7 +689,7 @@ impl DomainService {
             {
                 race(&mut ledger);
             }
-            let Some(entry) = ledger.seat_mut(seat, binding.generation, &binding.native_session)
+            let Some(entry) = ledger.binding_mut(seat, &binding.binding_id, binding.generation)
             else {
                 // Rotated meanwhile: the page belongs to a superseded generation, so no message is recorded or shown
                 // (they stay pending for the new one). Notices this pull settled are committed as carried: return
@@ -629,7 +715,7 @@ impl DomainService {
             }
             for (id, revision, truncated) in shown_invitations {
                 if entry.whole_invitations.len() + entry.truncated_invitations.len()
-                    >= MAX_INVITATION_DISPLAYS_PER_SEAT
+                    >= MAX_INVITATION_DISPLAYS_PER_BINDING
                     && !entry.whole_invitations.contains_key(&id)
                     && !entry.truncated_invitations.contains_key(&id)
                 {
@@ -730,7 +816,7 @@ impl DomainService {
                     .collect(),
             }))
         };
-        let (_, binding) = match self.hook_pull_view(&confirm.claim, budget) {
+        let (_, binding) = match self.hook_pull_view(&confirm.claim, peer, budget) {
             Ok(decided) => decided,
             Err(DeliveryRefusalReason::NoHookPull) => {
                 return report(
@@ -755,7 +841,7 @@ impl DomainService {
         let claim_is_older = confirm.claim.binding_generation < binding.generation;
         let forwarded: Vec<MessageId> = {
             let mut ledger = self.delivery_pull.lock();
-            let Some(entry) = ledger.seat_mut(seat, binding.generation, &binding.native_session)
+            let Some(entry) = ledger.binding_mut(seat, &binding.binding_id, binding.generation)
             else {
                 return report(
                     DeliveryConfirmOutcome::Retryable,
@@ -788,6 +874,8 @@ impl DomainService {
                     native_session: confirm.claim.native_session.clone(),
                     execution: confirm.claim.execution.clone(),
                     target: confirm.claim.target.clone(),
+                    agent_id: None,
+                    liveness: confirm.claim.liveness,
                 },
                 ids: forwarded,
                 operation: confirm.operation.clone(),
@@ -806,7 +894,7 @@ impl DomainService {
                 ));
             };
             let mut ledger = self.delivery_pull.lock();
-            let mut entry = ledger.seat_mut(seat, binding.generation, &binding.native_session);
+            let mut entry = ledger.binding_mut(seat, &binding.binding_id, binding.generation);
             for item in stored.results {
                 if matches!(
                     item.result,

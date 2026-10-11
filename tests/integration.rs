@@ -53,6 +53,16 @@ mod herdr_release_smoke;
 #[cfg(feature = "test-support")]
 #[path = "integration/herdr_states.rs"]
 mod herdr_states;
+/// ht-4ne.3: bare Hermes bridge enrollment, the installed bridge driven with
+/// synthetic callbacks against an isolated Herdr session and daemon.
+#[cfg(feature = "test-support")]
+#[path = "integration/hermes_enrollment_smoke.rs"]
+mod hermes_enrollment_smoke;
+/// ht-4ne.5: Hermes global enrollment main flow end to end through the real
+/// binary, plus the registry-wide enrollment policy check.
+#[cfg(feature = "test-support")]
+#[path = "integration/hermes_enrollment_sweep.rs"]
+mod hermes_enrollment_sweep;
 /// ht-p03.1: the isolated named Herdr test-session fixture's self-test.
 #[cfg(feature = "test-support")]
 #[path = "integration/isolated_herdr_fixture.rs"]
@@ -94,6 +104,26 @@ mod operator_text;
 /// Herdr endpoint.
 #[path = "integration/operator_ux.rs"]
 mod operator_ux;
+/// ht-54r.14: pane-close retirement and restart restore holds with several session bindings
+/// on one seat, on an isolated Herdr session.
+#[cfg(feature = "test-support")]
+#[path = "integration/pane_close_retirement.rs"]
+mod pane_close_retirement;
+/// ht-54r.25: session-binding flows the smoke configurations do not assert (settle once, one-shot).
+#[cfg(feature = "test-support")]
+#[path = "integration/session_bindings_e2e.rs"]
+mod session_bindings_e2e;
+/// ht-54r.19: the nine session-binding configurations end to end (real daemon, isolated Herdr).
+#[cfg(feature = "test-support")]
+#[path = "integration/session_bindings_smoke.rs"]
+mod session_bindings_smoke;
+#[path = "integration/session_bindings_subagent.rs"]
+mod session_bindings_subagent;
+/// ht-54r.5: agent callers are attributed from the harness environment, the real
+/// binary under a synthetic harness parent.
+#[cfg(feature = "test-support")]
+#[path = "integration/session_claims.rs"]
+mod session_claims;
 /// Real versionless setup output/configuration through the live canary consumer.
 #[cfg(feature = "test-support")]
 #[path = "integration/setup_canary_seam.rs"]

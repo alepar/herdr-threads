@@ -1101,6 +1101,28 @@ pub struct HookInspection {
     /// The installed hooks use legacy shared or UUID-marked commands: they still work, and
     /// explicit `setup` migrates them to stable per-event commands.
     pub legacy_event_registration: bool,
+    /// Required hook events (`required_hooks`) the recorded installation does not hold: a stale
+    /// install, fixed by re-running `herdr-threads setup`. Empty for a current install and for
+    /// one that is not installed at all.
+    pub missing_required_events: Vec<String>,
+}
+
+/// The `required_hooks` events of `harness` that none of `installed` names.
+pub fn missing_required_events<'a>(
+    harness: &str,
+    installed: impl IntoIterator<Item = &'a str>,
+) -> Vec<String> {
+    let installed: Vec<&str> = installed.into_iter().collect();
+    super::registry::builtins()
+        .registrations()
+        .iter()
+        .find(|registration| registration.metadata().id == harness)
+        .map(|registration| registration.required_hook_events())
+        .unwrap_or_default()
+        .iter()
+        .filter(|event| !installed.contains(event))
+        .map(|event| (*event).to_owned())
+        .collect()
 }
 
 /// Installation identity adopted from exact legacy UUID-marked groups, retained across migration.
@@ -1829,6 +1851,7 @@ fn inspect_allow_member(
             allow_rule: None,
             adopted: None,
             legacy_event_registration: false,
+            missing_required_events: Vec::new(),
         });
     };
     if !manifest_matches(kind, &manifest, config)? {
@@ -1861,6 +1884,7 @@ fn inspect_allow_member(
         }),
         adopted: None,
         legacy_event_registration: false,
+        missing_required_events: Vec::new(),
     })
 }
 
@@ -2107,6 +2131,10 @@ pub fn inspect_user_settings_for(
                     fingerprint: fingerprint(&current),
                 }),
                 allow_rule: None,
+                missing_required_events: missing_required_events(
+                    kind.harness(),
+                    adoptable.owned.iter().map(|entry| entry.event.as_str()),
+                ),
                 adopted: Some(Adoption {
                     owner: adoptable.installation_id,
                     recorded: false,
@@ -2121,6 +2149,7 @@ pub fn inspect_user_settings_for(
             allow_rule: None,
             adopted: None,
             legacy_event_registration: false,
+            missing_required_events: Vec::new(),
         });
     };
     if !manifest_matches(kind, &manifest, config)? {
@@ -2185,6 +2214,10 @@ pub fn inspect_user_settings_for(
             recorded: true,
         }),
         legacy_event_registration: installed && legacy,
+        missing_required_events: missing_required_events(
+            kind.harness(),
+            manifest.owned.iter().map(|entry| entry.event.as_str()),
+        ),
     })
 }
 
@@ -3411,6 +3444,12 @@ pub(crate) mod legacy {
         )
         .map_err(|e| settings_error(e, SetupVerb::Status, kind, settings, &manifest))?;
         report["installed"] = json!(inspection.installed);
+        if let Some(stale) = crate::harness::required_hooks::stale_install_json(
+            kind.harness(),
+            &inspection.missing_required_events,
+        ) {
+            report["stale_install"] = stale;
+        }
         report["adopted"] = adoption_json(inspection.adopted.as_ref());
         if kind.manages_permission() {
             report["allow_rule"] = allow_rule_json(kind, inspection.allow_rule.as_ref());

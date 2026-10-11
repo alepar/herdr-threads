@@ -34,9 +34,9 @@ SCEN = GATE_DIR / "scenarios"
 HOOK_PROVENANCE = "cooperative_hook_delivery"
 
 
-def load(world, name):
+def load(world, name, **variables):
     scenario = _l6.load_scenario(SCEN / (name + ".json"))
-    scenario["vars"] = dict(scenario.get("vars", {}), cwd=str(world.ws))
+    scenario["vars"] = dict(scenario.get("vars", {}), cwd=str(world.ws), **variables)
     world.backend.load(scenario)
     return scenario
 
@@ -168,18 +168,19 @@ def run(world):
     setup = _l6.setup(world)
     world.check("setup agy succeeds", setup.returncode == 0, (setup.stderr or setup.stdout).strip()[:200])
     sender = world.sender()
+    # The thread exists before agy starts: the scripted accept (wake-join) names it.
+    thread = _l6.create_thread(world, sender, "gate-delivery")
     pane = _l6.start_agy(world)
-    stop_scenario = load(world, "delivery-stop")
+    stop_scenario = load(world, "delivery-stop", thread=thread)
     _l5.run_turn(world, pane, "DELIV-WARM hello", "warm")
     binding = _l5.await_binding(world, lambda b: True)
     world.check("the agy seat is enrolled", binding is not None)
     if binding is None:
         return
     seat = binding["seat_id"]
-    thread = _l6.create_thread(world, sender, "gate-delivery")
     invite, accept = _l6.join(world, sender, pane, thread, seat)
-    world.check("the sender invited the agy seat and it accepted", invite.returncode == 0 and accept.returncode == 0,
-                "invite=%s accept=%s" % (invite.stderr.strip(), accept.stderr.strip()))
+    world.check("the sender invited the agy seat and the agy session accepted (run_command, joined)",
+                invite.returncode == 0 and accept.ok, "invite=%s accept=%s" % (invite.stderr.strip(), accept.detail))
     joined = _l5.await_step(world, "wake-join", 45)
     world.check("the join's idle wake was served (wake-join on 'herdr-threads: wake up')", joined is not None)
     pane.wait("idle", 30)

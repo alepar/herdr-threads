@@ -105,6 +105,8 @@ impl Fixture {
             native_session: NativeSessionId::new(format!("session-{seat}")),
             execution: ExecutionId::new(execution),
             target: HostTargetId::new(seat),
+            agent_id: None,
+            liveness: Some(herdr_threads::protocol::authority::LivenessFingerprint::TEST),
         }
     }
     fn mutate(&self, mutation: PermitMutation) -> CommandResult {
@@ -158,6 +160,7 @@ impl Fixture {
     }
     fn check(&self, seat: &str, op: &str) -> CheckInResult {
         let command = CheckIn {
+            lineage_parent: None,
             mode: CheckInMode::Current,
             claim: self.claim(seat),
             operation: OperationId::new(op),
@@ -233,6 +236,7 @@ impl Fixture {
             .store
             .query(
                 &Command::InboxBatchV2(InboxQuery {
+                    claim: None,
                     seat: Some(SeatId::new(seat)),
                     page: PageRequest::default(),
                 }),

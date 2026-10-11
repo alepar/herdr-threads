@@ -26,7 +26,7 @@ use crate::{
         workers::{
             WorkerStatus, admission_handle, start_admission_observer, start_deadline_worker,
             start_mod_channel_worker, start_observation_worker, start_retention_worker,
-            start_wake_worker,
+            start_wake_worker_with_liveness,
         },
     },
     store::{SqliteStore, connection::StoreContext},
@@ -1409,6 +1409,7 @@ where
                     },
                     mod_delivery,
                 )
+                .with_connection_cap(config.watch_connection_cap())
                 .with_log({
                     let log = Arc::clone(&rate_limited_log);
                     Arc::new(move |line: &str| log.write_line(line))
@@ -1421,7 +1422,14 @@ where
             let wake_pacer = register_lane(Lane::Wakes);
             reachability.attach_wake_pacer(Arc::clone(&wake_pacer));
             factory_probe.attach_reachability(&reachability);
-            workers.push(start_wake_worker(
+            // Binding liveness (spec §3, decision 9): the host process table backs both the
+            // periodic re-check thread and the re-check before each wake decision.
+            let liveness = Arc::new(crate::service::liveness::LivenessWorker::new(
+                Arc::clone(&store) as Arc<dyn crate::ports::StorePort>,
+                Arc::clone(&writer),
+                Arc::new(crate::host::process_table::HostProcessTable),
+            ));
+            workers.push(start_wake_worker_with_liveness(
                 Arc::clone(&store),
                 Arc::clone(&writer),
                 Arc::clone(&host),
@@ -1435,6 +1443,20 @@ where
                 Arc::clone(&reachability),
                 Arc::clone(&mod_channels),
                 Arc::clone(&delivery_pull) as Arc<dyn crate::ports::HookPullOutlook>,
+                Some(Arc::clone(&liveness)),
+            )?);
+            workers.push(crate::service::liveness::start_liveness_worker(
+                liveness,
+                Arc::new(Pacer::new(
+                    "liveness",
+                    Arc::clone(&factory_clock),
+                    factory_stop.clone(),
+                )),
+                factory_stop.clone(),
+                {
+                    let log = Arc::clone(&rate_limited_log);
+                    Arc::new(move |line: &str| log.write_line(line))
+                },
             )?);
             let observation_pacer = Arc::new(Pacer::new(
                 Lane::Observation.name(),

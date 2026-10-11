@@ -18,6 +18,10 @@ pub struct DisplayCandidates {
     pub claim: CallerClaim,
     pub lazy: Vec<MessageId>,
     pub ordinary: Vec<MessageId>,
+    /// Every message the page showed whole to this caller (a chunked body counts once its last
+    /// chunk is flushed), for any role: the messages the binding's own cursors may cover.
+    /// Never an ACK candidate by itself.
+    pub displayed: Vec<MessageId>,
 }
 /// Write and flush one complete selected page before recording any proof.
 /// Only the CLI's own default text route opts in; other reads remain passive.
@@ -36,13 +40,14 @@ pub fn write_page<W: Write>(
         claim: claim.clone(),
         lazy: vec![],
         ordinary: vec![],
+        displayed: vec![],
     };
     if selection != DisplaySelection::OwnDefaultText
-        || claim.role != crate::protocol::authority::CallerRole::TopLevel
         || spec.format != crate::protocol::output::OutputFormat::Text
     {
         return Ok(candidates);
     }
+    let top_level = claim.role == crate::protocol::authority::CallerRole::TopLevel;
     let CommandResult::InboxBatchV2(page) = result else {
         return Ok(candidates);
     };
@@ -76,9 +81,13 @@ pub fn write_page<W: Write>(
                     *body_start,
                     *body_end,
                     *body_len,
-                )? && !candidates.lazy.contains(message)
-                {
-                    candidates.lazy.push(message.clone());
+                )? {
+                    if !candidates.displayed.contains(message) {
+                        candidates.displayed.push(message.clone());
+                    }
+                    if top_level && !candidates.lazy.contains(message) {
+                        candidates.lazy.push(message.clone());
+                    }
                 }
             }
             crate::protocol::results::InboxBatchV2Item::Message {
@@ -95,10 +104,16 @@ pub fn write_page<W: Write>(
                     *body_start,
                     *body_end,
                     *body_len,
-                )? && ack_candidate.as_ref() == Some(message)
-                    && !candidates.ordinary.contains(message)
-                {
-                    candidates.ordinary.push(message.clone());
+                )? {
+                    if !candidates.displayed.contains(message) {
+                        candidates.displayed.push(message.clone());
+                    }
+                    if top_level
+                        && ack_candidate.as_ref() == Some(message)
+                        && !candidates.ordinary.contains(message)
+                    {
+                        candidates.ordinary.push(message.clone());
+                    }
                 }
             }
             _ => {}

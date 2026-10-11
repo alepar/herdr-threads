@@ -1,0 +1,21 @@
+# src state: tip with reverse-applied src diffs of: (none; tip)
+# command: cargo test --locked --all-features --lib -- compact_participants_mark_active golden_contract
+
+running 14 tests
+test cli::human::golden_contract::compact_already_joined_has_a_specific_form ... ok
+test cli::human::golden_contract::human_inbox_shows_invitation_id_and_accept_command ... ok
+test cli::human::golden_contract::pending_receipts_name_a_service_sender ... ok
+test cli::human::golden_contract::compact_thread_keeps_topic_detail_argv ... ok
+test cli::human::golden_contract::human_checked_in_keeps_warnings_continuation_and_offered_through ... ok
+test cli::human::golden_contract::human_inbox_shows_topics_when_known ... ok
+test cli::human::golden_contract::event_row_keeps_deadline_constraint_revision ... ok
+test cli::human::golden_contract::older_timestamps_carry_a_date ... ok
+test cli::human::golden_contract::todays_timestamps_stay_bare ... ok
+test cli::human::golden_contract::human_inbox_fetches_topics_once ... ok
+test cli::human::golden_contract::contract_table_lists_every_golden ... ok
+test protocol::output::tests::compact_participants_mark_active_and_inactive_members ... ok
+test cli::human::golden_contract::every_contract_continuation_appears_in_compact_output ... ok
+test cli::human::golden_contract::golden_files_match ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 4455 filtered out; finished in 0.01s
+

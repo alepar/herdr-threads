@@ -1253,6 +1253,7 @@ fn public_facade_check_in_commits_anchor_and_exact_empty_offer() {
     drop(db);
     let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
     let command = CheckIn {
+        lineage_parent: None,
         mode: crate::protocol::commands::CheckInMode::Lifecycle {
             expected_binding_generation: 1,
         },
@@ -1299,6 +1300,95 @@ fn public_facade_check_in_commits_anchor_and_exact_empty_offer() {
         )
         .unwrap()
             > 0
+    );
+    drop(db);
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
+// Kills: a lifecycle check-in that clears the seat's whole offer frontier (another session of the
+// seat would be offered again what it already was), and one that leaves its own frontier standing
+// (a resumed session would keep a stale watermark above the decision sequence).
+#[test]
+fn lifecycle_check_in_resets_only_its_own_offer() {
+    let path = std::env::temp_dir().join(format!("herdr-facade-{}.db", uuid::Uuid::new_v4()));
+    let context = connection::StoreContext::new(path.clone(), Arc::new(FixedClock));
+    let db = context.open_writer().unwrap();
+    db.execute(
+        "INSERT INTO host_instances(id,created_at,host_boot,host_epoch) VALUES ('i',0,'b',1)",
+        [],
+    )
+    .unwrap();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s1','i','resolved','native','p1',1,1,0)",[]).unwrap();
+    db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','p1','b',1,1,0,'fresh','term-'||'p1','inc','coherent_enumeration',1)",[]).unwrap();
+    drop(db);
+    let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
+    let lifecycle = |session: &str, pid: u32, execution: &str, operation: &str| {
+        let mut claim = fixture_claim("s1", "p1");
+        claim.native_session = NativeSessionId::new(session);
+        claim.execution = ExecutionId::new(execution);
+        claim.liveness = Some(crate::protocol::authority::LivenessFingerprint { pid, start: 1 });
+        let command = CheckIn {
+            mode: crate::protocol::commands::CheckInMode::Lifecycle {
+                expected_binding_generation: 1,
+            },
+            claim,
+            operation: OperationId::new(operation),
+            lineage_parent: None,
+        };
+        let permit = StorePort::issue_cooperative_permit(
+            &store,
+            cooperative_permit_request(&PermitMutation::CheckIn(command.clone())).unwrap(),
+            &budget(),
+        )
+        .unwrap();
+        StorePort::register_available(
+            &store,
+            RegisterAvailableRequest {
+                command,
+                read: ReadContext {
+                    instance: "i".into(),
+                    output: OutputSpec::default(),
+                    operation_scope: None,
+                },
+                operator: None,
+            },
+            permit,
+            &budget(),
+        )
+        .unwrap();
+    };
+    let (a_execution, b_execution) = (
+        "00000000-0000-4000-8000-0000000000a1",
+        "00000000-0000-4000-8000-0000000000b2",
+    );
+    lifecycle("sess-A", 11, a_execution, "check-in-a1");
+    lifecycle("sess-B", 12, b_execution, "check-in-b1");
+    let db = store.context.open_writer().unwrap();
+    let offer = |session: &str| -> Option<i64> {
+        db.query_row(
+            "SELECT o.offered_through_seq FROM warning_offer o JOIN occupant_bindings b ON b.binding_id=o.binding_id WHERE b.native_session=?1 AND o.seat_id='s1'",
+            [session],
+            |r| r.get(0),
+        )
+        .optional()
+        .unwrap()
+    };
+    // Each session's check-in left its own frontier, keyed by its own binding.
+    assert!(offer("sess-A").is_some_and(|seq| seq > 0));
+    assert!(offer("sess-B").is_some_and(|seq| seq > 0));
+    // Raise both far above the decision sequence, so a reset is observable.
+    db.execute("UPDATE warning_offer SET offered_through_seq=1000", [])
+        .unwrap();
+    lifecycle("sess-A", 11, a_execution, "check-in-a2");
+    let a = offer("sess-A").unwrap();
+    assert!(a < 1000, "A's own frontier started over: {a}");
+    assert_eq!(offer("sess-B"), Some(1000), "B's frontier is untouched");
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM warning_offer", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        2
     );
     drop(db);
     drop(store);
@@ -1488,6 +1578,8 @@ fn fixture_claim(seat: &str, target: &str) -> CallerClaim {
         native_session: NativeSessionId::new("n"),
         execution: ExecutionId::new("00000000-0000-4000-8000-000000000001"),
         target: HostTargetId::new(target),
+        agent_id: None,
+        liveness: Some(crate::protocol::authority::LivenessFingerprint::TEST),
     }
 }
 /// Mutates through the production cooperative path: the service-local permit
@@ -1700,6 +1792,7 @@ fn default_directory_and_inbox_resolve_only_the_trusted_selected_seat() {
     assert_eq!(page.items.len(), 1);
     assert_eq!(page.items[0].thread, ThreadId::new("t1"));
     let inbox = Command::Inbox(InboxQuery {
+        claim: None,
         seat: None,
         page: PageRequest::default(),
     });
@@ -1885,6 +1978,8 @@ fn invalid_inbox_completion_writes_no_state() {
         native_session: NativeSessionId::new("n"),
         execution: ExecutionId::new("e"),
         target: HostTargetId::new("p"),
+        agent_id: None,
+        liveness: Some(crate::protocol::authority::LivenessFingerprint::TEST),
     };
     let completion = CompleteInboxDelivery {
         via: None,

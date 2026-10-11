@@ -546,6 +546,7 @@ fn inbox_counts_published_warning_and_receipt_in_same_snapshot() {
     INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('i','p','m','t',10,10,1,0,1,1);
     UPDATE threads SET next_sequence=3 WHERE id='t';").unwrap();
     let q = Command::Inbox(InboxQuery {
+        claim: None,
         seat: Some(SeatId::new("s")),
         page: page(None),
     });
@@ -568,6 +569,7 @@ fn invitation_relevance_inbox_supplies_canonical_goal_without_joining() {
         &store,
         "i",
         &Command::InboxBatch(InboxQuery {
+            claim: None,
             seat: Some(SeatId::new("s")),
             page: PageRequest::default(),
         }),
@@ -620,6 +622,7 @@ fn invitation_relevance_goal_yields_to_bounded_inspection_without_skipping() {
             &store,
             "i",
             &Command::InboxBatch(InboxQuery {
+                claim: None,
                 seat: Some(SeatId::new("s")),
                 page: PageRequest {
                     max_bytes: 2048,
@@ -656,6 +659,7 @@ fn inbox_batch_displays_pending_body_and_only_complete_agent_receipt_is_candidat
         &store,
         "i",
         &Command::InboxBatch(InboxQuery {
+            claim: None,
             seat: Some(SeatId::new("s")),
             page: page(None),
         }),
@@ -719,6 +723,7 @@ fn inbox_v2_current_agent_counts_registered_harnesses_only() {
             &Command::InboxBatchV2(InboxQuery {
                 seat: Some(SeatId::new("s")),
                 page: page(None),
+                claim: None,
             }),
             &budget(),
         )
@@ -759,6 +764,7 @@ fn inbox_batch_partial_body_has_cursor_and_no_candidate_until_final_chunk() {
             &store,
             "i",
             &Command::InboxBatch(InboxQuery {
+                claim: None,
                 seat: Some(SeatId::new("s")),
                 page: request.clone(),
             }),
@@ -815,6 +821,7 @@ fn inbox_batch_pages_101_receipts_without_acknowledging_or_skipping() {
             &store,
             "i",
             &Command::InboxBatch(InboxQuery {
+                claim: None,
                 seat: Some(SeatId::new("s")),
                 page: request.clone(),
             }),
@@ -864,6 +871,7 @@ fn inbox_batch_defers_later_arrivals_to_next_traversal() {
         &store,
         "i",
         &Command::InboxBatch(InboxQuery {
+            claim: None,
             seat: Some(SeatId::new("s")),
             page: request.clone(),
         }),
@@ -881,6 +889,7 @@ fn inbox_batch_defers_later_arrivals_to_next_traversal() {
             &store,
             "i",
             &Command::InboxBatch(InboxQuery {
+                claim: None,
                 seat: Some(SeatId::new("s")),
                 page: request.clone(),
             }),
@@ -905,6 +914,7 @@ fn inbox_batch_defers_later_arrivals_to_next_traversal() {
         &store,
         "i",
         &Command::InboxBatch(InboxQuery {
+            claim: None,
             seat: Some(SeatId::new("s")),
             page: PageRequest {
                 cursor: None,
@@ -944,6 +954,7 @@ fn inbox_batch_finds_unprojected_active_warning_for_frozen_member() {
         &store,
         "i",
         &Command::InboxBatch(InboxQuery {
+            claim: None,
             seat: Some(SeatId::new("s")),
             page: page(None),
         }),
@@ -985,6 +996,7 @@ fn inbox_batch_keeps_open_and_clear_transition_visible_before_recipient_projecti
         &store,
         "i",
         &Command::InboxBatch(InboxQuery {
+            claim: None,
             seat: Some(SeatId::new("s")),
             page: page(None),
         }),
@@ -1005,12 +1017,21 @@ fn inbox_batch_keeps_open_and_clear_transition_visible_before_recipient_projecti
         .collect();
     assert_eq!(ids, vec!["warning-open-full", "warning-clear-full"]);
     bind_query_agent(&db);
-    db.execute("INSERT INTO warning_offer(seat_id,binding_generation,execution_id,offered_through_seq) VALUES ('s',1,'exec',2)", []).unwrap();
+    db.execute("INSERT INTO warning_offer(binding_id,seat_id,offered_through_seq) SELECT binding_id,'s',2 FROM occupant_bindings WHERE seat_id='s' AND execution_id='exec'", []).unwrap();
+    let binding = crate::protocol::ids::BindingId::new(
+        db.query_row(
+            "SELECT binding_id FROM occupant_bindings WHERE seat_id='s' AND execution_id='exec'",
+            [],
+            |r| r.get::<_, String>(0),
+        )
+        .unwrap(),
+    );
     let inbox = || {
         let CommandResult::InboxBatch(batch) = query(
             &store,
             "i",
             &Command::InboxBatch(InboxQuery {
+                claim: None,
                 seat: Some(SeatId::new("s")),
                 page: page(None),
             }),
@@ -1042,14 +1063,14 @@ fn inbox_batch_keeps_open_and_clear_transition_visible_before_recipient_projecti
     db.execute_batch("INSERT INTO warning_recipients(warning_id,seat_id,generation) VALUES ('warning-open-full','s',1),('warning-clear-full','s',1);").unwrap();
     let offered = crate::store::attention::notice_offer_page(&db, "s", 1).unwrap();
     assert_eq!(offered[0].notice.warning.as_str(), "warning-open-full");
-    crate::store::attention::settle_offered_notices(&db, "s", 1, "exec", &offered).unwrap();
+    crate::store::attention::settle_offered_notices(&db, "s", &binding, &offered).unwrap();
     assert_eq!(
         inbox().iter().map(MessageId::as_str).collect::<Vec<_>>(),
         vec!["warning-clear-full"],
         "only the exact carried open event settles"
     );
     let offered = crate::store::attention::notice_offer_page(&db, "s", 1).unwrap();
-    crate::store::attention::settle_offered_notices(&db, "s", 1, "exec", &offered).unwrap();
+    crate::store::attention::settle_offered_notices(&db, "s", &binding, &offered).unwrap();
     assert!(inbox().is_empty(), "both exact carried events leave inbox");
 }
 
@@ -1149,6 +1170,7 @@ fn warning_continuations_keep_published_identity_during_projection() {
         &store,
         "i",
         &Command::InboxBatch(InboxQuery {
+            claim: None,
             seat: Some(SeatId::new("s")),
             page: inbox_page.clone(),
         }),
@@ -1189,6 +1211,7 @@ fn warning_continuations_keep_published_identity_during_projection() {
             &store,
             "i",
             &Command::InboxBatch(InboxQuery {
+                claim: None,
                 seat: Some(SeatId::new("s")),
                 page: inbox_page.clone(),
             }),
@@ -1244,6 +1267,7 @@ fn queued_close_hides_active_condition_without_inventing_clear_and_allows_reopen
             &store,
             "i",
             &Command::InboxBatch(InboxQuery {
+                claim: None,
                 seat: Some(SeatId::new("s")),
                 page: page(None),
             }),
@@ -1342,6 +1366,7 @@ fn inbox_clear_recipient_is_frozen_at_close_decision_before_projection() {
             &store,
             "i",
             &Command::InboxBatch(InboxQuery {
+                claim: None,
                 seat: Some(SeatId::new(seat)),
                 page: page(None),
             }),
@@ -1474,6 +1499,7 @@ fn inbox_pages_205_invited_threads_without_skipping() {
             &store,
             "i",
             &Command::Inbox(InboxQuery {
+                claim: None,
                 seat: Some(SeatId::new("s")),
                 page: request.clone(),
             }),
@@ -1512,6 +1538,7 @@ fn inbox_continuation_stales_when_published_receipt_enters_examined_thread() {
     db.execute_batch("COMMIT").unwrap();
     let q = |cursor| {
         Command::Inbox(InboxQuery {
+            claim: None,
             seat: Some(SeatId::new("s")),
             page: page(cursor),
         })
@@ -1546,6 +1573,7 @@ fn inbox_continuation_stales_on_new_invitation_in_examined_thread() {
     db.execute_batch("COMMIT").unwrap();
     let q = |cursor| {
         Command::Inbox(InboxQuery {
+            claim: None,
             seat: Some(SeatId::new("s")),
             page: page(cursor),
         })
@@ -1571,6 +1599,7 @@ fn inbox_continuation_stales_at_committed_retirement_fence() {
     db.execute_batch("COMMIT").unwrap();
     let q = |cursor| {
         Command::Inbox(InboxQuery {
+            claim: None,
             seat: Some(SeatId::new("s")),
             page: page(cursor),
         })
@@ -1610,6 +1639,7 @@ fn inbox_validation_pages_unrelated_publications_before_advancing() {
     db.execute_batch("COMMIT").unwrap();
     let make = |cursor| {
         Command::Inbox(InboxQuery {
+            claim: None,
             seat: Some(SeatId::new("s")),
             page: page(cursor),
         })
@@ -1704,6 +1734,7 @@ fn inbox_continuation_survives_projection_of_already_published_receipt() {
     first_page.limit = 1;
     let make = |page| {
         Command::Inbox(InboxQuery {
+            claim: None,
             seat: Some(SeatId::new("s")),
             page,
         })
@@ -1736,6 +1767,7 @@ fn inbox_continuation_ignores_hidden_preparation_for_same_seat() {
     db.execute_batch("COMMIT").unwrap();
     let make = |cursor| {
         Command::Inbox(InboxQuery {
+            claim: None,
             seat: Some(SeatId::new("s")),
             page: page(cursor),
         })
@@ -2437,6 +2469,7 @@ fn retired_seat_has_no_actionable_pending_invitation_before_cleanup() {
         &store,
         "i",
         &Command::Inbox(InboxQuery {
+            claim: None,
             seat: Some(SeatId::new("s")),
             page: page(None),
         }),
@@ -4266,7 +4299,7 @@ fn pending_receipts_show_frozen_effective_and_deferral_during_catch_up() {
     assert!(plain.overdue);
     assert_eq!(plain.effective_deadline, None);
     assert_eq!(plain.deferred_until, None);
-    db.execute("INSERT INTO catch_up(seat_id,thread_id,frontier_seq,binding_generation,execution_id,entered_at,extension_until,state) VALUES ('s','t',0,1,'e',0,500,'active')", []).unwrap();
+    db.execute_batch("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) SELECT 's',1,'p','b',0,'codex','catch-up-row','e','cooperative_top_level',0,'tm','inc' WHERE NOT EXISTS(SELECT 1 FROM occupant_bindings WHERE seat_id='s' AND ended_at IS NULL); INSERT INTO catch_up(binding_id,seat_id,thread_id,frontier_seq,entered_at,extension_until,state) SELECT binding_id,'s','t',0,0,500,'active' FROM occupant_bindings WHERE seat_id='s'").unwrap();
     let extended = pending_for_s(&store);
     assert_eq!(extended.deadline, Some(UtcMillis(50)));
     assert_eq!(extended.effective_deadline, Some(UtcMillis(500)));
@@ -4284,7 +4317,7 @@ fn pending_receipts_show_frozen_effective_and_deferral_during_catch_up() {
 #[test]
 fn delivery_inspect_and_recipients_show_the_same_deferral() {
     let (store, db) = extended_receipt_fixture();
-    db.execute("INSERT INTO catch_up(seat_id,thread_id,frontier_seq,binding_generation,execution_id,entered_at,extension_until,state) VALUES ('s','t',0,1,'e',0,500,'active')", []).unwrap();
+    db.execute_batch("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) SELECT 's',1,'p','b',0,'codex','catch-up-row','e','cooperative_top_level',0,'tm','inc' WHERE NOT EXISTS(SELECT 1 FROM occupant_bindings WHERE seat_id='s' AND ended_at IS NULL); INSERT INTO catch_up(binding_id,seat_id,thread_id,frontier_seq,entered_at,extension_until,state) SELECT binding_id,'s','t',0,0,500,'active' FROM occupant_bindings WHERE seat_id='s'").unwrap();
     let q = Command::DeliveryInspect(DeliveryInspectQuery {
         message: MessageId::new("m1"),
         page: page(None),
@@ -4325,7 +4358,7 @@ fn diagnostics_overdue_listing_uses_the_effective_deadline() {
             .collect::<Vec<_>>()
     };
     assert_eq!(subjects(&store), vec!["overdue_receipt:m1:s"]);
-    db.execute("INSERT INTO catch_up(seat_id,thread_id,frontier_seq,binding_generation,execution_id,entered_at,extension_until,state) VALUES ('s','t',0,1,'e',0,500,'active')", []).unwrap();
+    db.execute_batch("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) SELECT 's',1,'p','b',0,'codex','catch-up-row','e','cooperative_top_level',0,'tm','inc' WHERE NOT EXISTS(SELECT 1 FROM occupant_bindings WHERE seat_id='s' AND ended_at IS NULL); INSERT INTO catch_up(binding_id,seat_id,thread_id,frontier_seq,entered_at,extension_until,state) SELECT binding_id,'s','t',0,0,500,'active' FROM occupant_bindings WHERE seat_id='s'").unwrap();
     assert!(subjects(&store).is_empty());
 }
 
@@ -4908,17 +4941,19 @@ fn recent_picker_committed_notices_update_activity_duplicates_and_rollback_do_no
     );
 }
 
-// Catches a stale open binding conferring display eligibility after the seat's
-// canonical binding generation has advanced. Reading the message remains allowed.
+// Catches a binding conferring display eligibility after the seat's canonical
+// generation has advanced (a rebind ends the seat's bindings; a binding's own generation is
+// informational since ht-54r.21). Reading the message remains allowed.
 #[test]
 fn adapter_inbox_batch_stale_generation_cannot_offer_display_ack() {
     let (store, db) = fixture();
     bind_query_agent(&db);
-    db.execute_batch("UPDATE seats SET generation=2 WHERE id='s'; INSERT INTO messages(instance_id,decision_seq,id,thread_id,sequence,kind,body,decision_at) VALUES ('i',1,'stale','t',1,'ordinary','body',0); INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('stale','t','s','pending',300); UPDATE threads SET next_sequence=2 WHERE id='t';").unwrap();
+    db.execute_batch("UPDATE seats SET generation=2 WHERE id='s'; UPDATE occupant_bindings SET ended_at=1 WHERE seat_id='s'; INSERT INTO messages(instance_id,decision_seq,id,thread_id,sequence,kind,body,decision_at) VALUES ('i',1,'stale','t',1,'ordinary','body',0); INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('stale','t','s','pending',300); UPDATE threads SET next_sequence=2 WHERE id='t';").unwrap();
     let CommandResult::InboxBatch(batch) = query(
         &store,
         "i",
         &Command::InboxBatch(InboxQuery {
+            claim: None,
             seat: Some(SeatId::new("s")),
             page: page(None),
         }),
@@ -4953,12 +4988,15 @@ fn adapter_inbox_batch_candidates_require_canonical_registered_agent() {
         ("harness='human'", false),
         ("harness='future_agent'", false),
         ("registered_at=NULL", false),
-        ("observation_provenance='managed_launch'", false),
+        ("observation_provenance='managed_launch'", true),
+        ("observation_provenance='cooperative_env_session'", true),
+        ("liveness='disconnected',disconnected_at=1", false),
+        ("role='subagent'", false),
         ("native_session=''", false),
         ("execution_id=''", false),
     ] {
         db.execute(
-            "UPDATE occupant_bindings SET target_id='w:p1',harness='codex',registered_at=0,observation_provenance='cooperative_top_level',native_session='session',execution_id='exec' WHERE seat_id='s'",
+            "UPDATE occupant_bindings SET target_id='w:p1',harness='codex',registered_at=0,observation_provenance='cooperative_top_level',native_session='session',execution_id='exec',role='top_level',liveness='connected',disconnected_at=NULL,disconnect_reason=NULL WHERE seat_id='s'",
             [],
         )
         .unwrap();
@@ -4971,6 +5009,7 @@ fn adapter_inbox_batch_candidates_require_canonical_registered_agent() {
             &store,
             "i",
             &Command::InboxBatch(InboxQuery {
+                claim: None,
                 seat: Some(SeatId::new("s")),
                 page: page(None),
             }),
@@ -5075,6 +5114,7 @@ fn user_intent_inbox_canonical_claims_survive_full_and_chunked_output() {
                         &store,
                         "i",
                         &Command::InboxBatch(InboxQuery {
+                            claim: None,
                             seat: Some(SeatId::new("s")),
                             page: request.clone(),
                         }),
@@ -5550,6 +5590,7 @@ fn human_guidance_canonical_requesting_caller_before_page_fit() {
         },
     };
     let command = Command::Inbox(InboxQuery {
+        claim: None,
         seat: Some(SeatId::new("s")),
         page: PageRequest {
             limit: 1,
@@ -5609,6 +5650,142 @@ fn human_guidance_canonical_requesting_caller_before_page_fit() {
         assert_eq!(result.items.len(), 1);
     }
 }
+
+/// Presence fixture: seat `s` (two connected bindings, one a subagent), `d` (only a disconnected
+/// binding) and `h` (a human binding on a resolved seat), all joined to thread `t`.
+fn presence_fixture() -> (super::super::connection::StoreContext, rusqlite::Connection) {
+    let (store, db) = fixture();
+    for seat in ["d", "h"] {
+        db.execute("INSERT INTO seats(id, instance_id, state, role, generation, created_at) VALUES (?1, 'i', 'resolved', 'native', 1, 0)", [seat]).unwrap();
+    }
+    for seat in ["s", "d", "h"] {
+        db.execute(
+            "INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES ('t',?1,'joined',1)",
+            [seat],
+        )
+        .unwrap();
+    }
+    let bind = |seat: &str, harness: &str, session: &str, role: &str, agent: &str, live: &str| {
+        db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,agent_id,role,liveness,disconnected_at,disconnect_reason,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES (?1,1,1,'w:p1','host',1,?2,?3,?5,?4,?6,CASE WHEN ?6='disconnected' THEN 1 END,CASE WHEN ?6='disconnected' THEN 'superseded' END,'exec','cooperative_top_level',0,0,'term','inc')", params![seat, harness, session, role, agent, live]).unwrap();
+    };
+    bind("s", "claude", "sess-1", "top_level", "", "connected");
+    bind("s", "claude", "sess-1", "subagent", "agent-7", "connected");
+    bind("d", "codex", "sess-2", "top_level", "", "disconnected");
+    bind("h", "human", "sess-3", "top_level", "", "connected");
+    (store, db)
+}
+
+type BindingShape = (&'static str, &'static str, bool, Option<&'static str>);
+
+fn expected_presence() -> Vec<(&'static str, bool, Vec<BindingShape>)> {
+    vec![
+        (
+            "s",
+            true,
+            vec![
+                ("claude", "top_level", true, None),
+                ("claude", "subagent", true, Some("agent-7")),
+            ],
+        ),
+        ("d", false, vec![("codex", "top_level", false, None)]),
+        ("h", true, vec![("human", "top_level", true, None)]),
+    ]
+}
+
+fn shape(
+    bindings: &[crate::protocol::results::BindingPresence],
+) -> Vec<(&str, &str, bool, Option<&str>)> {
+    bindings
+        .iter()
+        .map(|b| {
+            (
+                b.harness.as_str(),
+                b.role.as_str(),
+                b.connected,
+                b.agent_id.as_deref(),
+            )
+        })
+        .collect()
+}
+
+/// Kills: `active` copied from membership instead of the seat-active predicate (a disconnected
+/// binding must read inactive), bindings missing or unordered, a session id leaking in.
+#[test]
+fn participants_report_active_and_open_bindings() {
+    let (store, _db) = presence_fixture();
+    let CommandResult::Participants(participants) = query(
+        &store,
+        "i",
+        &Command::Participants(ParticipantsQuery {
+            thread: ThreadId::new("t"),
+            page: page(None),
+            caller: None,
+        }),
+        &budget(),
+    )
+    .unwrap() else {
+        panic!()
+    };
+    let got: Vec<_> = participants
+        .items
+        .iter()
+        .map(|p| (p.seat.as_str(), p.active, shape(&p.bindings)))
+        .collect();
+    let want = expected_presence();
+    assert_eq!(got.len(), want.len());
+    for (g, w) in got.iter().zip(&want) {
+        assert_eq!((g.0, g.1, &g.2), (w.0, w.1, &w.2));
+    }
+    assert!(participants.items.iter().all(|p| {
+        p.availability
+            .as_deref()
+            .is_some_and(|a| a == "available" || a.starts_with("unavailable@"))
+    }));
+}
+
+#[test]
+fn seat_list_reports_the_same() {
+    let (store, db) = presence_fixture();
+    // An ended binding is not open and must not be listed.
+    db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,ended_at,terminal_id,incarnation) VALUES ('d',1,1,'w:p1','host',1,'gone','sess-9','exec','cooperative_top_level',0,0,5,'term','inc')", []).unwrap();
+    let CommandResult::Seats(seats) = query(
+        &store,
+        "i",
+        &Command::Seats(SeatsQuery {
+            page: page(None),
+            target: None,
+            include_retired: false,
+        }),
+        &budget(),
+    )
+    .unwrap() else {
+        panic!()
+    };
+    for (seat, active, bindings) in expected_presence() {
+        let item = seats
+            .items
+            .iter()
+            .find(|i| i.seat.as_str() == seat)
+            .unwrap_or_else(|| panic!("seat {seat} listed"));
+        assert_eq!(
+            (item.active, shape(&item.bindings)),
+            (active, bindings),
+            "{seat}"
+        );
+    }
+    let json = serde_json::to_value(&seats.items[0]).unwrap();
+    assert!(json.get("active").is_some() && json.get("bindings").is_some());
+    assert!(
+        seats.items.iter().all(|i| i.availability.is_some()),
+        "seat list fills the availability slot"
+    );
+    assert!(json.get("availability").is_some());
+}
+
+// presence_adds_one_query_per_page_not_per_member: skipped. The store has no query-count
+// harness, and participants/seat rows are produced one candidate at a time (two small indexed
+// reads per member, bounded by the page limit and CANDIDATE_LIMIT), so the page-fit accounting
+// already bounds the added work.
 
 #[test]
 fn directory_name_or_topic_literal_matching_and_scopes() {
@@ -5834,6 +6011,7 @@ fn v2_invitation_goal_and_revision_fit_or_yield_to_usable_pending_inspection() {
             "i",
             &Command::InboxBatchV2(InboxQuery {
                 seat: Some(SeatId::new("s")),
+                claim: None,
                 page: PageRequest {
                     max_bytes,
                     ..PageRequest::default()
@@ -6104,9 +6282,10 @@ fn presentation_publication_observes_old_staging_only_after_late_manifest() {
     let (store, mut db) = fixture();
     bind_query_agent(&db);
     let seat = SeatId::new("s");
+    let binding = crate::protocol::ids::BindingId::new(db.query_row("SELECT binding_id FROM occupant_bindings WHERE seat_id='s' AND harness='codex' AND native_session='session' AND agent_id=''", [], |r|r.get::<_,String>(0)).unwrap());
     let thread = ThreadId::new("t");
     let refresh = |db: &rusqlite::Connection| {
-        crate::store::invitation_content::refresh(db, "i", &seat, 1, "session")
+        crate::store::invitation_content::refresh(db, "i", &seat, &binding, 1, "session")
             .unwrap()
             .unwrap()
     };
@@ -6149,6 +6328,7 @@ fn presentation_publication_observes_old_staging_only_after_late_manifest() {
         "late lazy body",
         PublicationAuthor::Native {
             seat: &seat,
+            binding: &binding,
             observation: "cooperative_top_level",
             relays_user: false,
             user_intent: None,

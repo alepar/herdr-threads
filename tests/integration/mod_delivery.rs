@@ -50,6 +50,17 @@ const BIN: &str = env!("CARGO_BIN_EXE_herdr-threads");
 const PANE_A: &str = "w1:p1";
 const PANE_B: &str = "w1:p2";
 const SESSION_B: &str = "SB";
+const PANE_C: &str = "w1:p3";
+const SESSION_C: &str = "SC";
+
+/// The harness session running in `pane`: B's or C's registered one, or the stand-in agent's (A).
+fn session_of(pane: &str) -> &'static str {
+    match pane {
+        PANE_B => SESSION_B,
+        PANE_C => SESSION_C,
+        _ => "SA",
+    }
+}
 /// A step the sweep waits for; generous because the suite shares the machine.
 const STEP: Duration = Duration::from_secs(20);
 /// How long an absence is observed (a negative check) once its trigger has
@@ -325,8 +336,18 @@ fn pre_tool_use(session: &str) -> String {
     )
 }
 
+/// A pane running a Claude agent for `session`. Herdr's foreground process of the pane is that
+/// session's harness process, the fingerprint of its binding: the composer wake types only to
+/// the binding whose process is the pane's foreground process (spec §3 Wake).
 fn claude(id: &str, terminal: &str, session: &str) -> Value {
-    agent_pane(id, terminal, "claude", Some(session))
+    let mut pane = agent_pane(id, terminal, "claude", Some(session));
+    pane["foreground_pid"] = json!(foreground_of(session));
+    pane
+}
+
+/// The pid of the harness process of `session` (see `hook_in_process_of`).
+fn foreground_of(session: &str) -> u32 {
+    herdr_threads::test_support::isolation::stand_in_fingerprint("claude", session).pid
 }
 
 // ---------------------------------------------------------------------- rig
@@ -349,6 +370,7 @@ struct Rig {
     setup_hook: Value,
     panics: Arc<Mutex<Vec<String>>>,
     daemon: Option<Daemon>,
+    config: ServiceConfig,
     /// The running daemon's lanes (its wake lane's finished passes).
     probe: LaneProbe,
     a: String,
@@ -364,16 +386,25 @@ impl Rig {
     }
 
     fn activation() -> Self {
-        Self::configured(None, true)
+        Self::configured(None, ServiceConfig::default(), true)
     }
 
     /// `settings`: the content of the instance's `settings.json`, written
     /// before the daemon starts.
     fn with_settings(settings: Option<Value>) -> Self {
-        Self::configured(settings, false)
+        Self::with_config(settings, ServiceConfig::default())
     }
 
-    fn configured(settings: Option<Value>, require_activation: bool) -> Self {
+    /// As `with_settings`, with the daemon started on `config` (a restart keeps it).
+    fn with_config(settings: Option<Value>, config: ServiceConfig) -> Self {
+        Self::configured(settings, config, false)
+    }
+
+    fn configured(
+        settings: Option<Value>,
+        config: ServiceConfig,
+        require_activation: bool,
+    ) -> Self {
         let guard = crate::ONE_DAEMON.lock().unwrap_or_else(|e| e.into_inner());
         let root = PathBuf::from(format!(
             "{}/htmd-{}",
@@ -417,6 +448,7 @@ impl Rig {
             setup_hook: Value::Null,
             panics: Arc::default(),
             daemon: None,
+            config,
             probe: LaneProbe::default(),
             a: String::new(),
             b: String::new(),
@@ -484,7 +516,7 @@ impl Rig {
         let host: Arc<dyn HostPort> = Arc::new(NativeCli::new(self.socket.clone(), clock.clone()));
         let stop = Cancellation::default();
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
-        let (paths, daemon_stop) = (self.paths.clone(), stop.clone());
+        let (paths, daemon_stop, config) = (self.paths.clone(), stop.clone(), self.config.clone());
         // The production composition (`run_elected`), except that the store
         // commits without a per-commit fsync: nothing here can observe the
         // difference (it only matters on power loss), and a shared loaded
@@ -501,7 +533,7 @@ impl Rig {
                     &paths,
                     clock,
                     daemon_stop,
-                    ServiceConfig::default(),
+                    config,
                     host,
                     probe,
                     move |descriptor| {
@@ -635,6 +667,12 @@ impl Rig {
                 .env("HERDR_ENV", "1")
                 .env("HERDR_PANE_ID", pane)
                 .env("HERDR_SOCKET_PATH", &self.socket);
+            // A pane-routed command runs as the harness session in that pane (decision 15).
+            herdr_threads::test_support::isolation::as_agent(
+                &mut command,
+                "claude",
+                session_of(pane),
+            );
         }
         command
     }
@@ -659,6 +697,7 @@ impl Rig {
             .env("CLAUDE_CONFIG_DIR", self.root.join("claude-config"))
             .env("HERDR_THREADS_OFFLINE", "1")
             .env("NO_COLOR", "1");
+        herdr_threads::test_support::isolation::as_agent(&mut command, "claude", session_of(pane));
         command
     }
 
@@ -743,6 +782,13 @@ impl Rig {
         }
         all.extend_from_slice(args);
         let mut command = self.command(None, &all);
+        if let Some((_, pane)) = caller {
+            herdr_threads::test_support::isolation::as_agent(
+                &mut command,
+                "claude",
+                session_of(pane),
+            );
+        }
         collect(
             command
                 .stdin(Stdio::null())
@@ -769,6 +815,7 @@ impl Rig {
         ];
         all.extend_from_slice(args);
         let mut command = self.command_with(false, None, &all);
+        herdr_threads::test_support::isolation::as_agent(&mut command, "claude", SESSION_B);
         collect(
             command
                 .stdin(Stdio::null())
@@ -788,13 +835,35 @@ impl Rig {
 
     /// The installed hook, exactly as setup installs it.
     fn hook(&self, pane: &str, stdin: &str) -> Out {
+        self.hook_in_process_of(pane, stdin, None)
+    }
+
+    /// `hook`, run by the harness process of `process_of` (default: the payload's own session):
+    /// a `/clear` starts a new session inside the same process, so the new session's hook
+    /// shares the old one's liveness fingerprint and supersedes its binding.
+    fn hook_in_process_of(&self, pane: &str, stdin: &str, process_of: Option<&str>) -> Out {
         let payload: Value = serde_json::from_str(stdin).unwrap();
         let event = payload["hook_event_name"].as_str().unwrap();
         let command = self.claude_hooks[event][0]["hooks"][0]["command"]
             .as_str()
             .unwrap_or_else(|| panic!("no installed Claude registration for {event}"))
             .to_owned();
-        let mut child = spawn::command("/bin/sh")
+        let mut shell = spawn::command("/bin/sh");
+        // The installed hook runs under its harness (the test process stands in for it).
+        herdr_threads::test_support::isolation::as_agent(&mut shell, "claude", "hook-session");
+        // Each session is a process of its own, as in a real run: hooks of several sessions
+        // sharing one fingerprint would supersede one another's bindings, and a disconnected
+        // binding loses its mod channel (spec §3 Wake).
+        if let Some(session) = process_of.or(payload["session_id"].as_str()) {
+            let stand_in =
+                herdr_threads::test_support::isolation::stand_in_fingerprint("claude", session)
+                    .pid
+                    .to_string();
+            shell
+                .env("CLAUDE_PID", &stand_in)
+                .env("HT_TEST_HARNESS_PID", &stand_in);
+        }
+        let mut child = shell
             .arg("-c")
             .arg(command)
             .env("HERDR_ENV", "1")
@@ -820,6 +889,24 @@ impl Rig {
 
     fn session_start_hook(&self, pane: &str, session: &str, source: &str) -> Out {
         let out = self.hook(pane, &session_start(session, source));
+        assert_eq!(
+            out.code, 0,
+            "SessionStart hook: {}{}",
+            out.stdout, out.stderr
+        );
+        out
+    }
+
+    /// A SessionStart of a new session started inside the process that ran `old_session`
+    /// (`/clear`).
+    fn session_start_hook_in_process_of(
+        &self,
+        pane: &str,
+        session: &str,
+        source: &str,
+        old_session: &str,
+    ) -> Out {
+        let out = self.hook_in_process_of(pane, &session_start(session, source), Some(old_session));
         assert_eq!(
             out.code, 0,
             "SessionStart hook: {}{}",
@@ -934,11 +1021,20 @@ impl Rig {
     /// The state of B's channel (`live`, `reconnect_grace`, `rebind_grace`),
     /// or `None` when the registry has no entry for B.
     fn channel_state(&self) -> Option<String> {
-        self.channels()["channels"]
+        // Channels are per binding: a seat can hold a superseded session's channel in grace
+        // beside the new session's live one. The seat's state is the strongest of them.
+        let channels = self.channels();
+        let states: Vec<&str> = channels["channels"]
             .as_array()?
             .iter()
-            .find(|channel| channel["seat"] == self.b.as_str())
-            .and_then(|channel| channel["state"].as_str().map(str::to_owned))
+            .filter(|channel| channel["seat"] == self.b.as_str())
+            .filter_map(|channel| channel["state"].as_str())
+            .collect();
+        states
+            .iter()
+            .find(|state| **state == "live")
+            .or(states.first())
+            .map(|state| (*state).to_owned())
     }
 
     fn wait_channel(&self, state: Option<&str>) {
@@ -1145,10 +1241,10 @@ impl Rig {
 
     /// Herdr now reports `session` for B's pane (what `/clear` does).
     fn set_session_b(&self, session: &str) {
-        self.host.set_panes(vec![
-            pane(PANE_A, "term-a"),
-            claude(PANE_B, "term-b", session),
-        ]);
+        // A `/clear` starts a new session inside the same harness process.
+        let mut b = claude(PANE_B, "term-b", session);
+        b["foreground_pid"] = json!(foreground_of(SESSION_B));
+        self.host.set_panes(vec![pane(PANE_A, "term-a"), b]);
     }
 
     /// B's agent has run its turn after a native prompt: Herdr shows it idle
@@ -2716,108 +2812,6 @@ fn activation_v2_watch_full_pending_capacity_parks_until_real_channel_input() {
         "full pending capacity must reach a terminal reply; empty Page.more is not runnable work",
     );
     assert_eq!(offered, sent[..256].iter().cloned().collect());
-    // Keep the terminal response held and Attention credits at zero while
-    // the registered channel observes real background commits. Finish every
-    // send_attention job before releasing this response, so the later real
-    // frame cannot restart a nonempty warning-source sweep. Include bootstrap
-    // jobs; no send/notify follows, and UTC remains frozen for deadlines.
-    let attention_work_diagnostic = || {
-        let db = rig.db();
-        let metadata = |sql: &str| -> Value {
-            match db.query_row(sql, [], |row| row.get::<_, String>(0)) {
-                Ok(raw) => serde_json::from_str(&raw)
-                    .unwrap_or_else(|error| json!({"decode_error": error.to_string()})),
-                Err(error) => json!({"query_error": error.to_string()}),
-            }
-        };
-        json!({
-            "utc": rig.clock.utc_now().0,
-            "monotonic": rig.clock.monotonic_now().0,
-            "deadline_idle_events": rig.probe.registered_idle_events(Lane::Deadlines),
-            "deadline_health": rig.probe.lane_health(Lane::Deadlines).map(|detail| diagnostic_text(&detail, 512)),
-            "by_status": metadata("SELECT json_group_array(json_object('kind',kind,'status',status,'count',n,'min_ordinal',lo,'max_ordinal',hi,'min_position',pmin,'max_position',pmax,'min_high_water',hmin,'max_high_water',hmax,'min_completed_units',umin,'max_completed_units',umax,'last_error',error)) FROM (SELECT kind,status,count(*) n,min(ordinal) lo,max(ordinal) hi,min(position) pmin,max(position) pmax,min(high_water) hmin,max(high_water) hmax,min(completed_units) umin,max(completed_units) umax,substr(max(last_error),1,128) error FROM work_jobs GROUP BY kind,status ORDER BY kind,status LIMIT 18)"),
-            "incomplete": metadata("SELECT json_group_array(json_object('id',substr(id,1,128),'ordinal',ordinal,'kind',kind,'status',status,'position',position,'high_water',high_water,'completed_units',completed_units,'last_error',substr(last_error,1,128))) FROM (SELECT id,ordinal,kind,status,position,high_water,completed_units,last_error FROM work_jobs WHERE kind='send_attention' AND status<>'complete' ORDER BY ordinal LIMIT 20)"),
-            // Per-job retry deadlines are private monotonic driver state,
-            // not work_jobs columns. Lane health is the exposed retry view.
-        })
-    };
-    let barrier_started_at = Instant::now();
-    let attention_work_before = attention_work_diagnostic();
-    let mut last_kicked_idle = None;
-    let attention_work_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        wait_until(
-            "all fixture send_attention jobs to complete before releasing held terminal",
-            STEP,
-            || {
-                let (total, complete, outstanding): (i64, i64, i64) = rig.db().query_row(
-                "SELECT count(*),COALESCE(sum(status='complete'),0),COALESCE(sum(status<>'complete'),0) FROM work_jobs WHERE kind='send_attention'",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            ).unwrap();
-                if outstanding == 0 {
-                    return Some((total, complete));
-                }
-                // Setup-only stepping: completed small jobs otherwise wait
-                // for the next safety tick. One ordinary kick per observed
-                // finished pass keeps real worker quanta and backoff intact.
-                let idle = rig.probe.registered_idle_events(Lane::Deadlines);
-                if last_kicked_idle != Some(idle) {
-                    last_kicked_idle = Some(idle);
-                    rig.probe.kick_registered(Lane::Deadlines);
-                }
-                None
-            },
-        )
-    }));
-    let (attention_jobs, completed_jobs) = attention_work_result.unwrap_or_else(|failure| {
-        let diagnostic = format!(
-            "capacity attention-work timeout diagnostic={}",
-            json!({
-                "before": attention_work_before,
-                "after": attention_work_diagnostic(),
-            })
-        );
-        // The daemon owns stderr until Rig::drop restores it. Preserve this
-        // metadata alongside the fixture's captured original panic instead.
-        rig.panics
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(diagnostic);
-        std::panic::resume_unwind(failure)
-    });
-    let barrier_elapsed = barrier_started_at.elapsed();
-    assert_eq!(attention_jobs, completed_jobs);
-    assert!(
-        attention_jobs >= sent.len() as i64,
-        "the terminal source barrier includes every seeded send, not an empty projection"
-    );
-    // Diagnostic-only snapshots while the existing relay holds each real
-    // response. Fixed metadata and bounded descriptor identities omit bodies.
-    let diagnostic_state = || {
-        let db = rig.db();
-        let metadata = |sql: &str| -> Value {
-            match db.query_row(sql, [&rig.b], |row| row.get::<_, String>(0)) {
-                Ok(raw) => serde_json::from_str(&raw)
-                    .unwrap_or_else(|error| json!({"decode_error": error.to_string()})),
-                Err(error) => json!({"query_error": error.to_string()}),
-            }
-        };
-        json!({
-            "consumer": metadata("SELECT json_object('control',substr(control_state,1,2048),'outbox_more',outbox_more,'token',outbox_token,'retired',outbox_retired_mask,'confirmed',outbox_confirmed_mask,'descriptor_count',json_array_length(outbox_descriptors),'descriptors',json((SELECT json_group_array(json_object('kind',json_extract(value,'$.item.kind'),'id',json_extract(value,'$.item.id'),'warning',json_extract(value,'$.item.warning'),'epoch',json_extract(value,'$.item.epoch'),'version',json_extract(value,'$.item.attention_version'))) FROM (SELECT value FROM json_each(outbox_descriptors) LIMIT 32))),'publication_after',ordinary_publication_after,'publication_high',ordinary_publication_high,'passive_generation',ordinary_passive_generation,'initial_after',initial_after,'initial_high',initial_high,'context_after',context_after_seq,'context_high',context_high,'context_thread',substr(context_thread,1,128),'context_invitation_after',context_invitation_after,'context_invitation_high',context_invitation_high,'dirty_after',dirty_after,'dirty_high',dirty_high,'revisit_after_bytes',revisit_after_bytes,'revisit_after_ordinal',revisit_after_ordinal,'revisit_high_bytes',revisit_high_bytes,'revisit_high_ordinal',revisit_high_ordinal,'ordinary_done',ordinary_done,'ordinary_version',ordinary_version,'carry_count',json_array_length(ordinary_pending,'$.items'),'partial_bytes',length(ordinary_partial),'rotation',rotation) FROM invitation_presentation_consumers WHERE seat_id=?1 AND consumer='watch'"),
-            "relevance": metadata("SELECT COALESCE((SELECT json_object('fence',json_extract(proof_json,'$.fence'),'frontier',json_extract(proof_json,'$.frontier'),'native_version',json_extract(proof_json,'$.native_version'),'absent',json_extract(proof_json,'$.absent'),'witness',substr(COALESCE(json_extract(proof_json,'$.witness'),'null'),1,512),'slots',substr(COALESCE(json_extract(proof_json,'$.slots'),'null'),1,8192),'source_rotation',json_extract(proof_json,'$.source_rotation'),'fallback_rotation',json_extract(proof_json,'$.fallback_rotation')) FROM presentation_warning_proofs WHERE seat_id=?1 AND consumer='watch'),'{}')"),
-            "canonical": metadata("SELECT json_object('fence',(SELECT version FROM presentation_warning_fence WHERE singleton=1),'notice_frontier',(SELECT offered_ordinal FROM digest_notice_offer WHERE seat_id=?1),'confirming_invitations',(SELECT count(*) FROM presentation_confirming_invitations WHERE seat_id=?1),'pending_invitations',(SELECT count(*) FROM digest_pending_invitations WHERE seat_id=?1),'physical_pending_receipts',(SELECT count(*) FROM receipts WHERE seat_id=?1 AND state='pending'),'host_decision_max',(SELECT max(decision_seq) FROM host_instances))")
-        })
-    };
-    let diagnostic_before = diagnostic_state();
-    let before = capacity_normal_snapshot(&rig);
-    let carry: Value = serde_json::from_str(before["carry"].as_str().unwrap()).unwrap();
-    let retained = carry["items"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|item| item["content"]["id"] == sent[256])
-        .expect("ID257 is retained in the actual canonical normal carry");
-    assert_eq!(retained["content"]["content"]["body"], body);
     let terminal_exchange = relay.snapshot()[terminal_index].clone();
     let terminal_result = &terminal_exchange.reply.as_ref().unwrap()["result"]["Ok"]["data"];
     let terminal_page = &terminal_result["args"];
@@ -2868,10 +2862,9 @@ fn activation_v2_watch_full_pending_capacity_parks_until_real_channel_input() {
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| watch.wait_item(&sent[255])));
     if let Err(failure) = output_wait {
         let mut diagnostic = format!(
-            "capacity output diagnostic: terminal={} hold_ms={} barrier_ms={} before={} after={}",
+            "capacity output diagnostic: terminal={} hold_ms={} phase=terminal_output_before_barrier before={} after={}",
             terminal_shape,
             held_before_release.as_millis(),
-            barrier_elapsed.as_millis(),
             before_output_wait,
             output_diagnostic(&mut watch),
         );
@@ -2887,6 +2880,106 @@ fn activation_v2_watch_full_pending_capacity_parks_until_real_channel_input() {
             .push(diagnostic);
         std::panic::resume_unwind(failure);
     }
+    // Deliver the terminal reply before unrelated setup work can exhaust its
+    // RPC budget. Keep Attention credits at zero while the registered channel
+    // observes real background commits. Finish every send_attention job before
+    // forwarding the real frame, so it cannot restart a nonempty warning-source
+    // sweep. Include bootstrap jobs; no send/notify follows, and UTC stays frozen.
+    let attention_work_diagnostic = || {
+        let db = rig.db();
+        let metadata = |sql: &str| -> Value {
+            match db.query_row(sql, [], |row| row.get::<_, String>(0)) {
+                Ok(raw) => serde_json::from_str(&raw)
+                    .unwrap_or_else(|error| json!({"decode_error": error.to_string()})),
+                Err(error) => json!({"query_error": error.to_string()}),
+            }
+        };
+        json!({
+            "utc": rig.clock.utc_now().0,
+            "monotonic": rig.clock.monotonic_now().0,
+            "deadline_idle_events": rig.probe.registered_idle_events(Lane::Deadlines),
+            "deadline_health": rig.probe.lane_health(Lane::Deadlines).map(|detail| diagnostic_text(&detail, 512)),
+            "by_status": metadata("SELECT json_group_array(json_object('kind',kind,'status',status,'count',n,'min_ordinal',lo,'max_ordinal',hi,'min_position',pmin,'max_position',pmax,'min_high_water',hmin,'max_high_water',hmax,'min_completed_units',umin,'max_completed_units',umax,'last_error',error)) FROM (SELECT kind,status,count(*) n,min(ordinal) lo,max(ordinal) hi,min(position) pmin,max(position) pmax,min(high_water) hmin,max(high_water) hmax,min(completed_units) umin,max(completed_units) umax,substr(max(last_error),1,128) error FROM work_jobs GROUP BY kind,status ORDER BY kind,status LIMIT 18)"),
+            "incomplete": metadata("SELECT json_group_array(json_object('id',substr(id,1,128),'ordinal',ordinal,'kind',kind,'status',status,'position',position,'high_water',high_water,'completed_units',completed_units,'last_error',substr(last_error,1,128))) FROM (SELECT id,ordinal,kind,status,position,high_water,completed_units,last_error FROM work_jobs WHERE kind='send_attention' AND status<>'complete' ORDER BY ordinal LIMIT 20)"),
+            // Per-job retry deadlines are private monotonic driver state,
+            // not work_jobs columns. Lane health is the exposed retry view.
+        })
+    };
+    let attention_work_before = attention_work_diagnostic();
+    let mut last_kicked_idle = None;
+    let attention_work_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        wait_until(
+            "all fixture send_attention jobs to complete before forwarding Attention",
+            STEP,
+            || {
+                let (total, complete, outstanding): (i64, i64, i64) = rig.db().query_row(
+                "SELECT count(*),COALESCE(sum(status='complete'),0),COALESCE(sum(status<>'complete'),0) FROM work_jobs WHERE kind='send_attention'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            ).unwrap();
+                if outstanding == 0 {
+                    return Some((total, complete));
+                }
+                // Setup-only stepping: completed small jobs otherwise wait
+                // for the next safety tick. One ordinary kick per observed
+                // finished pass keeps real worker quanta and backoff intact.
+                let idle = rig.probe.registered_idle_events(Lane::Deadlines);
+                if last_kicked_idle != Some(idle) {
+                    last_kicked_idle = Some(idle);
+                    rig.probe.kick_registered(Lane::Deadlines);
+                }
+                None
+            },
+        )
+    }));
+    let (attention_jobs, completed_jobs) = attention_work_result.unwrap_or_else(|failure| {
+        let diagnostic = format!(
+            "capacity attention-work timeout diagnostic={}",
+            json!({
+                "before": attention_work_before,
+                "after": attention_work_diagnostic(),
+            })
+        );
+        // The daemon owns stderr until Rig::drop restores it. Preserve this
+        // metadata alongside the fixture's captured original panic instead.
+        rig.panics
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(diagnostic);
+        std::panic::resume_unwind(failure)
+    });
+    assert_eq!(attention_jobs, completed_jobs);
+    assert!(
+        attention_jobs >= sent.len() as i64,
+        "the terminal source barrier includes every seeded send, not an empty projection"
+    );
+    // Diagnostic-only snapshots before forwarding real Attention. Fixed
+    // metadata and bounded descriptor identities omit bodies.
+    let diagnostic_state = || {
+        let db = rig.db();
+        let metadata = |sql: &str| -> Value {
+            match db.query_row(sql, [&rig.b], |row| row.get::<_, String>(0)) {
+                Ok(raw) => serde_json::from_str(&raw)
+                    .unwrap_or_else(|error| json!({"decode_error": error.to_string()})),
+                Err(error) => json!({"query_error": error.to_string()}),
+            }
+        };
+        json!({
+            "consumer": metadata("SELECT json_object('control',substr(control_state,1,2048),'outbox_more',outbox_more,'token',outbox_token,'retired',outbox_retired_mask,'confirmed',outbox_confirmed_mask,'descriptor_count',json_array_length(outbox_descriptors),'descriptors',json((SELECT json_group_array(json_object('kind',json_extract(value,'$.item.kind'),'id',json_extract(value,'$.item.id'),'warning',json_extract(value,'$.item.warning'),'epoch',json_extract(value,'$.item.epoch'),'version',json_extract(value,'$.item.attention_version'))) FROM (SELECT value FROM json_each(outbox_descriptors) LIMIT 32))),'publication_after',ordinary_publication_after,'publication_high',ordinary_publication_high,'passive_generation',ordinary_passive_generation,'initial_after',initial_after,'initial_high',initial_high,'context_after',context_after_seq,'context_high',context_high,'context_thread',substr(context_thread,1,128),'context_invitation_after',context_invitation_after,'context_invitation_high',context_invitation_high,'dirty_after',dirty_after,'dirty_high',dirty_high,'revisit_after_bytes',revisit_after_bytes,'revisit_after_ordinal',revisit_after_ordinal,'revisit_high_bytes',revisit_high_bytes,'revisit_high_ordinal',revisit_high_ordinal,'ordinary_done',ordinary_done,'ordinary_version',ordinary_version,'carry_count',json_array_length(ordinary_pending,'$.items'),'partial_bytes',length(ordinary_partial),'rotation',rotation) FROM invitation_presentation_consumers WHERE seat_id=?1 AND consumer='watch'"),
+            "relevance": metadata("SELECT COALESCE((SELECT json_object('fence',json_extract(proof_json,'$.fence'),'frontier',json_extract(proof_json,'$.frontier'),'native_version',json_extract(proof_json,'$.native_version'),'absent',json_extract(proof_json,'$.absent'),'witness',substr(COALESCE(json_extract(proof_json,'$.witness'),'null'),1,512),'slots',substr(COALESCE(json_extract(proof_json,'$.slots'),'null'),1,8192),'source_rotation',json_extract(proof_json,'$.source_rotation'),'fallback_rotation',json_extract(proof_json,'$.fallback_rotation')) FROM presentation_warning_proofs WHERE seat_id=?1 AND consumer='watch'),'{}')"),
+            "canonical": metadata("SELECT json_object('fence',(SELECT version FROM presentation_warning_fence WHERE singleton=1),'notice_frontier',(SELECT offered_ordinal FROM digest_notice_offer WHERE seat_id=?1),'confirming_invitations',(SELECT count(*) FROM presentation_confirming_invitations WHERE seat_id=?1),'pending_invitations',(SELECT count(*) FROM digest_pending_invitations WHERE seat_id=?1),'physical_pending_receipts',(SELECT count(*) FROM receipts WHERE seat_id=?1 AND state='pending'),'host_decision_max',(SELECT max(decision_seq) FROM host_instances))")
+        })
+    };
+    let diagnostic_before = diagnostic_state();
+    let before = capacity_normal_snapshot(&rig);
+    let carry: Value = serde_json::from_str(before["carry"].as_str().unwrap()).unwrap();
+    let retained = carry["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["content"]["id"] == sent[256])
+        .expect("ID257 is retained in the actual canonical normal carry");
+    assert_eq!(retained["content"]["content"]["body"], body);
     for id in &sent {
         assert_eq!(rig.receipt_state(id), "pending");
     }
@@ -3554,6 +3647,211 @@ fn truncated_lazy_row_marker_names_only_body() {
     assert_eq!(rig.lazy_state(&id), "pending", "reading completes nothing");
 }
 
+/// ht-54r F1: a truncated ordinary message is refused by the mod's settlement, so the binding's
+/// cursor stays behind it. The agent's full `body <id>` read is a whole display of it: the
+/// calling binding's cursor passes it, so a later message the mod displays is no longer unread.
+/// The read settles nothing; the explicit `ack` that follows does.
+#[test]
+fn full_body_read_of_truncated_message_unblocks_binding_cursor() {
+    let rig = Rig::new();
+    let mut watch = rig.raw_watch(SESSION_B);
+    watch.wait_connected();
+    let long = rig.send_ordinary(&"t".repeat(9000));
+    let line = watch.wait_item(&long);
+    assert_eq!(line["truncated"], true, "{line}");
+    let refused = rig.ack_result(SESSION_B, "context", &long);
+    assert_eq!(refused["result"], "refused_terminal", "{refused}");
+    let (binding, _, _) = open_binding_of(&rig, SESSION_B).expect("SB binding");
+    let seq_long = sequence_of(&rig, &long);
+    assert!(
+        cursor_of(&rig, &binding).is_none_or(|seq| seq < seq_long),
+        "the refused display leaves the cursor behind it"
+    );
+    let steps = rig.marker_steps(line["body"].as_str().unwrap());
+    let out = rig.run_marker_step(&steps[0]);
+    assert_eq!(out.code, 0, "{:?}: {}{}", steps[0], out.stdout, out.stderr);
+    assert!(
+        !out.stdout.contains("more: "),
+        "one full read: {}",
+        out.stdout
+    );
+    assert_eq!(
+        cursor_of(&rig, &binding),
+        Some(seq_long),
+        "a full body read moves the reading binding's cursor past the message"
+    );
+    assert_eq!(rig.receipt_state(&long), "pending", "body settles nothing");
+    let later = rig.send_ordinary("after the long one");
+    watch.wait_item(&later);
+    let settled = rig.ack_result(SESSION_B, "context", &later);
+    assert_eq!(settled["result"], "settled", "{settled}");
+    let read_to = cursor_of(&rig, &binding);
+    assert!(
+        read_to.is_some_and(|seq| seq >= sequence_of(&rig, &later)),
+        "the later message is read: the cursor is no longer stuck: {read_to:?}"
+    );
+    let out = rig.run_marker_step(&steps[1]);
+    assert_eq!(out.code, 0, "{:?}: {}{}", steps[1], out.stdout, out.stderr);
+    assert_eq!(rig.receipt_state(&long), "acked");
+    assert!(
+        cursor_of(&rig, &binding) >= read_to,
+        "the explicit ACK of the fully read message never moves the cursor back"
+    );
+}
+
+/// ht-54r F1: the mod displayed a later message whole (and settled it) while the cursor was held
+/// behind the truncated one. That display ACK is this binding's own evidence, so the full
+/// `body` read of the truncated message moves the cursor past both.
+#[test]
+fn full_body_read_passes_later_message_the_binding_already_displayed() {
+    let rig = Rig::new();
+    let mut watch = rig.raw_watch(SESSION_B);
+    watch.wait_connected();
+    let long = rig.send_ordinary(&"t".repeat(9000));
+    let line = watch.wait_item(&long);
+    let refused = rig.ack_result(SESSION_B, "context", &long);
+    assert_eq!(refused["result"], "refused_terminal", "{refused}");
+    let later = rig.send_ordinary("displayed while held");
+    watch.wait_item(&later);
+    let settled = rig.ack_result(SESSION_B, "context", &later);
+    assert_eq!(settled["result"], "settled", "{settled}");
+    let (binding, _, _) = open_binding_of(&rig, SESSION_B).expect("SB binding");
+    assert!(
+        cursor_of(&rig, &binding).is_none_or(|seq| seq < sequence_of(&rig, &long)),
+        "held behind the truncated message"
+    );
+    let steps = rig.marker_steps(line["body"].as_str().unwrap());
+    let out = rig.run_marker_step(&steps[0]);
+    assert_eq!(out.code, 0, "{:?}: {}{}", steps[0], out.stdout, out.stderr);
+    let read_to = cursor_of(&rig, &binding);
+    assert!(
+        read_to.is_some_and(|seq| seq >= sequence_of(&rig, &later)),
+        "the full read passes the truncated message and the one already displayed: {read_to:?}"
+    );
+    assert_eq!(rig.receipt_state(&long), "pending", "body settles nothing");
+}
+
+/// ht-54r F1: like `inbox --json` and `inbox --machine`, a `--json` or `--machine` body read is
+/// read-only, even when whole; only the text display moves the reading binding's cursor.
+#[test]
+fn machine_and_json_body_reads_do_not_advance_binding_cursor() {
+    let rig = Rig::new();
+    let mut watch = rig.raw_watch(SESSION_B);
+    watch.wait_connected();
+    let long = rig.send_ordinary(&"j".repeat(9000));
+    let line = watch.wait_item(&long);
+    let refused = rig.ack_result(SESSION_B, "context", &long);
+    assert_eq!(refused["result"], "refused_terminal", "{refused}");
+    let (binding, _, _) = open_binding_of(&rig, SESSION_B).expect("SB binding");
+    let before = cursor_of(&rig, &binding);
+    let body_step = rig.marker_steps(line["body"].as_str().unwrap()).remove(0);
+    for flag in ["--json", "--machine"] {
+        let mut argv = body_step.clone();
+        argv.extend([
+            flag.to_owned(),
+            "--max-bytes".to_owned(),
+            "65536".to_owned(),
+        ]);
+        let out = rig.run_marker_step(&argv);
+        assert_eq!(out.code, 0, "{argv:?}: {}{}", out.stdout, out.stderr);
+        assert!(
+            out.stdout.matches('j').count() >= 9000,
+            "whole: {}",
+            out.stdout
+        );
+        assert_eq!(
+            cursor_of(&rig, &binding),
+            before,
+            "{flag} body read is read-only"
+        );
+    }
+    let out = rig.run_marker_step(&body_step);
+    assert_eq!(out.code, 0, "{body_step:?}: {}{}", out.stdout, out.stderr);
+    assert_eq!(cursor_of(&rig, &binding), Some(sequence_of(&rig, &long)));
+}
+
+/// ht-54r F1: only a full read advances. A first chunk, or a read that starts at an explicit
+/// offset and reaches the end, leaves the cursor where it was; following the body's own
+/// continuation to the end is a full read.
+#[test]
+fn partial_body_read_does_not_advance_binding_cursor() {
+    let rig = Rig::new();
+    let mut watch = rig.raw_watch(SESSION_B);
+    watch.wait_connected();
+    let long = rig.send_ordinary(&"p".repeat(9000));
+    let line = watch.wait_item(&long);
+    let refused = rig.ack_result(SESSION_B, "context", &long);
+    assert_eq!(refused["result"], "refused_terminal", "{refused}");
+    let (binding, _, _) = open_binding_of(&rig, SESSION_B).expect("SB binding");
+    let before = cursor_of(&rig, &binding);
+    let seq_long = sequence_of(&rig, &long);
+    let body_step = rig.marker_steps(line["body"].as_str().unwrap()).remove(0);
+    let mut first = body_step.clone();
+    first.extend(["--max-bytes".to_owned(), "4096".to_owned()]);
+    let out = rig.run_marker_step(&first);
+    assert_eq!(out.code, 0, "{first:?}: {}{}", out.stdout, out.stderr);
+    let more = out
+        .stdout
+        .lines()
+        .find_map(|l| l.strip_prefix("more: "))
+        .unwrap_or_else(|| panic!("a partial read names its continuation: {}", out.stdout))
+        .to_owned();
+    assert_eq!(
+        cursor_of(&rig, &binding),
+        before,
+        "a first chunk is partial"
+    );
+    let mut tail = body_step.clone();
+    tail.extend(["--offset".to_owned(), "8000".to_owned()]);
+    let out = rig.run_marker_step(&tail);
+    assert_eq!(out.code, 0, "{tail:?}: {}{}", out.stdout, out.stderr);
+    assert!(!out.stdout.contains("more: "), "{}", out.stdout);
+    assert_eq!(
+        cursor_of(&rig, &binding),
+        before,
+        "a read from an explicit offset skipped the start"
+    );
+    let mut argv = shlex::split(&more).unwrap();
+    for _ in 0..8 {
+        let out = rig.run_marker_step(&argv);
+        assert_eq!(out.code, 0, "{argv:?}: {}{}", out.stdout, out.stderr);
+        match out.stdout.lines().find_map(|l| l.strip_prefix("more: ")) {
+            Some(next) => {
+                assert_eq!(cursor_of(&rig, &binding), before, "still partial");
+                argv = shlex::split(next).unwrap();
+            }
+            None => break,
+        }
+    }
+    assert_eq!(
+        cursor_of(&rig, &binding),
+        Some(seq_long),
+        "following the continuation to the end is a full read"
+    );
+    assert_eq!(rig.receipt_state(&long), "pending", "body settles nothing");
+}
+
+/// Main review I1: on a `wake_on: all` seat the real watch child streams a lazy message as a
+/// `message` line with no ACK and `wakes: true`, which the mod treats as idle-wake work; a plain
+/// lazy row on the same seat before the opt-in streams as `lazy` with no `wakes`.
+#[test]
+fn wake_on_all_promoted_lazy_line_carries_wakes() {
+    let rig = Rig::new();
+    let mut watch = rig.raw_watch(SESSION_B);
+    watch.wait_connected();
+    let quiet = rig.send_lazy("before the opt-in");
+    let line = watch.wait_item(&quiet);
+    assert_eq!(line["kind"], "lazy", "{line}");
+    assert!(line.get("wakes").is_none(), "{line}");
+    rig.cli(Some((&rig.b, PANE_B)), &["wake-on", "all"])
+        .data("wake-on");
+    let loud = rig.send_lazy("after the opt-in");
+    let line = watch.wait_item(&loud);
+    assert_eq!(line["kind"], "message", "{line}");
+    assert_eq!(line["ack_required"], false, "{line}");
+    assert_eq!(line["wakes"], true, "{line}");
+}
+
 /// Spec D7: while a channel is live no native wake prompt is sent for the
 /// seat, and the pending item stays pending until acked.
 #[test]
@@ -4163,45 +4461,25 @@ fn stale_attention_is_retracted_after_accept_and_after_a_notice_offer() {
     assert!(watch.running(), "the watch child died");
 }
 
-/// Snapshot of every file below `dir` (the seat's local context hints).
-fn snapshot(dir: &std::path::Path) -> Vec<(PathBuf, Vec<u8>)> {
-    fn walk(dir: &std::path::Path, out: &mut Vec<(PathBuf, Vec<u8>)>) {
-        for entry in fs::read_dir(dir).into_iter().flatten().flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                walk(&path, out);
-            } else if let Ok(bytes) = fs::read(&path) {
-                out.push((path, bytes));
-            }
-        }
-    }
-    let mut out = Vec::new();
-    walk(dir, &mut out);
-    out.sort();
-    out
-}
-
-/// Spec D2/D6 `/clear`: the lifecycle check-in rotates the binding
-/// generation and closes the channel (`binding_changed`); an ack naming the
-/// cleared session is `stale_generation` and settles nothing; the new
-/// session's watch registers and gets the still-pending item re-streamed.
+/// Spec D2/D6 `/clear`: the new session supersedes the cleared session's binding
+/// (session-keyed bindings: the generation no longer rotates) and closes its channel
+/// (`binding_changed`); the new session's watch registers and gets the still-pending item
+/// re-streamed, and its ack settles.
 #[test]
-fn clear_rebind_stale_generation_ack_refused_and_restreamed() {
+fn clear_rebind_pending_item_restreamed_to_new_session() {
     let rig = Rig::new();
     let mut old = rig.watch(SESSION_B);
     old.wait_connected();
     let id = rig.send_ordinary("pending across /clear");
     old.wait_item(&id);
     rig.set_session_b("SB2");
-    rig.session_start_hook(PANE_B, "SB2", "clear");
+    rig.session_start_hook_in_process_of(PANE_B, "SB2", "clear", SESSION_B);
     let closing = old.wait_line("the binding_changed close", STEP, |line| {
         line["kind"] == "status" && line["state"] == "closing"
     });
     assert_eq!(closing["reason"], "binding_changed", "{closing}");
     assert_eq!(old.exit_code(STEP), 0);
     rig.wait_channel(Some("rebind_grace"));
-    let stale = rig.ack_result(SESSION_B, "context", &id);
-    assert_eq!(stale["result"], "stale_generation", "{stale}");
     assert_eq!(rig.receipt_state(&id), "pending");
     let mut new = rig.watch("SB2");
     new.wait_connected();
@@ -4215,31 +4493,119 @@ fn clear_rebind_stale_generation_ack_refused_and_restreamed() {
     assert_eq!(settled["result"], "settled", "{settled}");
 }
 
-/// Spec D7 rebind grace: the SessionStart check-in that rotated the
-/// generation omits its digest (the seat still counts as live), no native
-/// prompt follows, and only when the grace lapses without a registration is
-/// the wake lane kicked.
+/// The open binding of native session `session` on B's seat: `(binding_id, liveness,
+/// disconnect_reason)`. `None` when the seat has no such open binding.
+fn open_binding_of(rig: &Rig, session: &str) -> Option<(String, String, Option<String>)> {
+    use rusqlite::OptionalExtension;
+    rig.db()
+        .query_row(
+            "SELECT binding_id,liveness,disconnect_reason FROM occupant_bindings \
+             WHERE seat_id=?1 AND native_session=?2 AND ended_at IS NULL",
+            [rig.b.as_str(), session],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()
+        .unwrap()
+}
+
+/// The binding's read cursor in the rig's thread.
+fn cursor_of(rig: &Rig, binding: &str) -> Option<i64> {
+    use rusqlite::OptionalExtension;
+    rig.db()
+        .query_row(
+            "SELECT seq FROM binding_cursors WHERE binding_id=?1 AND thread_id=?2",
+            [binding, rig.thread.as_str()],
+            |row| row.get(0),
+        )
+        .optional()
+        .unwrap()
+}
+
+fn sequence_of(rig: &Rig, message: &str) -> i64 {
+    rig.db()
+        .query_row(
+            "SELECT sequence FROM messages WHERE id=?1",
+            [message],
+            |row| row.get(0),
+        )
+        .unwrap()
+}
+
+/// `/clear` is a new binding (run.md parked escalation, codeBuckets.review; spec 1.3 and 1.5:
+/// the cleared session's binding is superseded by the new session's), and its cursors start at
+/// the seat maximum (spec 2 Cursors). Mail the old binding already displayed is therefore
+/// unread for nobody: the new binding's SessionStart carries no digest, no composer wake fires
+/// (spec 3 Wake: only mail unread by that binding wakes it), and the old binding's rebind grace
+/// expiring changes nothing.
 #[test]
-fn clear_within_rebind_grace_emits_no_session_start_digest_and_no_native_kick() {
+fn clear_new_binding_gets_no_digest_or_wake_for_mail_already_read() {
     let rig = Rig::new();
     let mut watch = rig.watch(SESSION_B);
     watch.wait_connected();
-    let id = rig.send_ordinary("pending across /clear");
+    let id = rig.send_ordinary("read before /clear");
+    watch.wait_item(&id);
+    let inbox = rig.cli_text_b(&["inbox"]);
+    assert_eq!(inbox.code, 0, "{}{}", inbox.stdout, inbox.stderr);
+    assert!(
+        inbox.stdout.contains("read before /clear"),
+        "{}",
+        inbox.stdout
+    );
+    let (old_binding, _, _) = open_binding_of(&rig, SESSION_B).expect("SB binding");
+    assert_eq!(
+        cursor_of(&rig, &old_binding),
+        Some(sequence_of(&rig, &id)),
+        "SB displayed the message, so its cursor is at that sequence"
+    );
+    let mark = rig.host.mark();
+    rig.set_session_b("SB2");
+    let started = rig.session_start_hook_in_process_of(PANE_B, "SB2", "clear", SESSION_B);
+    // Without a live channel for the new binding the hook still prints the digest line, but it is
+    // empty: nothing pending (the text inbox ACKed the displayed message).
+    assert!(
+        started
+            .stdout
+            .contains("attention digest: invitations=0; receipts=0; warnings=0"),
+        "expected an empty digest line: {}",
+        started.stdout
+    );
+    let (_, old_liveness, old_reason) = open_binding_of(&rig, SESSION_B).expect("SB binding");
+    assert_eq!(old_liveness, "disconnected");
+    assert_eq!(old_reason.as_deref(), Some("superseded"));
+    let (new_binding, new_liveness, _) = open_binding_of(&rig, "SB2").expect("SB2 binding");
+    assert_eq!(new_liveness, "connected");
+    assert_ne!(new_binding, old_binding, "/clear opens a new binding");
+    rig.assert_no_prompt(mark, QUIET);
+    // The quiet window gave what was in flight time to finish, so jump at once.
+    rig.clock.advance(31_000);
+    rig.wait_channel(None);
+    rig.assert_no_prompt(mark, QUIET);
+}
+
+/// The other half of the `/clear` model (same sources as above): mail no binding displayed is
+/// unread for the new binding too, since its seat-maximum cursor is short of it. The new
+/// binding's SessionStart digests it and the composer wake fires at once, with no rebind-grace
+/// suppression (the clock never passes `MOD_REBIND_GRACE_MS`).
+#[test]
+fn clear_new_binding_digests_and_wakes_for_its_unread_mail_without_grace() {
+    let rig = Rig::new();
+    let mut watch = rig.watch(SESSION_B);
+    watch.wait_connected();
+    let id = rig.send_ordinary("only the watch saw this");
     watch.wait_item(&id);
     let mark = rig.host.mark();
     rig.set_session_b("SB2");
-    let started = rig.session_start_hook(PANE_B, "SB2", "clear");
+    let started = rig.session_start_hook_in_process_of(PANE_B, "SB2", "clear", SESSION_B);
     assert!(
-        !started.stdout.contains(DIGEST_MARK),
-        "digest during rebind grace: {}",
+        started.stdout.contains(DIGEST_MARK),
+        "no digest for mail unread by the new binding: {}",
         started.stdout
     );
-    rig.wait_channel(Some("rebind_grace"));
-    rig.assert_no_prompt(mark, QUIET);
-    // The quiet window just observed already gave what was in flight time
-    // to finish (it is longer than `Rig::advance`'s pause), so jump at once.
-    rig.clock.advance(31_000);
-    rig.wait_channel(None);
+    assert!(
+        started.stdout.contains("receipts=1 ["),
+        "the digest does not list the unread mail's pending receipt: {}",
+        started.stdout
+    );
     rig.wait_prompt(mark, PANE_B);
     assert_eq!(rig.receipt_state(&id), "pending");
 }
@@ -4273,46 +4639,41 @@ fn reload_reack_same_generation_settles() {
     assert_eq!(result["result"], "settled", "{result}");
 }
 
-/// Spec D6 resume: `/resume` keeps the native session id but rotates the
-/// generation. An ack that still carries the previous generation (the local
-/// hint is stale) is accepted for the same native session and settles; the
-/// daemon decides against its canonical binding, not the client's claim.
+/// `/resume` keeps the native session, so it is a lifecycle check-in of the same binding
+/// (spec 1.3, `Resolution::Existing`): no `binding_changed` close, the channel and its binding
+/// generation stay as they were, and the re-ACK settles on that binding.
 #[test]
-fn resume_reack_settles() {
+fn resume_keeps_binding_and_reack_settles() {
     let rig = Rig::new();
     let mut old = rig.watch(SESSION_B);
     old.wait_connected();
     let id = rig.send_ordinary("delivered before the resume");
     old.wait_item(&id);
-    let contexts = rig.paths.instance_dir.join("contexts");
-    let before = snapshot(&contexts);
-    let generation = rig.channels()["channels"][0]["binding_generation"]
-        .as_u64()
-        .unwrap();
+    let (binding, _, _) = open_binding_of(&rig, SESSION_B).expect("SB binding");
+    let channel = rig.channels()["channels"][0].clone();
+    assert_eq!(channel["state"], "live", "{channel}");
     rig.session_start_hook(PANE_B, SESSION_B, "resume");
-    let closing = old.wait_line("the binding_changed close", STEP, |line| {
+    old.assert_no_line("a closing status", QUIET, |line| {
         line["kind"] == "status" && line["state"] == "closing"
     });
-    assert_eq!(closing["reason"], "binding_changed", "{closing}");
-    let mut new = rig.watch(SESSION_B);
-    new.wait_connected();
-    new.wait_item(&id);
-    rig.wait_channel(Some("live"));
-    let rotated = rig.channels()["channels"][0]["binding_generation"]
-        .as_u64()
+    let after = rig.channels()["channels"][0].clone();
+    assert_eq!(after["state"], "live", "{after}");
+    assert_eq!(
+        after["binding_generation"], channel["binding_generation"],
+        "resume does not change the binding generation"
+    );
+    let open: i64 = rig
+        .db()
+        .query_row(
+            "SELECT count(*) FROM occupant_bindings WHERE seat_id=?1 AND native_session=?2 AND ended_at IS NULL",
+            [rig.b.as_str(), SESSION_B],
+            |row| row.get(0),
+        )
         .unwrap();
-    assert!(rotated > generation, "resume rotates the generation");
-    // The ack process still sees the pre-resume context (previous generation).
-    let after = snapshot(&contexts);
-    assert_ne!(before, after, "the resume hook updated the local context");
-    for (path, _) in &after {
-        if !before.iter().any(|(old, _)| old == path) {
-            fs::remove_file(path).unwrap();
-        }
-    }
-    for (path, bytes) in &before {
-        fs::write(path, bytes).unwrap();
-    }
+    assert_eq!(open, 1, "exactly one open SB binding");
+    let (same, liveness, _) = open_binding_of(&rig, SESSION_B).expect("SB binding");
+    assert_eq!(same, binding, "resume keeps the same binding");
+    assert_eq!(liveness, "connected");
     let result = rig.ack_result(SESSION_B, "context", &id);
     assert_eq!(result["result"], "settled", "{result}");
     assert_eq!(rig.receipt_state(&id), "acked");
@@ -4599,13 +4960,20 @@ fn notice_published_while_live_reaches_the_next_pre_tool_use_once() {
     assert!(watch.running(), "the watch child died");
 }
 
-/// Spec D2: watch connections have their own budget of 64 (outside the 32
-/// ordinary slots). With 64 seats holding a channel, a 65th registration is
-/// refused `busy` (retryable, exit 2) while ordinary requests are still served.
+/// Spec D2 end to end: once the registry's watch budget is full (64 in
+/// production; 4 here, the 64 bound is pinned by the transport and registry
+/// unit tests), a further registration is refused `busy` (retryable, exit 2)
+/// while ordinary requests are still served.
 #[test]
 fn watch_admission_over_cap_refuses_busy() {
-    const CAP: usize = herdr_threads::protocol::watch::MAX_WATCH_CONNECTIONS;
-    let rig = Rig::new();
+    const CAP: usize = 4;
+    let deadline = Instant::now() + Duration::from_secs(25);
+    let rig = Rig::with_config(
+        None,
+        ServiceConfig::default()
+            .with_watch_connection_cap(CAP)
+            .unwrap(),
+    );
     let extra: Vec<(String, String)> = (0..CAP)
         .map(|n| (format!("w1:p{}", n + 3), format!("X{n}")))
         .collect();
@@ -4617,61 +4985,55 @@ fn watch_admission_over_cap_refuses_busy() {
             .map(|(n, (id, session))| claude(id, &format!("term-x{n}"), session)),
     );
     rig.host.set_panes(panes);
-    // Register the extra seats through their SessionStart hooks, four at a
-    // time: the daemon commits the check-ins one at a time, so wider batches
-    // (measured: 8 and 16) only queue the hooks past their budgets (an
-    // uncommitted check-in, retried below) and are no faster overall.
-    for chunk in extra.chunks(4) {
-        std::thread::scope(|scope| {
-            for (id, session) in chunk {
-                let rig = &rig;
-                scope.spawn(move || rig.session_start_hook(id, session, "startup"));
-            }
-        });
+    // Register the extra seats through their SessionStart hooks.
+    for (id, session) in &extra {
+        rig.session_start_hook(id, session, "startup");
     }
-    // The holders' `watch` children start sixteen at a time (inside the 32
-    // ordinary request slots their registration also uses: all 64 at once
-    // drew `daemon_unavailable` refusals); each first answer is judged once
-    // its chunk was spawned, and a refusal the mod would retry is retried.
+    assert!(
+        Instant::now() < deadline,
+        "hook registration ran past the test deadline"
+    );
     let spawn_holder = |id: &str, session: &str| {
         Watch::spawn(rig.command(
             Some(id),
             &["watch", "--harness", "claude", "--session", session],
         ))
     };
-    let mut holders: Vec<Watch> = Vec::with_capacity(CAP);
-    for chunk in extra.chunks(16) {
-        let mut spawned: Vec<Watch> = chunk
-            .iter()
-            .map(|(id, session)| spawn_holder(id, session))
-            .collect();
-        for (holder, (id, session)) in spawned.iter_mut().zip(chunk) {
-            for _ in 0..10 {
-                let first = holder.peek_first(STEP);
-                let reason = first
-                    .as_ref()
-                    .filter(|line| line["kind"] == "status" && line["state"] == "refused")
-                    .and_then(|line| line["reason"].as_str().map(str::to_owned));
-                match reason.as_deref() {
-                    // A hook that missed its budget under load left its
-                    // check-in uncommitted; run it again, as the next hook
-                    // would.
-                    Some("no_binding") => {
-                        rig.session_start_hook(id, session, "startup");
-                    }
-                    // Exit 1: the mod restarts the watch.
-                    Some("daemon_unavailable" | "error") => {}
-                    _ => break,
+    let mut spawned: Vec<Watch> = extra
+        .iter()
+        .map(|(id, session)| spawn_holder(id, session))
+        .collect();
+    for (holder, (id, session)) in spawned.iter_mut().zip(&extra) {
+        for _ in 0..5 {
+            let first = holder.peek_first(STEP);
+            let reason = first
+                .as_ref()
+                .filter(|line| line["kind"] == "status" && line["state"] == "refused")
+                .and_then(|line| line["reason"].as_str().map(str::to_owned));
+            match reason.as_deref() {
+                // A hook that missed its budget under load left its check-in
+                // uncommitted; run it again, as the next hook would.
+                Some("no_binding") => {
+                    rig.session_start_hook(id, session, "startup");
                 }
-                std::thread::sleep(Duration::from_millis(150));
-                *holder = spawn_holder(id, session);
+                // Exit 1: the mod restarts the watch.
+                Some("daemon_unavailable" | "error") => {}
+                _ => break,
             }
-            holder.wait_connected();
+            std::thread::sleep(Duration::from_millis(150));
+            *holder = spawn_holder(id, session);
         }
-        holders.append(&mut spawned);
+        holder.wait_connected();
     }
+    let mut holders = spawned;
+    assert!(
+        Instant::now() < deadline,
+        "the holders' connections ran past the test deadline"
+    );
     assert_eq!(rig.channels()["live_channels"], CAP, "{}", rig.channels());
-    let mut over = rig.watch(SESSION_B);
+    let mut over = rig
+        .try_watch(PANE_B, SESSION_B, &[], 3)
+        .expect("the SessionStart check-in never committed for the over-cap seat");
     let refusal = over.wait_line("the busy refusal", STEP, |line| {
         line["kind"] == "status" && line["state"] == "refused"
     });
@@ -4685,8 +5047,12 @@ fn watch_admission_over_cap_refuses_busy() {
     drop(freed);
     rig.advance(31_000);
     wait_until("the freed slot to be usable", STEP, || {
-        let mut retry = rig.watch(SESSION_B);
-        let line = retry.wait_line("a registration answer", STEP, |line| {
+        assert!(
+            Instant::now() < deadline,
+            "the freed slot probe ran past the test deadline"
+        );
+        let mut retry = rig.try_watch(PANE_B, SESSION_B, &[], 1)?;
+        let line = retry.wait_line("a registration answer", Duration::from_secs(5), |line| {
             line["kind"] == "status"
         });
         (line["state"] == "connected").then(|| drop(retry))
@@ -4706,8 +5072,6 @@ fn watch_admission_over_cap_refuses_busy() {
 /// submit it into an idle session), while the affected seat's watch does.
 #[test]
 fn other_seat_overdue_transitions_raise_no_mod_attention_for_a_bystander() {
-    const PANE_C: &str = "w1:p3";
-    const SESSION_C: &str = "SC";
     let rig = Rig::new();
     rig.host.set_panes(vec![
         pane(PANE_A, "term-a"),

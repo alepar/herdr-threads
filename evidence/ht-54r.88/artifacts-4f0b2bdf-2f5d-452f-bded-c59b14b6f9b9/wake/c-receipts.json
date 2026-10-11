@@ -1,0 +1,54 @@
+{
+  "N2": {
+    "actor": "s72ZivhYW",
+    "observation": {
+      "action_provenance": "cooperative_hook_delivery",
+      "binding_generation": 2,
+      "decided_at": 1791740927904,
+      "execution": "0741afbc-a171-4916-9eae-9e07f66a8ce3",
+      "harness": "agy",
+      "host_boot": "herdr-server:pid=17325:start=1791740857.084550:uid=501",
+      "observed_at": 1791740927904,
+      "provenance": "cooperative_top_level",
+      "session": "4d2c8826-109d-40f1-b7f4-213720dab85f",
+      "target_generation": 1,
+      "via": "transcript"
+    },
+    "provenance": "cooperative_hook_delivery",
+    "state": "acked"
+  },
+  "tables": {
+    "receipt_state": [
+      {
+        "ack_actor_seat_id": "s72ZivhYW",
+        "ack_generation": 2,
+        "ack_observation": "{\"binding_generation\":2,\"decided_at\":1791740900574,\"execution\":\"0741afbc-a171-4916-9eae-9e07f66a8ce3\",\"harness\":\"agy\",\"host_boot\":\"herdr-server:pid=17325:start=1791740857.084550:uid=501\",\"observed_at\":1791740900574,\"provenance\":\"cooperative_top_level\",\"session\":\"4d2c8826-109d-40f1-b7f4-213720dab85f\",\"target_generation\":1}",
+        "ack_required": 1,
+        "acked_at": 1791740900574,
+        "available_at": 1791740872583,
+        "deadline_at": 1791741172583,
+        "message_id": "mdd3jVTac",
+        "retired_at": null,
+        "seat_id": "s72ZivhYW",
+        "soft_poked_at": null,
+        "state": "acked",
+        "warning_message_id": null
+      },
+      {
+        "ack_actor_seat_id": "s72ZivhYW",
+        "ack_generation": 2,
+        "ack_observation": "{\"action_provenance\":\"cooperative_hook_delivery\",\"binding_generation\":2,\"decided_at\":1791740927904,\"execution\":\"0741afbc-a171-4916-9eae-9e07f66a8ce3\",\"harness\":\"agy\",\"host_boot\":\"herdr-server:pid=17325:start=1791740857.084550:uid=501\",\"observed_at\":1791740927904,\"provenance\":\"cooperative_top_level\",\"session\":\"4d2c8826-109d-40f1-b7f4-213720dab85f\",\"target_generation\":1,\"via\":\"transcript\"}",
+        "ack_required": 1,
+        "acked_at": 1791740927904,
+        "available_at": 1791740918907,
+        "deadline_at": 1791741218907,
+        "message_id": "mFm9YdRiq",
+        "retired_at": null,
+        "seat_id": "s72ZivhYW",
+        "soft_poked_at": null,
+        "state": "acked",
+        "warning_message_id": null
+      }
+    ]
+  }
+}

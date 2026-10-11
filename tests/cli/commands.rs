@@ -3,11 +3,32 @@ use super::*;
 #[test]
 fn doctor_debug_and_fix_are_scoped_to_doctor() {
     let plain = parse_argv(["herdr-threads", "doctor"]).unwrap();
-    assert!(matches!(plain.action, CliAction::Doctor { debug: false, fix: false, .. }));
+    assert!(matches!(
+        plain.action,
+        CliAction::Doctor {
+            debug: false,
+            fix: false,
+            ..
+        }
+    ));
     let debug = parse_argv(["herdr-threads", "doctor", "--debug"]).unwrap();
-    assert!(matches!(debug.action, CliAction::Doctor { debug: true, fix: false, .. }));
+    assert!(matches!(
+        debug.action,
+        CliAction::Doctor {
+            debug: true,
+            fix: false,
+            ..
+        }
+    ));
     let fix = parse_argv(["herdr-threads", "doctor", "fix", "--json"]).unwrap();
-    assert!(matches!(fix.action, CliAction::Doctor { debug: false, fix: true, .. }));
+    assert!(matches!(
+        fix.action,
+        CliAction::Doctor {
+            debug: false,
+            fix: true,
+            ..
+        }
+    ));
     assert_eq!(fix.output.format, OutputFormat::Json);
     assert!(parse_argv(["herdr-threads", "doctor", "repair"]).is_err());
 }
@@ -62,7 +83,14 @@ fn bounded_collection_routes_parse_with_exact_filters() {
             |c| matches!(c,WireCommand::Inbox(q) if q.seat.as_ref().is_some_and(|v|v.as_str()=="s1") && q.page.limit==7),
         ),
         (
-            vec!["herdr-threads", "warnings", "--active", "t1", "--limit", "7"],
+            vec![
+                "herdr-threads",
+                "warnings",
+                "--active",
+                "t1",
+                "--limit",
+                "7",
+            ],
             |c| matches!(c,WireCommand::ActiveWarnings(q) if q.thread.as_str()=="t1" && q.page.limit==7),
         ),
     ];
@@ -387,6 +415,8 @@ fn claim() -> crate::protocol::authority::CallerClaim {
         native_session: NativeSessionId::new("native-1"),
         execution: ExecutionId::new("execution-1"),
         target: HostTargetId::new("pane-1"),
+        agent_id: None,
+        liveness: None,
     }
 }
 
@@ -482,7 +512,11 @@ fn documented_read_table_dispatches_to_stub_client() {
 #[test]
 fn warnings_route_defaults_to_caller_and_requires_valid_page() {
     use crate::protocol::commands::Command;
-    assert!(parse_argv(["herdr-threads", "warnings"]).unwrap().caller_read_default);
+    assert!(
+        parse_argv(["herdr-threads", "warnings"])
+            .unwrap()
+            .caller_read_default
+    );
     assert!(parse_argv(["herdr-threads", "warnings", "--seat", "s1", "--limit", "0"]).is_err());
     let parsed = parse_argv(["herdr-threads", "warnings", "--seat", "s1", "--limit", "7"]).unwrap();
     assert!(
@@ -531,29 +565,83 @@ fn revised_directory_accept_and_body_routes_are_typed() {
 fn required_acceptance_names_the_displayed_episode_and_revision() {
     use crate::protocol::commands::Command;
     let parsed = parse_argv([
-        "herdr-threads", "accept-required", "thread-1", "--invitation", "invite-1",
-        "--requirement", "requirement-1", "--revision", "4",
-    ]).unwrap();
-    let CliAction::Mutation(spec) = parsed.action else { panic!("expected mutation") };
-    let Command::AcceptRequired(accept) = spec.into_command(
-        Some(claim()), crate::protocol::ids::OperationId::new("accept-op")
-    ).unwrap() else { panic!("required acceptance must keep its wire kind") };
+        "herdr-threads",
+        "accept-required",
+        "thread-1",
+        "--invitation",
+        "invite-1",
+        "--requirement",
+        "requirement-1",
+        "--revision",
+        "4",
+    ])
+    .unwrap();
+    let CliAction::Mutation(spec) = parsed.action else {
+        panic!("expected mutation")
+    };
+    let Command::AcceptRequired(accept) = spec
+        .into_command(
+            Some(claim()),
+            crate::protocol::ids::OperationId::new("accept-op"),
+        )
+        .unwrap()
+    else {
+        panic!("required acceptance must keep its wire kind")
+    };
     assert_eq!(accept.thread.as_str(), "thread-1");
     assert_eq!(accept.invitation.as_str(), "invite-1");
     assert_eq!(accept.requirement.as_str(), "requirement-1");
     assert_eq!(accept.expected_revision, 4);
-    assert!(parse_argv(["herdr-threads", "accept-required", "thread-1", "--invitation", "invite-1", "--requirement", "requirement-1", "--revision", "0"]).is_err());
+    assert!(
+        parse_argv([
+            "herdr-threads",
+            "accept-required",
+            "thread-1",
+            "--invitation",
+            "invite-1",
+            "--requirement",
+            "requirement-1",
+            "--revision",
+            "0"
+        ])
+        .is_err()
+    );
 }
 
 #[test]
 fn operator_service_recovery_uses_observed_boot_and_generation() {
     use crate::protocol::commands::Command;
     let inspect = parse_argv(["herdr-threads", "service", "inspect"]).unwrap();
-    assert!(matches!(inspect.action, CliAction::Wire(Command::ServiceInspect)));
+    assert!(matches!(
+        inspect.action,
+        CliAction::Wire(Command::ServiceInspect)
+    ));
     let boot = "00000000-0000-4000-8000-000000000001";
-    let disconnect = parse_argv(["herdr-threads", "human", "service", "disconnect", "--expected-boot", boot, "--expected-generation", "7"]).unwrap();
-    assert!(matches!(disconnect.action, CliAction::Wire(Command::ServiceDisconnect(request)) if request.expected_boot == boot && request.expected_generation == 7));
-    assert!(parse_argv(["herdr-threads", "human", "service", "disconnect", "--expected-boot", boot]).is_err());
+    let disconnect = parse_argv([
+        "herdr-threads",
+        "human",
+        "service",
+        "disconnect",
+        "--expected-boot",
+        boot,
+        "--expected-generation",
+        "7",
+    ])
+    .unwrap();
+    assert!(
+        matches!(disconnect.action, CliAction::Wire(Command::ServiceDisconnect(request)) if request.expected_boot == boot && request.expected_generation == 7)
+    );
+    assert!(
+        parse_argv([
+            "herdr-threads",
+            "human",
+            "service",
+            "disconnect",
+            "--expected-boot",
+            boot
+        ])
+        .is_err()
+    );
 }
 
 #[test]
@@ -848,21 +936,29 @@ fn documented_mutations_dispatch_exact_typed_command_to_stub() {
             &["invite", "t1", "--seat", "s1", "--operator"],
             "operator_orphan_invite",
         ),
-        (
-            &["seat", "retire", "s1", "--operator"],
-            "operator_retire",
-        ),
+        (&["seat", "retire", "s1", "--operator"], "operator_retire"),
         (
             &[
-                "seat", "rebind", "s1", "--pane", "w1:p1", "--replace", "s2", "--operator",
+                "seat",
+                "rebind",
+                "s1",
+                "--pane",
+                "w1:p1",
+                "--replace",
+                "s2",
+                "--operator",
             ],
             "operator_replace",
         ),
     ];
     let mut stub = Stub(vec![]);
     for &(args, expected) in rows {
-        let parsed =
-            parse_argv(std::iter::once("herdr-threads").chain(expected.starts_with("operator_").then_some("human")).chain(args.iter().copied())).unwrap();
+        let parsed = parse_argv(
+            std::iter::once("herdr-threads")
+                .chain(expected.starts_with("operator_").then_some("human"))
+                .chain(args.iter().copied()),
+        )
+        .unwrap();
         assert!(matches!(parsed.action, CliAction::Mutation(_)), "{args:?}");
         dispatch(
             freeze_thread_id(parsed),
@@ -1070,7 +1166,11 @@ fn local_composition_error_names_skill() {
     let parsed = parse_argv(["herdr-threads", "--skill"]).unwrap();
     let err = dispatch(freeze_thread_id(parsed), &mut Stub, None, None).unwrap_err();
     assert!(err.detail.contains("skill"), "{}", err.detail);
-    assert!(err.detail.contains("launch") && err.detail.contains("setup"), "{}", err.detail);
+    assert!(
+        err.detail.contains("launch") && err.detail.contains("setup"),
+        "{}",
+        err.detail
+    );
 }
 
 #[test]
@@ -1084,19 +1184,36 @@ fn help_names_exact_ack_separate_accept_and_optional_summary() {
 #[test]
 fn cooperative_selection_requires_explicit_complete_context() {
     let parsed = crate::cli::commands::parse_argv([
-        "herdr-threads", "--cooperative-seat", "seat-1", "--cooperative-target", "w:p1",
-        "--cooperative-harness", "codex", "--cooperative-role", "top-level",
-        "check-in", "--lifecycle-event", "launch-1",
-    ]).unwrap();
+        "herdr-threads",
+        "--cooperative-seat",
+        "seat-1",
+        "--cooperative-target",
+        "w:p1",
+        "--cooperative-harness",
+        "codex",
+        "--cooperative-role",
+        "top-level",
+        "check-in",
+        "--lifecycle-event",
+        "launch-1",
+    ])
+    .unwrap();
     let selection = parsed.cooperative.unwrap();
     assert_eq!(selection.seat.as_str(), "seat-1");
     assert_eq!(selection.target.as_str(), "w:p1");
     assert_eq!(selection.harness, crate::harness::context::Harness::Codex);
     assert_eq!(selection.role, crate::harness::context::Role::TopLevel);
-    assert!(crate::cli::commands::parse_argv([
-        "herdr-threads", "--cooperative-seat", "seat-1", "check-in",
-        "--lifecycle-event", "launch-1",
-    ]).is_err());
+    assert!(
+        crate::cli::commands::parse_argv([
+            "herdr-threads",
+            "--cooperative-seat",
+            "seat-1",
+            "check-in",
+            "--lifecycle-event",
+            "launch-1",
+        ])
+        .is_err()
+    );
 }
 
 // Demo-1 P1: the hook's digest lists `ITEM@THREAD`; a model passed that form to
@@ -1108,7 +1225,10 @@ fn cooperative_selection_requires_explicit_complete_context() {
 fn digest_item_form_is_refused_as_invalid_arguments_naming_the_bare_id() {
     let inv = "invitation-1@thread-9";
     for (argv, bare) in [
-        (vec!["herdr-threads", "accept", inv], "herdr-threads accept thread-9"),
+        (
+            vec!["herdr-threads", "accept", inv],
+            "herdr-threads accept thread-9",
+        ),
         (
             vec![
                 "herdr-threads",
@@ -1123,7 +1243,10 @@ fn digest_item_form_is_refused_as_invalid_arguments_naming_the_bare_id() {
             ],
             "`thread-9`",
         ),
-        (vec!["herdr-threads", "read", "msg-1@thread-9"], "`thread-9`"),
+        (
+            vec!["herdr-threads", "read", "msg-1@thread-9"],
+            "`thread-9`",
+        ),
         (
             vec!["herdr-threads", "thread", "participants", inv],
             "`thread-9`",
@@ -1139,11 +1262,19 @@ fn digest_item_form_is_refused_as_invalid_arguments_naming_the_bare_id() {
             let mut parsed = parse_argv(argv.clone()).unwrap();
             let selector = parsed.thread_selector.clone().unwrap();
             crate::cli::threads::resolve_cli_threads(&mut parsed, |_| {
-                Err::<ThreadId,_>(crate::cli::threads::selector_error(ApiError::not_found("thread not found"), &selector))
-            }).unwrap_err()
+                Err::<ThreadId, _>(crate::cli::threads::selector_error(
+                    ApiError::not_found("thread not found"),
+                    &selector,
+                ))
+            })
+            .unwrap_err()
         };
         assert_eq!(error.code, ErrorCode::InvalidRequest, "{argv:?}");
-        assert!(error.detail.contains("attention digest item"), "{}", error.detail);
+        assert!(
+            error.detail.contains("attention digest item"),
+            "{}",
+            error.detail
+        );
         assert!(error.detail.contains(bare), "{}", error.detail);
     }
     // Bare IDs still parse.
@@ -1201,7 +1332,15 @@ fn copied_compact_and_persisted_ids_parse_as_command_inputs() {
     }
     for seat in ["sAb12Cd34", "seat-Ab12Cd34"] {
         assert!(
-            parse_argv(["herdr-threads", "human", "seat", "retire", seat, "--operator"]).is_ok()
+            parse_argv([
+                "herdr-threads",
+                "human",
+                "seat",
+                "retire",
+                seat,
+                "--operator"
+            ])
+            .is_ok()
         );
     }
 }
@@ -1240,24 +1379,65 @@ fn read_follow_parses_its_options_and_refuses_page_selectors() {
         })
     );
     let parsed = parse_argv([
-        "herdr-threads", "read", "thread-1", "--follow", "--recent", "30", "--no-system",
+        "herdr-threads",
+        "read",
+        "thread-1",
+        "--follow",
+        "--recent",
+        "30",
+        "--no-system",
     ])
     .unwrap();
     let CliAction::Follow(request) = parsed.action else {
         panic!("expected follow")
     };
     assert_eq!((request.recent, request.no_system), (30, true));
-    let parsed =
-        parse_argv(["herdr-threads", "read", "thread-1", "--follow", "--after", "7"]).unwrap();
+    let parsed = parse_argv([
+        "herdr-threads",
+        "read",
+        "thread-1",
+        "--follow",
+        "--after",
+        "7",
+    ])
+    .unwrap();
     let CliAction::Follow(request) = parsed.action else {
         panic!("expected follow")
     };
     assert_eq!((request.recent, request.after), (0, Some(7)));
     for refused in [
-        vec!["herdr-threads", "read", "thread-1", "--follow", "--before", "3"],
-        vec!["herdr-threads", "read", "thread-1", "--follow", "--limit", "3"],
-        vec!["herdr-threads", "read", "thread-1", "--follow", "--cursor", "c2:x"],
-        vec!["herdr-threads", "read", "thread-1", "--follow", "--recent", "101"],
+        vec![
+            "herdr-threads",
+            "read",
+            "thread-1",
+            "--follow",
+            "--before",
+            "3",
+        ],
+        vec![
+            "herdr-threads",
+            "read",
+            "thread-1",
+            "--follow",
+            "--limit",
+            "3",
+        ],
+        vec![
+            "herdr-threads",
+            "read",
+            "thread-1",
+            "--follow",
+            "--cursor",
+            "c2:x",
+        ],
+        vec![
+            "herdr-threads",
+            "read",
+            "thread-1",
+            "--follow",
+            "--recent",
+            "101",
+        ],
         vec!["herdr-threads", "read", "thread-1", "--no-system"],
     ] {
         assert!(parse_argv(refused.clone()).is_err(), "{refused:?}");
@@ -1353,8 +1533,20 @@ fn exit_status_help_names_both_exit_3_remedies() {
 #[test]
 fn seat_retire_requires_operator_flag() {
     let error = parse_argv(["herdr-threads", "human", "seat", "retire", "s1"]).unwrap_err();
-    assert!(error.detail.contains("operator required"), "{}", error.detail);
-    let parsed = parse_argv(["herdr-threads", "human", "seat", "retire", "s1", "--operator"]).unwrap();
+    assert!(
+        error.detail.contains("operator required"),
+        "{}",
+        error.detail
+    );
+    let parsed = parse_argv([
+        "herdr-threads",
+        "human",
+        "seat",
+        "retire",
+        "s1",
+        "--operator",
+    ])
+    .unwrap();
     assert!(
         matches!(&parsed.action, CliAction::Mutation(MutationSpec::Retire(seat)) if seat.as_str() == "s1"),
         "{:?}",
@@ -1384,15 +1576,34 @@ fn seat_rebind_replace_parses_to_operator_replace() {
         parsed.action
     );
     // Without --replace the same form stays a plain rebind; --replace needs --operator.
-    let plain = parse_argv(["herdr-threads", "human", "seat", "rebind", "s1", "--pane", "p1", "--operator"])
-        .unwrap();
+    let plain = parse_argv([
+        "herdr-threads",
+        "human",
+        "seat",
+        "rebind",
+        "s1",
+        "--pane",
+        "p1",
+        "--operator",
+    ])
+    .unwrap();
     assert!(matches!(
         plain.action,
         CliAction::Mutation(MutationSpec::Rebind { .. })
     ));
     assert!(
-        parse_argv(["herdr-threads", "human", "seat", "rebind", "s1", "--pane", "p1", "--replace", "s2"])
-            .is_err()
+        parse_argv([
+            "herdr-threads",
+            "human",
+            "seat",
+            "rebind",
+            "s1",
+            "--pane",
+            "p1",
+            "--replace",
+            "s2"
+        ])
+        .is_err()
     );
 }
 
@@ -1427,18 +1638,32 @@ fn user_intent_send_cli_parses_and_dispatches() {
     use crate::protocol::summary::UserIntent;
     struct SendStub(Option<SendMessage>);
     impl CliBackend for SendStub {
-        fn call(&mut self, command: WireCommand, _: &OutputSpec) -> Result<CommandResult, ApiError> {
-            let WireCommand::SendMessage(send) = command else { panic!("expected send command") };
+        fn call(
+            &mut self,
+            command: WireCommand,
+            _: &OutputSpec,
+        ) -> Result<CommandResult, ApiError> {
+            let WireCommand::SendMessage(send) = command else {
+                panic!("expected send command")
+            };
             self.0 = Some(send);
             Ok(CommandResult::MessageSent(MessageId::new("sent")))
         }
     }
     let dispatch_send = |argv: Vec<&str>, expected, relay| {
         let parsed = parse_argv(argv).unwrap();
-        assert!(matches!(&parsed.action, CliAction::Mutation(MutationSpec::Send { user_intent, relays_user, .. })
-            if *user_intent == expected && *relays_user == relay));
+        assert!(
+            matches!(&parsed.action, CliAction::Mutation(MutationSpec::Send { user_intent, relays_user, .. })
+            if *user_intent == expected && *relays_user == relay)
+        );
         let mut stub = SendStub(None);
-        dispatch(freeze_thread_id(parsed), &mut stub, Some(claim()), Some(OperationId::new("intent-send"))).unwrap();
+        dispatch(
+            freeze_thread_id(parsed),
+            &mut stub,
+            Some(claim()),
+            Some(OperationId::new("intent-send")),
+        )
+        .unwrap();
         let sent = stub.0.unwrap();
         assert_eq!(sent.user_intent, expected);
         assert_eq!(sent.relays_user, relay);
@@ -1449,15 +1674,40 @@ fn user_intent_send_cli_parses_and_dispatches() {
         ("rule", UserIntent::Rule),
     ] {
         for relay in [false, true] {
-            let mut argv = vec!["herdr-threads", "send", "t1", "--body", "x", "--user-intent", spelling];
-            if relay { argv.push("--relays-user"); }
+            let mut argv = vec![
+                "herdr-threads",
+                "send",
+                "t1",
+                "--body",
+                "x",
+                "--user-intent",
+                spelling,
+            ];
+            if relay {
+                argv.push("--relays-user");
+            }
             dispatch_send(argv, Some(intent), relay);
         }
     }
-    dispatch_send(vec!["herdr-threads", "send", "t1", "--body", "x"], None, false);
+    dispatch_send(
+        vec!["herdr-threads", "send", "t1", "--body", "x"],
+        None,
+        false,
+    );
     for invalid in ["instruction", "Query", "REQUEST", ""] {
-        assert!(parse_argv(["herdr-threads", "send", "t1", "--body", "x", "--user-intent", invalid]).is_err(),
-            "accepted invalid user intent {invalid:?}");
+        assert!(
+            parse_argv([
+                "herdr-threads",
+                "send",
+                "t1",
+                "--body",
+                "x",
+                "--user-intent",
+                invalid
+            ])
+            .is_err(),
+            "accepted invalid user intent {invalid:?}"
+        );
     }
 }
 
@@ -1509,7 +1759,14 @@ fn contract_id_and_harness_version_parse_as_local_actions() {
     );
     assert!(parse_argv(["herdr-threads", "contract-id", "--harness", "gemini"]).is_err());
     assert!(
-        parse_argv(["herdr-threads", "harness-version", "normalize", "gemini", "1.0.0"]).is_err()
+        parse_argv([
+            "herdr-threads",
+            "harness-version",
+            "normalize",
+            "gemini",
+            "1.0.0"
+        ])
+        .is_err()
     );
 }
 
@@ -1535,8 +1792,14 @@ fn contract_id_runs_without_a_daemon_and_prints_exact_documents() {
         run(&["contract-id", "--harness", "codex"]).unwrap(),
         format!("codex {codex_id}\n")
     );
-    let doc: serde_json::Value = serde_json::from_str(&run(&["contract-id", "--json"]).unwrap()).unwrap();
-    let keys: Vec<&str> = doc.as_object().unwrap().keys().map(String::as_str).collect();
+    let doc: serde_json::Value =
+        serde_json::from_str(&run(&["contract-id", "--json"]).unwrap()).unwrap();
+    let keys: Vec<&str> = doc
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
     assert_eq!(keys, ["claude", "codex", "normalize"]);
     assert_eq!(doc["claude"], claude_id);
     assert_eq!(doc["codex"], codex_id);
@@ -1557,7 +1820,13 @@ fn contract_id_runs_without_a_daemon_and_prints_exact_documents() {
         doc,
         serde_json::json!({"harness":"claude","raw":"2.1.286 (Claude Code)","version":"2.1.286"})
     );
-    let err = run(&["harness-version", "normalize", "codex", "codex-cli 0.160.0-alpha.1"]).unwrap_err();
+    let err = run(&[
+        "harness-version",
+        "normalize",
+        "codex",
+        "codex-cli 0.160.0-alpha.1",
+    ])
+    .unwrap_err();
     assert!(
         err.contains("unrecognized codex version: codex-cli 0.160.0-alpha.1"),
         "{err}"
@@ -1572,38 +1841,105 @@ fn local_profile_and_options_are_validated_before_dispatch() {
         let bare = parse_argv(["herdr-threads", command, "--profile", "work"]).unwrap_err();
         assert!(bare.detail.contains("explicitly selected adapter"));
         for harness in ["claude", "codex"] {
-            let named = parse_argv(["herdr-threads", command, harness, "--profile", "work"]).unwrap_err();
+            let named =
+                parse_argv(["herdr-threads", command, harness, "--profile", "work"]).unwrap_err();
             assert!(named.detail.contains("named profile is unsupported"));
         }
     }
     let doctor = parse_argv(["herdr-threads", "doctor", "--profile", "work"]).unwrap_err();
     assert!(doctor.detail.contains("explicitly selected adapter"));
-    let doctor = parse_argv(["herdr-threads", "doctor", "--harness", "codex", "--profile", "work"]).unwrap_err();
+    let doctor = parse_argv([
+        "herdr-threads",
+        "doctor",
+        "--harness",
+        "codex",
+        "--profile",
+        "work",
+    ])
+    .unwrap_err();
     assert!(doctor.detail.contains("named profile is unsupported"));
     assert!(parse_argv(["herdr-threads", "setup", "unknown"]).is_err());
-    assert!(parse_argv(["herdr-threads", "setup", "codex", "--disable-prompt-suggestions"]).is_err());
-    assert!(parse_argv(["herdr-threads", "setup", "claude", "--disable-prompt-suggestions", "--keep-prompt-suggestions"]).is_err());
+    assert!(
+        parse_argv([
+            "herdr-threads",
+            "setup",
+            "codex",
+            "--disable-prompt-suggestions"
+        ])
+        .is_err()
+    );
+    assert!(
+        parse_argv([
+            "herdr-threads",
+            "setup",
+            "claude",
+            "--disable-prompt-suggestions",
+            "--keep-prompt-suggestions"
+        ])
+        .is_err()
+    );
     let bare = parse_argv(["herdr-threads", "setup", "--disable-prompt-suggestions"]).unwrap();
-    assert!(matches!(bare.action, CliAction::SetupAll(_, crate::cli::setup::PromptSuggestionPolicy::Disable, _)));
+    assert!(matches!(
+        bare.action,
+        CliAction::SetupAll(_, crate::cli::setup::PromptSuggestionPolicy::Disable, _)
+    ));
 }
 
 #[test]
 fn rejection_requires_exact_invitation_and_bounded_nonblank_reason() {
     let parsed = parse_argv([
-        "herdr-threads", "reject", "t1", "--invitation", "iv1", "--reason",
+        "herdr-threads",
+        "reject",
+        "t1",
+        "--invitation",
+        "iv1",
+        "--reason",
         "Outside my reviewer role",
     ]);
-    assert!(parsed.is_ok(), "ordinary invitation rejection must parse: {parsed:?}");
+    assert!(
+        parsed.is_ok(),
+        "ordinary invitation rejection must parse: {parsed:?}"
+    );
     assert!(parse_argv(["herdr-threads", "reject", "t1", "--reason", "irrelevant"]).is_err());
     assert!(parse_argv(["herdr-threads", "reject", "t1", "--invitation", "iv1"]).is_err());
-    assert!(parse_argv(["herdr-threads", "reject", "t1", "--invitation", "iv1", "--reason", " \n "]).is_err());
+    assert!(
+        parse_argv([
+            "herdr-threads",
+            "reject",
+            "t1",
+            "--invitation",
+            "iv1",
+            "--reason",
+            " \n "
+        ])
+        .is_err()
+    );
     let too_long = "x".repeat(4097);
-    assert!(parse_argv(["herdr-threads", "reject", "t1", "--invitation", "iv1", "--reason", &too_long]).is_err());
+    assert!(
+        parse_argv([
+            "herdr-threads",
+            "reject",
+            "t1",
+            "--invitation",
+            "iv1",
+            "--reason",
+            &too_long
+        ])
+        .is_err()
+    );
 }
 
 #[test]
 fn thread_names_public_create_and_selectors() {
-    let named = parse_argv(["ht", "thread", "create", "--topic", "Announcements", "--name", "team café"]);
+    let named = parse_argv([
+        "ht",
+        "thread",
+        "create",
+        "--topic",
+        "Announcements",
+        "--name",
+        "team café",
+    ]);
     assert!(named.is_ok(), "optional names must parse: {named:?}");
     for argv in [
         vec!["ht", "thread", "show", "team café"],
@@ -1612,7 +1948,10 @@ fn thread_names_public_create_and_selectors() {
         vec!["ht", "read", "team café"],
         vec!["ht", "summary", "team café"],
     ] {
-        assert!(parse_argv(argv.clone()).is_ok(), "selector must parse: {argv:?}");
+        assert!(
+            parse_argv(argv.clone()).is_ok(),
+            "selector must parse: {argv:?}"
+        );
     }
 }
 
@@ -1620,49 +1959,116 @@ fn thread_names_public_create_and_selectors() {
 fn thread_names_every_selector_freezes_one_literal_id() {
     use crate::cli::threads::{resolve_cli_threads, selector_mut};
     let cases = [
-        vec!["ht","thread","show","review"], vec!["ht","thread","topic","review"],
-        vec!["ht","thread","topic","review","--set","topic"], vec!["ht","thread","participants","review"],
-        vec!["ht","participants","review"], vec!["ht","invite","review","--seat","s1"],
-        vec!["ht","reject","review","--invitation","v1","--reason","Outside my role"],
-        vec!["ht","accept","review"], vec!["ht","accept-required","review","--invitation","v1","--requirement","q1","--revision","1"],
-        vec!["ht","leave","review"], vec!["ht","send","review","--body","ready"],
-        vec!["ht","archive","review"], vec!["ht","reopen","review"], vec!["ht","read","review"],
-        vec!["ht","read","review","--follow"], vec!["ht","pending-receipts","--thread","review"],
-        vec!["ht","diagnostics","--thread","review"], vec!["ht","warnings","--active","review"],
-        vec!["ht","search","release","--thread","review"], vec!["ht","summary","review"],
-        vec!["ht","thread","name","review"], vec!["ht","thread","name","review","--set","new"],
-        vec!["ht","thread","name","review","--clear"], vec!["ht","thread","rename","review","new"],
+        vec!["ht", "thread", "show", "review"],
+        vec!["ht", "thread", "topic", "review"],
+        vec!["ht", "thread", "topic", "review", "--set", "topic"],
+        vec!["ht", "thread", "participants", "review"],
+        vec!["ht", "participants", "review"],
+        vec!["ht", "invite", "review", "--seat", "s1"],
+        vec![
+            "ht",
+            "reject",
+            "review",
+            "--invitation",
+            "v1",
+            "--reason",
+            "Outside my role",
+        ],
+        vec!["ht", "accept", "review"],
+        vec![
+            "ht",
+            "accept-required",
+            "review",
+            "--invitation",
+            "v1",
+            "--requirement",
+            "q1",
+            "--revision",
+            "1",
+        ],
+        vec!["ht", "leave", "review"],
+        vec!["ht", "send", "review", "--body", "ready"],
+        vec!["ht", "archive", "review"],
+        vec!["ht", "reopen", "review"],
+        vec!["ht", "read", "review"],
+        vec!["ht", "read", "review", "--follow"],
+        vec!["ht", "pending-receipts", "--thread", "review"],
+        vec!["ht", "diagnostics", "--thread", "review"],
+        vec!["ht", "warnings", "--active", "review"],
+        vec!["ht", "search", "release", "--thread", "review"],
+        vec!["ht", "summary", "review"],
+        vec!["ht", "thread", "name", "review"],
+        vec!["ht", "thread", "name", "review", "--set", "new"],
+        vec!["ht", "thread", "name", "review", "--clear"],
+        vec!["ht", "thread", "rename", "review", "new"],
     ];
     for argv in cases {
         let mut parsed = parse_argv(argv.clone()).unwrap();
         let mut calls = 0;
         resolve_cli_threads(&mut parsed, |selector| {
-            assert_eq!(selector,"review", "{argv:?}"); calls += 1;
-            Ok::<_,ApiError>(ThreadId::new("tFREEZE01"))
-        }).unwrap();
-        assert_eq!(calls,1,"{argv:?}");
-        assert_eq!(selector_mut(&mut parsed.action).unwrap().as_str(),"tFREEZE01","{argv:?}");
-
+            assert_eq!(selector, "review", "{argv:?}");
+            calls += 1;
+            Ok::<_, ApiError>(ThreadId::new("tFREEZE01"))
+        })
+        .unwrap();
+        assert_eq!(calls, 1, "{argv:?}");
+        assert_eq!(
+            selector_mut(&mut parsed.action).unwrap().as_str(),
+            "tFREEZE01",
+            "{argv:?}"
+        );
     }
 }
 
 #[test]
 fn thread_names_validate_bytes_controls_and_exact_spaces() {
-    for name in ["".to_owned(), "x".repeat(129), "é".repeat(65), "line\nname".into(), "tab\tname".into(), "delete\u{7f}".into(), "unicode\u{85}".into(), "line\u{2028}name".into(), "paragraph\u{2029}name".into()] {
-        assert!(parse_argv(["ht","thread","create","--topic","topic","--name",&name]).is_err(),"{name:?}");
-        assert!(parse_argv(["ht","thread","name","t1","--set",&name]).is_err(),"{name:?}");
+    for name in [
+        "".to_owned(),
+        "x".repeat(129),
+        "é".repeat(65),
+        "line\nname".into(),
+        "tab\tname".into(),
+        "delete\u{7f}".into(),
+        "unicode\u{85}".into(),
+        "line\u{2028}name".into(),
+        "paragraph\u{2029}name".into(),
+    ] {
+        assert!(
+            parse_argv([
+                "ht", "thread", "create", "--topic", "topic", "--name", &name
+            ])
+            .is_err(),
+            "{name:?}"
+        );
+        assert!(
+            parse_argv(["ht", "thread", "name", "t1", "--set", &name]).is_err(),
+            "{name:?}"
+        );
     }
-    for name in ["x".repeat(128), "é".repeat(64), "  exact spaces  ".into(), "m1@t1".into()] {
-        let parsed = parse_argv(["ht","thread","create","--topic","topic","--name",&name]).unwrap();
-        assert!(matches!(parsed.action,CliAction::Mutation(MutationSpec::Create {name:Some(value),..}) if value==name));
-        assert!(parse_argv(["ht","read",&name]).is_ok());
+    for name in [
+        "x".repeat(128),
+        "é".repeat(64),
+        "  exact spaces  ".into(),
+        "m1@t1".into(),
+    ] {
+        let parsed = parse_argv([
+            "ht", "thread", "create", "--topic", "topic", "--name", &name,
+        ])
+        .unwrap();
+        assert!(
+            matches!(parsed.action,CliAction::Mutation(MutationSpec::Create {name:Some(value),..}) if value==name)
+        );
+        assert!(parse_argv(["ht", "read", &name]).is_ok());
     }
-    assert!(parse_argv(["ht","thread","name","t1","--set","x","--clear"]).is_err());
+    assert!(parse_argv(["ht", "thread", "name", "t1", "--set", "x", "--clear"]).is_err());
 }
 
 // Typed dispatch fixtures explicitly freeze exact IDs; runtime uses the daemon.
 fn freeze_thread_id(mut parsed: ParsedCli) -> ParsedCli {
-    crate::cli::threads::resolve_cli_threads(&mut parsed, |id| Ok::<_,ApiError>(ThreadId::new(id))).unwrap();
+    crate::cli::threads::resolve_cli_threads(&mut parsed, |id| {
+        Ok::<_, ApiError>(ThreadId::new(id))
+    })
+    .unwrap();
     parsed
 }
 
@@ -1670,33 +2076,85 @@ fn freeze_thread_id(mut parsed: ParsedCli) -> ParsedCli {
 fn thread_names_unresolved_dispatch_refuses_before_any_backend_call() {
     struct Never;
     impl CliBackend for Never {
-        fn call(&mut self,_:WireCommand,_:&OutputSpec)->Result<CommandResult,ApiError> {panic!("unresolved selector must not dispatch")}
+        fn call(&mut self, _: WireCommand, _: &OutputSpec) -> Result<CommandResult, ApiError> {
+            panic!("unresolved selector must not dispatch")
+        }
     }
-    for selector in ["review","team café","tIDSHAPED"] {
-        let parsed = parse_argv(["ht","read",selector]).unwrap();
-        assert!(super::dispatch(parsed,&mut Never,None,None).is_err());
+    for selector in ["review", "team café", "tIDSHAPED"] {
+        let parsed = parse_argv(["ht", "read", selector]).unwrap();
+        assert!(super::dispatch(parsed, &mut Never, None, None).is_err());
     }
 }
 
 #[test]
 fn handoff_parser_requires_one_thread_explicit_pane_and_one_body() {
-    let base = ["ht", "handoff", "--new-thread", "--pane", "bob", "--kind", "codex"];
+    let base = [
+        "ht",
+        "handoff",
+        "--new-thread",
+        "--pane",
+        "bob",
+        "--kind",
+        "codex",
+    ];
     let mut good = base.to_vec();
     good.extend(["--", "durable task"]);
     assert!(parse_argv(good).is_ok());
-    for tail in [vec![], vec!["--", "one", "two"], vec!["--thread", "review", "--", "task"]] {
-        let mut args = base.to_vec(); args.extend(tail);
+    for tail in [
+        vec![],
+        vec!["--", "one", "two"],
+        vec!["--thread", "review", "--", "task"],
+    ] {
+        let mut args = base.to_vec();
+        args.extend(tail);
         assert!(parse_argv(args).is_err());
     }
-    assert!(parse_argv(["ht", "handoff", "--new-thread", "--kind", "codex", "--", "task"]).is_err());
+    assert!(
+        parse_argv([
+            "ht",
+            "handoff",
+            "--new-thread",
+            "--kind",
+            "codex",
+            "--",
+            "task"
+        ])
+        .is_err()
+    );
     for option in ["--thread-name", "--topic", "--goal"] {
-        assert!(parse_argv(["ht", "handoff", "--thread", "review", "--pane", "bob", "--kind", "codex", option, "value", "--", "task"]).is_err());
+        assert!(
+            parse_argv([
+                "ht", "handoff", "--thread", "review", "--pane", "bob", "--kind", "codex", option,
+                "value", "--", "task"
+            ])
+            .is_err()
+        );
     }
 }
 #[test]
 fn handoff_parser_preserves_native_elements_and_distinct_names() {
-    let parsed = parse_argv(["ht", "handoff", "--new-thread", "--thread-name", "review", "--name", "worker", "--pane", "bob", "--kind", "codex", "--agent-arg=-a", "--agent-arg=on-request", "--agent-arg=literal spaces", "--", "one durable body"]).unwrap();
-    let CliAction::Handoff(request) = parsed.action else { panic!("not handoff"); };
+    let parsed = parse_argv([
+        "ht",
+        "handoff",
+        "--new-thread",
+        "--thread-name",
+        "review",
+        "--name",
+        "worker",
+        "--pane",
+        "bob",
+        "--kind",
+        "codex",
+        "--agent-arg=-a",
+        "--agent-arg=on-request",
+        "--agent-arg=literal spaces",
+        "--",
+        "one durable body",
+    ])
+    .unwrap();
+    let CliAction::Handoff(request) = parsed.action else {
+        panic!("not handoff");
+    };
     assert_eq!(request.launch.argv, ["-a", "on-request", "literal spaces"]);
     assert_eq!(request.launch.name.as_deref(), Some("worker"));
     assert_eq!(request.thread_name.as_deref(), Some("review"));
@@ -1705,52 +2163,179 @@ fn handoff_parser_preserves_native_elements_and_distinct_names() {
 
 #[test]
 fn handoff_thread_name_uses_shared_canonical_resolution() {
-    let mut parsed=parse_argv(["ht","handoff","--thread","review channel","--pane","bob","--kind","codex","--","task"]).unwrap();
-    assert_eq!(parsed.thread_selector.as_deref(),Some("review channel"));
-    crate::cli::threads::resolve_cli_threads::<ApiError>(&mut parsed, |selector| { assert_eq!(selector,"review channel"); Ok(ThreadId::new("tFrozen")) }).unwrap();
+    let mut parsed = parse_argv([
+        "ht",
+        "handoff",
+        "--thread",
+        "review channel",
+        "--pane",
+        "bob",
+        "--kind",
+        "codex",
+        "--",
+        "task",
+    ])
+    .unwrap();
+    assert_eq!(parsed.thread_selector.as_deref(), Some("review channel"));
+    crate::cli::threads::resolve_cli_threads::<ApiError>(&mut parsed, |selector| {
+        assert_eq!(selector, "review channel");
+        Ok(ThreadId::new("tFrozen"))
+    })
+    .unwrap();
     assert!(parsed.thread_selector.is_none());
-    assert!(matches!(parsed.action,CliAction::Handoff(request) if request.thread.as_ref().unwrap().as_str()=="tFrozen"));
+    assert!(
+        matches!(parsed.action,CliAction::Handoff(request) if request.thread.as_ref().unwrap().as_str()=="tFrozen")
+    );
 }
 
 #[test]
 fn handoff_new_tab_grammar() {
-    for target in [vec!["--new-tab", "peer"], vec!["--new-tab", "peer", "--space", "work", "--cwd", "/tmp"]] {
-        let mut argv = vec!["herdr-threads", "handoff", "--new-thread", "--kind", "codex"];
+    for target in [
+        vec!["--new-tab", "peer"],
+        vec!["--new-tab", "peer", "--space", "work", "--cwd", "/tmp"],
+    ] {
+        let mut argv = vec![
+            "herdr-threads",
+            "handoff",
+            "--new-thread",
+            "--kind",
+            "codex",
+        ];
         argv.extend(target);
-        argv.extend(["--agent-arg=--model", "--agent-arg=literal $HOME", "--", "quoted work"]);
+        argv.extend([
+            "--agent-arg=--model",
+            "--agent-arg=literal $HOME",
+            "--",
+            "quoted work",
+        ]);
         assert!(parse_argv(argv).is_ok(), "valid new-tab grammar must parse");
     }
 }
 #[test]
 fn handoff_new_tab_conflicts_and_required_fields() {
-    for extra in [vec!["--existing"], vec!["--tab", "t1"], vec!["--pane", "w1:p1"], vec!["--seat", "peer"]] {
-        let mut argv=vec!["herdr-threads", "handoff", "--new-tab", "peer", "--new-thread", "--kind", "codex"];
-        argv.extend(extra); argv.extend(["--", "work"]);
-        assert!(parse_argv(argv.clone()).is_err(), "accepted conflict: {argv:?}");
+    for extra in [
+        vec!["--existing"],
+        vec!["--tab", "t1"],
+        vec!["--pane", "w1:p1"],
+        vec!["--seat", "peer"],
+    ] {
+        let mut argv = vec![
+            "herdr-threads",
+            "handoff",
+            "--new-tab",
+            "peer",
+            "--new-thread",
+            "--kind",
+            "codex",
+        ];
+        argv.extend(extra);
+        argv.extend(["--", "work"]);
+        assert!(
+            parse_argv(argv.clone()).is_err(),
+            "accepted conflict: {argv:?}"
+        );
     }
     for argv in [
-        vec!["herdr-threads", "handoff", "--new-tab", "peer", "--new-thread", "--", "work"],
-        vec!["herdr-threads", "handoff", "--new-tab", "peer", "--new-thread", "--kind", "codex"],
-        vec!["herdr-threads", "handoff", "--pane", "w1:p1", "--cwd", "/tmp", "--new-thread", "--kind", "codex", "--", "work"],
-    ] { assert!(parse_argv(argv.clone()).is_err(), "accepted missing/conflict: {argv:?}"); }
+        vec![
+            "herdr-threads",
+            "handoff",
+            "--new-tab",
+            "peer",
+            "--new-thread",
+            "--",
+            "work",
+        ],
+        vec![
+            "herdr-threads",
+            "handoff",
+            "--new-tab",
+            "peer",
+            "--new-thread",
+            "--kind",
+            "codex",
+        ],
+        vec![
+            "herdr-threads",
+            "handoff",
+            "--pane",
+            "w1:p1",
+            "--cwd",
+            "/tmp",
+            "--new-thread",
+            "--kind",
+            "codex",
+            "--",
+            "work",
+        ],
+    ] {
+        assert!(
+            parse_argv(argv.clone()).is_err(),
+            "accepted missing/conflict: {argv:?}"
+        );
+    }
 }
 
 #[test]
 fn handoff_existing_target_matrix_and_no_launch_options() {
-    for target in [vec!["--pane", "w1:p1"], vec!["--seat", "peer"], vec!["--space", "work", "--tab", "tab", "--pane", "peer"]] {
-        let mut argv=vec!["herdr-threads","handoff","--existing","--thread","selected"];
-        argv.extend(target); argv.extend(["--","work"]);
+    for target in [
+        vec!["--pane", "w1:p1"],
+        vec!["--seat", "peer"],
+        vec!["--space", "work", "--tab", "tab", "--pane", "peer"],
+    ] {
+        let mut argv = vec![
+            "herdr-threads",
+            "handoff",
+            "--existing",
+            "--thread",
+            "selected",
+        ];
+        argv.extend(target);
+        argv.extend(["--", "work"]);
         assert!(parse_argv(argv).is_ok());
     }
-    for target in [vec![],vec!["--space","work"],vec!["--tab","tab"],vec!["--seat","peer","--pane","w1:p1"],vec!["--seat","peer","--space","work"],vec!["--pane","w1:p1","--kind","codex"],vec!["--pane","w1:p1","--agent-arg=--model"],vec!["--pane","w1:p1","--harness-binary","/bin/codex"],vec!["--pane","w1:p1","--name","peer"],vec!["--pane","w1:p1","--cwd","/tmp"]] {
-        let mut argv=vec!["herdr-threads","handoff","--existing","--thread","selected"];
-        argv.extend(target); argv.extend(["--","work"]);
-        assert!(parse_argv(argv.clone()).is_err(),"accepted: {argv:?}");
+    for target in [
+        vec![],
+        vec!["--space", "work"],
+        vec!["--tab", "tab"],
+        vec!["--seat", "peer", "--pane", "w1:p1"],
+        vec!["--seat", "peer", "--space", "work"],
+        vec!["--pane", "w1:p1", "--kind", "codex"],
+        vec!["--pane", "w1:p1", "--agent-arg=--model"],
+        vec!["--pane", "w1:p1", "--harness-binary", "/bin/codex"],
+        vec!["--pane", "w1:p1", "--name", "peer"],
+        vec!["--pane", "w1:p1", "--cwd", "/tmp"],
+    ] {
+        let mut argv = vec![
+            "herdr-threads",
+            "handoff",
+            "--existing",
+            "--thread",
+            "selected",
+        ];
+        argv.extend(target);
+        argv.extend(["--", "work"]);
+        assert!(parse_argv(argv.clone()).is_err(), "accepted: {argv:?}");
     }
-    let parsed=parse_argv(["herdr-threads","handoff","--new-tab","peer","--new-thread","--kind","codex","--agent-arg=--model","--agent-arg=$HOME","--agent-arg=--model","--","literal body"]).unwrap();
-    let CliAction::TopologyHandoff(request)=parsed.action else {panic!("wrong route")};
-    assert_eq!(request.argv,vec!["--model","$HOME","--model"]);
-    assert_eq!(request.body,"literal body");
+    let parsed = parse_argv([
+        "herdr-threads",
+        "handoff",
+        "--new-tab",
+        "peer",
+        "--new-thread",
+        "--kind",
+        "codex",
+        "--agent-arg=--model",
+        "--agent-arg=$HOME",
+        "--agent-arg=--model",
+        "--",
+        "literal body",
+    ])
+    .unwrap();
+    let CliAction::TopologyHandoff(request) = parsed.action else {
+        panic!("wrong route")
+    };
+    assert_eq!(request.argv, vec!["--model", "$HOME", "--model"]);
+    assert_eq!(request.body, "literal body");
     assert!(parsed.thread_selector.is_none());
 }
 
@@ -1758,32 +2343,120 @@ fn handoff_existing_target_matrix_and_no_launch_options() {
 // accept ordinary Agent person/account actions; these are real parser calls.
 #[test]
 fn actor_prerequisite_human_grammar_preserves_routing_and_format() {
-    let parsed = parse_argv(["ht", "human", "--state-dir", "state space", "--host-endpoint=host space", "--machine", "me", "init"]).unwrap();
+    let parsed = parse_argv([
+        "ht",
+        "human",
+        "--state-dir",
+        "state space",
+        "--host-endpoint=host space",
+        "--machine",
+        "me",
+        "init",
+    ])
+    .unwrap();
     assert!(matches!(parsed.action, CliAction::MeInit { .. }));
-    assert_eq!(parsed.output.context.state_dir.as_deref(), Some("state space"));
+    assert_eq!(
+        parsed.output.context.state_dir.as_deref(),
+        Some("state space")
+    );
     assert_eq!(parsed.output.context.host.as_deref(), Some("host space"));
     for argv in [
         vec!["ht", "me", "init"],
         vec!["ht", "--human", "me", "init"],
         vec!["ht", "seat", "retire", "seat-1", "--operator"],
-        vec!["ht", "service", "disconnect", "--expected-boot", "00000000-0000-4000-8000-000000000001", "--expected-generation", "7"],
-        vec!["ht", "seat", "rebind", "seat-1", "--pane", "pane", "--operator"],
-        vec!["ht", "seat", "resolve", "--pane", "pane", "--new-seat", "--operator"],
+        vec![
+            "ht",
+            "service",
+            "disconnect",
+            "--expected-boot",
+            "00000000-0000-4000-8000-000000000001",
+            "--expected-generation",
+            "7",
+        ],
+        vec![
+            "ht",
+            "seat",
+            "rebind",
+            "seat-1",
+            "--pane",
+            "pane",
+            "--operator",
+        ],
+        vec![
+            "ht",
+            "seat",
+            "resolve",
+            "--pane",
+            "pane",
+            "--new-seat",
+            "--operator",
+        ],
         vec!["ht", "invite", "thread-1", "--seat", "seat-1", "--operator"],
     ] {
         let failure = parse_argv(argv).unwrap_err();
-        assert!(failure.detail.contains("immediate human namespace"), "{failure:?}");
+        assert!(
+            failure.detail.contains("immediate human namespace"),
+            "{failure:?}"
+        );
     }
-    let failure = parse_argv(["ht binary", "--state-dir", "state space", "--host-endpoint", "host space", "human", "me", "init"]).unwrap_err();
-    assert!(failure.detail.contains("'ht binary' human --state-dir 'state space' --host-endpoint 'host space' me init"), "{failure:?}");
+    let failure = parse_argv([
+        "ht binary",
+        "--state-dir",
+        "state space",
+        "--host-endpoint",
+        "host space",
+        "human",
+        "me",
+        "init",
+    ])
+    .unwrap_err();
+    assert!(
+        failure.detail.contains(
+            "'ht binary' human --state-dir 'state space' --host-endpoint 'host space' me init"
+        ),
+        "{failure:?}"
+    );
     assert!(parse_argv(["ht", "--state-dir", "human", "--human", "inbox"]).is_ok());
-    assert!(parse_argv(["ht", "human", "--state-dir", "a", "me", "init", "--state-dir", "b"]).unwrap_err().detail.contains("conflicting values"));
+    assert!(
+        parse_argv([
+            "ht",
+            "human",
+            "--state-dir",
+            "a",
+            "me",
+            "init",
+            "--state-dir",
+            "b"
+        ])
+        .unwrap_err()
+        .detail
+        .contains("conflicting values")
+    );
 }
 
 #[test]
 fn actor_prerequisite_human_refuses_cooperative_agent_selectors() {
-    let failure = parse_argv(["ht", "human", "--cooperative-seat", "seat", "--cooperative-target", "pane", "--cooperative-harness", "codex", "--cooperative-role", "top-level", "ack", "message"]).unwrap_err();
-    assert!(failure.detail.contains("cannot be mixed with cooperative agent selectors"), "{failure:?}");
+    let failure = parse_argv([
+        "ht",
+        "human",
+        "--cooperative-seat",
+        "seat",
+        "--cooperative-target",
+        "pane",
+        "--cooperative-harness",
+        "codex",
+        "--cooperative-role",
+        "top-level",
+        "ack",
+        "message",
+    ])
+    .unwrap_err();
+    assert!(
+        failure
+            .detail
+            .contains("cannot be mixed with cooperative agent selectors"),
+        "{failure:?}"
+    );
 }
 
 #[test]
@@ -1795,48 +2468,154 @@ fn actor_prerequisite_real_os_parser_keeps_human_data_and_opaque_guidance() {
     assert_eq!(parsed.actor, InvocationActor::Agent);
     let parsed = parse_argv(["ht", "human", "--json", "inbox"]).unwrap();
     assert_eq!(parsed.actor, InvocationActor::Human);
-    let argv = vec![OsString::from_vec(vec![b'h', 0xff]), "--state-dir".into(), "state space".into(), "human".into(), "me".into(), "init".into()];
+    let argv = vec![
+        OsString::from_vec(vec![b'h', 0xff]),
+        "--state-dir".into(),
+        "state space".into(),
+        "human".into(),
+        "me".into(),
+        "init".into(),
+    ];
     let error = parse_argv(argv).unwrap_err();
-    assert!(error.detail.contains("opaque argv cannot be rendered as UTF-8"), "{error:?}");
+    assert!(
+        error
+            .detail
+            .contains("opaque argv cannot be rendered as UTF-8"),
+        "{error:?}"
+    );
 }
 
 #[test]
 fn human_topology_recovery_accepts_exact_attempt_qualified_grammar() {
-    for suffix in [vec!["--created-pane", "w1:p2"], vec!["--not-created"], vec!["--cancel", "--reason", "inspected abandonment"]] {
-        let mut argv = vec!["ht", "human", "--state-dir", "/quoted state", "--host-endpoint", "/quoted host.sock", "--json", "handoff", "recover", "local:1", "--attempt", "7"];
+    for suffix in [
+        vec!["--created-pane", "w1:p2"],
+        vec!["--not-created"],
+        vec!["--cancel", "--reason", "inspected abandonment"],
+    ] {
+        let mut argv = vec![
+            "ht",
+            "human",
+            "--state-dir",
+            "/quoted state",
+            "--host-endpoint",
+            "/quoted host.sock",
+            "--json",
+            "handoff",
+            "recover",
+            "local:1",
+            "--attempt",
+            "7",
+        ];
         argv.extend(suffix);
         let parsed = parse_argv(argv).expect("approved human recovery grammar must parse");
-        assert_eq!(parsed.actor, super::super::actor_route::InvocationActor::Human);
+        assert_eq!(
+            parsed.actor,
+            super::super::actor_route::InvocationActor::Human
+        );
         assert_eq!(parsed.output.format, OutputFormat::Json);
     }
 }
 
 #[test]
 fn human_topology_recovery_rejects_missing_extra_and_invalid_assertions() {
-    let cases = [vec!["--not-created"], vec!["--attempt", "0", "--not-created"], vec!["--attempt", "1"], vec!["--attempt", "1", "--not-created", "--cancel", "--reason", "x"], vec!["--attempt", "1", "--cancel"], vec!["--attempt", "1", "--cancel", "--reason", "   "], vec!["--attempt", "1", "--not-created", "--reason", "x"]];
+    let cases = [
+        vec!["--not-created"],
+        vec!["--attempt", "0", "--not-created"],
+        vec!["--attempt", "1"],
+        vec![
+            "--attempt",
+            "1",
+            "--not-created",
+            "--cancel",
+            "--reason",
+            "x",
+        ],
+        vec!["--attempt", "1", "--cancel"],
+        vec!["--attempt", "1", "--cancel", "--reason", "   "],
+        vec!["--attempt", "1", "--not-created", "--reason", "x"],
+    ];
     for suffix in cases {
         let mut argv = vec!["ht", "human", "handoff", "recover", "local:1"];
         argv.extend(suffix);
-        assert!(parse_argv(argv.clone()).is_err(), "unexpected accepted argv: {argv:?}");
+        assert!(
+            parse_argv(argv.clone()).is_err(),
+            "unexpected accepted argv: {argv:?}"
+        );
     }
     for reason in ["x".repeat(4097), "é".repeat(2049)] {
-        assert!(parse_argv(["ht", "human", "handoff", "recover", "local:1", "--attempt", "1", "--cancel", "--reason", reason.as_str()]).is_err());
+        assert!(
+            parse_argv([
+                "ht",
+                "human",
+                "handoff",
+                "recover",
+                "local:1",
+                "--attempt",
+                "1",
+                "--cancel",
+                "--reason",
+                reason.as_str()
+            ])
+            .is_err()
+        );
     }
-    assert!(parse_argv(["ht", "handoff", "recover", "local:1", "--attempt", "1", "--not-created"]).is_err());
-    assert!(parse_argv(["ht", "--json", "human", "handoff", "recover", "local:1", "--attempt", "1", "--not-created"]).is_err());
+    assert!(
+        parse_argv([
+            "ht",
+            "handoff",
+            "recover",
+            "local:1",
+            "--attempt",
+            "1",
+            "--not-created"
+        ])
+        .is_err()
+    );
+    assert!(
+        parse_argv([
+            "ht",
+            "--json",
+            "human",
+            "handoff",
+            "recover",
+            "local:1",
+            "--attempt",
+            "1",
+            "--not-created"
+        ])
+        .is_err()
+    );
 }
 
 #[test]
 fn legacy_handoff_body_word_recover_remains_data() {
-    let parsed = parse_argv(["ht", "handoff", "--pane", "w1:p2", "--new-thread", "--kind", "codex", "--", "recover"]).unwrap();
-    let CliAction::Handoff(request) = parsed.action else { panic!("legacy launch route changed") };
+    let parsed = parse_argv([
+        "ht",
+        "handoff",
+        "--pane",
+        "w1:p2",
+        "--new-thread",
+        "--kind",
+        "codex",
+        "--",
+        "recover",
+    ])
+    .unwrap();
+    let CliAction::Handoff(request) = parsed.action else {
+        panic!("legacy launch route changed")
+    };
     assert_eq!(request.body, "recover");
 }
 
 /// Kills an agent-grantable self-permission: every config-changing command is escalating.
 #[test]
 fn escalating_commands_are_the_self_granting_ones() {
-    let expected: [&[&str]; 4] = [&["setup"], &["unsetup"], &["doctor", "fix"], &["internal", "installer-integrations"]];
+    let expected: [&[&str]; 4] = [
+        &["setup"],
+        &["unsetup"],
+        &["doctor", "fix"],
+        &["internal", "installer-integrations"],
+    ];
     assert_eq!(ESCALATING_COMMANDS, &expected[..]);
 }
 
@@ -1854,7 +2633,11 @@ fn escalating_command_words_lead() {
         vec!["ht", "internal", "--json", "installer-integrations"],
     ] {
         let error = parse_argv(argv.clone()).unwrap_err();
-        assert!(error.detail.contains("first and put every option after it"), "{argv:?}: {}", error.detail);
+        assert!(
+            error.detail.contains("first and put every option after it"),
+            "{argv:?}: {}",
+            error.detail
+        );
     }
     for argv in [
         vec!["ht", "doctor", "fix", "--debug"],
@@ -1862,8 +2645,20 @@ fn escalating_command_words_lead() {
         vec!["ht", "--json", "doctor"],
         vec!["ht", "setup", "claude", "--state-dir", "/private/s"],
         vec!["ht", "--state-dir", "/private/s", "setup-status", "claude"],
-        vec!["ht", "internal", "installer-integrations", "--confirm-missing"],
-        vec!["ht", "human", "--state-dir", "/private/s", "unsetup", "claude"],
+        vec![
+            "ht",
+            "internal",
+            "installer-integrations",
+            "--confirm-missing",
+        ],
+        vec![
+            "ht",
+            "human",
+            "--state-dir",
+            "/private/s",
+            "unsetup",
+            "claude",
+        ],
     ] {
         assert!(parse_argv(argv.clone()).is_ok(), "{argv:?}");
     }
@@ -1872,20 +2667,79 @@ fn escalating_command_words_lead() {
 #[test]
 fn actor_route_pinned_globals_follow_human() {
     use crate::cli::actor_route::InvocationActor;
-    let parsed = parse_argv(["ht", "human", "--state-dir", "/private/state", "--host-endpoint", "/private/host.sock", "--json", "me", "init"]).unwrap();
+    let parsed = parse_argv([
+        "ht",
+        "human",
+        "--state-dir",
+        "/private/state",
+        "--host-endpoint",
+        "/private/host.sock",
+        "--json",
+        "me",
+        "init",
+    ])
+    .unwrap();
     assert_eq!(parsed.actor, InvocationActor::Human);
-    assert_eq!(parsed.output.context.state_dir.as_deref(), Some("/private/state"));
-    assert_eq!(parsed.output.context.host.as_deref(), Some("/private/host.sock"));
+    assert_eq!(
+        parsed.output.context.state_dir.as_deref(),
+        Some("/private/state")
+    );
+    assert_eq!(
+        parsed.output.context.host.as_deref(),
+        Some("/private/host.sock")
+    );
     assert_eq!(parsed.output.format, OutputFormat::Json);
-    for prefix in [vec!["--json"], vec!["--state-dir", "/private/a space"], vec!["--state-dir=/private/state", "--host-endpoint=/private/host.sock"]] {
-        let argv = ["ht"].into_iter().chain(prefix.iter().copied()).chain(["human", "me", "init"]);
+    for prefix in [
+        vec!["--json"],
+        vec!["--state-dir", "/private/a space"],
+        vec![
+            "--state-dir=/private/state",
+            "--host-endpoint=/private/host.sock",
+        ],
+    ] {
+        let argv = ["ht"]
+            .into_iter()
+            .chain(prefix.iter().copied())
+            .chain(["human", "me", "init"]);
         let error = parse_argv(argv).unwrap_err();
         assert!(error.detail.contains("ht human"), "{}", error.detail);
-        for token in &prefix { assert!(error.detail.contains(token), "{}", error.detail); }
+        for token in &prefix {
+            assert!(error.detail.contains(token), "{}", error.detail);
+        }
     }
-    assert!(parse_argv(["ht", "human", "--state-dir", "/private/s", "me", "init", "--state-dir", "/private/s"]).is_ok());
-    assert!(parse_argv(["ht", "human", "--state-dir", "/private/s", "me", "init", "--state-dir", "/private/other"]).unwrap_err().detail.contains("conflicting values"));
-    for args in [vec!["--human", "inbox"], vec!["inbox", "--human"], vec!["human", "--human", "inbox"]] {
+    assert!(
+        parse_argv([
+            "ht",
+            "human",
+            "--state-dir",
+            "/private/s",
+            "me",
+            "init",
+            "--state-dir",
+            "/private/s"
+        ])
+        .is_ok()
+    );
+    assert!(
+        parse_argv([
+            "ht",
+            "human",
+            "--state-dir",
+            "/private/s",
+            "me",
+            "init",
+            "--state-dir",
+            "/private/other"
+        ])
+        .unwrap_err()
+        .detail
+        .contains("conflicting values")
+    );
+    for args in [
+        vec!["--human", "inbox"],
+        vec!["inbox", "--human"],
+        vec!["human", "--human", "inbox"],
+    ] {
         let parsed = parse_argv(["ht"].into_iter().chain(args)).unwrap();
         assert_eq!(parsed.presentation, crate::cli::output::Presentation::Human);
     }
@@ -1899,55 +2753,182 @@ fn actor_route_pinned_globals_follow_human() {
 fn actor_route_administrative_and_discovery_matrix() {
     use crate::cli::actor_route::InvocationActor;
     let boot = "00000000-0000-4000-8000-000000000001";
-    let admin = ["service", "disconnect", "--expected-boot", boot, "--expected-generation", "7"];
-    assert!(parse_argv(["ht"].into_iter().chain(admin)).unwrap_err().detail.contains("ht human service disconnect"));
-    assert!(matches!(parse_argv(["ht", "human"].into_iter().chain(admin)).unwrap().action, CliAction::Wire(WireCommand::ServiceDisconnect(_))));
-    for args in [vec!["service", "inspect"], vec!["seat", "list"], vec!["seat", "inspect", "s1"], vec!["seat", "resolve", "--pane", "p1"], vec!["read"], vec!["follow"], vec!["launch", "--kind", "codex", "--pane", "p1", "--", "human", "--operator", "--human"]] {
-        assert_eq!(parse_argv(["ht"].into_iter().chain(args)).unwrap().actor, InvocationActor::Agent);
+    let admin = [
+        "service",
+        "disconnect",
+        "--expected-boot",
+        boot,
+        "--expected-generation",
+        "7",
+    ];
+    assert!(
+        parse_argv(["ht"].into_iter().chain(admin))
+            .unwrap_err()
+            .detail
+            .contains("ht human service disconnect")
+    );
+    assert!(matches!(
+        parse_argv(["ht", "human"].into_iter().chain(admin))
+            .unwrap()
+            .action,
+        CliAction::Wire(WireCommand::ServiceDisconnect(_))
+    ));
+    for args in [
+        vec!["service", "inspect"],
+        vec!["seat", "list"],
+        vec!["seat", "inspect", "s1"],
+        vec!["seat", "resolve", "--pane", "p1"],
+        vec!["read"],
+        vec!["follow"],
+        vec![
+            "launch",
+            "--kind",
+            "codex",
+            "--pane",
+            "p1",
+            "--",
+            "human",
+            "--operator",
+            "--human",
+        ],
+    ] {
+        assert_eq!(
+            parse_argv(["ht"].into_iter().chain(args)).unwrap().actor,
+            InvocationActor::Agent
+        );
     }
-    for args in [vec!["seat", "resolve", "--pane", "p1", "--new-seat", "--operator"], vec!["seat", "rebind", "s1", "--pane", "p1", "--operator"], vec!["seat", "rebind", "s1", "--pane", "p1", "--replace", "s2", "--operator"]] {
+    for args in [
+        vec![
+            "seat",
+            "resolve",
+            "--pane",
+            "p1",
+            "--new-seat",
+            "--operator",
+        ],
+        vec!["seat", "rebind", "s1", "--pane", "p1", "--operator"],
+        vec![
+            "seat",
+            "rebind",
+            "s1",
+            "--pane",
+            "p1",
+            "--replace",
+            "s2",
+            "--operator",
+        ],
+    ] {
         let human = parse_argv(["ht", "human"].into_iter().chain(args.iter().copied())).unwrap();
         assert_eq!(human.actor, InvocationActor::Human);
-        assert!(parse_argv(["ht"].into_iter().chain(args)).unwrap_err().detail.contains("human"));
+        assert!(
+            parse_argv(["ht"].into_iter().chain(args))
+                .unwrap_err()
+                .detail
+                .contains("human")
+        );
     }
-    for args in [vec!["seat", "rebind", "s1", "--pane", "p1"], vec!["seat", "retire", "s1"]] {
+    for args in [
+        vec!["seat", "rebind", "s1", "--pane", "p1"],
+        vec!["seat", "retire", "s1"],
+    ] {
         let error = parse_argv(["ht"].into_iter().chain(args)).unwrap_err();
         assert!(error.detail.contains("human") && error.detail.contains("operator"));
     }
-    assert!(parse_argv(["ht", "--cooperative-harness", "human", "inbox"]).unwrap_err().detail.contains("namespace"));
-    assert!(parse_argv(["ht", "human", "--cooperative-seat", "s1", "--cooperative-target", "p1", "--cooperative-harness", "codex", "--cooperative-role", "top-level", "inbox"]).unwrap_err().detail.contains("cannot be mixed"));
+    assert!(
+        parse_argv(["ht", "--cooperative-harness", "human", "inbox"])
+            .unwrap_err()
+            .detail
+            .contains("namespace")
+    );
+    assert!(
+        parse_argv([
+            "ht",
+            "human",
+            "--cooperative-seat",
+            "s1",
+            "--cooperative-target",
+            "p1",
+            "--cooperative-harness",
+            "codex",
+            "--cooperative-role",
+            "top-level",
+            "inbox"
+        ])
+        .unwrap_err()
+        .detail
+        .contains("cannot be mixed")
+    );
 }
 
 #[test]
 fn actor_route_payload_tokens_never_declare_actor() {
     use crate::cli::actor_route::InvocationActor;
     let body = "human --operator --human; ht human me init";
-    assert!(matches!(parse_argv(["ht", "send", "t1", "--body", body]).unwrap().action, CliAction::Mutation(MutationSpec::Send { body: value, .. }) if value == body));
-    for args in [vec!["thread", "create", "--topic", body, "--name", "human"], vec!["search", "human"], vec!["--state-dir", "human", "inbox"], vec!["handoff", "--thread", "t1", "--pane", "p1", "--kind", "codex", "--", body]] {
-        assert_eq!(parse_argv(["ht"].into_iter().chain(args)).unwrap().actor, InvocationActor::Agent);
+    assert!(
+        matches!(parse_argv(["ht", "send", "t1", "--body", body]).unwrap().action, CliAction::Mutation(MutationSpec::Send { body: value, .. }) if value == body)
+    );
+    for args in [
+        vec!["thread", "create", "--topic", body, "--name", "human"],
+        vec!["search", "human"],
+        vec!["--state-dir", "human", "inbox"],
+        vec![
+            "handoff", "--thread", "t1", "--pane", "p1", "--kind", "codex", "--", body,
+        ],
+    ] {
+        assert_eq!(
+            parse_argv(["ht"].into_iter().chain(args)).unwrap().actor,
+            InvocationActor::Agent
+        );
     }
 }
 
 #[test]
 #[cfg(unix)]
 fn actor_route_os_string_identity_is_preserved() {
+    use crate::cli::actor_route::InvocationActor;
     use std::ffi::OsString;
     use std::os::unix::ffi::OsStringExt;
-    use crate::cli::actor_route::InvocationActor;
     let opaque = OsString::from_vec(b"ht\xff".to_vec());
     let parsed = parse_argv([opaque.clone(), "human".into(), "inbox".into()]).unwrap();
     assert_eq!(parsed.actor, InvocationActor::Human);
-    for argv in [vec![opaque.clone(), OsString::from_vec(b"human\xff".to_vec()), "inbox".into()], vec![opaque.clone(), "send".into(), "t1".into(), "--body".into(), OsString::from_vec(vec![255])]] {
+    for argv in [
+        vec![
+            opaque.clone(),
+            OsString::from_vec(b"human\xff".to_vec()),
+            "inbox".into(),
+        ],
+        vec![
+            opaque.clone(),
+            "send".into(),
+            "t1".into(),
+            "--body".into(),
+            OsString::from_vec(vec![255]),
+        ],
+    ] {
         assert!(parse_argv(argv).is_err());
     }
     let error = parse_argv([opaque, "me".into(), "init".into()]).unwrap_err();
     assert!(error.detail.contains("opaque argv"));
     assert!(!error.detail.contains('\u{fffd}'));
-    assert!(matches!(parse_argv_or_informational(["ht"]), Err(ParseFailure::Usage(_))));
-    for argv in [vec!["ht", "--version"], vec!["/private/a space/ht", "--version"], vec!["ht", "human", "--help"]] {
-        assert!(matches!(parse_argv_or_informational(argv), Err(ParseFailure::Informational(_))));
+    assert!(matches!(
+        parse_argv_or_informational(["ht"]),
+        Err(ParseFailure::Usage(_))
+    ));
+    for argv in [
+        vec!["ht", "--version"],
+        vec!["/private/a space/ht", "--version"],
+        vec!["ht", "human", "--help"],
+    ] {
+        assert!(matches!(
+            parse_argv_or_informational(argv),
+            Err(ParseFailure::Informational(_))
+        ));
     }
-    let Err(ParseFailure::Informational(help)) = parse_argv_or_informational(["ht", "human", "--help"]) else { panic!("help") };
+    let Err(ParseFailure::Informational(help)) =
+        parse_argv_or_informational(["ht", "human", "--help"])
+    else {
+        panic!("help")
+    };
     assert!(help.contains("immediate `human`"));
 }
 
@@ -1960,30 +2941,57 @@ fn permission_consent_flags_are_setup_scoped() {
         (Some("--without-permissions"), PermissionPolicy::Decline),
     ] {
         let named: Vec<&str> = ["ht", "setup", "claude"].into_iter().chain(flag).collect();
-        let CliAction::Setup(request) = parse_argv(named).unwrap().action else { panic!("setup") };
+        let CliAction::Setup(request) = parse_argv(named).unwrap().action else {
+            panic!("setup")
+        };
         assert_eq!(request.permissions, policy);
         let bare: Vec<&str> = ["ht", "setup"].into_iter().chain(flag).collect();
-        assert!(matches!(parse_argv(bare).unwrap().action, CliAction::SetupAll(_, _, p) if p == policy));
+        assert!(
+            matches!(parse_argv(bare).unwrap().action, CliAction::SetupAll(_, _, p) if p == policy)
+        );
     }
     assert!(parse_argv(["ht", "setup", "--with-permissions", "--without-permissions"]).is_err());
     for verb in ["unsetup", "setup-status"] {
         for flag in ["--with-permissions", "--without-permissions"] {
-            assert!(parse_argv(["ht", verb, "claude", flag]).is_err(), "{verb} {flag}");
+            assert!(
+                parse_argv(["ht", verb, "claude", flag]).is_err(),
+                "{verb} {flag}"
+            );
         }
     }
     assert!(matches!(
-        parse_argv(["ht", "internal", "installer-integrations", "--without-permissions"]).unwrap().action,
-        CliAction::InstallerIntegrations { confirm_missing: false, without_permissions: true }
+        parse_argv([
+            "ht",
+            "internal",
+            "installer-integrations",
+            "--without-permissions"
+        ])
+        .unwrap()
+        .action,
+        CliAction::InstallerIntegrations {
+            confirm_missing: false,
+            without_permissions: true
+        }
     ));
     // The executable inventory flags are gone with absolute-path spellings.
-    for args in [vec!["inbox", "--with-permissions"], vec!["setup", "--permissions"], vec!["setup", "--permission-installed-binary", "/private/a"]] {
+    for args in [
+        vec!["inbox", "--with-permissions"],
+        vec!["setup", "--permissions"],
+        vec!["setup", "--permission-installed-binary", "/private/a"],
+    ] {
         assert!(parse_argv(["ht"].into_iter().chain(args)).is_err());
     }
 }
 
 #[test]
 fn inbox_v2_continuation_validates_without_changing_own_text_action() {
-    use crate::protocol::{ids::{ExecutionId,MessageId,SeatId}, pagination::{InboxBatchV2CursorState as State, InboxBatchV2Source as Source, InboxBatchV2BodyPosition,SeatAttentionCursorState,ReceiptAttentionCursorState}};
+    use crate::protocol::{
+        ids::{ExecutionId, MessageId, SeatId},
+        pagination::{
+            InboxBatchV2BodyPosition, InboxBatchV2CursorState as State,
+            InboxBatchV2Source as Source, ReceiptAttentionCursorState, SeatAttentionCursorState,
+        },
+    };
     let state = State {
         seat: SeatId::new("s"),
         binding_generation: Some(1),
@@ -1997,6 +3005,7 @@ fn inbox_v2_continuation_validates_without_changing_own_text_action() {
             offset: 2,
             body_len: 10,
         }),
+        unread: None,
         attention: SeatAttentionCursorState {
             invitation_after_seq: 0,
             invitation_after_ordinal: 0,
@@ -2022,16 +3031,34 @@ fn inbox_v2_continuation_validates_without_changing_own_text_action() {
             latest_warning_offset: Some(0),
         },
     };
-    let raw=state.encode("fixture-instance").unwrap();
-    let parsed=parse_argv(["ht","inbox","--cursor",&raw]).unwrap();
-    let CliAction::Wire(WireCommand::Inbox(query))=parsed.action else {panic!("must retain own Inbox placeholder")};
+    let raw = state.encode("fixture-instance").unwrap();
+    let parsed = parse_argv(["ht", "inbox", "--cursor", &raw]).unwrap();
+    let CliAction::Wire(WireCommand::Inbox(query)) = parsed.action else {
+        panic!("must retain own Inbox placeholder")
+    };
     assert!(query.seat.is_none());
-    assert_eq!(query.page.cursor.as_deref(),Some(raw.as_str()));
-    assert!(WireCommand::Inbox(query.clone()).validate().is_err(),"legacy wire still rejects ib2");
+    assert_eq!(query.page.cursor.as_deref(), Some(raw.as_str()));
+    assert!(
+        WireCommand::Inbox(query.clone()).validate().is_err(),
+        "legacy wire still rejects ib2"
+    );
     assert!(WireCommand::InboxBatch(query.clone()).validate().is_err());
     assert!(WireCommand::InboxBatchV2(query).validate().is_ok());
-    for prefix in [vec!["ht","read","t"],vec!["ht","search","needle"],vec!["ht","seat","list"]] {let mut args=prefix;args.extend(["--cursor",&raw]);assert!(parse_argv(args).is_err(),"non-Inbox route must reject v2 cursor");}
-    for invalid in ["ib2:","ib2:broken!","ib2:A"] {assert!(parse_argv(["ht","inbox","--cursor",invalid]).is_err());}
+    for prefix in [
+        vec!["ht", "read", "t"],
+        vec!["ht", "search", "needle"],
+        vec!["ht", "seat", "list"],
+    ] {
+        let mut args = prefix;
+        args.extend(["--cursor", &raw]);
+        assert!(
+            parse_argv(args).is_err(),
+            "non-Inbox route must reject v2 cursor"
+        );
+    }
+    for invalid in ["ib2:", "ib2:broken!", "ib2:A"] {
+        assert!(parse_argv(["ht", "inbox", "--cursor", invalid]).is_err());
+    }
 }
 
 #[test]
@@ -2039,10 +3066,19 @@ fn public_join_parses_and_freezes_thread_selector() {
     let mut parsed = parse_argv(["herdr-threads", "join", "shared work"]).unwrap();
     assert_eq!(parsed.thread_selector.as_deref(), Some("shared work"));
     crate::cli::threads::resolve_cli_threads::<crate::protocol::results::ApiError>(
-        &mut parsed, |_| Ok(ThreadId::new("tResolved")),
-    ).unwrap();
-    let CliAction::Mutation(spec) = parsed.action else { panic!("mutation expected") };
-    assert_eq!(crate::cli::threads::selector_mut(&mut CliAction::Mutation(spec)).unwrap().as_str(), "tResolved");
+        &mut parsed,
+        |_| Ok(ThreadId::new("tResolved")),
+    )
+    .unwrap();
+    let CliAction::Mutation(spec) = parsed.action else {
+        panic!("mutation expected")
+    };
+    assert_eq!(
+        crate::cli::threads::selector_mut(&mut CliAction::Mutation(spec))
+            .unwrap()
+            .as_str(),
+        "tResolved"
+    );
 }
 
 #[test]
@@ -2140,19 +3176,23 @@ fn registry_selectors_preserve_legacy_argv_and_never_default_unknown_to_claude()
         );
     }
     assert!(matches!(
-        parse_argv(["herdr-threads", "human", "me", "init"]).unwrap().action,
+        parse_argv(["herdr-threads", "human", "me", "init"])
+            .unwrap()
+            .action,
         CliAction::MeInit { operator: false }
     ));
 }
 
 // Metadata-only author fixture: selecting it must never call runtime operations.
-static SELECTOR_INSTALL_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static SELECTOR_INSTALL_CALLS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
 struct SelectorAdapter(u8);
 impl crate::harness::adapter::HarnessAdapter for SelectorAdapter {
     type Admission = ();
     fn metadata(&self) -> &'static crate::harness::adapter::AdapterMetadata {
         use crate::harness::adapter::*;
-        static METADATA: AdapterMetadata = AdapterMetadata { agent_env_markers: &[],
+        static METADATA: AdapterMetadata = AdapterMetadata {
+            agent_env_markers: &[],
             id: "selectorfixture",
             display_label: "Synthetic SelectorFixture",
             context_spelling: "SelectorFixture",
@@ -2166,7 +3206,8 @@ impl crate::harness::adapter::HarnessAdapter for SelectorAdapter {
             },
             runtime_sources: &[],
         };
-        static FOURTH: AdapterMetadata = AdapterMetadata { agent_env_markers: &[],
+        static FOURTH: AdapterMetadata = AdapterMetadata {
+            agent_env_markers: &[],
             id: "fourth",
             display_label: "Fourth",
             context_spelling: "Fourth",
@@ -2183,7 +3224,11 @@ impl crate::harness::adapter::HarnessAdapter for SelectorAdapter {
         if self.0 != 0 { &FOURTH } else { &METADATA }
     }
     fn canary_strategy(&self) -> Option<&dyn crate::harness::adapter::CanaryStrategy> {
-        if self.0 == 2 { Some(&InvalidDiscoveryStrategy) } else { None }
+        if self.0 == 2 {
+            Some(&InvalidDiscoveryStrategy)
+        } else {
+            None
+        }
     }
     fn contracts(&self) -> &'static [crate::harness::adapter::ContractDescriptor] {
         &[]
@@ -2271,10 +3316,7 @@ fn injected_registry_drives_agent_selector_choices_without_native_operations() {
     let registrations =
         Box::leak(vec![Registration::new(&ADAPTER), Registration::new(&FOURTH)].into_boxed_slice());
     let registry = Registry::new(registrations).unwrap();
-    for (name, spelling) in [
-        ("selectorfixture", "SelectorFixture"),
-        ("fourth", "Fourth"),
-    ] {
+    for (name, spelling) in [("selectorfixture", "SelectorFixture"), ("fourth", "Fourth")] {
         for mut argv in [
             vec![
                 "herdr-threads",
@@ -2297,7 +3339,12 @@ fn injected_registry_drives_agent_selector_choices_without_native_operations() {
                 "--",
                 "durable body",
             ],
-            vec!["herdr-threads", "contract-id", "--harness", "selectorfixture"],
+            vec![
+                "herdr-threads",
+                "contract-id",
+                "--harness",
+                "selectorfixture",
+            ],
             vec![
                 "herdr-threads",
                 "harness-version",
@@ -2377,11 +3424,22 @@ fn doctor_action_retains_selected_registered_profile() {
     use crate::harness::registry::{Registration, Registry};
     use clap::FromArgMatches;
     static ADAPTER: SelectorAdapter = SelectorAdapter(0);
-    let registry = Registry::new(Box::leak(vec![Registration::new(&ADAPTER)].into_boxed_slice())).unwrap();
-    let matches = command_for_registry(&registry).try_get_matches_from([
-        "herdr-threads", "doctor", "--harness", "selectorfixture", "--profile", "work"
-    ]).unwrap();
-    let parsed = parse_cli_in_registry(Cli::from_arg_matches(&matches).unwrap(), &registry).unwrap();
+    let registry = Registry::new(Box::leak(
+        vec![Registration::new(&ADAPTER)].into_boxed_slice(),
+    ))
+    .unwrap();
+    let matches = command_for_registry(&registry)
+        .try_get_matches_from([
+            "herdr-threads",
+            "doctor",
+            "--harness",
+            "selectorfixture",
+            "--profile",
+            "work",
+        ])
+        .unwrap();
+    let parsed =
+        parse_cli_in_registry(Cli::from_arg_matches(&matches).unwrap(), &registry).unwrap();
     let action = format!("{:?}", parsed.action);
     assert!(action.contains("selectorfixture"), "{action}");
     assert!(action.contains("work"), "{action}");
@@ -2394,52 +3452,85 @@ fn adapters_discovery_is_bounded_deterministic_and_never_probes_installation() {
     use clap::FromArgMatches;
     static THIRD: SelectorAdapter = SelectorAdapter(0);
     static FOURTH: SelectorAdapter = SelectorAdapter(1);
-    let registry = Registry::new(Box::leak(vec![
-        Registration::new(&FOURTH),
-        Registration::new(&crate::harness::claude::ClaudeAdapter),
-        Registration::new(&THIRD),
-        Registration::new(&crate::harness::codex::CodexAdapter),
-    ].into_boxed_slice())).unwrap();
+    let registry = Registry::new(Box::leak(
+        vec![
+            Registration::new(&FOURTH),
+            Registration::new(&crate::harness::claude::ClaudeAdapter),
+            Registration::new(&THIRD),
+            Registration::new(&crate::harness::codex::CodexAdapter),
+        ]
+        .into_boxed_slice(),
+    ))
+    .unwrap();
     let matches = command_for_registry(&registry)
-        .try_get_matches_from(["herdr-threads", "adapters", "--json"]).unwrap();
-    let parsed = parse_cli_in_registry(Cli::from_arg_matches(&matches).unwrap(), &registry).unwrap();
+        .try_get_matches_from(["herdr-threads", "adapters", "--json"])
+        .unwrap();
+    let parsed =
+        parse_cli_in_registry(Cli::from_arg_matches(&matches).unwrap(), &registry).unwrap();
     assert!(matches!(parsed.action, CliAction::Adapters));
     assert_eq!(parsed.output.format, OutputFormat::Json);
-    let bytes = adapter_discovery_output(&parsed, &registry).unwrap().expect("local dispatch output");
+    let bytes = adapter_discovery_output(&parsed, &registry)
+        .unwrap()
+        .expect("local dispatch output");
     let value: serde_json::Value = serde_json::from_str(&bytes).unwrap();
     assert_eq!(value["schema_version"], 1);
     let entries = value["adapters"].as_array().unwrap();
-    assert_eq!(entries.iter().map(|e|e["id"].as_str().unwrap()).collect::<Vec<_>>(),
-        ["fourth", "claude", "selectorfixture", "codex"]);
-    assert_eq!(entries[0], serde_json::json!({"id":"fourth", "display_name":"Fourth",
+    assert_eq!(
+        entries
+            .iter()
+            .map(|e| e["id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["fourth", "claude", "selectorfixture", "codex"]
+    );
+    assert_eq!(
+        entries[0],
+        serde_json::json!({"id":"fourth", "display_name":"Fourth",
         "host_kinds":[], "setup_scopes":["config_root"], "legacy_contract_id":null,
-        "contracts":[], "canary_strategy":null}));
+        "contracts":[], "canary_strategy":null})
+    );
     assert_eq!(entries[2]["canary_strategy"], serde_json::Value::Null);
     assert_eq!(entries[1]["contracts"][0]["domain"], "native_payload");
-    assert_eq!(entries[1]["contracts"][0]["required_milestones"], serde_json::json!(["lifecycle","tool"]));
-    assert_eq!(entries[1]["canary_strategy"]["npm_package"], "@anthropic-ai/claude-code");
-    assert_eq!(entries[3]["canary_strategy"]["npm_package"], "@openai/codex");
+    assert_eq!(
+        entries[1]["contracts"][0]["required_milestones"],
+        serde_json::json!(["lifecycle", "tool"])
+    );
+    assert_eq!(
+        entries[1]["canary_strategy"]["npm_package"],
+        "@anthropic-ai/claude-code"
+    );
+    assert_eq!(
+        entries[3]["canary_strategy"]["npm_package"],
+        "@openai/codex"
+    );
     assert_eq!(bytes, crate::harness::discovery::render(&registry).unwrap());
-    assert_eq!(SELECTOR_INSTALL_CALLS.load(std::sync::atomic::Ordering::SeqCst),0);
+    assert_eq!(
+        SELECTOR_INSTALL_CALLS.load(std::sync::atomic::Ordering::SeqCst),
+        0
+    );
     struct CountBackend(usize);
     impl CliBackend for CountBackend {
-        fn call(&mut self,_:WireCommand,_:&OutputSpec)->Result<CommandResult,ApiError> {
-            self.0 += 1; Err(ApiError::unsupported("unexpected daemon call"))
+        fn call(&mut self, _: WireCommand, _: &OutputSpec) -> Result<CommandResult, ApiError> {
+            self.0 += 1;
+            Err(ApiError::unsupported("unexpected daemon call"))
         }
     }
-    let mut backend=CountBackend(0);
-    assert!(dispatch(parsed,&mut backend,None,None).is_err());
-    assert_eq!(backend.0,0);
-
+    let mut backend = CountBackend(0);
+    assert!(dispatch(parsed, &mut backend, None, None).is_err());
+    assert_eq!(backend.0, 0);
 }
 
 struct InvalidDiscoveryStrategy;
 impl crate::harness::adapter::CanaryStrategy for InvalidDiscoveryStrategy {
     fn descriptor(&self) -> crate::harness::adapter::CanaryDescriptor {
         use crate::harness::adapter::*;
-        CanaryDescriptor { kind:CanaryKind::ExactRuntime, candidate_kind:CandidateKind::ExactBuild,
-            npm_package:None, model_key_env:None, companion:"scripts/canary/adapters/../bad.py".into(),
-            artifact_schema_version:1 }
+        CanaryDescriptor {
+            kind: CanaryKind::ExactRuntime,
+            candidate_kind: CandidateKind::ExactBuild,
+            npm_package: None,
+            model_key_env: None,
+            companion: "scripts/canary/adapters/../bad.py".into(),
+            artifact_schema_version: 1,
+        }
     }
 }
 // A malformed adapter-owned provider must refuse local discovery, never expose a supported strategy.
@@ -2447,9 +3538,10 @@ impl crate::harness::adapter::CanaryStrategy for InvalidDiscoveryStrategy {
 fn adapters_discovery_refuses_invalid_provider_before_daemon_dispatch() {
     use crate::harness::registry::{Registration, Registry};
     static BAD: SelectorAdapter = SelectorAdapter(2);
-    let registry=Registry::new(Box::leak(vec![Registration::new(&BAD)].into_boxed_slice())).unwrap();
-    let parsed=parse_argv(["ht","adapters","--json"]).unwrap();
-    assert!(adapter_discovery_output(&parsed,&registry).is_err());
+    let registry =
+        Registry::new(Box::leak(vec![Registration::new(&BAD)].into_boxed_slice())).unwrap();
+    let parsed = parse_argv(["ht", "adapters", "--json"]).unwrap();
+    assert!(adapter_discovery_output(&parsed, &registry).is_err());
 }
 
 #[test]
@@ -2528,70 +3620,231 @@ fn invitation_policy_explicit_flags_parse_and_human_keeps_legacy_semantics() {
     }
 }
 
+#[test]
+fn agent_id_global_parses_in_both_forms_and_changes_nothing_else() {
+    let base = parse_argv(["herdr-threads", "thread", "list"]).unwrap();
+    assert_eq!(base.agent_id, None);
+    for argv in [
+        vec!["herdr-threads", "--agent-id=agent-7", "thread", "list"],
+        vec!["herdr-threads", "--agent-id", "agent-7", "thread", "list"],
+        vec!["herdr-threads", "thread", "list", "--agent-id", "agent-7"],
+    ] {
+        let parsed = parse_argv(argv.clone()).unwrap();
+        assert_eq!(
+            parsed.agent_id,
+            Some(crate::protocol::ids::AgentId::new("agent-7")),
+            "{argv:?}"
+        );
+        assert_eq!(parsed.action, base.action, "{argv:?}");
+        assert_eq!(parsed.cooperative, base.cooperative);
+    }
+}
+
+#[test]
+fn agent_id_rejects_invalid_values_and_the_human_namespace() {
+    assert!(parse_argv(["herdr-threads", "--agent-id=", "thread", "list"]).is_err());
+    assert!(parse_argv(["herdr-threads", "--agent-id", "has space", "thread", "list"]).is_err());
+    assert!(
+        parse_argv([
+            "herdr-threads",
+            "human",
+            "--agent-id",
+            "a1",
+            "thread",
+            "list"
+        ])
+        .is_err()
+    );
+}
+
+#[test]
+fn stamp_agent_id_sets_only_the_claim_agent_id() {
+    use crate::protocol::{authority::*, ids::*};
+    let parsed = parse_argv(["herdr-threads", "--agent-id=a1", "thread", "list"]).unwrap();
+    let claim = CallerClaim {
+        instance: "i".into(),
+        seat: SeatId::new("s"),
+        binding_generation: 0,
+        role: CallerRole::TopLevel,
+        harness: Harness::Codex,
+        native_session: NativeSessionId::new("n"),
+        execution: ExecutionId::new("e"),
+        target: HostTargetId::new("p"),
+        agent_id: None,
+        liveness: None,
+    };
+    let stamped = parsed.stamp_agent_id(claim.clone());
+    assert_eq!(stamped.agent_id, Some(AgentId::new("a1")));
+    assert_eq!(stamped.role, claim.role);
+    assert_eq!(
+        parse_argv(["herdr-threads", "thread", "list"])
+            .unwrap()
+            .stamp_agent_id(claim.clone()),
+        claim
+    );
+}
 
 #[test]
 fn direct_send_accepts_target_body_and_human_forms() {
     for argv in [
         vec!["ht", "send", "--seat", "seat-b", "--body", "hello"],
-        vec!["ht", "human", "send", "--seat", "seat-b", "--body", "hello", "--nudge"],
-        vec!["ht", "send", "--seat", "seat-b", "--body", "hello", "--require-ack", "seat-b", "seat-b"],
+        vec![
+            "ht", "human", "send", "--seat", "seat-b", "--body", "hello", "--nudge",
+        ],
+        vec![
+            "ht",
+            "send",
+            "--seat",
+            "seat-b",
+            "--body",
+            "hello",
+            "--require-ack",
+            "seat-b",
+            "seat-b",
+        ],
     ] {
         assert!(parse_argv(argv.clone()).is_ok(), "{argv:?}");
     }
 }
-
 
 #[test]
 fn direct_send_rejects_ambiguous_selectors_and_broadened_ack() {
     for argv in [
         vec!["ht", "send", "--body", "hello"],
         vec!["ht", "send", "t1", "--seat", "seat-b", "--body", "hello"],
-        vec!["ht", "send", "--seat", "seat-b", "--body", "hello", "--require-ack", "seat-c"],
-        vec!["ht", "send", "--seat", "seat-b", "--body", "hello", "--require-ack-pane", "pane-b"],
-        vec!["ht", "send", "--seat", "seat-b", "--body", "hello", "--pane", "pane-b"],
+        vec![
+            "ht",
+            "send",
+            "--seat",
+            "seat-b",
+            "--body",
+            "hello",
+            "--require-ack",
+            "seat-c",
+        ],
+        vec![
+            "ht",
+            "send",
+            "--seat",
+            "seat-b",
+            "--body",
+            "hello",
+            "--require-ack-pane",
+            "pane-b",
+        ],
+        vec![
+            "ht", "send", "--seat", "seat-b", "--body", "hello", "--pane", "pane-b",
+        ],
     ] {
         assert!(parse_argv(argv.clone()).is_err(), "{argv:?}");
     }
 }
 
-
 #[test]
 fn direct_send_file_and_options_preserve_frozen_input() {
     let path = std::env::temp_dir().join(format!("ht-direct-body-{}", uuid::Uuid::new_v4()));
     std::fs::write(&path, "first\n雪\n").unwrap();
-    let parsed = parse_argv(["ht", "send", "--seat", "seat-b", "--file", path.to_str().unwrap(), "--nudge", "--deadline", "30", "--relays-user", "--user-intent", "request"]).unwrap();
+    let parsed = parse_argv([
+        "ht",
+        "send",
+        "--seat",
+        "seat-b",
+        "--file",
+        path.to_str().unwrap(),
+        "--nudge",
+        "--deadline",
+        "30",
+        "--relays-user",
+        "--user-intent",
+        "request",
+    ])
+    .unwrap();
     std::fs::remove_file(path).unwrap();
-    assert!(matches!(parsed.action, CliAction::Mutation(MutationSpec::DirectSend(request)) if request.target.as_str() == "seat-b" && request.body == "first\n雪\n" && request.delivery_mode == DeliveryMode::Ordinary && request.deadline_millis == Some(30_000) && request.relays_user && request.user_intent == Some(UserIntent::Request)));
+    assert!(
+        matches!(parsed.action, CliAction::Mutation(MutationSpec::DirectSend(request)) if request.target.as_str() == "seat-b" && request.body == "first\n雪\n" && request.delivery_mode == DeliveryMode::Ordinary && request.deadline_millis == Some(30_000) && request.relays_user && request.user_intent == Some(UserIntent::Request))
+    );
     for argv in [
-        vec!["ht", "send", "--seat", "seat-b", "--body", "x", "--deadline", "30"],
-        vec!["ht", "send", "--seat", "seat-b", "--body", "x", "--lazy", "--require-ack", "seat-b"],
-        vec!["ht", "send", "--seat", "seat-b", "--body", "x", "--nudge", "--deadline", "0"],
+        vec![
+            "ht",
+            "send",
+            "--seat",
+            "seat-b",
+            "--body",
+            "x",
+            "--deadline",
+            "30",
+        ],
+        vec![
+            "ht",
+            "send",
+            "--seat",
+            "seat-b",
+            "--body",
+            "x",
+            "--lazy",
+            "--require-ack",
+            "seat-b",
+        ],
+        vec![
+            "ht",
+            "send",
+            "--seat",
+            "seat-b",
+            "--body",
+            "x",
+            "--nudge",
+            "--deadline",
+            "0",
+        ],
     ] {
         assert!(parse_argv(argv).is_err());
     }
 }
 
-
 #[test]
 fn direct_send_stdin_grammar_uses_shared_bounded_utf8_source() {
     let cli = Cli::try_parse_from(["ht", "send", "--seat", "seat-b", "--stdin"]).unwrap();
-    let Top::Send(args) = cli.command else { panic!("send expected") };
+    let Top::Send(args) = cli.command else {
+        panic!("send expected")
+    };
     assert_eq!(args.seat.as_deref(), Some("seat-b"));
     assert!(args.thread.is_none());
     let mut input = "line one\n雪\n".as_bytes();
-    assert_eq!(crate::cli::input::read_body_from(args.body, args.file, args.stdin, &mut input).unwrap(), "line one\n雪\n");
+    assert_eq!(
+        crate::cli::input::read_body_from(args.body, args.file, args.stdin, &mut input).unwrap(),
+        "line one\n雪\n"
+    );
 }
-
 
 #[test]
 fn automatic_handoff_channel_omission_parses_for_every_destination() {
     for args in [
         vec!["ht", "handoff", "--existing", "--seat", "s1", "--", "work"],
-        vec!["ht", "handoff", "--existing", "--pane", "w1:p2", "--", "work"],
-        vec!["ht", "handoff", "--pane", "w1:p2", "--kind", "codex", "--", "work"],
-        vec!["ht", "handoff", "--new-tab", "peer", "--kind", "codex", "--", "work"],
+        vec![
+            "ht",
+            "handoff",
+            "--existing",
+            "--pane",
+            "w1:p2",
+            "--",
+            "work",
+        ],
+        vec![
+            "ht", "handoff", "--pane", "w1:p2", "--kind", "codex", "--", "work",
+        ],
+        vec![
+            "ht",
+            "handoff",
+            "--new-tab",
+            "peer",
+            "--kind",
+            "codex",
+            "--",
+            "work",
+        ],
     ] {
-        let parsed = parse_argv(args.clone()).unwrap_or_else(|e| panic!("automatic channel rejected: {args:?}: {e:?}"));
+        let parsed = parse_argv(args.clone())
+            .unwrap_or_else(|e| panic!("automatic channel rejected: {args:?}: {e:?}"));
         match parsed.action {
             CliAction::Handoff(request) => assert!(request.automatic),
             CliAction::TopologyHandoff(request) => assert!(request.automatic),

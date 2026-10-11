@@ -182,6 +182,11 @@ pub fn set_harness_marked(marked: bool) {
     HARNESS_MARKED.with(|cell| cell.set(marked));
 }
 
+/// Whether the process entrypoint recorded an agent-harness marker (see [`set_harness_marked`]).
+pub fn harness_marked_now() -> bool {
+    HARNESS_MARKED.with(Cell::get)
+}
+
 /// Record whether this thread's CLI writer is an interactive terminal. Only
 /// the process entrypoint sets it; library and test callers default to the
 /// machine form.

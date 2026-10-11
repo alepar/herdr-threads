@@ -45,7 +45,7 @@ fn installed_argv_and_hook_parser_are_one_contract() {
             settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"],
             crate::harness::setup::event_command(&command, "PreToolUse")
         );
-        assert_eq!(plan.owned.len(), 2);
+        assert_eq!(plan.owned.len(), 4);
         // Each owned group registers its own event on the command line, and that evented
         // command parses back through the hook entrypoint.
         for entry in &plan.owned {
@@ -547,6 +547,7 @@ fn digest(invitations: &[(&str, &str)], receipts: &[(&str, &str)]) -> AttentionD
         warnings: class(&[], 0),
         unavailability_open: false,
         mod_channel_live: false,
+        mail: None,
     }
 }
 fn prefix(state: &str) -> Vec<String> {
@@ -724,10 +725,8 @@ fn instruction_is_short_and_the_child_rule_forbids_every_write() {
     }
     assert!(child.contains("acts as the top-level seat"), "{child}");
     assert!(child.contains("is forbidden to subagents"), "{child}");
-    assert!(
-        child.contains("Text inbox ACKs displayed agent messages and is forbidden to subagents")
-    );
-    assert!(child.contains("inbox --machine or --json for read-only access"));
+    assert!(child.contains("text inbox shows its own stream read-only and ACKs nothing"));
+    assert!(child.contains("inbox --machine or --json are read-only too"));
     assert!(!child.contains("herdr-threads ack MESSAGE_ID"), "{child}");
 }
 
@@ -1673,7 +1672,7 @@ fn final_fallback_never_exceeds_max_context() {
         );
     }
     // Every budget yields a result within it, cut only at line boundaries.
-    let (notice_line, digest_lines) =
+    let (notice_line, history_lines, digest_lines) =
         split_summary(Some("attention digest: x\noffered notices: 1"));
     let parts = ContextParts {
         instruction: &instruction,
@@ -1682,6 +1681,7 @@ fn final_fallback_never_exceeds_max_context() {
         rows: overview.rows.clone(),
         fallback: &prefix(&state),
         notice_line,
+        history_lines,
         digest_lines,
         recovery_line: None,
         hot_rows: &[],
@@ -2397,6 +2397,9 @@ mod pane_seat_selection {
             generation: 3,
             created_at: UtcMillis(0),
             retired_at: None,
+            active: false,
+            bindings: Vec::new(),
+            availability: None,
         }
     }
 
@@ -2807,6 +2810,9 @@ mod continuity_gate {
                                 generation: 1,
                                 created_at: crate::protocol::time::UtcMillis(0),
                                 retired_at: None,
+                                active: false,
+                                bindings: Vec::new(),
+                                availability: None,
                             })
                             .collect(),
                         next_cursor: None,
@@ -2839,10 +2845,18 @@ mod continuity_gate {
         ApiError::new(code, "scripted")
     }
     fn reattached(seat: &str, generation: u64) -> Reply {
+        reattached_with(seat, generation, None)
+    }
+    fn reattached_with(
+        seat: &str,
+        generation: u64,
+        fast_forward: Option<crate::protocol::results::FastForward>,
+    ) -> Reply {
         Ok(Ok(CommandResult::ContinuityReattached(
             ContinuityReattachment {
                 seat: SeatId::new(seat),
                 binding_generation: generation,
+                fast_forward,
             },
         )))
     }
@@ -2917,6 +2931,18 @@ mod continuity_gate {
             (reference, execution)
         }
         fn record_with(&self, session: &str, execution: String) -> crate::cli::journal::IntentRef {
+            self.record_with_liveness(
+                session,
+                execution,
+                Some(crate::protocol::authority::LivenessFingerprint::TEST),
+            )
+        }
+        fn record_with_liveness(
+            &self,
+            session: &str,
+            execution: String,
+            liveness: Option<crate::protocol::authority::LivenessFingerprint>,
+        ) -> crate::cli::journal::IntentRef {
             self.journal()
                 .record(
                     IntentScope::Continuity {
@@ -2930,6 +2956,7 @@ mod continuity_gate {
                         source: "resume".into(),
                         event_id: "evt-recorded".into(),
                         execution: crate::protocol::ids::ExecutionId::new(execution),
+                        liveness,
                     },
                     1,
                 )
@@ -2964,6 +2991,7 @@ mod continuity_gate {
             role,
             event_id: uuid::Uuid::new_v4().to_string(),
             capability: Capability::ObservedInput,
+            agent_id: None,
         }
     }
     // Kills: choosing a lifecycle digest budget for matching Current, or
@@ -3008,17 +3036,48 @@ mod continuity_gate {
         let seat = SeatId::new("saved");
         let contexts = crate::cli::seat_contexts(&pane.paths, pane.instance, &seat).unwrap();
         if registered {
-            contexts
-                .install_reattached(OccupantContext {
-                    format_version: 1,
-                    instance: pane.instance,
-                    seat: "saved".into(),
-                    target: pane.target.as_str().into(),
-                    harness: Harness::Claude,
-                    binding_generation: 1,
-                    execution: uuid::Uuid::new_v4(),
-                    session: SessionReference::Native("S-1".into()),
-                    role: Role::TopLevel,
+            // S-1 already checked in: its lifecycle request is a completed entry of the journal,
+            // which is how a later turn of that session is known to be a Current turn.
+            let context = OccupantContext {
+                format_version: 1,
+                instance: pane.instance,
+                seat: "saved".into(),
+                target: pane.target.as_str().into(),
+                harness: Harness::Claude,
+                binding_generation: 1,
+                execution: uuid::Uuid::new_v4(),
+                session: SessionReference::Native("S-1".into()),
+                role: Role::TopLevel,
+            };
+            let earlier = crate::cli::seat_contexts(&pane.paths, pane.instance, &seat)
+                .unwrap()
+                .with_agent_caller(
+                    context.clone(),
+                    crate::protocol::authority::LivenessFingerprint::TEST,
+                )
+                .unwrap();
+            earlier
+                .prepare(PendingCheckIn {
+                    operation_id: uuid::Uuid::new_v4(),
+                    mode: crate::harness::context::CheckInMode::Lifecycle,
+                    // A lifecycle claim carries a fresh execution of its own.
+                    context: OccupantContext {
+                        execution: uuid::Uuid::new_v4(),
+                        ..context
+                    },
+                    expected_generation: Some(1),
+                    event_id: "registered-earlier".into(),
+                    payload_version: 1,
+                    payload: b"{}".to_vec(),
+                })
+                .unwrap();
+            earlier
+                .dispatch("registered-earlier", &mut |pending: &PendingCheckIn| {
+                    Ok(crate::harness::context::CheckInResponse {
+                        context: pending.context.clone(),
+                        historical: false,
+                        output: Vec::new(),
+                    })
                 })
                 .unwrap();
         }
@@ -3030,6 +3089,7 @@ mod continuity_gate {
         );
         let mut call_clock = clock();
         let turn = crate::harness::context::QualifiedTurn {
+            lineage_parent: None,
             session: ev.native_session.clone().unwrap(),
             event_key: ev.event_id.clone(),
             reset: reset.then(|| crate::harness::context::ResetObservation {
@@ -3247,9 +3307,10 @@ mod continuity_gate {
     }
 
     // Kills: a request that names a seat, drops the harness, session or source,
-    // a follow-up lifecycle check-in, or a context not written from the reply.
+    // a follow-up lifecycle check-in, or a context written from the reply (an
+    // agent's identity is its environment, never a saved context).
     #[test]
-    fn resume_reattaches_in_one_request_and_installs_the_context() {
+    fn resume_reattaches_in_one_request_and_saves_no_context() {
         for harness in [Harness::Claude, Harness::Codex] {
             let pane = Pane::new();
             let daemon = Daemon::new(vec![reattached("saved", 3)]);
@@ -3284,18 +3345,93 @@ mod continuity_gate {
                 )),
                 "no follow-up lifecycle check-in"
             );
-            let context = pane.saved_context("saved").expect("context installed");
-            assert_eq!(context.binding_generation, 3);
-            assert_eq!(context.target, pane.target.as_str());
-            assert_eq!(context.harness, harness);
-            assert_eq!(context.session, SessionReference::Native("S-1".into()));
-            assert_eq!(context.role, Role::TopLevel);
-            assert_eq!(
-                context.execution.to_string(),
-                requests[0].execution.as_str()
+            assert!(
+                pane.saved_context("saved").is_none(),
+                "a reattached agent session saves no context"
             );
             assert!(pane.pending().is_none(), "the intent is completed");
         }
+    }
+
+    // Kills: a continuity reattachment whose fast-forward gap report never reaches the resumed
+    // agent (the daemon moved its cursors, so the skipped messages would be silently gone).
+    #[test]
+    fn resume_reattachment_shows_the_fast_forward_gap() {
+        let pane = Pane::new();
+        let last = crate::protocol::results::MessageSummary {
+            user_intent: None,
+            message: crate::protocol::ids::MessageId::new("m-last"),
+            thread: crate::protocol::ids::ThreadId::new("t1"),
+            author: Some(SeatId::new("peer")),
+            event_author: None,
+            author_role: None,
+            relays_user: true,
+            author_role_backfilled: false,
+            kind: crate::protocol::results::MessageKind::Ordinary,
+            sequence: 41,
+            created_at: crate::protocol::time::UtcMillis(0),
+            actor_label: None,
+            preview_data: "ship it\nnow".into(),
+            preview_omitted: false,
+            preview_detail_argv: None,
+        };
+        let fast_forward = crate::protocol::results::FastForward {
+            skipped: 40,
+            threads: vec![crate::protocol::results::FastForwardThread {
+                history: crate::protocol::results::ThreadHistory {
+                    thread: crate::protocol::ids::ThreadId::new("t1"),
+                    name: Some("proj".into()),
+                    earlier: 40,
+                    from_people: 4,
+                    open_requests: 2,
+                    last_at: crate::protocol::time::UtcMillis(0),
+                },
+                last_message: Some(last),
+            }],
+            more: 0,
+        };
+        let daemon = Daemon::new(vec![reattached_with("saved", 3, Some(fast_forward))]);
+        let done = pane
+            .call(&daemon)
+            .reattach_by_continuity(&resume(Harness::Claude), false)
+            .done()
+            .expect("reattached");
+        let context = done.summary.clone().unwrap_or_default();
+        for want in [
+            "history: resumed past 40 messages:",
+            "— herdr-threads summary t1",
+        ] {
+            assert_eq!(context.matches(want).count(), 1, "{want}: {context}");
+        }
+    }
+
+    // Kills: a reattachment request without the hook's liveness fingerprint (the daemon then
+    // opens a successor binding the liveness worker disconnects), or an intent that does not
+    // record it (a retry would recompute or drop it).
+    #[test]
+    fn continuity_request_carries_the_hook_fingerprint() {
+        let pane = Pane::new();
+        // The install fails, so the recorded intent stays to be inspected.
+        std::fs::write(pane.paths.instance_dir.join("contexts"), b"in the way").unwrap();
+        let daemon = Daemon::new(vec![reattached("saved", 2)]);
+        let result = pane
+            .call(&daemon)
+            .reattach_by_continuity(&resume(Harness::Claude), false);
+        assert!(matches!(result, Reattach::InstallFailed(_)));
+        let requests = daemon.continuity_requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests[0].liveness,
+            Some(crate::protocol::authority::LivenessFingerprint::TEST)
+        );
+        let pending = pane.pending().expect("the intent stays");
+        let SemanticMutation::ContinuityCheckIn { liveness, .. } = pending.semantic else {
+            panic!("not a continuity intent");
+        };
+        assert_eq!(
+            liveness,
+            Some(crate::protocol::authority::LivenessFingerprint::TEST)
+        );
     }
 
     // Kills: installing the generation a reused intent's replay carries when
@@ -3319,19 +3455,13 @@ mod continuity_gate {
             requests[1].operation.as_str(),
             requests[0].operation.as_str()
         );
-        let context = pane.saved_context("saved").expect("context installed");
-        assert_eq!(context.binding_generation, 5);
-        assert_eq!(
-            context.execution.to_string(),
-            requests[1].execution.as_str(),
-            "the context carries the execution of the intent that reattached"
-        );
+        assert!(pane.saved_context("saved").is_none());
         assert!(pane.pending().is_none());
     }
 
     // Kills: a currency check that rejects a replay that is the pane's mapping.
     #[test]
-    fn a_reused_intent_whose_replay_is_current_installs_it() {
+    fn a_reused_intent_whose_replay_is_current_completes_it() {
         let pane = Pane::new();
         pane.record("S-1");
         let daemon = Daemon::new(vec![reattached("saved", 2)]).with_lookups(vec![vec!["saved"]]);
@@ -3342,8 +3472,11 @@ mod continuity_gate {
                 .is_some()
         );
         assert_eq!(daemon.continuity_requests().len(), 1);
-        assert_eq!(pane.saved_context("saved").unwrap().binding_generation, 2);
-        assert!(pane.pending().is_none());
+        assert!(pane.saved_context("saved").is_none());
+        assert!(
+            pane.pending().is_none(),
+            "the confirmed replay completes the intent"
+        );
     }
 
     // Kills: installing or reporting success for a replay whose currency the
@@ -3380,10 +3513,10 @@ mod continuity_gate {
         assert_eq!(daemon.lookup_count(), 0);
     }
 
-    // Kills: a context install that keeps a saved context for another pane or
-    // an older generation, or leaves its dead pending request's intent behind.
+    // Kills: a reattachment that rewrites the seat's saved context (it is a person's hint and
+    // an agent never owns it).
     #[test]
-    fn reattachment_replaces_any_saved_context_of_the_seat() {
+    fn reattachment_leaves_the_saved_context_of_the_seat_alone() {
         let pane = Pane::new();
         let contexts =
             crate::cli::seat_contexts(&pane.paths, pane.instance, &SeatId::new("saved")).unwrap();
@@ -3411,9 +3544,10 @@ mod continuity_gate {
         let context = pane.saved_context("saved").unwrap();
         assert_eq!(
             (context.target.as_str(), context.binding_generation),
-            (pane.target.as_str(), 4)
+            ("old-pane", 1),
+            "the stale context is neither replaced nor consulted"
         );
-        assert_ne!(context.execution, execution);
+        assert_eq!(context.execution, execution);
     }
 
     // Kills: keeping a refused intent, which would be resubmitted by every
@@ -3524,7 +3658,7 @@ mod continuity_gate {
                 .all(|r| r.execution == requests[0].execution)
         );
         assert!(pane.pending().is_none(), "one intent, completed");
-        assert_eq!(pane.saved_context("saved").unwrap().binding_generation, 2);
+        assert!(pane.saved_context("saved").is_none());
     }
 
     // Kills: reusing an intent of another session (a seat would move on
@@ -3570,8 +3704,55 @@ mod continuity_gate {
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].operation, reference.operation);
         assert_eq!(requests[0].execution.as_str(), execution.to_string());
-        assert_eq!(pane.saved_context("saved").unwrap().execution, execution);
         assert!(pane.pending().is_none());
+    }
+
+    // Kills: submitting a reused intent's journaled fingerprint (an earlier process's, which the
+    // liveness worker would disconnect) instead of this hook's.
+    #[test]
+    fn a_reused_intent_with_another_fingerprint_submits_the_current_one() {
+        let pane = Pane::new();
+        let reference = pane.record_with_liveness(
+            "S-1",
+            uuid::Uuid::new_v4().to_string(),
+            Some(crate::protocol::authority::LivenessFingerprint { pid: 999, start: 3 }),
+        );
+        let daemon = Daemon::new(vec![reattached("saved", 2)]).with_lookups(vec![vec!["saved"]]);
+        assert!(
+            pane.call(&daemon)
+                .reattach_by_continuity(&resume(Harness::Claude), false)
+                .done()
+                .is_some()
+        );
+        let requests = daemon.continuity_requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].operation, reference.operation);
+        assert_eq!(
+            requests[0].liveness,
+            Some(crate::protocol::authority::LivenessFingerprint::TEST)
+        );
+    }
+
+    // Kills: a pre-.70 intent (no fingerprint) being submitted as is and refused
+    // `liveness_fingerprint_required`.
+    #[test]
+    fn a_reused_intent_without_a_fingerprint_submits_the_current_one() {
+        let pane = Pane::new();
+        let reference = pane.record_with_liveness("S-1", uuid::Uuid::new_v4().to_string(), None);
+        let daemon = Daemon::new(vec![reattached("saved", 2)]).with_lookups(vec![vec!["saved"]]);
+        assert!(
+            pane.call(&daemon)
+                .reattach_by_continuity(&resume(Harness::Claude), false)
+                .done()
+                .is_some()
+        );
+        let requests = daemon.continuity_requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].operation, reference.operation);
+        assert_eq!(
+            requests[0].liveness,
+            Some(crate::protocol::authority::LivenessFingerprint::TEST)
+        );
     }
 
     // Kills: an intent with an execution that is not a UUID being reused (no
@@ -3630,6 +3811,7 @@ mod continuity_gate {
             match code {
                 ErrorCode::InvalidRequest
                 | ErrorCode::Unauthorized
+                | ErrorCode::SubagentReadOnly
                 | ErrorCode::Archived
                 | ErrorCode::Conflict
                 | ErrorCode::OperationPayloadMismatch
@@ -3641,6 +3823,8 @@ mod continuity_gate {
                 | ErrorCode::CallerUnverified
                 | ErrorCode::Unsupported
                 | ErrorCode::SequenceExhausted
+                // The reattachment request carries no fingerprint: an identical retry repeats it.
+                | ErrorCode::LivenessFingerprintRequired
                 // A deterministic rejection on this branch's retry path
                 // (ht-p03): identical retry repeats it.
                 | ErrorCode::StaleRequirementAcceptance => true,
@@ -3670,6 +3854,8 @@ mod continuity_gate {
                 | ErrorCode::StaleServiceGeneration
                 | ErrorCode::IncompatibleOwnership
                 | ErrorCode::RequiredInvitationNeedsManagedThread
+                | ErrorCode::SessionClaimRequired
+                | ErrorCode::ManagedDaemonRefused
                 | ErrorCode::TransportDenied => false,
             }
         }
@@ -3715,6 +3901,10 @@ mod continuity_gate {
             ErrorCode::MembershipRequired,
             ErrorCode::StaleRequirementAcceptance,
             ErrorCode::TransportDenied,
+            ErrorCode::SessionClaimRequired,
+            ErrorCode::LivenessFingerprintRequired,
+            ErrorCode::SubagentReadOnly,
+            ErrorCode::ManagedDaemonRefused,
         ];
         for code in &all {
             assert_eq!(
@@ -3879,6 +4069,7 @@ fn recovery_event_of(harness: Harness, kind: EventKind) -> LifecycleEvent {
         role: Role::TopLevel,
         event_id: uuid(),
         capability: crate::harness::Capability::ObservedInput,
+        agent_id: None,
     }
 }
 
@@ -4509,15 +4700,25 @@ fn child_lifecycle_context(harness: Harness, native_event: &str) -> String {
         clock(),
         None,
     );
-    assert_eq!(outcome.diagnostic, None);
+    // A subagent start enrolls its binding, so it asks the daemon for the pane's seat (this
+    // listener never answers: the report fails within its own sub-budget and the guidance still
+    // renders). Every other child event does no daemon work at all.
+    let reports_binding = native_event == "SubagentStart";
+    if reports_binding {
+        let diagnostic = outcome.diagnostic.as_deref().unwrap_or_default();
+        assert!(diagnostic.starts_with("seat lookup"), "{diagnostic}");
+    } else {
+        assert_eq!(outcome.diagnostic, None);
+    }
     assert!(outcome.attention.is_none(), "child must not own attention");
-    assert!(
-        runtime
-            .block_on(async {
-                tokio::time::timeout(Duration::from_millis(1), listener.accept()).await
-            })
-            .is_err(),
-        "child must not connect for canonical work"
+    let connected = runtime
+        .block_on(async {
+            tokio::time::timeout(Duration::from_millis(200), listener.accept()).await
+        })
+        .is_ok();
+    assert_eq!(
+        connected, reports_binding,
+        "child must connect for its binding report only, never for canonical work"
     );
     let value: serde_json::Value = serde_json::from_slice(&outcome.stdout).unwrap();
     assert_eq!(value["hookSpecificOutput"]["hookEventName"], native_event);
@@ -5027,10 +5228,18 @@ mod mod_channel_live {
     struct Daemon {
         live: AtomicBool,
         calls: Mutex<Vec<&'static str>>,
+        /// Every CheckIn the hook sent: its mode and claim.
+        check_ins: Mutex<Vec<(WireMode, crate::protocol::authority::CallerClaim)>>,
+        /// What the lifecycle check-in reports for the binding (ht-54r.8).
+        first_contact: Mutex<Option<crate::protocol::results::FirstContact>>,
+        fast_forward: Mutex<Option<crate::protocol::results::FastForward>>,
     }
     impl Daemon {
         fn calls(&self) -> Vec<&'static str> {
             std::mem::take(&mut *self.calls.lock().unwrap())
+        }
+        fn check_ins(&self) -> Vec<(WireMode, crate::protocol::authority::CallerClaim)> {
+            self.check_ins.lock().unwrap().clone()
         }
     }
     impl LocalClient for Daemon {
@@ -5048,6 +5257,7 @@ mod mod_channel_live {
                     self.calls.lock().unwrap().push("digest");
                     Ok(CommandResult::AttentionDigest(AttentionDigest {
                         lazy: None,
+                        mail: None,
                         version: DIGEST_VERSION,
                         seat: query.seat,
                         token: AttentionToken {
@@ -5075,6 +5285,10 @@ mod mod_channel_live {
                 Command::Directory(_) => Ok(CommandResult::Directory(empty())),
                 Command::CheckIn(check) => {
                     self.calls.lock().unwrap().push("check_in");
+                    self.check_ins
+                        .lock()
+                        .unwrap()
+                        .push((check.mode, check.claim.clone()));
                     let mut claim = check.claim;
                     if let WireMode::Lifecycle {
                         expected_binding_generation,
@@ -5092,6 +5306,8 @@ mod mod_channel_live {
                         warnings: empty(),
                         notices: Default::default(),
                         inbox: empty(),
+                        first_contact: self.first_contact.lock().unwrap().clone(),
+                        fast_forward: self.fast_forward.lock().unwrap().clone(),
                     }))
                 }
                 other => panic!("unexpected hook call {other:?}"),
@@ -5193,6 +5409,161 @@ mod mod_channel_live {
         SeatId::new("seat-1")
     }
 
+    fn history(
+        thread: &str,
+        name: &str,
+        earlier: u64,
+        from_people: u64,
+        open: u64,
+    ) -> crate::protocol::results::ThreadHistory {
+        crate::protocol::results::ThreadHistory {
+            thread: ThreadId::new(thread),
+            name: Some(name.into()),
+            earlier,
+            from_people,
+            open_requests: open,
+            last_at: crate::protocol::time::UtcMillis(0),
+        }
+    }
+
+    // Kills: first-contact stats missing from the lifecycle context, shown twice (once from the
+    // offer text and once from the summary), or placed after the attention digest.
+    #[test]
+    fn session_start_output_shows_first_contact_lines() {
+        let pane = Pane::new();
+        let daemon = Daemon::default();
+        *daemon.first_contact.lock().unwrap() = Some(crate::protocol::results::FirstContact {
+            threads: vec![
+                history("t1", "proj", 5, 2, 1),
+                history("t2", "other", 9, 0, 0),
+            ],
+            more: 3,
+        });
+        let ev = start();
+        let done = pane
+            .call(&daemon)
+            .check_in_seat(&ev, &seat(), 0)
+            .map_err(describe)
+            .expect("check-in");
+        let context = stdout(&ev, &done);
+        for want in [
+            "history: #proj (t1): 5 earlier messages, 2 from people (1 open requests), last ",
+            "m ago — herdr-threads summary t1",
+            "history: #other (t2): 9 earlier messages, 0 from people (0 open requests), last ",
+            "history: +3 more threads (herdr-threads thread list --joined)",
+        ] {
+            assert_eq!(context.matches(want).count(), 1, "{want}: {context}");
+        }
+        assert!(
+            context.find("history: #proj").unwrap() < context.find("receipts=1").unwrap(),
+            "history comes before the digest: {context}"
+        );
+        // Nothing for a binding without first contact.
+        let other_pane = Pane::new();
+        let plain = Daemon::default();
+        let ev = start();
+        let done = other_pane
+            .call(&plain)
+            .check_in_seat(&ev, &seat(), 0)
+            .map_err(describe)
+            .expect("check-in");
+        assert!(!stdout(&ev, &done).contains("history:"));
+    }
+
+    // Kills: a fast-forward that is not reported to the resumed agent, one without its gap
+    // counts, last message or summary pointer.
+    #[test]
+    fn resume_output_shows_fast_forward_summary() {
+        let pane = Pane::new();
+        let daemon = Daemon::default();
+        let mut last = crate::protocol::results::MessageSummary {
+            user_intent: None,
+            message: crate::protocol::ids::MessageId::new("m-last"),
+            thread: ThreadId::new("t1"),
+            author: Some(SeatId::new("peer")),
+            event_author: None,
+            author_role: None,
+            relays_user: false,
+            author_role_backfilled: false,
+            kind: crate::protocol::results::MessageKind::Ordinary,
+            sequence: 41,
+            created_at: crate::protocol::time::UtcMillis(0),
+            actor_label: None,
+            preview_data: "ship it\nnow".into(),
+            preview_omitted: false,
+            preview_detail_argv: None,
+        };
+        last.relays_user = true;
+        *daemon.fast_forward.lock().unwrap() = Some(crate::protocol::results::FastForward {
+            skipped: 40,
+            threads: vec![crate::protocol::results::FastForwardThread {
+                history: history("t1", "proj", 40, 4, 2),
+                last_message: Some(last),
+            }],
+            more: 0,
+        });
+        let ev = start();
+        let done = pane
+            .call(&daemon)
+            .check_in_seat(&ev, &seat(), 0)
+            .map_err(describe)
+            .expect("check-in");
+        let context = stdout(&ev, &done);
+        for want in [
+            "history: resumed past 40 messages:",
+            "history: #proj (t1): 40 earlier messages, 4 from people (2 open requests), last ",
+            "— herdr-threads summary t1",
+            "history:   last: #41 peer",
+            ": ship it now",
+        ] {
+            assert_eq!(context.matches(want).count(), 1, "{want}: {context}");
+        }
+        assert!(
+            context.find("history: resumed").unwrap() < context.find("receipts=1").unwrap(),
+            "{context}"
+        );
+    }
+
+    // Kills: history lines that vanish whole under a tight budget (the summary pointer must
+    // survive), or that crowd out the pinned commands.
+    #[test]
+    fn trimmed_history_keeps_its_summary_pointers() {
+        let instruction = "instruction".to_owned();
+        let long = format!(
+            "history: #{} (t1): 5 earlier messages, 2 from people (1 open requests), last 3m ago — herdr-threads summary t1",
+            "n".repeat(300)
+        );
+        let summary = format!(
+            "{long}\nhistory: +4 more threads (herdr-threads thread list --joined)\nattention digest: receipts=1"
+        );
+        let (notice_line, history_lines, digest_lines) = split_summary(Some(&summary));
+        assert_eq!(history_lines.len(), 2);
+        let fallback = vec!["herdr-threads".to_owned(), "inbox".to_owned()];
+        let parts = ContextParts {
+            instruction: &instruction,
+            actions: None,
+            overview: None,
+            rows: vec![],
+            fallback: &fallback,
+            notice_line,
+            history_lines,
+            digest_lines,
+            recovery_line: None,
+            hot_rows: &[],
+        };
+        let full = fit_context(&parts, 10_000);
+        assert!(full.contains(&"n".repeat(300)), "{full}");
+        // Too small for the long line, big enough for the pointer.
+        let tight = fit_context(&parts, 330);
+        assert!(!tight.contains(&"n".repeat(300)), "{tight}");
+        assert!(
+            tight.contains("history: herdr-threads summary t1"),
+            "{tight}"
+        );
+        assert!(!tight.contains("more threads"), "{tight}");
+        assert!(tight.len() <= 330);
+    }
+
     // Kills: a SessionStart that still shows the digest line, the ready
     // commands or seeds the attention mark while the mod delivers attention;
     // and one that skips the lifecycle CheckIn (enrollment must still happen).
@@ -5274,6 +5645,375 @@ mod mod_channel_live {
         assert!(done.summary.is_none());
         assert!(done.attention.is_none(), "mark stays where it was");
         assert_eq!(stdout(&ev, &done), "", "nothing reaches the model");
+    }
+
+    fn in_session(mut ev: LifecycleEvent, session: &str) -> LifecycleEvent {
+        ev.native_session = Some(session.into());
+        ev
+    }
+
+    // Kills: a tool-boundary hook that reads the pane's saved context for a session it never
+    // checked in (the old "no registered execution for this session" refusal), a claim that
+    // names the saved session instead of the payload's, and one that drops the fingerprint.
+    #[test]
+    fn second_claude_session_pre_tool_use_enrolls() {
+        let pane = Pane::new();
+        let daemon = Daemon::default();
+        pane.call(&daemon)
+            .check_in_seat(&in_session(start(), "session-A"), &seat(), 1)
+            .map_err(describe)
+            .expect("session A registers");
+        daemon.calls();
+        let ev = in_session(tool(), "session-B");
+        let done = pane
+            .call(&daemon)
+            .check_in_seat(&ev, &seat(), 1)
+            .map_err(describe)
+            .expect("session B's tool call enrolls, it is not refused");
+        assert!(
+            !String::from_utf8_lossy(&done.text).contains("no registered execution"),
+            "{:?}",
+            String::from_utf8_lossy(&done.text)
+        );
+        assert_eq!(daemon.calls(), vec!["digest", "check_in"]);
+        let sent = daemon.check_ins();
+        let (mode_a, claim_a) = &sent[0];
+        let (mode_b, claim_b) = &sent[1];
+        assert!(matches!(mode_a, WireMode::Lifecycle { .. }), "{mode_a:?}");
+        assert_eq!(mode_b, &WireMode::Current);
+        assert_eq!(claim_a.native_session.as_str(), "session-A");
+        assert_eq!(claim_b.native_session.as_str(), "session-B");
+        assert_eq!(claim_b.seat, seat());
+        assert_eq!(claim_b.binding_generation, 1);
+        for claim in [claim_a, claim_b] {
+            assert_eq!(
+                claim.liveness,
+                Some(crate::protocol::authority::LivenessFingerprint::TEST),
+                "every agent claim carries the harness fingerprint"
+            );
+            assert_eq!(claim.role, crate::protocol::authority::CallerRole::TopLevel);
+            assert_eq!(claim.agent_id, None);
+        }
+        // Nothing about either session was saved as the pane's context.
+        assert!(
+            crate::cli::seat_contexts(&pane.paths, pane.instance, &seat())
+                .unwrap()
+                .current()
+                .unwrap()
+                .is_none(),
+            "an agent's identity is its environment, not context.json"
+        );
+    }
+
+    // Kills: a subagent's tool call that checks in for the seat (or reads its digest), which would
+    // enroll the parent's session on the subagent's behalf.
+    #[test]
+    fn subagent_tool_boundary_never_checks_in_for_the_seat() {
+        let pane = Pane::new();
+        let daemon = Daemon::default();
+        let payload = serde_json::json!({
+            "hook_event_name": "PreToolUse",
+            "session_id": "session-A",
+            "agent_id": "agent-1",
+            "agent_type": "general-purpose",
+            "tool_name": "Bash",
+            "tool_use_id": "toolu_1",
+            "tool_input": {"command": "herdr-threads inbox"},
+        });
+        let mut ev = event(&serde_json::to_vec(&payload).unwrap());
+        ev.event_id = uuid::Uuid::new_v4().to_string();
+        assert_eq!(
+            ev.role,
+            Role::Subagent,
+            "the payload's agent_id makes it a child"
+        );
+        let done = pane
+            .call(&daemon)
+            .check_in_seat(&ev, &seat(), 1)
+            .map_err(describe)
+            .expect("a child's tool call is quiet, not an error");
+        assert!(done.text.is_empty());
+        assert_eq!(daemon.calls(), Vec::<&str>::new(), "no digest, no CheckIn");
+        assert!(daemon.check_ins().is_empty());
+    }
+
+    /// A daemon serving per-binding digests (`attention.binding_digest_v1`): every delivered
+    /// message is unread by each session until that session displays it, and a session's token
+    /// carries its own binding.
+    #[derive(Default)]
+    struct BindingDaemon {
+        /// Messages delivered so far (m1 ..= mN).
+        delivered: Mutex<u64>,
+        /// Per session key (`session:agent`), the highest message it displayed.
+        displayed: Mutex<std::collections::BTreeMap<String, u64>>,
+        digests: Mutex<Vec<crate::protocol::authority::CallerClaim>>,
+        check_ins: Mutex<usize>,
+    }
+    impl BindingDaemon {
+        fn deliver(&self) {
+            *self.delivered.lock().unwrap() += 1;
+        }
+        fn display(&self, key: &str) {
+            let n = *self.delivered.lock().unwrap();
+            self.displayed.lock().unwrap().insert(key.into(), n);
+        }
+    }
+    impl LocalClient for BindingDaemon {
+        fn supports_capability(&self, name: &str, _: &CallBudget) -> bool {
+            name == crate::protocol::capabilities::BINDING_DIGEST
+        }
+        fn call_with_output(
+            &self,
+            command: Command,
+            _: &crate::protocol::output::OutputSpec,
+            budget: &CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            self.call(command, budget)
+        }
+        fn call(&self, command: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
+            match command {
+                Command::AttentionDigest(query) => {
+                    let claim = query.claim.expect("a binding digest names its claim");
+                    let key = format!(
+                        "{}:{}",
+                        claim.native_session.as_str(),
+                        claim.agent_id.as_ref().map_or("", |a| a.as_str())
+                    );
+                    self.digests.lock().unwrap().push(claim.clone());
+                    let seen = self
+                        .displayed
+                        .lock()
+                        .unwrap()
+                        .get(&key)
+                        .copied()
+                        .unwrap_or(0);
+                    let delivered = *self.delivered.lock().unwrap();
+                    let unread: Vec<u64> = (seen + 1..=delivered).collect();
+                    let newest = unread.last().copied();
+                    Ok(CommandResult::AttentionDigest(AttentionDigest {
+                        lazy: None,
+                        mail: (!unread.is_empty()).then(|| AttentionClass {
+                            count: unread.len() as u64,
+                            items: unread
+                                .iter()
+                                .rev()
+                                .take(4)
+                                .map(|n| AttentionRef {
+                                    id: format!("m{n}"),
+                                    thread: ThreadId::new("t1"),
+                                    requirement: None,
+                                })
+                                .collect(),
+                            has_more: unread.len() > 4,
+                            count_has_more: false,
+                        }),
+                        version: DIGEST_VERSION,
+                        seat: query.seat,
+                        token: AttentionToken {
+                            mail: newest.map(|n| (10 + n, n)),
+                            unavailability_episode: 1,
+                            binding: Some(crate::protocol::attention::binding_token_hash(
+                                "seat-1",
+                                claim.harness.as_str(),
+                                claim.native_session.as_str(),
+                                claim.agent_id.as_ref().map_or("", |a| a.as_str()),
+                            )),
+                            ..Default::default()
+                        },
+                        invitations: AttentionClass::default(),
+                        receipts: AttentionClass::default(),
+                        warnings: AttentionClass::default(),
+                        unavailability_open: false,
+                        mod_channel_live: false,
+                    }))
+                }
+                Command::Directory(_) => Ok(CommandResult::Directory(empty())),
+                Command::CheckIn(check) => {
+                    *self.check_ins.lock().unwrap() += 1;
+                    let mut claim = check.claim;
+                    if let WireMode::Lifecycle {
+                        expected_binding_generation,
+                    } = check.mode
+                    {
+                        claim.binding_generation = expected_binding_generation + 1;
+                    }
+                    Ok(CommandResult::CheckedIn(CheckInResult {
+                        context: claim.clone(),
+                        context_disposition: CheckInContextDisposition::Current,
+                        seat: claim.seat,
+                        offered_through: Some("9".into()),
+                        warning_count: 0,
+                        warning_count_has_more: false,
+                        warnings: empty(),
+                        notices: Default::default(),
+                        inbox: empty(),
+                        first_contact: None,
+                        fast_forward: None,
+                    }))
+                }
+                other => panic!("unexpected hook call {other:?}"),
+            }
+        }
+    }
+
+    /// One top-level tool call of `session`; its mark is committed the way the process boundary
+    /// does after the output was delivered. Returns the presented summary, if any.
+    fn tool_call_of(pane: &Pane, daemon: &BindingDaemon, session: &str) -> Option<String> {
+        let ev = in_session(tool(), session);
+        let done = pane
+            .call(daemon)
+            .check_in_seat(&ev, &seat(), 1)
+            .map_err(describe)
+            .expect("tool call");
+        let shown = done.summary.clone();
+        if let Some(attention) = done.attention {
+            attention.commit().unwrap();
+        }
+        shown
+    }
+
+    // Kills: a mark that is one value for the pane (the second session's commit would erase the
+    // first's, which then re-presents what it already showed), a digest that is not read for the
+    // calling session's own binding (the second session would see nothing of its own), and a
+    // display by one session that clears the other's notice. Two sessions of one pane, one new
+    // message each time: every PreToolUse shows the notice once.
+    #[test]
+    fn background_and_foreground_sessions_each_get_new_mail_notices() {
+        let pane = Pane::new();
+        let daemon = BindingDaemon::default();
+        daemon.deliver();
+        let a = tool_call_of(&pane, &daemon, "session-A");
+        let b = tool_call_of(&pane, &daemon, "session-B");
+        for (who, shown) in [("A", &a), ("B", &b)] {
+            assert!(
+                shown
+                    .as_deref()
+                    .is_some_and(|s| s.contains("mail=1 [m1@t1]")),
+                "{who} gets its own notice: {shown:?}"
+            );
+        }
+        // Once each: B's commit did not erase A's mark, nor A's B's.
+        assert_eq!(tool_call_of(&pane, &daemon, "session-A"), None);
+        assert_eq!(tool_call_of(&pane, &daemon, "session-B"), None);
+        let contexts = crate::cli::seat_contexts(&pane.paths, pane.instance, &seat()).unwrap();
+        for session in ["session-A", "session-B"] {
+            let key = crate::harness::context::attention_mark_key("claude", session, None);
+            assert!(
+                contexts
+                    .attention_mark(&key)
+                    .is_some_and(|mark| mark.mail == Some((11, 1)) && mark.binding.is_some()),
+                "{session} keeps its own mark"
+            );
+        }
+        // A second message reaches both. A is shown it and displays it; B has not, and A's
+        // display left B's notice standing.
+        daemon.deliver();
+        let a = tool_call_of(&pane, &daemon, "session-A");
+        assert!(a.as_deref().is_some_and(|s| s.contains("mail=2")), "{a:?}");
+        daemon.display("session-A:");
+        let b = tool_call_of(&pane, &daemon, "session-B");
+        assert!(
+            b.as_deref().is_some_and(|s| s.contains("mail=2")),
+            "A's display left B's notice: {b:?}"
+        );
+        assert_eq!(tool_call_of(&pane, &daemon, "session-B"), None);
+        // Every digest was read for the calling session's own binding.
+        let claims = daemon.digests.lock().unwrap().clone();
+        assert!(
+            claims
+                .iter()
+                .any(|c| c.native_session.as_str() == "session-A")
+        );
+        assert!(
+            claims
+                .iter()
+                .any(|c| c.native_session.as_str() == "session-B")
+        );
+    }
+
+    // Kills: a subagent whose tool call stays silent (it gets no notice for its own stream), one
+    // that checks in for the seat to get it, one that moves its parent's mark, and a notice
+    // without the read-only wording.
+    #[test]
+    fn subagent_tool_call_shows_read_only_notice_wording() {
+        let pane = Pane::new();
+        let daemon = BindingDaemon::default();
+        daemon.deliver();
+        let payload = serde_json::json!({
+            "hook_event_name": "PreToolUse",
+            "session_id": "session-A",
+            "agent_id": "agent-1",
+            "agent_type": "general-purpose",
+            "tool_name": "Bash",
+            "tool_use_id": "toolu_1",
+            "tool_input": {"command": "ls"},
+        });
+        let mut ev = event(&serde_json::to_vec(&payload).unwrap());
+        ev.event_id = uuid::Uuid::new_v4().to_string();
+        assert_eq!(ev.role, Role::Subagent);
+        assert_eq!(ev.agent_id.as_deref(), Some("agent-1"));
+        let call = |ev: &LifecycleEvent| {
+            pane.call(&daemon)
+                .check_in_seat(ev, &seat(), 1)
+                .map_err(describe)
+                .expect("a child's tool call")
+        };
+        let done = call(&ev);
+        let summary = done.summary.clone().expect("the subagent gets a notice");
+        assert!(summary.contains("mail=1 [m1@t1]"), "{summary}");
+        assert!(
+            summary.contains(
+                "new mail (read-only: you may read and summarize; your parent session ACKs and replies)"
+            ),
+            "{summary}"
+        );
+        assert!(
+            !done.text.is_empty(),
+            "the fixed child guidance rides with it"
+        );
+        // It reached the model through the hook output, and no check-in was made for the seat.
+        let context = stdout(&ev, &done);
+        assert!(
+            context.contains("read-only: you may read and summarize"),
+            "{context}"
+        );
+        assert_eq!(*daemon.check_ins.lock().unwrap(), 0);
+        // The digest was read for the subagent's own binding.
+        let claims = daemon.digests.lock().unwrap().clone();
+        let claim = claims.last().unwrap();
+        assert_eq!(claim.role, crate::protocol::authority::CallerRole::Subagent);
+        assert_eq!(claim.agent_id.as_ref().map(|a| a.as_str()), Some("agent-1"));
+        assert_eq!(claim.native_session.as_str(), "session-A");
+        // Once: its commit is its own mark, and the parent's is untouched.
+        done.attention.expect("a mark to commit").commit().unwrap();
+        let again = call(&ev);
+        assert!(
+            again.summary.is_none() && again.text.is_empty(),
+            "{:?}",
+            again.summary
+        );
+        let contexts = crate::cli::seat_contexts(&pane.paths, pane.instance, &seat()).unwrap();
+        let parent = crate::harness::context::attention_mark_key("claude", "session-A", None);
+        let child =
+            crate::harness::context::attention_mark_key("claude", "session-A", Some("agent-1"));
+        assert!(contexts.attention_mark(&child).is_some());
+        assert_eq!(
+            contexts.attention_mark(&parent),
+            None,
+            "the parent's mark is not the child's"
+        );
+        // The parent still gets its own notice for the same message.
+        let parent_shown = tool_call_of(&pane, &daemon, "session-A");
+        assert!(
+            parent_shown
+                .as_deref()
+                .is_some_and(|s| s.contains("mail=1 [m1@t1]") && !s.contains("read-only")),
+            "{parent_shown:?}"
+        );
+        // A newer message reaches the subagent again.
+        daemon.deliver();
+        let next = call(&ev);
+        assert!(next.summary.is_some_and(|s| s.contains("mail=2")));
     }
 
     // Kills: the quiet tool boundary outliving the channel: with it gone the
@@ -5711,6 +6451,9 @@ mod enum_callback {
                     + 1,
                 created_at: crate::protocol::time::UtcMillis(0),
                 retired_at: None,
+                active: false,
+                bindings: Vec::new(),
+                availability: None,
             };
             match c {
                 Command::Seats(_) => {
@@ -5755,6 +6498,8 @@ mod enum_callback {
                         warnings: empty(),
                         notices: Default::default(),
                         inbox: empty(),
+                        first_contact: None,
+                        fast_forward: None,
                     }))
                 }
                 _ => Err(crate::test_support::unserved(
@@ -5874,12 +6619,24 @@ mod enum_callback {
         drop(calls);
         let journal =
             crate::cli::seat_contexts(&paths, instance, &SeatId::new("callback-seat")).unwrap();
-        let saved = journal.current().unwrap().unwrap();
-        assert_eq!(saved.binding_generation, 2);
-        assert_eq!(saved.harness, args.harness);
+        // The session is the payload's, sent on the check-in; nothing is saved as the context.
+        assert!(journal.current().unwrap().is_none());
+        let sent = service
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .find_map(|c| match c {
+                Command::CheckIn(check) => Some(check.claim.clone()),
+                _ => None,
+            })
+            .expect("a check-in");
+        assert_eq!(sent.binding_generation, 1);
+        assert_eq!(sent.harness, args.harness.into());
+        assert_eq!(sent.native_session.as_str(), "enum-only-session");
         assert_eq!(
-            saved.session,
-            SessionReference::Native("enum-only-session".into())
+            sent.liveness,
+            Some(crate::protocol::authority::LivenessFingerprint::TEST)
         );
         assert!(journal.pending().unwrap().is_none());
         // Exercise the same observation and input projections as the active
@@ -5934,7 +6691,7 @@ mod enum_callback {
             |detail| panic!("enum callback was refused before admission: {detail}"),
             |_| {},
         );
-        assert_eq!(journal.current().unwrap(), Some(saved));
+        assert!(journal.current().unwrap().is_none());
         let outside = run_hook_registered(
             registration,
             &args,
@@ -6184,6 +6941,7 @@ mod registered_resume {
                 event_id: p.event_id,
                 intent,
                 metadata: EventMetadata {
+                    enrollment_witness: None,
                     skill_pointer: false,
                     callback_deadline: None,
                     context_source: source.into(),
@@ -6191,6 +6949,7 @@ mod registered_resume {
                     domain: ContractDomain::Native,
                     native_event: p.event,
                     shape_fields: vec![],
+                    agent_id: None,
                 },
                 delivery: if observer {
                     DeliveryEligibility::ObserverOnly
@@ -6200,6 +6959,7 @@ mod registered_resume {
                 runtime: RuntimeAttribution::Unavailable {
                     diagnostic: "synthetic fixture has no native runtime".into(),
                 },
+                binding_event: None,
             })
         }
         fn encode(
@@ -6316,6 +7076,9 @@ mod registered_resume {
                 generation: *self.generation.lock().unwrap(),
                 created_at: crate::protocol::time::UtcMillis(0),
                 retired_at: None,
+                active: false,
+                bindings: Vec::new(),
+                availability: None,
             }
         }
     }
@@ -6428,6 +7191,7 @@ mod registered_resume {
                         ContinuityReattachment {
                             seat: SeatId::new("registered-seat"),
                             binding_generation: 7,
+                            fast_forward: None,
                         },
                     ))
                 }
@@ -6458,6 +7222,8 @@ mod registered_resume {
                         warnings: empty(),
                         notices: Default::default(),
                         inbox: empty(),
+                        first_contact: None,
+                        fast_forward: None,
                     }))
                 }
                 Command::AttentionDigest(_) => {
@@ -6488,6 +7254,7 @@ mod registered_resume {
                     Ok(CommandResult::HotThreads(hot))
                 }
                 Command::HookParseFailure(_) => Ok(CommandResult::HookParseFailureRecorded),
+                Command::BindingEvent(_) => Ok(CommandResult::BindingEventRecorded { changed: 1 }),
                 // Scripted only for the hook inbox page tests: the v2 inbox and
                 // hook lazy delivery are advertised and one page is served.
                 Command::Capabilities if self.control("inbox-v2.json") => Ok(
@@ -6777,6 +7544,9 @@ mod registered_resume {
             Ok(())
         }
         fn run(&self, r: &'static Registration, i: &HookInput) -> HookOutcome {
+            self.run_env(r, i, &herdr())
+        }
+        fn run_env(&self, r: &'static Registration, i: &HookInput, env: &HookEnv) -> HookOutcome {
             let mut a = args(&self.root);
             a.harness = OccupantHarness::Agent(builtins().agent(r.metadata().id).unwrap()).into();
             a.event = i.registered_event.clone();
@@ -6785,7 +7555,7 @@ mod registered_resume {
                 &a,
                 &claude(),
                 &i.bytes,
-                &herdr(),
+                env,
                 // The fixture service is a spawned child; on a loaded machine
                 // it can miss the 5 s production lifecycle budget and the
                 // hook (correctly) reports UnknownOutcome. These tests assert
@@ -6799,10 +7569,13 @@ mod registered_resume {
                 read_fixture_json(&self.root.join("transcript.json"), 1024 * 1024).unwrap();
             outcome
         }
+        /// The session the hook last checked in as, at the generation the reply carried: the
+        /// journal's last completed check-in. An agent's identity is its environment, never a
+        /// saved context (decision 15), so `context.json` holds none.
         fn saved(&self) -> Option<OccupantContext> {
             crate::cli::seat_contexts(&self.paths, self.instance, &SeatId::new("registered-seat"))
                 .unwrap()
-                .current()
+                .registered_snapshot()
                 .unwrap()
         }
         fn teardown(&mut self) -> Result<(), String> {
@@ -7141,6 +7914,8 @@ mod registered_resume {
     }
     /// A registry entry and normalized Startup cannot enroll Hermes. A mutant
     /// based on context_event mode reaches the forbidden actual ResolveSeat.
+    /// A null witness (older bridge) cannot enroll Hermes; witnessed CLI shapes
+    /// are covered by the `startup_enrollment_hermes_*` tests below.
     #[test]
     fn startup_enrollment_hermes_qualified_unowned_never_resolves() {
         let r = builtins()
@@ -7273,18 +8048,49 @@ mod registered_resume {
         let execution = uuid::Uuid::parse_str(c.execution.as_str()).unwrap();
         assert!(!execution.is_nil());
         assert_eq!(Command::ContinuityCheckIn(c.clone()).validate(), Ok(()));
-        let saved = f.saved().expect("canonical reply context installed");
-        assert_eq!(saved.instance, f.instance);
-        assert_eq!(saved.seat, "registered-seat");
-        assert_eq!(saved.binding_generation, 7);
-        assert_eq!(saved.target, "w9:p1");
-        assert_eq!(saved.harness, OccupantHarness::Agent(d.harness).into());
+        // The reattached session saves no context. Its presentation check-in (a non-durable
+        // Current one) is made as the session itself, at the generation the reply carried, with
+        // its stable per-session execution (not the continuity intent's) and the fingerprint.
+        assert!(f.saved().is_none(), "an agent's identity is not saved");
+        let presented = f
+            .service
+            .seen
+            .lock()
+            .unwrap()
+            .iter()
+            .find_map(|command| match command {
+                Command::CheckIn(check) => Some(check.clone()),
+                _ => None,
+            })
+            .expect("the presentation check-in");
         assert_eq!(
-            saved.session,
-            SessionReference::Native("fourth-resume-session".into())
+            presented.mode,
+            crate::protocol::commands::CheckInMode::Current
         );
-        assert_eq!(saved.role, Role::TopLevel);
-        assert_eq!(saved.execution, execution);
+        let claim = presented.claim;
+        assert_eq!(claim.instance, f.instance.to_string());
+        assert_eq!(claim.seat.as_str(), "registered-seat");
+        assert_eq!(claim.binding_generation, 7);
+        assert_eq!(claim.target.as_str(), "w9:p1");
+        assert_eq!(claim.harness, OccupantHarness::Agent(d.harness));
+        assert_eq!(claim.native_session.as_str(), "fourth-resume-session");
+        assert_eq!(claim.role, crate::protocol::authority::CallerRole::TopLevel);
+        assert_eq!(
+            claim.liveness,
+            Some(crate::protocol::authority::LivenessFingerprint::TEST)
+        );
+        // The continuity intent already carried the session's execution.
+        assert_eq!(claim.execution.as_str(), execution.to_string());
+        assert_eq!(
+            claim.execution.as_str(),
+            crate::harness::context::session_execution(
+                f.instance,
+                claim.harness.into(),
+                "fourth-resume-session",
+                None,
+            )
+            .to_string()
+        );
         let journal =
             crate::cli::journal::Journal::open(f.paths.instance_dir.join("intents")).unwrap();
         assert!(
@@ -7306,7 +8112,6 @@ mod registered_resume {
                 .contains("Before using threads")
         );
         assert!(outcome.attention.is_some());
-        eprintln!("installed canonical fixture context: {saved:?}");
     }
     #[test]
     fn registered_fourth_resume_refuses_child_unknown_role_and_observer() {
@@ -7416,6 +8221,7 @@ mod registered_resume {
             source: d.metadata.context_source,
             operation: OperationId::new(uuid()),
             execution: crate::protocol::ids::ExecutionId::new(uuid()),
+            liveness: Some(crate::protocol::authority::LivenessFingerprint::TEST),
         };
         assert_eq!(
             c.validate(),
@@ -7492,6 +8298,7 @@ mod registered_resume {
             event_id: uuid(),
             source: "resume".into(),
             capability: Capability::ObservedInput,
+            agent_id: None,
         };
         assert!(matches!(
             call.reattach_by_continuity(&ev, false),
@@ -7576,6 +8383,7 @@ mod registered_resume {
                         source: "resume".into(),
                         event_id: "planted-resume".into(),
                         execution: crate::protocol::ids::ExecutionId::new(uuid()),
+                        liveness: Some(crate::protocol::authority::LivenessFingerprint::TEST),
                     },
                     1,
                 )
@@ -7826,9 +8634,13 @@ mod registered_resume {
             contexts.prepared_kind_for_event("pre_llm_call-3").unwrap(),
             EventKind::Clear
         );
-        assert!(contexts.attention_mark(saved.execution).is_none());
+        // A session's attention mark is keyed by its binding key, whatever execution its
+        // lifecycle claim carried.
+        let key =
+            crate::harness::context::attention_mark_key(saved.harness.as_str(), "task52-new", None);
+        assert!(contexts.attention_mark(&key).is_none());
         outcome.attention.unwrap().commit().unwrap();
-        assert!(contexts.attention_mark(saved.execution).is_some());
+        assert!(contexts.attention_mark(&key).is_some());
     }
     #[test]
     fn task52_accepted_kind_replay_and_refused_neighbors_preserve_original_eligibility() {
@@ -7846,7 +8658,7 @@ mod registered_resume {
         let contexts =
             crate::cli::seat_contexts(&f.paths, f.instance, &SeatId::new("registered-seat"))
                 .unwrap();
-        assert!(contexts.attention_mark(saved.execution).is_none());
+        assert!(contexts.attention_mark(&saved.mark_key()).is_none());
         assert!(
             contexts
                 .completed_for_event("pre_llm_call-3")
@@ -8118,4 +8930,991 @@ mod registered_resume {
             );
         }
     }
+    // ---- Hermes global enrollment (ht-4ne.4) ----
+    fn hermes_cli_start(session: &str, sequence: u64) -> HookInput {
+        let mut i = hermes_input("on_session_start", session, "turn", sequence, "unknown");
+        let mut p: serde_json::Value = serde_json::from_slice(&i.bytes).unwrap();
+        p["turn_id"] = serde_json::Value::Null;
+        p["shape"]["turn_id"] = serde_json::json!({"presence":"missing","type":"absent"});
+        p["role_association"] = serde_json::json!({
+            "role": "top", "provenance": "cli_session_start",
+            "session_id": session, "turn_id": null,
+            "enrollment_witness": "cli_platform"});
+        assert_eq!(p["platform"], "cli");
+        i.bytes = serde_json::to_vec(&p).unwrap();
+        i
+    }
+    fn hermes_cli_turn(session: &str, turn: &str, sequence: u64) -> HookInput {
+        let mut i = hermes_input("pre_llm_call", session, turn, sequence, "top");
+        let mut p: serde_json::Value = serde_json::from_slice(&i.bytes).unwrap();
+        p["role_association"]["enrollment_witness"] = "cli_platform".into();
+        i.bytes = serde_json::to_vec(&p).unwrap();
+        i
+    }
+    fn patch(i: &HookInput, edit: impl FnOnce(&mut serde_json::Value)) -> HookInput {
+        let mut p: serde_json::Value = serde_json::from_slice(&i.bytes).unwrap();
+        edit(&mut p);
+        HookInput {
+            bytes: serde_json::to_vec(&p).unwrap(),
+            registered_event: i.registered_event.clone(),
+        }
+    }
+    fn lifecycle_check_ins(f: &Fixture) -> usize {
+        f.service
+            .seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|c| {
+                matches!(c, Command::CheckIn(c)
+                    if matches!(c.mode, crate::protocol::commands::CheckInMode::Lifecycle { .. }))
+            })
+            .count()
+    }
+    fn continuity_commands(f: &Fixture) -> usize {
+        f.service
+            .seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|c| matches!(c, Command::ContinuityCheckIn(_)))
+            .count()
+    }
+    fn unowned_fixture() -> Fixture {
+        let f = Fixture::new(false);
+        write_fixture_json(&f.root.join("enrollment-unowned.json"), &true).unwrap();
+        f
+    }
+    fn hermes_harness() -> OccupantHarness {
+        OccupantHarness::Agent(builtins().agent("hermes").unwrap())
+    }
+    fn claude_registration() -> &'static Registration {
+        builtins()
+            .by_id(builtins().agent("claude").unwrap())
+            .unwrap()
+    }
+    fn claude_session_start(event_id: &str) -> HookInput {
+        HookInput {
+            bytes: serde_json::to_vec(&serde_json::json!({
+                "hook_event_name": "SessionStart", "source": "startup",
+                "session_id": "claude-s", "transcript_path": "/tmp/t.jsonl", "cwd": "/tmp",
+                "event_id": event_id
+            }))
+            .unwrap(),
+            registered_event: Some("SessionStart".into()),
+        }
+    }
+    fn claude_subagent_event(event: &str) -> HookInput {
+        HookInput {
+            bytes: serde_json::to_vec(&serde_json::json!({
+                "hook_event_name": event, "session_id": "claude-s",
+                "agent_id": "agent-7", "agent_type": "worker",
+                "transcript_path": "/tmp/t.jsonl", "cwd": "/tmp"
+            }))
+            .unwrap(),
+            registered_event: Some(event.into()),
+        }
+    }
+    fn binding_events(f: &Fixture) -> Vec<crate::protocol::commands::BindingEvent> {
+        f.service
+            .seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|c| match c {
+                Command::BindingEvent(event) => Some(event.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+    // Kills: SubagentStop rendering child guidance or checking in (it is bookkeeping only), and
+    // SubagentStop failing to decode (a stale-contract parse failure reported to the daemon).
+    #[test]
+    fn claude_subagent_stop_is_quiet() {
+        let f = Fixture::new(true);
+        let outcome = f.run(
+            claude_registration(),
+            &claude_subagent_event("SubagentStop"),
+        );
+        assert!(outcome.stdout.is_empty(), "{:?}", outcome.stdout);
+        assert_eq!(outcome.diagnostic, None);
+        assert!(outcome.attention.is_none());
+        assert_eq!(task52_commands(&f), (0, 0), "no check-in, no hot threads");
+    }
+    // Kills: a Claude SubagentStop that stays silent without disconnecting the subagent binding, a
+    // stop attributed to the wrong session or agent, a stop sent as a subagent *write* (the
+    // claim must be the subagent's own), and a stop that checks in or reads hot threads.
+    #[test]
+    fn claude_subagent_stop_reports_a_stop_binding_event_for_its_agent() {
+        use crate::protocol::{authority::CallerRole, commands::BindingEventKind};
+        let f = Fixture::new(true);
+        f.run(
+            claude_registration(),
+            &claude_subagent_event("SubagentStop"),
+        );
+        let events = binding_events(&f);
+        assert_eq!(events.len(), 1, "{events:?}");
+        let event = &events[0];
+        assert_eq!(event.kind, BindingEventKind::SubagentStop);
+        assert_eq!(event.child_session, None);
+        assert_eq!(event.claim.role, CallerRole::Subagent);
+        assert_eq!(event.claim.native_session.as_str(), "claude-s");
+        assert_eq!(
+            event.claim.agent_id.as_ref().map(|agent| agent.as_str()),
+            Some("agent-7")
+        );
+        assert_eq!(event.claim.seat.as_str(), "registered-seat");
+        assert_eq!(task52_commands(&f), (0, 0));
+    }
+    // Kills: SubagentStart rendering guidance without enrolling the subagent binding, and the
+    // enrollment replacing the guidance.
+    #[test]
+    fn claude_subagent_start_enrolls_its_binding_and_still_renders_guidance() {
+        use crate::protocol::commands::BindingEventKind;
+        let f = Fixture::new(true);
+        let outcome = f.run(
+            claude_registration(),
+            &claude_subagent_event("SubagentStart"),
+        );
+        assert_eq!(outcome.diagnostic, None);
+        assert!(!outcome.stdout.is_empty());
+        let events = binding_events(&f);
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(events[0].kind, BindingEventKind::SubagentStart);
+        assert_eq!(
+            events[0].claim.agent_id.as_ref().map(|a| a.as_str()),
+            Some("agent-7")
+        );
+        // The subagent shares its parent's process, so the claim carries the fingerprint a
+        // first contact needs.
+        assert!(events[0].claim.liveness.is_some());
+    }
+    // Kills: an ordinary top-level hook (SessionStart) reporting a binding event of its own.
+    #[test]
+    fn claude_session_start_reports_no_binding_event() {
+        let f = Fixture::new(true);
+        f.run(claude_registration(), &claude_session_start("e1"));
+        assert!(binding_events(&f).is_empty());
+    }
+    fn codex_registration() -> &'static Registration {
+        builtins()
+            .by_id(builtins().agent("codex").unwrap())
+            .unwrap()
+    }
+    fn codex_end_event(event: &str, agent: Option<&str>) -> HookInput {
+        let mut payload = serde_json::json!({
+            "hook_event_name": event, "session_id": "codex-s", "turn_id": "turn-1",
+            "transcript_path": null, "cwd": "/tmp", "model": "test", "permission_mode": "default"
+        });
+        if let Some(agent) = agent {
+            payload["agent_id"] = agent.into();
+            payload["agent_type"] = "worker".into();
+        }
+        HookInput {
+            bytes: serde_json::to_vec(&payload).unwrap(),
+            registered_event: Some(event.into()),
+        }
+    }
+    // Kills: Codex SessionEnd and SubagentStop being dropped as unknown events (they would never
+    // disconnect), a SessionEnd claim carrying an agent id (it would name a subagent binding), a
+    // SubagentStop claim missing its (session, agent) key, and either rendering context.
+    #[test]
+    fn codex_session_end_and_subagent_stop_report_end_binding_events() {
+        use crate::protocol::{authority::CallerRole, commands::BindingEventKind};
+        let f = Fixture::new(true);
+        let outcome = f.run(codex_registration(), &codex_end_event("SessionEnd", None));
+        assert!(outcome.stdout.is_empty(), "{:?}", outcome.stdout);
+        assert_eq!(outcome.diagnostic, None);
+        let outcome = f.run(
+            codex_registration(),
+            &codex_end_event("SubagentStop", Some("thread-5")),
+        );
+        assert!(outcome.stdout.is_empty(), "{:?}", outcome.stdout);
+        assert_eq!(outcome.diagnostic, None);
+        let events = binding_events(&f);
+        assert_eq!(events.len(), 2, "{events:?}");
+        assert_eq!(events[0].kind, BindingEventKind::SessionEnd);
+        assert_eq!(events[0].claim.role, CallerRole::TopLevel);
+        assert_eq!(events[0].claim.agent_id, None);
+        assert_eq!(events[0].claim.native_session.as_str(), "codex-s");
+        assert_eq!(events[1].kind, BindingEventKind::SubagentStop);
+        assert_eq!(events[1].claim.role, CallerRole::Subagent);
+        assert_eq!(
+            events[1].claim.agent_id.as_ref().map(|a| a.as_str()),
+            Some("thread-5")
+        );
+        assert_eq!(events[1].claim.native_session.as_str(), "codex-s");
+        assert_eq!(task52_commands(&f), (0, 0));
+    }
+    fn hermes_end_event(callback: &str, edit: impl FnOnce(&mut serde_json::Value)) -> HookInput {
+        let mut input = hermes_input(callback, "hermes-top", "turn", 7, "unknown");
+        let mut p: serde_json::Value = serde_json::from_slice(&input.bytes).unwrap();
+        p["turn_id"] = serde_json::Value::Null;
+        p["shape"]["turn_id"] = serde_json::json!({"presence":"missing","type":"absent"});
+        edit(&mut p);
+        input.bytes = serde_json::to_vec(&p).unwrap();
+        input
+    }
+    // Kills: on_session_finalize not disconnecting (the session would stay connected after
+    // teardown), the Hermes delegate events claiming as the child instead of the parent, the child
+    // session being lost, and the bridge's JSON reply being empty (the Python side expects it).
+    #[test]
+    fn hermes_finalize_and_delegate_events_report_binding_events() {
+        use crate::protocol::{authority::CallerRole, commands::BindingEventKind};
+        let f = Fixture::new(true);
+        let r = task52_registration();
+        let reply = br#"{"context":null,"lifecycle_ack":null}"#;
+        let finalize = hermes_end_event("on_session_finalize", |_| {});
+        let outcome = f.run(r, &finalize);
+        assert_eq!(outcome.diagnostic, None);
+        assert_eq!(outcome.stdout, reply);
+        for callback in ["subagent_start", "subagent_stop"] {
+            let input = hermes_end_event(callback, |p| {
+                p["session_id"] = "hermes-child".into();
+                p["parent_session_id"] = "hermes-top".into();
+                p["platform"] = serde_json::Value::Null;
+                p["shape"]["platform"] = serde_json::json!({"presence":"missing","type":"absent"});
+                p["shape"]["parent_session_id"] =
+                    serde_json::json!({"presence":"present","type":"string"});
+            });
+            let outcome = f.run(r, &input);
+            assert_eq!(outcome.diagnostic, None, "{callback}");
+            assert_eq!(outcome.stdout, reply, "{callback}");
+        }
+        let events = binding_events(&f);
+        assert_eq!(events.len(), 3, "{events:?}");
+        assert_eq!(events[0].kind, BindingEventKind::SessionEnd);
+        assert_eq!(events[0].claim.native_session.as_str(), "hermes-top");
+        assert_eq!(events[0].child_session, None);
+        for (event, kind) in events[1..].iter().zip([
+            BindingEventKind::SubagentStart,
+            BindingEventKind::SubagentStop,
+        ]) {
+            assert_eq!(event.kind, kind);
+            assert_eq!(event.claim.role, CallerRole::TopLevel, "the parent's claim");
+            assert_eq!(event.claim.native_session.as_str(), "hermes-top");
+            assert_eq!(event.claim.agent_id, None);
+            assert_eq!(
+                event.child_session.as_ref().map(|s| s.as_str()),
+                Some("hermes-child")
+            );
+        }
+        assert_eq!(task52_commands(&f), (0, 0), "no check-in, no hot threads");
+    }
+    // Kills: SubagentStart being refused as an unknown Claude event, or rendering under the
+    // SessionStart name (Claude would drop the context).
+    #[test]
+    fn claude_subagent_start_renders_child_guidance() {
+        let f = Fixture::new(true);
+        let outcome = f.run(
+            claude_registration(),
+            &claude_subagent_event("SubagentStart"),
+        );
+        assert_eq!(outcome.diagnostic, None);
+        let output: serde_json::Value = serde_json::from_slice(&outcome.stdout)
+            .unwrap_or_else(|e| panic!("{e}: {:?}", outcome.stdout));
+        assert_eq!(
+            output["hookSpecificOutput"]["hookEventName"],
+            "SubagentStart"
+        );
+        assert!(
+            !output["hookSpecificOutput"]["additionalContext"]
+                .as_str()
+                .unwrap()
+                .is_empty()
+        );
+        assert!(output["hookSpecificOutput"].get("updatedInput").is_none());
+        assert!(
+            output["hookSpecificOutput"]
+                .get("permissionDecision")
+                .is_none()
+        );
+    }
+    fn turn_output(outcome: &HookOutcome, mode: &str, input: &HookInput) -> serde_json::Value {
+        let output = task52_output(outcome, mode, input);
+        assert!(output["context"].is_string());
+        output
+    }
+    #[test]
+    fn startup_enrollment_hermes_cli_start_enrolls_and_first_turn_checks_in() {
+        let r = task52_registration();
+        let f = unowned_fixture();
+        let start = hermes_cli_start("cli-a", 1);
+        let outcome = f.run(r, &start);
+        assert_eq!(enrollment_counts(&f), (1, 0));
+        assert!(outcome.stdout.is_empty());
+        assert_eq!(outcome.diagnostic, None);
+        assert!(outcome.attention.is_none());
+        assert!(f.saved().is_none());
+        assert_no_enrollment_intents(&f);
+        let turn = hermes_cli_turn("cli-a", "t1", 2);
+        let outcome = f.run(r, &turn);
+        let output = turn_output(&outcome, "startup", &turn);
+        assert_eq!(enrollment_counts(&f), (1, 1), "no second ResolveSeat");
+        let saved = f.saved().unwrap();
+        assert_eq!(saved.seat, "registered-seat");
+        assert_eq!(saved.harness, hermes_harness().into());
+        // Parity with a turn on a launch-created (pre-seeded) seat.
+        let launched = Fixture::new(true);
+        // Fresh envelope: the first one's 1.2 s callback deadline is spent.
+        let turn = hermes_cli_turn("cli-a", "t1", 2);
+        let outcome = launched.run(r, &turn);
+        let expected = turn_output(&outcome, "startup", &turn);
+        let keys = |v: &serde_json::Value| -> Vec<String> {
+            v.as_object().unwrap().keys().cloned().collect()
+        };
+        assert_eq!(keys(&output), keys(&expected));
+        assert_eq!(
+            output["lifecycle_ack"]["mode"],
+            expected["lifecycle_ack"]["mode"]
+        );
+        assert_eq!(
+            output["context"].as_str().unwrap().lines().next(),
+            expected["context"].as_str().unwrap().lines().next()
+        );
+    }
+    #[test]
+    fn startup_enrollment_hermes_new_reuses_seat_and_clears() {
+        let r = task52_registration();
+        let f = unowned_fixture();
+        f.run(r, &hermes_cli_start("cli-a", 1));
+        let turn = hermes_cli_turn("cli-a", "t1", 2);
+        turn_output(&f.run(r, &turn), "startup", &turn);
+        assert_eq!(enrollment_counts(&f), (1, 1));
+        let reset = hermes_input("on_session_reset", "cli-b", "reset", 3, "unknown");
+        assert!(f.run(r, &reset).stdout.is_empty());
+        let outcome = f.run(r, &hermes_cli_start("cli-b", 4));
+        assert!(outcome.stdout.is_empty());
+        assert_eq!(outcome.diagnostic, None);
+        assert_eq!(enrollment_counts(&f), (2, 1), "guarded reuse, no CheckIn");
+        let turn = hermes_cli_turn("cli-b", "t2", 5);
+        turn_output(&f.run(r, &turn), "clear", &turn);
+        assert_eq!(enrollment_counts(&f), (2, 2));
+        let saved = f.saved().unwrap();
+        assert_eq!(saved.seat, "registered-seat");
+        assert_eq!(saved.session, SessionReference::Native("cli-b".into()));
+    }
+    #[test]
+    fn startup_enrollment_hermes_unowned_turn_fallback_enrolls_and_checks_in() {
+        let r = task52_registration();
+        let f = unowned_fixture();
+        let turn = hermes_cli_turn("cli-a", "t1", 1);
+        let outcome = f.run(r, &turn);
+        turn_output(&outcome, "startup", &turn);
+        assert_eq!(enrollment_counts(&f), (1, 1));
+        assert_eq!(f.saved().unwrap().harness, hermes_harness().into());
+    }
+    #[test]
+    fn startup_enrollment_hermes_steady_turns_make_no_resolver_call() {
+        let r = task52_registration();
+        let f = Fixture::new(true);
+        let first = hermes_cli_turn("cli-a", "t1", 1);
+        turn_output(&f.run(r, &first), "startup", &first);
+        let second = hermes_cli_turn("cli-a", "t2", 2);
+        turn_output(&f.run(r, &second), "current", &second);
+        assert_eq!(enrollment_counts(&f).0, 0);
+        assert_eq!(lifecycle_check_ins(&f), 1);
+    }
+    #[test]
+    fn startup_enrollment_hermes_refusals_never_resolve() {
+        let r = task52_registration();
+        let start = hermes_cli_start("cli-a", 1);
+        let turn = hermes_cli_turn("cli-a", "t1", 2);
+        let no_association = |p: &mut serde_json::Value| {
+            p["role_association"] = serde_json::Value::Null;
+        };
+        let cases: Vec<(&str, HookInput)> = vec![
+            (
+                "subagent platform start",
+                patch(&start, |p| {
+                    no_association(p);
+                    p["platform"] = "subagent".into();
+                }),
+            ),
+            (
+                "empty platform start",
+                patch(&start, |p| {
+                    no_association(p);
+                    p["platform"] = "".into();
+                }),
+            ),
+            (
+                "null platform start",
+                patch(&start, |p| {
+                    no_association(p);
+                    p["platform"] = serde_json::Value::Null;
+                    p["shape"]["platform"] =
+                        serde_json::json!({"presence":"missing","type":"absent"});
+                }),
+            ),
+            (
+                "parented turn",
+                hermes_input("pre_llm_call", "cli-a", "t1", 3, "child"),
+            ),
+            (
+                "post_tool_call",
+                patch(
+                    &hermes_input("pre_llm_call", "cli-a", "t1", 4, "top"),
+                    |p| {
+                        p["callback"] = "post_tool_call".into();
+                        p["role_association"]["provenance"] = "qualified_pre_llm_cache".into();
+                    },
+                ),
+            ),
+            (
+                "reset",
+                hermes_input("on_session_reset", "cli-b", "reset", 5, "unknown"),
+            ),
+            (
+                "null witness on empty platform turn",
+                patch(&turn, |p| {
+                    p["platform"] = "".into();
+                    p["role_association"]["enrollment_witness"] = serde_json::Value::Null;
+                }),
+            ),
+        ];
+        for (name, input) in cases {
+            let f = unowned_fixture();
+            let outcome = f.run(r, &input);
+            assert_eq!(
+                enrollment_counts(&f),
+                (0, 0),
+                "{name}: diagnostic={:?}; commands={:?}",
+                outcome.diagnostic,
+                f.service.seen.lock().unwrap()
+            );
+            assert!(f.saved().is_none(), "{name}");
+            assert_no_enrollment_intents(&f);
+        }
+    }
+    #[test]
+    fn startup_enrollment_hermes_restore_hold_refuses_start_and_fallback() {
+        let r = task52_registration();
+        // No enrollment-unowned control: the fixture reports the pane's seat
+        // Unresolved, which is a held mapping.
+        let f = Fixture::new(false);
+        let outcome = f.run(r, &hermes_cli_start("cli-a", 1));
+        assert!(outcome.stdout.is_empty());
+        let detail = outcome.diagnostic.expect("held pane is reported");
+        assert!(detail.to_lowercase().contains("unresolved"), "{detail}");
+        assert_eq!(enrollment_counts(&f), (0, 0));
+        let turn = hermes_cli_turn("cli-a", "t1", 2);
+        let outcome = f.run(r, &turn);
+        assert!(outcome.diagnostic.is_some());
+        assert_eq!(enrollment_counts(&f), (0, 0));
+        assert_eq!(lifecycle_check_ins(&f), 0);
+        assert!(f.saved().is_none());
+        assert_no_enrollment_intents(&f);
+    }
+    #[test]
+    fn startup_enrollment_hermes_null_witness_on_launched_seat_checks_in() {
+        let r = task52_registration();
+        let f = Fixture::new(true);
+        let legacy = hermes_input("pre_llm_call", "legacy-a", "t1", 1, "top");
+        let outcome = f.run(r, &legacy);
+        turn_output(&outcome, "startup", &legacy);
+        assert_eq!(enrollment_counts(&f), (0, 1));
+    }
+    #[test]
+    fn startup_enrollment_hermes_resume_shapes() {
+        let r = task52_registration();
+        // Seated pane: a session never started in this run checks in as Startup.
+        let f = Fixture::new(true);
+        let turn = hermes_cli_turn("resumed-session", "t1", 1);
+        turn_output(&f.run(r, &turn), "startup", &turn);
+        assert_eq!(lifecycle_check_ins(&f), 1);
+        assert_eq!(enrollment_counts(&f).0, 0);
+        assert_eq!(continuity_commands(&f), 0);
+        assert_eq!(f.saved().unwrap().seat, "registered-seat");
+        // Unseated pane: enrolls only through the fallback.
+        let f = unowned_fixture();
+        let turn = hermes_cli_turn("resumed-session", "t1", 1);
+        turn_output(&f.run(r, &turn), "startup", &turn);
+        assert_eq!(enrollment_counts(&f), (1, 1));
+        assert_eq!(continuity_commands(&f), 0);
+    }
+    #[test]
+    fn startup_enrollment_hermes_side_agent_reuses_seat() {
+        let r = task52_registration();
+        let f = unowned_fixture();
+        f.run(r, &hermes_cli_start("cli-a", 1));
+        let a1 = hermes_cli_turn("cli-a", "t1", 2);
+        turn_output(&f.run(r, &a1), "startup", &a1);
+        assert_eq!(enrollment_counts(&f), (1, 1));
+        // A /background side agent: platform cli, own session, no parent.
+        let outcome = f.run(r, &hermes_cli_start("cli-side", 3));
+        assert_eq!(outcome.diagnostic, None);
+        assert_eq!(enrollment_counts(&f), (2, 1), "resolver reuse, no CheckIn");
+        let side = hermes_cli_turn("cli-side", "t2", 4);
+        turn_output(&f.run(r, &side), "startup", &side);
+        assert_eq!(lifecycle_check_ins(&f), 2);
+        assert_eq!(
+            f.saved().unwrap().session,
+            SessionReference::Native("cli-side".into())
+        );
+        // No ping-pong: the foreground session keeps its own binding, so its next turn is a
+        // Current turn and not another lifecycle check-in.
+        let a2 = hermes_cli_turn("cli-a", "t3", 5);
+        turn_output(&f.run(r, &a2), "current", &a2);
+        assert_eq!(lifecycle_check_ins(&f), 2);
+        assert_eq!(f.saved().unwrap().seat, "registered-seat");
+        assert_eq!(enrollment_counts(&f).0, 2);
+    }
+    #[test]
+    fn startup_enrollment_hermes_cross_harness_reuse_both_orders() {
+        let r = task52_registration();
+        let c = claude_registration();
+        let f = unowned_fixture();
+        let claude_start = claude_session_start("claude-start-1");
+        let outcome = f.run(c, &claude_start);
+        assert_eq!(outcome.diagnostic, None, "{outcome:?}");
+        let claude_harness: OccupantHarness =
+            OccupantHarness::Agent(builtins().agent("claude").unwrap());
+        assert_eq!(f.saved().unwrap().harness, claude_harness.into());
+        f.run(r, &hermes_cli_start("cli-a", 1));
+        let turn = hermes_cli_turn("cli-a", "t1", 2);
+        let outcome = f.run(r, &turn);
+        turn_output(&outcome, "startup", &turn);
+        let saved = f.saved().unwrap();
+        assert_eq!(saved.harness, hermes_harness().into());
+        assert_eq!(saved.seat, "registered-seat");
+        let outcome = f.run(c, &claude_session_start("claude-start-2"));
+        assert_eq!(outcome.diagnostic, None, "{outcome:?}");
+        let saved = f.saved().unwrap();
+        assert_eq!(saved.harness, claude_harness.into());
+        assert_eq!(saved.seat, "registered-seat");
+    }
+    #[test]
+    fn startup_enrollment_hermes_exit_then_restart_or_claude_keeps_seat() {
+        let r = task52_registration();
+        let f = unowned_fixture();
+        f.run(r, &hermes_cli_start("cli-a", 1));
+        let a = hermes_cli_turn("cli-a", "t1", 2);
+        turn_output(&f.run(r, &a), "startup", &a);
+        // Hermes exits; a new bare Hermes starts in the same pane (no reset).
+        f.run(r, &hermes_cli_start("cli-b", 3));
+        let b = hermes_cli_turn("cli-b", "t1", 4);
+        turn_output(&f.run(r, &b), "startup", &b);
+        let saved = f.saved().unwrap();
+        assert_eq!(saved.seat, "registered-seat");
+        assert_eq!(saved.session, SessionReference::Native("cli-b".into()));
+        // Then Claude starts in the same pane.
+        let outcome = f.run(claude_registration(), &claude_session_start("claude-start"));
+        assert_eq!(outcome.diagnostic, None, "{outcome:?}");
+        let saved = f.saved().unwrap();
+        assert_eq!(saved.seat, "registered-seat");
+        assert_eq!(
+            saved.harness,
+            OccupantHarness::Agent(builtins().agent("claude").unwrap()).into()
+        );
+        // No binding ends outside a lifecycle check-in.
+        assert!(f.service.seen.lock().unwrap().iter().all(|c| matches!(
+            c,
+            Command::Seats(_)
+                | Command::SeatInspect(_)
+                | Command::ResolveSeat(_)
+                | Command::CheckIn(_)
+                | Command::Capabilities
+                | Command::AttentionDigest(_)
+                | Command::Directory(_)
+                | Command::HotThreads(_)
+        )));
+    }
+    #[test]
+    fn startup_enrollment_hermes_outside_herdr_is_silent() {
+        let r = task52_registration();
+        let f = unowned_fixture();
+        let outside = HookEnv {
+            herdr_env: false,
+            pane: None,
+        };
+        for input in [
+            hermes_cli_start("cli-a", 1),
+            hermes_cli_turn("cli-a", "t1", 2),
+        ] {
+            let outcome = f.run_env(r, &input, &outside);
+            assert!(outcome.stdout.is_empty());
+            assert!(f.service.seen.lock().unwrap().is_empty());
+        }
+    }
+    /// The seats the lifecycle CheckIns in `seen` name.
+    fn check_in_seats(seen: &[Command]) -> std::collections::BTreeSet<String> {
+        seen.iter()
+            .filter_map(|c| match c {
+                Command::CheckIn(c)
+                    if matches!(
+                        c.mode,
+                        crate::protocol::commands::CheckInMode::Lifecycle { .. }
+                    ) =>
+                {
+                    Some(c.claim.seat.as_str().to_owned())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+    /// Duplicate-binding detector (ht-4ne punch list). The daemon enrolls one binding per
+    /// (seat, harness, session) key a lifecycle CheckIn claims; a replay repeats its operation
+    /// key. Err when the Hermes session `session` is held by anything but exactly one operation
+    /// on exactly one seat, or when that seat holds more than `max_on_seat` open bindings.
+    fn one_open_hermes_binding(
+        seen: &[Command],
+        session: &str,
+        max_on_seat: usize,
+    ) -> Result<(), String> {
+        use std::collections::{BTreeMap, BTreeSet};
+        let mut keys: BTreeMap<(String, String, String), BTreeSet<String>> = BTreeMap::new();
+        for command in seen {
+            if let Command::CheckIn(c) = command
+                && matches!(
+                    c.mode,
+                    crate::protocol::commands::CheckInMode::Lifecycle { .. }
+                )
+            {
+                keys.entry((
+                    c.claim.seat.as_str().to_owned(),
+                    c.claim.harness.as_str().to_owned(),
+                    c.claim.native_session.as_str().to_owned(),
+                ))
+                .or_default()
+                .insert(c.operation.as_str().to_owned());
+            }
+        }
+        let mine: Vec<_> = keys
+            .iter()
+            .filter(|((_, harness, native), _)| harness == "hermes" && native == session)
+            .collect();
+        let [((seat, ..), operations)] = mine.as_slice() else {
+            return Err(format!(
+                "session {session} bound by {mine:?}, expected one key"
+            ));
+        };
+        if operations.len() != 1 {
+            return Err(format!(
+                "session {session} allocated {} bindings: {operations:?}",
+                operations.len()
+            ));
+        }
+        let on_seat = keys.keys().filter(|(s, ..)| s == seat).count();
+        if on_seat > max_on_seat {
+            return Err(format!(
+                "seat {seat} holds {on_seat} bindings, at most {max_on_seat} expected"
+            ));
+        }
+        Ok(())
+    }
+    // Kills: a detector that passes a double allocation (the same session enrolled under two
+    // operation keys, as a daemon that allocated twice would) or one that rejects a replay.
+    #[test]
+    fn duplicate_binding_detector_fails_against_a_double_allocating_stub() {
+        let r = task52_registration();
+        let f = unowned_fixture();
+        f.run(r, &hermes_cli_start("cli-a", 1));
+        let turn = hermes_cli_turn("cli-a", "t1", 2);
+        turn_output(&f.run(r, &turn), "startup", &turn);
+        let honest = f.service.seen.lock().unwrap().clone();
+        assert_eq!(one_open_hermes_binding(&honest, "cli-a", 1), Ok(()));
+        // A replay repeats the operation key: still one binding.
+        let mut replayed = honest.clone();
+        replayed.extend(honest.iter().cloned());
+        assert_eq!(one_open_hermes_binding(&replayed, "cli-a", 1), Ok(()));
+        // The stub allocates twice: the same lifecycle CheckIn under a second operation key.
+        let mut doubled = honest.clone();
+        let twin = honest
+            .iter()
+            .find_map(|c| match c {
+                Command::CheckIn(c)
+                    if matches!(
+                        c.mode,
+                        crate::protocol::commands::CheckInMode::Lifecycle { .. }
+                    ) =>
+                {
+                    Some(c.clone())
+                }
+                _ => None,
+            })
+            .expect("a lifecycle CheckIn");
+        doubled.push(Command::CheckIn(crate::protocol::commands::CheckIn {
+            operation: OperationId::new("double-allocation"),
+            ..twin.clone()
+        }));
+        assert!(one_open_hermes_binding(&doubled, "cli-a", 1).is_err());
+        // The same session under a second seat is a duplicate too.
+        let mut moved = honest.clone();
+        let mut elsewhere = twin.clone();
+        elsewhere.claim.seat = SeatId::new("other-seat");
+        elsewhere.operation = OperationId::new("other-seat-op");
+        moved.push(Command::CheckIn(elsewhere));
+        assert!(one_open_hermes_binding(&moved, "cli-a", 1).is_err());
+        // Another binding on the seat beyond the expected bound.
+        let mut crowded = honest.clone();
+        let mut neighbor = twin;
+        neighbor.claim.native_session = crate::protocol::ids::NativeSessionId::new("neighbor");
+        neighbor.operation = OperationId::new("neighbor-op");
+        crowded.push(Command::CheckIn(neighbor));
+        assert!(one_open_hermes_binding(&crowded, "cli-a", 1).is_err());
+        assert_eq!(one_open_hermes_binding(&crowded, "cli-a", 2), Ok(()));
+    }
+    fn lineage_parents(f: &Fixture) -> Vec<Option<String>> {
+        f.service
+            .seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|c| match c {
+                Command::CheckIn(c) => {
+                    Some(c.lineage_parent.as_ref().map(|p| p.as_str().to_owned()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+    // Kills: the parent_session_id of a compression or /branch successor's first turn not
+    // reaching the daemon as the lineage hint.
+    #[test]
+    fn hermes_compression_turn_forwards_parent_as_lineage_parent() {
+        let r = task52_registration();
+        let f = unowned_fixture();
+        f.run(r, &hermes_cli_start("succ", 1));
+        let turn = patch(&hermes_cli_turn("succ", "t1", 2), |p| {
+            p["parent_session_id"] = "pred".into();
+        });
+        let outcome = f.run(r, &turn);
+        turn_output(&outcome, "startup", &turn);
+        assert_eq!(lineage_parents(&f), vec![Some("pred".to_owned())]);
+    }
+    // Kills: an invented hint when the turn has no parent, which would link every session to
+    // some predecessor (/new is a new binding).
+    #[test]
+    fn hermes_new_session_turn_sends_no_lineage_parent() {
+        let r = task52_registration();
+        let f = unowned_fixture();
+        f.run(r, &hermes_cli_start("fresh", 1));
+        let turn = hermes_cli_turn("fresh", "t1", 2);
+        turn_output(&f.run(r, &turn), "startup", &turn);
+        assert_eq!(lineage_parents(&f), vec![None]);
+    }
+    // Kills: a delegate child's parent_session_id reaching the daemon as lineage, or the child
+    // checking in at all (the bridge answers real children locally; a parented child role that
+    // still reaches the hook is observer-only).
+    #[test]
+    fn hermes_delegate_child_turn_is_not_lineage() {
+        let r = task52_registration();
+        let f = unowned_fixture();
+        let child = hermes_input("pre_llm_call", "child-s", "t1", 1, "child");
+        let outcome = f.run(r, &child);
+        let output: serde_json::Value = serde_json::from_slice(&outcome.stdout).unwrap();
+        assert!(output["context"].is_null() && output["lifecycle_ack"].is_null());
+        assert!(
+            !f.service
+                .seen
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|c| matches!(c, Command::CheckIn(_))),
+            "a child never checks in"
+        );
+        assert_eq!(lineage_parents(&f), Vec::<Option<String>>::new());
+    }
+    // Kills: the cross-harness retire (ht-4ne D10): a Hermes enrollment and check-in beside a
+    // Claude one on the same seat, each checking in without ending the other's context
+    // handling; both harnesses' lifecycle CheckIns reach the daemon, as separate bindings.
+    #[test]
+    fn claude_binding_and_hermes_one_shot_coexist_on_one_seat() {
+        let r = task52_registration();
+        let c = claude_registration();
+        let f = unowned_fixture();
+        let outcome = f.run(c, &claude_session_start("claude-start-1"));
+        assert_eq!(outcome.diagnostic, None, "{outcome:?}");
+        f.run(r, &hermes_cli_start("cli-a", 1));
+        let turn = hermes_cli_turn("cli-a", "t1", 2);
+        let outcome = f.run(r, &turn);
+        turn_output(&outcome, "startup", &turn);
+        assert_eq!(outcome.diagnostic, None, "{outcome:?}");
+        let seen = f.service.seen.lock().unwrap().clone();
+        let bound: std::collections::BTreeSet<(String, String)> = seen
+            .iter()
+            .filter_map(|c| match c {
+                Command::CheckIn(c) => Some((
+                    c.claim.harness.as_str().to_owned(),
+                    c.claim.native_session.as_str().to_owned(),
+                )),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            bound,
+            [
+                ("claude".to_owned(), "claude-s".to_owned()),
+                ("hermes".to_owned(), "cli-a".to_owned())
+            ]
+            .into_iter()
+            .collect(),
+            "one claim per session, two harnesses on one seat"
+        );
+        assert_eq!(check_in_seats(&seen).len(), 1, "one seat: {seen:?}");
+        assert_eq!(one_open_hermes_binding(&seen, "cli-a", 2), Ok(()));
+        // Claude's next lifecycle event is not refused by the Hermes context.
+        let outcome = f.run(c, &claude_session_start("claude-start-2"));
+        assert_eq!(outcome.diagnostic, None, "{outcome:?}");
+    }
+    #[test]
+    fn startup_enrollment_hermes_concurrent_start_and_first_turn_one_seat() {
+        let r = task52_registration();
+        for round in 0..5u64 {
+            let f = unowned_fixture();
+            let start = hermes_cli_start("cli-a", 1 + round * 10);
+            let turn = hermes_cli_turn("cli-a", "t1", 2 + round * 10);
+            let (started, turned) = std::thread::scope(|scope| {
+                let a = scope.spawn(|| f.run(r, &start));
+                let b = scope.spawn(|| {
+                    let began = Instant::now();
+                    let mut outcome = f.run(r, &turn);
+                    // A debug hook on a loaded machine can overrun the 1.2 s
+                    // callback cap and fail open with no output. Only such an
+                    // overrun is retried: the same event with fresh timestamps
+                    // is a canonical replay (same operation key).
+                    if outcome.stdout.is_empty() && began.elapsed() >= Duration::from_secs(1) {
+                        outcome = f.run(r, &hermes_cli_turn("cli-a", "t1", 2 + round * 10));
+                    }
+                    outcome
+                });
+                (a.join().unwrap(), b.join().unwrap())
+            });
+            assert!(started.stdout.is_empty());
+            let output: serde_json::Value = serde_json::from_slice(&turned.stdout)
+                .unwrap_or_else(|_| panic!("round {round}: turn output {turned:?}"));
+            assert!(output["context"].is_string(), "round {round}");
+            *f.service.seen.lock().unwrap() =
+                read_fixture_json(&f.root.join("transcript.json"), 1024 * 1024).unwrap();
+            // Exactly one open Hermes binding for the session key (a replay repeats its
+            // operation key), and the seat holds no binding beside it.
+            let seen = f.service.seen.lock().unwrap().clone();
+            if let Err(detail) = one_open_hermes_binding(&seen, "cli-a", 1) {
+                panic!("round {round}: {detail}");
+            }
+            assert_eq!(
+                f.saved().unwrap().seat,
+                check_in_seats(&seen).into_iter().next().unwrap(),
+                "the saved context names the seat the check-in enrolled"
+            );
+            assert!(enrollment_counts(&f).0 >= 1);
+        }
+    }
+}
+
+fn subagent_bash(agent: Option<&str>, tool: &str, command: &str) -> Vec<u8> {
+    let mut payload = serde_json::json!({
+        "session_id": "sess-1", "transcript_path": "/tmp/t.jsonl", "cwd": "/tmp",
+        "permission_mode": "default", "hook_event_name": "PreToolUse", "tool_name": tool,
+        "tool_input": {"command": command, "description": "d", "timeout": 5},
+        "tool_use_id": "toolu_1"
+    });
+    if let Some(agent) = agent {
+        payload["agent_id"] = agent.into();
+        payload["agent_type"] = "worker".into();
+    }
+    serde_json::to_vec(&payload).unwrap()
+}
+
+fn claude_args() -> HookArgs {
+    HookArgs {
+        state_dir: None,
+        host_endpoint: None,
+        harness: Harness::Claude,
+        event: Some("PreToolUse".into()),
+    }
+}
+
+fn outcome_with(stdout: &[u8]) -> HookOutcome {
+    HookOutcome {
+        stdout: stdout.to_vec(),
+        ..HookOutcome::default()
+    }
+}
+
+// Kills: no rewrite for a subagent, rewriting more than `command`, emitting a permissionDecision
+// (an `allow` would approve a whole compound command), and dropping the existing
+// additionalContext.
+#[test]
+fn claude_subagent_pre_tool_use_rewrites_herdr_commands() {
+    let input = subagent_bash(Some("a-1"), "Bash", "cd x && ht inbox");
+    for existing in [
+        &b""[..],
+        br#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"ctx"}}"#,
+    ] {
+        let out = with_subagent_rewrite(&claude_args(), &input, outcome_with(existing));
+        let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        let specific = &value["hookSpecificOutput"];
+        assert_eq!(specific["hookEventName"], "PreToolUse");
+        assert_eq!(
+            specific["updatedInput"],
+            serde_json::json!({
+                "command": "cd x && ht --agent-id=a-1 inbox", "description": "d", "timeout": 5
+            })
+        );
+        assert!(specific.get("permissionDecision").is_none());
+        assert!(value.get("permissionDecision").is_none());
+        assert_eq!(
+            specific.get("additionalContext").and_then(|c| c.as_str()),
+            (!existing.is_empty()).then_some("ctx")
+        );
+    }
+}
+
+// Kills: rewriting a main-session call (no agent_id), any non-Bash tool, a command that does not
+// run herdr-threads/ht, a non-Claude harness, and any output byte change in those cases.
+#[test]
+fn claude_main_session_non_bash_and_non_herdr_commands_are_untouched() {
+    let context =
+        br#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"ctx"}}"#;
+    for (name, input) in [
+        ("main session", subagent_bash(None, "Bash", "ht inbox")),
+        (
+            "non-Bash tool",
+            subagent_bash(Some("a-1"), "Read", "ht inbox"),
+        ),
+        (
+            "non-herdr command",
+            subagent_bash(Some("a-1"), "Bash", "git log; echo ht"),
+        ),
+        ("eval", subagent_bash(Some("a-1"), "Bash", "eval 'ht x'")),
+        (
+            "empty agent id",
+            subagent_bash(Some(""), "Bash", "ht inbox"),
+        ),
+        ("garbage", b"not json".to_vec()),
+    ] {
+        for existing in [&b""[..], &context[..]] {
+            let out = with_subagent_rewrite(&claude_args(), &input, outcome_with(existing));
+            assert_eq!(out.stdout, existing, "{name}");
+        }
+    }
+    let mut codex = claude_args();
+    codex.harness = Harness::Codex;
+    let input = subagent_bash(Some("a-1"), "Bash", "ht inbox");
+    assert!(
+        with_subagent_rewrite(&codex, &input, outcome_with(b""))
+            .stdout
+            .is_empty(),
+        "only Claude's PreToolUse is rewritten"
+    );
+}
+
+// Kills: tying the rewrite to a healthy daemon: it must ride on a quiet/unavailable outcome too,
+// and keep that outcome's diagnostic.
+#[test]
+fn claude_rewrite_survives_an_unavailable_daemon() {
+    let input = subagent_bash(Some("a-1"), "Bash", "ht inbox");
+    let out = with_subagent_rewrite(
+        &claude_args(),
+        &input,
+        quiet_outcome("daemon unavailable".into()),
+    );
+    assert_eq!(out.diagnostic.as_deref(), Some("daemon unavailable"));
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        value["hookSpecificOutput"]["updatedInput"]["command"],
+        "ht --agent-id=a-1 inbox"
+    );
 }

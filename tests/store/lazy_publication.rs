@@ -72,6 +72,8 @@ fn send_request() -> SendMessage {
             native_session: NativeSessionId::new("n"),
             execution: ExecutionId::new("00000000-0000-4000-8000-0000000000aa"),
             target: HostTargetId::new("pa"),
+            agent_id: None,
+            liveness: Some(herdr_threads::protocol::authority::LivenessFingerprint::TEST),
         },
         relays_user: false,
         user_intent: None,
@@ -176,6 +178,8 @@ fn lazy_publication_creates_no_receipt_warning_or_attention() {
     )
     .unwrap();
     conn.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES('t','b',1,1)",[]).unwrap();
+    // The seat-level lazy view counts messages unread for a connected top-level binding (V34).
+    conn.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES ('b',1,'pb','b',1,'codex','nb','00000000-0000-4000-8000-0000000000bb','cooperative_top_level',0,'term-pb','inc')", []).unwrap();
     let request = send_request();
     ready(&context, &mut conn, &request);
     assert_eq!(
@@ -196,8 +200,9 @@ fn lazy_publication_creates_no_receipt_warning_or_attention() {
         &conn,
         "i",
         &seat,
+        None,
         0,
-        lazy_delivery::capture_high_water(&conn, "i", &seat).unwrap(),
+        lazy_delivery::capture_high_water(&conn, "i", &seat, None).unwrap(),
         16,
     )
     .unwrap();
@@ -225,8 +230,9 @@ fn lazy_publication_creates_no_receipt_warning_or_attention() {
         &conn,
         "i",
         &seat,
+        None,
         0,
-        lazy_delivery::capture_high_water(&conn, "i", &seat).unwrap(),
+        lazy_delivery::capture_high_water(&conn, "i", &seat, None).unwrap(),
         16,
     )
     .unwrap();

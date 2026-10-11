@@ -129,6 +129,9 @@ pub enum SemanticMutation {
         /// (`me init --operator`); submitted as `Command::OperatorCheckIn`.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         operator: bool,
+        /// Hermes `parent_session_id` hint, frozen with the claim (see `CheckIn::lineage_parent`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lineage_parent: Option<NativeSessionId>,
     },
     ResolveSeat {
         target: HostTargetId,
@@ -143,6 +146,8 @@ pub enum SemanticMutation {
         source: String,
         event_id: String,
         execution: ExecutionId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        liveness: Option<crate::protocol::authority::LivenessFingerprint>,
     },
     CheckIn,
     CreateThread {
@@ -391,6 +396,7 @@ impl SemanticMutation {
                 mode,
                 event_id,
                 operator,
+                lineage_parent,
             } => {
                 if event_id.is_empty()
                     || event_id.len() > 1024
@@ -411,6 +417,7 @@ impl SemanticMutation {
                     claim: claim.clone(),
                     mode: *mode,
                     operation: OperationId::new("validation"),
+                    lineage_parent: lineage_parent.clone(),
                 };
                 if *operator {
                     Command::OperatorCheckIn(check)
@@ -427,6 +434,7 @@ impl SemanticMutation {
                 source,
                 event_id,
                 execution,
+                liveness,
             } => {
                 if event_id.is_empty()
                     || event_id.len() > 1024
@@ -441,6 +449,7 @@ impl SemanticMutation {
                     source: source.clone(),
                     operation: OperationId::new("validation"),
                     execution: execution.clone(),
+                    liveness: *liveness,
                 }
                 .validate()
                 .map_err(invalid)
@@ -593,12 +602,14 @@ impl SemanticMutation {
                 claim,
                 mode,
                 operator,
+                lineage_parent,
                 ..
             } => {
                 let check = CheckIn {
                     claim: claim.clone(),
                     mode: *mode,
                     operation,
+                    lineage_parent: lineage_parent.clone(),
                 };
                 if *operator {
                     Command::OperatorCheckIn(check)
@@ -616,6 +627,7 @@ impl SemanticMutation {
                 native_session,
                 source,
                 execution,
+                liveness,
                 ..
             } => Command::ContinuityCheckIn(ContinuityCheckIn {
                 target: target.clone(),
@@ -624,8 +636,10 @@ impl SemanticMutation {
                 source: source.clone(),
                 operation,
                 execution: execution.clone(),
+                liveness: *liveness,
             }),
             Self::CheckIn => Command::CheckIn(CheckIn {
+                lineage_parent: None,
                 mode: crate::protocol::commands::CheckInMode::Current,
                 operation,
                 claim: native()?,
@@ -1111,6 +1125,14 @@ impl Journal {
         digest.update(claim.binding_generation.to_be_bytes());
         digest.update((claim.execution.as_str().len() as u64).to_be_bytes());
         digest.update(claim.execution.as_str().as_bytes());
+        // Per binding (session and agent), so two bindings of one seat that share an execution
+        // never share display progress.
+        let session = claim.native_session.as_str();
+        digest.update((session.len() as u64).to_be_bytes());
+        digest.update(session.as_bytes());
+        let agent = claim.agent_id.as_ref().map_or("", |a| a.as_str());
+        digest.update((agent.len() as u64).to_be_bytes());
+        digest.update(agent.as_bytes());
         digest.update(message.as_str().as_bytes());
         self.root
             .join(format!("display-{:x}.progress", digest.finalize()))
@@ -1284,6 +1306,18 @@ impl Journal {
         operator: bool,
         factory: impl FnOnce() -> io::Result<(CallerClaim, CheckInMode)>,
     ) -> io::Result<IntentRef> {
+        self.record_check_in_lineage(scope, event_id, created_at_millis, operator, None, factory)
+    }
+    /// `record_check_in_as` freezing a lineage hint (Hermes `parent_session_id`) with the claim.
+    pub fn record_check_in_lineage(
+        &self,
+        scope: IntentScope,
+        event_id: &str,
+        created_at_millis: i64,
+        operator: bool,
+        lineage_parent: Option<NativeSessionId>,
+        factory: impl FnOnce() -> io::Result<(CallerClaim, CheckInMode)>,
+    ) -> io::Result<IntentRef> {
         let _lock = self.lock()?;
         for entry in fs::read_dir(&self.root)? {
             let Ok(entry) = entry else { continue };
@@ -1309,6 +1343,7 @@ impl Journal {
             mode,
             event_id: event_id.into(),
             operator,
+            lineage_parent,
         };
         if !scope_matches(&scope, &semantic) {
             return Err(invalid("intent authority scope mismatch"));

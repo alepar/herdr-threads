@@ -1,0 +1,4 @@
+6977 /private/tmp/ih.xcWL9F/agybin/1/agy
+6972 -zsh
+6717 /Users/alepar/.local/bin/herdr
+1 /sbin/launchd

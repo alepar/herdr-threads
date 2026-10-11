@@ -204,6 +204,11 @@ trait ErasedAdapter: Send + Sync {
     fn legacy_contract_id(&self) -> Option<String>;
     fn hook_admission_policy(&self) -> HookAdmissionPolicy;
     fn qualified_turn_policy(&self) -> super::context::QualifiedTurnPolicy;
+    fn enrollment_policy(&self) -> EnrollmentPolicy;
+    fn caller_env(&self) -> Option<CallerEnvShape>;
+    fn binding_policy(&self) -> BindingPolicy;
+    fn required_hook_events(&self) -> Vec<&'static str>;
+    fn rewrite_hook_output(&self, input: &[u8], existing_stdout: &[u8]) -> Option<Vec<u8>>;
     fn evidence_observations(&self, input: &HookInput) -> Vec<EvidenceProjection>;
     fn nonholding_unavailable_reasons(
         &self,
@@ -322,6 +327,21 @@ impl<A: HarnessAdapter> ErasedAdapter for TypedAdapter<A> {
     }
     fn qualified_turn_policy(&self) -> super::context::QualifiedTurnPolicy {
         self.0.qualified_turn_policy()
+    }
+    fn enrollment_policy(&self) -> EnrollmentPolicy {
+        self.0.enrollment_policy()
+    }
+    fn caller_env(&self) -> Option<CallerEnvShape> {
+        self.0.caller_env()
+    }
+    fn binding_policy(&self) -> BindingPolicy {
+        self.0.binding_policy()
+    }
+    fn required_hook_events(&self) -> Vec<&'static str> {
+        self.0.required_hook_events()
+    }
+    fn rewrite_hook_output(&self, input: &[u8], existing_stdout: &[u8]) -> Option<Vec<u8>> {
+        self.0.rewrite_hook_output(input, existing_stdout)
     }
     fn evidence_observations(&self, input: &HookInput) -> Vec<EvidenceProjection> {
         self.0.evidence_observations(input)
@@ -605,6 +625,21 @@ impl Registration {
     }
     pub fn qualified_turn_policy(&self) -> super::context::QualifiedTurnPolicy {
         self.adapter.qualified_turn_policy()
+    }
+    pub fn enrollment_policy(&self) -> EnrollmentPolicy {
+        self.adapter.enrollment_policy()
+    }
+    pub fn caller_env(&self) -> Option<CallerEnvShape> {
+        self.adapter.caller_env()
+    }
+    pub fn binding_policy(&self) -> BindingPolicy {
+        self.adapter.binding_policy()
+    }
+    pub fn required_hook_events(&self) -> Vec<&'static str> {
+        self.adapter.required_hook_events()
+    }
+    pub fn rewrite_hook_output(&self, input: &[u8], existing_stdout: &[u8]) -> Option<Vec<u8>> {
+        self.adapter.rewrite_hook_output(input, existing_stdout)
     }
     pub fn evidence_observations(
         &self,
@@ -1363,6 +1398,19 @@ impl Registry {
             .iter()
             .find(|r| r.metadata().id == harness_id)
             .and_then(|r| r.adapter.delivery_policy())
+    }
+    /// The binding policy of an agent harness id; `"human"` and unknown ids give the default.
+    pub fn binding_policy(&self, harness_id: &str) -> BindingPolicy {
+        self.registrations
+            .iter()
+            .find(|r| r.metadata().id == harness_id)
+            .map_or_else(BindingPolicy::default, |r| r.adapter.binding_policy())
+    }
+    /// Every registered caller shape as `(harness id, shape)`, in registry order.
+    pub fn caller_shapes(&self) -> impl Iterator<Item = (&'static str, CallerEnvShape)> {
+        self.registrations
+            .iter()
+            .filter_map(|r| Some((r.metadata().id, r.caller_env()?)))
     }
     /// The prompt a native idle wake types for a harness id: the marker unless its delivery
     /// policy injects the pending items at turn start.
@@ -2596,6 +2644,7 @@ mod tests {
             event_id: "event".into(),
             intent: EventIntent::Current,
             metadata: EventMetadata {
+                enrollment_witness: None,
                 context_source: "PreToolUse".into(),
                 callback_deadline: None,
                 skill_pointer: false,
@@ -2603,11 +2652,13 @@ mod tests {
                 domain: ContractDomain::Native,
                 native_event: "event".into(),
                 shape_fields: vec![],
+                agent_id: None,
             },
             delivery: DeliveryEligibility::Context,
             runtime: RuntimeAttribution::Unavailable {
                 diagnostic: "test".into(),
             },
+            binding_event: None,
         }
     }
     fn request() -> AdmissionRequest {
@@ -2786,6 +2837,7 @@ mod tests {
             role: super::super::context::Role::TopLevel,
             event_id: "fake".into(),
             capability: super::super::Capability::ObservedInput,
+            agent_id: None,
         };
 
         let mut decoded = event("codex");
@@ -3060,5 +3112,74 @@ mod tests {
             Err(DecodeFailure::RegistrationMismatch)
         ));
         assert_eq!(b.calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn binding_policy_of_builtins() {
+        let registry = builtins();
+        assert_eq!(
+            registry.binding_policy("claude"),
+            BindingPolicy {
+                hook_agent_id: true,
+                registered_child_sessions: false
+            }
+        );
+        assert_eq!(
+            registry.binding_policy("hermes"),
+            BindingPolicy {
+                hook_agent_id: false,
+                registered_child_sessions: true
+            }
+        );
+        for id in ["codex", "agy", "human", "no-such-harness"] {
+            assert_eq!(
+                registry.binding_policy(id),
+                BindingPolicy::default(),
+                "{id}"
+            );
+        }
+    }
+    #[test]
+    fn required_hook_events_of_builtins_are_their_installed_sets() {
+        let sorted = |mut names: Vec<&'static str>| {
+            names.sort_unstable();
+            names
+        };
+        let events = |id: &str| {
+            builtins()
+                .registrations()
+                .iter()
+                .find(|r| r.metadata().id == id)
+                .map(|r| sorted(r.required_hook_events()))
+                .unwrap()
+        };
+        let claude = events("claude");
+        assert!(!claude.is_empty());
+        assert_eq!(
+            claude,
+            sorted(
+                crate::harness::claude::declared_hook_groups("ht hook claude")
+                    .into_iter()
+                    .map(|(event, _)| event)
+                    .collect()
+            )
+        );
+        let codex = events("codex");
+        assert!(!codex.is_empty());
+        assert_eq!(
+            codex,
+            sorted(
+                crate::harness::codex::DECLARATION
+                    .owned_hooks
+                    .iter()
+                    .map(|hook| hook.event)
+                    .collect()
+            )
+        );
+        assert_eq!(
+            events("hermes"),
+            sorted(crate::harness::hermes::REQUIRED_HOOK_EVENTS.to_vec())
+        );
+        assert!(events("agy").is_empty());
     }
 }

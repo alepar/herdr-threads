@@ -367,7 +367,8 @@ fn publish(store: &SqliteStore, v: SendMessage) -> Result<CommandResult, ApiErro
 fn direct_prepare_revalidates_original_caller_binding() {
     let (store, db, path) = store_fixture();
     raw_pair(&db);
-    db.execute("UPDATE occupant_bindings SET execution_id='00000000-0000-4000-8000-000000000099' WHERE seat_id='s1'",[]).unwrap();
+    db.execute("UPDATE seats SET generation=generation+1 WHERE id='s1'", [])
+        .unwrap();
     assert!(
         prepare(
             &store,
@@ -480,14 +481,16 @@ fn ensure_invalid_targets_and_claims_have_no_effects() {
         ),
         (
             "s2",
-            "UPDATE occupant_bindings SET execution_id='00000000-0000-4000-8000-000000000099' WHERE seat_id='s1'",
+            "UPDATE seats SET generation=generation+1 WHERE id='s1'",
         ),
     ] {
         let (store, db, path) = store_fixture();
         db.execute_batch(sql).unwrap();
         let expected = if target == "s1" {
             ErrorCode::InvalidRequest
-        } else if sql.contains("occupant_bindings") {
+        } else if sql.contains("generation=generation+1") {
+            // Session-keyed bindings: the execution is no part of the binding key; the caller's
+            // binding changes here with the seat's binding generation (a rebind).
             ErrorCode::CallerUnverified
         } else {
             ErrorCode::TargetUnresolved
@@ -893,7 +896,8 @@ fn exact_ensure_replay_survives_binding_change_but_fresh_send_refuses() {
     let (store, db, path) = store_fixture();
     let t = thread(ensure(&store, "s1", "s2", "historical").unwrap());
     let rows = count(&db, "messages");
-    db.execute("UPDATE occupant_bindings SET execution_id='00000000-0000-4000-8000-000000000099' WHERE seat_id='s1'",[]).unwrap();
+    db.execute("UPDATE seats SET generation=generation+1 WHERE id='s1'", [])
+        .unwrap();
     assert_eq!(thread(ensure(&store, "s1", "s2", "historical").unwrap()), t);
     assert_eq!(count(&db, "messages"), rows);
     assert!(ensure(&store, "s1", "s2", "fresh-after-binding").is_err());

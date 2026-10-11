@@ -463,7 +463,12 @@ fn installed_command_is_the_hook_entrypoint_argv() {
         .join(" ");
     let settings: serde_json::Value =
         serde_json::from_slice(&fs::read(s.settings()).unwrap()).unwrap();
-    for event in ["SessionStart", "PreToolUse"] {
+    for event in [
+        "SessionStart",
+        "PreToolUse",
+        "SubagentStart",
+        "SubagentStop",
+    ] {
         let command = settings["hooks"][event][0]["hooks"][0]["command"]
             .as_str()
             .unwrap();
@@ -476,6 +481,102 @@ fn installed_command_is_the_hook_entrypoint_argv() {
         );
     }
     assert_eq!(settings["hooks"]["PreToolUse"][0]["matcher"], "Bash");
+}
+
+const SUBAGENT_EVENTS: [&str; 2] = ["SubagentStart", "SubagentStop"];
+/// Every hook group `setup codex` owns (spec §4): the session and subagent starts, the Bash
+/// tool boundary, and the two end events that disconnect a binding.
+const CODEX_OWNED_EVENTS: [&str; 5] = [
+    "SessionStart",
+    "SubagentStart",
+    "PreToolUse",
+    "SubagentStop",
+    "SessionEnd",
+];
+
+fn owned_event_groups(settings: &serde_json::Value, event: &str) -> usize {
+    settings["hooks"][event].as_array().map_or(0, |groups| {
+        groups
+            .iter()
+            .filter(|group| {
+                group["hooks"][0]["command"]
+                    .as_str()
+                    .is_some_and(|c| c.ends_with(&format!("'hook-event' 'claude' '{event}'")))
+            })
+            .count()
+    })
+}
+
+/// Kills: leaving SubagentStart/SubagentStop out of the declared Claude hooks (a subagent's
+/// start and stop would never reach the hook), or registering them without the per-event
+/// stable `hook-event` command.
+#[test]
+fn setup_claude_registers_subagent_start_and_stop() {
+    let s = Scratch::new();
+    s.harness("claude", "2.1.284 (Claude Code)");
+    let setup = s.run(&["setup", "claude", "--json"]);
+    assert_eq!(setup.status.code(), Some(0), "{}", text(&setup.stderr));
+    let settings: serde_json::Value =
+        serde_json::from_slice(&fs::read(s.settings()).unwrap()).unwrap();
+    for event in SUBAGENT_EVENTS {
+        let group = &settings["hooks"][event][0];
+        let command = group["hooks"][0]["command"].as_str().unwrap();
+        assert!(
+            command.ends_with(&format!("'hook-event' 'claude' '{event}'")),
+            "{event}: {command}"
+        );
+        assert_eq!(group["hooks"][0]["type"], "command", "{event}");
+        assert_eq!(group["hooks"][0]["timeout"], 10, "{event}");
+        assert!(group.get("matcher").is_none(), "{event}: no matcher");
+    }
+    let status = json(&s.run(&["--json", "setup-status", "claude"]));
+    assert_eq!(status["installed"], true, "{status}");
+}
+
+/// Kills: an unsetup that leaves the subagent groups behind (a stray hook running a removed
+/// binary), and a stale hook object that survives in the settings file.
+#[test]
+fn unsetup_claude_removes_subagent_groups() {
+    let s = Scratch::new();
+    s.harness("claude", "2.1.284 (Claude Code)");
+    fs::create_dir(&s.claude_config).unwrap();
+    fs::write(s.settings(), ORIGINAL).unwrap();
+    let setup = s.run(&["setup", "claude"]);
+    assert_eq!(setup.status.code(), Some(0), "{}", text(&setup.stderr));
+    let installed: serde_json::Value =
+        serde_json::from_slice(&fs::read(s.settings()).unwrap()).unwrap();
+    for event in SUBAGENT_EVENTS {
+        assert_eq!(owned_event_groups(&installed, event), 1, "{event}");
+    }
+    let unsetup = s.run(&["unsetup", "claude"]);
+    assert_eq!(unsetup.status.code(), Some(0), "{}", text(&unsetup.stderr));
+    assert_eq!(fs::read(s.settings()).unwrap(), ORIGINAL);
+    let left = text(&fs::read(s.settings()).unwrap());
+    for event in SUBAGENT_EVENTS {
+        assert!(!left.contains(event), "{event} left behind: {left}");
+    }
+}
+
+/// Kills: a re-run that appends a second owned group per event (every subagent hook would then
+/// fire twice).
+#[test]
+fn setup_claude_twice_keeps_one_group_per_event() {
+    let s = Scratch::new();
+    s.harness("claude", "2.1.284 (Claude Code)");
+    for _ in 0..2 {
+        let setup = s.run(&["setup", "claude", "--json"]);
+        assert_eq!(setup.status.code(), Some(0), "{}", text(&setup.stderr));
+    }
+    let settings: serde_json::Value =
+        serde_json::from_slice(&fs::read(s.settings()).unwrap()).unwrap();
+    for event in [
+        "SessionStart",
+        "PreToolUse",
+        "SubagentStart",
+        "SubagentStop",
+    ] {
+        assert_eq!(owned_event_groups(&settings, event), 1, "{event}");
+    }
 }
 
 /// Setup creates an absent `settings.json` (and its config directory) as
@@ -749,10 +850,7 @@ fn codex_setup_installs_user_hooks_and_unsetup_restores_bytes() {
     assert_eq!(report["scope"], "user");
     assert_eq!(report["action"], "installed");
     assert_eq!(report["harness_version"]["recipe"], "codex-hooks-v1");
-    assert_eq!(
-        report["events"],
-        serde_json::json!(["SessionStart", "SubagentStart", "PreToolUse"])
-    );
+    assert_eq!(report["events"], serde_json::json!(CODEX_OWNED_EVENTS));
     let hooks: serde_json::Value = serde_json::from_slice(&fs::read(s.hooks()).unwrap()).unwrap();
     let start = hooks["hooks"]["SessionStart"].as_array().unwrap();
     assert_eq!(start.len(), 2);
@@ -761,7 +859,7 @@ fn codex_setup_installs_user_hooks_and_unsetup_restores_bytes() {
         "bash '/h/herdr-agent-state.sh' session"
     );
     let command = owned_codex_command(&s);
-    for event in ["SessionStart", "SubagentStart", "PreToolUse"] {
+    for event in CODEX_OWNED_EVENTS {
         let groups = hooks["hooks"][event].as_array().unwrap();
         let owned = groups.last().unwrap()["hooks"][0]["command"]
             .as_str()
@@ -784,6 +882,8 @@ fn codex_setup_installs_user_hooks_and_unsetup_restores_bytes() {
             format!("{file}:session_start:1:0"),
             format!("{file}:subagent_start:0:0"),
             format!("{file}:pre_tool_use:0:0"),
+            format!("{file}:subagent_stop:0:0"),
+            format!("{file}:session_end:0:0"),
         ]
     );
     assert!(trust.iter().all(|k| k["trust_recorded"] == false));
@@ -832,6 +932,78 @@ fn codex_setup_installs_user_hooks_and_unsetup_restores_bytes() {
     assert_eq!(json(&twice)["action"], "not_installed");
     let status = json(&s.run(&["--json", "setup-status", "codex"]));
     assert_eq!(status["installed"], false);
+}
+
+/// Kills: `setup codex` leaving SubagentStop / SessionEnd out of `hooks.json` (a Codex subagent or
+/// session would then never disconnect its binding), registering them without the per-event
+/// stable `hook-event` command, or giving them a matcher or a different timeout.
+#[test]
+fn setup_codex_registers_subagent_stop_and_session_end() {
+    let s = Scratch::new();
+    s.harness("codex", "codex-cli 0.158.0");
+    fs::create_dir(&s.codex_home).unwrap();
+    let setup = s.run(&["setup", "codex", "--json"]);
+    assert_eq!(setup.status.code(), Some(0), "{}", text(&setup.stderr));
+    let hooks: serde_json::Value = serde_json::from_slice(&fs::read(s.hooks()).unwrap()).unwrap();
+    let command = owned_codex_command(&s);
+    for event in ["SubagentStop", "SessionEnd"] {
+        let groups = hooks["hooks"][event].as_array().unwrap();
+        assert_eq!(groups.len(), 1, "{event}");
+        let group = &groups[0];
+        let registered = group["hooks"][0]["command"].as_str().unwrap();
+        assert_eq!(
+            registered,
+            format!(
+                "{} '{event}'",
+                command.replace("'hook' 'codex'", "'hook-event' 'codex'")
+            ),
+            "{event}: {registered}"
+        );
+        assert_eq!(group["hooks"][0]["type"], "command", "{event}");
+        assert!(group.get("matcher").is_none(), "{event}: no matcher");
+    }
+    let status = json(&s.run(&["--json", "setup-status", "codex"]));
+    assert_eq!(status["installed"], true, "{status}");
+    // Re-running setup keeps one group per event.
+    let again = s.run(&["setup", "codex", "--json"]);
+    assert_eq!(json(&again)["action"], "already_installed");
+    let hooks: serde_json::Value = serde_json::from_slice(&fs::read(s.hooks()).unwrap()).unwrap();
+    for event in CODEX_OWNED_EVENTS {
+        assert_eq!(
+            hooks["hooks"][event].as_array().unwrap().len(),
+            1,
+            "{event}"
+        );
+    }
+}
+
+/// Kills: an unsetup that leaves the end-event groups behind (a stray hook running a removed
+/// binary), including in a `hooks.json` that already held the user's own groups for them.
+#[test]
+fn unsetup_codex_removes_them() {
+    let s = Scratch::new();
+    s.harness("codex", "codex-cli 0.158.0");
+    fs::create_dir(&s.codex_home).unwrap();
+    let original = br#"{"hooks":{"SessionEnd":[{"hooks":[{"command":"user-end","timeout":10,"type":"command"}]}]}}"#;
+    fs::write(s.hooks(), original).unwrap();
+    let setup = s.run(&["setup", "codex", "--json"]);
+    assert_eq!(setup.status.code(), Some(0), "{}", text(&setup.stderr));
+    let installed: serde_json::Value =
+        serde_json::from_slice(&fs::read(s.hooks()).unwrap()).unwrap();
+    assert_eq!(
+        installed["hooks"]["SessionEnd"].as_array().unwrap().len(),
+        2
+    );
+    assert_eq!(
+        installed["hooks"]["SubagentStop"].as_array().unwrap().len(),
+        1
+    );
+    let unsetup = s.run(&["unsetup", "codex", "--json"]);
+    assert_eq!(unsetup.status.code(), Some(0), "{}", text(&unsetup.stderr));
+    assert_eq!(fs::read(s.hooks()).unwrap(), original);
+    let left = text(&fs::read(s.hooks()).unwrap());
+    assert!(!left.contains("SubagentStop"), "{left}");
+    assert!(!left.contains("'hook-event'"), "{left}");
 }
 
 /// Snapshot of every file under `dir` (path and bytes) to prove no writes.
@@ -941,7 +1113,7 @@ fn codex_setup_keeps_existing_user_hooks_in_their_own_layers() {
     assert_eq!(child[0]["hooks"][0]["command"], "hcom child");
     assert_eq!(hooks["hooks"]["Stop"][0]["hooks"][0]["command"], "x");
     let command = owned_codex_command(&s);
-    for event in ["SessionStart", "SubagentStart", "PreToolUse"] {
+    for event in CODEX_OWNED_EVENTS {
         let groups = hooks["hooks"][event].as_array().unwrap();
         let owned: Vec<_> = groups
             .iter()
@@ -1727,7 +1899,7 @@ fn versionless_setup_upgrades_owned_hooks_with_large_legacy_allowance_manifest()
     assert_eq!(fs::read(&manifest).unwrap(), manifest_before);
     assert_ne!(fs::read(s.hooks()).unwrap(), hooks_before);
     let hooks: serde_json::Value = serde_json::from_slice(&fs::read(s.hooks()).unwrap()).unwrap();
-    for event in ["SessionStart", "SubagentStart", "PreToolUse"] {
+    for event in CODEX_OWNED_EVENTS {
         let command = hooks["hooks"][event][0]["hooks"][0]["command"]
             .as_str()
             .unwrap();
@@ -3351,6 +3523,96 @@ fn task51_public_assertions(
 }
 
 #[test]
+fn public_hermes_setup_writes_enrollment_bridge_and_status_flags_stale_generation() {
+    use sha2::Digest;
+    let f = task51_installed();
+    let bridge = f
+        .selected_home("work")
+        .join("plugins/herdr-threads/__init__.py");
+    let installed = fs::read(&bridge).unwrap();
+    for needle in ["enrollment_witness", "cli_session_start"] {
+        assert!(text(&installed).contains(needle), "bridge lacks {needle}");
+    }
+    let status = |json_format: bool| {
+        let out = task51_command(&f, "setup-status", json_format)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}{}",
+            text(&out.stdout),
+            text(&out.stderr)
+        );
+        out
+    };
+    // Text-form needles of the stale-bridge hint (hermes.rs `asset_projection`).
+    let stale_needles = [
+        "stale_bridge",
+        "older herdr-threads generation",
+        "to refresh the bridge",
+    ];
+    let fresh = json(&status(true));
+    assert_eq!(fresh["installed"], true, "{fresh}");
+    assert_eq!(fresh["bridge_current"], true, "{fresh}");
+    assert!(fresh.get("stale_bridge").is_none(), "{fresh}");
+    let fresh_text = text(&status(false).stdout);
+    for needle in stale_needles {
+        assert!(
+            !fresh_text.contains(needle),
+            "current bridge shows {needle}: {fresh_text}"
+        );
+    }
+
+    // An older generation: the installed bridge and its manifest record differ
+    // from the bridge this build ships.
+    let older = [installed.as_slice(), b"\n# older\n"].concat();
+    let manifest_path = task51_manifest(&f);
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+    manifest["assets"]["__init__.py"]["bytes"] = serde_json::json!(older);
+    manifest["assets"]["__init__.py"]["digest"] =
+        format!("sha256:{:x}", sha2::Sha256::digest(&older)).into();
+    fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+    fs::write(&bridge, &older).unwrap();
+    let stale = json(&status(true));
+    assert_eq!(stale["bridge_current"], false, "{stale}");
+    assert_eq!(
+        stale["stale_bridge"]["setup_argv"],
+        serde_json::json!(["herdr-threads", "setup", "hermes", "--profile", "work"]),
+        "{stale}"
+    );
+    let rendered = text(&status(false).stdout);
+    assert!(
+        rendered.contains("setup hermes --profile work"),
+        "{rendered}"
+    );
+    assert!(
+        stale_needles.iter().any(|needle| rendered.contains(needle)),
+        "the text form renders none of the stale needles: {rendered}"
+    );
+
+    // Re-running setup refreshes the bridge.
+    let out = task51_command(&f, "setup", true).output().unwrap();
+    assert!(
+        out.status.success(),
+        "{}{}",
+        text(&out.stdout),
+        text(&out.stderr)
+    );
+    assert_eq!(fs::read(&bridge).unwrap(), installed);
+    let current = json(&status(true));
+    assert_eq!(current["bridge_current"], true, "{current}");
+    assert!(current.get("stale_bridge").is_none(), "{current}");
+    let current_text = text(&status(false).stdout);
+    for needle in stale_needles {
+        assert!(
+            !current_text.contains(needle),
+            "refreshed bridge shows {needle}: {current_text}"
+        );
+    }
+}
+
+#[test]
 fn task51_public_hermes_removal_reports_modified_residue_and_no_removal() {
     // The removal removes nothing, so both report formats run against one
     // install; the whole tree is asserted unchanged by each run.
@@ -4934,7 +5196,7 @@ fn stable_codex_reinstall_status_preserves_trust_records_and_group_indices() {
     assert_eq!(status["commands"], first_report["commands"]);
     assert_eq!(status["current_command_matches"], true);
     assert_eq!(status["trust"]["hooks"], first_report["trust"]["hooks"]);
-    for event in ["SessionStart", "SubagentStart", "PreToolUse"] {
+    for event in CODEX_OWNED_EVENTS {
         assert_eq!(
             status["commands"][event],
             hooks["hooks"][event][0]["hooks"][0]["command"]
@@ -5059,4 +5321,184 @@ fn legacy_foreign_registration_codex_evented_installed() {
 #[test]
 fn legacy_foreign_registration_codex_shared_installed() {
     legacy_foreign_registration_case("codex", false, true);
+}
+
+// ---------------------------------------------------------------------------
+// Stale installs (ht-54r.24): an install that lacks a required hook event is
+// flagged by `doctor` and `setup-status`, and `doctor fix` re-runs the owned
+// setup.
+
+/// Rewrites a finished install into the shape an earlier release wrote: `events` leave the
+/// manifest's owned entries and the harness file.
+fn drop_installed_events(s: &Scratch, kind: &str, file: &Path, events: &[&str]) {
+    let manifest = fs::read_dir(s.state.join("setup"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| {
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            name.starts_with(&format!("{kind}-user-"))
+                && name.ends_with(".json")
+                && !name.ends_with(".created.json")
+        })
+        .expect("setup manifest");
+    let mut recorded: serde_json::Value =
+        serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
+    recorded["owned"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|entry| !events.contains(&entry["event"].as_str().unwrap()));
+    fs::write(&manifest, serde_json::to_vec(&recorded).unwrap()).unwrap();
+    let mut settings: serde_json::Value = serde_json::from_slice(&fs::read(file).unwrap()).unwrap();
+    for event in events {
+        settings["hooks"].as_object_mut().unwrap().remove(*event);
+    }
+    fs::write(file, serde_json::to_vec(&settings).unwrap()).unwrap();
+}
+
+fn stale_scratch_claude() -> Scratch {
+    let s = Scratch::new();
+    s.harness("claude", "2.1.284 (Claude Code)");
+    fs::create_dir(&s.state).unwrap();
+    let setup = s.run(&["setup", "claude"]);
+    assert_eq!(setup.status.code(), Some(0), "{}", text(&setup.stderr));
+    s
+}
+
+#[test]
+fn doctor_flags_claude_install_missing_subagent_groups() {
+    let s = stale_scratch_claude();
+    drop_installed_events(
+        &s,
+        "claude",
+        &s.settings(),
+        &["SubagentStart", "SubagentStop"],
+    );
+    let doctor = json_doctor(&s);
+    let stale = &doctor["hooks"]["claude"]["stale_install"];
+    assert_eq!(
+        stale["missing"],
+        serde_json::json!(["SubagentStart", "SubagentStop"]),
+        "{doctor}"
+    );
+    assert_eq!(stale["fix"], "herdr-threads setup claude");
+    assert!(
+        doctor["limitations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|line| line
+                .as_str()
+                .unwrap()
+                .contains("re-run `herdr-threads setup claude`")),
+        "{doctor}"
+    );
+}
+
+#[test]
+fn doctor_flags_codex_install_missing_subagent_stop_and_session_end() {
+    let s = Scratch::new();
+    s.harness("codex", "codex-cli 0.158.0");
+    fs::create_dir(&s.codex_home).unwrap();
+    let setup = s.run(&["setup", "codex"]);
+    assert_eq!(setup.status.code(), Some(0), "{}", text(&setup.stderr));
+    // A current install lacks nothing (setup now owns the end-event groups, ht-54r.11) ...
+    let doctor = json_doctor(&s);
+    assert!(
+        doctor["hooks"]["codex"]["stale_install"].is_null(),
+        "{doctor}"
+    );
+    // ... and an install from before them is flagged.
+    drop_installed_events(&s, "codex", &s.hooks(), &["SubagentStop", "SessionEnd"]);
+    let doctor = json_doctor(&s);
+    let stale = &doctor["hooks"]["codex"]["stale_install"];
+    assert_eq!(
+        stale["missing"],
+        serde_json::json!(["SubagentStop", "SessionEnd"]),
+        "{doctor}"
+    );
+    assert_eq!(stale["fix"], "herdr-threads setup codex");
+}
+
+#[test]
+fn setup_status_reports_the_same_findings() {
+    let s = stale_scratch_claude();
+    drop_installed_events(&s, "claude", &s.settings(), &["SubagentStop"]);
+    let status = json(&s.run(&["--json", "setup-status", "claude"]));
+    assert_eq!(
+        status["stale_install"]["missing"],
+        serde_json::json!(["SubagentStop"]),
+        "{status}"
+    );
+    assert_eq!(status["stale_install"]["fix"], "herdr-threads setup claude");
+    let doctor = json_doctor(&s);
+    assert_eq!(
+        doctor["hooks"]["claude"]["stale_install"]["missing"],
+        status["stale_install"]["missing"]
+    );
+    let text_status = text(&s.run(&["setup-status", "claude"]).stdout);
+    assert!(
+        text_status.contains("herdr-threads setup claude"),
+        "{text_status}"
+    );
+
+    let c = Scratch::new();
+    c.harness("codex", "codex-cli 0.158.0");
+    fs::create_dir(&c.codex_home).unwrap();
+    assert_eq!(c.run(&["setup", "codex"]).status.code(), Some(0));
+    let codex = json(&c.run(&["--json", "setup-status", "codex"]));
+    assert_eq!(
+        codex["stale_install"]["missing"],
+        json_doctor(&c)["hooks"]["codex"]["stale_install"]["missing"]
+    );
+}
+
+#[test]
+fn doctor_fix_reruns_owned_setup_and_clears_the_finding() {
+    let s = stale_scratch_claude();
+    struct Stop<'a>(&'a Scratch);
+    impl Drop for Stop<'_> {
+        fn drop(&mut self) {
+            let _ = self.0.run(&["daemon", "stop"]);
+        }
+    }
+    let _stop = Stop(&s);
+    drop_installed_events(
+        &s,
+        "claude",
+        &s.settings(),
+        &["SubagentStart", "SubagentStop"],
+    );
+    assert!(!json_doctor(&s)["hooks"]["claude"]["stale_install"].is_null());
+    let fix = s.run(&["doctor", "fix", "--json"]);
+    let fix: serde_json::Value = serde_json::from_slice(&fix.stdout)
+        .unwrap_or_else(|e| panic!("{e}: {}", text(&fix.stderr)));
+    assert!(
+        fix["doctor"]["repairs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["action"] == "setup claude" && row["outcome"] == "attempted"),
+        "{fix}"
+    );
+    assert!(
+        fix["doctor"]["hooks"]["claude"]["stale_install"].is_null(),
+        "{fix}"
+    );
+    let settings = text(&fs::read(s.settings()).unwrap());
+    assert!(
+        settings.contains("SubagentStart") && settings.contains("SubagentStop"),
+        "{settings}"
+    );
+}
+
+#[test]
+fn current_installs_report_no_finding() {
+    let s = stale_scratch_claude();
+    let doctor = json_doctor(&s);
+    assert!(
+        doctor["hooks"]["claude"]["stale_install"].is_null(),
+        "{doctor}"
+    );
+    let status = json(&s.run(&["--json", "setup-status", "claude"]));
+    assert!(status.get("stale_install").is_none(), "{status}");
 }

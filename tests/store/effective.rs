@@ -1057,15 +1057,31 @@ fn dormant_upgrade_actual_v31_backfill32_reopens_and_rolls_back_without_recaptur
             (31, include_str!("../../migrations/0031_seat_wake_on.sql")),
             (
                 32,
-                include_str!("../../migrations/0032_invitation_confirmation.sql"),
+                include_str!("../../migrations/0032_session_bindings.sql"),
             ),
             (
                 33,
-                include_str!("../../migrations/0033_receipt_send_time.sql"),
+                include_str!("../../migrations/0033_archival_scan_scope.sql"),
             ),
             (
                 34,
-                include_str!("../../migrations/0034_handoff_body_bounds.sql"),
+                include_str!("../../migrations/0034_binding_delivery_state.sql"),
+            ),
+            (
+                35,
+                include_str!("../../migrations/0035_binding_attention_frontiers.sql"),
+            ),
+            (
+                36,
+                include_str!("../../migrations/0036_invitation_confirmation.sql"),
+            ),
+            (
+                37,
+                include_str!("../../migrations/0037_receipt_send_time.sql"),
+            ),
+            (
+                38,
+                include_str!("../../migrations/0038_handoff_body_bounds.sql"),
             ),
         ] {
             db.execute_batch("BEGIN IMMEDIATE").unwrap();
@@ -1081,7 +1097,7 @@ fn dormant_upgrade_actual_v31_backfill32_reopens_and_rolls_back_without_recaptur
         assert_eq!(
             db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
                 .unwrap(),
-            34
+            38
         );
         assert_eq!(
             db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
@@ -1128,7 +1144,7 @@ fn dormant_upgrade_actual_v31_backfill32_reopens_and_rolls_back_without_recaptur
             .map(Result::unwrap)
             .collect::<Vec<_>>()
         };
-        // V39 rebuilds exactly these four body-bearing tables and their implicit indexes.
+        // V43 rebuilds exactly these four body-bearing tables and their implicit indexes.
         // Compare their exact transformed DDL while retaining rootpages for every other object.
         let normalize_capacity = |rows: &mut Vec<(String, String, String, i64, Option<String>)>| {
             for row in rows {
@@ -1172,7 +1188,7 @@ fn dormant_upgrade_actual_v31_backfill32_reopens_and_rolls_back_without_recaptur
         expected
             .execute_batch(warning.4.as_deref().unwrap())
             .unwrap();
-        let additions = include_str!("../../migrations/0037_invitation_warning_origin.sql")
+        let additions = include_str!("../../migrations/0041_invitation_warning_origin.sql")
             .split("WITH origins AS")
             .next()
             .unwrap();
@@ -1186,7 +1202,7 @@ fn dormant_upgrade_actual_v31_backfill32_reopens_and_rolls_back_without_recaptur
                 )
                 .unwrap(),
         );
-        // Derive the declared40/41 objects independently of initialize's output.
+        // Derive the declared44/45 objects independently of initialize's output.
         // The scratch schema needs only historical table declarations and the
         // separately excluded38 origin table; no current catalog is an oracle.
         for row in &expected_catalog {
@@ -1198,7 +1214,7 @@ fn dormant_upgrade_actual_v31_backfill32_reopens_and_rolls_back_without_recaptur
         }
         expected
             .execute_batch(
-                include_str!("../../migrations/0038_receipt_warning_origins.sql")
+                include_str!("../../migrations/0042_receipt_warning_origins.sql")
                     .split("CREATE INDEX receipt_warning_origins_seat")
                     .next()
                     .unwrap(),
@@ -1208,12 +1224,12 @@ fn dormant_upgrade_actual_v31_backfill32_reopens_and_rolls_back_without_recaptur
             catalog(&expected).into_iter().map(|row| row.1).collect();
         expected
             .execute_batch(include_str!(
-                "../../migrations/0040_invitation_presentation.sql"
+                "../../migrations/0044_invitation_presentation.sql"
             ))
             .unwrap();
         expected
             .execute_batch(include_str!(
-                "../../migrations/0041_presentation_relevance.sql"
+                "../../migrations/0045_presentation_relevance.sql"
             ))
             .unwrap();
         let mut presentation_objects: Vec<_> = catalog(&expected)
@@ -1228,7 +1244,7 @@ fn dormant_upgrade_actual_v31_backfill32_reopens_and_rolls_back_without_recaptur
                     .filter(|row| row.0 == kind)
                     .count(),
                 count,
-                "declared40/41 {kind}"
+                "declared44/45 {kind}"
             );
         }
         let new_names: std::collections::HashSet<_> = presentation_objects
@@ -1236,7 +1252,7 @@ fn dormant_upgrade_actual_v31_backfill32_reopens_and_rolls_back_without_recaptur
             .map(|row| row.1.clone())
             .collect();
         // New page allocation is unconstrained; old pages retain their exact
-        // witness, apart from the existing four-table39 rebuild exception.
+        // witness, apart from the existing four-table43 rebuild exception.
         let normalize_new_pages =
             |rows: &mut Vec<(String, String, String, i64, Option<String>)>| {
                 for row in rows {
@@ -1278,7 +1294,7 @@ fn dormant_upgrade_actual_v31_backfill32_reopens_and_rolls_back_without_recaptur
         assert_eq!(
             db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
                 .unwrap(),
-            34
+            38
         );
         assert_eq!(
             db.pragma_query_value(None, "foreign_keys", |r| r.get::<_, bool>(0))
@@ -1309,7 +1325,7 @@ fn dormant_upgrade_actual_v31_backfill32_reopens_and_rolls_back_without_recaptur
         assert_eq!(
             db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
                 .unwrap(),
-            34
+            38
         );
         schema::initialize(&db, || UtcMillis(1)).unwrap();
         assert_eq!(
@@ -1419,7 +1435,10 @@ fn dormant_upgrade_physical_projection_uses_original_send_time() {
 #[test]
 fn dormant_upgrade_discovers_physical_and_unmaterialized_manifest_without_availability() {
     let (path, mut db) = dormant_upgrade_fixture(1, 1);
-    let retained = receipt_upgrade_snapshot(&db, "messages");
+    let mut retained = receipt_upgrade_snapshot(&db, "messages");
+    for row in &mut retained {
+        row.push(rusqlite::types::Value::Null);
+    }
     schema::initialize(&db, || UtcMillis(5000)).unwrap();
     let context = crate::store::connection::StoreContext::new(
         path.clone(),
@@ -1653,17 +1672,14 @@ fn dormant_upgrade_bounded_batches_survive_restart_and_continuing_arrivals() {
 #[test]
 fn dormant_upgrade_preserves_running_terminal_waived_and_retained_results() {
     let (path, mut db) = dormant_upgrade_fixture(5, 5);
-    let observation = crate::store::control::AccountableActor {
-        harness: crate::protocol::authority::Harness::Codex,
-        native_session: crate::protocol::ids::NativeSessionId::new("ns"),
-        execution: crate::protocol::ids::ExecutionId::new("00000000-0000-4000-8000-0000000000aa"),
-        host_boot: crate::protocol::ids::HostBootId::new("b"),
-        target_generation: 1,
-        binding_generation: 1,
-        observed_at_utc: UtcMillis(1100),
-        provenance: "cooperative_top_level",
-    }
-    .observation(1100);
+    let observation = serde_json::json!({
+        "harness": "codex", "session": "ns",
+        "execution": "00000000-0000-4000-8000-0000000000aa",
+        "host_boot": "b", "target_generation": 1, "binding_generation": 1,
+        "observed_at": 1100, "decided_at": 1100,
+        "provenance": "cooperative_top_level"
+    })
+    .to_string();
     for index in 1..10 {
         if index == 5 {
             continue;
@@ -1694,8 +1710,14 @@ fn dormant_upgrade_preserves_running_terminal_waived_and_retained_results() {
         !matches!(&row[message_column], rusqlite::types::Value::Text(id) if id == "old0000" || id == "old0005")
     }).collect::<Vec<_>>()
     };
-    let before_physical = unchanged(&db, "receipts");
-    let before_sparse = unchanged(&db, "receipt_state");
+    let mut before_physical = unchanged(&db, "receipts");
+    for row in &mut before_physical {
+        row.push(rusqlite::types::Value::Null);
+    }
+    let mut before_sparse = unchanged(&db, "receipt_state");
+    for row in &mut before_sparse {
+        row.push(rusqlite::types::Value::Null);
+    }
     let retained = receipt_upgrade_snapshot(&db, "operations");
     schema::initialize(&db, || UtcMillis(5000)).unwrap();
     let context = crate::store::connection::StoreContext::new(
@@ -1739,8 +1761,14 @@ fn dormant_upgrade_all_terminal_backlog_counts_staged_rows_and_completes_once() 
     let (path, mut db) = dormant_upgrade_fixture(250, 250);
     db.execute("UPDATE receipts SET state='acked'", []).unwrap();
     db.execute("INSERT INTO receipt_state(message_id,seat_id,state) SELECT sm.message_id,pr.seat_id,'acked' FROM send_manifests sm JOIN prepared_recipients pr ON pr.preparation_id=sm.preparation_id",[]).unwrap();
-    let before_physical = receipt_upgrade_snapshot(&db, "receipts");
-    let before_sparse = receipt_upgrade_snapshot(&db, "receipt_state");
+    let mut before_physical = receipt_upgrade_snapshot(&db, "receipts");
+    for row in &mut before_physical {
+        row.push(rusqlite::types::Value::Null);
+    }
+    let mut before_sparse = receipt_upgrade_snapshot(&db, "receipt_state");
+    for row in &mut before_sparse {
+        row.push(rusqlite::types::Value::Null);
+    }
     schema::initialize(&db, || UtcMillis(5000)).unwrap();
     let mut visited = 0;
     let mut transitions = 0;
@@ -2001,6 +2029,8 @@ fn dormant_upgrade_ack_before_repair_preserves_original_not_extended_deadline() 
                 native_session: NativeSessionId::new("ns"),
                 execution: ExecutionId::new("00000000-0000-4000-8000-0000000000aa"),
                 target: HostTargetId::new("p"),
+                agent_id: None,
+                liveness: Some(crate::protocol::authority::LivenessFingerprint::TEST),
             },
         };
         let budget = CallBudget {
@@ -2056,20 +2086,21 @@ fn dormant_upgrade_ack_before_repair_preserves_original_not_extended_deadline() 
 
 #[test]
 fn receipt_send_time_upgrade_preserves_populated_v28_and_v29_graph_and_restarts_once() {
-    for version in [28, 32] {
+    for version in [28, 36] {
         let db = v28_fixture();
-        if version == 32 {
+        if version == 36 {
             db.execute_batch(include_str!("../../migrations/0029_direct_threads.sql"))
                 .unwrap();
             db.execute_batch(include_str!("../../migrations/0030_automatic_handoff.sql"))
                 .unwrap();
             db.execute_batch(include_str!("../../migrations/0031_seat_wake_on.sql"))
                 .unwrap();
+            apply_published_bindings32_to35(&db);
             db.execute_batch(include_str!(
-                "../../migrations/0032_invitation_confirmation.sql"
+                "../../migrations/0036_invitation_confirmation.sql"
             ))
             .unwrap();
-            db.pragma_update(None, "user_version", 32).unwrap();
+            db.pragma_update(None, "user_version", 36).unwrap();
             db.execute_batch("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,confirmation,inviter_seat_id) VALUES ('modern','t','s',1,'pending',1,100,50,150,'require_ack','s'),('quiet','t','s',2,'pending',2,100,50,150,'lazy','s');").unwrap();
         }
         for (index, (name, state, available, required)) in [
@@ -2117,7 +2148,12 @@ fn receipt_send_time_upgrade_preserves_populated_v28_and_v29_graph_and_restarts_
                 .unwrap(),
             schema::LATEST_VERSION
         );
-        for (name, expected) in tables.iter().zip(before) {
+        for (name, mut expected) in tables.iter().zip(before) {
+            if version == 28 && ["receipts", "receipt_state", "messages"].contains(name) {
+                for row in &mut expected {
+                    row.push(rusqlite::types::Value::Null);
+                }
+            }
             assert_eq!(receipt_upgrade_snapshot(&db, name), expected, "{name}");
         }
         assert_eq!(
@@ -2157,7 +2193,7 @@ fn receipt_send_time_upgrade_preserves_populated_v28_and_v29_graph_and_restarts_
         .unwrap(),
         10
     );
-        if version == 32 {
+        if version == 36 {
             let invitations: Vec<(String, String, String, i64)> = db.prepare("SELECT id,confirmation,inviter_seat_id,deadline_at FROM invitations ORDER BY id").unwrap().query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap().collect::<Result<_, _>>().unwrap();
             assert_eq!(
                 invitations,
@@ -2188,21 +2224,22 @@ fn receipt_send_time_upgrade_preserves_populated_v28_and_v29_graph_and_restarts_
 
 #[test]
 fn receipt_send_time_upgrade_failure_rolls_back_constraint_and_cutover_then_retries() {
-    for version in [28, 32] {
+    for version in [28, 36] {
         for foreign_keys in [false, true] {
             let db = v28_fixture();
-            if version == 32 {
+            if version == 36 {
                 db.execute_batch(include_str!("../../migrations/0029_direct_threads.sql"))
                     .unwrap();
                 db.execute_batch(include_str!("../../migrations/0030_automatic_handoff.sql"))
                     .unwrap();
                 db.execute_batch(include_str!("../../migrations/0031_seat_wake_on.sql"))
                     .unwrap();
+                apply_published_bindings32_to35(&db);
                 db.execute_batch(include_str!(
-                    "../../migrations/0032_invitation_confirmation.sql"
+                    "../../migrations/0036_invitation_confirmation.sql"
                 ))
                 .unwrap();
-                db.pragma_update(None, "user_version", 32).unwrap();
+                db.pragma_update(None, "user_version", 36).unwrap();
             }
             db.execute_batch(
                 "CREATE TABLE receipt_upgrade_child(ordinal INTEGER REFERENCES receipts(ordinal));",
@@ -2223,7 +2260,7 @@ fn receipt_send_time_upgrade_failure_rolls_back_constraint_and_cutover_then_retr
             assert_eq!(
                 db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
                     .unwrap(),
-                32
+                36
             );
             assert_eq!(
                 db.query_row(
@@ -2278,17 +2315,14 @@ fn historical_sparse_acknowledged_absent_deadline_survives_upgrade_and_later_ava
     // A live cooperative binding can ACK before its first registration. On
     // v28 this leaves both availability and deadline absent at settlement.
     db.execute_batch("UPDATE host_instances SET host_boot='b',host_epoch=1 WHERE id='i'; UPDATE seats SET target_id='p',target_generation=1 WHERE id='s'; INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES('i','p','b',1,1,1100,'fresh','term-p','inc','coherent_enumeration',1); INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES('s',1,'p','b',1,1,'codex','ns','00000000-0000-4000-8000-0000000000aa','cooperative_top_level',1100,'term-p','inc'); INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES('i','m','t',1,'ordinary','retained body',1000,5); INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('i','p','m','t',5,1000,1,0,1,0);").unwrap();
-    let observation = crate::store::control::AccountableActor {
-        harness: crate::protocol::authority::Harness::Codex,
-        native_session: crate::protocol::ids::NativeSessionId::new("ns"),
-        execution: crate::protocol::ids::ExecutionId::new("00000000-0000-4000-8000-0000000000aa"),
-        host_boot: crate::protocol::ids::HostBootId::new("b"),
-        target_generation: 1,
-        binding_generation: 1,
-        observed_at_utc: UtcMillis(1100),
-        provenance: "cooperative_top_level",
-    }
-    .observation(1100);
+    let observation = serde_json::json!({
+        "harness": "codex", "session": "ns",
+        "execution": "00000000-0000-4000-8000-0000000000aa",
+        "host_boot": "b", "target_generation": 1, "binding_generation": 1,
+        "observed_at": 1100, "decided_at": 1100,
+        "provenance": "cooperative_top_level"
+    })
+    .to_string();
     db.execute("INSERT INTO receipt_state(message_id,seat_id,state,ack_actor_seat_id,ack_generation,ack_observation,acked_at) VALUES('m','s','acked','s',1,?1,1100)",[&observation]).unwrap();
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
@@ -2303,7 +2337,10 @@ fn historical_sparse_acknowledged_absent_deadline_survives_upgrade_and_later_ava
         .unwrap(),
         0
     );
-    let retained = receipt_upgrade_snapshot(&db, "receipt_state");
+    let mut retained = receipt_upgrade_snapshot(&db, "receipt_state");
+    for row in &mut retained {
+        row.push(rusqlite::types::Value::Null);
+    }
     schema::initialize(&db, || UtcMillis(0)).unwrap();
     assert_eq!(
         effective_receipt(&db, "m", "s")
@@ -2327,4 +2364,62 @@ fn historical_sparse_acknowledged_absent_deadline_survives_upgrade_and_later_ava
     );
     assert_eq!(receipt.acked_at, Some(1100));
     assert_eq!(receipt_upgrade_snapshot(&db, "receipt_state"), retained);
+}
+
+fn apply_published_bindings32_to35(db: &Connection) {
+    for (version, migration) in [
+        (
+            32,
+            include_str!("../../migrations/0032_session_bindings.sql"),
+        ),
+        (
+            33,
+            include_str!("../../migrations/0033_archival_scan_scope.sql"),
+        ),
+        (
+            34,
+            include_str!("../../migrations/0034_binding_delivery_state.sql"),
+        ),
+        (
+            35,
+            include_str!("../../migrations/0035_binding_attention_frontiers.sql"),
+        ),
+    ] {
+        db.execute_batch(migration).unwrap();
+        db.pragma_update(None, "user_version", version).unwrap();
+    }
+}
+
+// Preserve the published test key and first observed availability oracle.
+// The appended send-time policy freezes deadline1300 independently of that anchor.
+#[test]
+fn unpublished_staging_is_invisible_and_first_later_anchor_is_immutable() {
+    let db = fixture();
+    assert!(effective_receipt(&db, "m", "s").unwrap().is_none());
+    db.execute_batch("\
+        INSERT INTO messages(instance_id,id, thread_id, sequence, kind, body, decision_at, decision_seq) VALUES ('i','m', 't', 1, 'ordinary', 'body', 1000, 10);\
+        INSERT INTO send_manifests(instance_id,preparation_id, message_id, thread_id, decision_seq, decision_at, base_sequence, interval_high_water, recipient_count, warning_count) VALUES ('i','p', 'm', 't', 10, 1000, 1, 0, 1, 0);\
+    ").unwrap();
+    assert!(
+        db.execute(
+            "UPDATE send_manifests SET instance_id='other' WHERE message_id='m'",
+            []
+        )
+        .is_err()
+    );
+    let before = effective_receipt(&db, "m", "s").unwrap().unwrap();
+    assert_eq!(before.thread_id, "t");
+    assert_eq!(before.frozen_duration_ms, 300);
+    assert_eq!(before.source, ReceiptSource::Manifest);
+    assert_eq!(before.warning_message_id, None);
+    assert_eq!(before.available_at, None);
+    assert_eq!(before.deadline_at, Some(1300));
+    db.execute_batch("\
+        INSERT INTO seat_availability(seat_id, decision_seq, decision_at, binding_generation, observation_provenance) VALUES ('s', 11, 1200, 1, 'verified');\
+        INSERT INTO seat_availability(seat_id, decision_seq, decision_at, binding_generation, observation_provenance) VALUES ('s', 12, 500, 1, 'verified');\
+    ").unwrap();
+    let after = effective_receipt(&db, "m", "s").unwrap().unwrap();
+    assert_eq!(after.available_at, Some(1200));
+    assert_eq!(after.deadline_at, Some(1300));
+    assert_eq!(after.state, EffectiveReceiptState::Pending);
 }

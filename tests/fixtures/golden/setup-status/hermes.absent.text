@@ -1,3 +1,4 @@
+bridge_current: none
 configured_enabled: true
 installed: false
 manual_argv: hermes --profile work plugins enable herdr-threads

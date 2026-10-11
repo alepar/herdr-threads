@@ -1,0 +1,11 @@
+# src state: tip with reverse-applied src diffs of: (none; tip)
+# command: cargo test --locked --all-features --lib -- a_pull_re_adopts a_pull_without_a_fingerprint a_pull_on_a_disconnected_non_migrated a_no_binding_refusal hook_step_runs_for_top_level_observer
+
+running 4 tests
+test harness::agy::delivery::tests::a_no_binding_refusal_keeps_the_state_file ... ok
+test cli::hook::local_evidence_tests::hook_step_runs_for_top_level_observer_events_with_claim_state_dir_and_daemon ... ok
+test service::delivery_pull::tests::a_pull_without_a_fingerprint_does_not_re_adopt_and_is_refused_no_binding ... ok
+test service::delivery_pull::tests::a_pull_re_adopts_a_migrated_binding_and_delivers ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 4465 filtered out; finished in 0.22s
+

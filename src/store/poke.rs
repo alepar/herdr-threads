@@ -173,12 +173,17 @@ fn collect(
                 (a.effective_deadline, a.message.as_str())
                     .cmp(&(b.effective_deadline, b.message.as_str()))
             });
-            PokeDue {
-                seat: receipts[0].seat.clone(),
+            let seat = receipts[0].seat.clone();
+            // A due receipt is seat-level attention: every connected top-level binding is a
+            // target, and the poke rides the same rule as the composer wake (ht-54r.13).
+            let targets = wake::wake_targets(conn, &seat, true)?;
+            Ok(PokeDue {
+                seat,
                 receipts,
-            }
+                targets,
+            })
         })
-        .collect();
+        .collect::<Result<_, ApiError>>()?;
     due.sort_by(|a, b| {
         (a.receipts[0].effective_deadline, a.seat.as_str())
             .cmp(&(b.receipts[0].effective_deadline, b.seat.as_str()))

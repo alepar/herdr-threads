@@ -46,7 +46,7 @@ One object per line, `schema: 1`; consumers ignore unknown keys.
 
 | `kind` | `id` | notes |
 |---|---|---|
-| `message` | message id | ordinary receipt, `ack_required: true` |
+| `message` | message id | ordinary message; `ack_required: true` while its receipt is pending, `false` when another binding of the seat already settled it. Both are acked: the second answers `already_settled` and only moves this session's read position |
 | `lazy` | message id | `ack_required: false` |
 | `attention` | `attention:<version>` | never acked; re-sent once per version and after each (re)start |
 | `attention_cleared` | `attention_cleared:<version>` | after an attention line, nothing it pointed at is still pending; the mod drops unsent attention items |
@@ -70,7 +70,7 @@ ids are retried on the next Attention, after the next registration and every 30 
 does not. On resume the mod may re-ack items delivered under the immediately previous generation
 of the same native session; older ones are `stale_generation` and are re-streamed. A drop starts a
 30 s reconnect grace (same-generation re-registration cancels it); `Close{binding_changed}` starts
-a 30 s seat-level rebind grace. A stalled channel (10 min without ack while an ordinary receipt
+a 30 s rebind grace for that binding (it keeps authorizing its late acks; it does not suppress wakes or the SessionStart digest for the new binding). A stalled channel (10 min without ack while an ordinary receipt
 waits) is closed with `stalled` and refused for 10 minutes. See spec D5-D7.
 
 ## Behaviour

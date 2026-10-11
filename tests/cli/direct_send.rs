@@ -1047,6 +1047,8 @@ fn ensure_command(
             native_session: NativeSessionId::new("session"),
             execution: ExecutionId::new("00000000-0000-4000-8000-000000000002"),
             target: HostTargetId::new("seat-a"),
+            agent_id: None,
+            liveness: None,
         },
     })
 }

@@ -2,6 +2,7 @@
 pub mod attention_oracle;
 pub mod counting_client;
 pub mod failpoints;
+pub mod harness_shim;
 pub mod history;
 #[cfg(feature = "test-support")]
 pub mod isolated_herdr;
@@ -378,6 +379,7 @@ pub mod synthetic_fourth {
                 event_id: payload.event_id,
                 intent,
                 metadata: EventMetadata {
+                    enrollment_witness: None,
                     skill_pointer: false,
                     callback_deadline: None,
                     context_source: payload.event.clone(),
@@ -385,6 +387,7 @@ pub mod synthetic_fourth {
                     domain: ContractDomain::Native,
                     native_event: payload.event,
                     shape_fields: vec![],
+                    agent_id: None,
                 },
                 delivery: if observer {
                     DeliveryEligibility::ObserverOnly
@@ -394,6 +397,7 @@ pub mod synthetic_fourth {
                 runtime: RuntimeAttribution::Unavailable {
                     diagnostic: "synthetic_runtime_unavailable".into(),
                 },
+                binding_event: None,
             })
         }
         fn encode(

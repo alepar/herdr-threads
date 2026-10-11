@@ -487,6 +487,8 @@ pub enum WorkKind {
     ReceiptTimerMaterialization,
     PreparationCleanup,
     HumanReceiptReconciliation,
+    /// A bounded sweep that closes an ended unavailability episode's open conditions.
+    WarningConditionClose,
 }
 /// One bounded hidden send-preparation step. `Ready` is not a publish permit;
 /// the service must obtain fresh caller proof for the final deciding mutation.
@@ -1921,6 +1923,11 @@ pub struct CorrelatedStartup {
     pub epoch: u64,
     pub submitted_at_mono: MonoInstant,
     pub completed_at_mono: MonoInstant,
+    /// PID and start stamp of the one process Herdr reports in the launched pane's foreground
+    /// (not its shell), read through host process info right after the observed start. `None`
+    /// when Herdr reported no single such process or the process table could not read it: the
+    /// managed-launch placeholder needs this fingerprint and is not recorded without it.
+    pub started_process: Option<crate::protocol::authority::LivenessFingerprint>,
 }
 impl CorrelatedStartup {
     pub fn matches_request(
@@ -2063,7 +2070,91 @@ pub enum ReservedWakeAuthority {
         binding_generation: Option<u64>,
         /// The open binding's harness, when the seat has one.
         harness: Option<String>,
+        /// The connected top-level bindings this wake is for (ht-54r.13). Empty means the
+        /// reservation carries no per-binding information (the legacy single-harness rule).
+        targets: Vec<WakeTarget>,
     },
+}
+
+/// One connected top-level binding a wake or poke may reach (spec §3 Wake).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct WakeTarget {
+    pub binding: crate::protocol::ids::BindingId,
+    pub harness: String,
+    /// Pid of the fingerprint the binding was enrolled with; the composer wake matches it
+    /// against Herdr's pane foreground process.
+    pub fingerprint_pid: Option<u32>,
+}
+
+/// Who the pane-level composer wake (typing) may reach, from a reservation's targets and
+/// Herdr's pane foreground pids (TRUST-POLICY A4 wake rows).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ComposerChoice<'a> {
+    /// The reservation names no targets: the legacy single-harness rule applies.
+    Unspecified,
+    /// The one target whose process is among the pane's foreground processes.
+    Binding(&'a WakeTarget),
+    /// No unique foreground match (none, or several targets in the foreground set): no
+    /// composer wake.
+    NoMatch,
+}
+
+impl ReservedWakeAuthority {
+    /// Equality of everything but the per-binding target list, which is a frozen delivery plan
+    /// (a binding reading its mail between reservation and delivery must not void the wake).
+    pub fn same_scope(&self, other: &Self) -> bool {
+        match (self, other) {
+            (
+                Self::Cooperative {
+                    terminal,
+                    incarnation,
+                    binding_generation,
+                    harness,
+                    ..
+                },
+                Self::Cooperative {
+                    terminal: other_terminal,
+                    incarnation: other_incarnation,
+                    binding_generation: other_generation,
+                    harness: other_harness,
+                    ..
+                },
+            ) => {
+                terminal == other_terminal
+                    && incarnation == other_incarnation
+                    && binding_generation == other_generation
+                    && harness == other_harness
+            }
+            _ => self == other,
+        }
+    }
+
+    pub fn targets(&self) -> &[WakeTarget] {
+        match self {
+            Self::Cooperative { targets, .. } => targets,
+            _ => &[],
+        }
+    }
+
+    /// The composer-wake target: the one target whose `fingerprint_pid` is among Herdr's pane
+    /// foreground pids (one target or several; a launcher and its native child are both
+    /// foreground, ht-54r.89). Zero or several matching targets are no match; no heuristic
+    /// fallback.
+    pub fn composer_choice(&self, foreground: &[u32]) -> ComposerChoice<'_> {
+        match self.targets() {
+            [] => ComposerChoice::Unspecified,
+            many => {
+                let mut matching = many.iter().filter(|t| {
+                    t.fingerprint_pid
+                        .is_some_and(|pid| foreground.contains(&pid))
+                });
+                match (matching.next(), matching.next()) {
+                    (Some(found), None) => ComposerChoice::Binding(found),
+                    _ => ComposerChoice::NoMatch,
+                }
+            }
+        }
+    }
 }
 impl WakeReservation {
     /// Cooperative structural recheck against a new host read: the same
@@ -2137,6 +2228,8 @@ pub struct WakeCandidate {
     pub binding_execution: Option<ExecutionId>,
     pub target: Option<HostTargetId>,
     pub reason_bits: u64,
+    /// Connected top-level non-human bindings of the seat the wake may reach (ht-54r.13).
+    pub targets: Vec<WakeTarget>,
     pub has_pending_invitation: bool,
     pub has_pending_receipt: bool,
     pub actionable_warning_generation: Option<u64>,
@@ -2411,6 +2504,9 @@ pub struct PokeReceipt {
 pub struct PokeDue {
     pub seat: SeatId,
     pub receipts: Vec<PokeReceipt>,
+    /// The connected top-level bindings the poke may reach (ht-54r.13); empty means the
+    /// source carries no per-binding information.
+    pub targets: Vec<WakeTarget>,
 }
 
 /// A committed poke reservation: the wake slot (same columns, reason
@@ -2515,17 +2611,22 @@ pub trait ModStoreReads: Send + Sync {
     fn presentation_refresh(
         &self,
         _seat: &SeatId,
+        _binding: &BindingId,
         _generation: u64,
         _native: &str,
         _budget: &CallBudget,
     ) -> Result<Option<ModPresentationRefresh>, ApiError> {
         Ok(None)
     }
-    /// The A2 view of `seat` for a watch registration or a channel check.
-    /// `None`: no such seat in this store's instance.
-    fn mod_seat_view(
+    /// The A2 view of `seat` and one of its bindings, for a watch registration or a channel
+    /// check (spec §3 Wake). The seat-level parts (state, hold, digest, invitations, warnings)
+    /// are the seat's; the fingerprint also carries the binding's own unread. `None`: no such
+    /// seat in this store's instance. A binding the reference does not resolve (or one of another
+    /// seat) leaves `binding` empty.
+    fn mod_binding_view(
         &self,
         seat: &SeatId,
+        binding: ModBindingRef<'_>,
         budget: &CallBudget,
     ) -> Result<Option<ModSeatView>, ApiError>;
     /// Canonical binding/admission only: presentation reads its pending
@@ -2533,9 +2634,10 @@ pub trait ModStoreReads: Send + Sync {
     fn presentation_seat_view(
         &self,
         seat: &SeatId,
+        binding: ModBindingRef<'_>,
         budget: &CallBudget,
     ) -> Result<Option<ModSeatView>, ApiError> {
-        self.mod_seat_view(seat, budget)
+        self.mod_binding_view(seat, binding, budget)
     }
     /// The oldest publication time among the seat's ordinary pending receipts
     /// published at or before `at_or_before` whose body is at most
@@ -2560,24 +2662,56 @@ pub struct ModPresentationRefresh {
     pub ordinary_publication_seeks: usize,
 }
 
-/// The open binding as the mod channel decision sees it.
+/// Which binding of the seat a [`ModStoreReads::mod_binding_view`] read is about.
+#[derive(Debug, Clone, Copy)]
+pub enum ModBindingRef<'a> {
+    /// A known binding, ended or not (the registry's pass).
+    Id(&'a crate::protocol::ids::BindingId),
+    /// The open binding the claim's key (seat, harness, native session, agent id) names (a watch
+    /// registration).
+    Claim(&'a CallerClaim),
+}
+
+/// One binding as the mod channel decision sees it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModBindingView {
+    pub binding_id: crate::protocol::ids::BindingId,
     pub generation: u64,
     pub provenance: String,
     pub harness: String,
     pub native_session: String,
+    /// The binding is top-level (a subagent binding never holds a channel).
+    pub top_level: bool,
+    /// The binding's liveness is `connected`.
+    pub connected: bool,
+    /// When the binding ended; `None` while open.
+    pub ended_at: Option<UtcMillis>,
+    /// Why the binding is disconnected (`superseded`, `migrated`, ...); `None` while connected.
+    pub disconnect_reason: Option<String>,
 }
 
-/// Change detector for one seat's mod-visible state: an Attention frame is
-/// pushed when it differs from the last one seen by the registry.
+impl ModBindingView {
+    /// Open, connected and top-level: the only binding that may hold a channel.
+    pub fn holds_channel(&self) -> bool {
+        self.ended_at.is_none() && self.connected && self.top_level
+    }
+}
+
+/// Change detector for one binding's mod-visible state: an Attention frame is
+/// pushed when it differs from the last one seen by the registry. The seat-level
+/// parts (digest, invitations, warnings) are shared by the seat's bindings; the
+/// unread and lazy parts are the binding's own.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ModFingerprint {
     pub attention_version: u64,
     pub pending_receipts: u64,
     pub max_pending_ordinal: i64,
+    /// The binding's unread lazy rows and the newest of their ordinals.
     pub lazy_pending: u64,
     pub max_lazy_rowid: i64,
+    /// The binding's unread ordinary messages (bounded) and the newest of their rowids.
+    pub unread: u64,
+    pub max_unread_rowid: i64,
     /// Pending invitations, and open warnings and notices that wake the
     /// seat (`attention::wake_warnings`; bounded count).
     pub other_pending: u64,
@@ -2587,11 +2721,14 @@ pub struct ModFingerprint {
 impl ModFingerprint {
     /// True when something addressed to the seat is pending.
     pub fn has_pending(&self) -> bool {
-        self.pending_receipts > 0 || self.lazy_pending > 0 || self.other_pending > 0
+        self.pending_receipts > 0
+            || self.lazy_pending > 0
+            || self.unread > 0
+            || self.other_pending > 0
     }
 }
 
-/// One seat's A2 state for the mod channel, read in one transaction.
+/// One binding's A2 state for the mod channel (with its seat's), read in one transaction.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModSeatView {
     pub seat: SeatId,
@@ -2601,6 +2738,7 @@ pub struct ModSeatView {
     pub continuity_resolved: bool,
     /// An open recovery hold covers the seat's target.
     pub held: bool,
+    /// The binding the read was about; `None` when it resolved to none of the seat's.
     pub binding: Option<ModBindingView>,
     pub attention_version: u64,
     pub fingerprint: ModFingerprint,
@@ -2790,6 +2928,24 @@ pub trait BootstrapStorePort: Send + Sync {
 
 pub trait StorePort: ModStoreReads + Send + Sync {
     fn clock(&self) -> &dyn Clock;
+    /// Connected bindings the liveness worker may judge (read-only; `seat` narrows it). The
+    /// default has none, so a port that predates the worker keeps its behavior.
+    fn liveness_candidates(
+        &self,
+        _seat: Option<&SeatId>,
+        _budget: &CallBudget,
+    ) -> Result<Vec<crate::store::bindings::LivenessCandidate>, ApiError> {
+        Ok(Vec::new())
+    }
+    /// Applies liveness verdicts in one write transaction; returns how many bindings
+    /// disconnected.
+    fn apply_liveness(
+        &self,
+        _decisions: &[crate::store::bindings::LivenessDecision],
+        _budget: &CallBudget,
+    ) -> Result<usize, ApiError> {
+        Ok(0)
+    }
     fn archival_pass(
         &self,
         runtime: &crate::store::archival::Runtime,
@@ -2858,10 +3014,58 @@ pub trait StorePort: ModStoreReads + Send + Sync {
         read: &ReadContext,
         budget: &CallBudget,
     ) -> Result<CommandResult, ApiError>;
+    /// An `AttentionDigest` / `AttentionDigestDelivery` query together with the open binding the
+    /// digest was read for (`None` for a seat-level read or a claim whose session has no binding
+    /// yet), read in one snapshot. Daemon-internal: the binding is never put on the wire (A2).
+    fn attention_digest_read(
+        &self,
+        command: &Command,
+        read: &ReadContext,
+        budget: &CallBudget,
+    ) -> Result<(CommandResult, Option<BindingId>), ApiError> {
+        self.query(command, read, budget)
+            .map(|result| (result, None))
+    }
     fn mutate(
         &self,
         command: PermitMutation,
         permit: MutationPermit,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError>;
+    /// Move the caller binding's own read cursors (spec §2): decided in one idempotent
+    /// transaction against the canonical view (A2), allowed for subagent claims because it
+    /// changes no seat state.
+    fn advance_cursors(
+        &self,
+        request: &crate::protocol::commands::AdvanceCursors,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError>;
+    /// Whether a plain call by `claim` would reconnect (or re-adopt) the open binding its key
+    /// names (read-only; `store::bindings::claim_reconnects_on_plain_call`). The default never
+    /// reconnects.
+    fn claim_reconnects_on_plain_call(
+        &self,
+        _claim: &CallerClaim,
+        _budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        Ok(false)
+    }
+    /// The hook pull's plain touch-or-reconnect of the claim's binding and the resulting mod view,
+    /// in one write transaction (`store::seats::hook_plain_reconnect`). `None`: no such seat.
+    fn hook_plain_reconnect(
+        &self,
+        _claim: &CallerClaim,
+        _presentation: bool,
+        _budget: &CallBudget,
+    ) -> Result<Option<ModSeatView>, ApiError> {
+        Ok(None)
+    }
+    /// Apply a harness lifecycle event to the caller's bindings (spec §2, §3): a subagent start
+    /// enrolls, a subagent stop or session end disconnects. Decided in one idempotent
+    /// transaction against the canonical view (A2); allowed for subagent claims.
+    fn binding_event(
+        &self,
+        request: &crate::protocol::commands::BindingEvent,
         budget: &CallBudget,
     ) -> Result<CommandResult, ApiError>;
     /// Hidden bounded staging keyed by the request's durable operation identity.
@@ -2919,22 +3123,23 @@ pub trait StorePort: ModStoreReads + Send + Sync {
         request: ContinuityRequest,
         budget: &CallBudget,
     ) -> Result<CommandResult, ApiError>;
-    /// TRUST-POLICY A3 `managed_launch` (ht-5n6): open an unregistered
-    /// occupant binding for a correlated managed launch on a seat with no
-    /// open binding, decided against the effective observation.
+    /// TRUST-POLICY A3 `managed_launch` (ht-5n6, ht-54r.4): open an unregistered
+    /// placeholder binding, carrying the started process's fingerprint, for a
+    /// correlated managed launch beside the seat's other bindings, decided
+    /// against the effective observation.
     fn record_managed_launch(
         &self,
         command: crate::protocol::commands::RecordManagedLaunch,
         budget: &CallBudget,
     ) -> Result<CommandResult, ApiError>;
-    /// Read-only (spec D6): the seat's open binding and the binding row that
-    /// immediately precedes it, for the `AckModDelivered` pre-decision. `None`
-    /// when the seat has no open binding. A hint for classification only; the
-    /// deciding transaction re-checks the claim against the canonical view (A2).
+    /// Read-only (spec D6, §3 Wake): the open top-level binding the ack's claim names, for the
+    /// `AckModDelivered` pre-decision. `None` when the claim names no open top-level binding.
+    /// A hint for classification only; the deciding transaction re-checks the claim against
+    /// the canonical view (A2).
     fn mod_ack_binding(
         &self,
         _instance: &str,
-        _seat: &crate::protocol::ids::SeatId,
+        _claim: &CallerClaim,
         _budget: &CallBudget,
     ) -> Result<Option<ModAckBinding>, ApiError> {
         Ok(None)
@@ -3243,6 +3448,7 @@ pub trait StorePort: ModStoreReads + Send + Sync {
     fn pull_notice_page(
         &self,
         _seat: &SeatId,
+        _binding: Option<&BindingId>,
         _limit: usize,
         _budget: &CallBudget,
     ) -> Result<Vec<PulledNotice>, ApiError> {
@@ -3256,6 +3462,7 @@ pub trait StorePort: ModStoreReads + Send + Sync {
     fn settle_pulled_notices(
         &self,
         _seat: &SeatId,
+        _binding: &BindingId,
         _generation: u64,
         _native_session: &str,
         _carried: &[crate::protocol::results::WarningRef],
@@ -3423,6 +3630,16 @@ pub trait HostPort: Send + Sync {
     ) -> Result<HostObservation, ApiError> {
         self.observe_current_target(target, context)
     }
+    /// Pids of the processes Herdr reports in the pane's foreground (not its shell), for the
+    /// composer wake of a seat with wake targets (spec §3 Wake). Empty when Herdr reports none
+    /// or the adapter cannot ask: the composer wake then does not fire.
+    fn foreground_pids(
+        &self,
+        _target: &HostTargetId,
+        _context: &HostCallContext,
+    ) -> Result<Vec<u32>, ApiError> {
+        Ok(Vec::new())
+    }
     /// Archival requires an explicit composer-aware adapter. Each adapter must
     /// provide composer evidence or explicitly refuse this observation; ordinary
     /// Idle status alone cannot qualify a target for archival.
@@ -3562,6 +3779,8 @@ pub struct ModChannelId(pub u64);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModChannelRegistration {
     pub seat: SeatId,
+    /// The binding that holds the channel (spec §3 Wake): the registry is keyed by it.
+    pub binding: BindingId,
     pub binding_generation: u64,
     pub native_session: NativeSessionId,
     pub harness: Harness,
@@ -3571,17 +3790,19 @@ pub struct ModChannelRegistration {
     pub registered_at: UtcMillis,
 }
 
-/// The open binding of a seat plus its immediate predecessor (spec D6).
+/// The open top-level binding a mod ack is decided against (spec D6): the one the ack's claim
+/// names (spec §3 Wake).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModAckBinding {
+    pub binding_id: BindingId,
     pub generation: u64,
+    /// The binding's liveness is `connected`.
+    pub connected: bool,
     pub provenance: String,
     pub harness: String,
     pub native_session: crate::protocol::ids::NativeSessionId,
     pub execution: crate::protocol::ids::ExecutionId,
     pub target: crate::protocol::ids::HostTargetId,
-    /// The preceding binding row of the seat: its generation and native session.
-    pub previous: Option<(u64, crate::protocol::ids::NativeSessionId)>,
 }
 
 /// Where the registry pushes frames for one connection; `false`: it is gone.
@@ -3589,8 +3810,25 @@ pub trait ModChannelSink: Send + Sync {
     fn push(&self, frame: crate::protocol::watch::WatchFrame) -> bool;
 }
 
-/// The registry of live mod delivery channels (spec D2, D7). Every method has
-/// a no-op default; the defaults ARE the inert behaviour ([`NoModChannels`]).
+/// One process as the host reports it (ancestry walk and liveness re-check).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessRecord {
+    pub pid: u32,
+    pub parent: Option<u32>,
+    /// Opaque OS start stamp; see `LivenessFingerprint`.
+    pub start: u64,
+    /// argv as reported by the host (argv[0] first); may be empty when unreadable.
+    pub argv: Vec<String>,
+}
+/// Read-only view of the host process table. `None`: no such process (or unreadable).
+pub trait ProcessInfo: Send + Sync {
+    fn process(&self, pid: u32) -> Option<ProcessRecord>;
+}
+
+/// The registry of live mod delivery channels (spec D2, D7; spec §3 Wake). Every method has
+/// a no-op default; the defaults ARE the inert behaviour ([`NoModChannels`]). The registry is
+/// keyed by binding: every connected top-level binding of a seat may hold its own channel, with
+/// its own deliveries, closes and stall cooldown.
 pub trait ModChannels: Send + Sync {
     /// Serializes current-owner replacement with presentation allocation and
     /// confirmation. Inert registries do not provide Watch presentation.
@@ -3608,6 +3846,7 @@ pub trait ModChannels: Send + Sync {
     fn presentation_owner_live(
         &self,
         _seat: &SeatId,
+        _binding: &BindingId,
         _generation: u64,
         _native_session: &str,
         _lease: &str,
@@ -3631,12 +3870,11 @@ pub trait ModChannels: Send + Sync {
         _current: &crate::delivery::ledger::OrdinaryDueSnapshot,
     ) {
     }
-    /// Register a channel: at most one per seat. A newer one for the same seat
-    /// and generation replaces the older (`Close{replaced}`); a new-generation
-    /// registration ends a rebind grace; a same-generation re-registration
-    /// within reconnect grace ends the grace (the mod re-acks). Refuses `busy`
-    /// over `MAX_WATCH_CONNECTIONS`, `cooldown` within `MOD_STALL_COOLDOWN_MS`
-    /// of a stall for that generation, `disabled` when `mod_delivery` is off.
+    /// Register a channel: at most one per binding. A newer one for the same binding replaces
+    /// the older (`Close{replaced}`; the seat's other bindings are untouched); a same-binding
+    /// registration within reconnect or rebind grace ends the grace (the mod re-acks). Refuses
+    /// `busy` over `MAX_WATCH_CONNECTIONS`, `cooldown` within `MOD_STALL_COOLDOWN_MS` of a stall
+    /// of that binding, `disabled` when `mod_delivery` is off.
     fn register(
         &self,
         _registration: ModChannelRegistration,
@@ -3648,33 +3886,45 @@ pub trait ModChannels: Send + Sync {
     /// in reconnect grace for `MOD_RECONNECT_GRACE_MS`; on expiry remove it
     /// and kick the wake lane for the seat.
     fn unregister(&self, _channel: ModChannelId, _now: UtcMillis) {}
-    /// Push `Close{reason}` and end the stream. `binding_changed` starts the
-    /// seat-level rebind grace (`MOD_REBIND_GRACE_MS`); `retired`,
-    /// `unresolved`, `stalled`, `disabled` and `stopping` remove at once and
-    /// kick; `stalled` also starts the cooldown.
+    /// Push `Close{reason}` to `binding`'s channel and end its stream; the seat's other
+    /// channels are untouched. `binding_changed` starts that binding's rebind grace
+    /// (`MOD_REBIND_GRACE_MS`); `retired`, `unresolved`, `stalled`, `disabled` and `stopping`
+    /// remove at once and kick; `stalled` also starts the binding's cooldown.
     fn close(
         &self,
-        _seat: &SeatId,
+        _binding: &BindingId,
         _reason: crate::protocol::watch::WatchCloseReason,
         _now: UtcMillis,
     ) {
     }
-    /// Authorization of `AckModDelivered` only (spec D6, TRUST-POLICY A5): true
-    /// from registration until the stream ends **and through reconnect
-    /// grace**, for the channel's own binding generation; during a rebind
-    /// grace true for every generation of the seat. It is not "is the mod
-    /// handling this seat": that is [`Self::seat_live`].
-    fn is_live(&self, _seat: &SeatId, _binding_generation: u64) -> bool {
+    /// Authorization of `AckModDelivered` only (spec D6, TRUST-POLICY A5): true from
+    /// registration until the stream ends **and through reconnect grace**, for the channel's own
+    /// binding; during that binding's rebind grace too (late acks stay authorized). It is not "is the mod handling this
+    /// seat": that is [`Self::seat_live`].
+    fn is_live(&self, _seat: &SeatId, _binding: &BindingId) -> bool {
         false
     }
+    /// Binding-keyed liveness of the mod channel (spec §3): `binding` holds an entry of `seat`
+    /// whose grace has not expired (Live and ReconnectGrace; a RebindGrace entry does not count:
+    /// that binding was closed as superseded). The default
+    /// answers from the seat.
+    fn binding_live(&self, seat: &SeatId, binding: &BindingId) -> bool {
+        let _ = binding;
+        self.seat_live(seat)
+    }
     /// "Is the mod handling this seat" (spec D7): any registry entry for the
-    /// seat whose grace has not expired, Live, ReconnectGrace and RebindGrace
-    /// alike, whatever its binding generation. Consumers: the wake candidate
+    /// seat whose grace has not expired, Live or ReconnectGrace, whichever binding holds it.
+    /// A RebindGrace entry (a binding closed as superseded) does not count: the new binding is
+    /// woken and digested for its own unread mail (spec §1.3, §3 Wake). Consumers: the seat-level wake candidate
     /// path and pokes (via [`Self::wake_suppressed`]) and the push-channel hook digest
     /// flag (`mod_channel_live`). The default answers from `status()`.
     fn seat_live(&self, seat: &SeatId) -> bool {
-        self.status()
-            .is_some_and(|status| status.channels.iter().any(|entry| &entry.seat == seat))
+        self.status().is_some_and(|status| {
+            status.channels.iter().any(|entry| {
+                &entry.seat == seat
+                    && entry.state != crate::protocol::watch::ModChannelState::RebindGrace
+            })
+        })
     }
     /// Whether native wake and pokes are suppressed for the seat (delivery-policy
     /// DP7): the mod handles the seat *and* its policy says the channel is what
@@ -3684,32 +3934,38 @@ pub trait ModChannels: Send + Sync {
     fn wake_suppressed(&self, seat: &SeatId) -> bool {
         self.seat_live(seat)
     }
-    /// Push `Attention{version}` to the seat's channel (call sites per spec D2).
+    /// Push `Attention{version}` to every Live channel of the seat.
     fn notify(&self, _seat: &SeatId, _attention_version: u64) {}
-    /// An Attention frame was pushed to the seat's channel at `now`. Counts
-    /// only for the entry of `binding_generation`, in Live or ReconnectGrace.
-    fn record_attention_push(&self, _seat: &SeatId, _binding_generation: u64, _now: UtcMillis) {}
     /// Post-emission presentation confirmation for the exact current Live
     /// Watch owner. This records a receipt-publication cutoff, not an ACK or
     /// a fresh stall countdown. Unsupported registries remain inert.
     fn record_presentation_attention_push(
         &self,
         _seat: &SeatId,
+        _binding: &BindingId,
         _binding_generation: u64,
         _native_session: &str,
         _lease: &str,
         _now: UtcMillis,
     ) {
     }
-    /// A mod ack landed for the seat (only `settled`/`already_settled` count).
-    /// Counts only for the entry of `binding_generation` (the generation the
-    /// ack was decided against), in Live or ReconnectGrace.
-    fn record_ack(&self, _seat: &SeatId, _binding_generation: u64, _now: UtcMillis) {}
-    /// Spec D7 predicate: the channel is live; its last mod ack or
+    /// An Attention frame was pushed to `binding`'s channel at `now`. Counts only for
+    /// that binding's entry, in Live or ReconnectGrace.
+    fn record_attention_push(&self, _seat: &SeatId, _binding: &BindingId, _now: UtcMillis) {}
+    /// A mod ack landed through `binding`'s channel (only `settled`/`already_settled` count).
+    /// Counts only for that binding's entry, in Live or ReconnectGrace.
+    fn record_ack(&self, _seat: &SeatId, _binding: &BindingId, _now: UtcMillis) {}
+    /// Spec D7 predicate for one binding: its channel is live; its last mod ack or
     /// registration is older than `MOD_STALL_AFTER_MS`; and some ordinary,
     /// non-truncated pending receipt for the seat, published at or before the
-    /// last pushed Attention, is itself older than `MOD_STALL_AFTER_MS`. A mod
-    /// hold counts; there is no heartbeat.
+    /// binding's last pushed Attention, is itself older than `MOD_STALL_AFTER_MS`. A mod
+    /// hold counts; there is no heartbeat. The default answers from the seat.
+    fn binding_stalled(&self, seat: &SeatId, binding: &BindingId, now: UtcMillis) -> bool {
+        let _ = binding;
+        self.stalled(seat, now)
+    }
+    /// Seat form of [`Self::binding_stalled`]: the seat holds at least one channel and every
+    /// one of them is stalled.
     fn stalled(&self, _seat: &SeatId, _now: UtcMillis) -> bool {
         false
     }
@@ -3743,15 +3999,22 @@ pub trait HookPullOutlook: Send + Sync {
     fn next_pull(
         &self,
         _seat: &SeatId,
+        _targets: &[BindingId],
         _binding_generation: u64,
         _attention_version: u64,
         _now: UtcMillis,
     ) -> NextPull {
         NextPull::Unknown
     }
-    /// The seat's ledger entry of this generation holds an id shown the maximum number of times, or is full (new
-    /// ids are not shown): it waits for `inbox`.
-    fn holds_parked(&self, _seat: &SeatId, _binding_generation: u64) -> bool {
+    /// A ledger entry of one of `targets` (the bindings a wake would reach; every entry of the seat when empty) of
+    /// this generation holds an id shown the maximum number of times, or is full (new ids are not shown): it waits
+    /// for `inbox`.
+    fn holds_parked(
+        &self,
+        _seat: &SeatId,
+        _targets: &[BindingId],
+        _binding_generation: u64,
+    ) -> bool {
         false
     }
 }
@@ -4071,6 +4334,7 @@ mod allocation_tests {
     #[test]
     fn completed_wake_attention_witness_rejects_wrong_scope_or_revision() {
         let candidate = WakeCandidate {
+            targets: Vec::new(),
             seat: SeatId::new("s"),
             attention_witness: None,
             effectively_retired: false,
@@ -4932,6 +5196,7 @@ pub enum CreateTabOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WatchReplayScope {
     pub seat: SeatId,
+    pub binding_id: BindingId,
     pub generation: u64,
     pub native_session: String,
     pub execution: crate::protocol::ids::ExecutionId,
@@ -4971,6 +5236,8 @@ pub struct WatchReplayProgress {
 /// authority and never settle an invitation or message.
 #[derive(Debug, Clone)]
 pub struct PresentationInput {
+    /// Service-resolved binding; store admission independently verifies it.
+    pub binding_id: BindingId,
     pub owner_replay: Option<WatchReplaySnapshot>,
     pub ordinary_due_snapshot: Option<crate::delivery::ledger::OrdinaryDueSnapshot>,
     pub frozen_render: Option<crate::delivery::presentation::FrozenPresentationRender>,
@@ -4991,6 +5258,12 @@ pub struct PresentationWork {
     pub ordinary_due_key_probes: usize,
     pub ordinary_due_seeks: usize,
     pub ordinary_due_hydrated: usize,
+    /// Binding eligibility rechecks for retained ordinary carry, separately
+    /// charged from mutually exclusive due/replay and fresh page walks.
+    /// At most 3 + 32 * 18 keyed probes, 32 seeks and 32 hydrated items.
+    pub ordinary_carry_key_probes: usize,
+    pub ordinary_carry_seeks: usize,
+    pub ordinary_carry_hydrated: usize,
     /// Snapshot identities checked for explicit canonical terminal evidence.
     pub offer_reconciliation_visits: usize,
     /// Fixed indexed relation probes, charged conservatively including misses.

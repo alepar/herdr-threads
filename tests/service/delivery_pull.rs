@@ -92,7 +92,7 @@ fn fixture(ordinary: usize) -> Fixture {
     )
     .unwrap();
     for (seat, target) in [("s", "p"), ("x", "px"), ("c", "pc")] {
-        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES (?1,'i','resolved','native',?2,0,0,0)", [seat, target]).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES (?1,'i','resolved','native',?2,1,0,0)", [seat, target]).unwrap();
         db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i',?1,'b',1,0,1,'fresh','unknown','unknown',0,0,'term-'||?1,'inc','coherent_enumeration',1)", [target]).unwrap();
     }
     db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES ('t','i','topic','goal',0,0,1)", []).unwrap();
@@ -210,6 +210,12 @@ fn claim(
         native_session: NativeSessionId::new(session),
         execution: ExecutionId::new("00000000-0000-4000-8000-000000000001"),
         target: HostTargetId::new(target),
+        agent_id: None,
+        liveness: Some(crate::protocol::authority::LivenessFingerprint {
+            // One harness process per pane: a seat's sessions share it.
+            pid: 1000 + seat.bytes().map(u32::from).sum::<u32>(),
+            start: 1,
+        }),
     }
 }
 fn fresh_execution(mut claim: CallerClaim, n: u8) -> CallerClaim {
@@ -224,6 +230,7 @@ fn check_in(f: &Fixture, claim: CallerClaim, operation: &str) -> CallerClaim {
         },
         claim,
         operation: OperationId::new(operation),
+        lineage_parent: None,
     });
     match f.service.handle(command, peer(), &budget()).unwrap() {
         CommandResult::CheckedIn(result) => result.context,
@@ -232,7 +239,7 @@ fn check_in(f: &Fixture, claim: CallerClaim, operation: &str) -> CallerClaim {
 }
 /// The pull seat `s`, checked in as `synthetic_fourth` in native session `n1`.
 fn pull_seat(f: &Fixture) -> CallerClaim {
-    check_in(f, claim("s", "p", fourth(), "n1", 0), "ci-1")
+    check_in(f, claim("s", "p", fourth(), "n1", 1), "ci-1")
 }
 /// Rotate `s` to a new native session (a `/clear`) or the same one (a resume).
 fn rotate(f: &Fixture, previous: &CallerClaim, session: &str, n: u8) -> CallerClaim {
@@ -308,6 +315,9 @@ fn lazy_state(f: &Fixture, id: &str) -> String {
     )
     .unwrap()
 }
+fn now_utc(f: &Fixture) -> UtcMillis {
+    UtcMillis(f.clock.0.load(Ordering::SeqCst))
+}
 fn advance(f: &Fixture, ms: i64) {
     f.clock.0.fetch_add(ms, Ordering::SeqCst);
 }
@@ -353,8 +363,10 @@ fn pull_returns_a_framed_page_whose_ordinary_ids_settle_on_confirm() {
 #[test]
 fn a_lazy_row_is_offered_framed_and_completes_on_confirm() {
     let f = fixture(0);
-    lazy_message(&f, "msg-lz1", "passive text");
+    // Session-keyed bindings: a fresh binding's lazy cursor starts at the thread head (first
+    // contact), so the lazy row is published after the session checks in.
     let context = pull_seat(&f);
+    lazy_message(&f, "msg-lz1", "passive text");
     let page = page(pull(&f, &context, None));
     assert!(
         page.text.contains("[herdr-threads] lazy msg-lz1 in "),
@@ -464,9 +476,10 @@ fn a_rotated_generation_discards_offers() {
     let f = fixture(1);
     let first = pull_seat(&f);
     page(pull(&f, &first, None));
-    // /clear: a new native session rotates the generation.
+    // /clear: a new native session is a new binding of the seat (session-keyed bindings; the
+    // binding generation is the seat's and does not move).
     let second = rotate(&f, &first, "n2", 2);
-    assert!(second.binding_generation > first.binding_generation);
+    assert_ne!(second.native_session, first.native_session);
     // The new generation never saw the offer.
     assert_eq!(
         confirm(&f, &second, &["m1"], "op-1"),
@@ -482,20 +495,19 @@ fn a_rotated_generation_discards_offers() {
     assert_eq!(page(pull(&f, &second, None)).offered, ids(&["m1"]));
 }
 
+// Session-keyed bindings: a resume re-registers the same session's binding in place (same binding
+// generation), so its offered set survives and the resumed session confirms what it was shown.
 #[test]
-fn a_resume_rotates_the_generation_and_an_older_claim_is_stale_generation() {
+fn a_resume_keeps_the_binding_and_its_offers() {
     let f = fixture(1);
     let first = pull_seat(&f);
     page(pull(&f, &first, None));
     let resumed = rotate(&f, &first, "n1", 2);
-    assert_eq!(resumed.binding_generation, first.binding_generation + 1);
-    // Same native session, older generation: the offer set was discarded, and
-    // the answer names the generation rather than "never offered".
+    assert_eq!(resumed.binding_generation, first.binding_generation);
     assert_eq!(
-        confirm(&f, &first, &["m1"], "op-1"),
-        vec![("m1".to_owned(), Outcome::StaleGeneration, None)]
+        confirm(&f, &resumed, &["m1"], "op-1"),
+        vec![("m1".to_owned(), Outcome::Settled, None)]
     );
-    assert_eq!(receipt_state(&f, "m1"), "pending");
 }
 
 #[test]
@@ -524,11 +536,42 @@ fn a_truncated_id_is_listed_truncated_and_refused_on_confirm() {
 }
 
 #[test]
+fn a_plain_call_enrolled_hook_pull_binding_is_served() {
+    let f = fixture(1);
+    // A plain (non-lifecycle) check-in enrolls the session: its binding keeps the honest
+    // `cooperative_env_session` provenance and is still served (role + liveness + harness).
+    let command = Command::CheckIn(CheckIn {
+        mode: CheckInMode::Current,
+        claim: claim("s", "p", fourth(), "n1", 1),
+        operation: OperationId::new("plain-1"),
+        lineage_parent: None,
+    });
+    let context = match f.service.handle(command, peer(), &budget()).unwrap() {
+        CommandResult::CheckedIn(result) => result.context,
+        other => panic!("unexpected {other:?}"),
+    };
+    let provenance: String = f
+        .db
+        .query_row(
+            "SELECT observation_provenance FROM occupant_bindings WHERE seat_id='s' AND native_session='n1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(provenance, "cooperative_env_session");
+    let reply = pull(&f, &context, None);
+    assert!(
+        matches!(reply, DeliveryPullReply::Page(_)),
+        "expected a page, got {reply:?}"
+    );
+}
+
+#[test]
 fn claude_and_codex_bindings_are_refused_no_hook_pull() {
     let f = fixture(1);
-    let codex = check_in(&f, claim("x", "px", Harness::Codex, "nx", 0), "ci-x");
+    let codex = check_in(&f, claim("x", "px", Harness::Codex, "nx", 1), "ci-x");
     assert_eq!(refusal(pull(&f, &codex, None)), Refusal::NoHookPull);
-    let claude = check_in(&f, claim("c", "pc", Harness::Claude, "nc", 0), "ci-c");
+    let claude = check_in(&f, claim("c", "pc", Harness::Claude, "nc", 1), "ci-c");
     assert_eq!(refusal(pull(&f, &claude, None)), Refusal::NoHookPull);
     assert_eq!(
         confirm(&f, &codex, &["m1"], "op-1"),
@@ -547,10 +590,8 @@ fn session_mismatch_subagent_held_and_unresolved_seats_are_refused() {
 
     let mut other_session = context.clone();
     other_session.native_session = NativeSessionId::new("someone-else");
-    assert_eq!(
-        refusal(pull(&f, &other_session, None)),
-        Refusal::SessionMismatch
-    );
+    // Session-keyed bindings: the claim's key names no binding of the seat.
+    assert_eq!(refusal(pull(&f, &other_session, None)), Refusal::NoBinding);
 
     let mut subagent = context.clone();
     subagent.role = CallerRole::Subagent;
@@ -564,11 +605,11 @@ fn session_mismatch_subagent_held_and_unresolved_seats_are_refused() {
     );
 
     // A seat that never checked in has no binding.
-    let none = claim("x", "px", fourth(), "nx", 0);
+    let none = claim("x", "px", fourth(), "nx", 1);
     assert_eq!(refusal(pull(&f, &none, None)), Refusal::NoBinding);
 
     // An unknown seat is unresolved.
-    let ghost = claim("ghost", "pg", fourth(), "ng", 0);
+    let ghost = claim("ghost", "pg", fourth(), "ng", 1);
     assert_eq!(refusal(pull(&f, &ghost, None)), Refusal::Unresolved);
     f.db.execute("UPDATE seats SET state='unresolved' WHERE id='s'", [])
         .unwrap();
@@ -578,6 +619,110 @@ fn session_mismatch_subagent_held_and_unresolved_seats_are_refused() {
 
     f.db.execute("INSERT INTO recovery_holds(instance_id,target_id,baseline_boot,baseline_epoch,reason) VALUES('i','p','b',1,'repair')", []).unwrap();
     assert_eq!(refusal(pull(&f, &context, None)), Refusal::Held);
+}
+
+const MARK_MIGRATED: &str = "UPDATE occupant_bindings SET migrated=1, migrated_session=native_session, liveness='disconnected', disconnected_at=1, disconnect_reason='migrated', liveness_pid=NULL, liveness_start=NULL WHERE seat_id='s' AND ended_at IS NULL";
+
+fn open_binding_row(f: &Fixture) -> (String, String, Option<i64>, String) {
+    f.db.query_row(
+        "SELECT binding_id, liveness, liveness_pid, observation_provenance FROM occupant_bindings WHERE seat_id='s' AND ended_at IS NULL",
+        [],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_pull_re_adopts_a_migrated_binding_and_delivers() {
+    let f = fixture(1);
+    let context = pull_seat(&f);
+    let (binding_id, ..) = open_binding_row(&f);
+    f.db.execute(MARK_MIGRATED, []).unwrap();
+    assert_eq!(open_binding_row(&f).1, "disconnected");
+
+    let offered = page(pull(&f, &context, None));
+    assert!(offered.text.contains("m1"), "{}", offered.text);
+    let (after_id, liveness, pid, provenance) = open_binding_row(&f);
+    assert_eq!(after_id, binding_id, "the same binding is re-adopted");
+    assert_eq!(liveness, "connected");
+    assert_eq!(
+        pid,
+        context.liveness.map(|l| i64::from(l.pid)),
+        "the claim's fingerprint is recorded"
+    );
+    assert_eq!(provenance, "cooperative_env_session");
+    assert_eq!(
+        confirm(&f, &context, &["m1"], "op-1"),
+        vec![("m1".to_owned(), Outcome::Settled, None)]
+    );
+}
+
+#[test]
+fn a_pull_without_a_fingerprint_does_not_re_adopt_and_is_refused_no_binding() {
+    let f = fixture(1);
+    let mut context = pull_seat(&f);
+    f.db.execute(MARK_MIGRATED, []).unwrap();
+    context.liveness = None;
+    assert_eq!(refusal(pull(&f, &context, None)), Refusal::NoBinding);
+    assert_eq!(open_binding_row(&f).1, "disconnected");
+}
+
+#[test]
+fn a_pull_on_a_binding_the_store_never_reconnects_writes_nothing() {
+    let f = fixture(1);
+    let context = pull_seat(&f);
+    f.db.execute(
+        "UPDATE occupant_bindings SET liveness='disconnected', disconnected_at=1, disconnect_reason='liveness_end_event' WHERE seat_id='s' AND ended_at IS NULL",
+        [],
+    )
+    .unwrap();
+    let operations = |f: &Fixture| -> i64 {
+        f.db.query_row("SELECT count(*) FROM operations", [], |r| r.get(0))
+            .unwrap()
+    };
+    let before = operations(&f);
+    assert_eq!(refusal(pull(&f, &context, None)), Refusal::NoBinding);
+    let (_, liveness, ..) = open_binding_row(&f);
+    assert_eq!(liveness, "disconnected");
+    assert_eq!(operations(&f), before, "no synthetic operation is recorded");
+}
+
+#[test]
+fn a_pull_reconnects_a_disconnected_non_migrated_binding_and_delivers() {
+    let f = fixture(1);
+    let context = pull_seat(&f);
+    f.db.execute(
+        "UPDATE occupant_bindings SET liveness='disconnected', disconnected_at=1, disconnect_reason='liveness_process_exit' WHERE seat_id='s' AND ended_at IS NULL",
+        [],
+    )
+    .unwrap();
+    let (binding_id, _, _, provenance_before) = open_binding_row(&f);
+    let observed = |f: &Fixture| -> i64 {
+        f.db.query_row(
+            "SELECT observed_at FROM occupant_bindings WHERE seat_id='s' AND ended_at IS NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    let observed_before = observed(&f);
+    assert_eq!(open_binding_row(&f).1, "disconnected");
+
+    let offered = page(pull(&f, &context, None));
+    assert!(offered.text.contains("m1"), "{}", offered.text);
+    let (after_id, liveness, pid, provenance) = open_binding_row(&f);
+    assert_eq!(after_id, binding_id);
+    assert_eq!(liveness, "connected");
+    assert_eq!(pid, context.liveness.map(|l| i64::from(l.pid)));
+    assert_eq!(
+        provenance, provenance_before,
+        "provenance stays as recorded"
+    );
+    assert_eq!(observed(&f), observed_before, "claim time stays");
+    assert_eq!(
+        confirm(&f, &context, &["m1"], "op-1"),
+        vec![("m1".to_owned(), Outcome::Settled, None)]
+    );
 }
 
 #[test]
@@ -791,6 +936,14 @@ fn attention_version_moves_with_every_fingerprint_field() {
             ..base.clone()
         },
         ModFingerprint {
+            unread: 1,
+            ..base.clone()
+        },
+        ModFingerprint {
+            max_unread_rowid: 1,
+            ..base.clone()
+        },
+        ModFingerprint {
             other_pending: 1,
             ..base.clone()
         },
@@ -850,10 +1003,11 @@ fn the_hook_pull_outlook_follows_offers_reoffers_and_parking() {
     let context = pull_seat(&f);
     let seat = SeatId::new("s");
     let generation = context.binding_generation;
+    let targets = [binding_of(&f, "n1")];
     let now = |f: &Fixture| UtcMillis(f.clock.0.load(Ordering::SeqCst));
     let outlook = |f: &Fixture| {
         f.state
-            .next_pull(&seat, generation, wake_attention(f), now(f))
+            .next_pull(&seat, &targets, generation, wake_attention(f), now(f))
     };
     assert_eq!(outlook(&f), NextPull::Unknown, "before any pull");
     page(pull(&f, &context, None));
@@ -861,29 +1015,369 @@ fn the_hook_pull_outlook_follows_offers_reoffers_and_parking() {
         outlook(&f),
         NextPull::ReofferAt(UtcMillis(now(&f).0 + REOFFER_AFTER_MS))
     );
-    assert!(!f.state.holds_parked(&seat, generation));
+    assert!(!f.state.holds_parked(&seat, &targets, generation));
     for _ in 1..MAX_OFFERS_PER_GENERATION {
         advance(&f, REOFFER_AFTER_MS);
         assert_eq!(outlook(&f), NextPull::Delivers, "the re-offer is due");
         page(pull(&f, &context, None));
     }
     assert_eq!(outlook(&f), NextPull::Nothing);
-    assert!(f.state.holds_parked(&seat, generation));
+    assert!(f.state.holds_parked(&seat, &targets, generation));
     ordinary_message(&f, "m2", "later");
     bump_wake_attention(&f);
     assert_eq!(outlook(&f), NextPull::Delivers, "new attention");
     let rotated = rotate(&f, &context, "n2", 2);
+    // Session-keyed bindings: a new session keeps the seat's binding generation; its first pull
+    // discards the previous session's entry and starts over.
+    page(pull(&f, &rotated, None));
+    let rotated_targets = [binding_of(&f, "n2")];
     assert_eq!(
         f.state.next_pull(
             &seat,
+            &rotated_targets,
             rotated.binding_generation,
             wake_attention(&f),
             now(&f)
         ),
-        NextPull::Unknown,
-        "a rotated generation starts over"
+        NextPull::ReofferAt(UtcMillis(now(&f).0 + REOFFER_AFTER_MS)),
+        "a new session starts over"
     );
-    assert!(!f.state.holds_parked(&seat, rotated.binding_generation));
+    assert!(
+        !f.state
+            .holds_parked(&seat, &rotated_targets, rotated.binding_generation)
+    );
+}
+
+// ---- the offered ledger is per binding (ht-54r.94) ----
+
+/// A second live top-level binding of seat `s` in native session `n2`: a second process, so it does not
+/// supersede the first.
+fn second_binding(f: &Fixture) -> CallerClaim {
+    let mut second = claim("s", "p", fourth(), "n2", 1);
+    second.liveness = Some(crate::protocol::authority::LivenessFingerprint {
+        pid: 4242,
+        start: 1,
+    });
+    let second = check_in(f, fresh_execution(second, 9), "ci-b");
+    let connected: i64 = f
+        .db
+        .query_row(
+            "SELECT count(*) FROM occupant_bindings WHERE seat_id='s' AND ended_at IS NULL AND liveness='connected'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(connected, 2, "both bindings of the seat are connected");
+    second
+}
+
+/// The open binding of seat `s` in native session `session`.
+fn binding_of(f: &Fixture, session: &str) -> BindingId {
+    BindingId::new(
+        f.db.query_row::<String, _, _>(
+            "SELECT binding_id FROM occupant_bindings WHERE seat_id='s' AND native_session=?1 AND ended_at IS NULL",
+            [session],
+            |r| r.get(0),
+        )
+        .unwrap(),
+    )
+}
+
+/// Resolve the exact canonical open binding named by a claim; no latest-seat fallback.
+fn binding_for_claim(f: &Fixture, claim: &CallerClaim) -> BindingId {
+    BindingId::new(f.db.query_row::<String, _, _>(
+        "SELECT binding_id FROM occupant_bindings WHERE seat_id=?1 AND harness=?2 AND native_session=?3 AND agent_id=?4 AND ended_at IS NULL",
+        params![claim.seat.as_str(), claim.harness.as_str(), claim.native_session.as_str(), claim.agent_id.as_ref().map_or("", |agent| agent.as_str())],
+        |row| row.get(0),
+    ).unwrap())
+}
+
+// Kills: one ledger entry per seat, so B's pull wiped A's offers and A's confirm answered NotOffered
+// (main review I2).
+#[test]
+fn interleaved_pulls_of_two_bindings_confirm_their_own_offers() {
+    let f = fixture(1);
+    let a = pull_seat(&f);
+    let b = second_binding(&f);
+    assert_eq!(page(pull(&f, &a, None)).offered, ids(&["m1"]));
+    assert_eq!(page(pull(&f, &b, None)).offered, ids(&["m1"]));
+    assert_eq!(
+        confirm(&f, &a, &["m1"], "op-a"),
+        vec![("m1".to_owned(), Outcome::Settled, None)]
+    );
+    assert_eq!(receipt_state(&f, "m1"), "acked");
+    assert_eq!(
+        confirm(&f, &b, &["m1"], "op-b"),
+        vec![("m1".to_owned(), Outcome::AlreadySettled, None)]
+    );
+}
+
+// Kills: alternating pulls recreating count 1 and last_at, so neither the 60 s spacing nor the 3-offer bound
+// held per binding.
+#[test]
+fn alternating_pulls_keep_each_bindings_reoffer_spacing_and_count() {
+    let f = fixture(1);
+    let a = pull_seat(&f);
+    let b = second_binding(&f);
+    let first = page(pull(&f, &a, None));
+    assert_eq!(first.offered, ids(&["m1"]));
+    assert_eq!(page(pull(&f, &b, None)).offered, ids(&["m1"]));
+    assert_eq!(
+        pull(&f, &a, Some(first.attention_version)),
+        DeliveryPullReply::Unchanged {
+            attention_version: first.attention_version
+        },
+        "A's own spacing holds after B pulled"
+    );
+    for _ in 1..MAX_OFFERS_PER_GENERATION {
+        advance(&f, REOFFER_AFTER_MS);
+        assert_eq!(page(pull(&f, &a, None)).offered, ids(&["m1"]));
+        assert_eq!(page(pull(&f, &b, None)).offered, ids(&["m1"]));
+    }
+    advance(&f, 10 * REOFFER_AFTER_MS);
+    for binding in [&a, &b] {
+        let reply = pull(&f, binding, Some(first.attention_version));
+        assert!(
+            matches!(reply, DeliveryPullReply::Unchanged { .. }),
+            "three showings per binding, then parked: {reply:?}"
+        );
+    }
+    assert_eq!(receipt_state(&f, "m1"), "pending");
+}
+
+// Kills: a new session of one binding replacing the seat's entry and wiping its sibling's offers.
+#[test]
+fn a_new_session_of_one_binding_keeps_its_siblings_offers() {
+    let f = fixture(1);
+    let a = pull_seat(&f);
+    let b = second_binding(&f);
+    page(pull(&f, &a, None));
+    page(pull(&f, &b, None));
+    let a2 = rotate(&f, &a, "n3", 3);
+    page(pull(&f, &a2, None));
+    assert_eq!(
+        confirm(&f, &b, &["m1"], "op-b"),
+        vec![("m1".to_owned(), Outcome::Settled, None)]
+    );
+}
+
+// Kills: an outlook that answers from one binding's entry: a wake that reaches both bindings must wait for both.
+#[test]
+fn the_hook_pull_outlook_waits_for_every_target_binding() {
+    let f = fixture(1);
+    let a = pull_seat(&f);
+    let b = second_binding(&f);
+    let seat = SeatId::new("s");
+    let generation = a.binding_generation;
+    let (bind_a, bind_b) = (binding_of(&f, "n1"), binding_of(&f, "n2"));
+    let outlook = |f: &Fixture, targets: &[BindingId]| {
+        f.state
+            .next_pull(&seat, targets, generation, wake_attention(f), now_utc(f))
+    };
+    let shown_at = now_utc(&f);
+    page(pull(&f, &a, None));
+    assert_eq!(
+        outlook(&f, std::slice::from_ref(&bind_a)),
+        NextPull::ReofferAt(UtcMillis(shown_at.0 + REOFFER_AFTER_MS))
+    );
+    assert_eq!(
+        outlook(&f, &[bind_a.clone(), bind_b.clone()]),
+        NextPull::Unknown,
+        "B has not pulled in this process: its next pull may deliver"
+    );
+    advance(&f, 5_000);
+    page(pull(&f, &b, None));
+    assert_eq!(
+        outlook(&f, &[bind_a.clone(), bind_b.clone()]),
+        NextPull::ReofferAt(UtcMillis(shown_at.0 + REOFFER_AFTER_MS)),
+        "the earlier of the two re-offers"
+    );
+    assert_eq!(
+        outlook(&f, std::slice::from_ref(&bind_b)),
+        NextPull::ReofferAt(UtcMillis(shown_at.0 + 5_000 + REOFFER_AFTER_MS))
+    );
+    assert_eq!(outlook(&f, &[]), outlook(&f, &[bind_a, bind_b]));
+}
+
+// Kills: same-seat, same-generation D state aliasing across two connected bindings.
+// Real pulls populate both ledgers and withheld carry; foreign hints/tokens cannot advance either.
+#[test]
+fn presentation_two_live_bindings_keep_offer_stamps_replay_and_carry_independent() {
+    use crate::protocol::delivery::{
+        DeliveryPresentationConfirmV2, DeliveryPresentationConfirmationV2, DeliveryPullReplyV2,
+        DeliveryPullV2, PresentationConsumer, PresentationRenderRequest,
+    };
+    let f = fixture(1);
+    let a = pull_seat(&f);
+    let b = second_binding(&f);
+    let (binding_a, binding_b) = (binding_for_claim(&f, &a), binding_for_claim(&f, &b));
+    assert_eq!(a.seat, b.seat);
+    assert_eq!(a.binding_generation, b.binding_generation);
+    assert_ne!(binding_a, binding_b);
+    f.db.execute("UPDATE seats SET wake_on='all' WHERE id='s'", [])
+        .unwrap();
+    let inviter = check_in(
+        &f,
+        claim("x", "px", fourth(), "binding-isolation-inviter", 0),
+        "binding-isolation-ci",
+    );
+    canonical_lazy_invitation_backlog(&f, &a, &inviter, 1, "binding-isolation-baseline");
+    for claim in [&a, &b] {
+        let DeliveryPullReplyV2::Page(page) = presentation_test_pull(&f, claim) else {
+            panic!("each binding has its own initial page")
+        };
+        assert_eq!(page.offered, ids(&["m1"]));
+        presentation_test_confirm(&f, claim, &page);
+    }
+    let stamps = |binding: &BindingId| f.state.lock().get(binding).unwrap().offers.clone();
+    let a_stamps = stamps(&binding_a);
+    let b_stamps = stamps(&binding_b);
+    assert_eq!(a_stamps, b_stamps);
+    assert_eq!(a_stamps[&MessageId::new("m1")].count, 1);
+    canonical_lazy_invitation_backlog(&f, &a, &inviter, 24, "binding-isolation-priority");
+    lazy_message(&f, "msg-binding-isolation-carry", &"\0".repeat(9000));
+    let pull = |claim: &CallerClaim| {
+        let CommandResult::DeliveryPulledV2(DeliveryPullReplyV2::Page(page)) = f
+            .service
+            .handle(
+                Command::DeliveryPullV2(DeliveryPullV2 {
+                    claim: claim.clone(),
+                    consumer: PresentationConsumer::Hook,
+                    render: PresentationRenderRequest::Hook {
+                        confirmable_selector: 0,
+                        passive_selector: 0,
+                    },
+                    presentation_lease: None,
+                    marker_prefix: vec!["p".repeat(4096)],
+                }),
+                peer(),
+                &budget(),
+            )
+            .unwrap()
+        else {
+            panic!("independent priority page")
+        };
+        page
+    };
+    let state = |binding: &BindingId| {
+        let mut statement = f.db.prepare("SELECT * FROM invitation_presentation_consumers WHERE binding_id=?1 AND consumer='hook'").unwrap();
+        statement
+            .query_row([binding.as_str()], |row| {
+                (0..row.as_ref().column_count())
+                    .map(|column| row.get::<_, rusqlite::types::Value>(column))
+                    .collect::<rusqlite::Result<Vec<_>>>()
+            })
+            .unwrap()
+    };
+    let carry = |binding: &BindingId| {
+        let raw: String = f.db.query_row("SELECT ordinary_pending FROM invitation_presentation_consumers WHERE binding_id=?1 AND consumer='hook'", [binding.as_str()], |row| row.get(0)).unwrap();
+        let carry: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(carry["prefix"], serde_json::json!(["p".repeat(4096)]));
+        assert!(
+            carry["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["content"]["id"] == "msg-binding-isolation-carry"),
+            "real withheld carry: {carry}"
+        );
+        raw
+    };
+    let a_page = pull(&a);
+    let a_carry = carry(&binding_a);
+    let a_state = state(&binding_a);
+    let b_page = pull(&b);
+    assert_ne!(a_page.presentation_token, b_page.presentation_token);
+    let b_carry = carry(&binding_b);
+    let b_state = state(&binding_b);
+    assert_eq!(
+        state(&binding_a),
+        a_state,
+        "B cannot replace A's outbox/carry/frontiers"
+    );
+    assert_eq!(stamps(&binding_a), a_stamps);
+    assert_eq!(stamps(&binding_b), b_stamps);
+    let CommandResult::DeliveryPresentationConfirmedV2(wrong) = f
+        .service
+        .handle(
+            Command::DeliveryPresentationConfirmV2(DeliveryPresentationConfirmV2 {
+                claim: b.clone(),
+                consumer: PresentationConsumer::Hook,
+                token: a_page.presentation_token.clone().unwrap(),
+                presentation_lease: None,
+                emitted_controls: a_page.emitted_controls.clone(),
+            }),
+            peer(),
+            &budget(),
+        )
+        .unwrap()
+    else {
+        panic!("physical confirmation reply")
+    };
+    assert_eq!(
+        wrong.status,
+        DeliveryPresentationConfirmationV2::NotCurrentPage
+    );
+    assert_eq!(state(&binding_a), a_state);
+    assert_eq!(state(&binding_b), b_state);
+    let replayed = pull(&a);
+    assert_eq!(replayed, a_page);
+    assert_eq!(carry(&binding_a), a_carry);
+    assert_eq!(carry(&binding_b), b_carry);
+    assert_eq!(state(&binding_b), b_state);
+    let due_a = f
+        .state
+        .lock()
+        .binding_mut(&a.seat, &binding_a, a.binding_generation)
+        .unwrap()
+        .due_snapshot(PresentationConsumer::Watch);
+    let due_b = f
+        .state
+        .lock()
+        .binding_mut(&b.seat, &binding_b, b.binding_generation)
+        .unwrap()
+        .due_snapshot(PresentationConsumer::Watch);
+    let mut foreign = offer_reconciliation_input(&f, &b, due_a.stamps.keys().cloned().collect());
+    foreign.ordinary_due_snapshot = Some(due_a);
+    assert_eq!(
+        f.store
+            .presentation_pull(foreign.clone(), &budget())
+            .unwrap_err()
+            .code,
+        crate::protocol::results::ErrorCode::InvalidRequest
+    );
+    foreign.ordinary_due_snapshot = Some(due_b);
+    install_owner_hint(&mut foreign);
+    foreign.owner_replay.as_mut().unwrap().scope.binding_id = binding_a.clone();
+    assert_eq!(
+        f.store
+            .presentation_pull(foreign, &budget())
+            .unwrap_err()
+            .code,
+        crate::protocol::results::ErrorCode::InvalidRequest
+    );
+    assert_eq!(state(&binding_a), a_state);
+    assert_eq!(state(&binding_b), b_state);
+    assert_eq!(stamps(&binding_a), a_stamps);
+    assert_eq!(stamps(&binding_b), b_stamps);
+    presentation_test_confirm(&f, &a, &a_page);
+    assert_eq!(
+        state(&binding_b),
+        b_state,
+        "A's current physical confirmation cannot consume B"
+    );
+    presentation_test_confirm(&f, &b, &b_page);
+    assert_eq!(receipt_state(&f, "m1"), "pending");
+    assert_eq!(lazy_state(&f, "msg-binding-isolation-carry"), "pending");
+    assert_eq!(
+        f.db.query_row::<i64, _, _>(
+            "SELECT count(*) FROM invitations WHERE seat_id='s' AND state='pending'",
+            [],
+            |row| row.get(0)
+        )
+        .unwrap(),
+        25
+    );
 }
 
 // ---- informational notices on the pull (ht-poh.53) ----
@@ -911,9 +1405,11 @@ fn leftover_notices_do_not_bring_a_held_wake_forward() {
         first.text
     );
     advance(&f, 10_000);
+    let targets = [binding_of(&f, "n1")];
     let outlook = |f: &Fixture| {
         f.state.next_pull(
             &seat,
+            &targets,
             generation,
             wake_attention(f),
             UtcMillis(f.clock.0.load(Ordering::SeqCst)),
@@ -984,6 +1480,7 @@ fn current_check_in(
         mode: CheckInMode::Current,
         claim,
         operation: OperationId::new(operation),
+        lineage_parent: None,
     });
     match f.service.handle(command, peer(), &budget()).unwrap() {
         CommandResult::CheckedIn(result) => result,
@@ -1074,7 +1571,11 @@ fn a_pending_notice_reserves_no_wake() {
     overdue_notice_about_x(&f, "w-over");
     let view = f
         .store
-        .mod_seat_view(&SeatId::new("s"), &budget())
+        .mod_binding_view(
+            &SeatId::new("s"),
+            crate::ports::ModBindingRef::Claim(&context),
+            &budget(),
+        )
         .unwrap()
         .unwrap();
     assert_eq!(
@@ -1121,7 +1622,11 @@ fn a_notice_carried_by_a_check_in_is_not_pulled() {
         DeliveryPullReply::Unchanged {
             attention_version: attention_version(
                 &f.store
-                    .mod_seat_view(&SeatId::new("s"), &budget())
+                    .mod_binding_view(
+                        &SeatId::new("s"),
+                        crate::ports::ModBindingRef::Claim(&context),
+                        &budget(),
+                    )
                     .unwrap()
                     .unwrap()
                     .fingerprint,
@@ -1267,10 +1772,10 @@ fn items_read(f: &Fixture) -> usize {
 // already saw it (final review 11 S2: 70 s+ here; a large backlog overran the hook's budget).
 #[test]
 fn a_backlog_over_the_offer_table_keeps_the_reoffer_bounds_and_parks_for_inbox() {
-    use crate::delivery::ledger::MAX_OFFERS_PER_SEAT;
+    use crate::delivery::ledger::MAX_OFFERS_PER_BINDING;
     // The smallest backlog that overfills the table, plus a few. The first four bodies are over the limit
     // (truncated, never confirmable); the rest are short, so a store page holds 32 of them.
-    let backlog = MAX_OFFERS_PER_SEAT + 4;
+    let backlog = MAX_OFFERS_PER_BINDING + 4;
     let f = fixture(0);
     let big = "x".repeat(WATCH_BODY_LIMIT_BYTES + 100);
     for n in 0..backlog {
@@ -1282,10 +1787,11 @@ fn a_backlog_over_the_offer_table_keeps_the_reoffer_bounds_and_parks_for_inbox()
     service_notice(&f, "w-1");
     let seat = SeatId::new("s");
     let generation = context.binding_generation;
+    let targets = [binding_of(&f, "n1")];
     let now = |f: &Fixture| UtcMillis(f.clock.0.load(Ordering::SeqCst));
     let outlook = |f: &Fixture| {
         f.state
-            .next_pull(&seat, generation, wake_attention(f), now(f))
+            .next_pull(&seat, &targets, generation, wake_attention(f), now(f))
     };
     let mut shown = std::collections::BTreeMap::new();
     let mut seen = None;
@@ -1329,10 +1835,10 @@ fn a_backlog_over_the_offer_table_keeps_the_reoffer_bounds_and_parks_for_inbox()
     );
     assert_eq!(
         shown.len(),
-        MAX_OFFERS_PER_SEAT,
+        MAX_OFFERS_PER_BINDING,
         "the table filled, then took no new id"
     );
-    for n in MAX_OFFERS_PER_SEAT..backlog {
+    for n in MAX_OFFERS_PER_BINDING..backlog {
         let id = format!("b{n:03}");
         assert!(
             !shown.contains_key(&MessageId::new(&id)),
@@ -1347,7 +1853,7 @@ fn a_backlog_over_the_offer_table_keeps_the_reoffer_bounds_and_parks_for_inbox()
         "a full table is not Delivers-forever"
     );
     assert!(
-        f.state.holds_parked(&seat, generation),
+        f.state.holds_parked(&seat, &targets, generation),
         "a full table parks new ids for inbox"
     );
 
@@ -1371,7 +1877,7 @@ fn a_backlog_over_the_offer_table_keeps_the_reoffer_bounds_and_parks_for_inbox()
         }
         bounded(&shown);
     }
-    assert_eq!(shown.len(), MAX_OFFERS_PER_SEAT);
+    assert_eq!(shown.len(), MAX_OFFERS_PER_BINDING);
     assert!(
         shown
             .values()
@@ -1379,7 +1885,7 @@ fn a_backlog_over_the_offer_table_keeps_the_reoffer_bounds_and_parks_for_inbox()
         "every offered id was re-offered up to the bound, then parked"
     );
     assert_eq!(outlook(&f), NextPull::Nothing);
-    assert!(f.state.holds_parked(&seat, generation));
+    assert!(f.state.holds_parked(&seat, &targets, generation));
 
     // A new notice on the parked full table rides a page without reading the pending set: nothing in it could be
     // shown or freed.
@@ -1402,14 +1908,14 @@ fn a_backlog_over_the_offer_table_keeps_the_reoffer_bounds_and_parks_for_inbox()
 // Kills: an id withheld at capacity stuck behind `Unchanged` after the same whole read freed a slot.
 #[test]
 fn an_id_withheld_at_capacity_is_shown_once_a_whole_read_frees_a_slot() {
-    use crate::delivery::ledger::MAX_OFFERS_PER_SEAT;
-    let f = fixture(MAX_OFFERS_PER_SEAT + 1);
+    use crate::delivery::ledger::MAX_OFFERS_PER_BINDING;
+    let f = fixture(MAX_OFFERS_PER_BINDING + 1);
     let context = pull_seat(&f);
     let mut seen = None;
-    for _ in 0..MAX_OFFERS_PER_SEAT / PAGE_MAX_BLOCKS {
+    for _ in 0..MAX_OFFERS_PER_BINDING / PAGE_MAX_BLOCKS {
         seen = Some(page(pull(&f, &context, seen)).attention_version);
     }
-    let last = format!("m{}", MAX_OFFERS_PER_SEAT + 1);
+    let last = format!("m{}", MAX_OFFERS_PER_BINDING + 1);
     assert!(
         matches!(
             pull(&f, &context, seen),
@@ -1417,10 +1923,11 @@ fn an_id_withheld_at_capacity_is_shown_once_a_whole_read_frees_a_slot() {
         ),
         "the table is full: {last} waits"
     );
-    assert!(
-        f.state
-            .holds_parked(&SeatId::new("s"), context.binding_generation)
-    );
+    assert!(f.state.holds_parked(
+        &SeatId::new("s"),
+        &[binding_of(&f, "n1")],
+        context.binding_generation
+    ));
     // `inbox` settles m1 outside the hook: the version moves and the whole read drops m1 from the table.
     f.db.execute(
         "UPDATE receipts SET state='acked' WHERE message_id='m1' AND seat_id='s'",
@@ -1447,10 +1954,12 @@ fn notices_settled_by_a_pull_that_lost_a_rotation_race_are_still_returned() {
     let context = pull_seat(&f);
     service_notice(&f, "w-race");
     let newer = context.binding_generation + 1;
+    let racing = binding_of(&f, "n1");
+    let racing_entry = racing.clone();
     *f.state.probe.before_record.lock().unwrap() =
         Some(Box::new(move |ledger: &mut OfferedLedger| {
             ledger
-                .seat_mut(&SeatId::new("s"), newer, "n2")
+                .binding_mut(&SeatId::new("s"), &racing, newer)
                 .expect("a newer generation replaces the entry");
         }));
     let page = page(pull(&f, &context, None));
@@ -1469,7 +1978,7 @@ fn notices_settled_by_a_pull_that_lost_a_rotation_race_are_still_returned() {
     );
     assert!(!page.text.contains("message m1"), "{}", page.text);
     let ledger = f.state.lock();
-    let entry = ledger.get(&SeatId::new("s")).unwrap();
+    let entry = ledger.get(&racing_entry).unwrap();
     assert_eq!(entry.generation, newer);
     assert!(
         entry.offers.is_empty(),
@@ -1744,8 +2253,16 @@ fn departed_receipt_origins_survive_pull_offers_late_association_and_partial_ack
                 &budget(),
             )
             .unwrap();
-        let a_view = f.store.mod_seat_view(&a.seat, &budget()).unwrap().unwrap();
-        let b_view = f.store.mod_seat_view(&b.seat, &budget()).unwrap().unwrap();
+        let a_view = f
+            .store
+            .mod_binding_view(&a.seat, crate::ports::ModBindingRef::Claim(&a), &budget())
+            .unwrap()
+            .unwrap();
+        let b_view = f
+            .store
+            .mod_binding_view(&b.seat, crate::ports::ModBindingRef::Claim(&b), &budget())
+            .unwrap()
+            .unwrap();
         assert_eq!(a_view.fingerprint.other_pending, u64::from(remaining > 0));
         assert_eq!(b_view.fingerprint.other_pending, u64::from(remaining > 0));
         assert_eq!(
@@ -1829,7 +2346,11 @@ fn canonical_lazy_invitation_signals_a_passive_channel_drain_without_attention_h
     assert!(sink.0.lock().unwrap().is_empty());
     let before = f
         .store
-        .mod_seat_view(&recipient.seat, &budget())
+        .mod_binding_view(
+            &recipient.seat,
+            crate::ports::ModBindingRef::Claim(&recipient),
+            &budget(),
+        )
         .unwrap()
         .unwrap();
     let CommandResult::ThreadCreated(thread) = service
@@ -1864,7 +2385,11 @@ fn canonical_lazy_invitation_signals_a_passive_channel_drain_without_attention_h
         .unwrap();
     let after = f
         .store
-        .mod_seat_view(&recipient.seat, &budget())
+        .mod_binding_view(
+            &recipient.seat,
+            crate::ports::ModBindingRef::Claim(&recipient),
+            &budget(),
+        )
         .unwrap()
         .unwrap();
     assert_eq!(
@@ -1942,7 +2467,11 @@ fn canonical_lazy_invitation_content_changes_on_accept_reject_and_retirement_onl
     };
     let version = || {
         f.store
-            .mod_seat_view(&recipient.seat, &budget())
+            .mod_binding_view(
+                &recipient.seat,
+                crate::ports::ModBindingRef::Claim(&recipient),
+                &budget(),
+            )
             .unwrap()
             .unwrap()
             .pending_invitation_version
@@ -2718,7 +3247,7 @@ fn a_finite_invitation_backlog_progresses_beyond_the_whole_display_cache() {
         claim("x", "px", fourth(), "capacity-inviter", 0),
         "capacity-inviter-ci",
     );
-    let count = crate::delivery::ledger::MAX_INVITATION_DISPLAYS_PER_SEAT + 1;
+    let count = crate::delivery::ledger::MAX_INVITATION_DISPLAYS_PER_BINDING + 1;
     canonical_lazy_invitation_backlog(&f, &recipient, &inviter, count, "capacity");
 
     let mut saw_final = false;
@@ -2838,7 +3367,11 @@ fn a_departed_inviter_remains_actionable_after_whole_deadline_warning_until_acce
     ));
     assert_eq!(
         f.store
-            .mod_seat_view(&inviter.seat, &budget())
+            .mod_binding_view(
+                &inviter.seat,
+                crate::ports::ModBindingRef::Claim(&inviter),
+                &budget()
+            )
             .unwrap()
             .unwrap()
             .fingerprint
@@ -2859,7 +3392,11 @@ fn a_departed_inviter_remains_actionable_after_whole_deadline_warning_until_acce
         .unwrap();
     assert_eq!(
         f.store
-            .mod_seat_view(&inviter.seat, &budget())
+            .mod_binding_view(
+                &inviter.seat,
+                crate::ports::ModBindingRef::Claim(&inviter),
+                &budget()
+            )
             .unwrap()
             .unwrap()
             .fingerprint
@@ -3182,6 +3719,7 @@ fn presentation_refresh_observes_lazy_context_and_removal_without_consuming_outp
         f.store
             .presentation_refresh(
                 &recipient.seat,
+                &binding_for_claim(&f, &recipient),
                 recipient.binding_generation,
                 recipient.native_session.as_str(),
                 &budget(),
@@ -3256,11 +3794,11 @@ fn presentation_refresh_preserves_live_presentation_header_and_outbox_across_reb
         "refresh-preserve-ci",
     );
     canonical_lazy_invitation_backlog(&f, &recipient, &inviter, 1, "refresh-preserve");
-    let pull = |claim: CallerClaim| {
-        f.store
+    let pull =
+        |claim: CallerClaim| {
+            f.store
             .presentation_pull(
-                PresentationInput {
-                    owner_replay: None,
+                PresentationInput { binding_id: binding_for_claim(&f, &claim), owner_replay: None,
                     ordinary_due_snapshot: None,
                     frozen_render: presentation_watch_frozen(&f, &claim),
                     render_profile:
@@ -3285,19 +3823,20 @@ fn presentation_refresh_preserves_live_presentation_header_and_outbox_across_reb
             )
             .unwrap()
             .reply
-    };
+        };
     let DeliveryPullReplyV2::Page(first) = pull(recipient.clone()) else {
         panic!("initial full context")
     };
     assert_eq!(presentation_invitations(&first).len(), 1);
     assert!(!presentation_invitations(&first)[0].content.truncated);
     let snapshot = || {
-        f.db.query_row("SELECT json_object('generation',generation,'execution',execution,'initial_after',initial_after,'initial_high',initial_high,'context_after_seq',context_after_seq,'revisit_after_bytes',revisit_after_bytes,'rotation',rotation,'outbox_token',outbox_token,'outbox_text',outbox_text,'outbox_descriptors',outbox_descriptors,'counters',(SELECT json_group_array(json_array(generation,execution,context_key,partial_count,complete_count,output_class)) FROM invitation_presentation_items WHERE seat_id='s' AND consumer='watch')) FROM invitation_presentation_consumers WHERE seat_id='s' AND consumer='watch'",[],|r|r.get::<_,String>(0)).unwrap()
+        f.db.query_row("SELECT json_object('generation',generation,'execution',execution,'initial_after',initial_after,'initial_high',initial_high,'context_after_seq',context_after_seq,'revisit_after_bytes',revisit_after_bytes,'rotation',rotation,'outbox_token',outbox_token,'outbox_text',outbox_text,'outbox_descriptors',outbox_descriptors,'counters',(SELECT json_group_array(json_array(generation,execution,context_key,partial_count,complete_count,output_class)) FROM invitation_presentation_items WHERE binding_id=?1 AND consumer='watch')) FROM invitation_presentation_consumers WHERE binding_id=?1 AND consumer='watch'",[binding_for_claim(&f, &recipient).as_str()],|r|r.get::<_,String>(0)).unwrap()
     };
     let before = snapshot();
     f.store
         .presentation_refresh(
             &recipient.seat,
+            &binding_for_claim(&f, &recipient),
             recipient.binding_generation,
             recipient.native_session.as_str(),
             &budget(),
@@ -3318,6 +3857,7 @@ fn presentation_refresh_preserves_live_presentation_header_and_outbox_across_reb
     f.store
         .presentation_refresh(
             &next.seat,
+            &binding_for_claim(&f, &next),
             next.binding_generation,
             next.native_session.as_str(),
             &budget(),
@@ -3384,6 +3924,7 @@ fn presentation_refresh_stub_allows_actual_watch_full_offer_and_replaced_owner_r
         .store
         .presentation_refresh(
             &recipient.seat,
+            &binding_for_claim(&f, &recipient),
             recipient.binding_generation,
             recipient.native_session.as_str(),
             &budget(),
@@ -3550,6 +4091,7 @@ fn presentation_final_watch_codec_counts_escaped_canonical_invitation_batch() {
             .store
             .presentation_pull(
                 PresentationInput {
+                    binding_id: binding_for_claim(&f, &recipient),
                     owner_replay: None,
                     ordinary_due_snapshot: None,
                     frozen_render: presentation_watch_frozen(&f, &recipient),
@@ -3657,6 +4199,7 @@ fn presentation_final_cleanup_preserves_passive_removal_observation() {
         f.store
             .presentation_refresh(
                 &recipient.seat,
+                &binding_for_claim(&f, &recipient),
                 recipient.binding_generation,
                 recipient.native_session.as_str(),
                 &budget(),
@@ -3681,6 +4224,7 @@ fn presentation_final_cleanup_preserves_passive_removal_observation() {
     f.store
         .presentation_pull(
             PresentationInput {
+                binding_id: binding_for_claim(&f, &recipient),
                 owner_replay: None,
                 ordinary_due_snapshot: None,
                 frozen_render: presentation_watch_frozen(&f, &recipient),
@@ -4335,6 +4879,7 @@ fn presentation_actual_candidate_sizing_and_rpc_wrapper_work_remain_bounded() {
             .store
             .presentation_pull(
                 PresentationInput {
+                    binding_id: binding_for_claim(&f, &recipient),
                     owner_replay: None,
                     ordinary_due_snapshot: None,
                     frozen_render,
@@ -5543,6 +6088,7 @@ fn presentation_publication_walk_counts_foreign_prefix_before_filter_and_progres
         f.store
             .presentation_refresh(
                 &recipient.seat,
+                &binding_for_claim(&f, &recipient),
                 recipient.binding_generation,
                 recipient.native_session.as_str(),
                 &budget(),
@@ -5696,12 +6242,13 @@ fn presentation_publication_refresh_and_pull_rebind_preserve_each_others_progres
                 .unwrap();
         }
         let pull = |claim: &CallerClaim| {
-            f.store.presentation_pull(PresentationInput{owner_replay:None,ordinary_due_snapshot:None,frozen_render:presentation_watch_frozen(&f,claim),render_profile:crate::delivery::presentation::PresentationRenderProfile::WatchJsonLinesV1,pull:DeliveryPullV2{claim:claim.clone(),consumer:PresentationConsumer::Watch,render:crate::protocol::delivery::PresentationRenderRequest::WatchJsonLinesV1,presentation_lease:Some("0123456789abcdef0123456789abcdef".into()),marker_prefix:vec![]},attention_version:0,ordinary_version:0,with_attention:false,retry_messages:false,blocked_messages:vec![],known_messages:vec![],new_message_slots:256},&budget()).unwrap()
+            f.store.presentation_pull(PresentationInput { binding_id: binding_for_claim(&f, claim), owner_replay:None,ordinary_due_snapshot:None,frozen_render:presentation_watch_frozen(&f,claim),render_profile:crate::delivery::presentation::PresentationRenderProfile::WatchJsonLinesV1,pull:DeliveryPullV2{claim:claim.clone(),consumer:PresentationConsumer::Watch,render:crate::protocol::delivery::PresentationRenderRequest::WatchJsonLinesV1,presentation_lease:Some("0123456789abcdef0123456789abcdef".into()),marker_prefix:vec![]},attention_version:0,ordinary_version:0,with_attention:false,retry_messages:false,blocked_messages:vec![],known_messages:vec![],new_message_slots:256},&budget()).unwrap()
         };
         let refresh = |claim: &CallerClaim| {
             f.store
                 .presentation_refresh(
                     &claim.seat,
+                    &binding_for_claim(&f, claim),
                     claim.binding_generation,
                     claim.native_session.as_str(),
                     &budget(),
@@ -5719,11 +6266,11 @@ fn presentation_publication_refresh_and_pull_rebind_preserve_each_others_progres
             (100, 200, 2),
             "all addressed candidates reach both indexed probes"
         );
-        let scalar = || {
-            f.db.query_row("SELECT ordinary_publication_after,ordinary_publication_high,ordinary_passive_generation FROM invitation_presentation_consumers WHERE seat_id='s' AND consumer='watch'",[],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?))).unwrap()
+        let scalar = |claim: &CallerClaim| {
+            f.db.query_row("SELECT ordinary_publication_after,ordinary_publication_high,ordinary_passive_generation FROM invitation_presentation_consumers WHERE binding_id=?1 AND consumer='watch'",[binding_for_claim(&f, claim).as_str()],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?))).unwrap()
         };
-        assert_eq!(scalar().2, 1);
-        assert!(scalar().0 > 0 && scalar().0 < scalar().1);
+        assert_eq!(scalar(&recipient).2, 1);
+        assert!(scalar(&recipient).0 > 0 && scalar(&recipient).0 < scalar(&recipient).1);
         let next = if same_generation_repair {
             // Explicit canonical repair fixture: preserve generation/session,
             // replace execution, and prove private ownership compares BOTH.
@@ -5734,7 +6281,11 @@ fn presentation_publication_refresh_and_pull_rebind_preserve_each_others_progres
             next
         } else {
             let next = rotate(&f, &recipient, "publication-reset-native", 2);
-            assert!(next.binding_generation > recipient.binding_generation);
+            assert_eq!(next.binding_generation, recipient.binding_generation);
+            assert_ne!(
+                binding_for_claim(&f, &next),
+                binding_for_claim(&f, &recipient)
+            );
             next
         };
         if refresh_first {
@@ -5742,7 +6293,7 @@ fn presentation_publication_refresh_and_pull_rebind_preserve_each_others_progres
         } else {
             pull(&next);
         }
-        let first = scalar();
+        let first = scalar(&next);
         assert!(first.0 > 0 && first.0 < first.1);
         assert_eq!(first.2, 1, "first new owner initializes exactly once");
         if refresh_first {
@@ -5750,7 +6301,7 @@ fn presentation_publication_refresh_and_pull_rebind_preserve_each_others_progres
         } else {
             refresh(&next);
         }
-        let second = scalar();
+        let second = scalar(&next);
         assert!(
             second.0 > first.0,
             "second owner keeps positive cursor, continues instead of resetting"
@@ -5761,13 +6312,13 @@ fn presentation_publication_refresh_and_pull_rebind_preserve_each_others_progres
         let context = StoreContext::new(f.directory.join("store.db"), f.clock.clone());
         let _reopened = context.open_writer().unwrap();
         refresh(&next);
-        let done = scalar();
+        let done = scalar(&next);
         assert_eq!(done.0, done.1);
         assert_eq!(done.2, 3);
-        let before = scalar();
+        let before = scalar(&next);
         refresh(&next);
         assert_eq!(
-            scalar(),
+            scalar(&next),
             before,
             "quiet refresh preserves completed progress"
         );
@@ -5844,6 +6395,7 @@ fn presentation_private_item_refresh_text_bounds_refuse_before_effects() {
         f.store
             .presentation_refresh(
                 &recipient.seat,
+                &binding_for_claim(&f, &recipient),
                 recipient.binding_generation,
                 recipient.native_session.as_str(),
                 &budget(),
@@ -5861,6 +6413,7 @@ fn presentation_private_item_refresh_text_bounds_refuse_before_effects() {
         let before = snapshot();
         let result = f.store.presentation_refresh(
             &recipient.seat,
+            &binding_for_claim(&f, &recipient),
             recipient.binding_generation,
             recipient.native_session.as_str(),
             &budget(),
@@ -6312,8 +6865,8 @@ fn presentation_notice_settles_current_execution(watch: bool, remaining_conditio
     );
     let frontier = || {
         f.db.query_row(
-        "SELECT binding_generation,execution_id,offered_ordinal FROM digest_notice_offer WHERE seat_id=?1",
-        [recipient.seat.as_str()], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?)),
+        "SELECT b.generation,b.execution_id,o.offered_ordinal FROM digest_notice_offer o JOIN occupant_bindings b ON b.binding_id=o.binding_id WHERE o.binding_id=?1 AND o.seat_id=b.seat_id",
+        [binding_for_claim(f, recipient).as_str()], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?)),
     ).unwrap()
     };
     let before = frontier();
@@ -6804,7 +7357,7 @@ impl OfferWindowFixture {
         self.f
             .state
             .lock()
-            .get(&self.recipient.seat)
+            .get(&binding_for_claim(&self.f, &self.recipient))
             .unwrap()
             .offers
             .clone()
@@ -6899,7 +7452,7 @@ impl Drop for OfferWindowFixture {
 
 fn assert_v2_offer_window_reclaimed(watch: bool, lazy: bool) {
     use crate::{
-        delivery::ledger::MAX_OFFERS_PER_SEAT,
+        delivery::ledger::MAX_OFFERS_PER_BINDING,
         protocol::{commands::DeliveryMode, delivery::DeliveryPullReplyV2},
     };
     let window = OfferWindowFixture::new(watch);
@@ -6908,7 +7461,7 @@ fn assert_v2_offer_window_reclaimed(watch: bool, lazy: bool) {
     } else {
         DeliveryMode::Ordinary
     };
-    let sent = (0..MAX_OFFERS_PER_SEAT)
+    let sent = (0..MAX_OFFERS_PER_BINDING)
         .map(|n| window.send(n, mode, "complete canonical offer window"))
         .collect::<Vec<_>>();
     assert_eq!(window.drain(256), sent.iter().cloned().collect());
@@ -6970,15 +7523,17 @@ fn assert_v2_offer_window_reclaimed(watch: bool, lazy: bool) {
         vec![successor]
     );
     let ledger = window.f.state.lock();
-    let entry = ledger.get(&window.recipient.seat).unwrap();
+    let entry = ledger
+        .get(&binding_for_claim(&window.f, &window.recipient))
+        .unwrap();
     assert_eq!(entry.generation, window.recipient.binding_generation);
     assert_eq!(
-        entry.native_session,
-        window.recipient.native_session.as_str()
+        entry.binding_id,
+        binding_for_claim(&window.f, &window.recipient)
     );
 }
 
-// Kills: treating MAX_OFFERS_PER_SEAT as cumulative lifetime throughput when
+// Kills: treating MAX_OFFERS_PER_BINDING as cumulative lifetime throughput when
 // Watch settles actual receipt-state rows through AckModDelivered.
 #[test]
 fn presentation_watch_settled_receipts_reclaim_live_offer_capacity() {
@@ -7150,8 +7705,9 @@ fn presentation_reclamation_preserves_pending_truncated_and_reoffer_history() {
         "pending offers remain parked at the original generation limit"
     );
 
-    // A real canonical check-in rotates the binding. The old owner/claim must
-    // refuse before it can drop the prior generation's retained offers.
+    // A real canonical check-in creates a new session binding at the same mapping
+    // generation and disconnects its same-process predecessor. The old owner
+    // must refuse before it can drop that predecessor's retained offers.
     let next = check_in(
         &window.f,
         fresh_execution(
@@ -7166,12 +7722,28 @@ fn presentation_reclamation_preserves_pending_truncated_and_reoffer_history() {
         ),
         "offer-window-next-ci",
     );
-    assert!(next.binding_generation > window.recipient.binding_generation);
+    assert_eq!(next.binding_generation, window.recipient.binding_generation);
+    assert_ne!(
+        binding_for_claim(&window.f, &next),
+        binding_for_claim(&window.f, &window.recipient)
+    );
+    assert_eq!(
+        window
+            .f
+            .db
+            .query_row::<String, _, _>(
+                "SELECT liveness FROM occupant_bindings WHERE binding_id=?1",
+                [binding_for_claim(&window.f, &window.recipient).as_str()],
+                |row| row.get(0)
+            )
+            .unwrap(),
+        "disconnected"
+    );
     assert!(matches!(window.pull(), DeliveryPullReplyV2::Refused { .. }));
     assert_eq!(
         window.offers(),
         parked,
-        "stale generation cannot reconcile ledger state"
+        "disconnected predecessor cannot reconcile ledger state"
     );
 }
 
@@ -7395,6 +7967,7 @@ fn offer_reconciliation_input(
         DeliveryPullV2, PresentationConsumer, PresentationRenderRequest,
     };
     crate::ports::PresentationInput {
+        binding_id: binding_for_claim(f, claim),
         owner_replay: None,
         ordinary_due_snapshot: None,
         frozen_render: presentation_watch_frozen(f, claim),
@@ -7721,6 +8294,7 @@ fn presentation_publication_foreign_refresh_refuses_without_touching_hook_or_wat
     f.store
         .presentation_refresh(
             &recipient.seat,
+            &binding_for_claim(&f, &recipient),
             recipient.binding_generation,
             recipient.native_session.as_str(),
             &budget(),
@@ -7744,6 +8318,7 @@ fn presentation_publication_foreign_refresh_refuses_without_touching_hook_or_wat
     let before = watch();
     let result = f.store.presentation_refresh(
         &recipient.seat,
+        &binding_for_claim(&f, &recipient),
         recipient.binding_generation,
         recipient.native_session.as_str(),
         &budget(),
@@ -7898,6 +8473,7 @@ fn presentation_publication_watch_reconnect_keeps_positive_frontier_without_nati
     registry.unregister(first, f.clock.utc_now());
     assert!(!registry.presentation_owner_live(
         &recipient.seat,
+        &binding_for_claim(&f, &recipient),
         recipient.binding_generation,
         recipient.native_session.as_str(),
         &old
@@ -7940,6 +8516,7 @@ fn presentation_publication_generation_overflow_rolls_back_frontier_and_version(
         f.store
             .presentation_refresh(
                 &recipient.seat,
+                &binding_for_claim(&f, &recipient),
                 recipient.binding_generation,
                 recipient.native_session.as_str(),
                 &budget(),
@@ -7971,6 +8548,7 @@ fn presentation_publication_generation_overflow_rolls_back_frontier_and_version(
         let before = snapshot();
         let result = f.store.presentation_refresh(
             &recipient.seat,
+            &binding_for_claim(&f, &recipient),
             recipient.binding_generation,
             recipient.native_session.as_str(),
             &budget(),
@@ -8310,6 +8888,7 @@ fn pull_private_invitation_id(
         });
     f.store.presentation_pull(
         PresentationInput {
+            binding_id: binding_for_claim(f, recipient),
             owner_replay: None,
             ordinary_due_snapshot: None,
             frozen_render,
@@ -8439,6 +9018,7 @@ fn private_watch_cleanup_id_fixture() -> (Fixture, CallerClaim) {
     f.store
         .presentation_refresh(
             &recipient.seat,
+            &binding_for_claim(&f, &recipient),
             recipient.binding_generation,
             recipient.native_session.as_str(),
             &budget(),
@@ -8491,6 +9071,7 @@ fn presentation_private_watch_cleanup_ids_refuse_malformed_identity_without_effe
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             f.store.presentation_refresh(
                 &recipient.seat,
+                &binding_for_claim(&f, &recipient),
                 recipient.binding_generation,
                 recipient.native_session.as_str(),
                 &budget(),
@@ -8531,6 +9112,7 @@ fn presentation_private_watch_cleanup_ids_enforce_borrowed_text_bounds_without_e
         let before = private_invitation_id_snapshot(&f.db);
         let result = f.store.presentation_refresh(
             &recipient.seat,
+            &binding_for_claim(&f, &recipient),
             recipient.binding_generation,
             recipient.native_session.as_str(),
             &budget(),
@@ -8573,6 +9155,7 @@ fn presentation_private_watch_cleanup_ids_allow_128_byte_id_without_canonical_ow
         .store
         .presentation_refresh(
             &recipient.seat,
+            &binding_for_claim(&f, &recipient),
             recipient.binding_generation,
             recipient.native_session.as_str(),
             &budget(),
@@ -8616,10 +9199,10 @@ fn presentation_capacity_missing_due_keys_finish_a_finite_pass() {
     {
         let mut ledger = window.f.state.lock();
         let entry = ledger
-            .seat_mut(
+            .binding_mut(
                 &window.recipient.seat,
+                &binding_for_claim(&window.f, &window.recipient),
                 window.recipient.binding_generation,
-                window.recipient.native_session.as_str(),
             )
             .unwrap();
         for n in 0..256 {
@@ -8695,10 +9278,10 @@ fn presentation_capacity_reclaimed_or_initially_free_with_missing_due_keys_quiet
         {
             let mut ledger = window.f.state.lock();
             let entry = ledger
-                .seat_mut(
+                .binding_mut(
                     &window.recipient.seat,
+                    &binding_for_claim(&window.f, &window.recipient),
                     window.recipient.binding_generation,
-                    window.recipient.native_session.as_str(),
                 )
                 .unwrap();
             for n in 0..255 {
@@ -8747,10 +9330,10 @@ fn presentation_capacity_last_slot_parks_unknown_carry_and_only_continues_for_du
         {
             let mut ledger = window.f.state.lock();
             let entry = ledger
-                .seat_mut(
+                .binding_mut(
                     &window.recipient.seat,
+                    &binding_for_claim(&window.f, &window.recipient),
                     window.recipient.binding_generation,
-                    window.recipient.native_session.as_str(),
                 )
                 .unwrap();
             for n in 0..255 {
@@ -8814,10 +9397,10 @@ fn capacity_missing_input(
 ) -> crate::ports::PresentationInput {
     let mut ledger = crate::delivery::ledger::OfferedLedger::new();
     let entry = ledger
-        .seat_mut(
+        .binding_mut(
             &recipient.seat,
+            &binding_for_claim(f, recipient),
             recipient.binding_generation,
-            recipient.native_session.as_str(),
         )
         .unwrap();
     for n in 0..count {
@@ -8925,6 +9508,8 @@ fn presentation_capacity_snapshot_validation_scope_and_failed_calls() {
     use crate::protocol::delivery::DeliveryPullReplyV2;
     let f = fixture(0);
     let recipient = pull_seat(&f);
+    let sibling = second_binding(&f);
+    let foreign_binding = binding_for_claim(&f, &sibling);
     let input = capacity_missing_input(&f, &recipient, 256);
     for mutation in 0..7 {
         let mut bad = input.clone();
@@ -8939,7 +9524,7 @@ fn presentation_capacity_snapshot_validation_scope_and_failed_calls() {
                     .pop_first();
             }
             3 => bad.ordinary_due_snapshot.as_mut().unwrap().generation += 1,
-            4 => bad.ordinary_due_snapshot.as_mut().unwrap().native_session = "other".into(),
+            4 => bad.ordinary_due_snapshot.as_mut().unwrap().binding_id = foreign_binding.clone(),
             5 => {
                 bad.ordinary_due_snapshot.as_mut().unwrap().cache.deferred =
                     bad.ordinary_due_snapshot.as_ref().unwrap().stamps.clone()
@@ -9249,10 +9834,10 @@ fn presentation_capacity_due_walk_preserves_partial_body_until_real_ack() {
         {
             let mut ledger = window.f.state.lock();
             let entry = ledger
-                .seat_mut(
+                .binding_mut(
                     &window.recipient.seat,
+                    &binding_for_claim(&window.f, &window.recipient),
                     window.recipient.binding_generation,
-                    window.recipient.native_session.as_str(),
                 )
                 .unwrap();
             for n in 0..255 {
@@ -9371,10 +9956,10 @@ fn presentation_capacity_parked_ordinary_still_drains_passive_context_and_notice
     {
         let mut ledger = window.f.state.lock();
         let entry = ledger
-            .seat_mut(
+            .binding_mut(
                 &window.recipient.seat,
+                &binding_for_claim(&window.f, &window.recipient),
                 window.recipient.binding_generation,
-                window.recipient.native_session.as_str(),
             )
             .unwrap();
         for n in 0..256 {
@@ -9477,10 +10062,10 @@ fn presentation_capacity_retained_concurrent_offer_count_does_not_refuse_passive
     {
         let mut ledger = window.f.state.lock();
         let entry = ledger
-            .seat_mut(
+            .binding_mut(
                 &window.recipient.seat,
+                &binding_for_claim(&window.f, &window.recipient),
                 window.recipient.binding_generation,
-                window.recipient.native_session.as_str(),
             )
             .unwrap();
         // Both routes can snapshot count two, then finish their recordings.
@@ -9490,15 +10075,16 @@ fn presentation_capacity_retained_concurrent_offer_count_does_not_refuse_passive
     }
     advance(&window.f, REOFFER_AFTER_MS);
     let race_claim = window.recipient.clone();
+    let race_binding = binding_for_claim(&window.f, &race_claim);
     let race_id = known.clone();
     let race_now = window.f.clock.utc_now();
     *window.f.state.probe.before_record.lock().unwrap() =
         Some(Box::new(move |ledger: &mut OfferedLedger| {
             let entry = ledger
-                .seat_mut(
+                .binding_mut(
                     &race_claim.seat,
+                    &race_binding,
                     race_claim.binding_generation,
-                    race_claim.native_session.as_str(),
                 )
                 .unwrap();
             assert_eq!(
@@ -9553,10 +10139,10 @@ fn presentation_capacity_cache_progress_survives_lost_reply_but_not_ledger_resta
     {
         let mut ledger = window.f.state.lock();
         let entry = ledger
-            .seat_mut(
+            .binding_mut(
                 &window.recipient.seat,
+                &binding_for_claim(&window.f, &window.recipient),
                 window.recipient.binding_generation,
-                window.recipient.native_session.as_str(),
             )
             .unwrap();
         for n in 0..256 {
@@ -9842,10 +10428,10 @@ fn presentation_owner_replay_full_final_page_keeps_logical_due_continuation() {
     {
         let mut ledger = window.f.state.lock();
         let entry = ledger
-            .seat_mut(
+            .binding_mut(
                 &window.recipient.seat,
+                &binding_for_claim(&window.f, &window.recipient),
                 window.recipient.binding_generation,
-                window.recipient.native_session.as_str(),
             )
             .unwrap();
         // Actual supported recorder reaches parked three and one due two.
@@ -9922,7 +10508,9 @@ fn presentation_owner_replay_full_final_page_keeps_logical_due_continuation() {
 
 fn owner_outlook(window: &OfferWindowFixture) -> (bool, Option<u64>, Option<u64>, NextPull) {
     let ledger = window.f.state.lock();
-    let entry = ledger.get(&window.recipient.seat).unwrap();
+    let entry = ledger
+        .get(&binding_for_claim(&window.f, &window.recipient))
+        .unwrap();
     (
         entry.more_pending,
         entry.read_attention,
@@ -9943,10 +10531,10 @@ fn presentation_owner_replay_missing_quanta_preserve_current_native_outlook() {
         {
             let mut ledger = window.f.state.lock();
             let entry = ledger
-                .seat_mut(
+                .binding_mut(
                     &window.recipient.seat,
+                    &binding_for_claim(&window.f, &window.recipient),
                     window.recipient.binding_generation,
-                    window.recipient.native_session.as_str(),
                 )
                 .unwrap();
             for n in 0..256 {
@@ -10039,10 +10627,10 @@ fn presentation_owner_replay_waits_for_original_outbox_then_continues() {
         {
             let mut ledger = window.f.state.lock();
             let entry = ledger
-                .seat_mut(
+                .binding_mut(
                     &window.recipient.seat,
+                    &binding_for_claim(&window.f, &window.recipient),
                     window.recipient.binding_generation,
-                    window.recipient.native_session.as_str(),
                 )
                 .unwrap();
             entry.more_pending = more;
@@ -10094,10 +10682,10 @@ fn owner_store_input(
     let due = f
         .state
         .lock()
-        .seat_mut(
+        .binding_mut(
             &claim.seat,
+            &binding_for_claim(f, claim),
             claim.binding_generation,
-            claim.native_session.as_str(),
         )
         .unwrap()
         .due_snapshot(crate::protocol::delivery::PresentationConsumer::Watch);
@@ -10140,10 +10728,10 @@ fn presentation_owner_replay_accepts_actual_v1_count_four_and_nonordinary_work()
     {
         let mut ledger = window.f.state.lock();
         let entry = ledger
-            .seat_mut(
+            .binding_mut(
                 &window.recipient.seat,
+                &binding_for_claim(&window.f, &window.recipient),
                 window.recipient.binding_generation,
-                window.recipient.native_session.as_str(),
             )
             .unwrap();
         for _ in 0..2 {
@@ -10152,14 +10740,15 @@ fn presentation_owner_replay_accepts_actual_v1_count_four_and_nonordinary_work()
     }
     advance(&window.f, REOFFER_AFTER_MS);
     let race_claim = window.recipient.clone();
+    let race_binding = binding_for_claim(&window.f, &race_claim);
     let race_id = id.clone();
     let now = window.f.clock.utc_now();
     *window.f.state.probe.before_record.lock().unwrap() = Some(Box::new(move |ledger| {
         let entry = ledger
-            .seat_mut(
+            .binding_mut(
                 &race_claim.seat,
+                &race_binding,
                 race_claim.binding_generation,
-                race_claim.native_session.as_str(),
             )
             .unwrap();
         assert_eq!(entry.offers[&race_id].count, 2);
@@ -10183,6 +10772,7 @@ fn presentation_owner_replay_accepts_actual_v1_count_four_and_nonordinary_work()
     let channel = registry
         .register(
             ModChannelRegistration {
+                binding: binding_for_claim(&window.f, &window.recipient),
                 seat: window.recipient.seat.clone(),
                 binding_generation: window.recipient.binding_generation,
                 native_session: window.recipient.native_session.clone(),
@@ -10232,10 +10822,10 @@ fn presentation_owner_replay_registry_success_scope_and_incarnation_lifetime() {
     {
         let mut ledger = window.f.state.lock();
         ledger
-            .seat_mut(
+            .binding_mut(
                 &window.recipient.seat,
+                &binding_for_claim(&window.f, &window.recipient),
                 window.recipient.binding_generation,
-                window.recipient.native_session.as_str(),
             )
             .unwrap()
             .record(&id, window.f.clock.utc_now(), false);
@@ -10251,10 +10841,10 @@ fn presentation_owner_replay_registry_success_scope_and_incarnation_lifetime() {
     {
         let mut ledger = window.f.state.lock();
         let entry = ledger
-            .seat_mut(
+            .binding_mut(
                 &window.recipient.seat,
+                &binding_for_claim(&window.f, &window.recipient),
                 window.recipient.binding_generation,
-                window.recipient.native_session.as_str(),
             )
             .unwrap();
         entry.record(&id, window.f.clock.utc_now(), true); // same last_at; full stamp changed
@@ -10264,10 +10854,10 @@ fn presentation_owner_replay_registry_success_scope_and_incarnation_lifetime() {
         .f
         .state
         .lock()
-        .seat_mut(
+        .binding_mut(
             &window.recipient.seat,
+            &binding_for_claim(&window.f, &window.recipient),
             window.recipient.binding_generation,
-            window.recipient.native_session.as_str(),
         )
         .unwrap()
         .due_snapshot(PresentationConsumer::Watch);
@@ -10296,10 +10886,10 @@ fn presentation_owner_replay_registry_success_scope_and_incarnation_lifetime() {
     {
         let mut ledger = window.f.state.lock();
         ledger
-            .seat_mut(
+            .binding_mut(
                 &window.recipient.seat,
+                &binding_for_claim(&window.f, &window.recipient),
                 window.recipient.binding_generation,
-                window.recipient.native_session.as_str(),
             )
             .unwrap()
             .record(&id, window.f.clock.utc_now(), false);
@@ -10426,10 +11016,10 @@ fn presentation_owner_replay_refusal_and_store_error_do_not_consume_first_captur
         .f
         .state
         .lock()
-        .seat_mut(
+        .binding_mut(
             &window.recipient.seat,
+            &binding_for_claim(&window.f, &window.recipient),
             window.recipient.binding_generation,
-            window.recipient.native_session.as_str(),
         )
         .unwrap()
         .due_snapshot(crate::protocol::delivery::PresentationConsumer::Watch);
@@ -10461,10 +11051,10 @@ fn presentation_owner_replay_preserves_post_snapshot_native_outlook_and_newer_st
         {
             let mut ledger = window.f.state.lock();
             let entry = ledger
-                .seat_mut(
+                .binding_mut(
                     &window.recipient.seat,
+                    &binding_for_claim(&window.f, &window.recipient),
                     window.recipient.binding_generation,
-                    window.recipient.native_session.as_str(),
                 )
                 .unwrap();
             entry.more_pending = !more;
@@ -10474,6 +11064,7 @@ fn presentation_owner_replay_preserves_post_snapshot_native_outlook_and_newer_st
         window.replace_watch();
         let state = window.f.state.clone();
         let claim = window.recipient.clone();
+        let binding = binding_for_claim(&window.f, &claim);
         let now = window.f.clock.utc_now();
         let replayed = id.clone();
         let barrier = Failpoint::connection(
@@ -10482,11 +11073,7 @@ fn presentation_owner_replay_preserves_post_snapshot_native_outlook_and_newer_st
             move |_| {
                 let mut ledger = state.lock();
                 let entry = ledger
-                    .seat_mut(
-                        &claim.seat,
-                        claim.binding_generation,
-                        claim.native_session.as_str(),
-                    )
+                    .binding_mut(&claim.seat, &binding, claim.binding_generation)
                     .unwrap();
                 entry.record(&replayed, now, true);
                 entry.more_pending = more;
@@ -10541,10 +11128,10 @@ fn presentation_owner_replay_preserves_partial_body_until_real_ack() {
         {
             let mut ledger = window.f.state.lock();
             let entry = ledger
-                .seat_mut(
+                .binding_mut(
                     &window.recipient.seat,
+                    &binding_for_claim(&window.f, &window.recipient),
                     window.recipient.binding_generation,
-                    window.recipient.native_session.as_str(),
                 )
                 .unwrap();
             for n in 0..255 {
@@ -10766,10 +11353,10 @@ fn presentation_owner_replay_validates_full_scope_and_nonzero_count_domain() {
     {
         let mut ledger = window.f.state.lock();
         let entry = ledger
-            .seat_mut(
+            .binding_mut(
                 &window.recipient.seat,
+                &binding_for_claim(&window.f, &window.recipient),
                 window.recipient.binding_generation,
-                window.recipient.native_session.as_str(),
             )
             .unwrap();
         for _ in 0..255 {
@@ -10842,6 +11429,7 @@ fn install_owner_hint(input: &mut crate::ports::PresentationInput) {
     let due = input.ordinary_due_snapshot.as_ref().unwrap();
     input.owner_replay = Some(crate::ports::WatchReplaySnapshot {
         scope: crate::ports::WatchReplayScope {
+            binding_id: input.binding_id.clone(),
             seat: input.pull.claim.seat.clone(),
             generation: input.pull.claim.binding_generation,
             native_session: input.pull.claim.native_session.as_str().into(),
@@ -11025,10 +11613,10 @@ fn presentation_owner_replay_mixed_invitation_page_preserves_native_outlook() {
         {
             let mut ledger = window.f.state.lock();
             let entry = ledger
-                .seat_mut(
+                .binding_mut(
                     &window.recipient.seat,
+                    &binding_for_claim(&window.f, &window.recipient),
                     window.recipient.binding_generation,
-                    window.recipient.native_session.as_str(),
                 )
                 .unwrap();
             entry.more_pending = more;
@@ -11130,6 +11718,7 @@ fn presentation_owner_replay_restart_discards_lease_and_recovers_canonical_pendi
     );
     assert!(!old_registry.presentation_owner_live(
         &window.recipient.seat,
+        &binding_for_claim(&window.f, &window.recipient),
         window.recipient.binding_generation,
         window.recipient.native_session.as_str(),
         window.watch.as_ref().unwrap().2.as_str()
@@ -11187,10 +11776,10 @@ fn presentation_owner_replay_standalone_unrenderable_attempt_is_finite_and_local
         .f
         .state
         .lock()
-        .seat_mut(
+        .binding_mut(
             &window.recipient.seat,
+            &binding_for_claim(&window.f, &window.recipient),
             window.recipient.binding_generation,
-            window.recipient.native_session.as_str(),
         )
         .unwrap()
         .due_snapshot(crate::protocol::delivery::PresentationConsumer::Watch);
@@ -11282,10 +11871,10 @@ fn presentation_owner_replay_deferred_control_only_preserves_current_outlook() {
         {
             let mut ledger = window.f.state.lock();
             let entry = ledger
-                .seat_mut(
+                .binding_mut(
                     &window.recipient.seat,
+                    &binding_for_claim(&window.f, &window.recipient),
                     window.recipient.binding_generation,
-                    window.recipient.native_session.as_str(),
                 )
                 .unwrap();
             entry.more_pending = more;
@@ -11362,10 +11951,10 @@ fn presentation_owner_replay_pruned_all_passive_page_preserves_current_outlook()
                 if full {
                     let mut ledger = window.f.state.lock();
                     let entry = ledger
-                        .seat_mut(
+                        .binding_mut(
                             &window.recipient.seat,
+                            &binding_for_claim(&window.f, &window.recipient),
                             window.recipient.binding_generation,
-                            window.recipient.native_session.as_str(),
                         )
                         .unwrap();
                     for n in 0..255 {
@@ -11405,10 +11994,10 @@ fn presentation_owner_replay_pruned_all_passive_page_preserves_current_outlook()
                 {
                     let mut ledger = window.f.state.lock();
                     let entry = ledger
-                        .seat_mut(
+                        .binding_mut(
                             &window.recipient.seat,
+                            &binding_for_claim(&window.f, &window.recipient),
                             window.recipient.binding_generation,
-                            window.recipient.native_session.as_str(),
                         )
                         .unwrap();
                     let ids = entry.offers.keys().cloned().collect::<Vec<_>>();
@@ -11437,6 +12026,7 @@ fn presentation_owner_replay_pruned_all_passive_page_preserves_current_outlook()
                 let stamps = window.offers();
                 let state = window.f.state.clone();
                 let claim = window.recipient.clone();
+                let binding = binding_for_claim(&window.f, &claim);
                 let barrier = concurrent.then(|| {
                     Failpoint::connection(
                         "store.writer.acquired",
@@ -11444,11 +12034,7 @@ fn presentation_owner_replay_pruned_all_passive_page_preserves_current_outlook()
                         move |_| {
                             let mut ledger = state.lock();
                             let entry = ledger
-                                .seat_mut(
-                                    &claim.seat,
-                                    claim.binding_generation,
-                                    claim.native_session.as_str(),
-                                )
+                                .binding_mut(&claim.seat, &binding, claim.binding_generation)
                                 .unwrap();
                             entry.more_pending = !more;
                         },
@@ -11520,10 +12106,10 @@ fn presentation_owner_replay_pruned_all_allows_real_logical_allocation_bookkeepi
         {
             let mut ledger = window.f.state.lock();
             let entry = ledger
-                .seat_mut(
+                .binding_mut(
                     &window.recipient.seat,
+                    &binding_for_claim(&window.f, &window.recipient),
                     window.recipient.binding_generation,
-                    window.recipient.native_session.as_str(),
                 )
                 .unwrap();
             entry.record(&id, window.f.clock.utc_now(), false);
@@ -11624,10 +12210,10 @@ fn presentation_owner_replay_mid_work_budget_keeps_first_capture_uninstalled() {
             .f
             .state
             .lock()
-            .seat_mut(
+            .binding_mut(
                 &window.recipient.seat,
+                &binding_for_claim(&window.f, &window.recipient),
                 window.recipient.binding_generation,
-                window.recipient.native_session.as_str(),
             )
             .unwrap()
             .record(id, window.f.clock.utc_now(), false);
@@ -11722,10 +12308,10 @@ fn presentation_owner_replay_mid_work_budget_keeps_first_capture_uninstalled() {
         .f
         .state
         .lock()
-        .seat_mut(
+        .binding_mut(
             &window.recipient.seat,
+            &binding_for_claim(&window.f, &window.recipient),
             window.recipient.binding_generation,
-            window.recipient.native_session.as_str(),
         )
         .unwrap()
         .due_snapshot(crate::protocol::delivery::PresentationConsumer::Watch);

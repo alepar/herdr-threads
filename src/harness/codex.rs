@@ -93,6 +93,28 @@ pub const CONTRACT: HarnessContract = HarnessContract {
                 f("agent_type", Str, false),
             ],
         },
+        // A subagent's end (ht-54r.11): disconnects the binding keyed by (session_id, agent_id).
+        EventContract {
+            event: "SubagentStop",
+            class: EventClass::Other,
+            fields: &[
+                f("hook_event_name", Str, true),
+                f("session_id", Str, true),
+                f("turn_id", Str, false),
+                f("agent_id", Str, true),
+                f("agent_type", Str, false),
+            ],
+        },
+        // The root session's end (ht-54r.11): disconnects the session's binding and its subagents.
+        EventContract {
+            event: "SessionEnd",
+            class: EventClass::Other,
+            fields: &[
+                f("hook_event_name", Str, true),
+                f("session_id", Str, true),
+                f("turn_id", Str, false),
+            ],
+        },
     ],
 };
 
@@ -190,7 +212,7 @@ pub fn recipe_for(installed: &str) -> Result<&'static CodexRecipe, LookupError> 
     recipe::lookup(RECIPES, installed)
 }
 
-/// Why setup owns a native hook group. Every purpose is context-only.
+/// Why setup owns a native hook group. Every purpose is context-only or bookkeeping-only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HookPurpose {
     /// `SessionStart` lifecycle check-in context.
@@ -202,6 +224,9 @@ pub enum HookPurpose {
     /// that shape without a decision (source-read), and a live 0.158.0 run
     /// delivered it to the model without blocking the tool call.
     ToolBoundaryContext,
+    /// `SubagentStop` / `SessionEnd`: a bookkeeping event that disconnects the binding it names
+    /// (spec §3). It renders no context.
+    EndEvent,
 }
 
 /// One hook group setup owns, exactly as it is installed.
@@ -241,6 +266,16 @@ pub const DECLARATION: Declaration = Declaration {
             event: "PreToolUse",
             matcher: Some("^Bash$"),
             purpose: HookPurpose::ToolBoundaryContext,
+        },
+        OwnedHook {
+            event: "SubagentStop",
+            matcher: None,
+            purpose: HookPurpose::EndEvent,
+        },
+        OwnedHook {
+            event: "SessionEnd",
+            matcher: None,
+            purpose: HookPurpose::EndEvent,
         },
     ],
     limitation: "codex invocation transport unsupported: approving updatedInput rewrite, \
@@ -980,6 +1015,17 @@ fn check_hooks_v1(value: &Value) -> Result<(), ContextError> {
                 return Err(ContextError::Invalid);
             }
         }
+        "SubagentStop" => {
+            // The end of a spawned thread: the binding it disconnects is keyed by (session, agent).
+            required(value, "agent_id")?;
+            field(value, "agent_type")?;
+        }
+        "SessionEnd" => {
+            // The root session's end names no agent.
+            if field(value, "agent_id")?.is_some() || field(value, "agent_type")?.is_some() {
+                return Err(ContextError::Invalid);
+            }
+        }
         "SubagentStart" => {
             // Complete HooksV1 SubagentStartCommandInput.
             for key in [
@@ -1102,7 +1148,8 @@ fn parse_shape(value: &Value, event_id: &str) -> Result<LifecycleEvent, ContextE
             };
             (source, kind, role)
         }
-        "SubagentStart" => (name, EventKind::Startup, Role::Subagent),
+        "SubagentStart" | "SubagentStop" => (name, EventKind::Startup, Role::Subagent),
+        "SessionEnd" => (name, EventKind::Startup, Role::TopLevel),
         "PreToolUse" if field(value, "tool_name")?.as_deref() == Some("Bash") => {
             required(value, "tool_use_id")?;
             (name, EventKind::Tool, role)
@@ -1117,6 +1164,7 @@ fn parse_shape(value: &Value, event_id: &str) -> Result<LifecycleEvent, ContextE
         role,
         event_id: event_id.into(),
         capability: Capability::SourceSupported,
+        agent_id: None,
     })
 }
 
@@ -1242,9 +1290,73 @@ impl super::adapter::CanaryStrategy for CodexCanary {
         }
     }
 }
+fn argv0_basename(record: &crate::ports::ProcessRecord) -> &str {
+    let argv0 = record.argv.first().map_or("", String::as_str);
+    argv0.rsplit('/').next().unwrap_or(argv0)
+}
+
+/// A process shaped like Codex beyond an argv[0] of exactly `codex`: a `codex-*` binary or the
+/// npm launcher.
+fn is_codex_shape(record: &crate::ports::ProcessRecord) -> bool {
+    argv0_basename(record).starts_with("codex-")
+        || record
+            .argv
+            .iter()
+            .any(|a| a.ends_with("/codex.js") || a.contains("@openai/codex"))
+}
+
+/// A `codex app-server --managed-daemon` process: no pane, so no pane-bound caller can sit under it.
+fn is_managed_daemon(record: &crate::ports::ProcessRecord) -> bool {
+    (argv0_basename(record) == "codex" || is_codex_shape(record))
+        && record.argv.iter().any(|a| a == "app-server")
+        && record.argv.iter().any(|a| a == "--managed-daemon")
+}
+
+fn managed_daemon_refusal(pid: u32) -> String {
+    format!(
+        "this command runs under `codex app-server --managed-daemon` (pid {pid}), which has \
+         no pane; keep Codex in its pane (the pane-env block from branch codex-daemon-env) \
+         or run Codex with --no-daemon"
+    )
+}
+
+/// Codex names a subagent by `CODEX_THREAD_ID` differing from the session id. An empty or equal
+/// value is top-level; a distinct unparseable one is refused, never read as top-level.
+fn caller_session(session: &str, env: &dyn Fn(&str) -> Option<String>) -> CallerSession {
+    match env("CODEX_THREAD_ID").filter(|thread| !thread.is_empty() && thread != session) {
+        None => CallerSession::TopLevel,
+        Some(thread) if crate::protocol::ids::AgentId::parse(thread.clone()).is_ok() => {
+            CallerSession::Marked { agent: thread }
+        }
+        Some(_) => CallerSession::MalformedMarker {
+            var: "CODEX_THREAD_ID",
+        },
+    }
+}
+
 impl HarnessAdapter for CodexAdapter {
     fn installer_policy(&self) -> Option<&dyn InstallerPolicy> {
         Some(self)
+    }
+    fn caller_env(&self) -> Option<CallerEnvShape> {
+        Some(CallerEnvShape {
+            process_names: &["codex"],
+            session_var: "CODEX_SESSION_ID",
+            role: Some(caller_session),
+            process_match: Some(is_codex_shape),
+            pid_var: None,
+            paneless: Some(PanelessProcess {
+                matches: is_managed_daemon,
+                refusal: managed_daemon_refusal,
+            }),
+        })
+    }
+    fn required_hook_events(&self) -> Vec<&'static str> {
+        DECLARATION
+            .owned_hooks
+            .iter()
+            .map(|hook| hook.event)
+            .collect()
     }
     fn receipt_admission_summary(&self) -> Option<String> {
         Some("declared".into())
@@ -1371,6 +1483,16 @@ impl HarnessAdapter for CodexAdapter {
                     milestone: None,
                     always_send: false,
                 },
+                super::evidence::EvidenceEvent {
+                    native_event: "SubagentStop",
+                    milestone: None,
+                    always_send: false,
+                },
+                super::evidence::EvidenceEvent {
+                    native_event: "SessionEnd",
+                    milestone: None,
+                    always_send: false,
+                },
             ],
             required_milestones: &["lifecycle", "tool"],
             qualifications: &[],
@@ -1445,7 +1567,7 @@ impl HarnessAdapter for CodexAdapter {
             }
         }
         parse_event_for_contract(&input.bytes, &uuid::Uuid::new_v4().to_string(), admitted)
-            .map(DecodedEvent::from_native)
+            .map(|event| DecodedEvent::from_native_payload(event, &input.bytes))
             .map_err(DecodeFailure::Native)
     }
     fn encode(

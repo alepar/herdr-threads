@@ -48,7 +48,7 @@
       {
         "domain": "native_payload",
         "origin": "native_payload",
-        "id": "c4c4b249584b3578",
+        "id": "f527a509c67d2f32",
         "events": [
           {
             "event": "SessionStart",
@@ -58,6 +58,16 @@
           {
             "event": "PreToolUse",
             "milestone": "tool",
+            "always_send": false
+          },
+          {
+            "event": "SubagentStart",
+            "milestone": null,
+            "always_send": false
+          },
+          {
+            "event": "SubagentStop",
+            "milestone": null,
             "always_send": false
           }
         ],
@@ -83,7 +93,7 @@
       },
       "domain": "native_payload",
       "origin": "native_payload",
-      "contract_id": "c4c4b249584b3578",
+      "contract_id": "f527a509c67d2f32",
       "status": "verified",
       "evidence_stage": "no_model",
       "source": "manual",

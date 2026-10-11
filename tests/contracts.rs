@@ -364,6 +364,7 @@ fn registration_request_binds_operation_and_selected_offer_context() {
     };
     let request = RegisterAvailableRequest {
         command: CheckIn {
+            lineage_parent: None,
             mode: herdr_threads::protocol::commands::CheckInMode::Current,
             claim: CallerClaim {
                 instance: "i".into(),
@@ -374,6 +375,8 @@ fn registration_request_binds_operation_and_selected_offer_context() {
                 native_session: NativeSessionId::new("n"),
                 execution: ExecutionId::new("e"),
                 target: HostTargetId::new("p"),
+                agent_id: None,
+                liveness: None,
             },
             operation: OperationId::new("op"),
         },
@@ -596,7 +599,7 @@ fn thread_detail_and_search_hit_preserve_compound_metadata() {
 fn seat_and_delivery_inspection_are_compound_pages() {
     let page = serde_json::json!({"items":[],"next_cursor":null,"next_argv":null,"high_water_ordinal":0,"scope_revision":null,"has_more":false,"stop_reason":"complete","consistency":"bounded_live"});
     let seat = serde_json::json!({"kind":"seat_inspect","data":{
-        "summary":{"seat":"s","continuity":"resolved","target":"p","generation":2,"created_at":1,"retired_at":null},
+        "summary":{"seat":"s","continuity":"resolved","target":"p","generation":2,"created_at":1,"retired_at":null,"active":false,"bindings":[]},
         "mapping":{"state":"resolved","target":"p","detail_argv":["seat","inspect","s"]},
         "hold":null,"open_binding":null,"retirement":null,"history":page
     }});
@@ -614,10 +617,17 @@ fn seat_and_delivery_inspection_are_compound_pages() {
 
 #[test]
 fn pending_and_retired_rows_preserve_physical_and_provenance_facts() {
-    let participant = serde_json::json!({"seat":"s","episode":2,"joined":false,"retired":true,"physical_state":"joined","effective_state":"retired","joined_at":10,"left_at":null,"retirement_cutover":20,"cleanup_state":"pending","accepted_invitation":{"invitation":"v","actor":"s","generation":2,"native_observation":"proof","accepted_at":10}});
+    // presence fields, spec §3 Presence (ht-54r.16)
+    let participant = serde_json::json!({"seat":"s","episode":2,"joined":false,"retired":true,"physical_state":"joined","effective_state":"retired","joined_at":10,"left_at":null,"retirement_cutover":20,"cleanup_state":"pending","accepted_invitation":{"invitation":"v","actor":"s","generation":2,"native_observation":"proof","accepted_at":10},"active":false,"bindings":[]});
     let parsed: herdr_threads::protocol::results::Participant =
         serde_json::from_value(participant.clone()).unwrap();
     assert_eq!(serde_json::to_value(parsed).unwrap(), participant);
+    // presence fields, spec §3 Presence (ht-54r.16): an active member with a top-level and a
+    // subagent binding (the top-level one omits `agent_id`)
+    let present = serde_json::json!({"seat":"s","episode":2,"joined":false,"retired":true,"physical_state":"joined","effective_state":"retired","joined_at":10,"left_at":null,"retirement_cutover":20,"cleanup_state":"pending","accepted_invitation":{"invitation":"v","actor":"s","generation":2,"native_observation":"proof","accepted_at":10},"active":true,"bindings":[{"harness":"claude","role":"top_level","connected":true},{"harness":"claude","role":"subagent","connected":false,"agent_id":"a1"}]});
+    let parsed: herdr_threads::protocol::results::Participant =
+        serde_json::from_value(present.clone()).unwrap();
+    assert_eq!(serde_json::to_value(parsed).unwrap(), present);
     let receipt = serde_json::json!({"message":"m","thread":"t","seat":"s","sequence":4,"sender":"author","decision_at":5,"available_at":null,"deadline":null,"overdue":false});
     let parsed: herdr_threads::protocol::results::PendingReceipt =
         serde_json::from_value(receipt.clone()).unwrap();
@@ -922,6 +932,7 @@ fn wake_candidate_exposes_pending_obligation_with_zero_projection_bits() {
     use herdr_threads::ports::{WakeCandidate, WarningOfferFrontier};
     use herdr_threads::protocol::ids::{ExecutionId, SeatId};
     let candidate = WakeCandidate {
+        targets: Vec::new(),
         seat: SeatId::new("s"),
         attention_witness: None,
         effectively_retired: false,
@@ -1741,6 +1752,8 @@ fn operator_boundary_only_accepts_three_administrative_commands() {
             native_session: NativeSessionId::new("n1"),
             execution: ExecutionId::new("e1"),
             target: HostTargetId::new("p1"),
+            agent_id: None,
+            liveness: None,
         },
     });
     assert!(OperatorCommand::try_from(native).is_err());
@@ -2529,6 +2542,7 @@ fn process_hint_mode_mismatch_rejects_correlation() {
         epoch: 3,
         submitted_at_mono: MonoInstant(1),
         completed_at_mono: MonoInstant(2),
+        started_process: None,
     };
     assert!(correlation.matches_request(&request, &context));
     correlation.process_hint = true;

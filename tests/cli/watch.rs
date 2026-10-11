@@ -121,6 +121,8 @@ struct FakeClient {
     calls: Mutex<Vec<Command>>,
     watch_capability: bool,
     presentation_capability: bool,
+    /// The daemon also serves per-binding unread streams (`inbox.binding_cursors_v1`).
+    cursors_capability: bool,
     /// Makes the capability probe fail: `Err` is an outer (transport) failure,
     /// `Ok` a definitive daemon rejection.
     probe: Option<Result<ApiError, ApiError>>,
@@ -135,6 +137,7 @@ impl FakeClient {
             calls: Mutex::new(Vec::new()),
             watch_capability: true,
             presentation_capability: false,
+            cursors_capability: false,
             probe: None,
         }
     }
@@ -170,14 +173,16 @@ impl LocalClient for FakeClient {
                 Some(Ok(rejection)) => Ok(Err(rejection.clone())),
                 None => Ok(Ok(CommandResult::Capabilities(CapabilityList {
                     capabilities: if self.watch_capability {
+                        let mut list = vec![MOD_WATCH.to_owned()];
                         if self.presentation_capability {
-                            vec![
-                                MOD_WATCH.to_owned(),
+                            list.push(
                                 crate::protocol::capabilities::DELIVERY_PRESENTATION_V2.to_owned(),
-                            ]
-                        } else {
-                            vec![MOD_WATCH.to_owned()]
+                            );
                         }
+                        if self.cursors_capability {
+                            list.push(crate::protocol::capabilities::BINDING_CURSORS.to_owned());
+                        }
+                        list
                     } else {
                         Vec::new()
                     },
@@ -320,6 +325,7 @@ fn run_drain(
         client,
         &clock(),
         &SeatId::new("me"),
+        None,
         version,
         state,
         &mut out,
@@ -940,6 +946,7 @@ fn drain_surfaces_daemon_errors_and_closed_stdout() {
         &client,
         &clock(),
         &SeatId::new("me"),
+        None,
         1,
         &mut EmitState::default(),
         &mut ClosedStdout,
@@ -980,7 +987,46 @@ fn claim() -> CallerClaim {
         native_session: NativeSessionId::new("sess-1"),
         execution: ExecutionId::new(uuid::Uuid::from_u128(2).to_string()),
         target: HostTargetId::new("w1:p1"),
+        agent_id: None,
+        liveness: None,
     }
+}
+
+#[test]
+fn watch_registers_with_its_own_session_claim() {
+    use crate::protocol::{authority::LivenessFingerprint, ids::AgentId};
+    // The seat context on disk may name another session, a subagent or a stale role: the claim
+    // the watch child registers names the `--session` it serves, as a top-level Claude caller.
+    let mut stale = claim();
+    stale.native_session = NativeSessionId::new("some-other-session");
+    stale.role = CallerRole::Subagent;
+    stale.agent_id = Some(AgentId::new("agent-7"));
+    let own = own_session_claim(stale, "sess-2", Some(LivenessFingerprint::TEST))
+        .ok()
+        .unwrap();
+    assert_eq!(own.native_session, NativeSessionId::new("sess-2"));
+    assert_eq!(own.role, CallerRole::TopLevel);
+    assert_eq!(own.agent_id, None);
+    assert_eq!(own.harness, crate::protocol::authority::Harness::Claude);
+    assert_eq!(own.liveness, Some(LivenessFingerprint::TEST));
+    assert_eq!(own.seat, SeatId::new("me"), "the seat comes from the pane");
+    // Two sessions of one seat register two different binding keys.
+    let a = own_session_claim(claim(), "sess-a", None).ok().unwrap();
+    let b = own_session_claim(claim(), "sess-b", None).ok().unwrap();
+    assert_ne!(
+        crate::store::bindings::BindingKey::from_claim(&a),
+        crate::store::bindings::BindingKey::from_claim(&b)
+    );
+    // Without a fresh fingerprint the claim keeps what the context recorded.
+    let mut recorded = claim();
+    recorded.liveness = Some(LivenessFingerprint::TEST);
+    assert_eq!(
+        own_session_claim(recorded, "sess-a", None)
+            .ok()
+            .unwrap()
+            .liveness,
+        Some(LivenessFingerprint::TEST)
+    );
 }
 
 fn write_frame(stream: &mut UnixStream, value: &impl serde::Serialize) {
@@ -1848,6 +1894,7 @@ fn presentation_watch_requires_both_capability_and_valid_accepted_lease() {
             other => panic!("inactive negotiation issued {other:?}"),
         });
         client.presentation_capability = capability;
+        client.cursors_capability = true;
         let clock = clock();
         let mut out = Vec::new();
         assert_eq!(
@@ -1866,6 +1913,7 @@ fn presentation_watch_requires_both_capability_and_valid_accepted_lease() {
             client.calls().as_slice(),
             [Command::InboxBatchV2(_)]
         ));
+        assert_eq!(inbox_claims(&client), [Some(claim())]);
         server.finish();
     }
 }
@@ -1904,6 +1952,7 @@ fn capable_watch_streams_ordered_v2_then_explicitly_confirms_captured_controls()
     let mut client = FakeClient::new(move |command| match command {
         Command::InboxBatchV2(_) => Ok(CommandResult::InboxBatchV2(page(vec![], None))),
         Command::DeliveryPullV2(pull) => {
+            assert_eq!(pull.claim, claim());
             assert_eq!(pull.presentation_lease.as_deref(), Some(lease));
             Ok(CommandResult::DeliveryPulledV2(DeliveryPullReplyV2::Page(
                 DeliveryPageV2 {
@@ -1921,6 +1970,7 @@ fn capable_watch_streams_ordered_v2_then_explicitly_confirms_captured_controls()
             )))
         }
         Command::DeliveryPresentationConfirmV2(confirm) => {
+            assert_eq!(confirm.claim, claim());
             assert!(confirm.emitted_controls.is_empty());
             assert_eq!(confirm.presentation_lease.as_deref(), Some(lease));
             Ok(CommandResult::DeliveryPresentationConfirmedV2(
@@ -1932,6 +1982,7 @@ fn capable_watch_streams_ordered_v2_then_explicitly_confirms_captured_controls()
         other => panic!("unexpected {other:?}"),
     });
     client.presentation_capability = true;
+    client.cursors_capability = true;
     let clock = clock();
     let mut out = Vec::new();
     assert_eq!(
@@ -2293,4 +2344,56 @@ fn presentation_watch_new_owner_physically_reemits_before_own_confirmation() {
             matches!(&pair[1],Command::DeliveryPresentationConfirmV2(p) if p.presentation_lease.as_deref()==Some(lease)&&p.emitted_controls.is_empty())
         );
     }
+}
+
+/// Every `InboxBatchV2` query the client recorded.
+fn inbox_claims(client: &FakeClient) -> Vec<Option<CallerClaim>> {
+    client
+        .calls()
+        .into_iter()
+        .filter_map(|command| match command {
+            Command::InboxBatchV2(query) => Some(query.claim),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Kills: a watch drain that reads the seat (`claim: None`), which never carries a message a
+/// sibling binding already settled.
+#[test]
+fn watch_drain_reads_the_registering_bindings_own_stream() {
+    let server = Server::start(|stream, request| {
+        write_frame(stream, &reply(&request, accepted(1)));
+    });
+    let mut client = empty_inbox();
+    client.cursors_capability = true;
+    let clock = clock();
+    let mut out = Vec::new();
+    let exit = run_session(session(&client, &clock, &server.socket), &mut out, || true);
+    assert_eq!(exit, 0);
+    let claims = inbox_claims(&client);
+    assert!(!claims.is_empty(), "the drain after Accepted ran");
+    for read in claims {
+        assert_eq!(read, Some(claim()), "the page is the binding's own stream");
+    }
+    server.finish();
+}
+
+/// Control: a daemon without `inbox.binding_cursors_v1` keeps the seat read.
+#[test]
+fn watch_drain_reads_the_seat_without_the_binding_cursors_capability() {
+    let server = Server::start(|stream, request| {
+        write_frame(stream, &reply(&request, accepted(1)));
+    });
+    let client = empty_inbox();
+    let clock = clock();
+    let mut out = Vec::new();
+    let exit = run_session(session(&client, &clock, &server.socket), &mut out, || true);
+    assert_eq!(exit, 0);
+    let claims = inbox_claims(&client);
+    assert!(!claims.is_empty());
+    for read in claims {
+        assert_eq!(read, None);
+    }
+    server.finish();
 }

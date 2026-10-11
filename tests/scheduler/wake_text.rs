@@ -15,8 +15,8 @@ use crate::{
     protocol::{
         authority::Harness,
         ids::{
-            ExecutionId, HostBootId, HostCallId, HostTargetId, NativeSessionId, SeatId, TerminalId,
-            WakeAttemptId,
+            BindingId, ExecutionId, HostBootId, HostCallId, HostTargetId, NativeSessionId, SeatId,
+            TerminalId, WakeAttemptId,
         },
         results::ApiError,
         time::{CallBudget, Cancellation, Clock, MonoInstant, UtcMillis},
@@ -45,9 +45,14 @@ struct TextRecordingHost {
     observation: HostObservation,
     /// Set on the safe target the host hands back (a recovery hint carries none of its own).
     host_bound_harness: Option<&'static str>,
+    /// The pane's foreground pids the host reports.
+    foreground: Vec<u32>,
     typed: Mutex<Vec<String>>,
 }
 impl HostPort for TextRecordingHost {
+    fn foreground_pids(&self, _: &HostTargetId, _: &HostCallContext) -> Result<Vec<u32>, ApiError> {
+        Ok(self.foreground.clone())
+    }
     fn observe_current_target_for_archival(
         &self,
         _: &HostTargetId,
@@ -205,16 +210,19 @@ fn cooperative(harness: &str) -> ReservedWakeAuthority {
         incarnation: "incarnation".into(),
         binding_generation: None,
         harness: Some(harness.to_owned()),
+        targets: Vec::new(),
     }
 }
 
-/// An outlook that says whether any seat holds ids parked for `inbox`.
+/// An outlook that says whether any seat holds ids parked for `inbox`: for every target list, or (with
+/// `only`) just for that one.
 struct FakeOutlook {
     parked: bool,
+    only: Option<Vec<BindingId>>,
 }
 impl HookPullOutlook for FakeOutlook {
-    fn holds_parked(&self, _: &SeatId, _: u64) -> bool {
-        self.parked
+    fn holds_parked(&self, _: &SeatId, targets: &[BindingId], _: u64) -> bool {
+        self.parked && self.only.as_ref().is_none_or(|only| only == targets)
     }
 }
 
@@ -234,6 +242,23 @@ fn typed_with(
     host_bound_harness: Option<&'static str>,
     parked: bool,
 ) -> Vec<String> {
+    typed_through(
+        authority,
+        observation(verified_idle),
+        host_bound_harness,
+        FakeOutlook { parked, only: None },
+        Vec::new(),
+    )
+}
+
+/// Like [`typed_with`], through the given outlook and with the host reporting `foreground` pids.
+fn typed_through(
+    authority: ReservedWakeAuthority,
+    observation: HostObservation,
+    host_bound_harness: Option<&'static str>,
+    outlook: FakeOutlook,
+    foreground: Vec<u32>,
+) -> Vec<String> {
     let context = HostCallContext {
         budget: CallBudget {
             deadline: MonoInstant(5_000),
@@ -243,11 +268,11 @@ fn typed_with(
         expected_epoch: Some(1),
     };
     let host = TextRecordingHost {
-        observation: observation(verified_idle),
+        observation,
         host_bound_harness,
+        foreground,
         typed: Mutex::new(vec![]),
     };
-    let outlook = FakeOutlook { parked };
     let dispatch =
         NativeWakeDispatcher::new(&host, &CurrentReservation, &FixedClock).with_hook_pull(&outlook);
     assert_eq!(
@@ -292,6 +317,7 @@ fn cooperative_in(harness: &str, binding_generation: Option<u64>) -> ReservedWak
         incarnation: "incarnation".into(),
         binding_generation,
         harness: Some(harness.to_owned()),
+        targets: Vec::new(),
     }
 }
 
@@ -360,4 +386,50 @@ fn wake_texts_are_one_line_and_the_minimal_one_is_content_free() {
     }
     assert!(!WAKE_UP.contains("inbox"));
     assert!(!WAKE_UP.contains("run"));
+}
+
+/// Kills: an `inbox` marker chosen from the whole seat (or the other binding) instead of the binding the composer
+/// wake reaches: two bindings share one composer, and only the one whose process is in the foreground is typed to.
+#[test]
+fn the_inbox_marker_follows_the_composer_bindings_parking() {
+    let (a, b) = (BindingId::new("binding-a"), BindingId::new("binding-b"));
+    let two_targets = || ReservedWakeAuthority::Cooperative {
+        terminal: TerminalId::new("terminal"),
+        incarnation: "incarnation".into(),
+        binding_generation: Some(1),
+        harness: None,
+        targets: [(&a, 111), (&b, 222)]
+            .into_iter()
+            .map(|(binding, pid)| crate::ports::WakeTarget {
+                binding: binding.clone(),
+                harness: "agy".to_owned(),
+                fingerprint_pid: Some(pid),
+            })
+            .collect(),
+    };
+    let typed = |parked_only: &BindingId| {
+        // Several targets need an idle pane; the composer wake is cooperative, so no verified occupant.
+        let mut idle = observation(false);
+        idle.ui = HostUiState::Idle;
+        typed_through(
+            two_targets(),
+            idle,
+            None,
+            FakeOutlook {
+                parked: true,
+                only: Some(vec![parked_only.clone()]),
+            },
+            vec![111],
+        )
+    };
+    assert_eq!(
+        typed(&a),
+        vec![MARKER.to_owned()],
+        "the foreground binding A holds parked ids"
+    );
+    assert_eq!(
+        typed(&b),
+        vec!["herdr-threads: wake up".to_owned()],
+        "only the other binding B holds parked ids: the woken one has none"
+    );
 }

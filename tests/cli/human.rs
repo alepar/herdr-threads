@@ -148,6 +148,9 @@ fn participants_are_a_list_marking_self() {
         retirement_cutover: None,
         cleanup_state: None,
         accepted_invitation: None,
+        active: false,
+        bindings: Vec::new(),
+        availability: None,
     };
     let out = human(&CommandResult::Participants(page(vec![
         participant("seat-A", MembershipStatus::Joined, true),
@@ -434,6 +437,9 @@ impl crate::ports::LocalClient for HumanClient {
                     generation: self.generation.load(SeqCst),
                     created_at: UtcMillis(0),
                     retired_at: None,
+                    active: false,
+                    bindings: Vec::new(),
+                    availability: None,
                 },
                 mapping: MappingStatus {
                     state: ContinuityStatus::Resolved,
@@ -470,6 +476,8 @@ impl crate::ports::LocalClient for HumanClient {
                     warnings: page(vec![]),
                     notices: Default::default(),
                     inbox: page(vec![]),
+                    first_contact: None,
+                    fast_forward: None,
                 }))
             }
             _ => Err(ApiError::unknown_outcome(

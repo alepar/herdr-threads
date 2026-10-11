@@ -16,7 +16,7 @@ use super::{
 use crate::daemon::paths::InstancePaths;
 use crate::ports::LocalClient;
 use crate::{
-    harness::{bridge, context::Role, shell_word},
+    harness::{context::Role, shell_word},
     protocol::{
         commands::Command,
         ids::{LeaseToken, SummaryJobId, ThreadId},
@@ -140,7 +140,13 @@ pub(crate) fn run_with_input<C: LocalClient + ?Sized, W: Write>(
         return Err(super::mapping_error("service returned no seat inspection"));
     };
     let generation = super::selected_generation(selection, &inspection)?;
-    let context = super::seat_contexts(paths, instance, &selection.seat)?
+    let contexts = super::caller_journal(
+        super::seat_contexts(paths, instance, &selection.seat)?,
+        instance,
+        selection,
+        generation,
+    )?;
+    let context = contexts
         .current()
         .map_err(super::context_run_error)?
         .ok_or_else(|| {
@@ -156,7 +162,7 @@ pub(crate) fn run_with_input<C: LocalClient + ?Sized, W: Write>(
             "local context differs from current service mapping",
         ));
     }
-    let claim = bridge::caller_claim(&context).map_err(super::context_run_error)?;
+    let claim = contexts.claim(&context).map_err(super::context_run_error)?;
     let command = match action {
         SummaryCli::Summary { thread } => Command::Summary(SummaryRequest {
             thread: thread.clone(),

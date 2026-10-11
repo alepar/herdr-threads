@@ -484,8 +484,10 @@ fn attribute(tx: &Connection, warning: &str, seat: &str, event_seq: i64) -> Resu
         ).map_err(store_error)?;
         return Ok(());
     }
-    let unoffered = super::attention::informational_notice_pending(tx, seat, warning)?
-        .unwrap_or(!offered(tx, seat, event_seq)?);
+    let unoffered = match super::attention::informational_notice_pending(tx, seat, warning)? {
+        Some(pending) => pending,
+        None => !offered(tx, seat, event_seq)?,
+    };
     if inserted > 0 && actionable(tx, warning, seat)? && unoffered {
         bump(tx, seat)?;
     }
@@ -545,7 +547,7 @@ fn actionable(tx: &Connection, warning: &str, seat: &str) -> Result<bool, ApiErr
                 return Ok(false);
             }
             let episode:Option<i64>=tx.query_row("SELECT unavailability_episode FROM prepared_unavailable_warnings WHERE warning_id=?1",[warning],|r|r.get(0)).optional().map_err(store_error)?;
-            let (current,open,available):(i64,i64,bool)=tx.query_row("SELECT s.unavailability_episode,s.unavailability_open,EXISTS(SELECT 1 FROM occupant_bindings b JOIN host_instances h ON h.id=s.instance_id WHERE b.seat_id=s.id AND b.generation=s.generation AND b.ended_at IS NULL AND b.registered_at IS NOT NULL AND b.host_boot=h.host_boot AND b.host_epoch=h.host_epoch) FROM seats s WHERE s.id=?1",[owner.as_str()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(store_error)?;
+            let (current,open,available):(i64,i64,bool)=tx.query_row("SELECT s.unavailability_episode,s.unavailability_open,EXISTS(SELECT 1 FROM occupant_bindings b JOIN host_instances h ON h.id=s.instance_id WHERE b.seat_id=s.id AND b.ended_at IS NULL AND b.registered_at IS NOT NULL AND b.host_boot=h.host_boot AND b.host_epoch=h.host_epoch) FROM seats s WHERE s.id=?1",[owner.as_str()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(store_error)?;
             Ok(episode == Some(current) && open == 1 && !available && !condition.is_empty())
         }
         _ => Err(api_error(
@@ -555,8 +557,9 @@ fn actionable(tx: &Connection, warning: &str, seat: &str) -> Result<bool, ApiErr
     }
 }
 
-fn offered(tx: &Connection, seat: &str, event_seq: i64) -> Result<bool, ApiError> {
-    tx.query_row("SELECT EXISTS(SELECT 1 FROM warning_offer o JOIN seats s ON s.id=o.seat_id JOIN occupant_bindings b ON b.seat_id=s.id AND b.generation=s.generation AND b.ended_at IS NULL WHERE o.seat_id=?1 AND o.binding_generation=s.generation AND o.execution_id=b.execution_id AND o.offered_through_seq>=?2)",params![seat,event_seq],|r|r.get(0)).map_err(store_error)
+pub(crate) fn offered(tx: &Connection, seat: &str, event_seq: i64) -> Result<bool, ApiError> {
+    // The seat view follows its latest open top-level binding's own offer frontier (ht-54r.9).
+    tx.query_row(&format!("SELECT EXISTS(SELECT 1 FROM warning_offer o WHERE o.binding_id=({}) AND o.offered_through_seq>=?2)",super::attention::SEAT_NOTICE_BINDING_SQL),params![seat,event_seq],|r|r.get(0)).map_err(store_error)
 }
 
 fn bump(tx: &Connection, seat: &str) -> Result<(), ApiError> {
@@ -686,8 +689,10 @@ fn service_notification_unit(
             |r| r.get(0),
         )
         .map_err(store_error)?;
-    let unoffered = super::attention::informational_notice_pending(tx, &seat, &message)?
-        .unwrap_or(!offered(tx, &seat, seq)?);
+    let unoffered = match super::attention::informational_notice_pending(tx, &seat, &message)? {
+        Some(pending) => pending,
+        None => !offered(tx, &seat, seq)?,
+    };
     if inserted > 0 && !retired && unoffered {
         bump(tx, &seat)?;
     }

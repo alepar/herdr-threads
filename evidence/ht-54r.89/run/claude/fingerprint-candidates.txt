@@ -1,0 +1,1 @@
+42815 /Users/alepar/.local/bin/claude

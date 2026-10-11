@@ -95,9 +95,11 @@ pub(crate) fn claim() -> CallerClaim {
         binding_generation: 0,
         role: CallerRole::TopLevel,
         harness: Harness::Codex,
-        native_session: NativeSessionId::new("plugin_context:n"),
+        native_session: NativeSessionId::new("session-n"),
         execution: ExecutionId::new("00000000-0000-4000-8000-000000000001"),
         target: HostTargetId::new("p"),
+        agent_id: None,
+        liveness: Some(crate::protocol::authority::LivenessFingerprint::TEST),
     }
 }
 pub(crate) fn budget() -> CallBudget {
@@ -135,6 +137,7 @@ fn request(command: &CheckIn) -> CooperativePermitRequest {
 fn mapped_generation_zero_can_issue_cooperative_permit_without_native_attestation() {
     let (store, conn, _) = fixture();
     let command = CheckIn {
+        lineage_parent: None,
         mode: CheckInMode::Lifecycle {
             expected_binding_generation: 0,
         },
@@ -185,6 +188,7 @@ fn check_in_as(
 }
 pub(crate) fn lifecycle(context: CallerClaim, operation: &str) -> CheckIn {
     CheckIn {
+        lineage_parent: None,
         mode: CheckInMode::Lifecycle {
             expected_binding_generation: context.binding_generation,
         },
@@ -197,9 +201,11 @@ fn lifecycle_cas_current_and_response_loss_replay_preserve_context_and_anchors()
     let (store, conn, _) = fixture();
     let initial = lifecycle(claim(), "initial");
     let result = check_in(&store, initial.clone()).unwrap();
-    assert_eq!(result.context.binding_generation, 1);
+    // ht-54r.3: check-ins keep the seat's mapping generation (0) and never bump it.
+    assert_eq!(result.context.binding_generation, 0);
     assert_eq!(check_in(&store, initial.clone()).unwrap(), result);
     let current = CheckIn {
+        lineage_parent: None,
         mode: CheckInMode::Current,
         claim: result.context.clone(),
         operation: OperationId::new("current"),
@@ -213,18 +219,25 @@ fn lifecycle_cas_current_and_response_loss_replay_preserve_context_and_anchors()
     let mut replacement = result.context.clone();
     replacement.execution = ExecutionId::new("00000000-0000-4000-8000-000000000002");
     let successor = check_in(&store, lifecycle(replacement, "successor")).unwrap();
-    assert_eq!(successor.context.binding_generation, 2);
+    assert_eq!(successor.context.binding_generation, 0);
+    // ht-54r.21: the replayed context names the same session binding, still open at the seat's
+    // generation, so it is current; the pane's execution is not part of that identity.
     let historical = check_in(&store, initial).unwrap();
     assert_eq!(
         serde_json::to_value(&historical).unwrap()["context_disposition"],
-        "historical"
+        "current"
     );
     assert_eq!(historical.context, result.context);
     assert_eq!(historical.inbox, result.inbox);
     assert_eq!(historical.warnings, result.warnings);
+    // A context from a different mapping generation is stale (the execution is no longer part
+    // of a plain call's identity: the session's binding is the same one).
+    let mut stale_claim = result.context;
+    stale_claim.binding_generation = 7;
     let stale = CheckIn {
+        lineage_parent: None,
         mode: CheckInMode::Current,
-        claim: result.context,
+        claim: stale_claim,
         operation: OperationId::new("stale"),
     };
     assert_eq!(
@@ -235,7 +248,7 @@ fn lifecycle_cas_current_and_response_loss_replay_preserve_context_and_anchors()
         conn.query_row("SELECT generation FROM seats WHERE id='s'", [], |r| r
             .get::<_, i64>(0))
             .unwrap(),
-        2
+        0
     );
 }
 fn obligations(conn: &Connection) {
@@ -461,7 +474,9 @@ fn cooperative_operation_reuse_across_control_kinds_is_rejected() {
 fn lifecycle_cas_conflict_and_non_uuid_execution_are_rejected() {
     let (store, conn, _) = fixture();
     let first = check_in(&store, lifecycle(claim(), "first")).unwrap();
+    // A claim from another mapping generation than the seat's fails the lifecycle CAS.
     let mut stale = claim();
+    stale.binding_generation = 5;
     stale.execution = ExecutionId::new("00000000-0000-4000-8000-000000000003");
     assert_eq!(
         check_in(&store, lifecycle(stale, "stale-cas"))
@@ -481,7 +496,7 @@ fn lifecycle_cas_conflict_and_non_uuid_execution_are_rejected() {
         conn.query_row("SELECT generation FROM seats WHERE id='s'", [], |r| r
             .get::<_, i64>(0))
             .unwrap(),
-        1
+        0
     );
 }
 #[test]
@@ -492,13 +507,13 @@ fn ended_uuid_wrong_instance_child_and_exact_payload_reuse_are_fenced() {
     let mut replacement = first.context.clone();
     replacement.execution = ExecutionId::new("00000000-0000-4000-8000-000000000002");
     let second = check_in(&store, lifecycle(replacement, "second")).unwrap();
-    let mut ended = second.context.clone();
-    ended.execution = first.context.execution;
+    // ht-54r.3: a lifecycle check-in re-registers the session's binding in place and the binding
+    // is keyed by session, so the replaced execution is not fenced: the same session checking in
+    // under it again is served as the current context (the fingerprint it carries is the proof).
+    let again = check_in(&store, lifecycle(first.context.clone(), "ended")).unwrap();
     assert_eq!(
-        check_in(&store, lifecycle(ended, "ended"))
-            .unwrap_err()
-            .code,
-        ErrorCode::CallerUnverified
+        again.context_disposition,
+        crate::protocol::results::CheckInContextDisposition::Current
     );
     let mut wrong_instance = first_command.clone();
     wrong_instance.claim.instance = "another-instance".into();
@@ -512,6 +527,7 @@ fn ended_uuid_wrong_instance_child_and_exact_payload_reuse_are_fenced() {
         check_in(
             &store,
             CheckIn {
+                lineage_parent: None,
                 mode: CheckInMode::Current,
                 claim: child,
                 operation: OperationId::new("child")
@@ -533,6 +549,7 @@ fn ended_uuid_wrong_instance_child_and_exact_payload_reuse_are_fenced() {
         check_in(
             &store,
             CheckIn {
+                lineage_parent: None,
                 mode: CheckInMode::Current,
                 claim: second.context,
                 operation: OperationId::new("declared-top-level")
@@ -540,11 +557,12 @@ fn ended_uuid_wrong_instance_child_and_exact_payload_reuse_are_fenced() {
         )
         .is_ok()
     );
+    // One session, one binding: the second lifecycle check-in re-registered it.
     assert_eq!(
         conn.query_row("SELECT count(*) FROM occupant_bindings", [], |r| r
             .get::<_, i64>(0))
             .unwrap(),
-        2
+        1
     );
 }
 #[test]
@@ -817,7 +835,7 @@ fn cooperative_offer_failure_rolls_back_binding_anchor_frontier_and_operation() 
         None,
         permit,
         &budget(),
-        |_, _, _| {
+        |_, _, _, _, _| {
             Err(super::connection::api_error(
                 ErrorCode::InvalidBudget,
                 "bounded offer failed",
@@ -850,7 +868,7 @@ fn cooperative_offer_failure_rolls_back_binding_anchor_frontier_and_operation() 
             .unwrap()
             .context
             .binding_generation,
-        1
+        0
     );
 }
 #[test]
@@ -887,6 +905,16 @@ fn replay_metadata_preserves_stored_domain_result_and_selected_output_bounds() {
     let mut successor = first.context.clone();
     successor.execution = ExecutionId::new("00000000-0000-4000-8000-000000000002");
     check_in(&store, lifecycle(successor, "successor")).unwrap();
+    // ht-54r.21: the session's binding is still open at the seat generation: current. Only
+    // an ended binding (or a rebound seat) makes the replayed context historical.
+    assert_eq!(
+        check_in(&store, original.clone())
+            .unwrap()
+            .context_disposition,
+        CheckInContextDisposition::Current
+    );
+    conn.execute("UPDATE occupant_bindings SET ended_at=1", [])
+        .unwrap();
     let historical = check_in(&store, original).unwrap();
     assert_eq!(
         historical.context_disposition,
@@ -932,7 +960,7 @@ fn replay_metadata_preserves_stored_domain_result_and_selected_output_bounds() {
     );
 }
 #[test]
-fn lifecycle_generation_exceeds_seat_and_binding_history_maximum() {
+fn lifecycle_generation_is_the_seat_mapping_generation_not_binding_history() {
     let (store, conn, _) = fixture();
     conn.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,ended_at) VALUES ('s',9,'p','b',1,0,'codex','old','00000000-0000-4000-8000-000000000009','cooperative_top_level',0,1)",[]).unwrap();
     assert_eq!(
@@ -940,7 +968,8 @@ fn lifecycle_generation_exceeds_seat_and_binding_history_maximum() {
             .unwrap()
             .context
             .binding_generation,
-        10
+        // ht-54r.3: the seat's mapping generation; check-ins bump nothing.
+        0
     );
     assert_eq!(
         conn.query_row(
@@ -1164,6 +1193,16 @@ fn recorded_context_without_disposition_is_presented_from_locked_occupancy() {
     let mut successor = first.context.clone();
     successor.execution = ExecutionId::new("00000000-0000-4000-8000-000000000002");
     check_in(&store, lifecycle(successor, "successor")).unwrap();
+    // ht-54r.21: the session's binding is still open at the seat generation: current. Only
+    // an ended binding (or a rebound seat) makes the recorded context historical.
+    assert_eq!(
+        check_in(&store, command.clone())
+            .unwrap()
+            .context_disposition,
+        CheckInContextDisposition::Current
+    );
+    conn.execute("UPDATE occupant_bindings SET ended_at=1", [])
+        .unwrap();
     let historical = check_in(&store, command).unwrap();
     assert_eq!(
         historical.context_disposition,
@@ -1221,7 +1260,7 @@ fn partial_legacy_context_is_unsupported_without_reconstruction() {
     assert_eq!(
         conn.query_row("SELECT generation FROM seats", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        1
+        0
     );
 }
 
@@ -1250,7 +1289,7 @@ fn alternate_uuid_spellings_reject_without_binding_or_operation_changes() {
         assert_eq!(
             conn.query_row("SELECT generation FROM seats", [], |r| r.get::<_, i64>(0))
                 .unwrap(),
-            1
+            0
         );
         assert_eq!(
             conn.query_row("SELECT count(*) FROM occupant_bindings", [], |r| r
@@ -1278,7 +1317,7 @@ fn alternate_uuid_spellings_reject_without_binding_or_operation_changes() {
             .unwrap()
             .context
             .binding_generation,
-        2
+        0
     );
 }
 
@@ -1301,9 +1340,11 @@ fn stored_noncanonical_context_replay_is_exact_without_normalizing_history() {
     .unwrap();
     let replay = check_in(&store, command).unwrap();
     assert_eq!(replay.context.execution.as_str(), spelling);
+    // ht-54r.21: the session's binding is open at the seat generation whatever execution
+    // spelling the stored context carries, so it is presented as current.
     assert_eq!(
         replay.context_disposition,
-        CheckInContextDisposition::Historical
+        CheckInContextDisposition::Current
     );
     assert_eq!(replay.inbox, first.inbox);
     assert_eq!(
@@ -1326,7 +1367,7 @@ fn stored_noncanonical_context_replay_is_exact_without_normalizing_history() {
     assert_eq!(
         conn.query_row("SELECT generation FROM seats", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        1
+        0
     );
 }
 
@@ -1830,7 +1871,7 @@ fn historical_accountable_replay_obeys_its_independent_current_call_budget() {
     assert_eq!(
         conn.query_row("SELECT generation FROM seats", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        2
+        0
     );
     assert_eq!(
         conn.query_row(
@@ -1863,7 +1904,7 @@ fn cooperative_binding_records_observation_evidence_and_refuses_without_it() {
     let result = check_in(&store, lifecycle(claim(), "initial")).unwrap();
     assert_eq!(
         evidence(&conn),
-        vec![(1, Some("term-p".into()), Some("inc".into()))]
+        vec![(0, Some("term-p".into()), Some("inc".into()))]
     );
     // The host re-verifies the same pane under a new server incarnation.
     conn.execute(
@@ -1872,6 +1913,7 @@ fn cooperative_binding_records_observation_evidence_and_refuses_without_it() {
     )
     .unwrap();
     let current = CheckIn {
+        lineage_parent: None,
         mode: CheckInMode::Current,
         claim: result.context.clone(),
         operation: OperationId::new("current"),
@@ -1879,7 +1921,7 @@ fn cooperative_binding_records_observation_evidence_and_refuses_without_it() {
     check_in(&store, current).unwrap();
     assert_eq!(
         evidence(&conn),
-        vec![(1, Some("term-p2".into()), Some("inc2".into()))]
+        vec![(0, Some("term-p2".into()), Some("inc2".into()))]
     );
     // Without verified terminal/incarnation evidence nothing is registered.
     conn.execute("UPDATE observed_targets SET terminal_id=NULL,incarnation=NULL,incarnation_source_kind=NULL,connection_epoch=NULL", []).unwrap();
@@ -1902,7 +1944,7 @@ fn cooperative_binding_records_observation_evidence_and_refuses_without_it() {
     assert_eq!(count("SELECT count(*) FROM seat_availability"), anchors);
     assert_eq!(
         evidence(&conn),
-        vec![(1, Some("term-p2".into()), Some("inc2".into()))]
+        vec![(0, Some("term-p2".into()), Some("inc2".into()))]
     );
 }
 
@@ -1929,6 +1971,7 @@ fn pending_notices(conn: &Connection) -> ((u64, bool), i64) {
 
 fn current(context: &CallerClaim, operation: &str) -> CheckIn {
     CheckIn {
+        lineage_parent: None,
         mode: CheckInMode::Current,
         claim: context.clone(),
         operation: OperationId::new(operation),
@@ -2301,6 +2344,7 @@ fn builtin_warning_dedup_recipients_and_successor_have_independent_frontiers() {
     }
     let mut successor = a.context.clone();
     successor.execution = ExecutionId::new("00000000-0000-4000-8000-000000000098");
+    successor.native_session = NativeSessionId::new("successor-session");
     let replaced = check_in(&store, lifecycle(successor, "dedup-successor")).unwrap();
     assert_eq!(
         carried(&replaced),
@@ -2800,8 +2844,11 @@ fn programmatic_notices_settle_page_by_page_for_the_current_occupant() {
     // Replacement: the successor's frontier is its own, starting empty.
     let mut replacement = first.context.clone();
     replacement.execution = ExecutionId::new("00000000-0000-4000-8000-000000000002");
+    replacement.native_session = NativeSessionId::new("successor-session");
     let successor = check_in(&store, lifecycle(replacement, "successor")).unwrap();
-    assert_eq!(successor.context.binding_generation, 2);
+    // ht-54r.3: a new session adds a binding with a frontier of its own (ht-54r.9); the
+    // mapping generation does not move.
+    assert_eq!(successor.context.binding_generation, 0);
     assert_eq!(
         (successor.warning_count, successor.warning_count_has_more),
         (22, false)
@@ -2864,7 +2911,7 @@ fn human_lifecycle_check_in_over_cooperative_top_level_binding_is_refused() {
     );
     assert_eq!(
         open_bindings(&conn),
-        vec![(1, "codex".to_owned(), "cooperative_top_level".to_owned())]
+        vec![(0, "codex".to_owned(), "cooperative_top_level".to_owned())]
     );
     assert_eq!(binding_count(&conn), before);
     let generation: i64 = conn
@@ -2872,7 +2919,7 @@ fn human_lifecycle_check_in_over_cooperative_top_level_binding_is_refused() {
             r.get(0)
         })
         .unwrap();
-    assert_eq!(generation, 1);
+    assert_eq!(generation, 0);
 }
 
 #[test]
@@ -2889,12 +2936,12 @@ fn human_to_agent_lifecycle_check_in_still_replaces_human_binding() {
     assert!(waived_through > 0);
     assert_eq!(
         open_bindings(&conn),
-        vec![(1, "human".to_owned(), "operator_human".to_owned())]
+        vec![(0, "human".to_owned(), "operator_human".to_owned())]
     );
     let mut agent = claim();
     agent.binding_generation = human.context.binding_generation;
     let result = check_in(&store, lifecycle(agent, "agent")).unwrap();
-    assert_eq!(result.context.binding_generation, 2);
+    assert_eq!(result.context.binding_generation, 0);
     let preserved: i64 = conn
         .query_row(
             "SELECT through_decision_seq FROM human_receipt_waivers WHERE seat_id=?1",
@@ -2905,34 +2952,34 @@ fn human_to_agent_lifecycle_check_in_still_replaces_human_binding() {
     assert_eq!(preserved, waived_through);
     assert_eq!(
         open_bindings(&conn),
-        vec![(2, "codex".to_owned(), "cooperative_top_level".to_owned())]
+        vec![(0, "codex".to_owned(), "cooperative_top_level".to_owned())]
     );
 }
 
 #[test]
-fn agent_lifecycle_check_ins_on_own_target_always_replace() {
+fn agent_lifecycle_check_ins_on_own_target_re_register_the_session_binding() {
+    // ht-54r.3: startup, clear and resume of one session are one binding, re-registered in
+    // place with each new execution; the seat's mapping generation never moves.
     let (store, conn, _) = fixture();
     let mut context = claim();
     for (round, event) in ["startup", "clear", "resume"].into_iter().enumerate() {
         let result = check_in(&store, lifecycle(context.clone(), event)).unwrap();
-        assert_eq!(
-            result.context.binding_generation,
-            round as u64 + 1,
-            "{event}"
-        );
+        assert_eq!(result.context.binding_generation, 0, "{event}");
         assert_eq!(
             open_bindings(&conn),
-            vec![(
-                round as i64 + 1,
-                "codex".to_owned(),
-                "cooperative_top_level".to_owned()
-            )],
+            vec![(0, "codex".to_owned(), "cooperative_top_level".to_owned())],
             "{event}"
         );
+        let held: String = conn
+            .query_row("SELECT execution_id FROM occupant_bindings", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(held, result.context.execution.as_str(), "{event}");
         context = result.context;
         context.execution = ExecutionId::new(format!("00000000-0000-4000-8000-00000000010{round}"));
     }
-    assert_eq!(binding_count(&conn), 3);
+    assert_eq!(binding_count(&conn), 1);
     let kinds: i64 = conn
         .query_row(
             "SELECT count(*) FROM allocation_decisions WHERE kind='cooperative_continuity'",
@@ -2959,10 +3006,10 @@ fn operator_human_override_replaces_agent_binding_and_is_audited() {
         Some(actor),
     )
     .unwrap();
-    assert_eq!(result.context.binding_generation, 2);
+    assert_eq!(result.context.binding_generation, 0);
     assert_eq!(
         open_bindings(&conn),
-        vec![(2, "human".to_owned(), "operator_human".to_owned())]
+        vec![(0, "human".to_owned(), "operator_human".to_owned())]
     );
     assert_eq!(decision_count(&conn, "operator_human_override"), 1);
     let bounds: (i64, i64) = conn.query_row("SELECT prepared_high_water,physical_high_water FROM human_receipt_reconciliation_bounds WHERE seat_id='s'", [], |r| Ok((r.get(0)?,r.get(1)?))).unwrap();
@@ -3050,8 +3097,15 @@ fn managed_launch() -> crate::protocol::commands::RecordManagedLaunch {
         incarnation: "inc".into(),
         host_boot: HostBootId::new("b"),
         target_generation: 0,
+        fingerprint: LIVENESS_OF_LAUNCH,
     }
 }
+/// The started process Herdr's pane process info reported for the fixture launch.
+const LIVENESS_OF_LAUNCH: crate::protocol::authority::LivenessFingerprint =
+    crate::protocol::authority::LivenessFingerprint {
+        pid: 4242,
+        start: 77,
+    };
 fn record_launch(
     store: &SqliteStore,
     command: crate::protocol::commands::RecordManagedLaunch,
@@ -3099,20 +3153,21 @@ fn seat_generation(conn: &Connection) -> i64 {
 
 /// Kills: a launch that leaves the seat unbound (no wake authority before the
 /// first check-in), a registered or available launch binding, a binding with
-/// a claimable session or execution, a seat generation not bumped by exactly
-/// one, or a wake binding generation set from it.
+/// a claimable session or execution, a seat generation bumped by the launch
+/// (ht-54r.4: the placeholder is one more binding), a placeholder without the
+/// started process's fingerprint, or a wake binding generation set from it.
 #[test]
 fn managed_launch_on_an_unbound_seat_opens_an_unregistered_binding() {
     let (store, conn, _) = fixture();
     let record = record_launch(&store, managed_launch()).unwrap();
     assert!(record.recorded);
-    assert_eq!(record.binding_generation, 1);
+    assert_eq!(record.binding_generation, 0);
     assert_eq!(record.provenance, "managed_launch");
-    assert_eq!(seat_generation(&conn), 1);
+    assert_eq!(seat_generation(&conn), 0);
     let rows = bindings(&conn);
     assert_eq!(rows.len(), 1);
     let (generation, provenance, session, execution, registered, ended, harness) = &rows[0];
-    assert_eq!(*generation, 1);
+    assert_eq!(*generation, 0);
     assert_eq!(provenance, "managed_launch");
     assert!(session.starts_with("launch:"), "{session}");
     assert!(execution.starts_with("launch:"), "{execution}");
@@ -3136,6 +3191,18 @@ fn managed_launch_on_an_unbound_seat_opens_an_unregistered_binding() {
         ),
         ("term-p", "inc", "b", 1, 0)
     );
+    let (pid, start, liveness): (i64, i64, String) = conn
+        .query_row(
+            "SELECT liveness_pid,liveness_start,liveness FROM occupant_bindings WHERE seat_id='s'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        (pid, start, liveness.as_str()),
+        (4242, 77, "connected"),
+        "the placeholder carries the started process's fingerprint"
+    );
     let anchors: i64 = conn
         .query_row("SELECT count(*) FROM seat_availability", [], |r| r.get(0))
         .unwrap();
@@ -3150,27 +3217,107 @@ fn managed_launch_on_an_unbound_seat_opens_an_unregistered_binding() {
     assert_eq!(wake, 0);
 }
 
-/// Kills: a launch record that replaces or duplicates an open binding (an
-/// agent or person that already checked in, or an earlier launch).
+/// A launch into a pane whose seat already holds a connected agent binding
+/// records a placeholder beside it and changes nothing else. Kills: a launch
+/// that refuses, replaces, disconnects or re-generations the agent binding
+/// that is already there (the old "left unchanged, recorded: false" rule).
 #[test]
-fn managed_launch_leaves_an_open_binding_unchanged() {
+fn launch_into_a_pane_with_a_connected_agent_records_a_placeholder() {
     let (store, conn, _) = fixture();
     check_in(&store, lifecycle(claim(), "initial")).unwrap();
     let before = bindings(&conn);
     let record = record_launch(&store, managed_launch()).unwrap();
-    assert!(!record.recorded);
-    assert_eq!(record.binding_generation, 1);
-    assert_eq!(record.provenance, "cooperative_top_level");
-    assert_eq!(bindings(&conn), before);
-    assert_eq!(seat_generation(&conn), 1);
-
+    assert!(record.recorded);
+    assert_eq!(record.binding_generation, 0);
+    assert_eq!(record.provenance, "managed_launch");
+    let rows = bindings(&conn);
+    assert_eq!(rows.len(), 2);
+    assert_eq!(
+        rows[0], before[0],
+        "the existing agent binding is untouched"
+    );
+    assert_eq!(rows[1].1, "managed_launch");
+    assert_eq!(seat_generation(&conn), 0);
+    let live: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM occupant_bindings WHERE ended_at IS NULL AND liveness='connected'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(live, 2);
+    // A second launch is a second placeholder with its own session.
     let (store, conn, _) = fixture();
     assert!(record_launch(&store, managed_launch()).unwrap().recorded);
-    let again = record_launch(&store, managed_launch()).unwrap();
-    assert!(!again.recorded);
-    assert_eq!(again.provenance, "managed_launch");
-    assert_eq!(bindings(&conn).len(), 1);
-    assert_eq!(seat_generation(&conn), 1);
+    assert!(record_launch(&store, managed_launch()).unwrap().recorded);
+    let sessions: i64 = conn
+        .query_row(
+            "SELECT count(DISTINCT native_session) FROM occupant_bindings WHERE observation_provenance='managed_launch'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(sessions, 2);
+    assert_eq!(seat_generation(&conn), 0);
+}
+
+/// The launched agent's first lifecycle check-in replaces only the placeholder
+/// of its own harness. Kills: a check-in that ends the agent binding that was
+/// already connected, a placeholder of another harness, or no placeholder.
+#[test]
+fn launched_agents_check_in_replaces_only_the_placeholder() {
+    let (store, conn, _) = fixture();
+    // An agent of another session is connected on the seat; a launch adds a
+    // codex placeholder and, beside it, a claude one.
+    let other = check_in(
+        &store,
+        lifecycle(
+            session_claim("sess-other", "00000000-0000-4000-8000-0000000000c1"),
+            "other",
+        ),
+    )
+    .unwrap();
+    record_launch(&store, managed_launch()).unwrap();
+    let mut claude_launch = managed_launch();
+    claude_launch.harness = Harness::Claude;
+    record_launch(&store, claude_launch).unwrap();
+    let launched = check_in(
+        &store,
+        lifecycle(
+            session_claim("sess-launched", "00000000-0000-4000-8000-0000000000c2"),
+            "launched",
+        ),
+    )
+    .unwrap();
+    assert_eq!(launched.context.binding_generation, 0);
+    type Row = (String, String, Option<i64>, String, Option<String>);
+    let rows: Vec<Row> = {
+        let mut statement = conn
+            .prepare("SELECT native_session,harness,ended_at,liveness,disconnect_reason FROM occupant_bindings WHERE seat_id='s' ORDER BY ordinal")
+            .unwrap();
+        statement
+            .query_map([], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            })
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    };
+    assert_eq!(rows.len(), 4);
+    assert_eq!(rows[0].0, "sess-other");
+    assert_eq!((rows[0].2, rows[0].3.as_str()), (None, "connected"));
+    assert!(rows[1].0.starts_with("launch:"));
+    assert_eq!(rows[1].1, "codex");
+    assert!(rows[1].2.is_some(), "the codex placeholder is replaced");
+    assert_eq!(rows[1].3, "disconnected");
+    assert_eq!(rows[1].4.as_deref(), Some("replaced"));
+    assert!(rows[2].0.starts_with("launch:"));
+    assert_eq!(rows[2].1, "claude");
+    assert_eq!(rows[2].2, None, "another harness's placeholder stays");
+    assert_eq!(rows[2].3, "connected");
+    assert_eq!(rows[3].0, "sess-launched");
+    assert_eq!((rows[3].2, rows[3].3.as_str()), (None, "connected"));
+    let _ = other;
 }
 
 /// Kills: deciding from the launcher's evidence instead of the daemon's
@@ -3244,39 +3391,30 @@ fn managed_launch_is_refused_when_evidence_differs_from_the_canonical_view() {
 }
 
 /// TRUST-POLICY A4 "agent to agent, same seat": the started agent's first
-/// lifecycle check-in replaces the launch binding, also when it read the seat
-/// generation before launch recorded it. Kills: a launch binding that blocks
-/// or survives the agent's registration, or a stale-generation tolerance that
-/// reaches past one launch.
+/// lifecycle check-in replaces the launch binding. The launch keeps the seat
+/// generation (ht-54r.4), so a context prepared before the launch is current.
+/// Kills: a launch binding that blocks or survives the agent's registration,
+/// or a launch that moves the generation under a prepared check-in.
 #[test]
 fn lifecycle_check_in_replaces_a_managed_launch_binding() {
-    for prepared_before_launch in [false, true] {
-        let (store, conn, _) = fixture();
-        record_launch(&store, managed_launch()).unwrap();
-        let mut context = claim();
-        context.binding_generation = if prepared_before_launch { 0 } else { 1 };
-        let result = check_in(&store, lifecycle(context, "startup")).unwrap();
-        assert_eq!(result.context.binding_generation, 2);
-        let rows = bindings(&conn);
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0].1, "managed_launch");
-        assert!(rows[0].5.is_some(), "the launch binding ended");
-        assert_eq!(rows[1].1, "cooperative_top_level");
-        assert!(rows[1].4.is_some(), "registered");
-        assert_eq!(rows[1].5, None);
-        assert_eq!(seat_generation(&conn), 2);
-    }
-    // Two generations behind is a stale context, not a launch race.
     let (store, conn, _) = fixture();
-    check_in(&store, lifecycle(claim(), "first")).unwrap();
-    conn.execute("UPDATE occupant_bindings SET ended_at=1", [])
-        .unwrap();
     record_launch(&store, managed_launch()).unwrap();
-    assert_eq!(seat_generation(&conn), 2);
-    let mut stale = claim();
-    stale.execution = ExecutionId::new("00000000-0000-4000-8000-000000000003");
+    let result = check_in(&store, lifecycle(claim(), "startup")).unwrap();
+    assert_eq!(result.context.binding_generation, 0);
+    let rows = bindings(&conn);
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].1, "managed_launch");
+    assert!(rows[0].5.is_some(), "the launch binding ended");
+    assert_eq!(rows[1].1, "cooperative_top_level");
+    assert!(rows[1].4.is_some(), "registered");
+    assert_eq!(rows[1].5, None);
+    assert_eq!(seat_generation(&conn), 0);
+    // A context from a generation the seat has since moved past is stale, not a launch race.
+    let (store, conn, _) = fixture();
+    record_launch(&store, managed_launch()).unwrap();
+    conn.execute("UPDATE seats SET generation=2", []).unwrap();
     assert_eq!(
-        check_in(&store, lifecycle(stale, "stale"))
+        check_in(&store, lifecycle(claim(), "stale"))
             .unwrap_err()
             .code,
         ErrorCode::Conflict
@@ -3297,25 +3435,32 @@ fn current_check_in_never_adopts_a_managed_launch_binding() {
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .unwrap();
-    let mut guessed = claim();
-    guessed.binding_generation = 1;
+    let guessed = claim();
     let mut exact = guessed.clone();
     exact.native_session = NativeSessionId::new(session);
-    exact.execution = ExecutionId::new(execution);
-    for context in [guessed, exact] {
-        let current = CheckIn {
-            mode: CheckInMode::Current,
-            claim: context,
-            operation: OperationId::new(format!("current-{}", uuid::Uuid::new_v4())),
-        };
-        assert_eq!(
-            check_in(&store, current).unwrap_err().code,
-            ErrorCode::CallerUnverified
-        );
-    }
+    let _ = execution; // the placeholder execution is not a UUID; keep a canonical one
+    let current = |context: CallerClaim| CheckIn {
+        lineage_parent: None,
+        mode: CheckInMode::Current,
+        claim: context,
+        operation: OperationId::new(format!("current-{}", uuid::Uuid::new_v4())),
+    };
+    // The placeholder session is never a caller (ht-54r.3).
+    assert_eq!(
+        check_in(&store, current(exact)).unwrap_err().code,
+        ErrorCode::SessionClaimRequired
+    );
+    assert_eq!(bindings(&conn).len(), 1);
+    // Any other session is a binding of its own, beside the launch placeholder, which stays
+    // exactly as it was.
+    check_in(&store, current(guessed)).unwrap();
     let rows = bindings(&conn);
-    assert_eq!(rows.len(), 1);
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].1, "managed_launch");
     assert_eq!(rows[0].4, None, "still not registered");
+    assert_eq!(rows[0].5, None, "not ended");
+    assert_eq!(rows[1].1, "cooperative_env_session");
+    assert!(rows[1].4.is_some());
 }
 
 /// TRUST-POLICY A4: `me init` (a human lifecycle check-in) is refused over a
@@ -3327,7 +3472,6 @@ fn human_check_in_over_a_managed_launch_needs_the_operator() {
     record_launch(&store, managed_launch()).unwrap();
     let mut person = claim();
     person.harness = Harness::Human;
-    person.binding_generation = 1;
     let error = check_in(&store, lifecycle(person.clone(), "me-init")).unwrap_err();
     assert_eq!(error.code, ErrorCode::Unauthorized);
     assert!(
@@ -3347,7 +3491,8 @@ fn human_check_in_over_a_managed_launch_needs_the_operator() {
         Some(operator),
     )
     .unwrap();
-    assert_eq!(result.context.binding_generation, 2);
+    // The launch kept the seat generation; the person's check-in keeps it.
+    assert_eq!(result.context.binding_generation, 0);
     assert_eq!(bindings(&conn)[1].1, "operator_human");
 }
 
@@ -3386,7 +3531,9 @@ fn continuity_candidates_ignore_managed_launch_bindings() {
 }
 
 #[test]
-fn adapter_unknown_stored_harness_is_unsupported_without_ending_binding() {
+fn adapter_unknown_stored_harness_binding_is_left_alone_by_other_claims() {
+    // ht-54r.3: a claim names its own binding by (seat, harness, session, agent), so a stored
+    // binding of a harness with no adapter is neither adopted nor ended by a codex claim.
     let (store, db, _) = fixture();
     let registered = check_in(&store, lifecycle(claim(), "startup")).unwrap();
     db.execute(
@@ -3394,22 +3541,30 @@ fn adapter_unknown_stored_harness_is_unsupported_without_ending_binding() {
         [],
     )
     .unwrap();
-    let error = check_in(&store, current(&registered.context, "unsupported-current")).unwrap_err();
-    assert_eq!(error.code, ErrorCode::Unsupported);
+    check_in(&store, current(&registered.context, "current-codex")).unwrap();
     assert_eq!(
         db.query_row(
-            "SELECT harness FROM occupant_bindings WHERE ended_at IS NULL",
+            "SELECT harness,ended_at IS NULL FROM occupant_bindings ORDER BY ordinal",
             [],
-            |r| r.get::<_, String>(0)
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, bool>(1)?))
         )
         .unwrap(),
-        "future_agent"
+        ("future_agent".to_owned(), true)
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM occupant_bindings WHERE ended_at IS NULL",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        2
     );
     assert_eq!(
         db.query_row("SELECT generation FROM seats WHERE id='s'", [], |r| r
             .get::<_, i64>(0))
             .unwrap(),
-        1
+        0
     );
 }
 
@@ -3436,5 +3591,753 @@ fn human_guidance_check_in_continuation_before_page_fit() {
             assert_ne!(argv[1], "human");
         }
         assert_eq!(check_in(&store, command).unwrap(), result);
+    }
+}
+
+// ---- ht-54r.3: bindings are keyed by session; check-ins add and refresh them ----
+
+/// A claim for one harness session. Each session is its own process, so its fingerprint is
+/// distinct: sessions sharing one would supersede each other (same process, new session).
+pub(crate) fn session_claim(session: &str, execution: &str) -> CallerClaim {
+    let pid = 1000 + session.bytes().map(u32::from).sum::<u32>();
+    CallerClaim {
+        native_session: NativeSessionId::new(session),
+        execution: ExecutionId::new(execution),
+        liveness: Some(crate::protocol::authority::LivenessFingerprint { pid, start: 1 }),
+        ..claim()
+    }
+}
+
+#[test]
+fn two_top_level_sessions_check_in_on_one_seat() {
+    let (store, conn, _) = fixture();
+    let a = check_in(
+        &store,
+        lifecycle(
+            session_claim("sess-A", "00000000-0000-4000-8000-0000000000a1"),
+            "a",
+        ),
+    )
+    .unwrap();
+    let b = check_in(
+        &store,
+        lifecycle(
+            session_claim("sess-B", "00000000-0000-4000-8000-0000000000b1"),
+            "b",
+        ),
+    )
+    .unwrap();
+    assert_eq!(a.context.binding_generation, b.context.binding_generation);
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM occupant_bindings WHERE ended_at IS NULL AND liveness='connected'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        2
+    );
+    assert_eq!(
+        conn.query_row("SELECT generation FROM seats WHERE id='s'", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    // sess-A's plain command is still accepted after sess-B checked in (no "occupant context
+    // changed").
+    check_in(&store, current(&a.context, "a-current")).unwrap();
+    check_in(&store, current(&b.context, "b-current")).unwrap();
+    assert_eq!(binding_count(&conn), 2);
+}
+
+#[test]
+fn lifecycle_check_in_never_ends_another_binding() {
+    let (store, conn, _) = fixture();
+    check_in(
+        &store,
+        lifecycle(
+            session_claim("sess-A", "00000000-0000-4000-8000-0000000000a1"),
+            "a",
+        ),
+    )
+    .unwrap();
+    let before: (i64, Option<i64>) = conn
+        .query_row(
+            "SELECT ordinal,ended_at FROM occupant_bindings WHERE native_session='sess-A'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    check_in(
+        &store,
+        lifecycle(
+            session_claim("sess-B", "00000000-0000-4000-8000-0000000000b1"),
+            "b",
+        ),
+    )
+    .unwrap();
+    let after: (i64, Option<i64>) = conn
+        .query_row(
+            "SELECT ordinal,ended_at FROM occupant_bindings WHERE native_session='sess-A'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(before, after);
+    assert_eq!(after.1, None);
+}
+
+#[test]
+fn cross_pane_resume_creates_a_new_binding_on_the_second_seat() {
+    let (store, conn, _) = fixture();
+    conn.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s2','i','resolved','native','q',0,0,0)", []).unwrap();
+    conn.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','q','b',1,0,1,'fresh','unknown','unknown',0,0,'term-q','inc','coherent_enumeration',1)", []).unwrap();
+    let a = session_claim("sess-A", "00000000-0000-4000-8000-0000000000a1");
+    check_in(&store, lifecycle(a.clone(), "on-a")).unwrap();
+    let row = |seat: &str| -> Vec<String> {
+        let mut stmt = conn
+            .prepare("SELECT binding_id||'|'||ordinal||'|'||generation||'|'||execution_id||'|'||liveness||'|'||ifnull(ended_at,'-')||'|'||observation_provenance||'|'||ifnull(liveness_pid,'-') FROM occupant_bindings WHERE seat_id=?1 ORDER BY ordinal")
+            .unwrap();
+        stmt.query_map([seat], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    };
+    let first = row("s");
+    assert_eq!(first.len(), 1);
+    let mut moved = a;
+    moved.seat = SeatId::new("s2");
+    moved.target = HostTargetId::new("q");
+    moved.execution = ExecutionId::new("00000000-0000-4000-8000-0000000000a2");
+    // The resumed session runs in a new process: the same fingerprint would supersede the first.
+    moved.liveness = Some(crate::protocol::authority::LivenessFingerprint {
+        pid: 4242,
+        start: 1,
+    });
+    check_in(&store, lifecycle(moved, "on-b")).unwrap();
+    assert_eq!(row("s2").len(), 1);
+    assert_eq!(row("s"), first, "the first seat's binding is untouched");
+}
+
+// ---- ht-54r.4: human seats stay exclusive under many bindings ----
+
+const EXEC_A: &str = "00000000-0000-4000-8000-0000000000a1";
+const EXEC_B: &str = "00000000-0000-4000-8000-0000000000b1";
+
+fn agent_a() -> CallerClaim {
+    session_claim("sess-A", EXEC_A)
+}
+fn agent_b() -> CallerClaim {
+    session_claim("sess-B", EXEC_B)
+}
+fn person() -> CallerClaim {
+    human_claim(&claim(), 0)
+}
+/// Every binding of seat `s` as (session, harness, ended, liveness, reason), in ordinal order.
+type SeatRow = (String, String, bool, String, Option<String>);
+fn seat_rows(conn: &Connection) -> Vec<SeatRow> {
+    let mut statement = conn
+        .prepare("SELECT native_session,harness,ended_at IS NOT NULL,liveness,disconnect_reason FROM occupant_bindings WHERE seat_id='s' ORDER BY ordinal")
+        .unwrap();
+    statement
+        .query_map([], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+        })
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+fn disconnect_session(conn: &Connection, session: &str) {
+    let id: String = conn
+        .query_row(
+            "SELECT binding_id FROM occupant_bindings WHERE native_session=?1 AND ended_at IS NULL",
+            [session],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        crate::store::bindings::disconnect(
+            conn,
+            &crate::protocol::ids::BindingId::parse(id).unwrap(),
+            crate::store::bindings::DisconnectReason::ProcessExit,
+            UtcMillis(7),
+        )
+        .unwrap()
+    );
+}
+fn operator() -> crate::protocol::authority::OperatorActor {
+    crate::protocol::authority::OperatorActor::from_peer(
+        crate::protocol::authority::PeerIdentity::from_kernel(501),
+        501,
+    )
+    .unwrap()
+}
+
+/// Kills: a person's check-in taking a seat while any agent binding of it is
+/// connected, however many other bindings the seat holds; and a refusal that
+/// leaves a mark (an ended or disconnected binding).
+#[test]
+fn me_init_is_refused_while_an_agent_binding_is_connected() {
+    let (store, conn, _) = fixture();
+    check_in(&store, lifecycle(agent_a(), "a")).unwrap();
+    check_in(&store, lifecycle(agent_b(), "b")).unwrap();
+    // The first agent leaves; the second stays connected.
+    disconnect_session(&conn, "sess-A");
+    let before = seat_rows(&conn);
+    let refused = check_in(&store, lifecycle(person(), "me-init")).unwrap_err();
+    assert_eq!(refused.code, ErrorCode::Unauthorized);
+    assert!(refused.detail.contains("--operator"), "{}", refused.detail);
+    assert_eq!(seat_rows(&conn), before, "a refusal changes no binding");
+    assert!(before.iter().all(|row| row.1 != "human"));
+}
+
+/// Kills: `me init` leaving dead agent bindings open on the seat (they would
+/// come back to life on a late check-in and make the seat agent-held again),
+/// or ending the still-connected ones without the override.
+#[test]
+fn me_init_ends_disconnected_agent_bindings() {
+    let (store, conn, _) = fixture();
+    check_in(&store, lifecycle(agent_a(), "a")).unwrap();
+    check_in(&store, lifecycle(agent_b(), "b")).unwrap();
+    disconnect_session(&conn, "sess-A");
+    disconnect_session(&conn, "sess-B");
+    check_in(&store, lifecycle(person(), "me-init")).unwrap();
+    let rows = seat_rows(&conn);
+    assert_eq!(rows.len(), 3);
+    for agent in &rows[..2] {
+        assert!(agent.2, "{agent:?} ended");
+        assert_eq!(agent.3, "disconnected");
+        assert_eq!(agent.4.as_deref(), Some("liveness_process_exit"));
+    }
+    assert_eq!((rows[2].1.as_str(), rows[2].2), ("human", false));
+    assert_eq!(rows[2].3, "connected");
+}
+
+/// Kills: an operator override that leaves a connected agent binding open next
+/// to the person, or ends it without the disconnect transition.
+#[test]
+fn me_init_operator_overrides_and_ends_agent_bindings() {
+    let (store, conn, _) = fixture();
+    check_in(&store, lifecycle(agent_a(), "a")).unwrap();
+    check_in(&store, lifecycle(agent_b(), "b")).unwrap();
+    disconnect_session(&conn, "sess-B");
+    check_in_as(&store, lifecycle(person(), "me-init-op"), Some(operator())).unwrap();
+    let rows = seat_rows(&conn);
+    assert_eq!(rows.len(), 3);
+    // sess-A was connected: disconnected as replaced, then ended.
+    assert_eq!(
+        rows[0],
+        (
+            "sess-A".into(),
+            "codex".into(),
+            true,
+            "disconnected".into(),
+            Some("replaced".into())
+        )
+    );
+    // sess-B was already disconnected: ended with its own reason intact.
+    assert_eq!(
+        rows[1],
+        (
+            "sess-B".into(),
+            "codex".into(),
+            true,
+            "disconnected".into(),
+            Some("liveness_process_exit".into())
+        )
+    );
+    assert_eq!((rows[2].1.as_str(), rows[2].2), ("human", false));
+    assert_eq!(decision_count(&conn, "operator_human_override"), 1);
+}
+
+/// Kills: an agent lifecycle check-in that leaves the human binding open (a
+/// person and an agent holding one seat), or ends it without the transition.
+#[test]
+fn agent_lifecycle_check_in_replaces_the_human_binding() {
+    let (store, conn, _) = fixture();
+    check_in(&store, lifecycle(person(), "me-init")).unwrap();
+    check_in(&store, lifecycle(agent_a(), "a")).unwrap();
+    let rows = seat_rows(&conn);
+    assert_eq!(
+        rows[0],
+        (
+            "plugin_context:person".into(),
+            "human".into(),
+            true,
+            "disconnected".into(),
+            Some("replaced".into())
+        )
+    );
+    assert_eq!((rows[1].1.as_str(), rows[1].2), ("codex", false));
+    assert_eq!(rows.len(), 2);
+}
+
+/// Kills: exclusivity enforced only at lifecycle check-ins, so a plain agent
+/// CLI/hook call (a new session's first call, or a touch of an existing
+/// binding) coexists with the person's binding (spec decision 14, r1).
+#[test]
+fn agent_plain_call_replaces_the_human_binding() {
+    let (store, conn, _) = fixture();
+    check_in(&store, lifecycle(person(), "me-init")).unwrap();
+    // A plain call of a session the seat has never seen enrolls it and ends the person's binding.
+    let first = check_in(&store, current(&agent_a(), "a-plain")).unwrap();
+    let rows = seat_rows(&conn);
+    assert_eq!((rows[0].1.as_str(), rows[0].2), ("human", true));
+    assert_eq!((rows[1].1.as_str(), rows[1].2), ("codex", false));
+    // A person's binding appearing beside an agent binding (an operator repair writes one the same
+    // way) is ended by that agent's next plain call as well.
+    let seat = SeatId::new("s");
+    let place = crate::store::bindings::BindingPlacement {
+        generation: 0,
+        target_generation: 0,
+        target: "p".into(),
+        terminal: "term-p".into(),
+        incarnation: "inc".into(),
+        host_boot: "b".into(),
+        host_epoch: 1,
+        execution: "human-exec".into(),
+        provenance: "operator_human".into(),
+        observed_at: UtcMillis(1),
+        registered_at: Some(UtcMillis(1)),
+    };
+    crate::store::bindings::enroll(
+        &conn,
+        &crate::store::bindings::EnrollRequest {
+            key: &crate::store::bindings::BindingKey {
+                seat,
+                harness: "human".into(),
+                native_session: NativeSessionId::new("plugin_context:person2"),
+                agent_id: None,
+            },
+            role: crate::store::bindings::BindingRole::TopLevel,
+            parent: None,
+            lineage: None,
+            fingerprint: None,
+            placement: &place,
+            trigger: crate::store::bindings::EnrollTrigger::Lifecycle,
+        },
+        UtcMillis(1),
+    )
+    .unwrap();
+    assert_eq!(
+        seat_rows(&conn)
+            .iter()
+            .filter(|r| r.1 == "human" && !r.2)
+            .count(),
+        1
+    );
+    check_in(&store, current(&first.context, "a-touch")).unwrap();
+    assert_eq!(
+        seat_rows(&conn)
+            .iter()
+            .filter(|r| r.1 == "human" && !r.2)
+            .count(),
+        0,
+        "a touch of an existing agent binding ends the person's binding"
+    );
+}
+
+/// Kills: a lifecycle reconnect of a disconnected agent binding that leaves
+/// the person's binding open.
+#[test]
+fn agent_reconnect_replaces_the_human_binding() {
+    let (store, conn, _) = fixture();
+    let first = check_in(&store, lifecycle(agent_a(), "a")).unwrap();
+    disconnect_session(&conn, "sess-A");
+    // The person's binding on the seat while the agent's open binding is disconnected.
+    let place = crate::store::bindings::BindingPlacement {
+        generation: 0,
+        target_generation: 0,
+        target: "p".into(),
+        terminal: "term-p".into(),
+        incarnation: "inc".into(),
+        host_boot: "b".into(),
+        host_epoch: 1,
+        execution: "human-exec".into(),
+        provenance: "operator_human".into(),
+        observed_at: UtcMillis(1),
+        registered_at: Some(UtcMillis(1)),
+    };
+    crate::store::bindings::enroll(
+        &conn,
+        &crate::store::bindings::EnrollRequest {
+            key: &crate::store::bindings::BindingKey {
+                seat: SeatId::new("s"),
+                harness: "human".into(),
+                native_session: NativeSessionId::new("plugin_context:person"),
+                agent_id: None,
+            },
+            role: crate::store::bindings::BindingRole::TopLevel,
+            parent: None,
+            lineage: None,
+            fingerprint: None,
+            placement: &place,
+            trigger: crate::store::bindings::EnrollTrigger::Lifecycle,
+        },
+        UtcMillis(1),
+    )
+    .unwrap();
+    let mut resume = first.context.clone();
+    resume.execution = ExecutionId::new("00000000-0000-4000-8000-0000000000a2");
+    check_in(&store, lifecycle(resume, "a-resume")).unwrap();
+    let rows = seat_rows(&conn);
+    assert_eq!(
+        rows.len(),
+        2,
+        "the agent's binding was reconnected, not re-enrolled"
+    );
+    assert_eq!(
+        (rows[0].1.as_str(), rows[0].2, rows[0].3.as_str()),
+        ("codex", false, "connected")
+    );
+    assert_eq!(
+        (rows[1].1.as_str(), rows[1].2, rows[1].4.as_deref()),
+        ("human", true, Some("replaced"))
+    );
+}
+
+/// Roast r2: exclusivity transitions set `ended_at`, and a row ended that way is never reopened:
+/// the same session's later check-in enrolls a fresh binding. Kills: a resume that reopens or
+/// reuses an ended binding (its cursors, fingerprint and history would be resurrected).
+#[test]
+fn resume_after_exclusivity_end_enrolls_a_fresh_binding() {
+    let (store, conn, _) = fixture();
+    let first = check_in(&store, lifecycle(agent_a(), "a")).unwrap();
+    disconnect_session(&conn, "sess-A");
+    check_in(&store, lifecycle(person(), "me-init")).unwrap();
+    assert!(
+        seat_rows(&conn)[0].2,
+        "me init ended the disconnected agent binding"
+    );
+    let ids = |conn: &Connection| -> Vec<String> {
+        let mut statement = conn
+            .prepare("SELECT binding_id FROM occupant_bindings WHERE native_session='sess-A' ORDER BY ordinal")
+            .unwrap();
+        statement
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    };
+    let old = ids(&conn);
+    assert_eq!(old.len(), 1);
+    let mut resume = first.context.clone();
+    resume.execution = ExecutionId::new("00000000-0000-4000-8000-0000000000a2");
+    check_in(&store, lifecycle(resume, "a-resume")).unwrap();
+    let now = ids(&conn);
+    assert_eq!(now.len(), 2, "a fresh binding for the same session");
+    assert_eq!(now[0], old[0]);
+    let rows = seat_rows(&conn);
+    assert!(rows[0].2, "the old row stays ended");
+    assert!(!rows[2].2 && rows[2].1 == "codex", "{rows:?}");
+    assert!(
+        rows[1].2 && rows[1].1 == "human",
+        "the resume ended the person's binding: {rows:?}"
+    );
+}
+
+/// A seat that holds a human binding (and a disconnected agent binding beside
+/// it) waives receipts and is never woken; once an agent binding replaces the
+/// person's, the wake exclusion ends. Kills: waivers or the wake exclusion
+/// keyed on the seat's latest binding instead of "holds an open human binding".
+#[test]
+fn human_seat_receipt_waivers_and_no_wake_hold() {
+    let (store, conn, _) = fixture();
+    conn.execute_batch("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0); INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('old','i','t',1,'ordinary','body',90,1); INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES ('old','t','s','pending',10,90,100);").unwrap();
+    check_in(&store, lifecycle(person(), "me-init")).unwrap();
+    // Mail sent after the person's check-in: owed by nobody while the person holds the seat.
+    conn.execute_batch("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('owed','i','t',2,'ordinary','body',95,1000); INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES ('owed','t','s','pending',10,95,105);").unwrap();
+    // A disconnected agent binding beside the person's (the last row inserted, so the seat's
+    // latest binding is the agent's).
+    let place = crate::store::bindings::BindingPlacement {
+        generation: 0,
+        target_generation: 0,
+        target: "p".into(),
+        terminal: "term-p".into(),
+        incarnation: "inc".into(),
+        host_boot: "b".into(),
+        host_epoch: 1,
+        execution: "dead-exec".into(),
+        provenance: "cooperative_top_level".into(),
+        observed_at: UtcMillis(1),
+        registered_at: Some(UtcMillis(1)),
+    };
+    let crate::store::bindings::EnrollOutcome::Enrolled { binding, .. } =
+        crate::store::bindings::enroll(
+            &conn,
+            &crate::store::bindings::EnrollRequest {
+                key: &crate::store::bindings::BindingKey {
+                    seat: SeatId::new("s"),
+                    harness: "codex".into(),
+                    native_session: NativeSessionId::new("sess-dead"),
+                    agent_id: None,
+                },
+                role: crate::store::bindings::BindingRole::TopLevel,
+                parent: None,
+                lineage: None,
+                fingerprint: None,
+                placement: &place,
+                trigger: crate::store::bindings::EnrollTrigger::PlainCall,
+            },
+            UtcMillis(1),
+        )
+        .unwrap()
+    else {
+        panic!("expected a fresh binding")
+    };
+    crate::store::bindings::disconnect(
+        &conn,
+        &binding.binding_id,
+        crate::store::bindings::DisconnectReason::ProcessExit,
+        UtcMillis(2),
+    )
+    .unwrap();
+    let held = |conn: &Connection| -> bool {
+        conn.query_row(
+            &format!("SELECT {}", crate::store::wake::human_bound_sql("?1")),
+            ["s"],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    let state = |message: &str| {
+        crate::store::effective::effective_receipt(&conn, message, "s")
+            .unwrap()
+            .unwrap()
+            .state
+    };
+    use crate::store::effective::EffectiveReceiptState::{NotRequired, Pending};
+    assert!(held(&conn), "the seat holds an open human binding");
+    assert_eq!((state("old"), state("owed")), (NotRequired, NotRequired));
+    // An agent replaces the person: the exclusion is gone. The waiver cutoff keeps covering what
+    // the person's check-in waived, and mail sent after it is owed again.
+    check_in(&store, lifecycle(agent_a(), "a")).unwrap();
+    assert!(!held(&conn));
+    assert_eq!((state("old"), state("owed")), (NotRequired, Pending));
+}
+
+// ---- ht-54r.17: Hermes lineage through the daemon check-in ----
+mod hermes_lineage {
+    use super::*;
+    use crate::protocol::authority::LivenessFingerprint;
+
+    fn hermes() -> Harness {
+        Harness::Agent(
+            crate::harness::registry::builtins()
+                .agent("hermes")
+                .unwrap(),
+        )
+    }
+    fn session_claim(session: &str, pid: u32) -> CallerClaim {
+        CallerClaim {
+            harness: hermes(),
+            native_session: NativeSessionId::new(session),
+            liveness: Some(LivenessFingerprint { pid, start: 9 }),
+            ..claim()
+        }
+    }
+    fn check_in_with(
+        store: &SqliteStore,
+        claim: CallerClaim,
+        operation: &str,
+        parent: Option<&str>,
+    ) {
+        // A lifecycle execution UUID is single-use: one per operation.
+        let mut claim = claim;
+        claim.execution = ExecutionId::new(format!(
+            "00000000-0000-4000-8000-{:012x}",
+            operation.bytes().fold(1u64, |h, b| h * 131 + u64::from(b)) & 0xffff_ffff_ffff
+        ));
+        let mut command = lifecycle(claim, operation);
+        command.lineage_parent = parent.map(NativeSessionId::new);
+        check_in(store, command).unwrap();
+    }
+    /// Two messages on one joined thread: a fresh binding starts at 2.
+    fn messages(conn: &Connection) {
+        conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0)", []).unwrap();
+        conn.execute(
+            "INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES ('t','s','joined',1)",
+            [],
+        )
+        .unwrap();
+        for (id, seq) in [("m1", 1), ("m2", 2)] {
+            conn.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i',?1,'t',?2,'ordinary','b',?2,?2)", rusqlite::params![id, seq]).unwrap();
+        }
+    }
+    fn binding_id(conn: &Connection, session: &str) -> String {
+        conn.query_row(
+            "SELECT binding_id FROM occupant_bindings WHERE native_session=?1 AND ended_at IS NULL",
+            [session],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+    fn cursor(conn: &Connection, session: &str) -> i64 {
+        conn.query_row(
+            "SELECT seq FROM binding_cursors WHERE binding_id=?1 AND thread_id='t'",
+            [binding_id(conn, session)],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+    fn set_cursor(conn: &Connection, session: &str, seq: i64) {
+        conn.execute(
+            "UPDATE binding_cursors SET seq=?2 WHERE binding_id=?1",
+            rusqlite::params![binding_id(conn, session), seq],
+        )
+        .unwrap();
+    }
+    fn lineage_from(conn: &Connection, session: &str) -> Option<String> {
+        conn.query_row(
+            "SELECT lineage_from FROM occupant_bindings WHERE native_session=?1 AND ended_at IS NULL",
+            [session],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+    fn liveness(conn: &Connection, session: &str) -> String {
+        conn.query_row(
+            "SELECT liveness FROM occupant_bindings WHERE native_session=?1 AND ended_at IS NULL",
+            [session],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+    fn open_hermes_bindings(conn: &Connection) -> i64 {
+        conn.query_row(
+            "SELECT count(*) FROM occupant_bindings WHERE harness='hermes' AND ended_at IS NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    // Kills: a compression successor seeded from the seat maximum (2, the other process's
+    // cursor) instead of its parent session's cursor (1); lineage_from unset; the parent left
+    // connected after the same-process successor enrolled.
+    #[test]
+    fn hermes_compression_lineage_carries_cursors() {
+        let (store, conn, _) = fixture();
+        messages(&conn);
+        check_in_with(&store, session_claim("P", 7), "p", None);
+        check_in_with(&store, session_claim("X", 8), "x", None);
+        set_cursor(&conn, "P", 1);
+        check_in_with(&store, session_claim("S", 7), "s", Some("P"));
+        assert_eq!(cursor(&conn, "S"), 1);
+        assert_eq!(lineage_from(&conn, "S"), Some(binding_id(&conn, "P")));
+        assert_eq!(liveness(&conn, "P"), "disconnected", "superseded");
+        assert_eq!(
+            liveness(&conn, "X"),
+            "connected",
+            "another process untouched"
+        );
+    }
+
+    // Kills: a parent_session_id trusted without the same-process check.
+    #[test]
+    fn hermes_lineage_from_another_process_is_ignored() {
+        let (store, conn, _) = fixture();
+        messages(&conn);
+        check_in_with(&store, session_claim("P", 7), "p", None);
+        check_in_with(&store, session_claim("X", 8), "x", None);
+        set_cursor(&conn, "P", 1);
+        check_in_with(&store, session_claim("S", 9), "s", Some("P"));
+        assert_eq!(lineage_from(&conn, "S"), None);
+        assert_eq!(cursor(&conn, "S"), 2, "fresh seed: the seat maximum");
+        assert_eq!(liveness(&conn, "P"), "connected");
+    }
+
+    // Kills: a CLI-first successor's later hint moving its cursor backwards to the parent's.
+    #[test]
+    fn hermes_cli_first_successor_links_lineage_without_moving_cursors_backwards() {
+        let (store, conn, _) = fixture();
+        messages(&conn);
+        check_in_with(&store, session_claim("P", 7), "p", None);
+        set_cursor(&conn, "P", 1);
+        // The successor's first claim carries no hint: it enrolls at the seat maximum.
+        check_in_with(&store, session_claim("S", 7), "s", None);
+        assert_eq!(cursor(&conn, "S"), 1);
+        set_cursor(&conn, "S", 2);
+        assert_eq!(lineage_from(&conn, "S"), None);
+        // The later pre_llm_call links lineage; the cursor stays ahead.
+        check_in_with(&store, session_claim("S", 7), "s-turn", Some("P"));
+        assert_eq!(lineage_from(&conn, "S"), Some(binding_id(&conn, "P")));
+        assert_eq!(cursor(&conn, "S"), 2, "never backwards");
+    }
+
+    // Main review I2. Kills: a late lineage link MAX-copying the predecessor's cursors onto an
+    // already-enrolled successor, so the successor skips mail the predecessor displayed after the
+    // successor enrolled (spec §1: the later pre_llm_call links lineage without moving cursors).
+    #[test]
+    fn hermes_plain_first_successor_late_link_never_moves_its_cursor() {
+        let (store, conn, _) = fixture();
+        messages(&conn);
+        check_in_with(&store, session_claim("P", 7), "p", None);
+        set_cursor(&conn, "P", 1);
+        // S's first call is a plain one (no lifecycle, no hint): it enrolls at the seat maximum
+        // and supersedes nothing, so P stays connected and keeps displaying.
+        store
+            .advance_cursors(
+                &crate::protocol::commands::AdvanceCursors {
+                    claim: session_claim("S", 7),
+                    operation: OperationId::new("s-plain"),
+                    displayed: Vec::new(),
+                },
+                &budget(),
+            )
+            .unwrap();
+        assert_eq!(cursor(&conn, "S"), 1);
+        assert_eq!(liveness(&conn, "P"), "connected");
+        // P displays m2 after S enrolled.
+        set_cursor(&conn, "P", 2);
+        // S's first lifecycle pre_llm_call names P: lineage is recorded, S's cursor is not moved.
+        check_in_with(&store, session_claim("S", 7), "s-turn", Some("P"));
+        assert_eq!(lineage_from(&conn, "S"), Some(binding_id(&conn, "P")));
+        assert_eq!(cursor(&conn, "S"), 1, "m2 is still unread for S");
+    }
+
+    // Kills: /new (no parent hint) inheriting the old session's cursors, and the old session
+    // surviving beside it.
+    #[test]
+    fn hermes_new_is_a_new_binding_and_supersedes() {
+        let (store, conn, _) = fixture();
+        messages(&conn);
+        check_in_with(&store, session_claim("P", 7), "p", None);
+        check_in_with(&store, session_claim("X", 8), "x", None);
+        set_cursor(&conn, "P", 1);
+        check_in_with(&store, session_claim("N", 7), "n", None);
+        assert_eq!(lineage_from(&conn, "N"), None);
+        assert_eq!(cursor(&conn, "N"), 2, "seat maximum, not P's cursor");
+        assert_eq!(liveness(&conn, "P"), "disconnected");
+    }
+
+    // Kills: a hint naming the claiming session itself or an unknown session creating
+    // lineage, and a hint ever adding a binding of its own.
+    #[test]
+    fn hermes_unknown_or_self_parent_hint_is_ignored() {
+        let (store, conn, _) = fixture();
+        messages(&conn);
+        check_in_with(&store, session_claim("S", 7), "s", Some("nobody"));
+        assert_eq!(lineage_from(&conn, "S"), None);
+        assert_eq!(open_hermes_bindings(&conn), 1);
+        // The wire form refuses a self-parent outright; the daemon would ignore it anyway.
+        let mut command = lifecycle(session_claim("S", 7), "self");
+        command.lineage_parent = Some(NativeSessionId::new("S"));
+        assert!(
+            crate::protocol::commands::Command::CheckIn(command)
+                .validate()
+                .is_err()
+        );
+    }
+
+    // Kills: a double-allocating daemon (two open bindings for one Hermes session key)
+    // passing the duplicate detector the hook concurrency test relies on.
+    #[test]
+    fn one_open_binding_per_hermes_session_after_repeated_check_ins() {
+        let (store, conn, _) = fixture();
+        messages(&conn);
+        check_in_with(&store, session_claim("S", 7), "a", None);
+        check_in_with(&store, session_claim("S", 7), "b", None);
+        assert_eq!(open_hermes_bindings(&conn), 1);
     }
 }

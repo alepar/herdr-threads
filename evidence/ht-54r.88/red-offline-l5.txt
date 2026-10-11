@@ -1,0 +1,22 @@
+EE...........
+======================================================================
+ERROR: test_binding_for_finds_a_session_whatever_its_state (test_scenarios_l5.L5QueryTests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/alepar/AleCode/herdr-threads/.worktrees/super-auto/session-keyed-seat-bindings/.worktrees/super-auto-session-keyed-seat-bindings--task-ht-54r.88/scripts/agy-gate/test_scenarios_l5.py", line 138, in test_binding_for_finds_a_session_whatever_its_state
+    self.assertEqual(self.l5.binding_for(self.world, "old")["liveness"], "disconnected")
+AttributeError: module 'l5q' has no attribute 'binding_for'
+
+======================================================================
+ERROR: test_live_binding_is_the_connected_open_top_level_agy_row (test_scenarios_l5.L5QueryTests)
+Session-keyed (ht-54r.88): the old session's disconnected row, a subagent row, an ended row and a
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/alepar/AleCode/herdr-threads/.worktrees/super-auto/session-keyed-seat-bindings/.worktrees/super-auto-session-keyed-seat-bindings--task-ht-54r.88/scripts/agy-gate/test_scenarios_l5.py", line 134, in test_live_binding_is_the_connected_open_top_level_agy_row
+    self.assertEqual((binding["binding_id"], binding["native_session"]), ("b2", "new"))
+KeyError: 'binding_id'
+
+----------------------------------------------------------------------
+Ran 13 tests in 0.078s
+
+FAILED (errors=2)

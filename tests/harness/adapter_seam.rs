@@ -741,7 +741,12 @@ fn adapter_seam_settings_kinds_name_their_adapter_and_declare_today_s_groups() {
             .iter()
             .map(|(event, _)| *event)
             .collect::<Vec<_>>(),
-        ["SessionStart", "PreToolUse"]
+        [
+            "SessionStart",
+            "PreToolUse",
+            "SubagentStart",
+            "SubagentStop"
+        ]
     );
 
     let codex_kind = registration("codex").settings_kind().expect("codex");
@@ -755,7 +760,13 @@ fn adapter_seam_settings_kinds_name_their_adapter_and_declare_today_s_groups() {
             .iter()
             .map(|(event, _)| *event)
             .collect::<Vec<_>>(),
-        ["SessionStart", "SubagentStart", "PreToolUse"]
+        [
+            "SessionStart",
+            "SubagentStart",
+            "PreToolUse",
+            "SubagentStop",
+            "SessionEnd"
+        ]
     );
     assert_eq!(codex_kind.legacy_upgrade_warning, codex::RETRUST_WARNING);
     assert!(codex_kind.adoption_note.contains("recorded trust"));

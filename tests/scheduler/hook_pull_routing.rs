@@ -2,12 +2,17 @@
 //! pull brings something (or when it holds ids parked for `inbox`). A fake
 //! `HookPullOutlook` stands in for the offered ledger.
 use super::*;
-use crate::ports::{HookPullOutlook, NextPull};
+use crate::{
+    ports::{HookPullOutlook, NextPull, WakeTarget},
+    protocol::ids::BindingId,
+};
 
 struct FakeHookPull {
     next: Mutex<NextPull>,
     parked: AtomicBool,
     asked: Mutex<Vec<(String, u64, u64)>>,
+    /// The target bindings each question named.
+    asked_targets: Mutex<Vec<Vec<BindingId>>>,
 }
 impl FakeHookPull {
     fn new(next: NextPull, parked: bool) -> Self {
@@ -15,6 +20,7 @@ impl FakeHookPull {
             next: Mutex::new(next),
             parked: AtomicBool::new(parked),
             asked: Mutex::new(Vec::new()),
+            asked_targets: Mutex::new(Vec::new()),
         }
     }
     fn set(&self, next: NextPull) {
@@ -22,14 +28,22 @@ impl FakeHookPull {
     }
 }
 impl HookPullOutlook for FakeHookPull {
-    fn next_pull(&self, seat: &SeatId, generation: u64, attention: u64, _: UtcMillis) -> NextPull {
+    fn next_pull(
+        &self,
+        seat: &SeatId,
+        targets: &[BindingId],
+        generation: u64,
+        attention: u64,
+        _: UtcMillis,
+    ) -> NextPull {
+        self.asked_targets.lock().unwrap().push(targets.to_vec());
         self.asked
             .lock()
             .unwrap()
             .push((seat.as_str().to_owned(), generation, attention));
         *self.next.lock().unwrap()
     }
-    fn holds_parked(&self, _: &SeatId, _: u64) -> bool {
+    fn holds_parked(&self, _: &SeatId, _: &[BindingId], _: u64) -> bool {
         self.parked.load(Ordering::SeqCst)
     }
 }
@@ -138,4 +152,47 @@ fn unknown_and_delivers_wake_as_before() {
     for next in [NextPull::Unknown, NextPull::Delivers] {
         assert_eq!(attempted_with(next, false).0, 1, "{next:?}");
     }
+}
+
+// Kills: an outlook asked about the seat only (one entry per seat), so a wake is gated by whichever binding pulled
+// last instead of the bindings it would reach.
+#[test]
+fn the_outlook_is_asked_about_the_candidates_target_bindings() {
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let store = FakeWakeStore {
+        clock: Arc::new(FakeClock(AtomicU64::new(0))),
+        events: events.clone(),
+        batch: None,
+        fail_reservation: AtomicBool::new(false),
+    };
+    let notifier = FakeNotifier {
+        events: events.clone(),
+    };
+    let outlook = FakeHookPull::new(NextPull::Delivers, false);
+    let mut runner = WakeRunner::new(&store, &notifier, RetryConfig::default(), daemon_boot());
+    runner.hook_pull = &outlook;
+    let mut candidate = due_candidate();
+    candidate.targets = ["binding-a", "binding-b"]
+        .into_iter()
+        .map(|id| WakeTarget {
+            binding: BindingId::new(id),
+            harness: "agy".to_owned(),
+            fingerprint_pid: None,
+        })
+        .collect();
+    runner.try_candidate(&candidate, &budget()).unwrap();
+    assert_eq!(
+        *outlook.asked_targets.lock().unwrap(),
+        vec![vec![
+            BindingId::new("binding-a"),
+            BindingId::new("binding-b")
+        ]]
+    );
+    candidate.targets.clear();
+    runner.try_candidate(&candidate, &budget()).unwrap();
+    assert_eq!(
+        outlook.asked_targets.lock().unwrap().last().unwrap(),
+        &Vec::<BindingId>::new(),
+        "a source without per-binding information asks with no targets"
+    );
 }

@@ -27,7 +27,13 @@ fn agy_fixtures() -> PathBuf {
 }
 
 fn agy_pane_value() -> Value {
-    agent_pane(PANE_G, "term-g", "agy", None)
+    let mut pane = agent_pane(PANE_G, "term-g", "agy", None);
+    // Herdr's foreground process of the pane is the agy process its binding is fingerprinted
+    // with: the composer wake types only to that binding (spec §3 Wake).
+    pane["foreground_pid"] = json!(
+        herdr_threads::test_support::isolation::stand_in_fingerprint("agy", "agy-process").pid
+    );
+    pane
 }
 
 /// The agy seat `g` of a rig, joined to the rig's thread.
@@ -104,8 +110,15 @@ impl Agy {
             "top-level",
         ];
         all.extend_from_slice(args);
+        let mut command = rig.command(None, &all);
+        // An agy agent's own call: the harness environment names its conversation, and agy's
+        // witnesses under `HOME` make it top-level (session-keyed bindings).
+        herdr_threads::test_support::isolation::as_agent(&mut command, "agy", "agy-process");
+        command
+            .env("ANTIGRAVITY_CONVERSATION_ID", TOP)
+            .env("HOME", &self.home);
         collect(
-            rig.command(None, &all)
+            command
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
@@ -128,7 +141,12 @@ impl Agy {
         let harness = OccupantHarness::Agent(builtins().agent("agy").unwrap()).into();
         let argv = installed_argv(BIN, Some(rig.state.to_str().unwrap()), None, harness);
         let base = herdr_threads::harness::setup::shell_command(&argv).unwrap();
-        let mut child = spawn::command("/bin/sh")
+        // A native hook runs under its harness, where it takes its liveness fingerprint from
+        // (session-keyed bindings): one long-lived stand-in plays the pane's agy process, shared
+        // by every conversation of the pane, as a `/clear` inside one agy process is.
+        let mut shell = spawn::command("/bin/sh");
+        herdr_threads::test_support::isolation::as_agent(&mut shell, "agy", "agy-process");
+        let mut child = shell
             .arg("-c")
             .arg(format!("{base} '--event' '{event}'"))
             .env("HERDR_ENV", "1")

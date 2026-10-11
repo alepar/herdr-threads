@@ -10,7 +10,7 @@ use super::{
 use crate::daemon::paths::InstancePaths;
 use crate::ports::LocalClient;
 use crate::{
-    harness::{bridge, context::Role},
+    harness::context::Role,
     protocol::{
         capabilities::SEAT_WAKE_ON_V1,
         commands::{Command, SetWakeOn, WakeOn, WakeOnQuery},
@@ -124,7 +124,15 @@ fn current_claim<C: LocalClient + ?Sized>(
         return Err(super::mapping_error("service returned no seat inspection"));
     };
     let generation = super::selected_generation(selection, &inspection)?;
-    let context = super::seat_contexts(paths, instance, &selection.seat)?
+    // An agent caller acts as its harness session (decision 15): its context is derived from the
+    // environment at the seat's mapping generation, never the saved pane context.
+    let contexts = super::caller_journal(
+        super::seat_contexts(paths, instance, &selection.seat)?,
+        instance,
+        selection,
+        generation,
+    )?;
+    let context = contexts
         .current()
         .map_err(super::context_run_error)?
         .ok_or_else(|| {
@@ -140,7 +148,7 @@ fn current_claim<C: LocalClient + ?Sized>(
             "local context differs from current service mapping",
         ));
     }
-    bridge::caller_claim(&context).map_err(super::context_run_error)
+    contexts.claim(&context).map_err(super::context_run_error)
 }
 
 #[cfg(test)]

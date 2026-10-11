@@ -896,6 +896,8 @@ fn stopped_daemon_is_unavailable_for_every_descriptor_read() {
         native_session: NativeSessionId::new("human"),
         execution: ExecutionId::new("execution"),
         target: HostTargetId::new("w1:p1"),
+        agent_id: None,
+        liveness: None,
     };
     let scope = IntentScope::Cooperative {
         instance: instance.clone(),

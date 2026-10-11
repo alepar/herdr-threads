@@ -29,9 +29,10 @@ impl Clock for TestClock {
 }
 struct NoReads;
 impl ModStoreReads for NoReads {
-    fn mod_seat_view(
+    fn mod_binding_view(
         &self,
         _seat: &SeatId,
+        _binding: crate::ports::ModBindingRef<'_>,
         _budget: &CallBudget,
     ) -> Result<Option<ModSeatView>, ApiError> {
         Ok(None)
@@ -62,11 +63,16 @@ fn registry(clock: &Arc<TestClock>) -> ModChannelRegistry {
         ModDeliverySetting::On,
     )
 }
+/// One binding per seat in these tests.
+fn binding_of(seat: &str) -> crate::protocol::ids::BindingId {
+    crate::protocol::ids::BindingId::new(format!("binding-{seat}"))
+}
 fn register(registry: &ModChannelRegistry, seat: &str, idle_wake: IdleWake) {
     registry
         .register(
             ModChannelRegistration {
                 seat: SeatId::new(seat),
+                binding: binding_of(seat),
                 binding_generation: 1,
                 native_session: NativeSessionId::new("native"),
                 harness: Harness::Claude,
@@ -150,6 +156,10 @@ fn wake_suppressed_ends_when_the_channel_grace_expires() {
     register(&registry, "channel-seat", IdleWake::Channel);
     let channel = registry.status().unwrap().channels.len();
     assert_eq!(channel, 1);
-    registry.close(&seat, WatchCloseReason::Retired, UtcMillis(1_000));
+    registry.close(
+        &binding_of("channel-seat"),
+        WatchCloseReason::Retired,
+        UtcMillis(1_000),
+    );
     assert!(!registry.wake_suppressed(&seat));
 }

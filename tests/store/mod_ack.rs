@@ -8,7 +8,11 @@ use crate::protocol::{
     time::{CallBudget, Clock, MonoInstant, UtcMillis},
     watch::{ModAckOutcome, ModAckReason, ModAckReport, ModDeliveryVia, WATCH_BODY_LIMIT_BYTES},
 };
-use crate::store::{connection::StoreContext, receipts};
+use crate::store::{
+    connection::StoreContext,
+    lazy_delivery::{self, LazyCompletion},
+    read_cursors, receipts,
+};
 use rusqlite::{Connection, params};
 use std::sync::{
     Arc,
@@ -69,6 +73,8 @@ fn claim() -> CallerClaim {
         native_session: NativeSessionId::new("nb"),
         execution: ExecutionId::new("00000000-0000-4000-8000-0000000000bb"),
         target: HostTargetId::new("pb"),
+        agent_id: None,
+        liveness: Some(crate::protocol::authority::LivenessFingerprint::TEST),
     }
 }
 fn request(ids: &[&str]) -> AckModDelivered {
@@ -129,9 +135,68 @@ fn pending(conn: &Connection, id: &str, sequence: i64, body: &str) {
     )
     .unwrap();
 }
+/// Like [`pending`], but receivable: a sealed preparation, a prepared recipient row for `b` and a
+/// manifest (the join `read_cursors::RECEIVABLE_FROM` walks), so a cursor cannot pass it unshown.
+fn receivable_pending(conn: &Connection, id: &str, sequence: i64, body: &str) {
+    pending(conn, id, sequence, body);
+    conn.execute_batch(&format!(
+        "INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES ('prep-{id}','i','actor','prep-{id}',zeroblob(32),'t',0,0,0,0,0,0,1,'sealed');
+         INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES ('prep-{id}','t','b',1,300000,1);
+         INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('prep-{id}','{id}','i','t',{},0,{sequence},0,1,0);",
+        sequence + 1
+    ))
+    .unwrap();
+}
+/// The binding id of seat `b`'s first (claim `nb`) binding.
+fn binding_b(conn: &Connection) -> BindingId {
+    BindingId::new(
+        conn.query_row(
+            "SELECT binding_id FROM occupant_bindings WHERE seat_id='b' AND native_session='nb'",
+            [],
+            |r| r.get::<_, String>(0),
+        )
+        .unwrap(),
+    )
+}
+fn cursor_b(conn: &Connection, binding: &BindingId) -> u64 {
+    read_cursors::cursor_for(conn, binding, &ThreadId::new("t"))
+        .unwrap()
+        .unwrap_or(0)
+}
+fn sequence_of(conn: &Connection, id: &str) -> u64 {
+    let sequence: i64 = conn
+        .query_row("SELECT sequence FROM messages WHERE id=?1", [id], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    u64::try_from(sequence).unwrap()
+}
+/// The highest sequence in thread `t`: the last displayed message or the non-receivable ack event
+/// the settlement appended after it. A cursor that walked every row the display covered ends here.
+fn thread_tail(conn: &Connection) -> u64 {
+    let tail: i64 = conn
+        .query_row(
+            "SELECT max(sequence) FROM messages WHERE thread_id='t'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    u64::try_from(tail).unwrap()
+}
 fn receipt_state(conn: &Connection, id: &str) -> String {
     conn.query_row(
         "SELECT state FROM receipts WHERE message_id=?1 AND seat_id='b'",
+        [id],
+        |r| r.get(0),
+    )
+    .unwrap()
+}
+/// The effective state of a receivable message's receipt for `b`: settlement of a message with a
+/// send manifest writes `receipt_state`, never the `receipts` row [`receipt_state`] reads.
+fn manifest_receipt_state(conn: &Connection, id: &str) -> String {
+    conn.query_row(
+        "SELECT COALESCE((SELECT state FROM receipt_state WHERE message_id=?1 AND seat_id='b'), \
+                         (SELECT state FROM receipts WHERE message_id=?1 AND seat_id='b'))",
         [id],
         |r| r.get(0),
     )
@@ -438,4 +503,129 @@ fn claim_rejected_without_writes_for_wrong_harness_and_subagent() {
     child.claim.role = CallerRole::Subagent;
     assert!(run(&context, &mut conn, &child).is_err());
     assert_eq!(receipt_state(&conn, "m1"), "pending");
+}
+
+#[test]
+fn mod_ack_of_ordinary_and_lazy_advances_the_cursor_past_both() {
+    let (context, mut conn, _) = setup();
+    receivable_pending(&conn, "o6", 1, "ordinary");
+    let lazy_id = lazy(&conn, "p0000aaaa", 2, "lazy body");
+    let report = run(&context, &mut conn, &request(&["o6", &lazy_id])).unwrap();
+    assert_eq!(
+        outcomes(&report),
+        vec![
+            ("o6", ModAckOutcome::Settled, None),
+            (lazy_id.as_str(), ModAckOutcome::Settled, None)
+        ]
+    );
+    let binding = binding_b(&conn);
+    // o6 is seq 1, the lazy row seq 2 and the settlement appended the non-receivable ack event
+    // after them: the cursor walks all three and stops at the thread tail.
+    assert_eq!(thread_tail(&conn), 3, "o6, the lazy row, the ack event");
+    assert_eq!(
+        cursor_b(&conn, &binding),
+        thread_tail(&conn),
+        "passes the ordinary and the lazy row"
+    );
+    assert!(!read_cursors::has_unread(&conn, &binding).unwrap());
+    assert_eq!(
+        lazy_delivery::lazy_completion_state(
+            &conn,
+            "i",
+            &SeatId::new("b"),
+            Some(&binding),
+            &MessageId::new(lazy_id.as_str())
+        )
+        .unwrap(),
+        LazyCompletion::Completed
+    );
+}
+
+#[test]
+fn mod_ack_of_only_the_lazy_row_stops_before_an_unshown_ordinary_message() {
+    let (context, mut conn, _) = setup();
+    // o5 (seq 1) is acked whole next to the lazy row (seq 3); o6 (seq 2) lies between them and is
+    // never shown, so the cursor passes o5 and stops before o6.
+    receivable_pending(&conn, "o5", 1, "shown ordinary");
+    receivable_pending(&conn, "o6", 2, "never shown");
+    let lazy_id = lazy(&conn, "p0000aaaa", 3, "lazy body");
+    let report = run(&context, &mut conn, &request(&["o5", &lazy_id])).unwrap();
+    assert_eq!(
+        outcomes(&report),
+        vec![
+            ("o5", ModAckOutcome::Settled, None),
+            (lazy_id.as_str(), ModAckOutcome::Settled, None)
+        ]
+    );
+    let binding = binding_b(&conn);
+    assert_eq!(
+        cursor_b(&conn, &binding),
+        sequence_of(&conn, "o5"),
+        "the cursor ends at o5, the last message before the unshown o6"
+    );
+    assert!(read_cursors::has_unread(&conn, &binding).unwrap());
+    assert_eq!(manifest_receipt_state(&conn, "o5"), "acked");
+    assert_eq!(manifest_receipt_state(&conn, "o6"), "pending");
+}
+
+#[test]
+fn already_settled_ordinary_still_advances_a_second_bindings_cursor() {
+    let (context, mut conn, _) = setup();
+    receivable_pending(&conn, "o6", 1, "ordinary");
+    conn.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES ('b',1,'pb','b',1,1,'claude','nb2','00000000-0000-4000-8000-0000000000b2','cooperative_top_level',0,'term-pb','inc')", []).unwrap();
+    let second: BindingId = BindingId::new(
+        conn.query_row(
+            "SELECT binding_id FROM occupant_bindings WHERE native_session='nb2'",
+            [],
+            |r| r.get::<_, String>(0),
+        )
+        .unwrap(),
+    );
+    run(&context, &mut conn, &request(&["o6"])).unwrap();
+    // o6 is seq 1 and the settlement appended its non-receivable ack event after it (seq 2).
+    assert_eq!(thread_tail(&conn), 2, "o6, then the ack event");
+    assert_eq!(cursor_b(&conn, &binding_b(&conn)), thread_tail(&conn));
+    assert_eq!(cursor_b(&conn, &second), 0);
+    let mut again = request(&["o6"]);
+    again.operation = OperationId::new("second-binding-op");
+    again.claim.native_session = NativeSessionId::new("nb2");
+    again.claim.execution = ExecutionId::new("00000000-0000-4000-8000-0000000000b2");
+    let report = run(&context, &mut conn, &again).unwrap();
+    assert_eq!(
+        outcomes(&report),
+        vec![("o6", ModAckOutcome::AlreadySettled, None)]
+    );
+    // The already-settled display writes no further event, so the tail is unchanged and the second
+    // binding's cursor walks o6 and the ack event just as the first binding's did.
+    assert_eq!(thread_tail(&conn), 2);
+    assert_eq!(cursor_b(&conn, &second), thread_tail(&conn));
+    assert!(!read_cursors::has_unread(&conn, &second).unwrap());
+}
+
+#[test]
+fn truncated_ordinary_next_to_a_lazy_row_does_not_let_the_cursor_pass() {
+    let (context, mut conn, _) = setup();
+    // ok1 (seq 1) is shown whole; big (seq 2) is refused as truncated, so it is not displayed and
+    // the lazy row (seq 3) behind it cannot carry the cursor past it.
+    receivable_pending(&conn, "ok1", 1, "short");
+    receivable_pending(&conn, "big", 2, &"x".repeat(WATCH_BODY_LIMIT_BYTES + 1));
+    let lazy_id = lazy(&conn, "p0000aaaa", 3, "lazy body");
+    let report = run(&context, &mut conn, &request(&["ok1", "big", &lazy_id])).unwrap();
+    assert_eq!(
+        outcomes(&report),
+        vec![
+            ("ok1", ModAckOutcome::Settled, None),
+            (
+                "big",
+                ModAckOutcome::RefusedTerminal,
+                Some(ModAckReason::Truncated)
+            ),
+            (lazy_id.as_str(), ModAckOutcome::Settled, None)
+        ]
+    );
+    assert_eq!(
+        cursor_b(&conn, &binding_b(&conn)),
+        sequence_of(&conn, "ok1"),
+        "the cursor ends at ok1, before the truncated big"
+    );
 }

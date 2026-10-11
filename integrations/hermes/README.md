@@ -36,10 +36,26 @@ HERMES_ACCEPT_HOOKS or hooks_auto_accept is inserted. A private modified Herdr m
 advertise the actual guarded process-hint capability; a hint remains cooperative
 recognition input. A successful managed launch is wake-only, unregistered, and is
 not a hook check-in or receipt. Hermes has no composer provider or in-turn poke.
-Hermes joins threads only through managed launch: a bare `hermes` started in a pane
-gets no seat and no context (TRUST-POLICY accepted limits). Native `delegate_task`
+A bare Hermes CLI session (`hermes`) in a Herdr pane joins on its own when the selected
+profile has herdr-threads installed (`herdr-threads setup hermes --profile NAME`) and
+enabled (`hermes --profile NAME plugins enable herdr-threads`): its session start takes
+the pane's seat and its first top-level turn gets the context. Delegated children
+(platform `subagent`) never enroll. There is no resume continuity (a resumed session
+starts fresh on the pane's seat), and on macOS Herdr does not recognize a bare Hermes,
+so its seat is not woken while idle; `herdr-threads launch --kind hermes` remains the
+way to get a wakeable Hermes. After upgrading herdr-threads, re-run
+`setup hermes --profile NAME` so the installed bridge sends the enrollment witness; an
+older bridge keeps launch-only behavior, and `setup-status` reports it as stale and
+shows whether each profile's bridge is enabled and current (TRUST-POLICY accepted
+limits). Native `delegate_task`
 children run with platform `subagent`; their parented `pre_llm_call` gets the
-subagent restriction locally and every other subagent callback is ignored.
+subagent restriction locally and every other subagent callback is ignored, except the delegate
+lifecycle: the bridge forwards `subagent_start` and `subagent_stop` (the child session and its
+`parent_session_id`) and the session teardown `on_session_finalize`, so the daemon registers a
+delegate child as a subagent binding of its parent and disconnects bindings when they end. A
+`herdr-threads` call made under a registered child's session acts as that read-only subagent
+binding. `on_session_end` fires after every turn, so it is never forwarded and never an end
+event. Re-run `setup hermes --profile NAME` to install the updated bridge.
 
 The plugin also registers a `pre_tool_call` person gate, independent of the bridge
 (it stays registered when the bridge cannot start): a terminal command that runs

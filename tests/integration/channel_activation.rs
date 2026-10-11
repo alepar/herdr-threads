@@ -107,6 +107,10 @@ impl World {
             .env("HOME", self.root.join("home"))
             .env("CODEX_HOME", self.root.join("codex"))
             .env("CLAUDE_CONFIG_DIR", self.root.join("claude"));
+        // A stand-in seat is an agent: it acts as a harness session (decision 15).
+        if claim.is_some() || args.contains(&"--cooperative-seat") {
+            herdr_threads::test_support::isolation::as_agent(&mut cmd, "claude", "channel-session");
+        }
         if let Some(c) = claim {
             cmd.args([
                 "--cooperative-seat",
@@ -211,11 +215,11 @@ fn channel_activation_real_daemon_loads_fresh_21_and_22_and_owns_archival_lane()
         // and the seat_archival insertion kicks the existing archival lane.
         w.ok(None, &["seat", "resolve", "--pane", "w1:p1"]);
         let db = w.db();
-        // The initializer upgrades each historical input to the current schema38.
+        // The initializer upgrades each historical input to the composed schema45.
         assert_eq!(
             db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
                 .unwrap(),
-            39
+            45
         );
         wait("archival worker initialization", || {
             db.query_row(

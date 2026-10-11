@@ -9,6 +9,7 @@ pub mod host_evidence;
 pub mod host_reachability;
 pub mod kicks;
 pub mod live_gate;
+pub mod liveness;
 pub mod mod_channels;
 pub mod pacer;
 pub mod workers;

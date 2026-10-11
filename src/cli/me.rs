@@ -11,8 +11,10 @@
 //! leaves behind is what lets later commands in the same pane locate the seat
 //! with no caller flags, exactly as an agent's hook context does.
 //!
-//! It never takes over an agent: a pane where Herdr reports an agent, or whose
-//! seat holds an agent's local context, is refused. Wake prompts are never
+//! It never takes over a connected agent: a pane where Herdr reports an agent,
+//! whose seat holds an agent's local context, or whose seat has a connected agent
+//! binding (the daemon decides), is refused. A successful `me init` ends the seat's
+//! disconnected agent bindings. Wake prompts are never
 //! sent to a human seat; its mail waits to be read and ACKed by hand.
 
 use super::{

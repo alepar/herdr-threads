@@ -132,6 +132,8 @@ fn claim() -> CallerClaim {
         native_session: NativeSessionId::new("native-w"),
         execution: ExecutionId::new("00000000-0000-4000-8000-000000000001"),
         target: HostTargetId::new("pane-w"),
+        agent_id: None,
+        liveness: None,
     }
 }
 

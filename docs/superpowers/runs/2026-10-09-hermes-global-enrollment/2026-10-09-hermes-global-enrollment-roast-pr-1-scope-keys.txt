@@ -1,0 +1,4 @@
+[Should-fix] .config/nextest.toml:101
+[Should-fix] docs/superpowers/runs/2026-10-09-hermes-global-enrollment/run.md:27
+[Nit] tests/cli/hook.rs:8260
+[Nit] docs/compatibility/README.md:40

@@ -138,11 +138,16 @@ pub(super) fn decode(_: &AgyAdmission, input: &HookInput) -> Result<DecodedEvent
             domain: ContractDomain::Native,
             native_event: event.as_str().into(),
             shape_fields: vec![],
+            // A child conversation carries no parent field or agent id (its role is refined from
+            // local evidence), so no event names a subagent binding.
+            agent_id: None,
+            enrollment_witness: None,
         },
         delivery,
         runtime: RuntimeAttribution::Unavailable {
             diagnostic: "agy payload carries no runtime version".into(),
         },
+        binding_event: None,
     })
 }
 

@@ -1,1 +1,1 @@
-{"setup":{"configured_enabled":true,"installed":true,"manual_argv":["hermes","--profile","work","plugins","enable","herdr-threads"],"native_acceptance":"unmet","repairable":false}}
+{"setup":{"bridge_current":true,"configured_enabled":true,"installed":true,"manual_argv":["hermes","--profile","work","plugins","enable","herdr-threads"],"native_acceptance":"unmet","repairable":false}}

@@ -19,7 +19,7 @@ use crate::{
     ports::LocalClient,
     protocol::{
         authority::CallerClaim,
-        capabilities::MOD_WATCH,
+        capabilities::{BINDING_CURSORS, MOD_WATCH},
         commands::{AckModDelivered, Command, InboxQuery},
         ids::{MessageId, NativeSessionId, OperationId, SeatId},
         pagination::{Page, PageRequest},
@@ -337,6 +337,8 @@ pub(crate) struct WatchSession<'a> {
 enum Probe {
     Supported {
         presentation: bool,
+        /// The daemon serves per-binding unread streams (`inbox.binding_cursors_v1`).
+        cursors: bool,
     },
     /// The daemon answered, and it has no such feature.
     Unsupported,
@@ -356,6 +358,7 @@ fn probe_mod_watch(client: &dyn LocalClient, budget: &CallBudget) -> Probe {
                         .capabilities
                         .iter()
                         .any(|c| c == crate::protocol::capabilities::DELIVERY_PRESENTATION_V2),
+                    cursors: list.capabilities.iter().any(|c| c == BINDING_CURSORS),
                 }
             } else {
                 Probe::Unsupported
@@ -389,11 +392,17 @@ fn run_session_marked(
     mut alive: impl FnMut() -> bool,
 ) -> i32 {
     let mut state = EmitState::new(session.hint_path.clone()).with_command_prefix(command_prefix);
-    let presentation = match probe_mod_watch(session.client, &cooperative_budget(session.clock)) {
-        Probe::Supported { presentation } => presentation,
-        Probe::Unsupported => return refuse(&mut state, out, WatchStatusReason::Unsupported),
-        Probe::Failed => return refuse(&mut state, out, WatchStatusReason::DaemonUnavailable),
-    };
+    let (presentation, cursors) =
+        match probe_mod_watch(session.client, &cooperative_budget(session.clock)) {
+            Probe::Supported {
+                presentation,
+                cursors,
+            } => (presentation, cursors),
+            Probe::Unsupported => return refuse(&mut state, out, WatchStatusReason::Unsupported),
+            Probe::Failed => return refuse(&mut state, out, WatchStatusReason::DaemonUnavailable),
+        };
+    // The historical fallback reads this binding's stream only after negotiation.
+    let reader = cursors.then(|| session.claim.clone());
     let seat = session.claim.seat.clone();
     let (reply, mut conn) =
         match open_watch(session.socket, session.instance, session.claim.clone()) {
@@ -436,6 +445,7 @@ fn run_session_marked(
             session.client,
             session.clock,
             &seat,
+            reader.as_ref(),
             accepted.attention_version,
             &mut state,
             out,
@@ -452,6 +462,7 @@ fn watch_loop(
     client: &dyn LocalClient,
     clock: &dyn Clock,
     seat: &SeatId,
+    claim: Option<&CallerClaim>,
     accepted_version: u64,
     state: &mut EmitState,
     out: &mut dyn Write,
@@ -492,7 +503,7 @@ fn watch_loop(
     ));
     let mut version = accepted_version;
     loop {
-        match drain(client, clock, seat, version, state, out) {
+        match drain(client, clock, seat, claim, version, state, out) {
             Ok(()) => {}
             Err(DrainError::Out) => return 0,
             Err(DrainError::Api | DrainError::Protocol) => {
@@ -739,6 +750,7 @@ struct ClientPageSource<'a> {
     client: &'a dyn LocalClient,
     clock: &'a dyn Clock,
     seat: &'a SeatId,
+    claim: Option<&'a CallerClaim>,
 }
 
 impl PageSource for ClientPageSource<'_> {
@@ -747,6 +759,7 @@ impl PageSource for ClientPageSource<'_> {
             .client
             .call(
                 Command::InboxBatchV2(InboxQuery {
+                    claim: self.claim.cloned(),
                     seat: Some(self.seat.clone()),
                     page: PageRequest {
                         cursor,
@@ -772,6 +785,7 @@ pub(crate) fn drain(
     client: &dyn LocalClient,
     clock: &dyn Clock,
     seat: &SeatId,
+    claim: Option<&CallerClaim>,
     frame_version: u64,
     state: &mut EmitState,
     out: &mut dyn Write,
@@ -780,6 +794,7 @@ pub(crate) fn drain(
         client,
         clock,
         seat,
+        claim,
     };
     let attention_text =
         crate::protocol::watch::attention_marker_for(&state.assembler.command_prefix);
@@ -969,6 +984,56 @@ impl CallerFailure {
     }
 }
 
+/// The watch child's caller. The mod passes the session it serves as `--session` (spec D3), so
+/// the harness's session variable is not needed: an ancestor of a push-channel harness with the
+/// variable unset is that session, fingerprinted by its own process.
+fn watch_origin(
+    parsed: &super::commands::ParsedCli,
+    session: &str,
+) -> Option<super::caller::CallerOrigin> {
+    use super::caller::CallerOrigin;
+    use crate::{
+        harness::caller_env::{self, EnvClaim, EnvInputs, EnvRefusal},
+        protocol::authority::{COOPERATIVE_ENV_SESSION_PROVENANCE, CallerRole},
+    };
+    let origin = super::caller::derive(parsed);
+    let Some(CallerOrigin::Refused(EnvRefusal::MissingSession { harness, .. })) = &origin else {
+        return origin;
+    };
+    let harness: &'static str = harness;
+    if !crate::delivery::declares(
+        harness,
+        crate::harness::adapter::DeliveryMechanism::PushChannel,
+    ) {
+        return origin;
+    }
+    let Ok(agent) = crate::harness::registry::builtins().agent(harness) else {
+        return origin;
+    };
+    let env = |name: &str| std::env::var(name).ok();
+    let inputs = EnvInputs {
+        env: &env,
+        self_pid: std::process::id(),
+        agent_id: None,
+        processes: &crate::host::process_table::HostProcessTable,
+    };
+    match (
+        caller_env::harness_fingerprint(&inputs, harness),
+        NativeSessionId::parse(session.to_owned()),
+    ) {
+        (Ok(fingerprint), Ok(native_session)) => CallerOrigin::Agent(EnvClaim {
+            harness: crate::protocol::authority::Harness::Agent(agent),
+            native_session,
+            agent_id: None,
+            role: CallerRole::TopLevel,
+            fingerprint,
+            provenance: COOPERATIVE_ENV_SESSION_PROVENANCE,
+        })
+        .into(),
+        _ => origin,
+    }
+}
+
 /// Pane (or `--cooperative-*`) to seat to the seat's recorded harness context,
 /// as a claim whose native session is the `--session` value (spec D3).
 fn locate_claim<C, F>(
@@ -984,7 +1049,9 @@ where
     C: LocalClient,
     F: Fn() -> Result<(uuid::Uuid, C), RunError>,
 {
-    let (instance, _) = connection.get().map_err(|_| CallerFailure::Daemon)?;
+    let (instance, client) = connection.get().map_err(|_| CallerFailure::Daemon)?;
+    let origin = watch_origin(parsed, session);
+    let _origin = super::caller::ActiveGuard::enter(origin.clone());
     let selection = match derive_caller(parsed, caller_pane, context, paths, connection, clock) {
         Ok(Some(selection)) => selection,
         Ok(None) => return Err(CallerFailure::NoBinding),
@@ -998,6 +1065,28 @@ where
         }
         Err(_) => return Err(CallerFailure::Other),
     };
+    if let Some(super::caller::CallerOrigin::Agent(env)) = origin {
+        // The mod's watch child runs under the session's harness: its claim is the environment's
+        // (the fingerprint is the harness process's), with the `--session` the mod passed.
+        if !crate::delivery::declares(
+            env.harness.as_str(),
+            crate::harness::adapter::DeliveryMechanism::PushChannel,
+        ) {
+            return Err(CallerFailure::NoPushChannel);
+        }
+        let generation = super::seat_generation(client, &parsed.output, &selection, clock.as_ref())
+            .map_err(|_| CallerFailure::NoBinding)?;
+        let current = super::caller::agent_context(
+            &env,
+            *instance,
+            &selection.seat,
+            &selection.target,
+            generation,
+        );
+        let claim = bridge::caller_claim(&current).map_err(|_| CallerFailure::NoBinding)?;
+        let claim = own_session_claim(claim, session, Some(env.fingerprint))?;
+        return Ok((claim, selection.seat, *instance));
+    }
     let contexts =
         seat_contexts(paths, *instance, &selection.seat).map_err(|_| CallerFailure::Other)?;
     let current = contexts
@@ -1010,10 +1099,28 @@ where
     ) {
         return Err(CallerFailure::NoPushChannel);
     }
-    let mut claim = bridge::caller_claim(&current).map_err(|_| CallerFailure::NoBinding)?;
+    let claim = bridge::caller_claim(&current).map_err(|_| CallerFailure::NoBinding)?;
+    let claim = own_session_claim(claim, session, None)?;
+    Ok((claim, selection.seat, *instance))
+}
+
+/// The watch child's claim names the binding of the session it serves (spec §3 Wake): the
+/// top-level Claude binding keyed by the seat and the `--session` the mod passed. A seat holds a
+/// binding per session, so the registration must carry this session and never an agent id; the
+/// daemon resolves it to that binding and holds the channel there.
+fn own_session_claim(
+    mut claim: CallerClaim,
+    session: &str,
+    liveness: Option<crate::protocol::authority::LivenessFingerprint>,
+) -> Result<CallerClaim, CallerFailure> {
     claim.native_session =
         NativeSessionId::parse(session.to_owned()).map_err(|_| CallerFailure::Other)?;
-    Ok((claim, selection.seat, *instance))
+    claim.role = crate::protocol::authority::CallerRole::TopLevel;
+    claim.agent_id = None;
+    if liveness.is_some() {
+        claim.liveness = liveness;
+    }
+    Ok(claim)
 }
 
 #[allow(clippy::too_many_arguments)]

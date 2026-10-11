@@ -54,6 +54,11 @@ impl Smoke {
         let mut cmd = self.cli();
         cmd.args(args);
         if let Some((seat, pane)) = seat {
+            herdr_threads::test_support::isolation::as_agent(
+                &mut cmd,
+                "codex",
+                &format!("smoke-{}", seat),
+            );
             cmd.args(["--cooperative-seat", seat, "--cooperative-target", pane])
                 .args(["--cooperative-harness", "codex"])
                 .args(["--cooperative-role", "top-level"]);

@@ -1,5 +1,6 @@
 //! Typed CLI client, selected renderer and local journal composition.
 pub mod actor_route;
+pub mod caller;
 pub mod commands;
 pub mod direct_send;
 pub mod doctor;
@@ -215,6 +216,58 @@ pub(crate) fn selected_generation(
     Ok(inspection.summary.generation)
 }
 
+/// The selected seat's current mapping generation, read from the daemon (the same inspection
+/// every seat-acting command makes).
+pub(crate) fn seat_generation<C: LocalClient + ?Sized>(
+    client: &C,
+    output: &OutputSpec,
+    selection: &CooperativeSelection,
+    clock: &dyn Clock,
+) -> Result<u64, RunError> {
+    use crate::protocol::{commands::SeatInspectQuery, pagination::PageRequest};
+    let inspection = client.call_with_output(
+        Command::SeatInspect(SeatInspectQuery {
+            seat: selection.seat.clone(),
+            page: PageRequest {
+                cursor: None,
+                limit: 1,
+                max_bytes: crate::protocol::pagination::MAX_PAGE_BYTES,
+            },
+        }),
+        output,
+        &cooperative_budget(clock),
+    )?;
+    let CommandResult::SeatInspect(inspection) = inspection else {
+        return Err(mapping_error("service returned no seat inspection"));
+    };
+    selected_generation(selection, &inspection)
+}
+
+/// `contexts` acting as the calling session when the active caller is an agent (decision 15):
+/// its context is derived from the environment at `generation` and never saved.
+pub(crate) fn caller_journal(
+    contexts: crate::harness::context::ContextJournal,
+    instance: uuid::Uuid,
+    selection: &CooperativeSelection,
+    generation: u64,
+) -> Result<crate::harness::context::ContextJournal, RunError> {
+    match caller::active() {
+        Some(caller::CallerOrigin::Agent(env)) => contexts
+            .with_agent_caller(
+                caller::agent_context(
+                    &env,
+                    instance,
+                    &selection.seat,
+                    &selection.target,
+                    generation,
+                ),
+                env.fingerprint,
+            )
+            .map_err(context_run_error),
+        _ => Ok(contexts),
+    }
+}
+
 struct SocketViewReader(LocalSocketClient);
 impl ViewReader for SocketViewReader {
     fn read(
@@ -254,6 +307,7 @@ where
 {
     output::set_stdout_is_terminal(stdout_is_terminal);
     output::set_harness_marked(output::harness_marked(|name| std::env::var_os(name)));
+    caller::derive_from_process();
     run(argv, writer)
 }
 
@@ -978,6 +1032,22 @@ fn run_parsed_in_pane<W: Write>(
     Ok(())
 }
 
+/// The actions that call the daemon as a cooperative caller (reads included).
+fn caller_needs_identity(action: &CliAction) -> bool {
+    matches!(
+        action,
+        CliAction::Wire(_)
+            | CliAction::Mutation(_)
+            | CliAction::PendingOps(_)
+            | CliAction::Retry(_)
+            | CliAction::CachedCheckIn(_)
+            | CliAction::Summary(_)
+            | CliAction::Handoff(_)
+            | CliAction::TopologyHandoff(_)
+            | CliAction::TopologyRecover(_)
+    )
+}
+
 /// A daemon connection opened on first use and then shared, so one CLI
 /// invocation never connects twice.
 struct LazyConnection<C, F> {
@@ -1038,6 +1108,19 @@ where
             .host
             .get_or_insert_with(|| context.host_endpoint.to_string_lossy().into_owned());
     }
+    // Who is calling comes from the environment (decision 15): an agent without a session id is
+    // refused before any daemon call, reads included.
+    // The `human` namespace is a person's explicit choice: it keeps the pane-context path, and
+    // its own guard (TRUST-POLICY A4) refuses it under an agent harness.
+    let origin = (parsed.actor != actor_route::InvocationActor::Human)
+        .then(|| caller::derive(&parsed))
+        .flatten();
+    if let Some(caller::CallerOrigin::Refused(refusal)) = &origin
+        && caller_needs_identity(&parsed.action)
+    {
+        return Err(caller::refusal_error(refusal));
+    }
+    let _origin = caller::ActiveGuard::enter(origin);
     match &parsed.action {
         CliAction::Handoff(request) => {
             let (_, client) = connection.get()?;
@@ -1087,10 +1170,24 @@ where
         )?;
         return Ok(None);
     }
+    let text_read = text_display(&parsed);
     match parsed.action {
         CliAction::Wire(command) => {
             let (_, client) = connection.get()?;
-            run_wire(command, &parsed.output, client, budget, writer)?;
+            let read = command.clone();
+            let result = run_wire_result(command, &parsed.output, client, budget, writer)?;
+            if text_read
+                && let Some(message) = full_body_read(&read, &result)
+                && let Some(claim) = body_reader_claim(
+                    &parsed.output,
+                    caller_pane,
+                    paths,
+                    connection,
+                    clock.as_ref(),
+                )
+            {
+                advance_over_body_read(client, clock.as_ref(), claim, message);
+            }
             Ok(None)
         }
         action => {
@@ -1116,6 +1213,17 @@ pub(crate) fn run_wire<C: LocalClient + ?Sized, W: Write>(
     budget: &dyn Fn() -> CallBudget,
     writer: &mut W,
 ) -> Result<(), RunError> {
+    run_wire_result(command, output_spec, client, budget, writer).map(|_| ())
+}
+
+/// [`run_wire`], returning the result exactly as it was written.
+fn run_wire_result<C: LocalClient + ?Sized, W: Write>(
+    command: Command,
+    output_spec: &OutputSpec,
+    client: &C,
+    budget: &dyn Fn() -> CallBudget,
+    writer: &mut W,
+) -> Result<CommandResult, RunError> {
     let command = match command {
         Command::Inbox(query)
             // A continuation must stay in the protocol that captured it.
@@ -1199,7 +1307,104 @@ pub(crate) fn run_wire<C: LocalClient + ?Sized, W: Write>(
             modes.write(bytes, max_bytes, writer)?;
         }
     };
-    Ok(())
+    Ok(result)
+}
+
+/// Whether this read is a text display (not `--json`, not `--machine`). Like `inbox`, only a
+/// text display moves the reading binding's cursor; machine reads are read-only.
+fn text_display(parsed: &commands::ParsedCli) -> bool {
+    parsed.output.format == OutputFormat::Text
+        && parsed.presentation != output::Presentation::Machine
+}
+
+/// The message a `body` read showed whole (ht-54r F1): the written chunk reaches the end of the
+/// body and the read either started at byte 0 or followed the body's own continuation. A read
+/// from an explicit `--offset` past 0, or a chunk short of the end, is partial.
+fn full_body_read(
+    command: &Command,
+    result: &CommandResult,
+) -> Option<crate::protocol::ids::MessageId> {
+    let Command::Message(query) = command else {
+        return None;
+    };
+    let CommandResult::Message(details) = result else {
+        return None;
+    };
+    let crate::protocol::results::MessageContent::Ordinary {
+        body_offset,
+        body_complete: true,
+        ..
+    } = &details.content
+    else {
+        return None;
+    };
+    (*body_offset == 0 || query.body.cursor.is_some()).then(|| query.message.clone())
+}
+
+/// After a full `body` read, best effort: the calling agent binding's cursors move over the
+/// message it displayed whole (`AdvanceCursors`, the same display walk as a text inbox page;
+/// every role, subagents included). It settles nothing, prints nothing, and a failure only
+/// leaves the message unread for that binding.
+fn advance_over_body_read<C: LocalClient + ?Sized>(
+    client: &C,
+    clock: &dyn Clock,
+    claim: crate::protocol::authority::CallerClaim,
+    message: crate::protocol::ids::MessageId,
+) {
+    if claim.harness == crate::protocol::authority::Harness::Human
+        || !client.supports_capability(
+            crate::protocol::capabilities::BINDING_CURSORS,
+            &cooperative_budget(clock),
+        )
+    {
+        return;
+    }
+    let _ = client.call(
+        Command::AdvanceCursors(crate::protocol::commands::AdvanceCursors {
+            claim,
+            operation: crate::protocol::ids::OperationId::new(uuid::Uuid::new_v4().to_string()),
+            displayed: vec![message],
+        }),
+        &cooperative_budget(clock),
+    );
+}
+
+/// The claim of the agent session calling from `caller_pane` (no explicit selection), derived
+/// as every seat-acting command derives it; `None` for a person or when anything is missing.
+fn body_reader_claim<C, F>(
+    output: &OutputSpec,
+    caller_pane: Option<&str>,
+    paths: &InstancePaths,
+    connection: &LazyConnection<C, F>,
+    clock: &dyn Clock,
+) -> Option<crate::protocol::authority::CallerClaim>
+where
+    C: LocalClient,
+    F: Fn() -> Result<(uuid::Uuid, C), RunError>,
+{
+    let Some(caller::CallerOrigin::Agent(env)) = caller::active() else {
+        return None;
+    };
+    let pane = parse_pane(caller_pane.filter(|pane| !pane.is_empty())?).ok()?;
+    let (_, client) = connection.get().ok()?;
+    let seat = pane_seat(client, output, &pane, clock).ok().flatten()?;
+    let instance = read_existing_namespace(paths).ok().flatten()?;
+    let selection = CooperativeSelection {
+        seat,
+        target: pane,
+        harness: crate::harness::context::Harness::from(env.harness),
+        role: caller::role_of(env.role),
+    };
+    let generation = seat_generation(client, output, &selection, clock).ok()?;
+    let contexts = caller_journal(
+        seat_contexts(paths, instance, &selection.seat).ok()?,
+        instance,
+        &selection,
+        generation,
+    )
+    .ok()?;
+    let context = contexts.current().ok().flatten()?;
+    role_claim(&contexts, &context, selection.role).ok()
 }
 
 fn read_byte_bound(command: &Command) -> u32 {
@@ -1375,6 +1580,56 @@ fn select_display_inbox_page<C: LocalClient + ?Sized>(
     Ok((command, result))
 }
 
+/// A subagent's own identity: the agent id from the caller environment and the native session of
+/// the occupant context. `None` when either is missing (the subagent has no stream of its own).
+fn subagent_identity(
+    context: &crate::harness::context::OccupantContext,
+) -> Option<(crate::protocol::ids::AgentId, String)> {
+    let Some(caller::CallerOrigin::Agent(env)) = caller::active() else {
+        return None;
+    };
+    match (env.agent_id, &context.session) {
+        (Some(agent), crate::harness::context::SessionReference::Native(native)) => {
+            Some((agent, native.clone()))
+        }
+        _ => None,
+    }
+}
+
+/// The caller's claim for `context`: top-level as built, or, for a subagent, in the shape the
+/// hook builds (agent id, per-agent execution), never the parent's.
+fn role_claim(
+    contexts: &crate::harness::context::ContextJournal,
+    context: &crate::harness::context::OccupantContext,
+    role: crate::harness::context::Role,
+) -> Result<crate::protocol::authority::CallerClaim, RunError> {
+    let mut claim = contexts.claim(context).map_err(context_run_error)?;
+    if role == crate::harness::context::Role::TopLevel {
+        return Ok(claim);
+    }
+    let refused = || {
+        unsupported(
+            "subagents may read and summarize; only top-level agents check in, accept or ACK",
+        )
+    };
+    let Some((agent, native)) = subagent_identity(context) else {
+        return Err(refused());
+    };
+    claim.role = crate::protocol::authority::CallerRole::Subagent;
+    claim.execution = crate::protocol::ids::ExecutionId::parse(
+        crate::harness::context::session_execution(
+            context.instance,
+            context.harness,
+            &native,
+            Some(agent.as_str()),
+        )
+        .to_string(),
+    )
+    .map_err(|_| RunError::Api(ApiError::invalid_request("subagent execution id")))?;
+    claim.agent_id = Some(agent);
+    Ok(claim)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_display_inbox<C: LocalClient + ?Sized, W: Write>(
     query: &crate::protocol::commands::InboxQuery,
@@ -1384,6 +1639,7 @@ fn run_display_inbox<C: LocalClient + ?Sized, W: Write>(
     client: &C,
     clock: &dyn Clock,
     writer: &mut W,
+    role: crate::harness::context::Role,
 ) -> Result<(), RunError> {
     use crate::protocol::{ids::MessageId, results::InboxBatchItem};
     let context = contexts
@@ -1392,7 +1648,19 @@ fn run_display_inbox<C: LocalClient + ?Sized, W: Write>(
         .ok_or_else(|| {
             caller_not_located("context missing; explicit lifecycle check-in required")
         })?;
-    let claim = crate::harness::bridge::caller_claim(&context).map_err(context_run_error)?;
+    let subagent = role != crate::harness::context::Role::TopLevel;
+    // A subagent without its own stream (no agent identity, or a daemon without per-binding
+    // cursors) reads read-only: no claim, no cursor, nothing settled.
+    if subagent && subagent_identity(&context).is_none() {
+        return run_wire(
+            Command::Inbox(query.clone()),
+            output_spec,
+            client,
+            &|| cooperative_budget(clock),
+            writer,
+        );
+    }
+    let claim = role_claim(contexts, &context, role)?;
     let mut request = query.clone();
     request.seat = Some(claim.seat.clone());
     let capabilities = match client.call(Command::Capabilities, &cooperative_budget(clock)) {
@@ -1417,6 +1685,26 @@ fn run_display_inbox<C: LocalClient + ?Sized, W: Write>(
         && capabilities
             .iter()
             .any(|name| name == crate::protocol::capabilities::INBOX_BATCH_V2);
+    // Spec §2: an agent reads its own binding's stream and advances only its own cursors.
+    let binding_cursors = v2
+        && claim.harness != crate::protocol::authority::Harness::Human
+        && capabilities
+            .iter()
+            .any(|name| name == crate::protocol::capabilities::BINDING_CURSORS);
+    if subagent && !binding_cursors {
+        // A subagent without its own stream (no agent identity, or a daemon without per-binding
+        // cursors) reads read-only: no claim, no cursor, nothing settled.
+        return run_wire(
+            Command::Inbox(query.clone()),
+            output_spec,
+            client,
+            &|| cooperative_budget(clock),
+            writer,
+        );
+    }
+    if binding_cursors {
+        request.claim = Some(claim.clone());
+    }
     let supported = capabilities
         .iter()
         .any(|name| name == crate::protocol::capabilities::INBOX_BATCH);
@@ -1440,6 +1728,47 @@ fn run_display_inbox<C: LocalClient + ?Sized, W: Write>(
             &claim,
             lazy_display::DisplaySelection::OwnDefaultText,
         )?;
+        // After the whole page was flushed: this binding's cursors move over what it displayed
+        // (every role, subagents included), before any top-level settlement. A failure only means
+        // the messages are offered again.
+        if binding_cursors {
+            // A page that showed first-contact history for a session the daemon had not
+            // enrolled yet still sends the (possibly empty) advance: it enrolls the binding, so
+            // the history is shown once (ht-54r.8).
+            let showed_history = output_spec.format == crate::protocol::output::OutputFormat::Text
+                && matches!(
+                    &result,
+                    CommandResult::InboxBatchV2(page) if page.items.iter().any(|item| matches!(
+                        item,
+                        crate::protocol::results::InboxBatchV2Item::FirstContact(_)
+                    ))
+                );
+            let empty: [MessageId; 0] = [];
+            let batches: Vec<&[MessageId]> = if candidates.displayed.is_empty() && showed_history {
+                vec![&empty[..]]
+            } else {
+                candidates
+                    .displayed
+                    .chunks(crate::protocol::commands::MAX_BATCH_ITEMS)
+                    .collect()
+            };
+            for batch in batches {
+                let _ = client.call(
+                    Command::AdvanceCursors(crate::protocol::commands::AdvanceCursors {
+                        claim: claim.clone(),
+                        operation: crate::protocol::ids::OperationId::new(
+                            uuid::Uuid::new_v4().to_string(),
+                        ),
+                        displayed: batch.to_vec(),
+                    }),
+                    &cooperative_budget(clock),
+                );
+            }
+        }
+        if subagent {
+            // A subagent's display settles nothing: no display ACK, no delivery completion.
+            return Ok(());
+        }
         return lazy_display::settle(
             candidates,
             journal,
@@ -1649,11 +1978,15 @@ pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
     let historical = replay
         .as_ref()
         .and_then(|claim| replay_selection(selection, claim, instance));
+    let origin = caller::active();
     let selection = if let Some(historical) = &historical {
         historical
     } else {
         if !matches!(&parsed.action, CliAction::Retry(_)) {
             validate_actor_harness(parsed.actor, selection.harness)?;
+            if let Some(origin) = &origin {
+                caller::check_selection(origin, selection.harness)?;
+            }
         }
         selection
     };
@@ -1686,7 +2019,7 @@ pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
         return Err(mapping_error("service returned no seat inspection"));
     };
     let generation = selected_generation(selection, &inspection)?;
-    let contexts = seat_contexts(paths, instance, &selection.seat)?;
+    let mut contexts = seat_contexts(paths, instance, &selection.seat)?;
     let journal = journal::Journal::open(paths.instance_dir.join("intents"))?;
     let mut current = contexts.current().map_err(context_run_error)?;
     let lifecycle = matches!(
@@ -1733,6 +2066,13 @@ pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
         && context.target == selection.target.as_str()
     {
         current = None;
+    }
+    // An agent caller acts as its harness session (decision 15): its context is derived from the
+    // environment at the seat's mapping generation and never saved. The saved pane context is
+    // consulted above only to retire a person's, which an agent's lifecycle check-in replaces.
+    if matches!(origin, Some(caller::CallerOrigin::Agent(_))) {
+        contexts = caller_journal(contexts, instance, selection, generation)?;
+        current = contexts.current().map_err(context_run_error)?;
     }
     // A fresh lifecycle check-in (a new event, not a replay of a recorded
     // one) is a deliberate new registration: it is seeded from the service's
@@ -1781,7 +2121,7 @@ pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
         let saved = current
             .as_ref()
             .ok_or_else(|| caller_not_located("handoff requires lifecycle check-in"))?;
-        let claim = crate::harness::bridge::caller_claim(saved).map_err(context_run_error)?;
+        let claim = contexts.claim(saved).map_err(context_run_error)?;
         let topology = match &parsed.action {
             CliAction::TopologyHandoff(_) => true,
             CliAction::Retry(recovery) => topology_runtime::is_compound(
@@ -1892,8 +2232,12 @@ fn exact_check_in_replay(
                 let CommandResult::CheckedIn(check) = result else {
                     return Err(context_run_error(ContextError::Corrupt));
                 };
-                return Ok(check.context
-                    == bridge::caller_claim(&response.context).map_err(context_run_error)?);
+                // The daemon echoes the frozen claim, liveness fingerprint included.
+                let mut echoed = check.context.clone();
+                echoed.liveness = None;
+                return Ok(
+                    echoed == bridge::caller_claim(&response.context).map_err(context_run_error)?
+                );
             }
             (
                 journal.find_check_in(&scope, event_id)?,
@@ -2515,6 +2859,25 @@ where
     let seat = pane_seat(client, &parsed.output, &pane, clock.as_ref())?
         .ok_or_else(|| no_seat_for_pane(&pane))?;
     let instance = read_existing_namespace(paths)?.ok_or_else(daemon_unavailable)?;
+    let origin = caller::active();
+    if let Some(caller::CallerOrigin::Agent(env)) = &origin {
+        // An agent's identity is its harness session: no saved context is read or required.
+        let selection = CooperativeSelection {
+            seat,
+            target: pane,
+            harness: crate::harness::context::Harness::from(env.harness),
+            role: caller::role_of(env.role),
+        };
+        if let Some(claim) = replay
+            && let Some(historical) = replay_selection(&selection, &claim, instance)
+        {
+            return Ok(historical);
+        }
+        if !matches!(&parsed.action, CliAction::Retry(_)) {
+            validate_actor_harness(parsed.actor, selection.harness)?;
+        }
+        return Ok(selection);
+    }
     let contexts = seat_contexts(paths, instance, &seat)?;
     let context = match contexts.current().map_err(context_run_error)? {
         Some(context) => context,
@@ -2781,7 +3144,6 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
     });
     if let CliAction::Wire(Command::Inbox(query)) = &parsed.action
         && own_text_inbox
-        && role == Role::TopLevel
     {
         return run_display_inbox(
             query,
@@ -2791,16 +3153,43 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
             client,
             clock,
             writer,
+            role,
         );
     }
-    if let CliAction::Wire(command) = parsed.action {
-        return run_wire(
+    let text_read = text_display(&parsed);
+    if let CliAction::Wire(mut command) = parsed.action {
+        // An agent's machine read of its own inbox carries its claim so the daemon serves that
+        // binding's stream (every role); machine reads move no cursor.
+        if let Command::Inbox(query) = &mut command
+            && parsed.caller_read_default
+            && query.claim.is_none()
+            && contexts.is_agent_caller()
+            && client.supports_capability(
+                crate::protocol::capabilities::BINDING_CURSORS,
+                &cooperative_budget(clock),
+            )
+            && let Some(context) = contexts.current().map_err(context_run_error)?
+        {
+            let claim = role_claim(contexts, &context, role)?;
+            query.seat = Some(claim.seat.clone());
+            query.claim = Some(claim);
+        }
+        let read = command.clone();
+        let result = run_wire_result(
             command,
             &parsed.output,
             client,
             &|| cooperative_budget(clock),
             writer,
-        );
+        )?;
+        if text_read
+            && let Some(message) = full_body_read(&read, &result)
+            && let Ok(Some(context)) = contexts.current()
+            && let Ok(claim) = role_claim(contexts, &context, role)
+        {
+            advance_over_body_read(client, clock, claim, message);
+        }
+        return Ok(());
     }
     if let CliAction::CachedCheckIn(request) = parsed.action {
         let saved = contexts
@@ -2834,6 +3223,7 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
                 role,
                 event_id: uuid::Uuid::new_v4().to_string(),
                 capability: Capability::SourceSupported,
+                agent_id: None,
             };
             bridge::run_event(
                 journal,
@@ -2857,6 +3247,21 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
             let seed = initial
                 .or(context.as_ref())
                 .ok_or_else(|| unsupported("lifecycle requires a service-resolved durable seat"))?;
+            // An agent's session is its environment's; a differing `--native-session` is a
+            // mistake, never a second identity.
+            let native_session = match (&seed.session, contexts.is_agent_caller()) {
+                (crate::harness::context::SessionReference::Native(own), true) => {
+                    match native_session {
+                        Some(given) if given != *own => {
+                            return Err(invalid_request(
+                                "--native-session differs from the calling harness session",
+                            ));
+                        }
+                        _ => Some(own.clone()),
+                    }
+                }
+                _ => native_session,
+            };
             let event = LifecycleEvent {
                 harness: seed.harness,
                 source: "explicit".into(),
@@ -2865,6 +3270,7 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
                 role,
                 event_id,
                 capability: Capability::SourceSupported,
+                agent_id: None,
             };
             bridge::run_event_as(
                 journal,
@@ -2894,7 +3300,7 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
         }
         CliAction::Mutation(mutation) => {
             let context = current()?;
-            let claim = bridge::caller_claim(&context).map_err(context_run_error)?;
+            let claim = contexts.claim(&context).map_err(context_run_error)?;
             let scope = IntentScope::Cooperative {
                 instance: claim.instance.clone(),
                 seat: claim.seat.clone(),
@@ -2971,6 +3377,7 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
                 mode,
                 event_id,
                 operator,
+                ..
             } = &pending.semantic
             {
                 let saved_session = contexts
@@ -2997,6 +3404,7 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
                     role,
                     event_id: event_id.clone(),
                     capability: Capability::SourceSupported,
+                    agent_id: None,
                 };
                 bridge::run_event_as(
                     journal,

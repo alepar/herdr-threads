@@ -206,11 +206,20 @@ pub trait LaunchSeatResolver: Send + Sync {
 }
 
 /// The daemon command an accepted, correlated startup becomes: the seat, pane
-/// and harness Herdr started, and the structural evidence it was started in.
+/// and harness Herdr started, the structural evidence it was started in and the started
+/// process's liveness fingerprint (the placeholder binding's identity). A startup with no
+/// observable started process is refused with a clear message: no placeholder is recorded on
+/// heuristic evidence.
 pub fn managed_launch_command(
     startup: &CorrelatedStartup,
-) -> crate::protocol::commands::RecordManagedLaunch {
-    crate::protocol::commands::RecordManagedLaunch {
+) -> Result<crate::protocol::commands::RecordManagedLaunch, ApiError> {
+    let fingerprint = startup.started_process.ok_or_else(|| {
+        ApiError::new(
+            ErrorCode::InvalidRequest,
+            "no started process is observable in the launched pane (Herdr reported no single foreground process other than the shell); no launch placeholder is recorded and the agent registers at its first check-in",
+        )
+    })?;
+    Ok(crate::protocol::commands::RecordManagedLaunch {
         seat: startup.seat.clone(),
         target: startup.target.clone(),
         harness: startup.harness,
@@ -218,7 +227,8 @@ pub fn managed_launch_command(
         incarnation: startup.expected_incarnation.clone(),
         host_boot: startup.host_boot.clone(),
         target_generation: startup.expected_generation,
-    }
+        fingerprint,
+    })
 }
 
 /// The owned hook configuration a managed launch adds: the installed hook's

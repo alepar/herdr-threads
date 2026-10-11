@@ -307,8 +307,10 @@ export function createCore(io) {
         truncated,
         wakes: o.kind !== 'notice' && o.wakes === true,
         contextVersion,
+        // Already-settled binding mail is passive; promoted Lazy messages still wake.
+        passive: o.kind === 'message' && o.ack_required === false && o.wakes !== true,
         run: S.run,
-        ackable: !truncated && (o.kind === 'lazy' || (o.kind === 'message' && o.ack_required === true)),
+        ackable: !truncated && (o.kind === 'lazy' || o.kind === 'message'),
       })
     }
     retryAcks()
@@ -535,7 +537,7 @@ export function createCore(io) {
     void pump()
   }
 
-  const passive = (item) => item.kind === 'lazy' || item.kind === 'notice' || (item.kind === 'invitation' && !item.wakes)
+  const passive = (item) => item.kind === 'lazy' || item.kind === 'notice' || (item.kind === 'invitation' && !item.wakes) || (item.kind === 'message' && item.passive)
 
   /** Passive items are appended at once, busy or idle, without a wake. */
   async function pumpLazy() {

@@ -1271,7 +1271,7 @@ impl RichManifestSource for CachedExactDomain {
             && identity.source == "native_transcript"
             && domain == "native_payload"
             && origin == crate::harness::evidence::EvidenceOrigin::NativePayload
-            && contract_id == "c4c4b249584b3578"
+            && contract_id == "f527a509c67d2f32"
     }
 }
 #[test]
@@ -1911,12 +1911,13 @@ mod publication_order {
         release: Mutex<mpsc::Receiver<()>>,
     }
     impl ModStoreReads for PausedStore {
-        fn mod_seat_view(
+        fn mod_binding_view(
             &self,
             seat: &SeatId,
+            binding: ModBindingRef<'_>,
             budget: &CallBudget,
         ) -> Result<Option<ModSeatView>, ApiError> {
-            self.inner.mod_seat_view(seat, budget)
+            self.inner.mod_binding_view(seat, binding, budget)
         }
         fn mod_stall_oldest(
             &self,
@@ -1993,6 +1994,20 @@ mod publication_order {
             budget: &CallBudget,
         ) -> Result<CommandResult, ApiError> {
             self.inner.mutate(command, permit, budget)
+        }
+        fn advance_cursors(
+            &self,
+            request: &crate::protocol::commands::AdvanceCursors,
+            budget: &CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            self.inner.advance_cursors(request, budget)
+        }
+        fn binding_event(
+            &self,
+            request: &crate::protocol::commands::BindingEvent,
+            budget: &CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            self.inner.binding_event(request, budget)
         }
         fn prepare_send_step(
             &self,

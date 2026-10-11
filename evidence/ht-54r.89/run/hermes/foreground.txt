@@ -1,0 +1,4 @@
+sample 1: shell_pid=47769 non_shell_foreground=[48173] started_process_pid(current)=48173
+sample 2: shell_pid=47769 non_shell_foreground=[48173] started_process_pid(current)=48173
+sample 3: shell_pid=47769 non_shell_foreground=[48173] started_process_pid(current)=48173
+candidates (harness-shaped descendants): 48173 /tmp/ih.oHO4go/home/hermes-home/tools/python-3.14.7+20260901-darwin-arm64/bin/python3;

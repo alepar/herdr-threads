@@ -519,13 +519,24 @@ fn run_hook_traced(
         }
     };
     record(started, HookPhase::CommandBuildStart);
-    let mut command_line = scrubbed_command("/bin/sh");
+    // A native hook runs under its harness: the shim gives the installed command line a `claude`,
+    // `codex` or `hermes` parent, which is where the hook takes its liveness fingerprint from.
+    let mut words = command.split_whitespace();
+    let harness = words
+        .by_ref()
+        .find(|word| word.trim_matches('\'') == "hook")
+        .and_then(|_| words.next())
+        .map_or("claude", |word| word.trim_matches('\''));
+    let mut command_line = herdr_threads::test_support::harness_shim::under_harness(
+        harness,
+        Path::new("/bin/sh"),
+        &["-c", command],
+        &[],
+    );
     if !scaled {
         command_line.env_remove(herdr_threads::protocol::time::TEST_TIMEOUT_SCALE_ENV);
     }
     command_line
-        .arg("-c")
-        .arg(command)
         .env("HERDR_ENV", "1")
         .env("HERDR_PANE_ID", pane)
         .env("HERDR_SOCKET_PATH", host)
@@ -619,6 +630,22 @@ fn tool(session: &str) -> Vec<u8> {
     Payload::pre_tool_use(session, "ls").bytes()
 }
 
+/// An agent's identity is its environment, never a saved context (decision 15): the journal's
+/// `current` is empty. What tests ask of "the registered context" is the one the hook last
+/// checked in as, which is the journal's last completed (not historical) check-in.
+fn registered_current(mut state: serde_json::Value) -> serde_json::Value {
+    if state["current"].is_null()
+        && let Some(done) = state["completed"].as_array().and_then(|done| {
+            done.iter()
+                .rev()
+                .find(|done| done["response"]["historical"] == false)
+        })
+    {
+        state["current"] = done["response"]["context"].clone();
+    }
+    state
+}
+
 fn count(db: &Path, sql: &str) -> i64 {
     rusqlite::Connection::open(db)
         .unwrap()
@@ -651,8 +678,35 @@ fn cooperative(
     ];
     args.extend_from_slice(command);
     let mut out = Vec::new();
+    let _agent = agent_origin("claude", "sess-1");
     herdr_threads::cli::run(args, &mut out).unwrap();
     serde_json::from_slice(&out).unwrap()
+}
+
+/// The in-process CLI acts as the harness session the hooks register (decision 15; the
+/// fingerprint is the fixed test one).
+fn agent_origin(harness: &str, session: &str) -> herdr_threads::cli::caller::OriginFixture {
+    use herdr_threads::protocol::authority::{
+        COOPERATIVE_ENV_SESSION_PROVENANCE, CallerRole, Harness, LivenessFingerprint,
+    };
+    herdr_threads::cli::caller::fix_origin(herdr_threads::cli::caller::CallerOrigin::Agent(
+        herdr_threads::harness::caller_env::EnvClaim {
+            harness: match harness {
+                "codex" => Harness::Codex,
+                "claude" => Harness::Claude,
+                other => Harness::Agent(
+                    herdr_threads::harness::registry::builtins()
+                        .agent(other)
+                        .unwrap(),
+                ),
+            },
+            native_session: herdr_threads::protocol::ids::NativeSessionId::new(session),
+            agent_id: None,
+            role: CallerRole::TopLevel,
+            fingerprint: LivenessFingerprint::TEST,
+            provenance: COOPERATIVE_ENV_SESSION_PROVENANCE,
+        },
+    ))
 }
 
 fn seed(paths: &InstancePaths) -> Uuid {
@@ -1018,7 +1072,7 @@ impl Fixture {
     }
     fn context_json(&self, seat: &str) -> serde_json::Value {
         let bytes = fs::read(self.context_dir(seat).join("context.json")).unwrap();
-        serde_json::from_slice(&bytes).unwrap()
+        registered_current(serde_json::from_slice(&bytes).unwrap())
     }
     fn intents(&self) -> usize {
         let dir = self.instance_dir.join("intents");
@@ -1076,7 +1130,7 @@ fn installed_claude_hook_checks_in_over_socket_and_never_blocks() {
     );
     assert_eq!(
         count(&db, "SELECT generation FROM seats WHERE id='seat'"),
-        2
+        1
     );
     assert_eq!(
         count(
@@ -1101,7 +1155,7 @@ fn installed_claude_hook_checks_in_over_socket_and_never_blocks() {
     assert_eq!(fx.digests.load(Ordering::SeqCst), digests_before + 1);
     assert_eq!(
         count(&db, "SELECT generation FROM seats WHERE id='seat'"),
-        2
+        1
     );
 
     // 3. A peer (registered by its own hook) invites the seat and sends mail.
@@ -1207,21 +1261,32 @@ fn installed_claude_hook_checks_in_over_socket_and_never_blocks() {
     assert!(child.stdout.is_empty());
     assert_eq!(check_ins.load(Ordering::SeqCst), before);
 
-    // 6. A tool call from an unseen native session is tool-boundary traffic:
-    // it registers nothing (quiet, stderr only). Its SessionStart registers.
+    // 6. A tool call from an unseen native session enrolls that session's own binding (decision
+    // 15; there is no "no registered execution" refusal) and moves nothing else. Its
+    // SessionStart then registers the same binding.
     let other = run_hook(&command, "w9:p1", &host, &tool("sess-2"));
     assert_eq!(other.code, Some(0), "{}", other.stderr);
-    assert!(other.stdout.is_empty());
-    assert!(other.stderr.contains("lifecycle"), "{}", other.stderr);
+    assert!(
+        !other.stderr.contains("lifecycle"),
+        "an unseen session is enrolled, not refused: {}",
+        other.stderr
+    );
     assert_eq!(
         count(&db, "SELECT generation FROM seats WHERE id='seat'"),
-        2
+        1
+    );
+    assert_eq!(
+        count(
+            &db,
+            "SELECT count(*) FROM occupant_bindings WHERE seat_id='seat' AND ended_at IS NULL AND native_session='sess-2'"
+        ),
+        1
     );
     let other = run_hook(&command, "w9:p1", &host, &start("sess-2"));
     assert_eq!(other.code, Some(0), "{}", other.stderr);
     assert_eq!(
         count(&db, "SELECT generation FROM seats WHERE id='seat'"),
-        3
+        1
     );
     assert_eq!(
         count(
@@ -1364,6 +1429,41 @@ fn installed_claude_hook_checks_in_over_socket_and_never_blocks() {
 // checks in although nothing advanced (the CheckIn count must not move).
 // Past the ~128-call wedge point of a journaling tool path; the journal bytes
 // are compared exactly as well, so one journaling call already fails.
+// Kills: a rewrite that only exists in a unit seam, not in the installed hook process: a
+// subagent's `ht` call must come back from the real entrypoint with `--agent-id` and no
+// permissionDecision, and the same call from the main session must stay untouched.
+#[test]
+fn installed_claude_hook_rewrites_a_subagents_herdr_call_only() {
+    let fx = Fixture::start();
+    let (host, command) = (fx.host.clone(), fx.command.clone());
+    let started = run_hook(&command, "w9:p1", &host, &start("sess-sub"));
+    assert_eq!(started.code, Some(0), "{}", started.stderr);
+
+    let child = Payload::pre_tool_use("sess-sub", "cd x && ht inbox | ht send t m")
+        .with("agent_id", "agent-9".into())
+        .with("agent_type", "worker".into())
+        .bytes();
+    let rewritten = run_hook(&command, "w9:p1", &host, &child);
+    assert_eq!(rewritten.code, Some(0), "{}", rewritten.stderr);
+    let value = rewritten.context();
+    let specific = &value["hookSpecificOutput"];
+    assert_eq!(specific["hookEventName"], "PreToolUse");
+    assert_eq!(
+        specific["updatedInput"]["command"],
+        "cd x && ht --agent-id=agent-9 inbox | ht --agent-id=agent-9 send t m"
+    );
+    assert!(specific.get("permissionDecision").is_none(), "{specific}");
+
+    let main = Payload::pre_tool_use("sess-sub", "ht inbox").bytes();
+    let untouched = run_hook(&command, "w9:p1", &host, &main);
+    assert_eq!(untouched.code, Some(0), "{}", untouched.stderr);
+    assert!(
+        !String::from_utf8_lossy(&untouched.stdout).contains("updatedInput"),
+        "{:?}",
+        String::from_utf8_lossy(&untouched.stdout)
+    );
+}
+
 const TOOL_HOOK_CALLS: u64 = 130;
 #[test]
 fn two_hundred_tool_hooks_on_one_seat_stay_healthy_and_write_no_journal() {
@@ -1492,7 +1592,7 @@ fn rejection_then_generation_bump_then_session_start_registers_new_generation() 
         fresh.stderr
     );
     assert_eq!(
-        fx.count("SELECT count(*) FROM occupant_bindings WHERE seat_id='seat' AND ended_at IS NULL AND generation=3 AND native_session='a-2'"),
+        fx.count("SELECT count(*) FROM occupant_bindings WHERE seat_id='seat' AND ended_at IS NULL AND generation=2 AND native_session='a-2'"),
         1
     );
 
@@ -1519,12 +1619,12 @@ fn rejection_then_generation_bump_then_session_start_registers_new_generation() 
         fresh.stderr
     );
     assert_eq!(
-        fx.count("SELECT count(*) FROM occupant_bindings WHERE seat_id='seat' AND ended_at IS NULL AND generation=5 AND native_session='b-2'"),
+        fx.count("SELECT count(*) FROM occupant_bindings WHERE seat_id='seat' AND ended_at IS NULL AND generation=3 AND native_session='b-2'"),
         1
     );
     let state = fx.context_json("seat");
     assert!(state["pending"].is_null());
-    assert_eq!(state["current"]["binding_generation"], 5);
+    assert_eq!(state["current"]["binding_generation"], 3);
     assert_eq!(state["abandoned"].as_array().map(Vec::len), Some(2));
     assert_eq!(fx.intents(), 0);
     // Tool calls in the new execution are healthy.
@@ -1536,13 +1636,18 @@ fn rejection_then_generation_bump_then_session_start_registers_new_generation() 
 /// check-ins on its resolved target always replace its binding. None is
 /// refused and none records a continuity decision.
 #[test]
-fn cooperative_seat_on_own_target_startup_clear_resume_always_replace_binding() {
+fn cooperative_seat_on_own_target_startup_clear_resume_register_session_bindings() {
     let fx = Fixture::start();
     let session_start = |session: &str, source: &str| {
         format!(r#"{{"session_id":"{session}","transcript_path":"/tmp/t.jsonl","cwd":"/tmp","hook_event_name":"SessionStart","source":"{source}"}}"#).into_bytes()
     };
-    let mut generation = fx.count("SELECT generation FROM seats WHERE id='seat'");
-    for (session, source) in [("s-a", "startup"), ("s-b", "clear"), ("s-a", "resume")] {
+    // ht-54r.3: each session is a binding of its own and a resume re-registers its session's
+    // binding; no lifecycle check-in bumps the seat's mapping generation or ends another binding.
+    let generation = fx.count("SELECT generation FROM seats WHERE id='seat'");
+    for (index, (session, source)) in [("s-a", "startup"), ("s-b", "clear"), ("s-a", "resume")]
+        .into_iter()
+        .enumerate()
+    {
         let hook = fx.hook("w9:p1", &session_start(session, source));
         assert_eq!(hook.code, Some(0), "{source}: {}", hook.stderr);
         let context = context_of(&hook);
@@ -1552,13 +1657,12 @@ fn cooperative_seat_on_own_target_startup_clear_resume_always_replace_binding() 
         );
         assert!(!context.contains("unavailable"), "{source}: {context}");
         let next = fx.count("SELECT generation FROM seats WHERE id='seat'");
-        assert!(next > generation, "{source}: {generation} -> {next}");
-        generation = next;
+        assert_eq!(next, generation, "{source}: {generation} -> {next}");
         assert_eq!(
             fx.count(
                 "SELECT count(*) FROM occupant_bindings WHERE seat_id='seat' AND ended_at IS NULL"
             ),
-            1,
+            [1, 2, 2][index],
             "{source}"
         );
         assert_eq!(
@@ -1569,7 +1673,7 @@ fn cooperative_seat_on_own_target_startup_clear_resume_always_replace_binding() 
     }
     assert_eq!(
         fx.count("SELECT count(*) FROM occupant_bindings WHERE seat_id='seat'"),
-        3
+        2
     );
     assert_eq!(
         fx.count("SELECT count(*) FROM allocation_decisions WHERE kind='cooperative_continuity'"),
@@ -1736,7 +1840,8 @@ fn lazy_mail_moves_the_digest_and_the_next_tool_hook_injects_inbox_rows() {
     assert_eq!(displayed(), 1);
     quiet("after lazy completion");
 
-    // 2. A subagent call neither shows nor completes pending lazy mail.
+    // 2. A subagent call gets its own read-only notice that lazy mail is pending (ht-54r.9), but
+    // neither shows the row nor completes it: that stays with the top level.
     let second = lazy("lazy for the top level only");
     let child = fx.hook(
         "w9:p1",
@@ -1746,11 +1851,19 @@ fn lazy_mail_moves_the_digest_and_the_next_tool_hook_injects_inbox_rows() {
             .bytes(),
     );
     assert_eq!(child.code, Some(0), "{}", child.stderr);
+    let notice = context_of(&child);
     assert!(
-        child.stdout.is_empty(),
-        "{}",
-        String::from_utf8_lossy(&child.stdout)
+        notice.contains(&format!("lazy=1 [{second}@{thread}]")),
+        "{notice}"
     );
+    assert!(
+        notice.contains(
+            "new mail (read-only: you may read and summarize; your parent session ACKs and replies)"
+        ),
+        "{notice}"
+    );
+    assert!(!notice.contains(INBOX_HEADER), "{notice}");
+    assert!(!notice.contains("lazy for the top level only"), "{notice}");
     assert_eq!(displayed(), 1);
 
     // 3. Ordinary and lazy together: both rows injected, the ACK-required
@@ -1832,6 +1945,7 @@ fn lazy_mail_reaches_the_next_codex_tool_hook() {
     ));
     fx.cooperative("peer", "w9:p2", &["invite", &thread, "--seat", "cx"]);
     let mut out = Vec::new();
+    let _codex = agent_origin("codex", "cx-sess");
     herdr_threads::cli::run(
         [
             "herdr-threads",
@@ -3254,15 +3368,17 @@ impl Fixture {
             16 * k
         ))
     }
-    /// `seat`'s offered notice frontier (its binding generation and ordinal)
-    /// and the notices above it.
+    /// The offered notice frontier of `seat`'s newest open top-level binding (the seat's
+    /// generation while that binding holds a frontier, else -1; the ordinal) and the notices
+    /// above it. Each session holds its own frontier (ht-54r.9).
     fn notice_frontier(&self) -> (i64, i64, i64) {
-        let generation = self.count(
-            "SELECT COALESCE((SELECT binding_generation FROM digest_notice_offer WHERE seat_id='seat'),-1)",
-        );
-        let frontier = self.count(
-            "SELECT COALESCE((SELECT offered_ordinal FROM digest_notice_offer WHERE seat_id='seat'),0)",
-        );
+        const NEWEST: &str = "(SELECT binding_id FROM occupant_bindings WHERE seat_id='seat' AND ended_at IS NULL AND role='top_level' ORDER BY ordinal DESC LIMIT 1)";
+        let generation = self.count(&format!(
+            "SELECT COALESCE((SELECT s.generation FROM seats s JOIN digest_notice_offer o ON o.binding_id={NEWEST} WHERE s.id='seat'),-1)"
+        ));
+        let frontier = self.count(&format!(
+            "SELECT COALESCE((SELECT offered_ordinal FROM digest_notice_offer WHERE binding_id={NEWEST}),0)"
+        ));
         let above = self.count(&format!(
             "SELECT count(*) FROM digest_programmatic_warnings WHERE seat_id='seat' AND ordinal>{frontier}"
         ));
@@ -3356,7 +3472,8 @@ fn programmatic_backlog_is_offered_page_by_page(n: u64) {
     assert_eq!(carried_notices("clear", &text), (fx.notice_page(0), true));
     timings.push(("clear", cleared.elapsed));
     let successor = fx.count("SELECT generation FROM seats WHERE id='seat'");
-    assert!(successor > generation);
+    // ht-54r.3: a new session adds a binding; the mapping generation holds.
+    assert_eq!(successor, generation);
     assert_eq!(
         fx.notice_frontier(),
         (successor, fx.nth_notice_ordinal(16), n as i64 - 16)
@@ -3381,7 +3498,10 @@ fn agent_path(fx: &Fixture) -> String {
 /// Run one emitted command line exactly as an agent's shell tool would, in
 /// the agent's pane environment (no state dir env, no seat flags).
 fn run_in_pane(fx: &Fixture, pane: &str, command: &str) -> std::process::Output {
-    scrubbed_command("/bin/sh")
+    // The commands a hook printed are run by the agent: as the harness session that registered.
+    let mut shell = scrubbed_command("/bin/sh");
+    herdr_threads::test_support::isolation::as_agent(&mut shell, "claude", "sess-1");
+    shell
         .arg("-c")
         .arg(command)
         .env("HERDR_ENV", "1")
@@ -4359,12 +4479,7 @@ fn hook_path_takeover_replaces_a_human_occupant_with_a_new_agent_generation() {
             [],
         )
         .unwrap();
-    let journal = fx.context_dir("seat").join("context.json");
-    let mut state = fx.context_json("seat");
-    assert_eq!(state["current"]["harness"], "Claude");
-    state["current"]["harness"] = "Human".into();
-    fs::write(&journal, serde_json::to_vec(&state).unwrap()).unwrap();
-    let human_execution = state["current"]["execution"].clone();
+    let human_execution = fx.context_json("seat")["current"]["execution"].clone();
 
     let takeover = fx.hook("w9:p1", &start("agent-2"));
     assert_eq!(takeover.code, Some(0), "{}", takeover.stderr);
@@ -4383,7 +4498,7 @@ fn hook_path_takeover_replaces_a_human_occupant_with_a_new_agent_generation() {
     );
     assert_eq!(
         fx.count(&format!(
-            "SELECT count(*) FROM occupant_bindings WHERE seat_id='seat' AND ended_at IS NULL AND harness='claude' AND native_session='agent-2' AND generation>{bound}"
+            "SELECT count(*) FROM occupant_bindings WHERE seat_id='seat' AND ended_at IS NULL AND harness='claude' AND native_session='agent-2' AND generation>={bound}"
         )),
         1
     );
@@ -4394,11 +4509,11 @@ fn hook_path_takeover_replaces_a_human_occupant_with_a_new_agent_generation() {
         1,
         "the person's binding is ended, not continued"
     );
-    // The local context: the agent's, on a new execution; the person's is gone.
+    // The agent registered as its own session (its own execution); no context is saved for it.
     let after = fx.context_json("seat");
     assert_eq!(after["current"]["harness"], "Claude");
     assert_ne!(after["current"]["execution"], human_execution);
-    assert!(after["current"]["binding_generation"].as_u64().unwrap() > bound as u64);
+    assert!(after["current"]["binding_generation"].as_u64().unwrap() >= bound as u64);
     // Tool calls in the agent's execution are healthy.
     let routine = fx.hook("w9:p1", &tool("agent-2"));
     assert!(routine.stderr.is_empty(), "{}", routine.stderr);
@@ -4655,6 +4770,7 @@ mod continuity {
         daemon: Option<std::thread::JoinHandle<std::io::Result<bool>>>,
         claude: String,
         codex: String,
+        hermes: String,
         /// The elected daemon's diagnostics sink dup2()s the process-wide fd
         /// 1/2, so these fixtures run one at a time like every hook test
         /// (ht-p03.26). Last field: released after the daemon is stopped.
@@ -4667,6 +4783,21 @@ mod continuity {
             panes: &[(&str, Agent)],
             seed: impl FnOnce(&rusqlite::Connection, &str),
         ) -> Self {
+            Self::start_with(panes, seed, false)
+        }
+
+        /// [`Fixture::start`] for Hermes: `{"harness_manifest":"off"}` is written
+        /// to the instance's settings (mode 0600) before the daemon spawns, so
+        /// Hermes callback admission does not depend on the embedded manifest.
+        pub fn start_hermes(panes: &[(&str, Agent)]) -> Self {
+            Self::start_with(panes, |_, _| {}, true)
+        }
+
+        fn start_with(
+            panes: &[(&str, Agent)],
+            seed: impl FnOnce(&rusqlite::Connection, &str),
+            manifest_off: bool,
+        ) -> Self {
             let serial = serialized();
             let root = private_root();
             let state = root.join("state");
@@ -4676,6 +4807,15 @@ mod continuity {
             let owner = OwnerLock::acquire(&paths).unwrap();
             let instance = owner.instance_uuid();
             drop(owner);
+            if manifest_off {
+                use std::os::unix::fs::PermissionsExt;
+                paths.prepare_instance_dir().unwrap();
+                let settings = paths
+                    .instance_dir
+                    .join(herdr_threads::daemon::settings::SETTINGS_FILE);
+                fs::write(&settings, br#"{"harness_manifest":"off"}"#).unwrap();
+                fs::set_permissions(&settings, fs::Permissions::from_mode(0o600)).unwrap();
+            }
             let setup =
                 StoreContext::new(paths.database_path.clone(), Arc::new(SystemClock::new()));
             let db = setup.open_writer().unwrap();
@@ -4708,6 +4848,18 @@ mod continuity {
             let codex_argv =
                 installed_argv(BIN, Some(state.to_str().unwrap()), None, Harness::Codex);
             let codex = herdr_threads::harness::setup::shell_command(&codex_argv).unwrap();
+            let hermes_argv = installed_argv(
+                BIN,
+                Some(state.to_str().unwrap()),
+                None,
+                herdr_threads::harness::registry::OccupantHarness::Agent(
+                    herdr_threads::harness::registry::builtins()
+                        .agent("hermes")
+                        .unwrap(),
+                )
+                .into(),
+            );
+            let hermes = herdr_threads::harness::setup::shell_command(&hermes_argv).unwrap();
             let mut fixture = Self {
                 root,
                 host,
@@ -4722,6 +4874,7 @@ mod continuity {
                 daemon: None,
                 claude,
                 codex,
+                hermes,
                 _serial: serial,
             };
             fixture.spawn(); // leak-guard: fixture method, starts an in-process daemon thread (no child process)
@@ -4829,10 +4982,10 @@ mod continuity {
         }
 
         pub fn hook(&self, harness: &str, pane: &str, stdin: &[u8]) -> Hook {
-            let command = if harness == "codex" {
-                &self.codex
-            } else {
-                &self.claude
+            let command = match harness {
+                "codex" => &self.codex,
+                "hermes" => &self.hermes,
+                _ => &self.claude,
             };
             run_hook(command, pane, &self.host, stdin)
         }
@@ -4845,7 +4998,7 @@ mod continuity {
         }
         pub fn context_json(&self, seat: &str) -> serde_json::Value {
             let bytes = fs::read(self.context_dir(seat).join("context.json")).unwrap();
-            serde_json::from_slice(&bytes).unwrap()
+            super::registered_current(serde_json::from_slice(&bytes).unwrap())
         }
         pub fn intents(&self) -> usize {
             fs::read_dir(self.instance_dir.join("intents")).map_or(0, |entries| {
@@ -5104,6 +5257,185 @@ mod continuity {
         }
     }
 
+    // ---- Hermes global enrollment (ht-4ne.4) ----
+
+    /// A Hermes envelope from the shared fixture with fresh timestamps.
+    fn hermes_envelope(session: &str, callback: &str, sequence: u64) -> serde_json::Value {
+        let mut payload: serde_json::Value =
+            serde_json::from_slice(include_bytes!("fixtures/hermes/envelopes.json")).unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        let event = format!("{callback}-{sequence}");
+        payload["callback"] = callback.into();
+        payload["session_id"] = session.into();
+        payload["event_id"] = event.clone().into();
+        payload["turn_id"] = event.clone().into();
+        payload["role_association"]["session_id"] = session.into();
+        payload["role_association"]["turn_id"] = event.into();
+        payload["role_association"]["enrollment_witness"] = "cli_platform".into();
+        payload["started_at"] = now.into();
+        payload["deadline_at"] = (now + 1200).into();
+        payload["observation_order"]["observed_at_millis"] = now.into();
+        payload["observation_order"]["sequence"] = sequence.into();
+        assert_eq!(payload["platform"], "cli");
+        if callback == "on_session_start" {
+            payload["turn_id"] = serde_json::Value::Null;
+            payload["shape"]["turn_id"] = serde_json::json!({"presence":"missing","type":"absent"});
+            payload["parent_session_id"] = serde_json::Value::Null;
+            payload["shape"]["parent_session_id"] =
+                serde_json::json!({"presence":"missing","type":"absent"});
+            payload["role_association"] = serde_json::json!({
+                "role": "top", "provenance": "cli_session_start",
+                "session_id": session, "turn_id": null,
+                "enrollment_witness": "cli_platform"});
+        }
+        payload
+    }
+    fn hermes_start(session: &str, sequence: u64) -> Vec<u8> {
+        serde_json::to_vec(&hermes_envelope(session, "on_session_start", sequence)).unwrap()
+    }
+    /// A CLI turn that must yield context. The envelope carries the production
+    /// 1200 ms callback cap; a debug hook child on a loaded machine can overrun
+    /// it and fail open with no context. Only such an overrun (the empty
+    /// attempt itself took at least 1 s) is retried with a fresh envelope for
+    /// the same event (a canonical replay).
+    fn hermes_turn_with_context(
+        fx: &Fixture,
+        pane: &str,
+        session: &str,
+        sequence: u64,
+    ) -> serde_json::Value {
+        let mut output = serde_json::Value::Null;
+        for _ in 0..4 {
+            let started = Instant::now();
+            let hook = fx.hook(
+                "hermes",
+                pane,
+                &serde_json::to_vec(&hermes_envelope(session, "pre_llm_call", sequence)).unwrap(),
+            );
+            assert_eq!(hook.code, Some(0), "{}", hook.stderr);
+            output = if hook.stdout.is_empty() {
+                serde_json::Value::Null
+            } else {
+                hook.context()
+            };
+            if !output["context"].is_null() || started.elapsed() < Duration::from_secs(1) {
+                break;
+            }
+        }
+        output
+    }
+    const ORDINARY_ALLOCATIONS: &str =
+        "SELECT count(*) FROM allocation_decisions WHERE kind='ordinary'";
+
+    #[test]
+    fn hermes_cli_start_allocates_then_reuses_the_canonical_seat() {
+        let fx = Fixture::start_hermes(&[(PANE, Agent::NoSession)]);
+        fx.wait_reconciled();
+        for sequence in [1, 2] {
+            let start = fx.hook("hermes", PANE, &hermes_start("hermes-s", sequence));
+            assert_eq!(start.code, Some(0), "{}", start.stderr);
+            assert!(start.stdout.is_empty(), "{:?}", start.stdout);
+            assert_eq!(fx.count("SELECT count(*) FROM seats"), 1);
+            assert_eq!(fx.count(ORDINARY_ALLOCATIONS), 1);
+            assert_eq!(
+                fx.count("SELECT count(*) FROM occupant_bindings WHERE ended_at IS NULL"),
+                0,
+                "enrollment alone opens no binding"
+            );
+            assert_eq!(fx.intents(), 0);
+        }
+        let output = hermes_turn_with_context(&fx, PANE, "hermes-s", 3);
+        assert!(output["context"].is_string(), "{output}");
+        assert_eq!(output["lifecycle_ack"]["mode"], "startup");
+        assert_eq!(fx.count("SELECT count(*) FROM seats"), 1);
+        assert_eq!(fx.count(ORDINARY_ALLOCATIONS), 1);
+        assert_eq!(
+            fx.count("SELECT count(*) FROM occupant_bindings WHERE ended_at IS NULL AND observation_provenance='cooperative_top_level' AND harness='hermes'"),
+            1
+        );
+        assert_eq!(fx.intents(), 0);
+    }
+
+    #[test]
+    fn hermes_cli_concurrent_callbacks_keep_one_seat_per_pane() {
+        let fx = Fixture::start_hermes(&[(PANE, Agent::NoSession), ("w1:p2", Agent::NoSession)]);
+        fx.wait_reconciled();
+        let results = std::thread::scope(|scope| {
+            let mut workers = Vec::new();
+            for n in 0..5u64 {
+                let command = fx.hermes.clone();
+                let host = fx.host.clone();
+                let pane = if n < 4 { "w1:p2" } else { PANE };
+                workers.push(scope.spawn(move || {
+                    run_hook(&command, pane, &host, &hermes_start("concurrent", 1 + n))
+                }));
+            }
+            workers
+                .into_iter()
+                .map(|w| w.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        for result in results {
+            assert_eq!(result.code, Some(0), "{}", result.stderr);
+            assert!(result.stdout.is_empty());
+        }
+        // A final callback per pane reuses whatever the race left.
+        for (pane, sequence) in [("w1:p2", 10), (PANE, 11)] {
+            let hook = fx.hook("hermes", pane, &hermes_start("concurrent", sequence));
+            assert_eq!(hook.code, Some(0), "{}", hook.stderr);
+        }
+        assert_eq!(fx.count("SELECT count(*) FROM seats"), 2);
+        assert_eq!(fx.count(ORDINARY_ALLOCATIONS), 2);
+        // A racing start may leave an uncertain intent for explicit replay;
+        // settle each under its exact key and frozen payload.
+        use herdr_threads::cli::journal::Journal;
+        let journal = Journal::open(fx.instance_dir.join("intents")).unwrap();
+        let pending = journal
+            .page(&herdr_threads::protocol::pagination::PageRequest {
+                cursor: None,
+                limit: 50,
+                max_bytes: herdr_threads::protocol::pagination::MAX_PAGE_BYTES,
+            })
+            .unwrap();
+        for item in pending.items {
+            let reference = journal
+                .resolve_recovery_ref(item.recovery_ref.as_str())
+                .unwrap();
+            let intent = journal.load(&reference).unwrap();
+            let command = intent
+                .semantic
+                .to_command(reference.operation.clone(), None)
+                .unwrap();
+            if let Err(error) = fx.call(command) {
+                assert!(
+                    matches!(
+                        error.code,
+                        ErrorCode::CallerUnverified | ErrorCode::Conflict
+                    ),
+                    "{error:?}"
+                );
+            }
+            journal.complete(&reference).unwrap();
+        }
+        assert_eq!(fx.intents(), 0);
+        assert_eq!(fx.count("SELECT count(*) FROM seats"), 2);
+    }
+
+    #[test]
+    fn hermes_cli_start_outside_herdr_is_silent() {
+        let fx = Fixture::start_hermes(&[(PANE, Agent::NoSession)]);
+        fx.wait_reconciled();
+        let outside = run_hook_outside_pane(&fx.hermes, &fx.host, &hermes_start("outside", 1));
+        assert_eq!(outside.code, Some(0), "{}", outside.stderr);
+        assert!(outside.stdout.is_empty());
+        assert_eq!(fx.count("SELECT count(*) FROM seats"), 0);
+        assert_eq!(fx.count("SELECT count(*) FROM allocation_decisions"), 0);
+        assert_eq!(fx.intents(), 0);
+    }
+
     #[test]
     fn startup_enrollment_excludes_child_tool_wrong_registration_and_non_herdr() {
         for harness in HARNESSES {
@@ -5314,14 +5646,9 @@ mod continuity {
                 1,
                 "{harness}"
             );
-            // The client context names the seat and the new binding generation.
+            // The reattached session is not saved as the pane's context (decision 15).
             let state = fx.context_json("saved");
-            assert_eq!(state["current"]["seat"], "saved");
-            assert_eq!(state["current"]["target"], PANE);
-            assert_eq!(
-                state["current"]["binding_generation"],
-                fx.count("SELECT generation FROM seats WHERE id='saved'")
-            );
+            assert!(state["current"].is_null(), "{harness}");
             assert!(state["pending"].is_null());
             // Pane released; the last unresolved seat lifted the restore hold.
             assert_eq!(
@@ -5583,6 +5910,7 @@ mod continuity {
                     execution: herdr_threads::protocol::ids::ExecutionId::new(
                         Uuid::new_v4().to_string(),
                     ),
+                    liveness: Some(herdr_threads::protocol::authority::LivenessFingerprint::TEST),
                 },
                 1,
             )
@@ -5655,12 +5983,10 @@ mod continuity {
                 1,
                 "{harness}"
             );
+            // The stale file is neither consulted nor rewritten: the reattached session is its
+            // environment's (decision 15).
             let state = fx.context_json("saved");
-            assert_eq!(state["current"]["target"], PANE, "{harness}");
-            assert_eq!(
-                state["current"]["binding_generation"],
-                fx.count("SELECT generation FROM seats WHERE id='saved'")
-            );
+            assert_eq!(state["current"]["target"], "old-pane", "{harness}");
             assert_eq!(fx.intents(), 0);
         }
     }
@@ -5701,13 +6027,10 @@ mod continuity {
                 "{harness}: {}",
                 start.stderr
             );
+            // The stale file from before the restart is never consulted, so it can neither make
+            // the check-in differ from the mapping nor be rewritten by it.
             let state = fx.context_json("saved");
-            assert_eq!(state["current"]["target"], PANE, "{harness}");
-            assert_eq!(
-                state["current"]["binding_generation"],
-                fx.count("SELECT generation FROM seats WHERE id='saved'"),
-                "{harness}"
-            );
+            assert_eq!(state["current"]["target"], "old-pane", "{harness}");
             assert_eq!(fx.count(decisions), 1, "{harness}: no second decision");
         }
     }
@@ -5744,6 +6067,9 @@ mod continuity {
                         event_id: Uuid::new_v4().to_string(),
                         execution: herdr_threads::protocol::ids::ExecutionId::new(
                             Uuid::new_v4().to_string(),
+                        ),
+                        liveness: Some(
+                            herdr_threads::protocol::authority::LivenessFingerprint::TEST,
                         ),
                     },
                     1,
@@ -5851,6 +6177,9 @@ mod continuity {
                         execution: herdr_threads::protocol::ids::ExecutionId::new(
                             Uuid::new_v4().to_string(),
                         ),
+                        liveness: Some(
+                            herdr_threads::protocol::authority::LivenessFingerprint::TEST,
+                        ),
                     },
                     1,
                 )
@@ -5870,16 +6199,9 @@ mod continuity {
             let again = fx.hook(harness, PANE, &session_start(harness, "S-1", "resume"));
             assert_eq!(again.code, Some(0), "{harness}: {}", again.stderr);
             // The pending intent was reused under its key and execution: one
-            // decision, the intent finished, the context installed from the reply.
+            // decision, the intent finished, the binding carrying its execution.
             assert_eq!(fx.count(decisions), 1, "{harness}");
             assert_eq!(fx.intents(), 0, "{harness}");
-            let state = fx.context_json("saved");
-            assert_eq!(state["current"]["target"], PANE);
-            assert_eq!(state["current"]["execution"], execution.as_str());
-            assert_eq!(
-                state["current"]["binding_generation"],
-                fx.count("SELECT generation FROM seats WHERE id='saved'")
-            );
             assert_eq!(
                 fx.count(&format!("SELECT count(*) FROM occupant_bindings WHERE seat_id='saved' AND ended_at IS NULL AND execution_id='{}'", execution.as_str())),
                 1,
@@ -6141,8 +6463,10 @@ fn native_event_entrypoints_dispatch_declared_codecs_and_refuse_invalid_pairs_be
 fn versionless_native_callbacks_without_path_refuse_registered_event_mismatch() {
     let fx = Fixture::start();
     let invoke = |harness: &str, pane: &str, registered: &str, payload: &[u8]| {
-        let mut child = scrubbed_command(BIN)
-            .args([
+        let mut child = herdr_threads::test_support::harness_shim::under_harness(
+            harness,
+            Path::new(BIN),
+            &[
                 "--state-dir",
                 fx.state.to_str().unwrap(),
                 "--host-endpoint",
@@ -6151,16 +6475,18 @@ fn versionless_native_callbacks_without_path_refuse_registered_event_mismatch() 
                 harness,
                 "--event",
                 registered,
-            ])
-            .env("PATH", "")
-            .env("HERDR_ENV", "1")
-            .env("HERDR_PANE_ID", pane)
-            .env("HERDR_SOCKET_PATH", &fx.host)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn_owned()
-            .unwrap();
+            ],
+            &[],
+        )
+        .env("PATH", "")
+        .env("HERDR_ENV", "1")
+        .env("HERDR_PANE_ID", pane)
+        .env("HERDR_SOCKET_PATH", &fx.host)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn_owned()
+        .unwrap();
         child.stdin.take().unwrap().write_all(payload).unwrap();
         child.wait_with_output().unwrap()
     };

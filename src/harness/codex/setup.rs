@@ -1373,6 +1373,7 @@ pub fn inspect_codex_session(
         allow_rule: None,
         adopted: None,
         legacy_event_registration: false,
+        missing_required_events: Vec::new(),
     })
 }
 /// Check the typed reader's exact structural input before future session overrides are published.

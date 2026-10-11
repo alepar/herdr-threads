@@ -311,6 +311,8 @@ fn invitation_policy_lazy_hook_display_remains_recoverable_without_acceptance() 
             native_session: NativeSessionId::new("session"),
             execution: ExecutionId::new("execution"),
             target: HostTargetId::new("w:p"),
+            agent_id: None,
+            liveness: None,
         },
         page: Page {
             items: vec![InboxBatchV2Item::Invitation {
@@ -331,6 +333,7 @@ fn invitation_policy_lazy_hook_display_remains_recoverable_without_acceptance() 
             stop_reason: StopReason::Complete,
             consistency: Consistency::BoundedLive,
         },
+        cursors: false,
     };
     let (context, completions) =
         crate::cli::hook_inbox::append(String::new(), &offer, &["herdr-threads".into()], 4096);

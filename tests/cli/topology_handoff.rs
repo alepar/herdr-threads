@@ -777,7 +777,7 @@ mod live {
                     return Err(ApiError::unknown_outcome("committed wrapper reply lost"));
                 }
                 if role == "reserve" && s.fault == Fault::Check {
-                    s.db.execute("UPDATE occupant_bindings SET execution_id='00000000-0000-4000-8000-000000000002' WHERE seat_id='sender'", []).unwrap();
+                    s.db.execute("UPDATE occupant_bindings SET native_session='changed-session' WHERE seat_id='sender'", []).unwrap();
                 }
                 if role == "reserve" && s.fault == Fault::SavePossible {
                     std::fs::create_dir(self.progress()).unwrap();
@@ -1307,7 +1307,7 @@ mod live {
                 vec![],
             )?;
             if let Some(path) = &self.change_binding_before_gate {
-                rusqlite::Connection::open(path).unwrap().execute("UPDATE occupant_bindings SET execution_id='changed-before-launch' WHERE seat_id='sender'",[]).unwrap();
+                rusqlite::Connection::open(path).unwrap().execute("UPDATE occupant_bindings SET native_session='changed-before-launch' WHERE seat_id='sender'",[]).unwrap();
             }
             gate(true)?;
             if self.not_submitted {
@@ -4863,7 +4863,7 @@ mod live {
                         .unwrap();
                 }
                 "binding" => {
-                    state.db.execute("UPDATE occupant_bindings SET execution_id='00000000-0000-4000-8000-000000000002' WHERE seat_id='sender'", []).unwrap();
+                    state.db.execute("UPDATE occupant_bindings SET native_session='changed-session' WHERE seat_id='sender'", []).unwrap();
                 }
                 "namespace" => namespace.host_endpoint = f._temp.path().join("different.sock"),
                 "claim" => {
@@ -5105,7 +5105,7 @@ mod live {
                 )
                 .unwrap();
             } else {
-                s.db.execute("UPDATE occupant_bindings SET execution_id='00000000-0000-4000-8000-000000000002' WHERE seat_id='sender'",[]).unwrap();
+                s.db.execute("UPDATE occupant_bindings SET native_session='changed-session' WHERE seat_id='sender'",[]).unwrap();
             }
             let result = crate::store::seats::resolve_bootstrap_seat(
                 &ctx,
@@ -6109,6 +6109,8 @@ mod live {
                 let mut successor = self.identity.claim.clone();
                 successor.execution =
                     crate::protocol::ids::ExecutionId::new(uuid::Uuid::new_v4().to_string());
+                // A lifecycle check-in records the harness process (session-keyed bindings).
+                successor.liveness = Some(crate::protocol::authority::LivenessFingerprint::TEST);
                 let command = crate::protocol::commands::CheckIn {
                     mode: crate::protocol::commands::CheckInMode::Lifecycle {
                         expected_binding_generation: successor.binding_generation,
@@ -6117,6 +6119,7 @@ mod live {
                     operation: crate::protocol::ids::OperationId::new(
                         uuid::Uuid::new_v4().to_string(),
                     ),
+                    lineage_parent: None,
                 };
                 let budget = super::super::super::super::cooperative_budget(&self.base.clock);
                 let permit = self
@@ -8340,8 +8343,11 @@ mod live {
             recipient.seat = attachment.resolved_seat;
             recipient.target = attachment.created.root_pane;
             recipient.binding_generation = 1;
+            // A real harness session (a `plugin_context:` placeholder is refused) and the
+            // harness process a lifecycle check-in records.
             recipient.native_session =
-                crate::protocol::ids::NativeSessionId::new("plugin_context:recipient");
+                crate::protocol::ids::NativeSessionId::new("recipient-session");
+            recipient.liveness = Some(crate::protocol::authority::LivenessFingerprint::TEST);
             recipient.execution =
                 crate::protocol::ids::ExecutionId::new(uuid::Uuid::new_v4().to_string());
             let check_in = crate::protocol::commands::CheckIn {
@@ -8350,6 +8356,7 @@ mod live {
                 },
                 claim: recipient,
                 operation: crate::protocol::ids::OperationId::new(uuid::Uuid::new_v4().to_string()),
+                lineage_parent: None,
             };
             let permit = peer
                 .store
@@ -8586,7 +8593,13 @@ mod live {
             };
             let successor = peer.sender_lifecycle_check_in();
             assert_ne!(successor, peer.identity.claim);
-            assert_eq!(successor.binding_generation, 2);
+            // Session-keyed bindings: a lifecycle check-in of the same session re-registers its
+            // binding in place (new execution, same generation).
+            assert_eq!(
+                successor.binding_generation,
+                peer.identity.claim.binding_generation
+            );
+            assert_ne!(successor.execution, peer.identity.claim.execution);
 
             let recovery = peer.reference.recovery_ref();
             let mut parsed = super::super::super::super::commands::parse_argv([
@@ -8754,13 +8767,21 @@ mod live {
                 }))
             ));
             peer.sender_lifecycle_check_in();
-            assert!(matches!(
-                peer.historical_retry(peer.ns()),
-                Err(RunError::Api(ApiError {
-                    code: crate::protocol::results::ErrorCode::CallerUnverified,
-                    ..
-                }))
-            ));
+            // Session-keyed bindings: the sender's lifecycle check-in re-registers its own binding
+            // in place (same session, same binding generation), so the frozen caller is no longer
+            // stale by generation. Either way the historical layer admits nothing: it refuses the
+            // caller, or reports the bootstrap not completed and absorbs nothing.
+            let retried = peer.historical_retry(peer.ns());
+            assert!(
+                matches!(
+                    retried,
+                    Err(RunError::Api(ApiError {
+                        code: crate::protocol::results::ErrorCode::CallerUnverified,
+                        ..
+                    })) | Ok((false, _))
+                ),
+                "{retried:?}"
+            );
             assert_eq!(peer.status().state, BootstrapState::Attached);
             assert_eq!(launcher.starts, 1);
             assert_eq!(peer.base.peer.state.lock().unwrap().native_calls, 1);

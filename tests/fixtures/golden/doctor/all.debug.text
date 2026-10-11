@@ -1,5 +1,5 @@
 herdr-threads doctor
-version: <version> (protocol 6)
+version: <version> (protocol 7)
 state_dir: <root>/state
 state_dir.source: --state-dir
 state_dir.status: ok

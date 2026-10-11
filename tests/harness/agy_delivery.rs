@@ -62,6 +62,8 @@ fn claim(generation: u64) -> CallerClaim {
         native_session: NativeSessionId::new(CONV),
         execution: ExecutionId::new("00000000-0000-4000-8000-000000000001"),
         target: HostTargetId::new("p"),
+        agent_id: None,
+        liveness: Some(crate::protocol::authority::LivenessFingerprint::TEST),
     }
 }
 
@@ -623,6 +625,22 @@ fn the_state_file_is_created_after_a_pull_and_deleted_on_session_mismatch() {
         &rt,
     );
     assert!(!rig.state_file().exists());
+}
+
+#[test]
+fn a_no_binding_refusal_keeps_the_state_file() {
+    let rig = Rig::new();
+    let rt = runtime(1000, &ident("a"));
+    rig.pre(0, &offering(), &rt);
+    let before = std::fs::read(rig.state_file()).unwrap();
+    rig.pre(
+        1,
+        &Fake::with(vec![pulled(DeliveryPullReply::Refused {
+            reason: DeliveryRefusalReason::NoBinding,
+        })]),
+        &rt,
+    );
+    assert_eq!(std::fs::read(rig.state_file()).unwrap(), before);
 }
 
 #[test]
@@ -1407,7 +1425,7 @@ mod daemon {
             [],
         )
         .unwrap();
-        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s','i','resolved','native','p',0,0,0)", []).unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s','i','resolved','native','p',1,0,0)", []).unwrap();
         db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','p','b',1,0,1,'fresh','unknown','unknown',0,0,'term-p','inc','coherent_enumeration',1)", []).unwrap();
         db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES ('t','i','topic','goal',0,0,2)", []).unwrap();
         db.execute(
@@ -1430,13 +1448,14 @@ mod daemon {
     }
     impl World {
         fn check_in(&self) -> CallerClaim {
-            let claim = claim(0);
+            let claim = claim(1);
             let command = Command::CheckIn(CheckIn {
                 mode: CheckInMode::Lifecycle {
-                    expected_binding_generation: 0,
+                    expected_binding_generation: 1,
                 },
                 claim,
                 operation: OperationId::new("ci-1"),
+                lineage_parent: None,
             });
             match self.service.handle(command, peer(), &budget()).unwrap() {
                 CommandResult::CheckedIn(result) => result.context,
@@ -1618,6 +1637,7 @@ mod daemon {
             },
             claim: next,
             operation: crate::protocol::ids::OperationId::new("ci-2"),
+            lineage_parent: None,
         });
         let CommandResult::CheckedIn(result) =
             world.service.handle(command, peer(), &budget()).unwrap()
@@ -1625,7 +1645,9 @@ mod daemon {
             panic!("the /clear check-in");
         };
         let second = result.context;
-        assert!(second.binding_generation > first.binding_generation);
+        // Session-keyed bindings: the new conversation is a new binding of the seat; the binding
+        // generation is the seat's and does not move.
+        assert_ne!(second.native_session, first.native_session);
 
         assert_eq!(confirm(&second, "op-1"), DeliveryConfirmOutcome::NotOffered);
         assert_eq!(
@@ -1663,6 +1685,7 @@ mod daemon {
                     },
                     claim: origin,
                     operation: OperationId::new("origin-checkin"),
+                    lineage_parent: None,
                 }),
                 peer(),
                 &budget(),
@@ -2131,6 +2154,7 @@ fn modern_items() -> Vec<PresentationItemV2> {
                 body_len: 9,
                 truncated: false,
                 ack_required: true,
+                wakes: false,
             },
         },
         PresentationItemV2::Attention {

@@ -1,5 +1,6 @@
 use super::*;
 use crate::cli::commands::{parse_argv, parse_argv_or_informational};
+use crate::harness::bridge;
 use crate::protocol::commands::{Command as WireCommand, HistoryRange};
 use crate::protocol::{
     ids::*,
@@ -143,6 +144,9 @@ impl crate::ports::LocalClient for Client {
                     generation: self.generation.load(std::sync::atomic::Ordering::SeqCst),
                     created_at: UtcMillis(0),
                     retired_at: None,
+                    active: false,
+                    bindings: Vec::new(),
+                    availability: None,
                 },
                 mapping: MappingStatus {
                     state: ContinuityStatus::Resolved,
@@ -167,6 +171,8 @@ impl crate::ports::LocalClient for Client {
                     warnings: empty(),
                     notices: Default::default(),
                     inbox: empty(),
+                    first_contact: None,
+                    fast_forward: None,
                 }))
             }
             other => Ok((self.reply)(&other)),

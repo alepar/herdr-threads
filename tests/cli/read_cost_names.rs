@@ -54,6 +54,9 @@ fn seat_summary(seat: SeatId, target: Option<HostTargetId>) -> SeatSummary {
         generation: 1,
         created_at: UtcMillis(1_790_771_000_000),
         retired_at: None,
+        active: false,
+        bindings: Vec::new(),
+        availability: None,
     }
 }
 
@@ -72,6 +75,9 @@ fn participant(seat: SeatId) -> Participant {
         retirement_cutover: None,
         cleanup_state: None,
         accepted_invitation: None,
+        active: false,
+        bindings: Vec::new(),
+        availability: None,
     }
 }
 

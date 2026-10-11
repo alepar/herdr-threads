@@ -14,6 +14,72 @@ pub struct CallerClaim {
     pub native_session: NativeSessionId,
     pub execution: ExecutionId,
     pub target: HostTargetId,
+    /// Subagent agent id (Claude `--agent-id`, Codex `CODEX_THREAD_ID` when it differs from
+    /// `CODEX_SESSION_ID`). Absent for a top-level caller.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<AgentId>,
+    /// The caller's liveness fingerprint (decision 9). Required of every agent claim that creates
+    /// or connects a binding; human claims carry none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub liveness: Option<LivenessFingerprint>,
+}
+
+/// The stable detail of `ErrorCode::SubagentReadOnly`.
+pub const SUBAGENT_READ_ONLY_DETAIL: &str = "subagent bindings are read-only: they may read, summarize and advance their own cursor, never ACK, send, accept, reject, leave, invite or check in for the seat";
+
+impl CallerClaim {
+    /// A subagent claim (ht-54r.20): the declared role or any agent id. Cooperative recognition,
+    /// not verification (TRUST-POLICY).
+    pub fn is_subagent(&self) -> bool {
+        self.role == CallerRole::Subagent || self.agent_id.is_some()
+    }
+
+    /// Wire-level checks of the binding fields (ids are validated by their types).
+    pub fn validate_binding_fields(&self) -> Result<(), &'static str> {
+        if self.liveness.is_some_and(|f| f.pid == 0) {
+            return Err("invalid liveness fingerprint pid");
+        }
+        Ok(())
+    }
+}
+
+/// Liveness fingerprint (spec §1, decision 9): the harness process's pid and its OS start
+/// stamp. `start` is opaque: it is only ever compared for equality with a value produced by the
+/// same `ProcessInfo` implementation on the same host (macOS: microseconds since the Unix epoch
+/// from `kp_proc.p_starttime`; Linux: `/proc/<pid>/stat` field 22, clock ticks since boot).
+/// A pid whose current start stamp differs is a different process (pid reuse).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LivenessFingerprint {
+    pub pid: u32,
+    pub start: u64,
+}
+impl LivenessFingerprint {
+    pub fn of(record: &crate::ports::ProcessRecord) -> Self {
+        Self {
+            pid: record.pid,
+            start: record.start,
+        }
+    }
+    /// A fixed fingerprint for tests that need an agent claim to enroll (the daemon requires one
+    /// on every claim that creates or connects a binding). It names no real process.
+    #[cfg(any(test, feature = "test-support"))]
+    pub const TEST: Self = Self { pid: 1, start: 1 };
+    /// The fingerprint of this very process, for tests whose daemon runs the liveness worker: a
+    /// binding carrying [`Self::TEST`] is judged an exited process and disconnected there.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn current_process() -> Self {
+        use crate::ports::ProcessInfo;
+        let record = crate::host::process_table::HostProcessTable
+            .process(std::process::id())
+            .expect("this process is in the process table");
+        Self::of(&record)
+    }
+    /// True iff the fingerprinted process still exists with the same start stamp.
+    pub fn is_alive(&self, info: &dyn crate::ports::ProcessInfo) -> bool {
+        info.process(self.pid)
+            .is_some_and(|p| p.start == self.start)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -40,6 +106,16 @@ pub const COOPERATIVE_MOD_DELIVERY_PROVENANCE: &str = "cooperative_mod_delivery"
 /// (delivery-policy DP5/DP6). Not proof of reading.
 pub const COOPERATIVE_HOOK_DELIVERY_PROVENANCE: &str = "cooperative_hook_delivery";
 
+/// TRUST-POLICY A3: a plain cooperative call enrolled its session's binding (and a Codex or
+/// Hermes subagent attached to its parent) from the harness environment, without a hook.
+pub const COOPERATIVE_ENV_SESSION_PROVENANCE: &str = "cooperative_env_session";
+/// TRUST-POLICY A3: a Claude subagent's binding, attached from its hook-carried agent id.
+pub const COOPERATIVE_HOOK_AGENT_PROVENANCE: &str = "cooperative_hook_agent";
+/// TRUST-POLICY A3; defined, behaviour lands in later beads (ht-54r).
+pub const LIVENESS_PROCESS_EXIT_PROVENANCE: &str = "liveness_process_exit";
+/// TRUST-POLICY A3; defined, behaviour lands in later beads (ht-54r).
+pub const LIVENESS_END_EVENT_PROVENANCE: &str = "liveness_end_event";
+
 /// Whether Herdr actually reports a registered native host kind. Registry
 /// metadata alone is never evidence of native recognition or continuity.
 pub fn is_harness_agent_kind(kind: &str) -> bool {
@@ -52,8 +128,12 @@ pub const OPERATOR_HUMAN_PROVENANCE: &str = "operator_human";
 /// C4: bindings a structural reconfirmation carries to a new host epoch;
 /// native `verified_current_target` bindings re-register instead. The planner
 /// predicate and the applier both read this one set.
-pub const CARRIED_BINDING_PROVENANCES: [&str; 2] =
-    [COOPERATIVE_TOP_LEVEL_PROVENANCE, OPERATOR_HUMAN_PROVENANCE];
+pub const CARRIED_BINDING_PROVENANCES: [&str; 4] = [
+    COOPERATIVE_TOP_LEVEL_PROVENANCE,
+    OPERATOR_HUMAN_PROVENANCE,
+    COOPERATIVE_ENV_SESSION_PROVENANCE,
+    COOPERATIVE_HOOK_AGENT_PROVENANCE,
+];
 /// TRUST-POLICY A3/C1: a seat was reattached because a resumed harness
 /// session id matched an unresolved seat's last binding. Seat rebinds only
 /// (the `allocation_decisions.kind` of the reattachment); never on receipts
@@ -74,8 +154,12 @@ pub const MANAGED_LAUNCH_PLACEHOLDER_PREFIX: &str = "launch:";
 /// TRUST-POLICY A4: the open-binding provenances that are an agent's, which a
 /// person's `me init` never replaces without `--operator` and a second
 /// `launch` respects.
-pub const AGENT_BINDING_PROVENANCES: [&str; 2] =
-    [COOPERATIVE_TOP_LEVEL_PROVENANCE, MANAGED_LAUNCH_PROVENANCE];
+pub const AGENT_BINDING_PROVENANCES: [&str; 4] = [
+    COOPERATIVE_TOP_LEVEL_PROVENANCE,
+    MANAGED_LAUNCH_PROVENANCE,
+    COOPERATIVE_ENV_SESSION_PROVENANCE,
+    COOPERATIVE_HOOK_AGENT_PROVENANCE,
+];
 
 /// Obtained from the local socket kernel credential, never from JSON.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -396,6 +480,8 @@ mod tests {
             native_session: NativeSessionId::new("plugin_context:n"),
             execution: ExecutionId::new("e"),
             target: HostTargetId::new("p"),
+            agent_id: None,
+            liveness: None,
         };
         let obligation = ObligationRef::CheckIn(claim.seat.clone());
         let mut permit = MutationPermit::cooperative(
@@ -457,5 +543,107 @@ mod tests {
                 .consume_cooperative(&fence, &OperationId::new("op"), &obligation, &[7; 32])
                 .is_err()
         );
+    }
+
+    fn base_claim() -> CallerClaim {
+        CallerClaim {
+            instance: "i".into(),
+            seat: SeatId::new("s"),
+            binding_generation: 0,
+            role: CallerRole::TopLevel,
+            harness: Harness::Codex,
+            native_session: NativeSessionId::new("n"),
+            execution: ExecutionId::new("e"),
+            target: HostTargetId::new("p"),
+            agent_id: None,
+            liveness: None,
+        }
+    }
+
+    #[test]
+    fn claim_without_binding_fields_serializes_exactly_as_before() {
+        let claim = base_claim();
+        let value = serde_json::to_value(&claim).unwrap();
+        assert!(value.get("agent_id").is_none());
+        assert!(value.get("liveness").is_none());
+        // A pre-V32 (wire 6 shape) claim still decodes.
+        let back: CallerClaim = serde_json::from_value(value).unwrap();
+        assert_eq!(back, claim);
+        let full = CallerClaim {
+            agent_id: Some(AgentId::new("agent-7")),
+            liveness: Some(LivenessFingerprint {
+                pid: 42,
+                start: 1_700_000_000_000_000,
+            }),
+            role: CallerRole::Subagent,
+            ..claim.clone()
+        };
+        let json = serde_json::to_value(&full).unwrap();
+        assert_eq!(json["agent_id"], "agent-7");
+        assert_eq!(
+            json["liveness"],
+            serde_json::json!({"pid": 42, "start": 1_700_000_000_000_000u64})
+        );
+        assert_eq!(serde_json::from_value::<CallerClaim>(json).unwrap(), full);
+        let mut bad = serde_json::to_value(&claim).unwrap();
+        bad["liveness"] = serde_json::json!({"pid": 1, "start": 2, "extra": 3});
+        assert!(serde_json::from_value::<CallerClaim>(bad).is_err());
+    }
+
+    #[test]
+    fn binding_fields_validation_rejects_pid_zero() {
+        let mut claim = base_claim();
+        assert!(claim.validate_binding_fields().is_ok());
+        claim.liveness = Some(LivenessFingerprint { pid: 0, start: 1 });
+        assert!(claim.validate_binding_fields().is_err());
+        claim.liveness = Some(LivenessFingerprint { pid: 1, start: 0 });
+        assert!(claim.validate_binding_fields().is_ok());
+    }
+
+    #[test]
+    fn fingerprint_is_alive_only_for_the_same_pid_and_start() {
+        struct Table(Vec<crate::ports::ProcessRecord>);
+        impl crate::ports::ProcessInfo for Table {
+            fn process(&self, pid: u32) -> Option<crate::ports::ProcessRecord> {
+                self.0.iter().find(|p| p.pid == pid).cloned()
+            }
+        }
+        let rec = crate::ports::ProcessRecord {
+            pid: 10,
+            parent: Some(1),
+            start: 500,
+            argv: vec!["claude".into()],
+        };
+        let fp = LivenessFingerprint::of(&rec);
+        assert!(fp.is_alive(&Table(vec![rec.clone()])));
+        assert!(!fp.is_alive(&Table(vec![]))); // exited
+        assert!(!fp.is_alive(&Table(vec![crate::ports::ProcessRecord {
+            start: 501,
+            ..rec
+        }]))); // pid reuse
+    }
+
+    #[test]
+    fn session_binding_provenances_are_defined_in_trust_policy() {
+        let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/TRUST-POLICY.md"))
+            .unwrap();
+        for value in [
+            COOPERATIVE_ENV_SESSION_PROVENANCE,
+            COOPERATIVE_HOOK_AGENT_PROVENANCE,
+            LIVENESS_PROCESS_EXIT_PROVENANCE,
+            LIVENESS_END_EVENT_PROVENANCE,
+        ] {
+            assert!(
+                text.contains(&format!("| `{value}` |")),
+                "{value} missing from the A3 table"
+            );
+        }
+        assert_eq!(
+            COOPERATIVE_ENV_SESSION_PROVENANCE,
+            "cooperative_env_session"
+        );
+        assert_eq!(COOPERATIVE_HOOK_AGENT_PROVENANCE, "cooperative_hook_agent");
+        assert_eq!(LIVENESS_PROCESS_EXIT_PROVENANCE, "liveness_process_exit");
+        assert_eq!(LIVENESS_END_EVENT_PROVENANCE, "liveness_end_event");
     }
 }

@@ -46,6 +46,8 @@ fn claim(role: CallerRole, generation: u64) -> CallerClaim {
         native_session: NativeSessionId::new("ns"),
         execution: ExecutionId::new("00000000-0000-4000-8000-0000000000aa"),
         target: HostTargetId::new("ps"),
+        agent_id: None,
+        liveness: Some(crate::protocol::authority::LivenessFingerprint::TEST),
     }
 }
 fn command(value: WakeOn, operation: &str) -> SetWakeOn {
@@ -234,23 +236,16 @@ fn lazy_ordinal_rejects_zero_and_accepts_null_or_positive() {
     assert_eq!(last_lazy(&conn), Some(5));
 }
 
-/// A database left at the previous schema version (30), then migrated. The
-/// previous shape is the current one without the two added columns.
+/// A database at the historical schema version 30 (main's released chain), then migrated
+/// through V31 and the session-binding migrations after it.
 #[test]
 fn migration_up_adds_the_columns_with_their_defaults() {
-    let (_, previous) = setup();
-    previous
-        .execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode) VALUES ('old','i','resolved','native','po',1,1,0,1)", [])
-        .unwrap();
-    previous
-        .execute(
-            "INSERT INTO wake_work(seat_id,reason_bits,attention_version) VALUES ('old',1,1)",
-            [],
-        )
-        .unwrap();
+    let previous = crate::store::connection::tests::adapter_historical_database(30);
     previous
         .execute_batch(
-            "ALTER TABLE seats DROP COLUMN wake_on; ALTER TABLE wake_work DROP COLUMN last_lazy_ordinal; PRAGMA user_version=30;",
+            "INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'b',1,1);
+             INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at,unavailability_episode) VALUES ('old','i','resolved','native','po',1,1,0,1);
+             INSERT INTO wake_work(seat_id,reason_bits,attention_version) VALUES ('old',1,1);",
         )
         .unwrap();
     let has_column = |table: &str, column: &str| -> bool {

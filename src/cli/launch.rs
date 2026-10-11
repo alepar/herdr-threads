@@ -15,11 +15,13 @@
 //!    disk, so launch adds none). No daemon-mode argument is injected.
 //!
 //! Launch never registers, accepts or ACKs. After an accepted, correlated
-//! startup it asks the daemon to record a `managed_launch` binding on a seat
-//! with no open binding (TRUST-POLICY A3): an unregistered occupant record
+//! startup it asks the daemon to record a `managed_launch` placeholder binding on
+//! the seat, beside any binding it already holds (TRUST-POLICY A3), carrying the
+//! started process's fingerprint: an unregistered occupant record
 //! that authorizes nothing but a wake prompt to the launched harness, so an
 //! agent that never checks in before its first turn (Codex 0.159.3 TUI) is
-//! still woken for pending work; its first lifecycle check-in replaces it.
+//! still woken for pending work; the launched harness's first lifecycle check-in
+//! replaces it. With no single started process observable, nothing is recorded.
 //! Invitations and messages that were committed before launch stay pending
 //! and are surfaced by the SessionStart hook's check-in, or by `inbox`, even
 //! when the agent's initial prompt is lost. Each submitted start is appended
@@ -389,7 +391,7 @@ fn record_managed_launch_with(
         return Ok(None);
     }
     match client.call(
-        Command::RecordManagedLaunch(managed_launch_command(startup)),
+        Command::RecordManagedLaunch(managed_launch_command(startup)?),
         budget,
     )? {
         CommandResult::ManagedLaunchRecorded(record) => Ok(Some(record)),
@@ -533,6 +535,7 @@ impl<C: LocalClient + ?Sized> HandoffReader for C {
     fn pending(&self, seat: &SeatId, budget: &CallBudget) -> Result<Value, ApiError> {
         let result = self.call(
             Command::Inbox(InboxQuery {
+                claim: None,
                 seat: Some(seat.clone()),
                 page: PageRequest {
                     cursor: None,
@@ -1326,6 +1329,10 @@ mod task23_tests {
                     epoch: context.expected_epoch.unwrap(),
                     submitted_at_mono: diagnostic.started_at_mono,
                     completed_at_mono: diagnostic.completed_at_mono,
+                    started_process: Some(crate::protocol::authority::LivenessFingerprint {
+                        pid: 4242,
+                        start: 1,
+                    }),
                 },
                 diagnostic,
             })
@@ -1375,7 +1382,7 @@ mod task23_tests {
             self.recorded
                 .lock()
                 .unwrap()
-                .push(managed_launch_command(startup));
+                .push(managed_launch_command(startup)?);
             let record = |recorded: bool, provenance: &str| {
                 Ok(Some(ManagedLaunchRecord {
                     seat: startup.seat.clone(),

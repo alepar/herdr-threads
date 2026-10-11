@@ -56,6 +56,9 @@ fn seat(continuity: ContinuityStatus) -> SeatSummary {
         generation: 7,
         created_at: UtcMillis(0),
         retired_at: None,
+        active: true,
+        availability: None,
+        bindings: Vec::new(),
     }
 }
 

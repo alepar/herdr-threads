@@ -67,6 +67,9 @@ fn seat_in(name: &str, continuity: ContinuityStatus) -> SeatSummary {
         generation: 1,
         created_at: UtcMillis(0),
         retired_at: None,
+        active: false,
+        bindings: Vec::new(),
+        availability: None,
     }
 }
 
@@ -85,6 +88,9 @@ fn participants() -> Page<Participant> {
         retirement_cutover: None,
         cleanup_state: None,
         accepted_invitation: None,
+        active: false,
+        bindings: Vec::new(),
+        availability: None,
     }])
 }
 

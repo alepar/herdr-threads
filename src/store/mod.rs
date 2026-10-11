@@ -1,10 +1,12 @@
 //! SQLite-backed production store dispatch.
 pub mod archival;
 pub mod attention;
+pub mod bindings;
 pub mod catch_up;
 pub mod connection;
 pub mod control;
 pub mod effective;
+pub mod first_contact;
 pub mod handoff;
 pub mod harness_evidence;
 pub mod invitation_content;
@@ -18,6 +20,7 @@ pub mod poke;
 mod presentation_relevance;
 pub(crate) mod public_ids;
 pub mod queries;
+pub mod read_cursors;
 pub mod receipts;
 pub mod retention;
 pub mod schema;
@@ -1037,6 +1040,9 @@ fn pending_work_page_on(
             "receipt_timer_materialization" => WorkKind::ReceiptTimerMaterialization,
             "preparation_cleanup" => WorkKind::PreparationCleanup,
             "human_receipt_reconciliation" => WorkKind::HumanReceiptReconciliation,
+            // Advanced by `materialization` like the others; discovery must list it, or one
+            // pending sweep stalls every later job.
+            "warning_condition_close" => WorkKind::WarningConditionClose,
             _ => return Err(api_error(ErrorCode::StoreCorrupt, "invalid work kind")),
         };
         item_positions.push((
@@ -1080,7 +1086,7 @@ fn pending_work_page_on(
 
 /// The seat walk of wake discovery: live (`seats_live_ordinal`) seats in ordinal
 /// order, excluding any seat whose current occupant is human (Wave 18).
-pub(crate) const WAKE_SEAT_WALK: &str = "SELECT s.ordinal,s.id FROM seats s INDEXED BY seats_live_ordinal WHERE s.instance_id=?1 AND s.state!='retired' AND s.ordinal>?2 AND s.ordinal<=?3 AND NOT EXISTS (SELECT 1 FROM occupant_bindings INDEXED BY occupant_bindings_current WHERE seat_id=s.id AND ended_at IS NULL AND harness='human') ORDER BY s.ordinal LIMIT 1";
+pub(crate) const WAKE_SEAT_WALK: &str = "SELECT s.ordinal,s.id FROM seats s INDEXED BY seats_live_ordinal WHERE s.instance_id=?1 AND s.state!='retired' AND s.ordinal>?2 AND s.ordinal<=?3 AND NOT EXISTS (SELECT 1 FROM occupant_bindings INDEXED BY occupant_bindings_open WHERE seat_id=s.id AND ended_at IS NULL AND harness='human') ORDER BY s.ordinal LIMIT 1";
 
 /// What one discovery pass found: the candidates, the `(before, ordinal)` position
 /// of each, the last seat ordinal passed, and why the pass stopped.
@@ -1224,6 +1230,7 @@ impl crate::ports::ModStoreReads for SqliteStore {
     fn presentation_refresh(
         &self,
         seat: &SeatId,
+        binding: &crate::protocol::ids::BindingId,
         generation: u64,
         native: &str,
         budget: &CallBudget,
@@ -1231,30 +1238,32 @@ impl crate::ports::ModStoreReads for SqliteStore {
         let mut writer = self.writer(budget)?;
         self.context.execute_decision(
             &mut writer,
-            |tx| invitation_content::refresh(tx, &self.instance, seat, generation, native),
+            |tx| invitation_content::refresh(tx, &self.instance, seat, binding, generation, native),
             |_, _, reply| Ok(reply),
         )
     }
     fn presentation_seat_view(
         &self,
         seat: &SeatId,
+        binding: crate::ports::ModBindingRef<'_>,
         budget: &CallBudget,
     ) -> Result<Option<crate::ports::ModSeatView>, ApiError> {
         let db = self.context.open_query(budget.clone())?;
         db.execute_batch("BEGIN DEFERRED")
             .map_err(|e| db.map_error(e))?;
-        seats::presentation_seat_view(&db, &self.instance, seat)
+        seats::presentation_seat_view(&db, &self.instance, seat, binding)
     }
 
-    fn mod_seat_view(
+    fn mod_binding_view(
         &self,
         seat: &crate::protocol::ids::SeatId,
+        binding: crate::ports::ModBindingRef<'_>,
         budget: &CallBudget,
     ) -> Result<Option<crate::ports::ModSeatView>, ApiError> {
         let db = self.context.open_query(budget.clone())?;
         db.execute_batch("BEGIN DEFERRED")
             .map_err(|e| db.map_error(e))?;
-        seats::mod_seat_view(&db, &self.instance, seat)
+        seats::mod_binding_view(&db, &self.instance, seat, binding)
     }
 
     fn mod_stall_oldest(
@@ -1309,6 +1318,26 @@ impl StorePort for SqliteStore {
         )
     }
 
+    fn liveness_candidates(
+        &self,
+        seat: Option<&SeatId>,
+        budget: &CallBudget,
+    ) -> Result<Vec<bindings::LivenessCandidate>, ApiError> {
+        let db = self.context.open_query(budget.clone())?;
+        bindings::liveness_candidates(&db, seat)
+    }
+    fn apply_liveness(
+        &self,
+        decisions: &[bindings::LivenessDecision],
+        budget: &CallBudget,
+    ) -> Result<usize, ApiError> {
+        let mut writer = self.writer(budget)?;
+        self.context.execute_decision(
+            &mut writer,
+            |_| Ok(()),
+            |tx, at, ()| bindings::apply_liveness(tx, decisions, at.utc),
+        )
+    }
     fn archival_pass(
         &self,
         runtime: &archival::Runtime,
@@ -1486,6 +1515,29 @@ impl StorePort for SqliteStore {
             gate,
             budget,
             self.settings.invitation_default_ms,
+        )
+    }
+
+    fn attention_digest_read(
+        &self,
+        command: &Command,
+        read: &ReadContext,
+        budget: &CallBudget,
+    ) -> Result<(CommandResult, Option<crate::protocol::ids::BindingId>), ApiError> {
+        read.validate()
+            .map_err(|why| api_error(ErrorCode::InvalidRequest, why))?;
+        if read.instance != self.instance {
+            return Err(api_error(
+                ErrorCode::InvalidRequest,
+                "read instance mismatch",
+            ));
+        }
+        queries::query_attention_digest(
+            &self.context,
+            &self.instance,
+            command,
+            &read.output,
+            budget,
         )
     }
 
@@ -1683,6 +1735,68 @@ impl StorePort for SqliteStore {
             }
         }
     }
+    fn advance_cursors(
+        &self,
+        request: &crate::protocol::commands::AdvanceCursors,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        if request.claim.instance != self.instance {
+            return Err(api_error(
+                ErrorCode::CallerUnverified,
+                "cursor advance instance mismatch",
+            ));
+        }
+        let mut writer = self.writer(budget)?;
+        control::advance_cursors(&self.context, &mut writer, budget, request)
+    }
+    fn claim_reconnects_on_plain_call(
+        &self,
+        claim: &crate::protocol::authority::CallerClaim,
+        budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        if claim.instance != self.instance {
+            return Ok(false);
+        }
+        let db = self.context.open_query(budget.clone())?;
+        db.execute_batch("BEGIN DEFERRED")
+            .map_err(|e| db.map_error(e))?;
+        bindings::claim_reconnects_on_plain_call(&db, claim)
+    }
+    fn hook_plain_reconnect(
+        &self,
+        claim: &crate::protocol::authority::CallerClaim,
+        presentation: bool,
+        budget: &CallBudget,
+    ) -> Result<Option<crate::ports::ModSeatView>, ApiError> {
+        if claim.instance != self.instance {
+            return Err(api_error(
+                ErrorCode::CallerUnverified,
+                "hook reconnect instance mismatch",
+            ));
+        }
+        let mut writer = self.writer(budget)?;
+        seats::hook_plain_reconnect(
+            &self.context,
+            &mut writer,
+            &self.instance,
+            claim,
+            presentation,
+        )
+    }
+    fn binding_event(
+        &self,
+        request: &crate::protocol::commands::BindingEvent,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        if request.claim.instance != self.instance {
+            return Err(api_error(
+                ErrorCode::CallerUnverified,
+                "binding event instance mismatch",
+            ));
+        }
+        let mut writer = self.writer(budget)?;
+        control::binding_event(&self.context, &mut writer, budget, request)
+    }
     fn prepare_send_step(
         &self,
         request: &SendMessage,
@@ -1795,43 +1909,40 @@ impl StorePort for SqliteStore {
     fn mod_ack_binding(
         &self,
         instance: &str,
-        seat: &crate::protocol::ids::SeatId,
+        claim: &crate::protocol::authority::CallerClaim,
         budget: &CallBudget,
     ) -> Result<Option<crate::ports::ModAckBinding>, ApiError> {
         use crate::protocol::ids::{ExecutionId, HostTargetId, NativeSessionId};
         let db = self.context.open_query(budget.clone())?;
-        let mut stmt = db
-            .prepare("SELECT b.generation,b.observation_provenance,b.harness,b.native_session,b.execution_id,b.target_id,b.ended_at IS NULL FROM occupant_bindings b JOIN seats s ON s.id=b.seat_id WHERE b.seat_id=?1 AND s.instance_id=?2 ORDER BY b.ordinal DESC LIMIT 2")
+        // The channel's binding is the one the claim's key names (spec §3 Wake): a seat holds
+        // many bindings and each session acks through its own. Subagent rows never head a channel.
+        let Some(row) = bindings::match_claim(&db, &bindings::BindingKey::from_claim(claim))?
+        else {
+            return Ok(None);
+        };
+        if row.role != bindings::BindingRole::TopLevel {
+            return Ok(None);
+        }
+        let placement: Option<(String, String)> = db
+            .query_row(
+                "SELECT b.execution_id,b.target_id FROM occupant_bindings b JOIN seats s ON s.id=b.seat_id WHERE b.binding_id=?1 AND s.instance_id=?2",
+                params![row.binding_id.as_str(), instance],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()
             .map_err(store_error)?;
-        let rows = stmt
-            .query_map(params![seat.as_str(), instance], |r| {
-                Ok((
-                    r.get::<_, i64>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, String>(2)?,
-                    r.get::<_, String>(3)?,
-                    r.get::<_, String>(4)?,
-                    r.get::<_, String>(5)?,
-                    r.get::<_, bool>(6)?,
-                ))
-            })
-            .map_err(store_error)?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(store_error)?;
-        let mut rows = rows.into_iter();
-        let Some(open) = rows.next().filter(|row| row.6) else {
+        let Some((execution, target)) = placement else {
             return Ok(None);
         };
         Ok(Some(crate::ports::ModAckBinding {
-            generation: open.0 as u64,
-            provenance: open.1,
-            harness: open.2,
-            native_session: NativeSessionId::new(open.3),
-            execution: ExecutionId::new(open.4),
-            target: HostTargetId::new(open.5),
-            previous: rows
-                .next()
-                .map(|row| (row.0 as u64, NativeSessionId::new(row.3))),
+            binding_id: row.binding_id,
+            generation: row.generation,
+            connected: row.liveness == bindings::Liveness::Connected,
+            provenance: row.provenance,
+            harness: row.harness,
+            native_session: NativeSessionId::new(row.native_session),
+            execution: ExecutionId::new(execution),
+            target: HostTargetId::new(target),
         }))
     }
     fn issue_cooperative_permit(
@@ -1880,7 +1991,7 @@ impl StorePort for SqliteStore {
             request.operator.as_ref(),
             permit,
             budget,
-            |tx, seat, seq| {
+            |tx, seat, seq, history, binding| {
                 let _namespace = crate::protocol::output::CommandNamespaceGuard::enter(
                     request.command.claim.harness == crate::protocol::authority::Harness::Human
                         || request.operator.is_some(),
@@ -1900,10 +2011,11 @@ impl StorePort for SqliteStore {
                     self.context.clock(),
                 )?;
                 let (warning_count, warning_count_has_more) =
-                    queries::pending_warning_count_in_transaction(
+                    queries::pending_warning_count_for_binding_in_transaction(
                         tx,
                         &self.instance,
                         seat,
+                        binding,
                         budget,
                         self.context.clock(),
                     )?;
@@ -1935,9 +2047,10 @@ impl StorePort for SqliteStore {
                 // The capped page of programmatic notices above the current
                 // occupant's offered frontier, oldest first; the writer
                 // settles exactly the prefix this offer carries.
-                let mut notices = crate::store::attention::notice_offer_page(
+                let mut notices = crate::store::attention::notice_offer_page_for(
                     tx,
                     seat.as_str(),
+                    binding,
                     crate::protocol::results::MAX_NOTICE_PAGE_ITEMS + 1,
                 )?
                 .into_iter()
@@ -1957,6 +2070,8 @@ impl StorePort for SqliteStore {
                     warnings,
                     notices: crate::protocol::results::NoticeOffer::default(),
                     inbox,
+                    first_contact: history.first_contact,
+                    fast_forward: history.fast_forward,
                 };
                 let mut selected = CommandResult::CheckedIn(offer);
                 crate::protocol::output::namespace_result(&mut selected);
@@ -1979,6 +2094,20 @@ impl StorePort for SqliteStore {
                         break;
                     }
                     if notices.pop().is_none() {
+                        // History lines give way after the notices, a thread at a time from
+                        // the least recent; the rest is counted in `more`.
+                        if let Some(ff) = offer.fast_forward.as_mut()
+                            && ff.threads.pop().is_some()
+                        {
+                            ff.more += 1;
+                            continue;
+                        }
+                        if let Some(fc) = offer.first_contact.as_mut()
+                            && fc.threads.pop().is_some()
+                        {
+                            fc.more += 1;
+                            continue;
+                        }
                         return Err(api_error(
                             ErrorCode::InvalidBudget,
                             "complete check-in offer exceeds selected output bound",
@@ -2693,42 +2822,48 @@ impl StorePort for SqliteStore {
     fn pull_notice_page(
         &self,
         seat: &SeatId,
+        binding: Option<&crate::protocol::ids::BindingId>,
         limit: usize,
         budget: &CallBudget,
     ) -> Result<Vec<crate::ports::PulledNotice>, ApiError> {
         let db = self.context.open_query(budget.clone())?;
         db.execute_batch("BEGIN DEFERRED")
             .map_err(|e| db.map_error(e))?;
-        attention::notice_offer_page(&db, seat.as_str(), limit)?
-            .into_iter()
-            .map(|offered| {
-                let topic: String = db
-                    .query_row(
-                        "SELECT topic FROM threads WHERE id=?1",
-                        [offered.notice.thread.as_str()],
-                        |r| r.get(0),
-                    )
-                    .map_err(store_error)?;
-                let author: Option<String> = db
-                    .query_row(
-                        "SELECT actor_seat_id FROM messages WHERE id=?1",
-                        [offered.notice.warning.as_str()],
-                        |r| r.get(0),
-                    )
-                    .optional()
-                    .map_err(store_error)?
-                    .flatten();
-                Ok(crate::ports::PulledNotice {
-                    notice: offered.notice,
-                    topic,
-                    author: author.map(SeatId::new),
-                })
+        // The pulling binding's own frontier (spec §2): the page it later settles.
+        match binding {
+            Some(binding) => attention::notice_offer_page_for(&db, seat.as_str(), binding, limit)?,
+            None => attention::notice_offer_page(&db, seat.as_str(), limit)?,
+        }
+        .into_iter()
+        .map(|offered| {
+            let topic: String = db
+                .query_row(
+                    "SELECT topic FROM threads WHERE id=?1",
+                    [offered.notice.thread.as_str()],
+                    |r| r.get(0),
+                )
+                .map_err(store_error)?;
+            let author: Option<String> = db
+                .query_row(
+                    "SELECT actor_seat_id FROM messages WHERE id=?1",
+                    [offered.notice.warning.as_str()],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(store_error)?
+                .flatten();
+            Ok(crate::ports::PulledNotice {
+                notice: offered.notice,
+                topic,
+                author: author.map(SeatId::new),
             })
-            .collect()
+        })
+        .collect()
     }
     fn settle_pulled_notices(
         &self,
         seat: &SeatId,
+        binding: &crate::protocol::ids::BindingId,
         generation: u64,
         native_session: &str,
         carried: &[crate::protocol::results::WarningRef],
@@ -2745,6 +2880,7 @@ impl StorePort for SqliteStore {
                     tx,
                     &self.instance,
                     seat.as_str(),
+                    binding,
                     generation,
                     native_session,
                     carried,

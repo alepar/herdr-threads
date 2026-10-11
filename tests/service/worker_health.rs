@@ -1142,6 +1142,7 @@ fn observation_worker_loop_feeds_production_health_at_both_call_sites() {
         inner: ScheduledStore {
             store: production.store.clone(),
             writer,
+            liveness: None,
         },
         fail_admission: Default::default(),
         fail_page: Default::default(),
@@ -1920,6 +1921,7 @@ fn refusal_free_pass_records_marker_once() {
         inner: ScheduledStore {
             store: production.store.clone(),
             writer,
+            liveness: None,
         },
         fail_admission: Default::default(),
         fail_page: Default::default(),
@@ -1990,6 +1992,7 @@ fn stale_refused_pass_skips_reconciliation_marker() {
         inner: ScheduledStore {
             store: production.store.clone(),
             writer,
+            liveness: None,
         },
         fail_admission: Default::default(),
         fail_page: Default::default(),

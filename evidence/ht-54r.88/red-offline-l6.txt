@@ -1,0 +1,25 @@
+E.............F..
+======================================================================
+ERROR: test_accept_verdict_names_the_attribution_refusal (test_scenarios_l6.L6ScenarioTests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/alepar/AleCode/herdr-threads/.worktrees/super-auto/session-keyed-seat-bindings/.worktrees/super-auto-session-keyed-seat-bindings--task-ht-54r.88/scripts/agy-gate/test_scenarios_l6.py", line 142, in test_accept_verdict_names_the_attribution_refusal
+    ok, _ = l6.accept_verdict("herdr-threads: joined\nCommand exited with code 0", "joined")
+AttributeError: module 'l6h' has no attribute 'accept_verdict'
+
+======================================================================
+FAIL: test_the_join_wake_runs_accept_through_run_command_as_the_agy_session (test_scenarios_l6.L6ScenarioTests)
+ht-54r.88: the agy seat accepts from inside agy (env claim + agy ancestor), not from the gate.
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/alepar/AleCode/herdr-threads/.worktrees/super-auto/session-keyed-seat-bindings/.worktrees/super-auto-session-keyed-seat-bindings--task-ht-54r.88/scripts/agy-gate/test_scenarios_l6.py", line 129, in test_the_join_wake_runs_accept_through_run_command_as_the_agy_session
+    self.assertEqual(labels[labels.index("wake-join") + 1], "wake-join-done", name)
+AssertionError: 'stop-busy' != 'wake-join-done'
+- stop-busy
++ wake-join-done
+ : delivery-stop
+
+----------------------------------------------------------------------
+Ran 17 tests in 0.199s
+
+FAILED (failures=1, errors=1)

@@ -258,6 +258,9 @@ impl crate::ports::LocalService for Service {
             generation: 1,
             created_at: crate::protocol::time::UtcMillis(0),
             retired_at: None,
+            active: true,
+            availability: None,
+            bindings: Vec::new(),
         };
         match c {
             Command::Seats(_) => {
@@ -299,6 +302,7 @@ impl crate::ports::LocalService for Service {
                     unavailability_open: false,
                     mod_channel_live: false,
                     lazy: None,
+                    mail: None,
                 }))
             }
             Command::CheckIn(check_in) => {
@@ -316,6 +320,8 @@ impl crate::ports::LocalService for Service {
                     warnings: empty(),
                     notices: Default::default(),
                     inbox: empty(),
+                    fast_forward: None,
+                    first_contact: None,
                 }))
             }
             _ => Err(crate::test_support::unserved("unused fixture operation")),
@@ -718,6 +724,11 @@ fn hook_step_runs_for_top_level_observer_events_with_claim_state_dir_and_daemon(
             assert_eq!(claim.native_session.as_str(), "native-1");
             assert_eq!(claim.harness.as_str(), ADAPTER.metadata().id);
             assert_eq!(claim.seat.as_str(), "callback-seat");
+            assert_eq!(
+                claim.liveness,
+                Some(crate::protocol::authority::LivenessFingerprint::TEST),
+                "the step's claim carries the hook's fingerprint"
+            );
             assert_eq!(
                 ran.daemon_answer,
                 Some(true),

@@ -97,6 +97,8 @@ impl Assembler {
 
     pub fn push(&mut self, item: InboxBatchV2Item) -> Result<Assembled, AssembleError> {
         match item {
+            // First-contact history has no delivery frame.
+            InboxBatchV2Item::FirstContact(_) => Ok(Assembled::Pending),
             InboxBatchV2Item::Invitation {
                 thread,
                 topic_data,
@@ -187,7 +189,7 @@ impl Assembler {
                 } else if !goal_omitted
                     && (self.invitation_displays.contains_key(&invitation)
                         || self.invitation_displays.len()
-                            < crate::delivery::ledger::MAX_INVITATION_DISPLAYS_PER_SEAT)
+                            < crate::delivery::ledger::MAX_INVITATION_DISPLAYS_PER_BINDING)
                 {
                     self.invitation_displays
                         .insert(invitation.clone(), topic_revision);
@@ -333,6 +335,7 @@ impl Assembler {
             body_len: chunk.body_len,
             truncated,
             ack_required: chunk.ack_required,
+            wakes: chunk.lazy && chunk.promoted,
         };
         self.emitted.insert(id);
         Ok(Assembled::Item(DeliveryItem {

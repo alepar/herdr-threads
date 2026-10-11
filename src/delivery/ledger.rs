@@ -1,20 +1,23 @@
 //! The offered ledger of hook-pull delivery (delivery-policy DP5): which ids a
-//! `DeliveryPull` showed to which binding generation of a seat, how often and
-//! when. Pure data with explicit bounds; the daemon keeps one behind a `Mutex`
+//! `DeliveryPull` showed to which binding, how often and when. Each binding (one
+//! native session of a seat) has its own entry, so two live bindings of one seat
+//! never touch each other's offers. Pure data with explicit bounds; the daemon keeps one behind a `Mutex`
 //! (`service::delivery_pull`) and never holds the lock across a store read.
 
 use crate::ports::NextPull;
-use crate::protocol::{ids::InvitationId, ids::MessageId, ids::SeatId, time::UtcMillis};
+use crate::protocol::{
+    ids::{BindingId, InvitationId, MessageId, SeatId},
+    time::UtcMillis,
+};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-/// Seats the ledger remembers; the least recently touched is evicted first.
-pub const MAX_LEDGER_SEATS: usize = 4096;
-/// Offers kept per seat. A full table evicts nothing (an evicted pending id would be offered afresh): a new id
+/// Bindings the ledger remembers; the least recently touched is evicted first.
+pub const MAX_LEDGER_BINDINGS: usize = 4096;
+/// Offers kept per binding. A full table evicts nothing (an evicted pending id would be offered afresh): a new id
 /// waits, pending, for `inbox` until a confirm, a settle or a whole read frees a slot.
-pub const MAX_OFFERS_PER_SEAT: usize = 256;
-/// Independent invitation display cache, large enough for the canonical 1001-row window.
-/// Neither these whole displays nor truncated attempts are receipt offers or wake work.
-pub const MAX_INVITATION_DISPLAYS_PER_SEAT: usize = 1024;
+pub const MAX_OFFERS_PER_BINDING: usize = 256;
+/// Independent per-binding invitation display cache, not receipt offers or wake work.
+pub const MAX_INVITATION_DISPLAYS_PER_BINDING: usize = 1024;
 /// An unconfirmed id is offered again only after this long.
 pub const REOFFER_AFTER_MS: i64 = 60_000;
 /// An id is offered at most this many times per binding generation.
@@ -25,7 +28,7 @@ pub const MAX_OFFERS_PER_GENERATION: u8 = 3;
 pub struct Offer {
     pub first_at: UtcMillis,
     pub last_at: UtcMillis,
-    /// Times shown (1..=[`MAX_OFFERS_PER_GENERATION`]).
+    /// Recorded times shown (1..=255). Admission separately enforces the reoffer ceiling.
     pub count: u8,
     /// Shown cut at the body limit; never confirmable.
     pub truncated: bool,
@@ -61,7 +64,7 @@ pub struct OrdinaryDueCache {
 pub struct OrdinaryDueSnapshot {
     pub incarnation: [u8; 16],
     pub generation: u64,
-    pub native_session: String,
+    pub binding_id: BindingId,
     pub stamps: BTreeMap<MessageId, Offer>,
     pub cache: OrdinaryDueCache,
 }
@@ -73,11 +76,13 @@ fn consumer_index(consumer: crate::protocol::delivery::PresentationConsumer) -> 
     }
 }
 
-/// What one seat's current binding generation was offered.
+/// What one binding was offered.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SeatOffers {
+pub struct BindingOffers {
+    pub binding_id: BindingId,
+    /// The seat the binding belongs to.
+    pub seat: SeatId,
     pub generation: u64,
-    pub native_session: String,
     /// The last page stopped at a bound, so more is pending behind it.
     pub more_pending: bool,
     /// The last pull left informational notices pending (a full notice page, a refused settle or a failed
@@ -102,7 +107,7 @@ pub struct SeatOffers {
     touched: u64,
 }
 
-impl SeatOffers {
+impl BindingOffers {
     fn prune_due(&mut self) {
         for cache in &mut self.ordinary_due {
             cache
@@ -119,7 +124,7 @@ impl SeatOffers {
         OrdinaryDueSnapshot {
             incarnation: self.presentation_incarnation,
             generation: self.generation,
-            native_session: self.native_session.clone(),
+            binding_id: self.binding_id.clone(),
             stamps: self.offers.clone(),
             cache: self.ordinary_due[consumer_index(consumer)].clone(),
         }
@@ -133,7 +138,7 @@ impl SeatOffers {
         self.prune_due();
         if update.incarnation != self.presentation_incarnation
             || update.generation != self.generation
-            || update.native_session != self.native_session
+            || update.binding_id != self.binding_id
         {
             return;
         }
@@ -148,12 +153,12 @@ impl SeatOffers {
         self.offers.values().any(|offer| offer.is_due(now))
     }
 
-    /// True when the table holds [`MAX_OFFERS_PER_SEAT`] offers: no new id can be recorded.
+    /// True when the table holds [`MAX_OFFERS_PER_BINDING`] offers: no new id can be recorded.
     pub fn is_full(&self) -> bool {
-        self.offers.len() >= MAX_OFFERS_PER_SEAT
+        self.offers.len() >= MAX_OFFERS_PER_BINDING
     }
 
-    /// What the seat's next pull would show at `now`, given the wake attention counter. Leftover informational
+    /// What the binding's next pull would show at `now`, given the wake attention counter. Leftover informational
     /// notices (`notices_pending`) are not counted: they never wake.
     pub fn next_pull(&self, attention_version: u64, now: UtcMillis) -> NextPull {
         if self.read_attention != Some(attention_version) || self.more_pending || self.any_due(now)
@@ -214,10 +219,12 @@ impl SeatOffers {
     }
 }
 
-/// All seats' offers.
+/// All bindings' offers.
 #[derive(Debug, Default)]
 pub struct OfferedLedger {
-    seats: HashMap<SeatId, SeatOffers>,
+    bindings: HashMap<BindingId, BindingOffers>,
+    /// The bindings that have an entry, per seat (for the outlook of a source without per-binding information).
+    seats: HashMap<SeatId, BTreeSet<BindingId>>,
     clock: u64,
 }
 
@@ -226,20 +233,32 @@ impl OfferedLedger {
         Self::default()
     }
 
-    /// The seat's entry for the canonical binding `generation`, created when missing. An entry of an older
-    /// generation is discarded first (a rotated generation discards its offered set); an entry of a newer
-    /// generation is left untouched and the answer is `None` (a request that read the binding before a rotation
-    /// must not wipe its successor's offers). A new entry over [`MAX_LEDGER_SEATS`] evicts the least recently
-    /// touched seat.
-    pub fn seat_mut(
+    fn drop_binding(&mut self, binding: &BindingId) {
+        if let Some(entry) = self.bindings.remove(binding)
+            && let Some(set) = self.seats.get_mut(&entry.seat)
+        {
+            set.remove(binding);
+            if set.is_empty() {
+                self.seats.remove(&entry.seat);
+            }
+        }
+    }
+
+    /// The binding's entry for the canonical binding `generation`, created when missing. An entry of an older
+    /// generation is discarded first (a rotated binding discards its offered set); an entry of a newer generation
+    /// is left untouched and the answer is `None` (a request that read the binding before a rotation must not wipe
+    /// its successor's offers). A binding id is one native session, so no other binding's entry is ever touched
+    /// (a `/clear` is a new binding id). A new entry over [`MAX_LEDGER_BINDINGS`] evicts the least recently
+    /// touched binding.
+    pub fn binding_mut(
         &mut self,
         seat: &SeatId,
+        binding: &BindingId,
         generation: u64,
-        native_session: &str,
-    ) -> Option<&mut SeatOffers> {
+    ) -> Option<&mut BindingOffers> {
         if self
-            .seats
-            .get(seat)
+            .bindings
+            .get(binding)
             .is_some_and(|entry| entry.generation > generation)
         {
             return None;
@@ -247,27 +266,32 @@ impl OfferedLedger {
         self.clock += 1;
         let touched = self.clock;
         if self
-            .seats
-            .get(seat)
-            .is_some_and(|entry| entry.generation != generation)
+            .bindings
+            .get(binding)
+            .is_some_and(|entry| entry.generation != generation || entry.seat != *seat)
         {
-            self.seats.remove(seat);
+            self.drop_binding(binding);
         }
-        if !self.seats.contains_key(seat) {
-            if self.seats.len() >= MAX_LEDGER_SEATS
+        if !self.bindings.contains_key(binding) {
+            if self.bindings.len() >= MAX_LEDGER_BINDINGS
                 && let Some(oldest) = self
-                    .seats
+                    .bindings
                     .iter()
                     .min_by_key(|(_, entry)| entry.touched)
-                    .map(|(seat, _)| seat.clone())
+                    .map(|(id, _)| id.clone())
             {
-                self.seats.remove(&oldest);
+                self.drop_binding(&oldest);
             }
-            self.seats.insert(
-                seat.clone(),
-                SeatOffers {
+            self.seats
+                .entry(seat.clone())
+                .or_default()
+                .insert(binding.clone());
+            self.bindings.insert(
+                binding.clone(),
+                BindingOffers {
+                    binding_id: binding.clone(),
+                    seat: seat.clone(),
                     generation,
-                    native_session: native_session.to_owned(),
                     more_pending: false,
                     notices_pending: false,
                     read_attention: None,
@@ -283,47 +307,102 @@ impl OfferedLedger {
             );
         }
         let entry = self
-            .seats
-            .get_mut(seat)
+            .bindings
+            .get_mut(binding)
             .expect("the entry was inserted above");
         entry.touched = touched;
-        if entry.native_session != native_session {
-            entry.ordinary_due = Default::default();
-        }
-        entry.native_session = native_session.to_owned();
         Some(entry)
     }
 
-    /// The seat's entry, if any, without touching it.
-    pub fn get(&self, seat: &SeatId) -> Option<&SeatOffers> {
-        self.seats.get(seat)
+    /// The binding's entry, if any, without touching it.
+    pub fn get(&self, binding: &BindingId) -> Option<&BindingOffers> {
+        self.bindings.get(binding)
     }
 
-    /// Read-only: never creates an entry and never touches the LRU order. Another generation, or none, is `Unknown`.
+    /// The entries an outlook question counts: each target's entry of this seat and generation (`Err(())` when a
+    /// target has none), or, with no targets, every entry of the seat with that generation (`Err(())` when there
+    /// is none).
+    fn counted(
+        &self,
+        seat: &SeatId,
+        targets: &[BindingId],
+        generation: u64,
+    ) -> Result<Vec<&BindingOffers>, ()> {
+        let matching =
+            |entry: &&BindingOffers| entry.seat == *seat && entry.generation == generation;
+        if targets.is_empty() {
+            let entries: Vec<&BindingOffers> = self
+                .seats
+                .get(seat)
+                .into_iter()
+                .flatten()
+                .filter_map(|binding| self.bindings.get(binding))
+                .filter(matching)
+                .collect();
+            return if entries.is_empty() {
+                Err(())
+            } else {
+                Ok(entries)
+            };
+        }
+        targets
+            .iter()
+            .map(|target| self.bindings.get(target).filter(matching).ok_or(()))
+            .collect()
+    }
+
+    /// What the next pull of the bindings a wake would reach shows (`targets`; empty when the source has no
+    /// per-binding information, then every entry of the seat counts). `Delivers` if any counted entry delivers,
+    /// else `ReofferAt` the earliest re-offer, else `Nothing`. A target with no entry of this generation has not
+    /// pulled in this process, so its next pull may deliver: the answer is `Unknown`. A superseded binding is
+    /// never a target, so its stale entry cannot hold a wake back; with no targets it still counts (the exposure
+    /// the seat-keyed entry had). Read-only: never creates an entry and never touches the LRU order.
     pub fn next_pull(
         &self,
         seat: &SeatId,
+        targets: &[BindingId],
         generation: u64,
         attention_version: u64,
         now: UtcMillis,
     ) -> NextPull {
-        self.seats
-            .get(seat)
-            .filter(|entry| entry.generation == generation)
-            .map_or(NextPull::Unknown, |entry| {
-                entry.next_pull(attention_version, now)
-            })
+        let Ok(entries) = self.counted(seat, targets, generation) else {
+            return NextPull::Unknown;
+        };
+        let mut earliest: Option<UtcMillis> = None;
+        for entry in entries {
+            match entry.next_pull(attention_version, now) {
+                NextPull::Delivers => return NextPull::Delivers,
+                NextPull::ReofferAt(at) => earliest = Some(earliest.map_or(at, |e| e.min(at))),
+                NextPull::Nothing | NextPull::Unknown => {}
+            }
+        }
+        earliest.map_or(NextPull::Nothing, NextPull::ReofferAt)
     }
 
-    /// Read-only, like [`Self::next_pull`].
-    pub fn holds_parked(&self, seat: &SeatId, generation: u64) -> bool {
-        self.seats
-            .get(seat)
-            .is_some_and(|entry| entry.generation == generation && entry.holds_parked())
+    /// True if any counted entry holds a parked id or is full (see [`Self::next_pull`] for which entries count).
+    /// A target with no entry counts as false. Read-only.
+    pub fn holds_parked(&self, seat: &SeatId, targets: &[BindingId], generation: u64) -> bool {
+        let matching =
+            |entry: &&BindingOffers| entry.seat == *seat && entry.generation == generation;
+        if targets.is_empty() {
+            return self
+                .seats
+                .get(seat)
+                .into_iter()
+                .flatten()
+                .filter_map(|binding| self.bindings.get(binding))
+                .filter(matching)
+                .any(BindingOffers::holds_parked);
+        }
+        targets
+            .iter()
+            .filter_map(|target| self.bindings.get(target))
+            .filter(matching)
+            .any(BindingOffers::holds_parked)
     }
 
-    pub fn seat_count(&self) -> usize {
-        self.seats.len()
+    pub fn binding_count(&self) -> usize {
+        self.bindings.len()
     }
 }
 

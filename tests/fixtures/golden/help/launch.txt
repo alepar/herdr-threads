@@ -36,6 +36,8 @@ Options:
           Agent harness making the cooperative call [possible values: claude, codex, hermes, agy, synthetic_fourth]
       --cooperative-role <COOPERATIVE_ROLE>
           Agent role for the cooperative call [possible values: top-level, subagent]
+      --agent-id <ID>
+          Subagent agent id, inserted by herdr-threads' Claude PreToolUse hook (spec §1). Carried into the cooperative claim; no behaviour change until session bindings land
   -h, --help
           Print help
 
@@ -72,10 +74,12 @@ auto-approve flag is added.
 Launch is not receipt: it never checks in, accepts or ACKs. Invitations and messages
 sent before launch stay pending; the agent's SessionStart hook shows them, and
 `herdr-threads inbox --seat SEAT` lists them even when the initial prompt is lost.
-After an observed start, a seat with no open binding gets a `managed_launch` binding
-(report `binding`; `seat inspect` shows it as launched, not checked in): it lets the
-daemon wake the idle agent for pending work before its first check-in (some harnesses run no
-SessionStart hook until their first turn), and the agent's first check-in replaces it.
+After an observed start, the seat gets a `managed_launch` placeholder binding next to
+any it already holds (report `binding`; `seat inspect` shows it as launched, not checked
+in): it lets the daemon wake the idle agent for pending work before its first check-in
+(some harnesses run no SessionStart hook until their first turn), and the launched
+harness's first check-in replaces it. It is not recorded when Herdr shows no single
+started process.
 
 A harness that exits right after the start (for example a harness refusing its arguments)
 fails launch at once with invalid_request and the pane's last lines.
@@ -90,7 +94,9 @@ an explicit `--daemon`, a caller `--no-daemon` after the subcommand and a caller
 override are refused.
 
 Hermes is experimental, natively
-measured on 0.21.5 with a private Herdr build; it joins only through this launch. Its separate startup/profile/API prelaunch observation
+measured on 0.21.5 with a private Herdr build; a bare Hermes CLI session also
+joins through its hooks; this launch adds the guarded process hint that makes the seat
+wakeable. Its separate startup/profile/API prelaunch observation
 must match the selected executable, owned generation and configured enabled profile.
 Native Hermes -p/--profile NAME after `--` is emitted once (default when omitted);
 --cli and one policy-owned chat token compose the captured interactive grammar.

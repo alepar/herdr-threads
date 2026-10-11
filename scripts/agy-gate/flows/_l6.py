@@ -96,11 +96,47 @@ def create_thread(world, sender, topic):
     return first_id(data, ("thread_id", "thread", "id"))
 
 
-def join(world, sender, pane, thread, seat):
-    """The sender invites the agy seat and the agy pane accepts."""
+# Codes a refused attribution carries; an accept whose output names one did not run as the agy session.
+REFUSAL_CODES = ("caller_not_located", "invalid_request", "missing_session", "no_harness",
+                 "unattributed_session", "no_fingerprint", "session_claim_required")
+
+
+class Accept(object):
+    """Outcome of the agy seat's own ``accept``: ``ok``, a ``detail`` line and the raw run_command ``output``."""
+
+    def __init__(self, ok, detail, output=""):
+        self.ok, self.detail, self.output = ok, detail, output
+
+
+def accept_verdict(output, state):
+    """``(ok, detail)`` for an accept the agy session ran: exit 0, no refusal code, membership ``joined``."""
+    refused = [code for code in REFUSAL_CODES if code in output]
+    ran = re.search(r"exited with code 0\b", output) is not None
+    ok = ran and not refused and state == "joined"
+    return ok, "ran=%s refusals=%s membership=%s output=%r" % (ran, refused, state, output[-300:])
+
+
+def membership_state(world, seat):
+    """``state`` of the seat's membership (``joined``/``invited``/...); None when it has none."""
+    rows = query(world, "SELECT state FROM memberships WHERE seat_id='%s'" % seat)
+    return rows[0]["state"] if rows else None
+
+
+def join(world, sender, pane, thread, seat, timeout=45):
+    """The sender invites the agy seat and the agy session accepts: ``(invite, Accept)``.
+
+    The invitation wakes the idle agent (``wake-join``); the scripted model answers that wake by running
+    ``herdr-threads accept <thread>`` through agy's ``run_command``, so the accept carries the session claim
+    (``ANTIGRAVITY_CONVERSATION_ID`` plus the agy ancestor). Calling ``accept`` from the gate process has
+    neither, and the product refuses an unattributable caller (agent seats have no pane-context journal)."""
     invite = world.ht(["invite", thread, "--seat", seat], pane=sender.pane_id, check=False, human=True)
-    accept = world.ht(["accept", thread], pane=pane.pane_id, check=False)
-    return invite, accept
+    done = _l5.await_step(world, "wake-join-done", timeout) if invite.returncode == 0 else None
+    if done is None:
+        return invite, Accept(False, "the accept step was not served (invite rc=%s)" % invite.returncode)
+    pane.wait("idle", 30)
+    output = _l4.last_functionresponse(world, done)
+    ok, detail = accept_verdict(output, membership_state(world, seat))
+    return invite, Accept(ok, detail, output)
 
 
 def send(world, sender, thread, body, *flags):

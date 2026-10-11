@@ -151,11 +151,24 @@ pub(super) fn budget_error(budget: &CallBudget) -> ApiError {
 pub(crate) struct ScheduledStore {
     store: Arc<dyn StorePort>,
     writer: Arc<FairWriter>,
+    liveness: Option<Arc<crate::service::liveness::LivenessWorker>>,
 }
 
 impl ScheduledStore {
     pub(crate) fn new(store: Arc<dyn StorePort>, writer: Arc<FairWriter>) -> Self {
-        Self { store, writer }
+        Self {
+            store,
+            writer,
+            liveness: None,
+        }
+    }
+    /// Re-checks a seat's binding liveness before each wake decision.
+    pub(crate) fn with_liveness(
+        mut self,
+        liveness: Option<Arc<crate::service::liveness::LivenessWorker>>,
+    ) -> Self {
+        self.liveness = liveness;
+        self
     }
 }
 
@@ -1257,6 +1270,16 @@ impl WakePort for ScheduledStore {
         let _turn = self.writer.enter_background(budget, self.store.clock())?;
         self.store.wake_batch_window(candidate, budget)
     }
+    fn before_wake_decision(
+        &self,
+        seat: &crate::protocol::ids::SeatId,
+        budget: &CallBudget,
+    ) -> Result<(), ApiError> {
+        match &self.liveness {
+            Some(liveness) => liveness.recheck_seat(seat, budget),
+            None => Ok(()),
+        }
+    }
     fn reserve_wake(
         &self,
         candidate: &WakeCandidate,
@@ -1467,6 +1490,13 @@ impl<P: WakePort + ?Sized> WakePort for ObservedWakePort<'_, P> {
             self.port.wake_batch_window(candidate, budget),
         )
     }
+    fn before_wake_decision(
+        &self,
+        seat: &crate::protocol::ids::SeatId,
+        budget: &CallBudget,
+    ) -> Result<(), ApiError> {
+        self.port.before_wake_decision(seat, budget)
+    }
     fn reserve_wake(
         &self,
         candidate: &WakeCandidate,
@@ -1574,13 +1604,50 @@ pub fn start_wake_worker(
     mod_channels: Arc<dyn crate::ports::ModChannels>,
     hook_pull: Arc<dyn crate::ports::HookPullOutlook>,
 ) -> std::io::Result<thread::JoinHandle<()>> {
+    start_wake_worker_with_liveness(
+        store,
+        writer,
+        host,
+        instance,
+        boot,
+        retry,
+        pacer,
+        cancellation,
+        status,
+        poke_capabilities,
+        reachability,
+        mod_channels,
+        hook_pull,
+        None,
+    )
+}
+
+/// [`start_wake_worker`] with the liveness re-check that runs before each wake decision.
+// Allowed: worker start-up wiring: each argument is a distinct dependency.
+#[allow(clippy::too_many_arguments)]
+pub fn start_wake_worker_with_liveness(
+    store: Arc<dyn StorePort>,
+    writer: Arc<FairWriter>,
+    host: Arc<dyn HostPort>,
+    instance: String,
+    boot: uuid::Uuid,
+    retry: RetryConfig,
+    pacer: Arc<Pacer>,
+    cancellation: Cancellation,
+    status: Arc<WorkerStatus>,
+    poke_capabilities: Arc<dyn crate::ports::PokeCapabilitySource>,
+    reachability: Arc<HostReachability>,
+    mod_channels: Arc<dyn crate::ports::ModChannels>,
+    hook_pull: Arc<dyn crate::ports::HookPullOutlook>,
+    liveness: Option<Arc<crate::service::liveness::LivenessWorker>>,
+) -> std::io::Result<thread::JoinHandle<()>> {
     thread::Builder::new()
         .name("herdr-wakes".into())
         .spawn(move || {
             let _origin = kicks::enter_lane(Lane::Wakes);
             status.attach_pacer(Arc::clone(&pacer));
             let _guard = status.lane_guard(&cancellation);
-            let port = ScheduledStore::new(store, writer);
+            let port = ScheduledStore::new(store, writer).with_liveness(liveness);
             let notifier = NativeWakeDispatcher::new(host.as_ref(), &port, port.store.clock())
                 .with_hook_pull(hook_pull.as_ref());
             let observed = ObservedWakePort::new(&port, &status);

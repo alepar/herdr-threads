@@ -19,9 +19,18 @@ integration-daemon = { max-threads = 1 }
 service-daemon = { max-threads = 1 }
 # The mod delivery sweep (ht-j16.10): each test runs an elected in-process
 # daemon with an injected clock and real `watch` children, and one of them
-# holds 64 channels. Four at a time keep it from starving the latency-asserting
+# fills the watch budget. Four at a time keep it from starving the latency-asserting
 # daemon tests running beside it; its own waits are generous.
 mod-delivery = { max-threads = 4 }
+# The Hermes bare-enrollment smoke (ht-4ne.3): each test drives the installed
+# bridge under its real 1.2 s pre_llm_call cap against its own isolated Herdr
+# server and daemon. Starved beside the suite a callback fails open (no context),
+# so the tests run one at a time.
+hermes-smoke = { max-threads = 1 }
+# The session-binding configuration smoke (ht-54r.19): each test runs a real detached daemon
+# against its own isolated Herdr server and waits on the 5 s liveness cadence; one at a time they
+# stay inside their own bounds and do not starve the latency-asserting chains beside them.
+session-bindings-smoke = { max-threads = 1 }
 
 [profile.default]
 # A hang guard, not a budget: the longest test waits ~70 s by design.
@@ -122,7 +131,7 @@ test-group = "hook-budget"
 
 [[profile.default.overrides]]
 filter = """
-binary(integration) & test(/^(lanes_latency|lane_wiring|sweep_remaining|topology_activation)::/)
+binary(integration) & test(/^(lanes_latency|lane_wiring|pane_close_retirement|sweep_remaining|topology_activation)::/)
 & !test(/::(herdr_stopped_freezes_wake_lane|idle_daemon_commits_nothing_from_deadline_wake_request_for_30s|retention_runs_alongside_the_wake_idle_bound|idle_five_lanes_30s|injected_lane_failure_logs_and_degrades_then_clears)$/)
 """
 priority = 70
@@ -140,6 +149,25 @@ test-group = "service-daemon"
 filter = "binary(integration) & test(/^mod_delivery::/)"
 priority = 60
 test-group = "mod-delivery"
+
+[[profile.default.overrides]]
+filter = "binary(integration) & test(/^hermes_enrollment_smoke::/)"
+priority = 60
+test-group = "hermes-smoke"
+
+[[profile.default.overrides]]
+filter = "binary(integration) & test(/session_bindings_(smoke|e2e)::/)"
+priority = 60
+test-group = "session-bindings-smoke"
+
+# The in-process Hermes enrollment hook tests (ht-4ne.3, punch list closed by ht-54r.17) drive
+# the installed-bridge envelopes under the production 1200 ms pre_llm_call cap against a spawned
+# fixture service and include a concurrent start/first-turn race; starved beside the suite a
+# callback fails open. They run one at a time, like the smoke above.
+[[profile.default.overrides]]
+filter = "binary_id(herdr-threads) & test(/^cli::hook::tests::registered_resume::startup_enrollment_hermes_/)"
+priority = 60
+test-group = "hermes-smoke"
 
 # CI: a JUnit report (per-test times; success output kept for the
 # skipped-Herdr summary).

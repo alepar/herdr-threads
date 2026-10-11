@@ -77,6 +77,8 @@ id!(WakeAttemptId);
 id!(SummaryJobId);
 id!(SummaryBlockId);
 id!(LeaseToken);
+id!(BindingId);
+id!(AgentId);
 
 /// Private journal lookup token; it never names a server receipt or message.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]

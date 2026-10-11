@@ -961,6 +961,12 @@ impl Host {
                         json!({"type":"agent_started","argv":request["params"]["args"],"agent":agent})
                     }
                     "agent.get" => json!({"type":"agent_info","agent":state.agent}),
+                    // The started agent: the one foreground process besides the shell (session-keyed
+                    // bindings record the launched process's fingerprint); the test process stands for it.
+                    "pane.process_info" => json!({"type":"pane_process_info","process_info":{
+                        "pane_id":request["params"]["pane_id"],"shell_pid":1,
+                        "foreground_processes":[{"pid":std::process::id(),"name":"agent","argv0":"agent"}]
+                    }}),
                     other => panic!("unexpected private native request {other}: {request}"),
                 };
                 let _ = writeln!(stream, "{}", json!({"id":request["id"],"result":result}));
@@ -1502,6 +1508,9 @@ fn hook_stdout_healthy_checkin() {
                 .env("HERDR_SOCKET_PATH", &t.context.host_endpoint)
                 .env("CLAUDE_CONFIG_DIR", t.iso.path("claude-config"))
                 .env("CODEX_HOME", t.iso.path("codex-home"))
+                // The hook takes its liveness fingerprint from its harness process: this test
+                // process stands in for it (session-keyed bindings).
+                .env("HT_TEST_HARNESS", harness)
                 .current_dir(t.iso.path("cwd"))
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())

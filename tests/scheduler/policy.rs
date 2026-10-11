@@ -11,6 +11,7 @@ use crate::protocol::{
 
 fn candidate() -> WakeCandidate {
     WakeCandidate {
+        targets: Vec::new(),
         seat: SeatId::new("seat"),
         attention_witness: None,
         effectively_retired: false,

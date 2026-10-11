@@ -1,0 +1,3 @@
+# pid ppid pgid tpgid stat comm args  (shell 42799 and its descendants)
+42799 42757 42799 42815 SNs  -zsh             -zsh
+42815 42799 42815 42815 SN+  /Users/alepar/.l /Users/alepar/.local/bin/claude

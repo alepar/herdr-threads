@@ -32,6 +32,9 @@ fn selected_service_mapping_rejects_wrong_target_and_repair_hold() {
             generation: 7,
             created_at: crate::protocol::time::UtcMillis(0),
             retired_at: None,
+            active: false,
+            bindings: Vec::new(),
+            availability: None,
         },
         mapping: MappingStatus {
             state: ContinuityStatus::Resolved,
@@ -143,6 +146,9 @@ fn selected_first_lifecycle_fixture(replace_human: bool) {
                         generation: self.generation.load(std::sync::atomic::Ordering::SeqCst),
                         created_at: crate::protocol::time::UtcMillis(0),
                         retired_at: None,
+                        active: false,
+                        bindings: Vec::new(),
+                        availability: None,
                     },
                     mapping: MappingStatus {
                         state: ContinuityStatus::Resolved,
@@ -173,6 +179,8 @@ fn selected_first_lifecycle_fixture(replace_human: bool) {
                         warnings: empty(),
                         notices: Default::default(),
                         inbox: empty(),
+                        first_contact: None,
+                        fast_forward: None,
                     }))
                 }
                 Command::Ack(c) => Ok(CommandResult::Acknowledged(AckResult {
@@ -322,6 +330,9 @@ fn completed_predecessor_replays_after_successor_without_a_new_check_in() {
                         generation: self.generation.load(Ordering::SeqCst),
                         created_at: crate::protocol::time::UtcMillis(0),
                         retired_at: None,
+                        active: false,
+                        bindings: Vec::new(),
+                        availability: None,
                     },
                     mapping: MappingStatus {
                         state: ContinuityStatus::Resolved,
@@ -374,6 +385,8 @@ fn completed_predecessor_replays_after_successor_without_a_new_check_in() {
                         warnings: empty(),
                         notices: Default::default(),
                         inbox: empty(),
+                        first_contact: None,
+                        fast_forward: None,
                     });
                     *self.saved.lock().unwrap() = Some((c.operation, result.clone()));
                     if self.lose_response.swap(false, Ordering::SeqCst) {
@@ -664,6 +677,8 @@ fn claim() -> CallerClaim {
         native_session: NativeSessionId::new("plugin_context:context"),
         execution: ExecutionId::new("execution"),
         target: HostTargetId::new("pane"),
+        agent_id: None,
+        liveness: None,
     }
 }
 #[test]
@@ -1950,6 +1965,9 @@ fn recipient_panes_reads_do_not_allocate_and_invite_uses_guarded_resolution() {
                                 generation: 1,
                                 created_at: crate::protocol::time::UtcMillis(0),
                                 retired_at: None,
+                                active: false,
+                                bindings: Vec::new(),
+                                availability: None,
                             }]
                         },
                         next_cursor: None,
@@ -2210,6 +2228,9 @@ mod scoped_runtime {
                                 generation: 1,
                                 created_at: crate::protocol::time::UtcMillis(0),
                                 retired_at: None,
+                                active: false,
+                                bindings: Vec::new(),
+                                availability: None,
                             }]
                             .into_iter()
                             .filter(|seat| {
@@ -2230,6 +2251,9 @@ mod scoped_runtime {
                                     generation: 1,
                                     created_at: crate::protocol::time::UtcMillis(0),
                                     retired_at: None,
+                                    active: false,
+                                    bindings: Vec::new(),
+                                    availability: None,
                                 },
                                 mapping: crate::protocol::results::MappingStatus {
                                     state: ContinuityStatus::Resolved,
@@ -3287,6 +3311,8 @@ fn actor_current_ack_fixture(human_route: bool, human_current: bool) {
         native_session: NativeSessionId::new("plugin_context:00000000-0000-0000-0000-000000000002"),
         execution: ExecutionId::new("00000000-0000-0000-0000-000000000002"),
         target: HostTargetId::new("current-pane"),
+        agent_id: None,
+        liveness: None,
     };
     struct Client<'a> {
         journal: &'a Journal,
@@ -3538,6 +3564,8 @@ fn actor_prerequisite_lifecycle_guard_uses_its_selected_initial_seed() {
                 warnings: empty(),
                 notices: Default::default(),
                 inbox: empty(),
+                first_contact: None,
+                fast_forward: None,
             }))
         }
     }
@@ -3979,6 +4007,7 @@ fn inbox_empty_work_selection_preserves_bounds_and_continuations() {
                 requests: Mutex::new(vec![]),
             };
             let request = InboxQuery {
+                claim: None,
                 seat: Some(SeatId::new("seat")),
                 page: PageRequest {
                     cursor: None,
@@ -4100,6 +4129,7 @@ fn inbox_drained_page_refit_retains_selected_cursor_and_body_offset() {
     }
     let client = Client(Mutex::new(vec![]));
     let command = Command::InboxBatchV2(InboxQuery {
+        claim: None,
         seat: Some(SeatId::new("seat")),
         page: PageRequest {
             cursor: None,
@@ -5235,6 +5265,7 @@ impl OrdinaryHumanRetryFixture {
         let result = client
             .call(
                 Command::CheckIn(CheckIn {
+                    lineage_parent: None,
                     claim: original,
                     operation: OperationId::new("human-initial"),
                     mode: CheckInMode::Lifecycle {
@@ -5257,16 +5288,14 @@ impl OrdinaryHumanRetryFixture {
             harness,
             binding_generation: claim.binding_generation,
             execution: uuid::Uuid::parse_str(claim.execution.as_str()).unwrap(),
-            session: SessionReference::PluginContext(
-                uuid::Uuid::parse_str(
-                    claim
-                        .native_session
-                        .as_str()
-                        .strip_prefix("plugin_context:")
-                        .unwrap(),
-                )
-                .unwrap(),
-            ),
+            session: match claim
+                .native_session
+                .as_str()
+                .strip_prefix("plugin_context:")
+            {
+                Some(id) => SessionReference::PluginContext(uuid::Uuid::parse_str(id).unwrap()),
+                None => SessionReference::Native(claim.native_session.as_str().into()),
+            },
             role: Role::TopLevel,
         };
         let human = context_for(&original, crate::harness::context::Harness::Human);
@@ -5309,11 +5338,12 @@ impl OrdinaryHumanRetryFixture {
         let mut agent = original.clone();
         agent.harness = Harness::Codex;
         agent.execution = ExecutionId::new(uuid::Uuid::new_v4().to_string());
-        agent.native_session =
-            NativeSessionId::new(format!("plugin_context:{}", uuid::Uuid::new_v4()));
+        agent.native_session = NativeSessionId::new(format!("session-{}", uuid::Uuid::new_v4()));
+        agent.liveness = Some(crate::protocol::authority::LivenessFingerprint::TEST);
         let result = client
             .call(
                 Command::CheckIn(CheckIn {
+                    lineage_parent: None,
                     claim: agent,
                     operation: OperationId::new("agent-successor"),
                     mode: CheckInMode::Lifecycle {
@@ -5644,4 +5674,331 @@ fn invitation_confirmation_capability_refuses_modern_and_bypasses_legacy() {
         }
         assert_eq!(client.calls.load(std::sync::atomic::Ordering::SeqCst), 4);
     }
+}
+
+/// Kills: a subagent's text inbox falling to the unclaimed wire read (ht-6v2), a subagent display
+/// settling (display ACK / delivery completion), and an agent's `inbox --machine` omitting its
+/// claim so the daemon served the seat page instead of the binding's own stream.
+#[test]
+fn subagent_own_inbox_displays_advances_only_its_cursor_and_machine_read_carries_the_claim() {
+    use crate::harness::context::{
+        ContextJournal, Harness as ContextHarness, OccupantContext, Role, SessionReference,
+    };
+    use crate::protocol::{
+        authority::{CallerRole, LivenessFingerprint},
+        commands::InboxQuery,
+        pagination::{Consistency, Page, StopReason},
+        results::{ApiError, CapabilityList, InboxBatchV2Item},
+        time::CallBudget,
+    };
+    use std::sync::Mutex;
+    struct Client(Mutex<Vec<Command>>);
+    impl crate::ports::LocalClient for Client {
+        fn call_with_output(
+            &self,
+            command: Command,
+            _: &crate::protocol::output::OutputSpec,
+            budget: &CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            self.call(command, budget)
+        }
+        fn supports_capability(&self, name: &str, _: &CallBudget) -> bool {
+            [
+                crate::protocol::capabilities::INBOX_BATCH_V2,
+                crate::protocol::capabilities::BINDING_CURSORS,
+            ]
+            .contains(&name)
+        }
+        fn call(&self, command: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
+            self.0.lock().unwrap().push(command.clone());
+            match command {
+                Command::Capabilities => Ok(CommandResult::Capabilities(CapabilityList {
+                    capabilities: vec![
+                        crate::protocol::capabilities::INBOX_BATCH_V2.into(),
+                        crate::protocol::capabilities::BINDING_CURSORS.into(),
+                    ],
+                })),
+                Command::InboxBatchV2(_) => Ok(CommandResult::InboxBatchV2(Page {
+                    items: vec![InboxBatchV2Item::Message {
+                        thread: ThreadId::new("thread"),
+                        message: MessageId::new("message-1"),
+                        sequence: 1,
+                        topic_data: "topic".into(),
+                        sender: Some(SeatId::new("peer")),
+                        author_role: None,
+                        relays_user: false,
+                        user_intent: None,
+                        author_role_backfilled: false,
+                        body: "hello".into(),
+                        body_start: 0,
+                        body_end: 5,
+                        body_len: 5,
+                        ack_candidate: Some(MessageId::new("message-1")),
+                    }],
+                    next_cursor: None,
+                    next_argv: None,
+                    high_water_ordinal: 1,
+                    scope_revision: None,
+                    has_more: false,
+                    stop_reason: StopReason::Complete,
+                    consistency: Consistency::BoundedLive,
+                })),
+                Command::AdvanceCursors(_) => {
+                    Ok(CommandResult::CursorsAdvanced(Default::default()))
+                }
+                other => panic!("a subagent read sent {other:?}"),
+            }
+        }
+    }
+    let root = std::env::temp_dir()
+        .canonicalize()
+        .unwrap()
+        .join(format!("subagent-inbox-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&root).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let instance = uuid::Uuid::from_u128(1);
+    let context = OccupantContext {
+        format_version: 1,
+        instance,
+        seat: "seat-test".into(),
+        target: "w1:p1".into(),
+        harness: ContextHarness::Claude,
+        binding_generation: 1,
+        execution: uuid::Uuid::from_u128(2),
+        session: SessionReference::Native("sess-1".into()),
+        role: Role::TopLevel,
+    };
+    let contexts = ContextJournal::open(
+        &root,
+        instance,
+        "seat-test",
+        std::time::Duration::from_millis(20),
+    )
+    .unwrap()
+    .with_agent_caller(context, LivenessFingerprint::TEST)
+    .unwrap();
+    let journal = Journal::open(root.join("intents")).unwrap();
+    let env = crate::harness::caller_env::EnvClaim {
+        harness: crate::protocol::authority::Harness::Claude,
+        native_session: crate::protocol::ids::NativeSessionId::new("sess-1"),
+        agent_id: Some(crate::protocol::ids::AgentId::new("agent-1")),
+        role: CallerRole::Subagent,
+        fingerprint: LivenessFingerprint::TEST,
+        provenance: "cooperative_hook_agent",
+    };
+    let _active =
+        crate::cli::caller::ActiveGuard::enter(Some(crate::cli::caller::CallerOrigin::Agent(env)));
+    let client = Client(Mutex::new(vec![]));
+    let run = |argv: &[&str]| {
+        let parsed = crate::cli::commands::parse_argv(argv.iter().copied()).unwrap();
+        let mut out = vec![];
+        crate::cli::run_cooperative(
+            parsed,
+            &journal,
+            &contexts,
+            None,
+            Role::Subagent,
+            &client,
+            &crate::app::SystemClock::new(),
+            &mut out,
+        )
+        .unwrap();
+        String::from_utf8(out).unwrap()
+    };
+    let subagent_claim = |claim: &crate::protocol::authority::CallerClaim| {
+        assert_eq!(claim.role, CallerRole::Subagent);
+        assert_eq!(claim.agent_id.as_ref().map(|a| a.as_str()), Some("agent-1"));
+        assert_eq!(claim.native_session.as_str(), "sess-1");
+    };
+
+    let text = run(&["herdr-threads", "inbox"]);
+    assert!(
+        text.contains("hello"),
+        "the subagent sees its own mail: {text}"
+    );
+    let calls = client.0.lock().unwrap().clone();
+    let mut reads = 0;
+    let mut advances = 0;
+    for call in &calls {
+        match call {
+            Command::InboxBatchV2(InboxQuery { claim, .. }) => {
+                subagent_claim(claim.as_ref().expect("the read carries the claim"));
+                reads += 1;
+            }
+            Command::AdvanceCursors(advance) => {
+                subagent_claim(&advance.claim);
+                assert_eq!(advance.displayed, vec![MessageId::new("message-1")]);
+                advances += 1;
+            }
+            Command::Capabilities => {}
+            other => panic!("a subagent display settled or wrote: {other:?}"),
+        }
+    }
+    assert_eq!((reads, advances), (1, 1));
+
+    client.0.lock().unwrap().clear();
+    run(&["herdr-threads", "inbox", "--machine"]);
+    let calls = client.0.lock().unwrap().clone();
+    let query = calls
+        .iter()
+        .find_map(|call| match call {
+            Command::InboxBatchV2(query) | Command::Inbox(query) => Some(query),
+            _ => None,
+        })
+        .expect("the machine read reached the daemon");
+    subagent_claim(
+        query
+            .claim
+            .as_ref()
+            .expect("machine read carries the claim"),
+    );
+    assert!(
+        calls
+            .iter()
+            .all(|call| !matches!(call, Command::AdvanceCursors(_))),
+        "a machine read moves no cursor"
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// Kills: a subagent's text inbox against a daemon without per-binding cursors being refused
+/// instead of read read-only (it may read and summarize), and such a read carrying a claim or
+/// settling anything.
+#[test]
+fn subagent_text_inbox_without_binding_cursors_is_a_read_only_read() {
+    use crate::harness::context::{
+        ContextJournal, Harness as ContextHarness, OccupantContext, Role, SessionReference,
+    };
+    use crate::protocol::{
+        authority::{CallerRole, LivenessFingerprint},
+        commands::InboxQuery,
+        pagination::{Consistency, Page, StopReason},
+        results::{ApiError, CapabilityList, InboxBatchV2Item},
+        time::CallBudget,
+    };
+    use std::sync::Mutex;
+    struct Client(Mutex<Vec<Command>>);
+    impl crate::ports::LocalClient for Client {
+        fn call_with_output(
+            &self,
+            command: Command,
+            _: &crate::protocol::output::OutputSpec,
+            budget: &CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            self.call(command, budget)
+        }
+        fn supports_capability(&self, name: &str, _: &CallBudget) -> bool {
+            name == crate::protocol::capabilities::INBOX_BATCH_V2
+        }
+        fn call(&self, command: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
+            self.0.lock().unwrap().push(command.clone());
+            match command {
+                Command::Capabilities => Ok(CommandResult::Capabilities(CapabilityList {
+                    capabilities: vec![crate::protocol::capabilities::INBOX_BATCH_V2.into()],
+                })),
+                Command::InboxBatchV2(_) => Ok(CommandResult::InboxBatchV2(Page {
+                    items: vec![InboxBatchV2Item::Message {
+                        thread: ThreadId::new("thread"),
+                        message: MessageId::new("message-1"),
+                        sequence: 1,
+                        topic_data: "topic".into(),
+                        sender: Some(SeatId::new("peer")),
+                        author_role: None,
+                        relays_user: false,
+                        user_intent: None,
+                        author_role_backfilled: false,
+                        body: "hello".into(),
+                        body_start: 0,
+                        body_end: 5,
+                        body_len: 5,
+                        ack_candidate: Some(MessageId::new("message-1")),
+                    }],
+                    next_cursor: None,
+                    next_argv: None,
+                    high_water_ordinal: 1,
+                    scope_revision: None,
+                    has_more: false,
+                    stop_reason: StopReason::Complete,
+                    consistency: Consistency::BoundedLive,
+                })),
+                other => panic!("a read-only subagent read sent {other:?}"),
+            }
+        }
+    }
+    let root = std::env::temp_dir()
+        .canonicalize()
+        .unwrap()
+        .join(format!("subagent-inbox-ro-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&root).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let instance = uuid::Uuid::from_u128(1);
+    let context = OccupantContext {
+        format_version: 1,
+        instance,
+        seat: "seat-test".into(),
+        target: "w1:p1".into(),
+        harness: ContextHarness::Claude,
+        binding_generation: 1,
+        execution: uuid::Uuid::from_u128(2),
+        session: SessionReference::Native("sess-1".into()),
+        role: Role::TopLevel,
+    };
+    let contexts = ContextJournal::open(
+        &root,
+        instance,
+        "seat-test",
+        std::time::Duration::from_millis(20),
+    )
+    .unwrap()
+    .with_agent_caller(context, LivenessFingerprint::TEST)
+    .unwrap();
+    let journal = Journal::open(root.join("intents")).unwrap();
+    let env = crate::harness::caller_env::EnvClaim {
+        harness: crate::protocol::authority::Harness::Claude,
+        native_session: crate::protocol::ids::NativeSessionId::new("sess-1"),
+        agent_id: Some(crate::protocol::ids::AgentId::new("agent-1")),
+        role: CallerRole::Subagent,
+        fingerprint: LivenessFingerprint::TEST,
+        provenance: "cooperative_hook_agent",
+    };
+    let _active =
+        crate::cli::caller::ActiveGuard::enter(Some(crate::cli::caller::CallerOrigin::Agent(env)));
+    let client = Client(Mutex::new(vec![]));
+    let parsed = crate::cli::commands::parse_argv(["herdr-threads", "inbox"]).unwrap();
+    let mut out = vec![];
+    crate::cli::run_cooperative(
+        parsed,
+        &journal,
+        &contexts,
+        None,
+        Role::Subagent,
+        &client,
+        &crate::app::SystemClock::new(),
+        &mut out,
+    )
+    .expect("a subagent may read its inbox read-only");
+    let text = String::from_utf8(out).unwrap();
+    assert!(text.contains("hello"), "the read shows the mail: {text}");
+    let calls = client.0.lock().unwrap().clone();
+    let mut reads = 0;
+    for call in &calls {
+        match call {
+            Command::InboxBatchV2(InboxQuery { claim, .. }) => {
+                assert!(claim.is_none(), "a read-only read carries no claim");
+                reads += 1;
+            }
+            Command::Capabilities => {}
+            other => panic!("a read-only subagent read settled or wrote: {other:?}"),
+        }
+    }
+    assert!(reads >= 1, "the read reached the daemon: {calls:?}");
+    std::fs::remove_dir_all(root).unwrap();
 }

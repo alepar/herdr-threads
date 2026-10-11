@@ -82,6 +82,15 @@ pub(super) fn legacy_codex_projection(
     let path = request.environment.path.clone();
     let mut limitations = Vec::new();
     let codex_inspection = crate::cli::setup::user_inspection(Harness::Codex, &env);
+    let codex_stale = codex_inspection.as_ref().ok().and_then(|(_, inspection)| {
+        crate::harness::required_hooks::stale_install_json(
+            "codex",
+            &inspection.missing_required_events,
+        )
+    });
+    if let Some(stale) = &codex_stale {
+        limitations.push(scalar(&stale["detail"]));
+    }
     let codex_setup = match &codex_inspection {
         Ok((file, inspection)) => json!({
             "hooks_file": file.display().to_string(),
@@ -139,6 +148,7 @@ pub(super) fn legacy_codex_projection(
         "permissions": super::setup::permission_status_json(&env),
         "trust": codex_trust,
         "recipes": crate::harness::recipe::describe(super::RECIPES),
+        "stale_install": codex_stale.clone().unwrap_or(Value::Null),
         "installed": installed,
         "sandbox_warning": sandbox_warning,
         "socket_policy_validation": socket_policy_validation,
@@ -158,7 +168,11 @@ pub(super) fn legacy_codex_projection(
         hooks,
         limitations,
         manual_repairs,
-        safe_repairs: vec![],
+        safe_repairs: if codex_stale.is_some() {
+            vec![LocalRepair::RepairOwned]
+        } else {
+            vec![]
+        },
         repair_options: Default::default(),
     }
 }

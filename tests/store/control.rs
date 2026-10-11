@@ -1361,6 +1361,8 @@ fn claim(seat: &str) -> CallerClaim {
         native_session: NativeSessionId::new("n"),
         execution: ExecutionId::new("00000000-0000-4000-8000-000000000001"),
         target: HostTargetId::new(seat),
+        agent_id: None,
+        liveness: Some(crate::protocol::authority::LivenessFingerprint::TEST),
     }
 }
 fn permit(
@@ -1568,6 +1570,7 @@ fn required_then_independent_ordinary_acceptance_keeps_one_join_interval() {
     };
     assert!(threads.items.iter().any(|item| item.thread == thread));
     let inbox = crate::protocol::commands::Command::Inbox(crate::protocol::commands::InboxQuery {
+        claim: None,
         seat: Some(SeatId::new("s2")),
         page: Default::default(),
     });
@@ -2660,6 +2663,7 @@ fn managed_required_reattach_preserves_upgraded_ordinary_invitation_and_history(
     let inbox = crate::protocol::commands::Command::Inbox(crate::protocol::commands::InboxQuery {
         seat: Some(SeatId::new("s2")),
         page: Default::default(),
+        claim: None,
     });
     let CommandResult::Inbox(page) =
         crate::store::queries::query(&context, "i", &inbox, &budget).unwrap()
@@ -5118,7 +5122,7 @@ fn retirement_rejects_exhausted_binding_generation_before_fence() {
 }
 
 #[test]
-fn registration_rejects_exhausted_binding_generation_without_anchor() {
+fn registration_ignores_an_exhausted_binding_history_generation_and_rolls_back_without_anchor() {
     use crate::{
         protocol::commands::{CheckIn, CheckInMode},
         store::seats,
@@ -5126,6 +5130,7 @@ fn registration_rejects_exhausted_binding_generation_without_anchor() {
     let (context, mut conn, path, _) = fixture(100);
     conn.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES ('s2',?1,'s2','b',1,1,'codex','old','old','cooperative_top_level',0,'term-'||'s2','inc')",[i64::MAX]).unwrap();
     let command = CheckIn {
+        lineage_parent: None,
         mode: CheckInMode::Lifecycle {
             expected_binding_generation: 1,
         },
@@ -5150,10 +5155,18 @@ fn registration_rejects_exhausted_binding_generation_without_anchor() {
             deadline: crate::protocol::time::MonoInstant(u64::MAX),
             cancellation: Default::default(),
         },
-        |_tx, _seat, _seq| panic!("offer must not run after exhausted generation"),
+        // ht-54r.3: a check-in no longer computes a next generation, so a binding history at the
+        // maximum is not an error and the offer is reached. Failing it rolls everything back.
+        |_tx, _seat, _seq, _history, _binding| {
+            Err(crate::protocol::results::ApiError::new(
+                ErrorCode::Conflict,
+                "offer reached",
+            ))
+        },
     )
     .unwrap_err();
-    assert_eq!(error.code, ErrorCode::SequenceExhausted);
+    assert_eq!(error.code, ErrorCode::Conflict);
+    assert_eq!(error.detail, "offer reached");
     assert_eq!(
         conn.query_row(
             "SELECT count(*) FROM seat_availability WHERE seat_id='s2'",
@@ -7126,6 +7139,7 @@ fn registration_requires_and_records_reconfirmation_evidence() {
     };
     let (context, mut conn, path, _) = fixture(100);
     let command = CheckIn {
+        lineage_parent: None,
         mode: CheckInMode::Lifecycle {
             expected_binding_generation: 1,
         },
@@ -7150,7 +7164,11 @@ fn registration_requires_and_records_reconfirmation_evidence() {
             consistency: crate::protocol::pagination::Consistency::BoundedLive,
         }
     }
-    let offer = |_tx: &rusqlite::Transaction<'_>, seat: &SeatId, seq: u64| {
+    let offer = |_tx: &rusqlite::Transaction<'_>,
+                 seat: &SeatId,
+                 seq: u64,
+                 _history: crate::store::first_contact::OfferHistory,
+                 _binding: &crate::protocol::ids::BindingId| {
         Ok(crate::protocol::results::CheckInResult {
             context_disposition: crate::protocol::results::CheckInContextDisposition::Current,
             context: claim(seat.as_str()),
@@ -7161,6 +7179,8 @@ fn registration_requires_and_records_reconfirmation_evidence() {
             warnings: empty(),
             inbox: empty(),
             notices: crate::protocol::results::NoticeOffer::default(),
+            first_contact: None,
+            fast_forward: None,
         })
     };
     conn.execute("UPDATE observed_targets SET terminal_id=NULL,incarnation=NULL,incarnation_source_kind=NULL,connection_epoch=NULL WHERE target_id='s2'", []).unwrap();
@@ -7235,6 +7255,8 @@ fn accountable_observation_has_one_shape_and_legacy_rows_read_back_in_it() {
         binding_generation: 2,
         observed_at_utc: UtcMillis(10),
         provenance: "cooperative_top_level",
+        binding_id: crate::protocol::ids::BindingId::new("b-1"),
+        binding_connected: true,
     };
     let written = actor.observation(11);
     let value: serde_json::Value = serde_json::from_str(&written).unwrap();
@@ -8264,6 +8286,10 @@ fn c1_command(
         source: "resume".into(),
         operation: OperationId::new(operation),
         execution: ExecutionId::new(format!("exec-{operation}")),
+        liveness: Some(crate::protocol::authority::LivenessFingerprint {
+            pid: 4242,
+            start: 7,
+        }),
     }
 }
 
@@ -8348,6 +8374,7 @@ fn continuity_reattaches_unique_session_match_on_held_target() {
         CommandResult::ContinuityReattached(crate::protocol::results::ContinuityReattachment {
             seat: SeatId::new("s1"),
             binding_generation: 2,
+            fast_forward: None,
         })
     );
     let seat: (String, Option<String>, i64) = conn
@@ -8588,7 +8615,7 @@ fn continuity_never_matches_retired_sentinel_human_or_empty_sessions() {
     c1_unresolved_seat(&conn, "s-sentinel", "claude", "plugin_context:abc");
     c1_unresolved_seat(&conn, "s-human", "human", "sess-h");
     c1_unresolved_seat(&conn, "s-empty", "claude", "");
-    // A different harness with the same id, and a superseded (not latest) binding.
+    // A different harness with the same id, and a superseded (not newest) binding.
     c1_unresolved_seat(&conn, "s-codex", "codex", "sess-c");
     c1_unresolved_seat(&conn, "s-old", "claude", "sess-old");
     c1_bind(&conn, "s-old", 2, "claude", "sess-new");
@@ -8608,12 +8635,374 @@ fn continuity_never_matches_retired_sentinel_human_or_empty_sessions() {
         ask("claude", "sess-c").is_empty(),
         "other harness's session"
     );
-    assert!(ask("claude", "sess-old").is_empty(), "superseded binding");
+    // ht-54r.78: a superseded (not newest) top-level binding still matches.
+    assert_eq!(
+        ask("claude", "sess-old"),
+        vec!["s-old"],
+        "superseded binding"
+    );
     // Controls: the live matches are found, so the empties above are real.
     assert_eq!(ask("codex", "sess-c"), vec!["s-codex"]);
     assert_eq!(ask("claude", "sess-new"), vec!["s-old"]);
     assert_eq!(ask("claude", "sess-1"), vec!["s1"]);
     drop(tx);
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+/// A binding row the way the real unresolve leaves it: ended `seat_unresolved`.
+fn c1_unresolved_binding(conn: &Connection, seat: &str, generation: i64, session: &str) -> String {
+    c1_bind(conn, seat, generation, "claude", session);
+    conn.execute(
+        "UPDATE occupant_bindings SET liveness='disconnected',disconnected_at=50,disconnect_reason='seat_unresolved',role='top_level',agent_id='' WHERE seat_id=?1 AND generation=?2 AND native_session=?3",
+        rusqlite::params![seat, generation, session],
+    )
+    .unwrap();
+    conn.query_row(
+        "SELECT binding_id FROM occupant_bindings WHERE seat_id=?1 AND generation=?2 AND native_session=?3",
+        rusqlite::params![seat, generation, session],
+        |r| r.get(0),
+    )
+    .unwrap()
+}
+
+/// Thread `ct` of `messages` ordinary messages receivable by `s1`, which has joined it.
+fn c1_history(conn: &Connection, messages: i64) {
+    c1_history_body(conn, messages, "'body'");
+}
+
+/// [`c1_history`] with every message body the SQL expression `body` (messages are immutable).
+fn c1_history_body(conn: &Connection, messages: i64, body: &str) {
+    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('ct','i','topic','goal',0,0)", []).unwrap();
+    conn.execute(
+        "INSERT INTO memberships(thread_id,seat_id,state) VALUES ('ct','s1','joined')",
+        [],
+    )
+    .unwrap();
+    for n in 1..=messages {
+        conn.execute_batch(&format!(
+            "INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i','cm{n}','ct',{n},'ordinary',{body},{n},{n});
+             INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES ('cp{n}','i','actor','cm{n}',zeroblob(32),'ct',0,0,0,0,0,0,1,'sealed');
+             INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES ('cp{n}','ct','s1',1,300,1);
+             INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('cp{n}','cm{n}','i','ct',{n},{n},{n},0,1,0);"
+        ))
+        .unwrap();
+    }
+}
+
+fn c1_set_cursor(conn: &Connection, binding: &str, seq: i64) {
+    conn.execute(
+        "INSERT OR REPLACE INTO binding_cursors(binding_id,thread_id,seq) VALUES (?1,'ct',?2)",
+        rusqlite::params![binding, seq],
+    )
+    .unwrap();
+}
+
+#[test]
+fn continuity_reattach_reopens_the_sessions_binding_with_its_cursors() {
+    use crate::store::read_cursors;
+    let (context, mut conn, path) = c1_fixture();
+    conn.execute("DELETE FROM occupant_bindings WHERE seat_id='s1'", [])
+        .unwrap();
+    let ended = c1_unresolved_binding(&conn, "s1", 1, "sess-1");
+    c1_history(&conn, 5);
+    c1_set_cursor(&conn, &ended, 5);
+    let rows_before: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM occupant_bindings WHERE seat_id='s1' AND native_session='sess-1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let CommandResult::ContinuityReattached(reply) = c1_decide(
+        &context,
+        &mut conn,
+        &c1_command("held-pane", "sess-1", "c1-reopen"),
+        "match",
+    )
+    .unwrap() else {
+        panic!("not reattached")
+    };
+    assert_eq!(reply.seat, SeatId::new("s1"));
+    let (open, ended_at, liveness, pid, start, rows): (String, Option<i64>, String, i64, i64, i64) = conn
+        .query_row(
+            "SELECT binding_id,ended_at,liveness,liveness_pid,liveness_start,(SELECT count(*) FROM occupant_bindings WHERE seat_id='s1' AND native_session='sess-1') FROM occupant_bindings WHERE seat_id='s1' AND native_session='sess-1' AND ended_at IS NULL",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+        )
+        .unwrap();
+    assert_eq!(open, ended, "the session's own row is reopened");
+    assert_eq!(ended_at, None);
+    assert_eq!(liveness, "connected");
+    assert_eq!((pid, start), (4242, 7));
+    assert_eq!(rows, rows_before, "no new row");
+    let id = BindingId::new(ended);
+    assert_eq!(
+        read_cursors::cursor_for(&conn, &id, &ThreadId::new("ct")).unwrap(),
+        Some(5)
+    );
+    assert!(!read_cursors::has_unread(&conn, &id).unwrap());
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+/// `s1` unresolved with the session's `seat_unresolved` row, 6 long messages of thread `ct`
+/// (about 4000 bytes each) and the reopenable row's cursor at `cursor`.
+fn c1_past_one_page(cursor: i64, long: bool) -> (StoreContext, Connection, PathBuf, String) {
+    let (context, conn, path) = c1_fixture();
+    conn.execute("DELETE FROM occupant_bindings WHERE seat_id='s1'", [])
+        .unwrap();
+    let ended = c1_unresolved_binding(&conn, "s1", 1, "sess-1");
+    if long {
+        c1_history_body(&conn, 6, "hex(zeroblob(2000))");
+    } else {
+        c1_history(&conn, 5);
+    }
+    c1_set_cursor(&conn, &ended, cursor);
+    (context, conn, path, ended)
+}
+
+#[test]
+fn continuity_reattach_past_one_page_fast_forwards_the_reopened_binding() {
+    use crate::store::read_cursors;
+    let (context, mut conn, path, ended) = c1_past_one_page(1, true);
+    let receipts_before: (i64, i64) = conn
+        .query_row(
+            "SELECT (SELECT count(*) FROM receipts),(SELECT count(*) FROM prepared_recipients)",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    let CommandResult::ContinuityReattached(reply) = c1_decide(
+        &context,
+        &mut conn,
+        &c1_command("held-pane", "sess-1", "c1-ff"),
+        "match",
+    )
+    .unwrap() else {
+        panic!("not reattached")
+    };
+    let ff = reply
+        .fast_forward
+        .expect("a backlog past one page is fast-forwarded");
+    assert_eq!(ff.skipped, 5);
+    assert_eq!(ff.threads.len(), 1);
+    assert_eq!(ff.threads[0].history.thread, ThreadId::new("ct"));
+    assert_eq!(ff.threads[0].history.earlier, 5);
+    assert_eq!(
+        ff.threads[0].last_message.as_ref().map(|m| m.sequence),
+        Some(6)
+    );
+    let id = BindingId::new(ended.clone());
+    assert_eq!(
+        read_cursors::cursor_for(&conn, &id, &ThreadId::new("ct")).unwrap(),
+        Some(6)
+    );
+    let open: String = conn
+        .query_row(
+            "SELECT binding_id FROM occupant_bindings WHERE seat_id='s1' AND ended_at IS NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(open, ended, "the reopened row is the one fast-forwarded");
+    let receipts_after: (i64, i64) = conn
+        .query_row(
+            "SELECT (SELECT count(*) FROM receipts),(SELECT count(*) FROM prepared_recipients)",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(receipts_after, receipts_before, "no obligation is settled");
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn continuity_reattach_within_one_page_does_not_fast_forward() {
+    use crate::store::read_cursors;
+    let (context, mut conn, path, ended) = c1_past_one_page(2, false);
+    let CommandResult::ContinuityReattached(reply) = c1_decide(
+        &context,
+        &mut conn,
+        &c1_command("held-pane", "sess-1", "c1-noff"),
+        "match",
+    )
+    .unwrap() else {
+        panic!("not reattached")
+    };
+    assert_eq!(reply.fast_forward, None);
+    assert_eq!(
+        read_cursors::cursor_for(&conn, &BindingId::new(ended), &ThreadId::new("ct")).unwrap(),
+        Some(2)
+    );
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn continuity_replay_returns_the_recorded_fast_forward() {
+    use crate::store::read_cursors;
+    let (context, mut conn, path, ended) = c1_past_one_page(1, true);
+    let command = c1_command("held-pane", "sess-1", "c1-ff-replay");
+    let first = c1_decide(&context, &mut conn, &command, "match").unwrap();
+    let CommandResult::ContinuityReattached(reply) = &first else {
+        panic!("not reattached")
+    };
+    assert!(reply.fast_forward.is_some());
+    let again = c1_decide(&context, &mut conn, &command, "match").unwrap();
+    assert_eq!(again, first, "the replay carries the gap report");
+    let replayed =
+        crate::store::seats::replay_continuity(&context, "i", &command, &b5_budget()).unwrap();
+    assert_eq!(replayed, Some(first));
+    assert_eq!(
+        read_cursors::cursor_for(&conn, &BindingId::new(ended), &ThreadId::new("ct")).unwrap(),
+        Some(6)
+    );
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn continuity_prefers_the_seat_where_the_session_was_live_at_unresolve() {
+    for reason in ["liveness_process_exit", "superseded", "liveness_end_event"] {
+        let (context, mut conn, path) = c1_fixture();
+        conn.execute("DELETE FROM occupant_bindings WHERE seat_id='s1'", [])
+            .unwrap();
+        c1_unresolved_binding(&conn, "s1", 1, "sess-1");
+        c1_unresolved_seat(&conn, "s3", "claude", "sess-1");
+        conn.execute(
+            "UPDATE occupant_bindings SET liveness='disconnected',disconnect_reason=?1,role='top_level',agent_id='' WHERE seat_id='s3'",
+            [reason],
+        )
+        .unwrap();
+        let tx = conn.transaction().unwrap();
+        let candidates =
+            crate::store::seats::continuity_candidates(&tx, "i", "claude", "sess-1").unwrap();
+        drop(tx);
+        assert_eq!(candidates, vec![SeatId::new("s1")], "{reason}");
+        let CommandResult::ContinuityReattached(reply) = c1_decide(
+            &context,
+            &mut conn,
+            &c1_command("held-pane", "sess-1", "c1-prefer"),
+            "match",
+        )
+        .unwrap() else {
+            panic!("not reattached")
+        };
+        assert_eq!(reply.seat, SeatId::new("s1"), "{reason}");
+        let s3: String = conn
+            .query_row("SELECT state FROM seats WHERE id='s3'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(s3, "unresolved", "{reason}");
+        drop(conn);
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+#[test]
+fn continuity_still_refuses_two_seats_where_the_session_was_live() {
+    use crate::protocol::results::ErrorCode;
+    let (context, mut conn, path) = c1_fixture();
+    b5_set_marker_to_recovery(&conn);
+    conn.execute("DELETE FROM occupant_bindings WHERE seat_id='s1'", [])
+        .unwrap();
+    c1_unresolved_binding(&conn, "s1", 1, "sess-1");
+    c1_unresolved_seat(&conn, "s3", "claude", "sess-1");
+    conn.execute(
+        "UPDATE occupant_bindings SET liveness='disconnected',disconnect_reason='seat_unresolved',role='top_level',agent_id='' WHERE seat_id='s3'",
+        [],
+    )
+    .unwrap();
+    let refused = c1_decide(
+        &context,
+        &mut conn,
+        &c1_command("held-pane", "sess-1", "c1-two-live"),
+        "match",
+    )
+    .unwrap_err();
+    assert_eq!(refused.code, ErrorCode::Conflict);
+    let states: Vec<String> = conn
+        .prepare("SELECT state FROM seats WHERE id IN ('s1','s3') ORDER BY id")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(states, ["unresolved", "unresolved"]);
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn continuity_reattach_matches_when_a_later_binding_enrolled_after_the_main_session() {
+    let (context, mut conn, path) = c1_fixture();
+    conn.execute("DELETE FROM occupant_bindings WHERE seat_id='s1'", [])
+        .unwrap();
+    let main = c1_unresolved_binding(&conn, "s1", 1, "sess-1");
+    let oneshot = c1_unresolved_binding(&conn, "s1", 1, "sess-z");
+    let CommandResult::ContinuityReattached(reply) = c1_decide(
+        &context,
+        &mut conn,
+        &c1_command("held-pane", "sess-1", "c1-later"),
+        "match",
+    )
+    .unwrap() else {
+        panic!("not reattached")
+    };
+    assert_eq!(reply.seat, SeatId::new("s1"));
+    let ended_of = |id: &str| -> Option<i64> {
+        conn.query_row(
+            "SELECT ended_at FROM occupant_bindings WHERE binding_id=?1",
+            [id],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    assert_eq!(ended_of(&main), None, "the main row is reopened");
+    assert!(ended_of(&oneshot).is_some(), "the one-shot stays ended");
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn continuity_reattach_without_a_reopenable_row_enrolls_at_the_seat_read_position() {
+    use crate::store::read_cursors;
+    let (context, mut conn, path) = c1_fixture();
+    conn.execute("DELETE FROM occupant_bindings WHERE seat_id='s1'", [])
+        .unwrap();
+    let died = c1_unresolved_binding(&conn, "s1", 1, "sess-1");
+    conn.execute(
+        "UPDATE occupant_bindings SET disconnect_reason='liveness_process_exit' WHERE binding_id=?1",
+        [&died],
+    )
+    .unwrap();
+    c1_history(&conn, 5);
+    c1_set_cursor(&conn, &died, 5);
+    let CommandResult::ContinuityReattached(_) = c1_decide(
+        &context,
+        &mut conn,
+        &c1_command("held-pane", "sess-1", "c1-fresh-row"),
+        "match",
+    )
+    .unwrap() else {
+        panic!("not reattached")
+    };
+    let fresh: String = conn
+        .query_row(
+            "SELECT binding_id FROM occupant_bindings WHERE seat_id='s1' AND ended_at IS NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_ne!(fresh, died, "a dead-process row is never reopened");
+    let id = BindingId::new(fresh);
+    assert_eq!(
+        read_cursors::cursor_for(&conn, &id, &ThreadId::new("ct")).unwrap(),
+        Some(5),
+        "the new binding starts at the seat's furthest-read point"
+    );
+    assert!(!read_cursors::has_unread(&conn, &id).unwrap());
     drop(conn);
     let _ = std::fs::remove_file(path);
 }
@@ -8765,6 +9154,185 @@ fn continuity_replay_returns_recorded_seat_and_generation() {
         .unwrap(),
         None
     );
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn continuity_successor_records_the_resume_fingerprint() {
+    let (context, mut conn, path) = c1_fixture();
+    let command = c1_command("held-pane", "sess-1", "c1-fp");
+    c1_decide(&context, &mut conn, &command, "match").unwrap();
+    let row: (String, Option<i64>, Option<i64>) = conn
+        .query_row(
+            "SELECT liveness,liveness_pid,liveness_start FROM occupant_bindings WHERE seat_id='s1' AND ended_at IS NULL",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(row, ("connected".into(), Some(4242), Some(7)));
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn continuity_successor_survives_a_liveness_pass_before_its_first_touch() {
+    use crate::ports::{ProcessInfo, ProcessRecord};
+    struct Table(Option<(u32, u64)>);
+    impl ProcessInfo for Table {
+        fn process(&self, pid: u32) -> Option<ProcessRecord> {
+            self.0
+                .filter(|(p, _)| *p == pid)
+                .map(|(pid, start)| ProcessRecord {
+                    pid,
+                    parent: None,
+                    start,
+                    argv: Vec::new(),
+                })
+        }
+    }
+    let (context, mut conn, path) = c1_fixture();
+    // The reattach of the last unresolved seat lifts the holds, as production's does.
+    b5_set_marker_to_recovery(&conn);
+    let command = c1_command("held-pane", "sess-1", "c1-liveness");
+    c1_decide(&context, &mut conn, &command, "match").unwrap();
+    assert_eq!(
+        b5_hold_state(&conn),
+        (0, 0),
+        "the instance is no longer held"
+    );
+    let seat_state: String = conn
+        .query_row("SELECT state FROM seats WHERE id='s1'", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(seat_state, "resolved");
+    // No touch and no further check-in: the pass lands between the reattach and the first touch.
+    let candidates = crate::store::bindings::liveness_candidates(&conn, None).unwrap();
+    let successor = candidates
+        .iter()
+        .find(|c| c.binding.seat.as_str() == "s1")
+        .unwrap_or_else(|| panic!("the successor is a candidate of the pass: {candidates:?}"));
+    assert_eq!(
+        successor.binding.fingerprint,
+        Some(crate::protocol::authority::LivenessFingerprint {
+            pid: 4242,
+            start: 7
+        }),
+        "the successor carries the resume's fingerprint (ht-54r.70)"
+    );
+    let state = |conn: &Connection| -> (String, Option<String>) {
+        conn.query_row(
+            "SELECT liveness,disconnect_reason FROM occupant_bindings WHERE seat_id='s1' AND ended_at IS NULL",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap()
+    };
+    let now = crate::protocol::time::UtcMillis(1_000);
+    let alive = Table(Some((4242, 7)));
+    let decisions = crate::service::liveness::classify(&candidates, &alive);
+    assert!(decisions.is_empty(), "{decisions:?}");
+    let tx = conn.transaction().unwrap();
+    crate::store::bindings::apply_liveness(&tx, &decisions, now).unwrap();
+    tx.commit().unwrap();
+    assert_eq!(state(&conn).0, "connected");
+    // The fingerprint is really judged: the same pass over an empty table disconnects it.
+    let decisions = crate::service::liveness::classify(&candidates, &Table(None));
+    assert_eq!(decisions.len(), 1, "{decisions:?}");
+    let tx = conn.transaction().unwrap();
+    crate::store::bindings::apply_liveness(&tx, &decisions, now).unwrap();
+    tx.commit().unwrap();
+    assert_eq!(
+        state(&conn),
+        ("disconnected".into(), Some("liveness_process_exit".into()))
+    );
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn continuity_successor_is_not_judged_while_its_instance_is_held() {
+    let (context, mut conn, path) = c1_fixture();
+    b5_set_marker_to_recovery(&conn);
+    c1_unresolved_seat(&conn, "s3", "claude", "sess-3");
+    c1_decide(
+        &context,
+        &mut conn,
+        &c1_command("held-pane", "sess-1", "c1-held"),
+        "match",
+    )
+    .unwrap();
+    assert_eq!(b5_hold_state(&conn), (1, 0));
+    let candidates = crate::store::bindings::liveness_candidates(&conn, None).unwrap();
+    assert!(
+        candidates.iter().all(|c| c.binding.seat.as_str() != "s1"),
+        "a held instance is never judged: {candidates:?}"
+    );
+    let binding: String = conn
+        .query_row(
+            "SELECT binding_id FROM occupant_bindings WHERE seat_id='s1' AND ended_at IS NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let decision = crate::store::bindings::LivenessDecision {
+        binding: crate::protocol::ids::BindingId::new(binding),
+        fingerprint: Some(crate::protocol::authority::LivenessFingerprint {
+            pid: 4242,
+            start: 7,
+        }),
+        reason: crate::store::bindings::DisconnectReason::ProcessExit,
+    };
+    let tx = conn.transaction().unwrap();
+    let changed = crate::store::bindings::apply_liveness(
+        &tx,
+        &[decision],
+        crate::protocol::time::UtcMillis(1_000),
+    )
+    .unwrap();
+    tx.commit().unwrap();
+    assert_eq!(changed, 0, "apply_liveness re-reads the candidates");
+    let liveness: String = conn
+        .query_row(
+            "SELECT liveness FROM occupant_bindings WHERE seat_id='s1' AND ended_at IS NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(liveness, "connected");
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn continuity_without_fingerprint_is_refused_and_changes_nothing() {
+    let (context, mut conn, path) = c1_fixture();
+    let mut command = c1_command("held-pane", "sess-1", "c1-nofp");
+    command.liveness = None;
+    let error = c1_decide(&context, &mut conn, &command, "match").unwrap_err();
+    assert_eq!(
+        error.code,
+        crate::protocol::results::ErrorCode::LivenessFingerprintRequired
+    );
+    let state: String = conn
+        .query_row("SELECT state FROM seats WHERE id='s1'", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(state, "unresolved");
+    let bindings: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM occupant_bindings WHERE seat_id='s1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(bindings, 1, "no successor binding");
+    let decisions: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM allocation_decisions WHERE kind='cooperative_continuity'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(decisions, 0);
     drop(conn);
     let _ = std::fs::remove_file(path);
 }
@@ -9342,6 +9910,7 @@ fn invitation_rejection_delivers_reason_once_as_a_thread_warning() {
         &crate::protocol::commands::Command::InboxBatch(crate::protocol::commands::InboxQuery {
             seat: Some(SeatId::new("s1")),
             page: Default::default(),
+            claim: None,
         }),
         &budget,
     )
@@ -9418,14 +9987,20 @@ fn invitation_rejection_delivers_reason_once_as_a_thread_warning() {
     let tx = conn.transaction().unwrap();
     let page = crate::store::attention::notice_offer_page(&tx, "s1", 16).unwrap();
     assert_eq!(page.len(), 1);
-    let execution: String = tx
+    let binding: String = tx
         .query_row(
-            "SELECT execution_id FROM occupant_bindings WHERE seat_id='s1' AND ended_at IS NULL",
+            "SELECT binding_id FROM occupant_bindings WHERE seat_id='s1' AND ended_at IS NULL",
             [],
             |r| r.get(0),
         )
         .unwrap();
-    crate::store::attention::settle_offered_notices(&tx, "s1", 1, &execution, &page).unwrap();
+    crate::store::attention::settle_offered_notices(
+        &tx,
+        "s1",
+        &crate::protocol::ids::BindingId::new(binding),
+        &page,
+    )
+    .unwrap();
     tx.commit().unwrap();
     assert!(
         pending(&conn).is_empty(),
@@ -9539,7 +10114,7 @@ fn invitation_rejection_projection_retry_and_late_offer_keep_exact_delivery() {
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .unwrap();
-    conn.execute("INSERT INTO warning_offer(seat_id,binding_generation,execution_id,offered_through_seq) SELECT seat_id,generation,execution_id,?1 FROM occupant_bindings WHERE seat_id='s1'", [seq+100]).unwrap();
+    conn.execute("INSERT INTO warning_offer(binding_id,seat_id,offered_through_seq) SELECT binding_id,seat_id,?1 FROM occupant_bindings WHERE seat_id='s1' AND ended_at IS NULL", [seq+100]).unwrap();
     conn.execute_batch("CREATE TEMP TRIGGER reject_projection_failure BEFORE INSERT ON digest_programmatic_warnings BEGIN SELECT RAISE(ABORT,'injected rejection projection failure'); END;").unwrap();
     let budget = crate::protocol::time::CallBudget {
         deadline: MonoInstant(u64::MAX),
@@ -9690,14 +10265,20 @@ fn invitation_rejection_frozen_members_and_binding_scoped_prefix() {
     let page = crate::store::attention::notice_offer_page(&conn, "s2", 1).unwrap();
     assert_eq!(page.len(), 1);
     assert_eq!(page[0].notice.warning.as_str(), id);
-    let execution: String = conn
+    let binding: String = conn
         .query_row(
-            "SELECT execution_id FROM occupant_bindings WHERE seat_id='s2' AND ended_at IS NULL",
+            "SELECT binding_id FROM occupant_bindings WHERE seat_id='s2' AND ended_at IS NULL",
             [],
             |r| r.get(0),
         )
         .unwrap();
-    crate::store::attention::settle_offered_notices(&conn, "s2", 1, &execution, &page).unwrap();
+    crate::store::attention::settle_offered_notices(
+        &conn,
+        "s2",
+        &crate::protocol::ids::BindingId::new(binding),
+        &page,
+    )
+    .unwrap();
     assert_eq!(
         crate::store::attention::informational_notice_pending(&conn, "s2", &id).unwrap(),
         Some(false)
@@ -9706,10 +10287,12 @@ fn invitation_rejection_frozen_members_and_binding_scoped_prefix() {
         crate::store::attention::informational_notice_pending(&conn, "s2", &second_id).unwrap(),
         Some(true)
     );
-    // A stale predecessor frontier does not cover the current occupant.
-    conn.execute(
-        "UPDATE digest_notice_offer SET execution_id='predecessor' WHERE seat_id='s2'",
-        [],
+    // A stale predecessor frontier does not cover the current occupant (session-keyed bindings:
+    // the frontier row belongs to an ended predecessor binding of the seat).
+    conn.execute_batch(
+        "INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,ended_at,terminal_id,incarnation,liveness,disconnected_at,disconnect_reason) \
+         SELECT seat_id,generation,target_id,host_boot,host_epoch,harness,'predecessor-session','predecessor',observation_provenance,observed_at,1,terminal_id,incarnation,'disconnected',1,'superseded' FROM occupant_bindings WHERE seat_id='s2' AND ended_at IS NULL;
+         UPDATE digest_notice_offer SET binding_id=(SELECT binding_id FROM occupant_bindings WHERE execution_id='predecessor') WHERE seat_id='s2';",
     )
     .unwrap();
     assert_eq!(
@@ -10298,6 +10881,182 @@ fn invitation_rejection_human_retains_declared_human_provenance() {
 #[path = "topology_attachment_guard.rs"]
 mod topology_attachment;
 
+// ---- ht-54r.14: retirement under multiple bindings ----
+
+/// Seat `s2` with three open bindings on the one terminal: two connected, one already
+/// disconnected (`end_event`), each with a cursor row on thread `t`.
+fn multi_binding_retirement_fixture() -> (StoreContext, Connection, PathBuf, Arc<FixedClock>) {
+    let (context, conn, path, clock) = fixture(100);
+    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0)", []).unwrap();
+    for (id, session, live) in [
+        ("b1", "sess-1", true),
+        ("b2", "sess-2", true),
+        ("b3", "sess-3", false),
+    ] {
+        conn.execute("INSERT INTO occupant_bindings(binding_id,seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES (?1,'s2',1,'s2','b',1,1,'codex',?2,'00000000-0000-4000-8000-000000000001','verified_current_target',0,'term-s2','inc')", rusqlite::params![id,session]).unwrap();
+        if !live {
+            conn.execute("UPDATE occupant_bindings SET liveness='disconnected',disconnected_at=50,disconnect_reason='liveness_end_event' WHERE binding_id=?1", [id]).unwrap();
+        }
+        conn.execute(
+            "INSERT INTO binding_cursors(binding_id,thread_id,seq) VALUES (?1,'t',?2)",
+            rusqlite::params![id, if id == "b1" { 3 } else { 1 }],
+        )
+        .unwrap();
+    }
+    (context, conn, path, clock)
+}
+
+fn retire_s2(context: &StoreContext, conn: &mut Connection) -> crate::ports::RetirementJob {
+    use crate::ports::ClosureEvidence;
+    begin_retirement(
+        context,
+        conn,
+        SeatId::new("s2"),
+        ClosureEvidence {
+            host_boot: HostBootId::new("b"),
+            epoch: 1,
+            target: HostTargetId::new("s2"),
+            generation: 1,
+        },
+    )
+    .unwrap()
+}
+
+#[test]
+fn retirement_disconnects_and_ends_every_binding() {
+    let (context, mut conn, path, _) = multi_binding_retirement_fixture();
+    retire_s2(&context, &mut conn);
+    let rows: Vec<(String, Option<i64>, String, Option<String>)> = conn
+        .prepare("SELECT binding_id,ended_at,liveness,disconnect_reason FROM occupant_bindings WHERE seat_id='s2' ORDER BY ordinal")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(
+        rows,
+        vec![
+            (
+                "b1".into(),
+                Some(100),
+                "disconnected".into(),
+                Some("seat_retired".into())
+            ),
+            (
+                "b2".into(),
+                Some(100),
+                "disconnected".into(),
+                Some("seat_retired".into())
+            ),
+            (
+                "b3".into(),
+                Some(100),
+                "disconnected".into(),
+                Some("liveness_end_event".into())
+            ),
+        ]
+    );
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn retirement_keeps_seat_record_and_cursor_rows() {
+    let (context, mut conn, path, _) = multi_binding_retirement_fixture();
+    retire_s2(&context, &mut conn);
+    let seat: (String, i64) = conn
+        .query_row(
+            "SELECT state,retired_at FROM seats WHERE id='s2'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(seat, ("retired".into(), 100));
+    let cursors: Vec<(String, i64)> = conn
+        .prepare(
+            "SELECT binding_id,seq FROM binding_cursors WHERE thread_id='t' ORDER BY binding_id",
+        )
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(
+        cursors,
+        vec![("b1".into(), 3), ("b2".into(), 1), ("b3".into(), 1)]
+    );
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn retirement_with_two_bindings_retires_memberships_settles_receipts_closes_invitations() {
+    use crate::{
+        ports::WorkAdmission,
+        protocol::time::{CallBudget, Cancellation},
+    };
+    let (context, mut conn, path, clock) = multi_binding_retirement_fixture();
+    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('u','i','topic','goal',0,0)", []).unwrap();
+    conn.execute(
+        "INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES ('t','s2','joined',0)",
+        [],
+    )
+    .unwrap();
+    conn.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('t','s2',1,1)", []).unwrap();
+    conn.execute(
+        "INSERT INTO memberships(thread_id,seat_id,state) VALUES ('u','s2','invited')",
+        [],
+    )
+    .unwrap();
+    conn.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,frozen_duration_ms,deadline_at,created_decision_seq) VALUES ('inv','u','s2',1,'pending',0,90,90,1)", []).unwrap();
+    conn.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i','m1','t',1,'ordinary','body',0,2)", []).unwrap();
+    conn.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES ('m1','t','s2','pending',90,0,90)", []).unwrap();
+    conn.execute("UPDATE threads SET next_sequence=5 WHERE id='t'", [])
+        .unwrap();
+    conn.execute("UPDATE host_instances SET decision_seq=30 WHERE id='i'", [])
+        .unwrap();
+    let job = retire_s2(&context, &mut conn);
+    clock.0.store(200, Ordering::SeqCst);
+    let budget = CallBudget {
+        deadline: MonoInstant(1000),
+        cancellation: Cancellation::default(),
+    };
+    for _ in 0..8 {
+        if advance_retirement(
+            &context,
+            &mut conn,
+            job.id.clone(),
+            WorkAdmission::Background,
+            &budget,
+        )
+        .unwrap()
+        .complete
+        {
+            break;
+        }
+    }
+    let count = |sql: &str| conn.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap();
+    assert_eq!(
+        count("SELECT count(*) FROM memberships WHERE seat_id='s2' AND state='joined'"),
+        0
+    );
+    assert_eq!(
+        count("SELECT count(*) FROM receipts WHERE message_id='m1' AND state='recipient_retired'"),
+        1
+    );
+    assert_eq!(
+        count("SELECT count(*) FROM invitations WHERE id='inv' AND state='recipient_retired'"),
+        1
+    );
+    assert_eq!(
+        count("SELECT count(*) FROM occupant_bindings WHERE seat_id='s2' AND ended_at IS NULL"),
+        0
+    );
+    assert_eq!(count("SELECT count(*) FROM binding_cursors"), 3);
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
 #[path = "direct_threads.rs"]
 mod direct_threads;
 #[test]
@@ -10817,6 +11576,7 @@ fn invitation_confirmation_registration_never_settles_or_restarts_and_late_accep
                 mode: CheckInMode::Current,
                 claim: claim("s2"),
                 operation: OperationId::new("registration-not-acceptance"),
+                lineage_parent: None,
             };
             let hash = crate::store::schema::canonical_digest(
                 &crate::store::seats::check_in_payload(&checkin),
@@ -10835,7 +11595,7 @@ fn invitation_confirmation_registration_never_settles_or_restarts_and_late_accep
                     100,
                 ),
                 &budget,
-                |_, seat, seq| {
+                |_, seat, seq, history, _binding| {
                     Ok(CheckInResult {
                         context_disposition: CheckInContextDisposition::Current,
                         context: claim(seat.as_str()),
@@ -10846,6 +11606,8 @@ fn invitation_confirmation_registration_never_settles_or_restarts_and_late_accep
                         warnings: empty(),
                         inbox: empty(),
                         notices: NoticeOffer::default(),
+                        first_contact: history.first_contact,
+                        fast_forward: history.fast_forward,
                     })
                 },
             )
@@ -11145,25 +11907,19 @@ fn invitation_origin_wake_after_notice_offer(mod_path: bool, discovery_path: boo
             "discovery must not depend on attribution backlog"
         );
     }
-    let carried: Vec<_> = attention::notice_offer_page(&conn, "s1", 10)
+    let origin_binding = invitation_policy_binding(&conn, "s1");
+    let carried: Vec<_> = attention::notice_offer_page_for(&conn, "s1", &origin_binding, 10)
         .unwrap()
         .into_iter()
         .map(|row| row.notice)
         .collect();
     assert_eq!(carried.len(), 1);
     let tx = conn.transaction().unwrap();
-    tx.execute("INSERT INTO warning_offer(seat_id,binding_generation,execution_id,offered_through_seq) SELECT 's1',1,'00000000-0000-4000-8000-000000000001',decision_seq FROM host_instances WHERE id='i'", []).unwrap();
-    attention::settle_carried_notices(
-        &tx,
-        "s1",
-        1,
-        "00000000-0000-4000-8000-000000000001",
-        &carried,
-    )
-    .unwrap();
+    tx.execute("INSERT INTO warning_offer(binding_id,seat_id,offered_through_seq) SELECT ?1,'s1',decision_seq FROM host_instances WHERE id='i'", [origin_binding.as_str()]).unwrap();
+    attention::settle_carried_notices(&tx, "s1", &origin_binding, &carried).unwrap();
     tx.commit().unwrap();
     assert!(
-        attention::notice_offer_page(&conn, "s1", 10)
+        attention::notice_offer_page_for(&conn, "s1", &origin_binding, 10)
             .unwrap()
             .is_empty(),
         "committed informational offer must stay settled"
@@ -11194,9 +11950,15 @@ fn invitation_origin_wake_after_notice_offer(mod_path: bool, discovery_path: boo
         );
     }
     if mod_path {
-        let view = crate::store::seats::mod_seat_view(&conn, "i", &origin)
-            .unwrap()
-            .unwrap();
+        let view = crate::store::seats::mod_binding_view(
+            &conn,
+            "i",
+            &origin,
+            crate::ports::ModBindingRef::Id(&origin_binding),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(view.binding.as_ref().unwrap().binding_id, origin_binding);
         assert_eq!(
             view.fingerprint.other_pending, 1,
             "mod retains original inviter open condition after notice offer"
@@ -11266,11 +12028,16 @@ fn invitation_origin_wake_after_notice_offer(mod_path: bool, discovery_path: boo
         "late explicit acceptance clears native condition attention"
     );
     assert_eq!(
-        crate::store::seats::mod_seat_view(&conn, "i", &origin)
-            .unwrap()
-            .unwrap()
-            .fingerprint
-            .other_pending,
+        crate::store::seats::mod_binding_view(
+            &conn,
+            "i",
+            &origin,
+            crate::ports::ModBindingRef::Id(&origin_binding)
+        )
+        .unwrap()
+        .unwrap()
+        .fingerprint
+        .other_pending,
         0,
         "clear is passive for mod attention"
     );
@@ -11286,7 +12053,7 @@ fn invitation_origin_wake_after_notice_offer(mod_path: bool, discovery_path: boo
             "passive clear cannot keep the original inviter in native discovery"
         );
     }
-    let clears = attention::notice_offer_page(&conn, "s1", 10).unwrap();
+    let clears = attention::notice_offer_page_for(&conn, "s1", &origin_binding, 10).unwrap();
     assert_eq!(
         clears.len(),
         1,
@@ -11465,11 +12232,16 @@ fn assert_no_lazy_overdue_effects(conn: &Connection, invitation: &InvitationId) 
             .is_none()
     );
     assert_eq!(
-        crate::store::seats::mod_seat_view(conn, "i", &SeatId::new("s1"))
-            .unwrap()
-            .unwrap()
-            .fingerprint
-            .other_pending,
+        crate::store::seats::mod_binding_view(
+            conn,
+            "i",
+            &SeatId::new("s1"),
+            crate::ports::ModBindingRef::Id(&invitation_policy_binding(conn, "s1"))
+        )
+        .unwrap()
+        .unwrap()
+        .fingerprint
+        .other_pending,
         0
     );
 }
@@ -11925,4 +12697,15 @@ fn invitation_command_epoch_corruption_and_exhaustion_roll_back_required_attach(
         drop(conn);
         let _ = std::fs::remove_file(path);
     }
+}
+
+fn invitation_policy_binding(conn: &Connection, seat: &str) -> BindingId {
+    let claim = claim(seat);
+    crate::store::bindings::match_claim(
+        conn,
+        &crate::store::bindings::BindingKey::from_claim(&claim),
+    )
+    .unwrap()
+    .expect("invitation policy fixture has this exact open binding")
+    .binding_id
 }

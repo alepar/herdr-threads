@@ -241,6 +241,11 @@ fn seats(page: &Page<SeatSummary>, out: &mut String) {
                 vec![
                     seat.seat.as_str().to_owned(),
                     state.to_owned(),
+                    format!(
+                        "{}{}",
+                        if seat.active { "active" } else { "inactive" },
+                        availability_suffix(seat.availability.as_deref())
+                    ),
                     timestamp(seat.created_at),
                     current.map_or_else(
                         || "-".to_owned(),
@@ -263,10 +268,19 @@ fn seats(page: &Page<SeatSummary>, out: &mut String) {
             .collect::<Vec<_>>()
     });
     table(
-        &["SEAT", "STATE", "CREATED", "SPACE", "TAB", "PANE"],
+        &[
+            "SEAT", "STATE", "PRESENCE", "CREATED", "SPACE", "TAB", "PANE",
+        ],
         &rows,
         out,
     );
+    for seat in page.items.iter().filter(|seat| !seat.bindings.is_empty()) {
+        out.push_str(&format!(
+            "  {}\n",
+            escape_for_terminal(seat.seat.as_str(), Context::SingleLine)
+        ));
+        binding_lines(&seat.bindings, "      ", out);
+    }
     more(page, out);
 }
 
@@ -295,6 +309,9 @@ mod seat_list_tests {
             generation: 1,
             created_at: UtcMillis(0),
             retired_at: (i == 2).then_some(UtcMillis(1)),
+            active: false,
+            bindings: Vec::new(),
+            availability: None,
         })
         .collect();
         rows.push(SeatSummary {
@@ -304,6 +321,9 @@ mod seat_list_tests {
             generation: 1,
             created_at: UtcMillis(0),
             retired_at: None,
+            active: false,
+            bindings: Vec::new(),
+            availability: None,
         });
         let page = Page {
             items: rows,
@@ -336,6 +356,72 @@ mod seat_list_tests {
         assert_eq!(text.matches("w4 (Space)").count(), 1);
         assert_eq!(text.matches("w4:p1 (unavailable)").count(), 2);
         assert!(text.contains("w4:p2 (unavailable)"));
+    }
+
+    #[test]
+    fn presence_column_and_binding_lines() {
+        let seat =
+            |id: &str, active: bool, bindings: Vec<(&str, bool, Option<&str>)>| SeatSummary {
+                seat: SeatId::new(id),
+                continuity: ContinuityStatus::Resolved,
+                target: None,
+                generation: 1,
+                created_at: UtcMillis(0),
+                retired_at: None,
+                active,
+                bindings: bindings
+                    .into_iter()
+                    .map(
+                        |(role, connected, agent)| crate::protocol::results::BindingPresence {
+                            harness: "claude".into(),
+                            role: role.into(),
+                            connected,
+                            agent_id: agent.map(str::to_owned),
+                        },
+                    )
+                    .collect(),
+                availability: None,
+            };
+        let page = Page {
+            items: vec![
+                seat(
+                    "up",
+                    true,
+                    vec![("top_level", true, None), ("subagent", true, Some("a1"))],
+                ),
+                seat("down", false, vec![("top_level", false, None)]),
+                seat("bare", false, vec![]),
+            ],
+            next_cursor: None,
+            next_argv: None,
+            high_water_ordinal: 3,
+            scope_revision: None,
+            has_more: false,
+            stop_reason: StopReason::Complete,
+            consistency: Consistency::BoundedLive,
+        };
+        let mut out = String::new();
+        seats(&page, &mut out);
+        let rows: Vec<_> = out
+            .lines()
+            .filter(|l| l.starts_with("up ") || l.starts_with("down ") || l.starts_with("bare "))
+            .collect();
+        assert!(rows[0].contains("  active  "), "{out}");
+        assert!(rows[1].contains("  inactive  "), "{out}");
+        assert!(
+            out.contains(
+                "  up\n      claude top_level connected\n      claude subagent connected agent=a1\n"
+            ),
+            "{out}"
+        );
+        assert!(
+            out.contains("  down\n      claude top_level disconnected\n"),
+            "{out}"
+        );
+        assert!(
+            !out.contains("  bare\n"),
+            "a seat without bindings gets no binding block"
+        );
     }
 }
 
@@ -528,7 +614,7 @@ fn thread(details: &ThreadDetails, out: &mut String) {
         summary.message_count, summary.ordinary_count, summary.system_count
     ));
     out.push_str(&format!("Participants ({}):\n", details.participant_count));
-    for participant in &details.participants.items {
+    for participant in active_first(&details.participants.items) {
         participant_line(participant, out);
     }
     if details.participants.has_more
@@ -553,10 +639,60 @@ fn participants(page: &Page<Participant>, out: &mut String) {
     if page.items.is_empty() {
         out.push_str("No participants.\n");
     }
-    for participant in &page.items {
+    for participant in active_first(&page.items) {
         participant_line(participant, out);
     }
     more(page, out);
+}
+
+/// Active members first, then inactive ones; each group keeps its page order.
+fn active_first(items: &[Participant]) -> Vec<&Participant> {
+    let (mut active, inactive): (Vec<_>, Vec<_>) = items.iter().partition(|p| p.active);
+    active.extend(inactive);
+    active
+}
+
+/// `, available` or `, unavailable since <time>` for the presence availability slot; empty when
+/// the slot is absent.
+fn availability_suffix(slot: Option<&str>) -> String {
+    match slot {
+        Some("available") => ", available".to_owned(),
+        Some(other) => match other
+            .strip_prefix("unavailable@")
+            .and_then(|ms| ms.parse::<i64>().ok())
+        {
+            Some(ms) => format!(", unavailable since {}", timestamp(UtcMillis(ms))),
+            None => format!(", {}", escape_for_terminal(other, Context::SingleLine)),
+        },
+        None => String::new(),
+    }
+}
+
+/// One indented line per open binding: `    claude top_level connected [agent=ID]`.
+fn binding_lines(
+    bindings: &[crate::protocol::results::BindingPresence],
+    indent: &str,
+    out: &mut String,
+) {
+    for binding in bindings {
+        out.push_str(&format!(
+            "{indent}{} {} {}",
+            escape_for_terminal(&binding.harness, Context::SingleLine),
+            escape_for_terminal(&binding.role, Context::SingleLine),
+            if binding.connected {
+                "connected"
+            } else {
+                "disconnected"
+            }
+        ));
+        if let Some(agent) = &binding.agent_id {
+            out.push_str(&format!(
+                " agent={}",
+                escape_for_terminal(agent, Context::SingleLine)
+            ));
+        }
+        out.push('\n');
+    }
 }
 
 fn participant_line(participant: &Participant, out: &mut String) {
@@ -566,12 +702,17 @@ fn participant_line(participant: &Participant, out: &mut String) {
         MembershipStatus::Left => "left",
         MembershipStatus::Retired => "retired",
     };
-    out.push_str(&format!("  - {} {state}", participant.seat.as_str()));
+    out.push_str(&format!(
+        "  {} {} {state}",
+        if participant.active { '+' } else { '-' },
+        participant.seat.as_str()
+    ));
     if let Some(at) = participant.joined_at
         && participant.effective_state == MembershipStatus::Joined
     {
         out.push_str(&format!(" since {}", timestamp(at)));
     }
+    out.push_str(&availability_suffix(participant.availability.as_deref()));
     if participant.requirement.is_some() {
         out.push_str(" (required)");
     }
@@ -582,6 +723,7 @@ fn participant_line(participant: &Participant, out: &mut String) {
         out.push_str(&format!(" — {location}"));
     }
     out.push('\n');
+    binding_lines(&participant.bindings, "      ", out);
 }
 
 fn message(details: &MessageDetails, out: &mut String) {
@@ -852,3 +994,18 @@ mod golden_contract;
 #[cfg(test)]
 #[path = "../../tests/cli/guidance.rs"]
 mod guidance;
+
+#[cfg(test)]
+mod availability_suffix_tests {
+    use super::*;
+
+    #[test]
+    fn renders_available_and_unavailable_since() {
+        assert_eq!(availability_suffix(None), "");
+        assert_eq!(availability_suffix(Some("available")), ", available");
+        assert_eq!(
+            availability_suffix(Some("unavailable@0")),
+            ", unavailable since 1970-01-01 00:00Z"
+        );
+    }
+}

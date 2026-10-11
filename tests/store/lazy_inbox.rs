@@ -76,6 +76,8 @@ fn send_request() -> SendMessage {
             native_session: NativeSessionId::new("n"),
             execution: ExecutionId::new("00000000-0000-4000-8000-0000000000aa"),
             target: HostTargetId::new("pa"),
+            agent_id: None,
+            liveness: Some(herdr_threads::protocol::authority::LivenessFingerprint::TEST),
         },
         relays_user: false,
         user_intent: None,
@@ -146,6 +148,8 @@ fn fixture(name: &str) -> (TestIsolation, StoreContext, Connection) {
     )
     .unwrap();
     conn.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES('t','b',1,1)", []).unwrap();
+    // A binding open while its seat joins holds a cursor for the thread (join seeds it).
+    conn.execute("INSERT INTO binding_cursors(binding_id,thread_id,seq) SELECT binding_id,'t',0 FROM occupant_bindings WHERE seat_id='b'", []).unwrap();
     (iso, context, conn)
 }
 fn send(
@@ -183,6 +187,7 @@ fn query(
         context,
         "i",
         &Command::InboxBatchV2(InboxQuery {
+            claim: None,
             seat: Some(SeatId::new("b")),
             page: request,
         }),
@@ -553,6 +558,7 @@ fn lazy_inbox_addressed_leave_retire_archive() {
         &context,
         "i",
         &Command::InboxBatchV2(InboxQuery {
+            claim: None,
             seat: Some(SeatId::new("b")),
             page: PageRequest::default(),
         }),
@@ -591,6 +597,7 @@ fn lazy_inbox_v2_rejects_changed_binding_foreign_and_bad_body_cursor() {
             &context,
             "i",
             &Command::InboxBatchV2(InboxQuery {
+                claim: None,
                 seat: Some(SeatId::new("b")),
                 page: PageRequest {
                     cursor: Some(raw),
@@ -749,6 +756,7 @@ fn lazy_inbox_v2_small_budget_and_read_only_queries() {
             &context,
             "i",
             &Command::InboxBatchV2(InboxQuery {
+                claim: None,
                 seat: Some(SeatId::new("b")),
                 page: PageRequest {
                     max_bytes: 256,
@@ -866,6 +874,7 @@ fn lazy_inbox_v2_ack_candidates_follow_registered_agent_harnesses() {
     let offer = InboxOffer {
         page,
         claim: claim(),
+        cursors: false,
     };
     let (context_text, lazy) = append(String::new(), &offer, &["herdr-threads".to_owned()], 4096);
     assert!(lazy.is_empty(), "ordinary rows are never lazy-completed");
@@ -898,12 +907,13 @@ fn lazy_inbox_completion_prevalidates_all_ids_and_authority_before_progress() {
         complete(&iso, request).unwrap_err().code,
         ErrorCode::InvalidRequest
     );
-    for bad in 0..5 {
+    // ht-54r.3: a different harness or native session is a different binding key, so a plain
+    // call from it enrolls its own binding on the seat instead of being refused as "occupant
+    // context changed"; those two cases are no longer bad claims. The rest still are.
+    for bad in [1, 3, 4] {
         let mut caller = claim();
         match bad {
-            0 => caller.harness = Harness::Claude,
             1 => caller.execution = ExecutionId::new("other"),
-            2 => caller.native_session = NativeSessionId::new("other"),
             3 => caller.target = HostTargetId::new("pa"),
             _ => caller = send_request().claim,
         }
@@ -913,7 +923,7 @@ fn lazy_inbox_completion_prevalidates_all_ids_and_authority_before_progress() {
             operation: OperationId::new(format!("bad-claim-{bad}")),
             claim: caller,
         };
-        assert!(complete(&iso, request).is_err());
+        assert!(complete(&iso, request).is_err(), "bad case {bad}");
         assert_eq!(
             conn.query_row("SELECT state FROM lazy_recipients", [], |r| r
                 .get::<_, String>(0))
@@ -1209,10 +1219,12 @@ fn invitation_confirmation_inbox_metadata_distinguishes_lazy_timed_and_legacy() 
         Command::InboxBatch(InboxQuery {
             seat: Some(SeatId::new("b")),
             page: PageRequest::default(),
+            claim: Some(claim()),
         }),
         Command::InboxBatchV2(InboxQuery {
             seat: Some(SeatId::new("b")),
             page: PageRequest::default(),
+            claim: Some(claim()),
         }),
     ] {
         let result = herdr_threads::store::queries::query_with_output(

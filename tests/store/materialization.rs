@@ -737,7 +737,7 @@ fn current_offer_suppresses_projection_wake_but_successor_gets_attention() {
         UPDATE host_instances SET decision_seq=10 WHERE id='i';\
         INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at) VALUES('v','t','s1',1,'pending',1,0,300,300);\
         INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at) VALUES('s1',1,'target','boot',1,'codex','native','old','verified',0,1);\
-        INSERT INTO warning_offer(seat_id,binding_generation,execution_id,offered_through_seq) VALUES('s1',1,'old',10);\
+        INSERT INTO warning_offer(binding_id,seat_id,offered_through_seq) SELECT binding_id,'s1',10 FROM occupant_bindings WHERE seat_id='s1' AND execution_id='old';\
         INSERT INTO messages(instance_id,id,thread_id,sequence,kind,event_key,event_json,decision_at,decision_seq,event_offset) VALUES('i','w1','t',1,'warn','w1','{}',10,10,0),('i','w2','t',2,'warn','w2','{}',10,10,1);\
         INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id,phase) VALUES('w1',10,'t',0,'s1','invitation','v','affected'),('w2',10,'t',0,'s1','invitation','v','affected');\
         INSERT INTO work_jobs(id,kind,subject_id,high_water) VALUES('j1','warning_attribution','w1',0),('j2','warning_attribution','w2',0);\

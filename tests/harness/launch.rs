@@ -113,6 +113,12 @@ impl HostPort for FakeHost {
                             expected_incarnation: request.expected_incarnation.clone(),
                             submitted_at_mono: MonoInstant(2),
                             completed_at_mono: MonoInstant(3),
+                            started_process: Some(
+                                crate::protocol::authority::LivenessFingerprint {
+                                    pid: 4242,
+                                    start: 1,
+                                },
+                            ),
                         }),
                     diagnostic: diagnostic.clone(),
                 }
@@ -264,7 +270,38 @@ fn correlation_for_empty_args(harness: Harness) -> CorrelatedStartup {
         expected_incarnation: request.expected_incarnation,
         submitted_at_mono: MonoInstant(2),
         completed_at_mono: MonoInstant(3),
+        started_process: Some(crate::protocol::authority::LivenessFingerprint {
+            pid: 4242,
+            start: 1,
+        }),
     }
+}
+
+/// The managed-launch command carries the started process's fingerprint, and a
+/// startup with none observable has no command at all. Kills: a placeholder
+/// fingerprint taken from anywhere but the startup's host process info, and a
+/// default or zero fingerprint standing in for a missing one.
+#[test]
+fn managed_launch_command_carries_the_started_process_fingerprint() {
+    let mut startup = correlation_for_empty_args(Harness::Codex);
+    let command = managed_launch_command(&startup).unwrap();
+    assert_eq!(
+        command.fingerprint,
+        crate::protocol::authority::LivenessFingerprint {
+            pid: 4242,
+            start: 1
+        }
+    );
+    assert_eq!(command.seat, startup.seat);
+    assert!(command.validate().is_ok());
+    startup.started_process = None;
+    let refusal = managed_launch_command(&startup).unwrap_err();
+    assert_eq!(refusal.code, ErrorCode::InvalidRequest);
+    assert!(refusal.detail.contains("no started process is observable"));
+    // The wire form rejects a zero pid.
+    let mut zero = command;
+    zero.fingerprint.pid = 0;
+    assert!(zero.validate().is_err());
 }
 
 #[test]

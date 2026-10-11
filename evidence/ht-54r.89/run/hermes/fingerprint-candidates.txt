@@ -1,0 +1,1 @@
+48173 /tmp/ih.oHO4go/home/hermes-home/tools/python-3.14.7+20260901-darwin-arm64/bin/python3

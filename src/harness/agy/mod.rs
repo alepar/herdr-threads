@@ -70,6 +70,19 @@ impl HarnessAdapter for AgyAdapter {
     fn hook_admission_policy(&self) -> HookAdmissionPolicy {
         HookAdmissionPolicy::RegisteredContract
     }
+    /// Herdr detects agy by these process names; hooks and the model's `run_command` shells
+    /// inherit agy's environment, where `ANTIGRAVITY_CONVERSATION_ID` names the conversation
+    /// (the hook payload's `conversationId`).
+    fn caller_env(&self) -> Option<CallerEnvShape> {
+        Some(CallerEnvShape {
+            process_names: &["agy", "antigravity", "antigravity-cli"],
+            session_var: "ANTIGRAVITY_CONVERSATION_ID",
+            role: Some(witness::caller_session),
+            process_match: None,
+            pid_var: None,
+            paneless: None,
+        })
+    }
     fn output_policy(&self) -> OutputPolicy {
         OutputPolicy {
             child_requires_endpoint: true,

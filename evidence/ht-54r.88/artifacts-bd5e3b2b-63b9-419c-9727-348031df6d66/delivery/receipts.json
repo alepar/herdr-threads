@@ -1,0 +1,27 @@
+{
+  "A1": {
+    "actor": "soTZU6bWN",
+    "observation": {
+      "action_provenance": "cooperative_hook_delivery",
+      "binding_generation": 1,
+      "decided_at": 1791741306242,
+      "execution": "57cc322c-0531-5f56-be3d-9f6761a1c4ca",
+      "harness": "agy",
+      "host_boot": "herdr-server:pid=33374:start=1791741163.729807:uid=501",
+      "observed_at": 1791741306242,
+      "provenance": "cooperative_top_level",
+      "session": "2d5044f1-ec93-49c2-8b1b-bd47c8baae18",
+      "target_generation": 1,
+      "via": "transcript"
+    },
+    "provenance": "cooperative_hook_delivery",
+    "state": "acked"
+  },
+  "O1": {},
+  "T1": {
+    "actor": null,
+    "observation": {},
+    "provenance": null,
+    "state": "pending"
+  }
+}

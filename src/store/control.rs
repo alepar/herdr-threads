@@ -123,12 +123,15 @@ pub(crate) fn begin_retirement_fence(
         schema::clear_open_unavailability_for_seat(tx, seat.as_str(), cutover)?;
         let changed = tx.execute("UPDATE seats SET state='retired',unresolved_reason=NULL,unresolved_from_generation_id=NULL,unresolved_prior_binding_generation=NULL,generation=generation+1,retired_at=?1,retired_seq=?2 WHERE id=?3 AND state!='retired'",
             params![cutover.0,cutover_seq as i64,seat.as_str()]).map_err(store_error)?;
-        tx.execute(
-            "UPDATE occupant_bindings SET ended_at=?1 WHERE seat_id=?2 AND ended_at IS NULL",
-            params![cutover.0, seat.as_str()],
-        )
-        .map_err(store_error)?;
-        super::catch_up::supersede_stale(tx, &seat, cutover)?;
+        // Every open binding disconnects (`seat_retired`, side-effect hooks run) and ends through
+        // the sole transition; an already disconnected binding keeps its own reason.
+        super::bindings::end_open_bindings(
+            tx,
+            &seat,
+            super::bindings::DisconnectReason::SeatRetired,
+            cutover,
+        )?;
+        super::catch_up::supersede_ended_bindings(tx, &seat, cutover)?;
         tx.execute(
             "DELETE FROM warning_offer WHERE seat_id=?1",
             [seat.as_str()],
@@ -691,6 +694,7 @@ pub(crate) fn resolve_direct_pair(
     let joined_seq = schema::next_decision_seq(tx, instance)?;
     tx.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES(?1,?2,?3,?3,?4,?4)",params![thread.as_str(),instance,label,decision.utc.0]).map_err(store_error)?;
     tx.execute("INSERT INTO memberships(thread_id,seat_id,state,voluntary_state,joined_at) VALUES(?1,?2,'joined','joined',?3)",params![thread.as_str(),caller.as_str(),decision.utc.0]).map_err(store_error)?;
+    super::read_cursors::init_for_join(tx, caller, &thread)?;
     tx.execute(
         "INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES(?1,?2,1,?3)",
         params![thread.as_str(), caller.as_str(), joined_seq as i64],
@@ -913,6 +917,7 @@ pub fn join(
                 params![command.thread.as_str(),caller.as_str(),episode,decision.utc.0]).map_err(store_error)?;
             tx.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES (?1,?2,?3,?4)",
                 params![command.thread.as_str(),caller.as_str(),episode,seq as i64]).map_err(store_error)?;
+            super::read_cursors::init_for_join(tx, &caller, &command.thread)?;
             let payload = serde_json::json!({"action":"join", "seat":caller.as_str(),
                 "generation":actor.binding_generation,"observation":actor.provenance})
             .to_string();
@@ -1110,6 +1115,7 @@ pub fn accept(
                     params![episode,decision.utc.0,thread.as_str(),caller.as_str()]).map_err(store_error)?;
                 tx.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES (?1,?2,?3,?4)",
                     params![thread.as_str(),caller.as_str(),episode,event_seq as i64]).map_err(store_error)?;
+                super::read_cursors::init_for_join(tx, &caller, &thread)?;
             }
             let payload = serde_json::json!({"action":"accept", "seat":caller.as_str(), "invitation":invitation.as_str()}).to_string();
             schema::append_event_once_with_decision_seq(
@@ -1412,6 +1418,7 @@ pub fn accept_required(
                     params![episode,decision.utc.0,command.thread.as_str(),caller.as_str()]).map_err(store_error)?;
                 tx.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES (?1,?2,?3,?4)",
                     params![command.thread.as_str(),caller.as_str(),episode,seq as i64]).map_err(store_error)?;
+                super::read_cursors::init_for_join(tx, &caller, &command.thread)?;
             }
             let payload = serde_json::json!({"action":"accept_required","seat":caller.as_str(),
                 "requirement":command.requirement.as_str(),"invitation":command.invitation.as_str()}).to_string();
@@ -1978,6 +1985,7 @@ fn create_thread_impl(
                 params![thread.as_str(), seat.as_str(), decision.utc.0]).map_err(store_error)?;
             tx.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES (?1,?2,1,?3)",
                 params![thread.as_str(),seat.as_str(),joined_seq as i64]).map_err(store_error)?;
+            super::read_cursors::init_for_join(tx, &seat, &thread)?;
             let payload = serde_json::json!({"action":"create_thread", "goal":command.goal,
                 "actor_seat":seat.as_str()})
             .to_string();
@@ -2388,6 +2396,11 @@ pub(crate) struct AccountableActor {
     pub binding_generation: u64,
     pub observed_at_utc: UtcMillis,
     pub provenance: &'static str,
+    /// The acting binding (spec §2): receipts record it as `ack_binding_id`, sends as
+    /// `sender_binding_id`.
+    pub binding_id: crate::protocol::ids::BindingId,
+    /// Whether the acting binding was connected when the decision resolved it.
+    pub binding_connected: bool,
 }
 impl AccountableActor {
     /// The one durable observation JSON for every accountable decision (send,
@@ -2431,7 +2444,7 @@ pub(crate) fn decide_accountable(
             operation.as_str(),
         )?;
     }
-    let mapping = super::seats::decide_cooperative(
+    let (mapping, resolution) = super::seats::decide_cooperative(
         tx,
         at,
         &claim.instance,
@@ -2442,6 +2455,10 @@ pub(crate) fn decide_accountable(
         obligation,
         digest,
     )?;
+    let binding = resolution.binding();
+    // The daemon decides read-only from the resolved binding's role (TRUST-POLICY A2); the
+    // claim-shape check in dispatch is only an early refusal.
+    require_top_level_binding(binding)?;
     Ok(AccountableActor {
         harness: claim.harness,
         native_session: claim.native_session.clone(),
@@ -2451,7 +2468,22 @@ pub(crate) fn decide_accountable(
         binding_generation: mapping.generation,
         observed_at_utc: at.utc,
         provenance: claim.harness.cooperative_provenance(),
+        binding_id: binding.binding_id.clone(),
+        binding_connected: binding.liveness == super::bindings::Liveness::Connected,
     })
+}
+
+/// The resolved binding must be top-level: a subagent binding is read-only (spec decision 13).
+pub(crate) fn require_top_level_binding(
+    binding: &super::bindings::BindingRow,
+) -> Result<(), ApiError> {
+    if binding.role == super::bindings::BindingRole::Subagent {
+        return Err(api_error(
+            ErrorCode::SubagentReadOnly,
+            crate::protocol::authority::SUBAGENT_READ_ONLY_DETAIL,
+        ));
+    }
+    Ok(())
 }
 
 /// Complete cooperative control digest.
@@ -2540,12 +2572,155 @@ pub fn complete_inbox_delivery(
                 &ObligationRef::CheckIn(seat.clone()),
                 &digest,
             )?;
-            for id in &request.messages {
-                super::lazy_delivery::complete_addressed(tx, &request.claim.instance, seat, id)?;
-            }
+            // The display counts for the claim's binding; a claim matching no open binding (a
+            // pre-binding client) completes for the whole seat, as before V34.
+            let binding = super::bindings::match_claim(
+                tx,
+                &super::bindings::BindingKey::from_claim(&request.claim),
+            )?
+            .map(|b| b.binding_id);
+            super::lazy_delivery::complete_for_binding(
+                tx,
+                &request.claim.instance,
+                seat,
+                binding.as_ref(),
+                &request.messages,
+            )?;
             Ok(CommandResult::InboxDeliveryCompleted(
                 request.messages.clone(),
             ))
         },
+    )
+}
+
+/// Advance the caller binding's own cursors over the messages it fully displayed (spec §2). The
+/// claim resolves with the plain trigger (it may enroll); only that binding's cursor moves, so a
+/// subagent claim is accepted: no seat state changes and no receipt is settled. Idempotent per
+/// operation key. Messages of threads the seat has not joined are ignored.
+pub fn advance_cursors(
+    context: &StoreContext,
+    conn: &mut Connection,
+    budget: &CallBudget,
+    request: &crate::protocol::commands::AdvanceCursors,
+) -> Result<CommandResult, ApiError> {
+    let claim = &request.claim;
+    let digest = cooperative_payload_hash("advance_cursors", request)?;
+    schema::execute_budgeted_idempotent_transaction(
+        context,
+        conn,
+        budget,
+        &format!("seat:{}", claim.seat.as_str()),
+        request.operation.as_str(),
+        digest,
+        |tx| super::seats::cooperative_instance(tx, &claim.instance, claim),
+        |tx| super::seats::cooperative_mapping(tx, claim, None).map(|_| ()),
+        |tx, at| {
+            let mapping = super::seats::cooperative_mapping(tx, claim, None)?;
+            // Own stream (spec §2), allowed for subagent bindings.
+            let binding = super::seats::resolve_cooperative(tx, at, claim, None, &mapping)?
+                .binding()
+                .binding_id
+                .clone();
+            let mut by_thread: std::collections::BTreeMap<String, Vec<u64>> = Default::default();
+            for id in &request.displayed {
+                let row: Option<(String, i64)> = tx
+                    .query_row(
+                        "SELECT thread_id,sequence FROM messages WHERE id=?1 AND instance_id=?2",
+                        params![id.as_str(), claim.instance],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )
+                    .optional()
+                    .map_err(store_error)?;
+                let (thread, sequence) = row.ok_or_else(|| {
+                    api_error(ErrorCode::InvalidRequest, "displayed message not found")
+                })?;
+                by_thread.entry(thread).or_default().push(sequence as u64);
+            }
+            for (thread, sequences) in by_thread {
+                let joined: bool = tx
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM memberships WHERE thread_id=?1 AND seat_id=?2 AND state='joined')",
+                        params![thread, claim.seat.as_str()],
+                        |r| r.get(0),
+                    )
+                    .map_err(store_error)?;
+                if joined {
+                    super::read_cursors::advance_through_displayed(
+                        tx,
+                        &binding,
+                        &ThreadId::new(thread),
+                        &sequences,
+                    )?;
+                }
+            }
+            Ok(CommandResult::CursorsAdvanced(request.displayed.clone()))
+        },
+        |_tx, result| Ok(result),
+    )
+}
+
+/// Apply a harness lifecycle event to the caller's bindings (spec §2 Enrollment, §3 end events).
+/// A subagent start enrolls its binding (the parent first, if needed); a subagent stop or a
+/// session end disconnects with reason `liveness_end_event`. Nothing here ends a binding, moves a
+/// seat or touches a receipt, so declared subagent claims are accepted. Stop and end events
+/// resolve no mapping: an unknown binding is a no-op, and a pane that is already gone must still
+/// be able to report its end. Idempotent per operation key.
+pub fn binding_event(
+    context: &StoreContext,
+    conn: &mut Connection,
+    budget: &CallBudget,
+    request: &crate::protocol::commands::BindingEvent,
+) -> Result<CommandResult, ApiError> {
+    use crate::protocol::commands::BindingEventKind;
+    let claim = &request.claim;
+    let digest = cooperative_payload_hash("binding_event", request)?;
+    schema::execute_budgeted_idempotent_transaction(
+        context,
+        conn,
+        budget,
+        &format!("seat:{}", claim.seat.as_str()),
+        request.operation.as_str(),
+        digest,
+        |tx| super::seats::cooperative_instance(tx, &claim.instance, claim),
+        |tx| match request.kind {
+            BindingEventKind::SubagentStart => {
+                super::seats::cooperative_mapping(tx, claim, None).map(|_| ())
+            }
+            BindingEventKind::SubagentStop | BindingEventKind::SessionEnd => Ok(()),
+        },
+        |tx, at| {
+            let changed = match request.kind {
+                BindingEventKind::SubagentStart => {
+                    let mapping = super::seats::cooperative_mapping(tx, claim, None)?;
+                    let created = match &request.child_session {
+                        Some(child) => {
+                            super::seats::attach_registered_child(tx, at, claim, child, &mapping)?
+                        }
+                        // Own stream (spec §2), allowed for subagent bindings: enrolment only.
+                        None => matches!(
+                            super::seats::resolve_cooperative(tx, at, claim, None, &mapping)?,
+                            super::bindings::Resolution::Enrolled { .. }
+                        ),
+                    };
+                    u32::from(created)
+                }
+                BindingEventKind::SubagentStop => {
+                    let key = match &request.child_session {
+                        Some(child) => super::bindings::BindingKey::from_claim(
+                            &super::bindings::registered_child_claim(claim, child)?,
+                        ),
+                        None => super::bindings::BindingKey::from_claim(claim),
+                    };
+                    super::bindings::end_event_subagent(tx, &key, at.utc)?
+                }
+                BindingEventKind::SessionEnd => super::bindings::end_event_session(
+                    tx,
+                    &super::bindings::BindingKey::from_claim(claim),
+                    at.utc,
+                )?,
+            };
+            Ok(CommandResult::BindingEventRecorded { changed })
+        },
+        |_tx, result| Ok(result),
     )
 }

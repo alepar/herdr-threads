@@ -87,6 +87,71 @@ fn glob_listing(data: &Path, child: &str, deadline: Instant) -> Witness {
     Witness::Absent
 }
 
+/// The parent whose subagent listing names `child`: one bounded walk of `data/brain`, like
+/// [`glob_listing`]. `Err`: unreadable or over budget.
+fn listing_parent(data: &Path, child: &str, deadline: Instant) -> Result<Option<String>, ()> {
+    let entries = match std::fs::read_dir(data.join("brain")) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(()),
+    };
+    for (seen, entry) in entries.enumerate() {
+        if seen >= BRAIN_ENTRY_CAP || (seen % 256 == 0 && Instant::now() >= deadline) {
+            return Err(());
+        }
+        let entry = entry.map_err(|_| ())?;
+        let Some(parent) = entry
+            .file_name()
+            .to_str()
+            .filter(|parent| *parent != child && paths::valid_conversation_id(parent))
+            .map(str::to_owned)
+        else {
+            continue;
+        };
+        match listing_entry(data, &parent, child) {
+            Witness::Present => return Ok(Some(parent)),
+            Witness::Unreadable => return Err(()),
+            _ => {}
+        }
+    }
+    Ok(None)
+}
+
+/// The role of the conversation a CLI call names (`ANTIGRAVITY_CONVERSATION_ID`), from the same
+/// witnesses the hooks read: a presence lock is a top-level conversation (agy never creates one for
+/// a child); otherwise the subagent listing names its parent. Neither, or an unreadable witness,
+/// cannot be attributed and fails toward child (refused).
+pub(super) fn caller_session(
+    conversation: &str,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> crate::harness::adapter::CallerSession {
+    use crate::harness::adapter::CallerSession;
+    const BUDGET: std::time::Duration = std::time::Duration::from_millis(500);
+    if !paths::valid_conversation_id(conversation) {
+        return CallerSession::Unattributable("invalid agy conversation id".into());
+    }
+    let Some(home) = env("HOME").filter(|home| !home.is_empty()) else {
+        return CallerSession::Unattributable(
+            "HOME is unset, so agy's witnesses cannot be read".into(),
+        );
+    };
+    let data = AgyRoots::from_home(Path::new(&home)).data;
+    match regular_file(&data.join("presence").join(format!("{conversation}.lock"))) {
+        Witness::Present => return CallerSession::TopLevel,
+        Witness::Unreadable => {
+            return CallerSession::Unattributable("agy presence lock unreadable".into());
+        }
+        _ => {}
+    }
+    match listing_parent(&data, conversation, Instant::now() + BUDGET) {
+        Ok(Some(parent)) => CallerSession::Subagent { parent },
+        Ok(None) => CallerSession::Unattributable(
+            "agy conversation has no presence lock and no parent listing".into(),
+        ),
+        Err(()) => CallerSession::Unattributable("agy subagent listings unreadable".into()),
+    }
+}
+
 pub(super) fn local_evidence(request: &LocalEvidenceRequest<'_>) -> LocalEvidence {
     let Some(event) = request
         .input

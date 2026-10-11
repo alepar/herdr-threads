@@ -6,7 +6,8 @@
     "text": "DELIVERY-UNEXPECTED"
   },
   "vars": {
-    "cwd": "/unset"
+    "cwd": "/unset",
+    "thread": "/unset"
   },
   "steps": [
     {
@@ -22,6 +23,28 @@
     },
     {
       "label": "wake-join",
+      "match": {
+        "contains": [
+          "herdr-threads: wake up"
+        ],
+        "not_contains": [
+          "STOP-BUSY",
+          "STOP-NOTE"
+        ]
+      },
+      "reply": {
+        "call": "run_command",
+        "args": {
+          "CommandLine": "herdr-threads accept {var.thread}",
+          "Cwd": "{var.cwd}",
+          "WaitMsBeforeAsync": 1000,
+          "toolAction": "gate",
+          "toolSummary": "gate"
+        }
+      }
+    },
+    {
+      "label": "wake-join-done",
       "match": {
         "contains": [
           "herdr-threads: wake up"

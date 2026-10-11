@@ -77,9 +77,9 @@ pub enum Command {
     /// TRUST-POLICY C1: seatless resume-only reattachment decision.
     ContinuityCheckIn(ContinuityCheckIn),
     /// TRUST-POLICY A3 `managed_launch`: `launch` reports a correlated,
-    /// observed startup so the daemon can open an unregistered occupant
-    /// binding on a seat with no open binding (ht-5n6). Sent only to a daemon
-    /// advertising `seat.managed_launch`.
+    /// observed startup so the daemon can open an unregistered placeholder
+    /// binding carrying the started process's fingerprint (ht-5n6, ht-54r.4).
+    /// Sent only to a daemon advertising `seat.managed_launch`.
     RecordManagedLaunch(RecordManagedLaunch),
     CheckIn(CheckIn),
     /// Person check-in over an agent's binding, as the local account
@@ -109,6 +109,13 @@ pub enum Command {
     DeliveryConfirm(crate::protocol::delivery::DeliveryConfirm),
     /// Presentation bookkeeping only; never an ACK or adoption.
     CompleteInboxDelivery(CompleteInboxDelivery),
+    /// Advance the caller binding's own read cursors over messages it fully displayed. Allowed
+    /// for subagent bindings: it changes only the caller's read position, never seat state.
+    AdvanceCursors(AdvanceCursors),
+    /// A harness lifecycle event about a binding (spec §2 Enrollment, §3 end events): a subagent
+    /// start enrolls its binding, a subagent stop or session end disconnects. Not an accountable
+    /// seat write, so declared subagents may report it.
+    BindingEvent(BindingEvent),
     /// Set the caller seat's `wake_on` preference (TRUST-POLICY A5); gated by
     /// `seat.wake_on_v1`.
     SetWakeOn(SetWakeOn),
@@ -407,6 +414,10 @@ pub struct SeatInspectQuery {
 pub struct InboxQuery {
     pub seat: Option<SeatId>,
     pub page: PageRequest,
+    /// The reading binding's claim (ht-54r.7). With it the daemon serves that binding's own
+    /// stream (spec §2 Inbox, per binding); without it, today's per-seat page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claim: Option<CallerClaim>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -551,6 +562,12 @@ pub struct AttentionDigestQuery {
     /// rows never enter the wake frontier either way.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub lazy: bool,
+    /// The reading binding's claim (ht-54r.9). With it the daemon computes the digest for that
+    /// binding: its own unread mail and its own notice frontier, and a token carrying the
+    /// binding. Sent only to a daemon advertising `attention.binding_digest_v1`. A claim whose
+    /// session has no binding yet reads the seat-level digest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claim: Option<CallerClaim>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -600,6 +617,9 @@ pub struct ContinuityCheckIn {
     /// The execution id the successor binding carries; chosen by the client
     /// once per intent so every retry under the operation key repeats it.
     pub execution: ExecutionId,
+    /// The resumed session's liveness fingerprint (decision 9); the successor binding records it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub liveness: Option<crate::protocol::authority::LivenessFingerprint>,
 }
 impl ContinuityCheckIn {
     pub const RESUME_SOURCE: &'static str = "resume";
@@ -634,6 +654,9 @@ pub struct RecordManagedLaunch {
     pub incarnation: String,
     pub host_boot: HostBootId,
     pub target_generation: u64,
+    /// PID and start stamp of the process Herdr's guarded start left in the pane (host process
+    /// info), the placeholder binding's liveness fingerprint.
+    pub fingerprint: crate::protocol::authority::LivenessFingerprint,
 }
 impl RecordManagedLaunch {
     pub fn validate(&self) -> Result<(), &'static str> {
@@ -644,6 +667,7 @@ impl RecordManagedLaunch {
             || self.incarnation.len() > 128
             || self.terminal.as_str().is_empty()
             || self.host_boot.as_str().is_empty()
+            || self.fingerprint.pid == 0
         {
             return Err("managed launch evidence out of range");
         }
@@ -656,6 +680,10 @@ pub struct CheckIn {
     pub mode: CheckInMode,
     pub claim: CallerClaim,
     pub operation: OperationId,
+    /// Hermes `parent_session_id`: a predecessor hint the daemon verifies (same seat, harness,
+    /// top-level binding, same process fingerprint) before it links lineage; otherwise ignored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lineage_parent: Option<NativeSessionId>,
 }
 /// Lifecycle requests deliberately rotate using a fixed expected generation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -887,6 +915,40 @@ pub struct CompleteInboxDelivery {
     pub via: Option<LazyCompletionVia>,
 }
 
+/// Advance the caller binding's cursors over messages it fully displayed (spec §2). Allowed for
+/// subagent bindings: it changes only the caller's own read position, never seat state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AdvanceCursors {
+    pub claim: CallerClaim,
+    pub operation: OperationId,
+    pub displayed: Vec<MessageId>,
+}
+
+/// What a [`BindingEvent`] reports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BindingEventKind {
+    SubagentStart,
+    SubagentStop,
+    SessionEnd,
+}
+
+/// A harness lifecycle event about a binding (spec §2 Enrollment, §3 end events). Not an
+/// accountable seat write: allowed for subagent claims.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BindingEvent {
+    /// Top-level ids for `SessionEnd`; the parent session plus the agent id (Claude, Codex) for
+    /// subagent events. For a Hermes delegate it is the parent's top-level claim.
+    pub claim: CallerClaim,
+    pub kind: BindingEventKind,
+    /// Hermes only: the delegate child's own session id (`subagent_start` / `subagent_stop`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child_session: Option<NativeSessionId>,
+    pub operation: OperationId,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SendMessage {
@@ -1035,6 +1097,32 @@ pub const MAX_SEARCH_CANDIDATES: u16 = 100;
 pub const MAX_BATCH_ITEMS: usize = 100;
 
 impl Command {
+    /// The caller claim of an accountable command, if it carries one. Queries, `Summary` and
+    /// `AdvanceCursors` carry none here, so a subagent may issue them.
+    pub fn accountable_claim(&self) -> Option<&crate::protocol::authority::CallerClaim> {
+        match self {
+            Self::CheckIn(v) | Self::OperatorCheckIn(v) => Some(&v.claim),
+            Self::BeginHandoff(v) | Self::CompleteHandoff(v) => Some(&v.identity.claim),
+            Self::CreateThread(v) => Some(&v.claim),
+            Self::EnsureDirectThread(v) => Some(&v.claim),
+            Self::Invite(v) => Some(&v.claim),
+            Self::Join(v) => Some(&v.claim),
+            Self::Accept(v) => Some(&v.claim),
+            Self::AcceptRequired(v) => Some(&v.claim),
+            Self::Reject(v) => Some(&v.claim),
+            Self::SendMessage(v) => Some(&v.claim),
+            Self::Ack(v) | Self::AckDisplayed(v) => Some(&v.claim),
+            Self::AckModDelivered(v) => Some(&v.claim),
+            Self::CompleteInboxDelivery(v) => Some(&v.claim),
+            Self::SetWakeOn(v) => Some(&v.claim),
+            Self::Leave(v) => Some(&v.claim),
+            Self::SetTopic(v) => Some(&v.claim),
+            Self::SetThreadName(v) => Some(&v.claim),
+            Self::Archive(v) | Self::Reopen(v) => Some(&v.claim),
+            _ => None,
+        }
+    }
+
     pub fn validate(&self) -> Result<(), &'static str> {
         match self {
             Self::HandoffDelivery(v) => return v.validate(),
@@ -1125,31 +1213,23 @@ impl Command {
                 }
             }
         }
-        let claim = match self {
-            Self::CheckIn(v) | Self::OperatorCheckIn(v) => Some(&v.claim),
-            Self::BeginHandoff(v) | Self::CompleteHandoff(v) => Some(&v.identity.claim),
-            Self::CreateThread(v) => Some(&v.claim),
-            Self::EnsureDirectThread(v) => Some(&v.claim),
-            Self::Invite(v) => Some(&v.claim),
-            Self::Join(v) => Some(&v.claim),
-            Self::Accept(v) => Some(&v.claim),
-            Self::AcceptRequired(v) => Some(&v.claim),
-            Self::Reject(v) => Some(&v.claim),
-            Self::SendMessage(v) => Some(&v.claim),
-            Self::Ack(v) | Self::AckDisplayed(v) => Some(&v.claim),
-            Self::AckModDelivered(v) => Some(&v.claim),
+        // Hook-pull delivery answers a subagent with its own refusal reply (delivery-policy DP6),
+        // so it is not an early-refused accountable claim; its binding fields are still checked.
+        let claim = self.accountable_claim().or(match self {
             Self::DeliveryPull(v) => Some(&v.claim),
             Self::DeliveryPullV2(v) => Some(&v.claim),
             Self::DeliveryPresentationConfirmV2(v) => Some(&v.claim),
             Self::DeliveryConfirm(v) => Some(&v.claim),
-            Self::CompleteInboxDelivery(v) => Some(&v.claim),
-            Self::SetWakeOn(v) => Some(&v.claim),
-            Self::Leave(v) => Some(&v.claim),
-            Self::SetTopic(v) => Some(&v.claim),
-            Self::SetThreadName(v) => Some(&v.claim),
-            Self::Archive(v) | Self::Reopen(v) => Some(&v.claim),
             _ => None,
-        };
+        });
+        if let Some(claim) = claim {
+            claim.validate_binding_fields()?;
+        }
+        if let Self::AttentionDigest(query) | Self::AttentionDigestDelivery(query) = self
+            && let Some(claim) = &query.claim
+        {
+            claim.validate_binding_fields()?;
+        }
         if claim.is_some_and(|v| v.role == crate::protocol::authority::CallerRole::Subagent) {
             return Err("declared subagents cannot perform accountable operations");
         }
@@ -1222,6 +1302,11 @@ impl Command {
             }
             Self::AcceptRequired(accept) => accept.validate(),
             Self::Reject(reject) => validate_rejection_reason(&reject.reason),
+            Self::CheckIn(check) | Self::OperatorCheckIn(check)
+                if check.lineage_parent.as_ref() == Some(&check.claim.native_session) =>
+            {
+                Err("lineage parent is the claiming session itself")
+            }
             Self::ContinuityCheckIn(continuity) => continuity.validate(),
             Self::RecordManagedLaunch(launch) => launch.validate(),
             Self::OperatorOrphanInvite(invite) if invite.deadline_millis == Some(0) => {
@@ -1261,6 +1346,30 @@ impl Command {
                 if query.messages.is_empty() || query.messages.len() > MAX_BATCH_ITEMS =>
             {
                 Err("message delivery mode batch must contain 1..=100 messages")
+            }
+            Self::BindingEvent(event) => {
+                event.claim.validate_binding_fields()?;
+                let subagent_event = event.kind != BindingEventKind::SessionEnd;
+                match (&event.child_session, event.claim.agent_id.is_some()) {
+                    (Some(_), true) => Err("a delegate child event carries the parent's claim"),
+                    (Some(_), false) if !subagent_event => {
+                        Err("a session end names no child session")
+                    }
+                    (None, false) if subagent_event => {
+                        Err("a subagent event names an agent id or a child session")
+                    }
+                    (None, true) if !subagent_event => Err("a session end is top-level"),
+                    _ => Ok(()),
+                }
+            }
+            Self::AdvanceCursors(advance) => {
+                advance.claim.validate_binding_fields()?;
+                // An empty batch only enrolls the caller's binding (a read that showed history
+                // stats and no message): it moves no cursor.
+                if advance.displayed.len() > MAX_BATCH_ITEMS || has_duplicate(&advance.displayed) {
+                    return Err("invalid cursor advance batch");
+                }
+                Ok(())
             }
             Self::CompleteInboxDelivery(completion)
                 if completion.messages.is_empty()

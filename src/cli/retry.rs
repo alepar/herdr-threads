@@ -346,6 +346,7 @@ fn is_deterministic_rejection(code: &ErrorCode) -> bool {
         code,
         ErrorCode::InvalidRequest
             | ErrorCode::Unauthorized
+            | ErrorCode::SubagentReadOnly
             | ErrorCode::Archived
             | ErrorCode::Conflict
             | ErrorCode::OperationPayloadMismatch
@@ -372,6 +373,7 @@ pub(crate) fn is_continuity_refusal(code: &ErrorCode) -> bool {
                 | ErrorCode::CallerUnverified
                 | ErrorCode::Unsupported
                 | ErrorCode::SequenceExhausted
+                | ErrorCode::LivenessFingerprintRequired
         )
 }
 

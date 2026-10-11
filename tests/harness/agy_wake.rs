@@ -46,12 +46,14 @@ fn claim() -> CallerClaim {
     CallerClaim {
         instance: "i".into(),
         seat: SeatId::new("s"),
-        binding_generation: 0,
+        binding_generation: 1,
         role: CallerRole::TopLevel,
         harness: Harness::Agent(builtins().agent("agy").unwrap()),
         native_session: NativeSessionId::new(CONV),
         execution: ExecutionId::new("00000000-0000-4000-8000-000000000001"),
         target: HostTargetId::new("p"),
+        agent_id: None,
+        liveness: Some(crate::protocol::authority::LivenessFingerprint::TEST),
     }
 }
 
@@ -74,7 +76,7 @@ fn service(temp: &Temp) -> DomainService {
         [],
     )
     .unwrap();
-    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s','i','resolved','native','p',0,0,0)", []).unwrap();
+    db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s','i','resolved','native','p',1,0,0)", []).unwrap();
     db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','p','b',1,0,1,'fresh','unknown','unknown',0,0,'term-p','inc','coherent_enumeration',1)", []).unwrap();
     db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES ('t','i','topic','goal',0,0,2)", []).unwrap();
     db.execute(
@@ -109,10 +111,11 @@ fn the_woken_turn_receives_the_bodies_by_injection() {
         .handle(
             Command::CheckIn(CheckIn {
                 mode: CheckInMode::Lifecycle {
-                    expected_binding_generation: 0,
+                    expected_binding_generation: 1,
                 },
                 claim: claim(),
                 operation: crate::protocol::ids::OperationId::new("ci-1"),
+                lineage_parent: None,
             }),
             peer(),
             &budget(),

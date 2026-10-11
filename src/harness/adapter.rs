@@ -38,6 +38,30 @@ pub trait HarnessAdapter: Send + Sync + 'static {
     fn qualified_turn_policy(&self) -> super::context::QualifiedTurnPolicy {
         super::context::QualifiedTurnPolicy::Strict
     }
+    /// Which decoded events may enroll a seat. Grants no authority by itself.
+    fn enrollment_policy(&self) -> EnrollmentPolicy {
+        EnrollmentPolicy::Lifecycle
+    }
+    /// How a CLI call made inside a session of this harness names its session from the process
+    /// environment and ancestry (session-keyed bindings, spec §1). `None`: the generic caller
+    /// derivation does not know this harness's shape.
+    fn caller_env(&self) -> Option<CallerEnvShape> {
+        None
+    }
+    /// How the daemon and the client treat this harness's subagent and child sessions.
+    fn binding_policy(&self) -> BindingPolicy {
+        BindingPolicy::default()
+    }
+    /// The hook events this harness's installed integration must register for herdr-threads to
+    /// work; a missing one marks the install stale.
+    fn required_hook_events(&self) -> Vec<&'static str> {
+        Vec::new()
+    }
+    /// A daemon-free rewrite of this harness's hook stdout, applied to every outcome. `None`:
+    /// leave `existing_stdout` as it is.
+    fn rewrite_hook_output(&self, _input: &[u8], _existing_stdout: &[u8]) -> Option<Vec<u8>> {
+        None
+    }
     fn evidence_observations(&self, input: &HookInput) -> Vec<EvidenceProjection> {
         let observed = self.classify(input);
         self.contracts()
@@ -244,6 +268,76 @@ pub trait HarnessAdapter: Send + Sync + 'static {
     fn transcript_version(&self) -> Option<&'static TranscriptVersionSpec> {
         None
     }
+}
+
+/// A harness's caller shape for environment attribution (spec §1, decision 15): the process the
+/// harness runs as and the variable its children inherit naming the native session. A caller
+/// under such a process whose variable is unset is refused (no session id), never attributed to
+/// the pane. Recorded as `cooperative_env_session` (TRUST-POLICY A3); never verified.
+#[derive(Debug, Clone, Copy)]
+pub struct CallerEnvShape {
+    /// argv[0] basenames of the harness's own process.
+    pub process_names: &'static [&'static str],
+    /// Environment variable carrying the native session id in the harness's descendants.
+    pub session_var: &'static str,
+    /// Client-local evidence of the session's role, given its session id and the caller's
+    /// environment (cooperative, never authority: the daemon decides the claim against A2).
+    /// `None`: every session is top-level.
+    pub role: Option<CallerRoleWitness>,
+    /// Other process shapes of the harness beyond the argv[0] names (argv contents, interpreter
+    /// launchers).
+    pub process_match: Option<fn(&crate::ports::ProcessRecord) -> bool>,
+    /// A variable in which the harness exports its own pid to its descendants: a process with
+    /// that pid is this harness, and its record is preferred for the fingerprint while it exists.
+    pub pid_var: Option<&'static str>,
+    /// A process of this harness that has no pane (a managed daemon): a caller under it is
+    /// refused `managed_daemon`.
+    pub paneless: Option<PanelessProcess>,
+}
+
+/// A process of a harness that has no pane, and the refusal text for a caller under it.
+#[derive(Debug, Clone, Copy)]
+pub struct PanelessProcess {
+    pub matches: fn(&crate::ports::ProcessRecord) -> bool,
+    /// The refusal message, given the pid of the paneless process.
+    pub refusal: fn(u32) -> String,
+}
+
+/// Adapter-declared facts about how a harness's sessions bind, used by the client and the daemon.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BindingPolicy {
+    /// The harness's own hook passes a subagent's id to the CLI as `--agent-id`: the client
+    /// honours `--agent-id` only for such a harness, and its subagent bindings are recorded
+    /// `cooperative_hook_agent` (else `cooperative_env_session`).
+    pub hook_agent_id: bool,
+    /// Child sessions are registered by their parent as subagent bindings keyed
+    /// `(seat, harness, child, agent_id = child)`; a top-level-shaped claim naming the child
+    /// session resolves to that binding.
+    pub registered_child_sessions: bool,
+}
+
+/// `CallerEnvShape::role`: the session id and the caller's environment lookup.
+pub type CallerRoleWitness = fn(&str, &dyn Fn(&str) -> Option<String>) -> CallerSession;
+
+/// What a harness's local evidence says about the session a CLI call names (spec §1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CallerSession {
+    TopLevel,
+    /// A child session of the top-level session `parent`: the call is a subagent call whose agent
+    /// id is the child's own session id.
+    Subagent {
+        parent: String,
+    },
+    /// A subagent of the named session whose agent id is `agent`.
+    Marked {
+        agent: String,
+    },
+    /// A subagent marker in `var` is present but unparseable: refused, never read as top-level.
+    MalformedMarker {
+        var: &'static str,
+    },
+    /// The evidence cannot tell: refused, never read as top-level (fails toward child).
+    Unattributable(String),
 }
 
 /// One environment variable that marks an agent process of this harness.
@@ -503,11 +597,37 @@ pub enum EventIntent {
     Lifecycle(crate::harness::context::EventKind),
     Current,
     QualifiedTurn(crate::harness::context::QualifiedTurn),
+    /// A witnessed top-level session start: Hermes' CLI `on_session_start` with the
+    /// bridge's enrollment witness. It enrolls the pane through the ordinary resolver
+    /// without a check-in; the first qualified turn checks in.
+    Enroll,
     Observer,
     DeclaredReset(super::context::DeclaredReset),
 }
+/// What an adapter lets enroll a seat.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnrollmentPolicy {
+    /// Only original admitted lifecycle intent enrolls.
+    Lifecycle,
+    /// Lifecycle, plus a witnessed session start and a witnessed turn on an unowned pane.
+    WitnessedStartAndUnownedTurn,
+}
+/// Why a decoded event may enroll.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnrollmentKind {
+    Lifecycle,
+    SessionStart,
+    /// Eligible for the Unowned fallback; the seat check belongs to the caller.
+    UnownedTurn,
+}
+/// Who vouched that the event came from an interactive top-level session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnrollmentWitness {
+    CliPlatform,
+}
 #[derive(Clone)]
 pub struct EventMetadata {
+    pub enrollment_witness: Option<EnrollmentWitness>,
     pub skill_pointer: bool,
     /// An adapter callback can shorten the core end-to-end limit.
     pub callback_deadline: Option<std::time::Instant>,
@@ -516,6 +636,8 @@ pub struct EventMetadata {
     pub domain: ContractDomain,
     pub native_event: String,
     pub shape_fields: Vec<String>,
+    /// The subagent id a native event carried (see `LifecycleEvent::agent_id`).
+    pub agent_id: Option<String>,
 }
 #[derive(Clone)]
 pub enum DeliveryEligibility {
@@ -528,6 +650,46 @@ pub enum RuntimeAttribution {
     Attributed(RuntimeIdentity),
     Unavailable { diagnostic: String },
 }
+/// A decoded harness start/stop/end event that enrolls or disconnects a binding (spec §2 Enrollment,
+/// §3 end events). Carried next to the event's ordinary intent: a Claude or Codex `SubagentStart`
+/// still renders its child guidance after the binding is enrolled.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BindingEventDecode {
+    pub kind: crate::protocol::commands::BindingEventKind,
+    /// The subagent's agent id (Claude and Codex `agent_id`); `None` for a session end and for a
+    /// Hermes delegate, which is known by its child session.
+    pub agent_id: Option<String>,
+    /// Hermes only: the delegate child's own session id.
+    pub child_session: Option<String>,
+    /// The session the claim names when it is not the event's own native session: a Hermes
+    /// delegate event is about the child session, its claim is the parent's.
+    pub claim_session: Option<String>,
+}
+impl BindingEventDecode {
+    /// The event a native Claude or Codex hook payload (`hook_event_name`, `agent_id`) carries,
+    /// if it is a start/stop/end event.
+    pub fn from_native_payload(payload: &serde_json::Value) -> Option<Self> {
+        use crate::protocol::commands::BindingEventKind as Kind;
+        let kind = match payload.get("hook_event_name")?.as_str()? {
+            "SubagentStart" => Kind::SubagentStart,
+            "SubagentStop" => Kind::SubagentStop,
+            "SessionEnd" => Kind::SessionEnd,
+            _ => return None,
+        };
+        let agent_id = payload
+            .get("agent_id")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned);
+        // A subagent event names its agent; a session end is the root's (an `agent_id` on one is
+        // a malformed payload and is not trusted to disconnect anything).
+        (agent_id.is_some() == (kind != Kind::SessionEnd)).then_some(Self {
+            kind,
+            agent_id,
+            child_session: None,
+            claim_session: None,
+        })
+    }
+}
 #[derive(Clone)]
 pub struct DecodedEvent {
     pub harness: crate::harness::registry::AgentHarnessId,
@@ -538,6 +700,8 @@ pub struct DecodedEvent {
     pub metadata: EventMetadata,
     pub delivery: DeliveryEligibility,
     pub runtime: RuntimeAttribution,
+    /// The binding enrollment or disconnect this event reports, if any.
+    pub binding_event: Option<BindingEventDecode>,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Witness {
@@ -1230,6 +1394,36 @@ impl DecodedEvent {
                 EventIntent::Lifecycle(_) | EventIntent::Current | EventIntent::QualifiedTurn(_)
             )
     }
+    /// The enrollment this event earns under `policy`, if any.
+    pub fn enrollment(&self, policy: EnrollmentPolicy) -> Option<EnrollmentKind> {
+        use super::context::EventKind;
+        let top = matches!(self.role, EventRole::TopLevel);
+        // A qualified turn's normalized Startup/Clear is not lifecycle evidence.
+        if matches!(
+            self.intent,
+            EventIntent::Lifecycle(EventKind::Startup | EventKind::Clear | EventKind::Resume)
+        ) && top
+            && matches!(self.delivery, DeliveryEligibility::Context)
+            && self.can_check_in()
+        {
+            return Some(EnrollmentKind::Lifecycle);
+        }
+        if policy != EnrollmentPolicy::WitnessedStartAndUnownedTurn
+            || !top
+            || self.metadata.enrollment_witness != Some(EnrollmentWitness::CliPlatform)
+        {
+            return None;
+        }
+        match self.intent {
+            EventIntent::Enroll => Some(EnrollmentKind::SessionStart),
+            EventIntent::QualifiedTurn(_)
+                if matches!(self.delivery, DeliveryEligibility::Context) =>
+            {
+                Some(EnrollmentKind::UnownedTurn)
+            }
+            _ => None,
+        }
+    }
 }
 
 /// The default daemon observation: install availability, then admission.
@@ -1434,6 +1628,7 @@ mod tests {
             event_id: "event".into(),
             intent: EventIntent::Current,
             metadata: EventMetadata {
+                enrollment_witness: None,
                 context_source: "PreToolUse".into(),
                 callback_deadline: None,
                 skill_pointer: false,
@@ -1441,11 +1636,13 @@ mod tests {
                 domain: ContractDomain::Native,
                 native_event: "Tool".into(),
                 shape_fields: vec![],
+                agent_id: None,
             },
             delivery: DeliveryEligibility::Context,
             runtime: RuntimeAttribution::Unavailable {
                 diagnostic: "unavailable".into(),
             },
+            binding_event: None,
         };
         for role in [EventRole::TopLevel, EventRole::Subagent, EventRole::Unknown] {
             event.role = role;
@@ -1455,6 +1652,127 @@ mod tests {
             assert_eq!(event.can_check_in(), role == EventRole::TopLevel);
             event.intent = EventIntent::Observer;
             assert!(!event.can_check_in());
+        }
+    }
+    #[test]
+    fn enrollment_policy_maps_decoded_events_to_kinds() {
+        use super::super::context::{EventKind, QualifiedTurn};
+        use EnrollmentKind as K;
+        use EnrollmentPolicy::{Lifecycle as L, WitnessedStartAndUnownedTurn as W};
+        let cli = Some(EnrollmentWitness::CliPlatform);
+        let mut event = DecodedEvent {
+            harness: super::super::registry::builtins().agent("codex").unwrap(),
+            role: EventRole::TopLevel,
+            native_session: Some("s".into()),
+            event_id: "event".into(),
+            intent: EventIntent::Current,
+            metadata: EventMetadata {
+                enrollment_witness: None,
+                context_source: "SessionStart".into(),
+                callback_deadline: None,
+                skill_pointer: false,
+                capability: crate::harness::Capability::ObservedInput,
+                domain: ContractDomain::Native,
+                native_event: "SessionStart".into(),
+                shape_fields: vec![],
+                agent_id: None,
+            },
+            delivery: DeliveryEligibility::Context,
+            runtime: RuntimeAttribution::Unavailable {
+                diagnostic: "unavailable".into(),
+            },
+            binding_event: None,
+        };
+        let turn = || {
+            EventIntent::QualifiedTurn(QualifiedTurn {
+                lineage_parent: None,
+                session: "s".into(),
+                event_key: "event".into(),
+                reset: None,
+                ordering: None,
+            })
+        };
+        for policy in [L, W] {
+            for kind in [EventKind::Startup, EventKind::Clear, EventKind::Resume] {
+                event.role = EventRole::TopLevel;
+                event.intent = EventIntent::Lifecycle(kind);
+                assert_eq!(event.enrollment(policy), Some(K::Lifecycle));
+                for role in [EventRole::Subagent, EventRole::Unknown] {
+                    event.role = role;
+                    assert_eq!(event.enrollment(policy), None);
+                }
+            }
+            event.role = EventRole::TopLevel;
+            for kind in [EventKind::Compact, EventKind::Restart] {
+                event.intent = EventIntent::Lifecycle(kind);
+                assert_eq!(event.enrollment(policy), None);
+            }
+            event.intent = EventIntent::Lifecycle(EventKind::Startup);
+            event.delivery = DeliveryEligibility::ObserverOnly;
+            assert_eq!(event.enrollment(policy), None);
+            event.delivery = DeliveryEligibility::Context;
+            for intent in [
+                EventIntent::Current,
+                EventIntent::Observer,
+                EventIntent::Enroll,
+            ] {
+                event.intent = intent;
+                assert_eq!(event.enrollment(policy), None);
+            }
+        }
+        // Under Lifecycle a witnessed turn or start is not admitted.
+        event.metadata.enrollment_witness = cli;
+        event.intent = turn();
+        assert_eq!(event.enrollment(L), None);
+        event.intent = EventIntent::Enroll;
+        assert_eq!(event.enrollment(L), None);
+        // Under the witnessed policy.
+        assert_eq!(event.enrollment(W), Some(K::SessionStart));
+        event.intent = turn();
+        assert_eq!(event.enrollment(W), Some(K::UnownedTurn));
+        event.delivery = DeliveryEligibility::ObserverOnly;
+        assert_eq!(event.enrollment(W), None);
+        event.delivery = DeliveryEligibility::Context;
+        for role in [EventRole::Subagent, EventRole::Unknown] {
+            event.role = role;
+            event.intent = EventIntent::Enroll;
+            assert_eq!(event.enrollment(W), None);
+            event.intent = turn();
+            assert_eq!(event.enrollment(W), None);
+        }
+        event.role = EventRole::TopLevel;
+        event.intent = EventIntent::DeclaredReset(super::super::context::DeclaredReset {
+            session: "s".into(),
+            event_key: "event".into(),
+            ordering: super::super::context::ObservationOrder {
+                process_nonce: uuid::Uuid::nil(),
+                sequence: 0,
+                observed_at_millis: 0,
+                callback_budget_millis: 0,
+            },
+        });
+        assert_eq!(event.enrollment(W), None);
+        event.intent = EventIntent::Observer;
+        assert_eq!(event.enrollment(W), None);
+        event.metadata.enrollment_witness = None;
+        event.intent = EventIntent::Enroll;
+        assert_eq!(event.enrollment(W), None);
+        event.intent = turn();
+        assert_eq!(event.enrollment(W), None);
+        // Enroll is neither a check-in nor a context event.
+        event.intent = EventIntent::Enroll;
+        assert!(!event.can_check_in());
+        assert!(event.context_event().is_none());
+        // Only Hermes overrides the default.
+        let builtins = super::super::registry::builtins();
+        let hermes = builtins.by_id(builtins.agent("hermes").unwrap()).unwrap();
+        for registration in builtins.registrations() {
+            let expected = if std::ptr::eq(registration, hermes) {
+                EnrollmentPolicy::WitnessedStartAndUnownedTurn
+            } else {
+                EnrollmentPolicy::Lifecycle
+            };
+            assert_eq!(registration.enrollment_policy(), expected);
         }
     }
     #[test]
@@ -1588,9 +1906,16 @@ impl DecodedEvent {
             "PreToolUse"
         } else if event.source == "SubagentStart" {
             "SubagentStart"
+        } else if event.source == "SubagentStop" {
+            "SubagentStop"
+        } else if event.source == "SessionEnd" {
+            "SessionEnd"
         } else {
             "SessionStart"
         };
+        // A subagent's or session's end is a bookkeeping event: it never checks in and renders
+        // nothing.
+        let stop = matches!(native_event, "SubagentStop" | "SessionEnd");
         Self {
             harness,
             role: match event.role {
@@ -1599,12 +1924,15 @@ impl DecodedEvent {
             },
             native_session: event.native_session,
             event_id: event.event_id,
-            intent: if event.kind == super::context::EventKind::Tool {
+            intent: if stop {
+                EventIntent::Observer
+            } else if event.kind == super::context::EventKind::Tool {
                 EventIntent::Current
             } else {
                 EventIntent::Lifecycle(event.kind)
             },
             metadata: EventMetadata {
+                enrollment_witness: None,
                 context_source: event.source,
                 callback_deadline: None,
                 skill_pointer: native_event == "SessionStart",
@@ -1612,12 +1940,26 @@ impl DecodedEvent {
                 domain: ContractDomain::Native,
                 native_event: native_event.into(),
                 shape_fields: vec![],
+                agent_id: event.agent_id,
             },
-            delivery: DeliveryEligibility::Context,
+            delivery: if stop {
+                DeliveryEligibility::Ineligible
+            } else {
+                DeliveryEligibility::Context
+            },
             runtime: RuntimeAttribution::Unavailable {
                 diagnostic: "runtime attribution is separate".into(),
             },
+            binding_event: None,
         }
+    }
+    /// [`Self::from_native`] plus the binding enrollment or disconnect the raw hook payload reports.
+    pub fn from_native_payload(event: super::LifecycleEvent, payload: &[u8]) -> Self {
+        let mut decoded = Self::from_native(event);
+        decoded.binding_event = serde_json::from_slice(payload)
+            .ok()
+            .and_then(|value| BindingEventDecode::from_native_payload(&value));
+        decoded
     }
     pub fn context_event(&self) -> Option<super::LifecycleEvent> {
         Some(super::LifecycleEvent {
@@ -1638,7 +1980,9 @@ impl DecodedEvent {
                         super::context::EventKind::Startup
                     }
                 }
-                EventIntent::Observer | EventIntent::DeclaredReset(_) => return None,
+                EventIntent::Enroll | EventIntent::Observer | EventIntent::DeclaredReset(_) => {
+                    return None;
+                }
             },
             native_session: self.native_session.clone(),
             role: match self.role {
@@ -1648,6 +1992,7 @@ impl DecodedEvent {
             },
             event_id: self.event_id.clone(),
             capability: self.metadata.capability,
+            agent_id: self.metadata.agent_id.clone(),
         })
     }
 }

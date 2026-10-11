@@ -4,8 +4,9 @@
 //! proves absence; mutations during a sweep are handled at its completion.
 use super::connection::{api_error, store_error};
 use crate::protocol::{
-    authority::{CallerClaim, CallerRole},
+    authority::CallerClaim,
     delivery::PresentationConsumer,
+    ids::BindingId,
     results::{ApiError, ErrorCode},
     time::CallBudget,
 };
@@ -18,9 +19,10 @@ const SEEK_LIMIT: u16 = 26;
 const POINT_LIMIT: u16 = 64;
 // Each of 13 slots has <=14 nonnegative i64s/bools/enum markers (<700
 // serialized bytes), and one witness has <=8 i64s/markers (<400). The
-// claim has six <=128-byte ASCII-graphic identifiers (<=256 escaped bytes
-// each), bounded enum spelling and u64 generation, and the outer record has
-// <1024 bytes of names/scalars. Thus <13*700+400+6*256+1024=12060 bytes.
+// claim and canonical binding have eight <=128-byte ASCII-graphic identifiers
+// (<=256 escaped bytes each), bounded enum spelling, optional process fingerprint
+// and u64 generation; the outer record has <1024 bytes of names/scalars.
+// Thus <13*700+400+8*256+1024=12572 bytes.
 // Keep a power-of-two ceiling with headroom, enforcing fields AND total bytes.
 const PROOF_BYTES: usize = 32768;
 
@@ -97,6 +99,7 @@ struct Witness {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct State {
+    binding_id: BindingId,
     claim: CallerClaim,
     fence: i64,
     frontier: i64,
@@ -228,6 +231,7 @@ fn check(budget: &CallBudget) -> Result<(), ApiError> {
 }
 fn validate(state: &State) -> Result<(), ApiError> {
     if ![
+        state.binding_id.as_str(),
         state.claim.instance.as_str(),
         state.claim.seat.as_str(),
         state.claim.native_session.as_str(),
@@ -316,12 +320,13 @@ fn validate(state: &State) -> Result<(), ApiError> {
 fn load(
     db: &Connection,
     claim: &CallerClaim,
+    binding: &BindingId,
     consumer: PresentationConsumer,
 ) -> Result<Option<State>, ApiError> {
     let raw: Option<Result<String, ApiError>> = db
         .query_row(
-            "SELECT proof_json FROM presentation_warning_proofs WHERE seat_id=?1 AND consumer=?2",
-            params![claim.seat.as_str(), consumer.as_str()],
+            "SELECT proof_json FROM presentation_warning_proofs WHERE binding_id=?1 AND consumer=?2 AND seat_id=?3",
+            params![binding.as_str(), consumer.as_str(), claim.seat.as_str()],
             |r| {
                 Ok(match r.get_ref(0)? {
                     rusqlite::types::ValueRef::Text(bytes) if bytes.len() <= PROOF_BYTES => {
@@ -353,18 +358,8 @@ fn save(db: &Connection, consumer: PresentationConsumer, state: &State) -> Resul
     if raw.len() > PROOF_BYTES {
         return Err(corrupt("relevance proof byte bound"));
     }
-    db.execute("INSERT INTO presentation_warning_proofs(seat_id,consumer,proof_json) VALUES(?1,?2,?3) ON CONFLICT(seat_id,consumer) DO UPDATE SET proof_json=excluded.proof_json",params![state.claim.seat.as_str(),consumer.as_str(),raw]).map_err(store_error)?;
+    db.execute("INSERT INTO presentation_warning_proofs(seat_id,consumer,proof_json,binding_id) VALUES(?1,?2,?3,?4) ON CONFLICT(binding_id,consumer) DO UPDATE SET proof_json=excluded.proof_json",params![state.claim.seat.as_str(),consumer.as_str(),raw,state.binding_id.as_str()]).map_err(store_error)?;
     Ok(())
-}
-// Fixed admission probes, outside per-candidate accounting. The presentation
-// caller has already applied its complete A2 admission in this transaction.
-fn admitted(db: &Connection, claim: &CallerClaim) -> Result<bool, ApiError> {
-    let generation = i64::try_from(claim.binding_generation)
-        .map_err(|_| corrupt("relevance generation overflow"))?;
-    if claim.role != CallerRole::TopLevel {
-        return Ok(false);
-    }
-    db.query_row("SELECT EXISTS(SELECT 1 FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id AND b.generation=?3 WHERE s.id=?1 AND s.instance_id=?2 AND s.state='resolved' AND s.generation=?3 AND s.target_id=?4 AND b.ended_at IS NULL AND b.native_session=?5 AND b.execution_id=?6 AND b.harness=?7)",params![claim.seat.as_str(),claim.instance,generation,claim.target.as_str(),claim.native_session.as_str(),claim.execution.as_str(),claim.harness.as_str()],|r|r.get(0)).map_err(store_error)
 }
 fn fence(db: &Connection) -> Result<i64, ApiError> {
     let n: i64 = db
@@ -386,11 +381,13 @@ fn confirming(db: &Connection, claim: &CallerClaim) -> Result<bool, ApiError> {
 fn snapshot(
     db: &Connection,
     claim: &CallerClaim,
+    binding: &BindingId,
     frontier: i64,
     work: &mut RelevanceWork,
 ) -> Result<State, ApiError> {
     let mut state = State {
         claim: claim.clone(),
+        binding_id: binding.clone(),
         fence: fence(db)?,
         frontier,
         native_version: db
@@ -527,7 +524,7 @@ fn receipt_pending(points: &mut Points<'_>, message: &str, seat: &str) -> Result
     if retired || not_required || provenance.as_deref() == Some("operator_human") {
         return Ok(false);
     }
-    let human=points.yes(1,"SELECT EXISTS(SELECT 1 FROM occupant_bindings INDEXED BY occupant_bindings_current WHERE seat_id=?1 AND ended_at IS NULL AND harness='human')",[seat])?;
+    let human=points.yes(1,"SELECT EXISTS(SELECT 1 FROM occupant_bindings INDEXED BY occupant_bindings_session_key WHERE seat_id=?1 AND ended_at IS NULL AND harness='human')",[seat])?;
     let waiver: Option<i64> = points.row(
         1,
         "SELECT through_decision_seq FROM human_receipt_waivers WHERE seat_id=?1",
@@ -1202,17 +1199,17 @@ pub(super) fn advance(
         return Err(corrupt("negative relevance notice frontier"));
     }
     let mut work = RelevanceWork::default();
-    if !admitted(db, claim)? {
+    let Some(binding) = super::invitation_content::binding_scope(db, claim)? else {
         return Ok(result(Relevance::Unknown, work));
-    }
+    };
     if confirming(db, claim)? {
         return Ok(result(Relevance::Open, work));
     }
     let now = fence(db)?;
-    let prior = load(db, claim, consumer)?;
+    let prior = load(db, claim, &binding, consumer)?;
     let mut state = match prior {
-        Some(state) if state.claim == *claim => state,
-        _ => snapshot(db, claim, frontier, &mut work)?,
+        Some(state) if state.claim == *claim && state.binding_id == binding => state,
+        _ => snapshot(db, claim, &binding, frontier, &mut work)?,
     };
     if witness(db, &state, frontier, &mut work)? {
         return Ok(result(Relevance::Open, work));
@@ -1222,7 +1219,7 @@ pub(super) fn advance(
         return Ok(result(Relevance::Absent, work));
     }
     if state.absent {
-        state = snapshot(db, claim, frontier, &mut work)?;
+        state = snapshot(db, claim, &binding, frontier, &mut work)?;
     }
     // An advancing notice frontier cannot leave an already-settled notice as
     // a positive witness while this older captured sweep finishes.
@@ -1255,7 +1252,7 @@ pub(super) fn advance(
             // Finish the captured finite sweep before recapture. A full
             // recapture consumes13 seeks; yield if this call lacks room.
             if work.highwater_seeks + SOURCES as u16 <= SEEK_LIMIT {
-                state = snapshot(db, claim, frontier, &mut work)?;
+                state = snapshot(db, claim, &binding, frontier, &mut work)?;
             }
             Relevance::Unknown
         }
@@ -1289,16 +1286,16 @@ pub(super) fn revalidate(
     }
     let now = fence(db)?;
     let mut work = RelevanceWork::default();
-    if !admitted(db, claim)? {
+    let Some(binding) = super::invitation_content::binding_scope(db, claim)? else {
         return Ok(result(Relevance::Unknown, work));
-    }
+    };
     if confirming(db, claim)? {
         return Ok(result(Relevance::Open, work));
     }
-    let Some(state) = load(db, claim, consumer)? else {
+    let Some(state) = load(db, claim, &binding, consumer)? else {
         return Ok(result(Relevance::Unknown, work));
     };
-    if state.claim != *claim {
+    if state.claim != *claim || state.binding_id != binding {
         return Ok(result(Relevance::Unknown, work));
     }
     if witness(db, &state, frontier, &mut work)? {

@@ -94,10 +94,12 @@ auto-approve flag is added.
 Launch is not receipt: it never checks in, accepts or ACKs. Invitations and messages
 sent before launch stay pending; the agent's SessionStart hook shows them, and
 `herdr-threads inbox --seat SEAT` lists them even when the initial prompt is lost.
-After an observed start, a seat with no open binding gets a `managed_launch` binding
-(report `binding`; `seat inspect` shows it as launched, not checked in): it lets the
-daemon wake the idle agent for pending work before its first check-in (some harnesses run no
-SessionStart hook until their first turn), and the agent's first check-in replaces it.
+After an observed start, the seat gets a `managed_launch` placeholder binding next to
+any it already holds (report `binding`; `seat inspect` shows it as launched, not checked
+in): it lets the daemon wake the idle agent for pending work before its first check-in
+(some harnesses run no SessionStart hook until their first turn), and the launched
+harness's first check-in replaces it. It is not recorded when Herdr shows no single
+started process.
 
 A harness that exits right after the start (for example a harness refusing its arguments)
 fails launch at once with invalid_request and the pane's last lines.
@@ -300,8 +302,9 @@ read, ack and accept there with no --cooperative-* flags. Your actions are recor
 operator_human, never as an agent. Messages remain readable, but a human seat owes no ACK and \
 gets no overdue-ACK warning, even when a sender uses --require-ack. Re-run `ht human me init` after a daemon restart to \
 mark yourself available again. It is refused where {refusal} present, and over \
-a seat bound to an agent; `ht human me init --operator` overrides that as the local account (later \
-commands in this pane then run as you). Put --state-dir, --host-endpoint and output flags \
+a seat with a connected agent binding; `ht human me init --operator` overrides that as the local account (later \
+commands in this pane then run as you). A seat holds either you or agents: `me init` ends the seat's \
+disconnected agent bindings, and an agent that checks in there later ends yours. Put --state-dir, --host-endpoint and output flags \
 after human. --human changes output only. Recover retained person/operator intents with \
 `ht human retry REF`."
     )

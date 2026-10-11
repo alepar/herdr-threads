@@ -543,6 +543,36 @@ test('lazy rows are appended at once, busy or idle, and acked via append', async
   expect(idle.submits.length).toBe(0)
 })
 
+test('a message another binding already settled (ack_required false) is appended like a lazy row and never wakes an idle session', async () => {
+  const idle = await harness({ state: IDLE }).boot()
+  idle.line(msg('m1', { ack_required: false }))
+  await flush()
+  expect(idle.appends.length).toBe(1)
+  expect(idle.submits.length).toBe(0)
+  expect(idle.ackRuns()[0].slice(5)).toEqual(['--via', 'append', 'm1'])
+  const busy = await harness({ state: busyState() }).boot()
+  busy.line(msg('m1', { ack_required: false }))
+  await flush()
+  expect(busy.appends.length).toBe(1)
+  expect(busy.submits.length).toBe(0)
+})
+
+test('a promoted wake_on:all lazy row (message, ack_required false, wakes true) still wakes an idle session', async () => {
+  const h = await harness({ state: IDLE }).boot()
+  h.line(msg('p1', { ack_required: false, wakes: true }))
+  await flush()
+  expect(h.submits).toEqual([WAKE])
+  expect(h.appends.length).toBe(1)
+  expect(h.appends[0]).toContain('p1')
+  expect(h.ackRuns()[0]).toContain('p1')
+  // the settled-ordinary control in the same shape minus `wakes` appends without a wake
+  const c = await harness({ state: IDLE }).boot()
+  c.line(msg('s1', { ack_required: false }))
+  await flush()
+  expect(c.submits.length).toBe(0)
+  expect(c.appends.length).toBe(1)
+})
+
 test('an append with deny keeps the lazy row and is retried later', async () => {
   const h = await harness({ state: IDLE }).boot()
   h.appendResult = () => ({ deny: 'readonly' })
@@ -692,6 +722,18 @@ test('per-id ack results: only retryable ids stay for a retry', async () => {
   // stale_generation forgets the delivery so the re-streamed item is delivered again
   expect(h.core.snapshot().rec.delivered.m5).toBe(undefined)
   expect(h.core.snapshot().rec.delivered.m1).toBe('context')
+})
+
+test('an already-settled message line is delivered (appended, like a lazy row) and acked', async () => {
+  const h = await harness({ state: busyState() }).boot()
+  h.ackResult = () => ({ code: 0, stdout: JSON.stringify({ id: 'm9', result: 'already_settled' }) })
+  h.line(msg('m9', { ack_required: false }))
+  await h.core.onToolCall({ tool: 'Bash' }, answered)
+  await flush()
+  expect(h.ackRuns().length).toBe(1)
+  expect(h.ackRuns()[0]).toContain('m9')
+  expect(h.core.snapshot().rec.delivered.m9).toBe('append')
+  expect(Object.keys(h.core.snapshot().rec.unacked)).toEqual([])
 })
 
 test('a non-zero ack exit makes every id retryable; a missing line too', async () => {

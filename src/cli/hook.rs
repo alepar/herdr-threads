@@ -742,7 +742,7 @@ fn compose_context(
         return envelope(&context);
     }
     // Compact form: never the offer's peer fields beyond the overview rows.
-    let (notice_line, digest_lines) = split_summary(summary);
+    let (notice_line, history_lines, digest_lines) = split_summary(summary);
     // Overview rows of hot threads beyond the recovery block are marked.
     let rows: Vec<String> = overview.map_or_else(Vec::new, |overview| {
         overview
@@ -758,6 +758,7 @@ fn compose_context(
         rows,
         fallback,
         notice_line,
+        history_lines,
         digest_lines,
         recovery_line: recovery_line.as_deref(),
         hot_rows,
@@ -780,6 +781,8 @@ struct ContextParts<'a> {
     /// The read argv of the oversize fallback (its selectors name the instance).
     fallback: &'a [String],
     notice_line: Option<&'a str>,
+    /// The first-contact / fast-forward lines (`HISTORY_PREFIX`), shown before the digest.
+    history_lines: Vec<&'a str>,
     digest_lines: Vec<&'a str>,
     /// The fixed recovery instruction line (top-level Compact/Resume/Clear).
     recovery_line: Option<&'a str>,
@@ -792,6 +795,8 @@ struct Keep {
     /// Per overview row, in server order: still shown.
     rows: Vec<bool>,
     digest: DigestKeep,
+    /// The history lines in full, else cut to their summary pointers (never dropped).
+    history_full: bool,
     items: usize,
     notices: bool,
     /// Hot-thread recovery rows still shown, from the start.
@@ -894,7 +899,8 @@ fn item_names_thread(item: &str, thread: &str) -> bool {
 /// 2. overview rows whose thread has no kept item command, from the end; the
 ///    main thread's row (the thread of the first item command, else the first
 ///    row) is never dropped, and a kept item command keeps its thread's row;
-/// 3. the digest counts line;
+/// 3. the digest counts line, then the history lines (first-contact stats, fast-forward gap)
+///    shrink to their summary pointers, which stay;
 /// 4. item commands from the end, down to the pinned inbox command; each dropped command
 ///    takes its thread's row with it unless another kept command names it;
 /// 5. the `offered notices:` line, then the pinned commands;
@@ -974,6 +980,16 @@ fn fit_context(parts: &ContextParts, budget: usize) -> String {
                 ));
             }
         }
+        if keep.history_full {
+            data.extend(parts.history_lines.iter().map(|line| (*line).to_owned()));
+        } else {
+            data.extend(
+                parts
+                    .history_lines
+                    .iter()
+                    .filter_map(|line| history_pointer(line)),
+            );
+        }
         match keep.digest {
             DigestKeep::Full => {
                 data.extend(parts.digest_lines.iter().map(|line| (*line).to_owned()))
@@ -1007,6 +1023,7 @@ fn fit_context(parts: &ContextParts, budget: usize) -> String {
     let mut keep = Keep {
         rows: vec![true; rows.len()],
         digest: DigestKeep::Full,
+        history_full: true,
         items: all,
         notices: true,
         hot: parts.hot_rows.len(),
@@ -1033,6 +1050,13 @@ fn fit_context(parts: &ContextParts, budget: usize) -> String {
     // 3. The digest counts line.
     if !parts.digest_lines.is_empty() {
         keep.digest = DigestKeep::None;
+        if let Some(candidate) = fits(&keep) {
+            return candidate;
+        }
+    }
+    // 3b. The history lines shrink to their summary pointers.
+    if !parts.history_lines.is_empty() {
+        keep.history_full = false;
         if let Some(candidate) = fits(&keep) {
             return candidate;
         }
@@ -1121,19 +1145,52 @@ fn digest_counts(line: &str) -> String {
     out.replace(" +more", "")
 }
 
-/// Split the joined summary into the `offered notices:` line and the rest
+/// Marks a first-contact or fast-forward line inside the joined summary (spec §2). The lines
+/// come before the digest; the budgeted form trims them on their own (`fit_context`).
+const HISTORY_PREFIX: &str = "history: ";
+/// What a history line keeps when the budget trims it: its summary pointer.
+const SUMMARY_POINTER: &str = " — herdr-threads summary ";
+
+/// `summary` with the offer's history lines (first-contact stats or fast-forward gap) in front
+/// of it, each marked so the budgeted form can tell it from the digest.
+fn with_history(history: &[String], summary: Option<String>) -> Option<String> {
+    if history.is_empty() {
+        return summary;
+    }
+    let mut lines: Vec<String> = history
+        .iter()
+        .map(|line| format!("{HISTORY_PREFIX}{line}"))
+        .collect();
+    lines.extend(summary);
+    Some(lines.join("\n"))
+}
+
+/// A history line cut to its summary pointer (`history: herdr-threads summary <id>`); lines
+/// without one (the `resumed past` heading, a last message, the `+N more` count) vanish.
+fn history_pointer(line: &str) -> Option<String> {
+    let at = line.find(SUMMARY_POINTER)?;
+    Some(format!(
+        "{HISTORY_PREFIX}herdr-threads summary {}",
+        &line[at + SUMMARY_POINTER.len()..]
+    ))
+}
+
+/// Split the joined summary into the `offered notices:` line, the history lines and the rest
 /// (the digest line), so each can give way on its own.
-fn split_summary(summary: Option<&str>) -> (Option<&str>, Vec<&str>) {
+fn split_summary(summary: Option<&str>) -> (Option<&str>, Vec<&str>, Vec<&str>) {
     let mut notices = None;
+    let mut history = Vec::new();
     let mut rest = Vec::new();
     for line in summary.into_iter().flat_map(str::lines) {
         if line.starts_with("offered notices:") {
             notices = Some(line);
+        } else if line.starts_with(HISTORY_PREFIX) {
+            history.push(line);
         } else if !line.is_empty() {
             rest.push(line);
         }
     }
-    (notices, rest)
+    (notices, history, rest)
 }
 
 /// The argv0 of every command the hook tells an agent to run. It is the bare
@@ -1488,6 +1545,7 @@ fn pending_event(pending: &PendingCheckIn) -> LifecycleEvent {
         role: pending.context.role,
         event_id: pending.event_id.clone(),
         capability: Capability::SourceSupported,
+        agent_id: None,
     }
 }
 
@@ -1512,30 +1570,30 @@ struct CheckedIn {
     link: Option<super::hook_inbox::CompletionLink>,
 }
 
-/// The attention token delivered to one execution. Committed only after stdout
-/// is written, so a lost output can never suppress an offer.
+/// The attention token delivered to one binding (`key`, see
+/// `harness::context::attention_mark_key`). Committed only after stdout is written, so a lost
+/// output can never suppress an offer.
 pub struct AttentionCommit {
     contexts: crate::harness::context::ContextJournal,
-    execution: uuid::Uuid,
+    key: String,
     token: crate::protocol::attention::AttentionToken,
 }
 impl AttentionCommit {
     pub fn commit(self) -> Result<(), ContextError> {
-        self.contexts
-            .set_attention_mark(self.execution, &self.token)
+        self.contexts.set_attention_mark(&self.key, &self.token)
     }
 }
 impl std::fmt::Debug for AttentionCommit {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AttentionCommit")
-            .field("execution", &self.execution)
+            .field("key", &self.key)
             .field("token", &self.token)
             .finish()
     }
 }
 impl PartialEq for AttentionCommit {
     fn eq(&self, other: &Self) -> bool {
-        self.execution == other.execution && self.token == other.token
+        self.key == other.key && self.token == other.token
     }
 }
 impl Eq for AttentionCommit {}
@@ -1585,24 +1643,38 @@ fn connect_existing(
     Ok((instance, client, link))
 }
 
-/// Composition over the existing daemon/client/bridge APIs. Returns bridge text.
-#[allow(clippy::too_many_arguments)]
-fn check_in(
+/// How a qualified event may enroll the pane before it checks in.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Enroll {
+    /// Never resolve a seat; the pane must already be resolved.
+    No,
+    /// Native lifecycle evidence: always run the ordinary resolver.
+    Lifecycle,
+    /// A witnessed turn: run the resolver only when the pane has no seat.
+    IfUnowned,
+}
+
+/// One hook invocation's checked connection to the daemon for one pane.
+struct Connected {
+    context: RuntimeContext,
+    paths: InstancePaths,
+    instance: uuid::Uuid,
+    target: HostTargetId,
+    client: LocalSocketClient,
+    link: super::hook_inbox::CompletionLink,
+}
+
+/// The shared prefix of every pane-bound hook call: Herdr environment and pane
+/// check, runtime context and paths, the top-level `ensure_running` (bounded by
+/// the remaining deadline) when `ensure_executable` is given, then namespace,
+/// descriptor, protocol check and client.
+fn connect_pane(
     args: &HookArgs,
-    event: &LifecycleEvent,
-    turn: Option<&crate::harness::context::QualifiedTurn>,
-    enroll: bool,
     env: &HookEnv,
     deadline: Instant,
-    current_deadline: CurrentDeadline,
-    clock: Arc<dyn Clock>,
+    clock: &Arc<dyn Clock>,
     ensure_executable: Option<&Path>,
-) -> Result<CheckedIn, Failure> {
-    if let Some(order) = turn.and_then(|turn| turn.ordering.as_ref()) {
-        order
-            .validate_deadline(clock.utc_now().0)
-            .map_err(|e| Failure::Quiet(format!("observation: {e:?}")))?;
-    }
+) -> Result<Connected, Failure> {
     if !env.herdr_env {
         return Err(Failure::Quiet("not running inside a Herdr pane".into()));
     }
@@ -1617,8 +1689,7 @@ fn check_in(
             .map_err(|e| Failure::Quiet(format!("runtime context: {e}")))?;
     let paths = InstancePaths::resolve(&context)
         .map_err(|e| Failure::Unavailable(format!("state paths: {:?}", e.kind())))?;
-    let lifecycle = event.kind.mode() == crate::harness::context::CheckInMode::Lifecycle;
-    if let (true, Role::TopLevel, Some(executable)) = (lifecycle, event.role, ensure_executable) {
+    if let Some(executable) = ensure_executable {
         // Startup may ensure the daemon (design: 5 s startup budget). The result
         // is advisory: a reachable degraded daemon still serves CheckIn.
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -1629,13 +1700,100 @@ fn check_in(
             let _ = runtime.block_on(async {
                 tokio::time::timeout(
                     remaining,
-                    ensure_running(&context, executable, Arc::clone(&clock)),
+                    ensure_running(&context, executable, Arc::clone(clock)),
                 )
                 .await
             });
         }
     }
-    let (instance, client, link) = connect_existing(&paths, Arc::clone(&clock))?;
+    let (instance, client, link) = connect_existing(&paths, Arc::clone(clock))?;
+    Ok(Connected {
+        context,
+        paths,
+        instance,
+        target,
+        client,
+        link,
+    })
+}
+
+/// Enroll the pane for a witnessed Hermes CLI session start: the ordinary
+/// guarded resolver (reuses a resolved seat, allocates only for a genuinely new
+/// pane), no check-in, no context, no continuity attempt. A held or unresolved
+/// pane is refused, never bypassed.
+fn enroll_pane(
+    args: &HookArgs,
+    env: &HookEnv,
+    deadline: Instant,
+    clock: Arc<dyn Clock>,
+    ensure_executable: Option<&Path>,
+) -> Result<SeatId, Failure> {
+    let Connected {
+        paths,
+        instance,
+        target,
+        client,
+        ..
+    } = connect_pane(args, env, deadline, &clock, ensure_executable)?;
+    if let PaneSeat::HeldOrUnresolved(detail) =
+        find_seat_for(args.harness, &client, &target, deadline, clock.as_ref())?
+    {
+        return Err(Failure::Unavailable(detail));
+    }
+    let journal = super::journal::Journal::open(paths.instance_dir.join("intents"))
+        .map_err(|_| Failure::Unavailable("seat enrollment journal unavailable".into()))?;
+    let resolved = super::launch::resolve_seat(
+        &client,
+        &journal,
+        instance,
+        &target,
+        clock.as_ref(),
+        &budget(deadline, clock.as_ref()),
+    )
+    .map_err(|e| api_failure("seat enrollment", &e))?;
+    // Operation replay is historical, never current mapping authority.
+    match find_seat_for(args.harness, &client, &target, deadline, clock.as_ref())? {
+        PaneSeat::Resolved(current, _) if current == resolved => Ok(current),
+        _ => Err(Failure::Unavailable(
+            "enrolled seat mapping changed; retry".into(),
+        )),
+    }
+}
+
+/// Composition over the existing daemon/client/bridge APIs. Returns bridge text.
+#[allow(clippy::too_many_arguments)]
+fn check_in(
+    args: &HookArgs,
+    event: &LifecycleEvent,
+    turn: Option<&crate::harness::context::QualifiedTurn>,
+    enroll: Enroll,
+    env: &HookEnv,
+    deadline: Instant,
+    current_deadline: CurrentDeadline,
+    clock: Arc<dyn Clock>,
+    ensure_executable: Option<&Path>,
+) -> Result<CheckedIn, Failure> {
+    if let Some(order) = turn.and_then(|turn| turn.ordering.as_ref()) {
+        order
+            .validate_deadline(clock.utc_now().0)
+            .map_err(|e| Failure::Quiet(format!("observation: {e:?}")))?;
+    }
+    let lifecycle = event.kind.mode() == crate::harness::context::CheckInMode::Lifecycle;
+    let ensure = (lifecycle && event.role == Role::TopLevel)
+        .then_some(ensure_executable)
+        .flatten();
+    let Connected {
+        context,
+        paths,
+        instance,
+        target,
+        client,
+        link,
+    } = connect_pane(args, env, deadline, &clock, ensure)?;
+    let pane = env
+        .pane
+        .as_ref()
+        .ok_or_else(|| Failure::Quiet("HERDR_PANE_ID missing".into()))?;
     let stamp = |mut done: CheckedIn| {
         if done.lazy.is_some() {
             done.link = Some(link.clone());
@@ -1697,7 +1855,7 @@ fn check_in(
             Reattach::Done(done) => return Ok(stamp(*done)),
             Reattach::InstallFailed(detail) => return Err(install_failed(&detail)),
             Reattach::Declined
-                if enroll
+                if enroll != Enroll::No
                     && event.kind != EventKind::Resume
                     && matches!(absent, PaneSeat::Unowned) =>
             {
@@ -1706,7 +1864,7 @@ fn check_in(
                 None
             }
             Reattach::Refused(ErrorCode::NotFound)
-                if enroll && matches!(absent, PaneSeat::Unowned) =>
+                if enroll != Enroll::No && matches!(absent, PaneSeat::Unowned) =>
             {
                 None
             }
@@ -1715,7 +1873,12 @@ fn check_in(
             }
         },
     };
-    let (seat, generation) = if enroll {
+    // A lifecycle event always runs the ordinary resolver; a witnessed turn only
+    // when the pane had no seat (a Resolved pane takes `existing`, so steady
+    // turns make no resolver call).
+    let (seat, generation) = if enroll == Enroll::Lifecycle
+        || (enroll == Enroll::IfUnowned && existing.is_none())
+    {
         let journal = call
             .journal()
             .ok_or_else(|| Failure::Unavailable("seat enrollment journal unavailable".into()))?;
@@ -1742,6 +1905,36 @@ fn check_in(
     };
     call.check_in_seat_with_turn(event, turn, &seat, generation)
         .map(stamp)
+}
+
+/// The liveness fingerprint of the harness process this hook runs under (spec §1). Unit tests
+/// run under no harness, so they get the fixed test fingerprint; the real-binary tests run the
+/// hook under `test_support::harness_shim`.
+fn hook_fingerprint(
+    harness: Harness,
+) -> Result<crate::protocol::authority::LivenessFingerprint, Failure> {
+    #[cfg(test)]
+    {
+        let _ = harness;
+        Ok(crate::protocol::authority::LivenessFingerprint::TEST)
+    }
+    #[cfg(not(test))]
+    {
+        use crate::harness::caller_env::{EnvInputs, EnvRefusal, harness_fingerprint};
+        let env = |name: &str| std::env::var(name).ok();
+        let inputs = EnvInputs {
+            env: &env,
+            self_pid: std::process::id(),
+            agent_id: None,
+            processes: &crate::host::process_table::HostProcessTable,
+        };
+        harness_fingerprint(&inputs, harness.as_str()).map_err(|refusal| match refusal {
+            EnvRefusal::ManagedDaemon { .. } | EnvRefusal::NoHarness => {
+                Failure::Quiet(refusal.message())
+            }
+            other => Failure::Unavailable(other.message()),
+        })
+    }
 }
 
 /// One hook invocation's connection to the daemon for one pane.
@@ -1844,25 +2037,33 @@ impl PaneCall<'_> {
     }
 
     /// Submit a recorded continuity intent under its operation key until the
-    /// daemon answers or the hook deadline passes. The same command is sent
-    /// every time, so the daemon's idempotent replay returns the recorded seat
-    /// and generation. A definitive refusal completes the intent; busy,
+    /// daemon answers or the hook deadline passes. The same operation key and
+    /// payload digest are sent every time (the fingerprint is always this
+    /// hook's, never the journaled one), so the daemon's idempotent replay
+    /// returns the recorded seat and generation. A definitive refusal completes the intent; busy,
     /// stale-observation (a Herdr restart the daemon has not yet caught up
     /// with), transport and uncertain outcomes retry with backoff.
     fn submit_continuity(
         &self,
         journal: &super::journal::Journal,
         reference: &super::journal::IntentRef,
+        liveness: crate::protocol::authority::LivenessFingerprint,
     ) -> ContinuityOutcome {
         let Ok(pending) = journal.load(reference) else {
             return ContinuityOutcome::Kept;
         };
-        let Ok(command) = pending
+        let Ok(mut command) = pending
             .semantic
             .to_command(reference.operation.clone(), None)
         else {
             return ContinuityOutcome::Kept;
         };
+        // The journaled fingerprint is an earlier process's (or absent in a pre-.70 intent):
+        // the digest excludes it, so the current one rides under the reused operation key.
+        let Command::ContinuityCheckIn(check_in) = &mut command else {
+            return ContinuityOutcome::Kept;
+        };
+        check_in.liveness = Some(liveness);
         let mut backoff = CONTINUITY_BACKOFF_START;
         loop {
             match self
@@ -1903,6 +2104,7 @@ impl PaneCall<'_> {
         event: &LifecycleEvent,
         harness: crate::protocol::authority::Harness,
         session: &crate::protocol::ids::NativeSessionId,
+        liveness: crate::protocol::authority::LivenessFingerprint,
         reuse: bool,
     ) -> Option<(super::journal::IntentRef, uuid::Uuid, bool)> {
         let instance = self.instance.to_string();
@@ -1926,7 +2128,14 @@ impl PaneCall<'_> {
                 break;
             }
         }
-        let execution = uuid::Uuid::new_v4();
+        // The reattached session's binding carries the session's execution, the one its own
+        // claims will: its later calls then match the binding they reattached.
+        let execution = crate::harness::context::session_execution(
+            self.instance,
+            event.harness,
+            session.as_str(),
+            None,
+        );
         let reference = journal
             .record(
                 super::journal::IntentScope::Continuity {
@@ -1940,6 +2149,7 @@ impl PaneCall<'_> {
                     source: event.source.clone(),
                     event_id: event.event_id.clone(),
                     execution: crate::protocol::ids::ExecutionId::new(execution.to_string()),
+                    liveness: Some(liveness),
                 },
                 self.clock.utc_now().0,
             )
@@ -1961,7 +2171,7 @@ impl PaneCall<'_> {
     }
 
     /// C1 attempt: a top-level `resume` asks the daemon to reattach the
-    /// unresolved seat whose last binding holds this session (a pane whose
+    /// unresolved seat one of whose bindings holds this session (a pane whose
     /// resolved mapping is current is refused, its target being owned; there
     /// `pane_resolved` is set and no pending intent is reused). The daemon's
     /// one transaction rebinds the seat and opens the successor binding; the
@@ -1992,15 +2202,20 @@ impl PaneCall<'_> {
         else {
             return Reattach::Declined;
         };
+        // C1 reattachment is a lifecycle check-in: the successor binding records this
+        // process's fingerprint. A failure declines, so ordinary enrollment surfaces it.
+        let Ok(liveness) = hook_fingerprint(event.harness) else {
+            return Reattach::Declined;
+        };
         let Some(journal) = self.journal() else {
             return Reattach::Pending;
         };
-        let Some((mut reference, mut execution, reused)) =
-            self.continuity_intent(&journal, event, harness, &session, !pane_resolved)
+        let Some((mut reference, _, reused)) =
+            self.continuity_intent(&journal, event, harness, &session, liveness, !pane_resolved)
         else {
             return Reattach::Pending;
         };
-        let mut reattached = match self.submit_continuity(&journal, &reference) {
+        let mut reattached = match self.submit_continuity(&journal, &reference, liveness) {
             ContinuityOutcome::Reattached(reattached) => reattached,
             ContinuityOutcome::Refused(code) => return Reattach::Refused(code),
             ContinuityOutcome::Kept => return Reattach::Pending,
@@ -2013,14 +2228,13 @@ impl PaneCall<'_> {
                     // A stale replay: drop it and ask once more under a fresh
                     // key, which the daemon cannot answer from a replay.
                     let _ = journal.complete(&reference);
-                    let Some((fresh, fresh_execution, _)) =
-                        self.continuity_intent(&journal, event, harness, &session, false)
+                    let Some((fresh, _, _)) =
+                        self.continuity_intent(&journal, event, harness, &session, liveness, false)
                     else {
                         return Reattach::Pending;
                     };
                     reference = fresh;
-                    execution = fresh_execution;
-                    reattached = match self.submit_continuity(&journal, &reference) {
+                    reattached = match self.submit_continuity(&journal, &reference, liveness) {
                         ContinuityOutcome::Reattached(reattached) => reattached,
                         ContinuityOutcome::Refused(code) => return Reattach::Refused(code),
                         ContinuityOutcome::Kept => return Reattach::Pending,
@@ -2028,25 +2242,17 @@ impl PaneCall<'_> {
                 }
             }
         }
+        let fast_forward = reattached.fast_forward;
         let seat = reattached.seat;
         let contexts = match super::seat_contexts(self.paths, self.instance, &seat) {
             Ok(contexts) => contexts,
             Err(error) => return Reattach::InstallFailed(format!("{}: {error:?}", seat.as_str())),
         };
-        let context = OccupantContext {
-            format_version: 1,
-            instance: self.instance,
-            seat: seat.as_str().into(),
-            target: self.target.as_str().into(),
-            harness: event.harness,
-            binding_generation: reattached.binding_generation,
-            execution,
-            session: SessionReference::Native(session.as_str().to_owned()),
-            role: Role::TopLevel,
-        };
+        // The reattached session's identity is its environment, not a saved context: only a
+        // request still pending for the replaced context is dead.
         // On a failed install the intent stays: the daemon replays the same
         // result on the next resume and the install is tried again.
-        let abandoned = match contexts.install_reattached(context) {
+        let abandoned = match contexts.abandon_any_pending() {
             Ok(abandoned) => abandoned,
             Err(error) => return Reattach::InstallFailed(format!("{}: {error:?}", seat.as_str())),
         };
@@ -2078,6 +2284,12 @@ impl PaneCall<'_> {
                 lazy: None,
                 link: None,
             });
+        // The daemon moved this binding's cursors past a backlog beyond one page: the gap is
+        // reported the way a check-in's fast-forward is.
+        if let Some(ff) = &fast_forward {
+            let lines = crate::store::first_contact::render_fast_forward(ff, self.clock.utc_now());
+            done.summary = with_history(&lines, done.summary.take());
+        }
         // A resumed session is a lifecycle start: it gets the standing
         // instruction a lifecycle check-in presents, ahead of any attention.
         let mut text = render_context(Role::TopLevel, &[], true)
@@ -2119,8 +2331,8 @@ impl PaneCall<'_> {
         seat: &SeatId,
         generation: u64,
     ) -> Result<CheckedIn, Failure> {
-        let (context, paths, client, target) = (self.context, self.paths, self.client, self.target);
-        let (instance, deadline) = (self.instance, self.deadline);
+        let (context, paths, client) = (self.context, self.paths, self.client);
+        let deadline = self.deadline;
         let clock = Arc::clone(&self.clock);
         let lifecycle = event.kind.mode() == crate::harness::context::CheckInMode::Lifecycle;
         let pane = pane_inputs();
@@ -2165,6 +2377,9 @@ impl PaneCall<'_> {
                     link: None,
                 });
             }
+            if let Some(done) = self.subagent_notice(event, seat, generation, &fallback) {
+                return Ok(done);
+            }
             return Ok(CheckedIn {
                 prepared_kind: None,
                 command_routing: None,
@@ -2179,8 +2394,7 @@ impl PaneCall<'_> {
                 link: None,
             });
         }
-        let contexts = super::seat_contexts(paths, instance, seat)
-            .map_err(|_| Failure::Unavailable("seat context journal unavailable".into()))?;
+        let contexts = self.session_journal(event, seat, generation)?;
         let output = OutputSpec {
             format: OutputFormat::Text,
             context: selectors,
@@ -2191,20 +2405,15 @@ impl PaneCall<'_> {
             // digest token advanced. It writes nothing to the context or intent
             // journal and never replays.
             let boundary = bridge::tool_boundary_check_in(
-            &contexts,
-            event,
-            client,
-            clock.as_ref(),
-            &output,
-            &budget(deadline, clock.as_ref()),
-            event.kind == EventKind::Tool,
-        )
-        .map_err(|e| match e {
-            bridge::BridgeError::Context(ContextError::LifecycleRequired) => Failure::Quiet(
-                "no registered execution for this session; a lifecycle check-in (SessionStart) registers one".into(),
-            ),
-            other => bridge_failure(other),
-        })?;
+                &contexts,
+                event,
+                client,
+                clock.as_ref(),
+                &output,
+                &budget(deadline, clock.as_ref()),
+                event.kind == EventKind::Tool,
+            )
+            .map_err(bridge_failure)?;
             // The inbox page rides only with a presented offer; a live mod
             // channel delivers itself.
             // One rule for both boundaries (TRUST-POLICY A8): a hook-pull seat's lazy
@@ -2217,13 +2426,13 @@ impl PaneCall<'_> {
                 self.inbox_offer(
                     &contexts,
                     event,
-                    boundary.mark.map(|(execution, _)| execution),
+                    boundary.mark.as_ref().map(|(key, _)| key.as_str()),
                 )
             })
             .flatten();
-            let attention = boundary.mark.map(|(execution, token)| AttentionCommit {
+            let attention = boundary.mark.map(|(key, token)| AttentionCommit {
                 contexts,
-                execution,
+                key,
                 token,
             });
             return Ok(CheckedIn {
@@ -2246,10 +2455,7 @@ impl PaneCall<'_> {
             contexts,
             paths,
             client,
-            target,
             seat,
-            generation,
-            instance,
             &output,
             deadline,
             &self.current_deadline,
@@ -2269,10 +2475,10 @@ impl PaneCall<'_> {
         // registered.
         // A hook-pull seat reads no page at any boundary (TRUST-POLICY A8); channel
         // liveness is already folded into `done.attention`.
-        if let Some(execution) = done
+        if let Some(key) = done
             .attention
             .as_ref()
-            .map(|mark| mark.execution)
+            .map(|mark| mark.key.clone())
             .filter(|_| {
                 crate::delivery::routing::hook_inbox_page(
                     crate::harness::registry::builtins().delivery_policy(event.harness.as_str()),
@@ -2280,11 +2486,119 @@ impl PaneCall<'_> {
                 )
             })
         {
-            done.lazy = super::seat_contexts(paths, instance, seat)
+            done.lazy = self
+                .session_journal(event, seat, generation)
                 .ok()
-                .and_then(|contexts| self.inbox_offer(&contexts, event, Some(execution)));
+                .and_then(|contexts| self.inbox_offer(&contexts, event, Some(key.as_str())));
         }
         Ok(done)
+    }
+
+    /// A subagent's routine tool call: its own read-only notice (ht-54r.9). The subagent never
+    /// checks in, so this reads the digest of its own binding and compares it with its own mark;
+    /// the parent's marks and frontiers are never touched. Any failure is silence.
+    fn subagent_notice(
+        &self,
+        event: &LifecycleEvent,
+        seat: &SeatId,
+        generation: u64,
+        fallback: &[String],
+    ) -> Option<CheckedIn> {
+        if event.kind != EventKind::Tool || event.source == "SubagentStart" {
+            return None;
+        }
+        let native = event.native_session.as_deref()?;
+        let agent = event.agent_id.as_deref()?;
+        let contexts = super::seat_contexts(self.paths, self.instance, seat).ok()?;
+        let current = OccupantContext {
+            format_version: 1,
+            instance: self.instance,
+            seat: seat.as_str().into(),
+            target: self.target.as_str().into(),
+            harness: event.harness,
+            binding_generation: generation,
+            execution: crate::harness::context::session_execution(
+                self.instance,
+                event.harness,
+                native,
+                Some(agent),
+            ),
+            session: SessionReference::Native(native.to_owned()),
+            role: Role::TopLevel,
+        };
+        let mut claim = bridge::caller_claim(&current).ok()?;
+        claim.role = crate::protocol::authority::CallerRole::Subagent;
+        claim.agent_id = Some(crate::protocol::ids::AgentId::parse(agent).ok()?);
+        let seen = bridge::subagent_boundary(
+            &contexts,
+            &claim,
+            self.client,
+            &budget(self.deadline, self.clock.as_ref()),
+            true,
+        )
+        .ok()?;
+        let text = if seen.summary.is_some() {
+            render_context(Role::Subagent, &[], true).ok()?.into_bytes()
+        } else {
+            Vec::new()
+        };
+        Some(CheckedIn {
+            prepared_kind: None,
+            command_routing: None,
+            text,
+            fallback: fallback.to_vec(),
+            summary: seen.summary,
+            actions: None,
+            overview: None,
+            recovery: None,
+            attention: seen.mark.map(|(key, token)| AttentionCommit {
+                contexts,
+                key,
+                token,
+            }),
+            lazy: None,
+            link: None,
+        })
+    }
+
+    /// The seat's context journal acting as the session this hook event names. The payload is
+    /// authoritative: the session comes from `session_id`, the fingerprint from the harness
+    /// process among this hook's ancestors, and nothing about the session is read from or
+    /// written to `context.json` (spec §1, decision 15).
+    fn session_journal(
+        &self,
+        event: &LifecycleEvent,
+        seat: &SeatId,
+        generation: u64,
+    ) -> Result<crate::harness::context::ContextJournal, Failure> {
+        let contexts = super::seat_contexts(self.paths, self.instance, seat)
+            .map_err(|_| Failure::Unavailable("seat context journal unavailable".into()))?;
+        let Some(native) = event.native_session.as_deref() else {
+            return Err(Failure::Quiet(format!(
+                "the {} hook payload carries no session id, so the call is not attributed",
+                event.harness.as_str()
+            )));
+        };
+        let liveness = hook_fingerprint(event.harness)?;
+        let current = OccupantContext {
+            format_version: 1,
+            instance: self.instance,
+            seat: seat.as_str().into(),
+            target: self.target.as_str().into(),
+            harness: event.harness,
+            binding_generation: generation,
+            execution: crate::harness::context::session_execution(
+                self.instance,
+                event.harness,
+                native,
+                None,
+            ),
+            session: SessionReference::Native(native.to_owned()),
+            role: Role::TopLevel,
+        };
+        contexts
+            .with_agent_caller(current, liveness)
+            .map_err(|e| Failure::Unavailable(format!("seat context: {e:?}")))
     }
 
     /// One bounded inbox page for the registered top-level execution, read
@@ -2293,13 +2607,13 @@ impl PaneCall<'_> {
         &self,
         contexts: &crate::harness::context::ContextJournal,
         event: &LifecycleEvent,
-        execution: Option<uuid::Uuid>,
+        mark_key: Option<&str>,
     ) -> Option<super::hook_inbox::InboxOffer> {
         let saved = contexts.current().ok()??;
-        // The claim must be the execution this event presented for, never a
+        // The claim must be the session this event presented for, never a
         // context that replaced it in between.
         if saved.harness != event.harness
-            || execution.is_some_and(|execution| execution != saved.execution)
+            || mark_key.is_some_and(|key| key != saved.mark_key())
             || event
                 .native_session
                 .as_ref()
@@ -2307,7 +2621,7 @@ impl PaneCall<'_> {
         {
             return None;
         }
-        let claim = bridge::caller_claim(&saved).ok()?;
+        let claim = contexts.claim(&saved).ok()?;
         let capped = self.deadline.min(Instant::now() + INBOX_READ_BUDGET);
         super::hook_inbox::read_page(self.client, claim, &budget(capped, self.clock.as_ref()))
     }
@@ -2452,10 +2766,7 @@ fn lifecycle_check_in(
     contexts: crate::harness::context::ContextJournal,
     paths: &InstancePaths,
     client: &dyn LocalClient,
-    target: &HostTargetId,
     seat: &SeatId,
-    generation: u64,
-    instance: uuid::Uuid,
     output: &OutputSpec,
     deadline: Instant,
     current_deadline: &CurrentDeadline,
@@ -2479,17 +2790,11 @@ fn lifecycle_check_in(
         let replay = contexts
             .request_for_event(&turn.event_key)
             .map_err(|e| Failure::Unavailable(format!("seat context: {e:?}")))?;
-        let matching = contexts
-            .current()
-            .map_err(|e| Failure::Unavailable(format!("seat context: {e:?}")))?
-            .is_some_and(|saved| {
-                saved.harness == event.harness
-                    && saved.target == target.as_str()
-                    && saved.binding_generation > 0
-                    && saved.binding_generation == generation
-                    && saved.session == SessionReference::Native(turn.session.clone())
-                    && turn.reset.is_none()
-            });
+        // The session this journal already checked in continues as a Current turn.
+        let matching = turn.reset.is_none()
+            && contexts
+                .session_known(&turn.session)
+                .map_err(|e| Failure::Unavailable(format!("seat context: {e:?}")))?;
         if replay.as_ref().map_or(matching, |request| {
             request.mode == crate::harness::context::CheckInMode::Current
         }) {
@@ -2544,10 +2849,9 @@ fn lifecycle_check_in(
     let pending = contexts
         .pending()
         .map_err(|e| Failure::Unavailable(format!("seat context: {e:?}")))?;
-    let mut replay = false;
     if let Some(pending) = pending {
         match run(&pending_event(&pending), None, &mut replayed) {
-            Ok(()) => replay = true,
+            Ok(()) => (),
             Err(error) if definitive(&error) => {
                 replayed.clear();
                 abandon(&journal, contexts, &pending.event_id)?;
@@ -2555,72 +2859,13 @@ fn lifecycle_check_in(
             Err(error) => return Err(bridge_failure(error)),
         }
     }
-    let mut current = contexts
-        .current()
-        .map_err(|e| Failure::Unavailable(format!("seat context: {e:?}")))?;
-    if let Some(saved) = current.clone() {
-        // A replayed lifecycle CheckIn may have advanced past the inspected generation.
-        let advanced_by_replay = replay && saved.binding_generation > generation;
-        if saved.binding_generation < generation {
-            // The service moved the seat past this context (a reattachment
-            // whose reply was lost, or one that installed in another pane): it
-            // is historical whatever its target, retired before any
-            // comparison with the pane. A deliberately fresh lifecycle request
-            // reads the current generation.
-            let retired = contexts
-                .retire_current(&saved)
-                .map_err(|e| Failure::Unavailable(format!("seat context: {e:?}")))?;
-            if !retired {
-                return Err(Failure::Unavailable(
-                    "local context changed during check-in".into(),
-                ));
-            }
-            current = None;
-        } else if saved.target != target.as_str()
-            || (saved.binding_generation > generation && !advanced_by_replay)
-        {
-            return Err(Failure::Unavailable(
-                "local context differs from current service mapping".into(),
-            ));
-        } else if saved.harness == crate::harness::context::Harness::Human
-            && event.harness != crate::harness::context::Harness::Human
-        {
-            // An agent started in a pane a person had claimed with `me init`:
-            // its lifecycle CheckIn replaces that human occupant (a new
-            // binding generation), never continues it under the human's
-            // context.
-            let retired = contexts
-                .retire_current(&saved)
-                .map_err(|e| Failure::Unavailable(format!("seat context: {e:?}")))?;
-            if !retired {
-                return Err(Failure::Unavailable(
-                    "local context changed during check-in".into(),
-                ));
-            }
-            current = None;
-        }
-    }
-    let initial = current.is_none().then(|| {
-        let execution = uuid::Uuid::new_v4();
-        OccupantContext {
-            format_version: 1,
-            instance,
-            seat: seat.as_str().into(),
-            target: target.as_str().into(),
-            harness: event.harness,
-            binding_generation: generation,
-            execution,
-            session: SessionReference::PluginContext(execution),
-            role: Role::TopLevel,
-        }
-    });
     if let Some(turn) = turn {
         let request = bridge::prepare_qualified_turn(
             &journal,
             contexts,
             event,
             turn,
-            initial.as_ref(),
+            None,
             clock.utc_now().0,
         )
         .map_err(|e| bridge_failure(e.into()))?;
@@ -2643,7 +2888,7 @@ fn lifecycle_check_in(
         client,
         seat,
         &budget(deadline, clock.as_ref()),
-        || run(event, initial.as_ref(), &mut text),
+        || run(event, None, &mut text),
     );
     let seeded = match seeded {
         Ok(seeded) => seeded,
@@ -2661,6 +2906,10 @@ fn lifecycle_check_in(
     let notices = carried
         .as_ref()
         .and_then(|presented| presented.notices.summary());
+    let history = carried
+        .as_ref()
+        .map(|presented| presented.history.clone())
+        .unwrap_or_default();
     let overview = carried.and_then(|presented| presented.overview);
     let prepared_kind = if turn.is_some()
         && registration_for(event.harness)
@@ -2690,18 +2939,24 @@ fn lifecycle_check_in(
         crate::delivery::routing::Boundary::Lifecycle,
     );
     let (summary, actions, attention) = if mod_live {
-        (bridge::join_summaries(None, notices), None, None)
+        (
+            with_history(&history, bridge::join_summaries(None, notices)),
+            None,
+            None,
+        )
     } else {
-        let summary =
-            bridge::join_summaries(seeded.as_ref().map(|(_, digest)| digest.summary()), notices);
+        let summary = with_history(
+            &history,
+            bridge::join_summaries(seeded.as_ref().map(|(_, digest)| digest.summary()), notices),
+        );
         let actions = next_actions(&prefix, seeded.as_ref().map(|(_, digest)| digest));
-        let attention = seeded.map(|(execution, digest)| {
+        let attention = seeded.map(|(key, digest)| {
             let token = owned
-                .attention_mark(execution)
+                .attention_mark(&key)
                 .map_or(digest.token, |mark| mark.join(&digest.token));
             AttentionCommit {
                 contexts: owned,
-                execution,
+                key,
                 token,
             }
         });
@@ -2852,7 +3107,7 @@ pub(crate) fn run_hook_registered(
 fn event_bound(registration: &Registration, decoded: &DecodedEvent) -> Duration {
     let lifecycle = matches!(
         decoded.intent,
-        EventIntent::Lifecycle(_) | EventIntent::QualifiedTurn(_)
+        EventIntent::Lifecycle(_) | EventIntent::QualifiedTurn(_) | EventIntent::Enroll
     );
     crate::protocol::time::external_bound(event_budget(registration, lifecycle, None))
 }
@@ -2951,7 +3206,13 @@ fn run_hook_step(
                 (SessionReference::Native(session), Some(native)) if session == native
             )
         })
-        .and_then(|context| bridge::caller_claim(&context).ok());
+        .and_then(|context| bridge::caller_claim(&context).ok())
+        .map(|mut claim| {
+            // The honest current process, as a CLI call of this session sends; only a re-adopting
+            // pull needs it, so a failure leaves it unset.
+            claim.liveness = hook_fingerprint(harness).ok();
+            claim
+        });
     let connected =
         RuntimeContext::from_environment(args.state_dir.clone(), args.host_endpoint.clone())
             .ok()
@@ -3102,7 +3363,7 @@ fn pane_context_journal(
             continue;
         };
         if let Some(snapshot) = journal
-            .current_snapshot()
+            .registered_snapshot()
             .ok()
             .flatten()
             .filter(|c| c.harness == harness && c.target == target)
@@ -3142,6 +3403,99 @@ fn record_observer_reset(
             bridge::record_declared_reset(&journal, args.harness, target, reset, clock.utc_now().0);
     }
 }
+/// The most a subagent start may spend reporting its binding before it renders its child guidance.
+const BINDING_EVENT_BEFORE_GUIDANCE: Duration = Duration::from_millis(2000);
+
+/// Report a harness start/stop/end event to the daemon (spec §2 Enrollment, §3 end events): one
+/// `BindingEvent` for the pane's seat, acting as the session the payload names. A subagent start
+/// needs the harness process fingerprint (it may enroll); a stop or end event does not, so a
+/// harness already shutting down still reports.
+fn report_binding_event(
+    args: &HookArgs,
+    decoded: &DecodedEvent,
+    event: &BindingEventDecode,
+    env: &HookEnv,
+    deadline: Instant,
+    clock: &Arc<dyn Clock>,
+) -> Result<(), Failure> {
+    use crate::protocol::commands::{BindingEvent, BindingEventKind};
+    let Connected {
+        instance,
+        target,
+        client,
+        ..
+    } = connect_pane(args, env, deadline, clock, None)?;
+    let pane = env
+        .pane
+        .as_ref()
+        .ok_or_else(|| Failure::Quiet("HERDR_PANE_ID missing".into()))?;
+    let (seat, generation) =
+        match find_seat_for(args.harness, &client, &target, deadline, clock.as_ref())? {
+            PaneSeat::Resolved(seat, generation) => (seat, generation),
+            other => return Err(other.refusal(pane)),
+        };
+    let invalid = |what: &str| Failure::Quiet(format!("binding event: invalid {what}"));
+    let session = event
+        .claim_session
+        .as_deref()
+        .or(decoded.native_session.as_deref())
+        .ok_or_else(|| {
+            Failure::Quiet(format!(
+                "the {} hook payload carries no session id, so the call is not attributed",
+                args.harness.as_str()
+            ))
+        })?;
+    let context = OccupantContext {
+        format_version: 1,
+        instance,
+        seat: seat.as_str().into(),
+        target: target.as_str().into(),
+        harness: args.harness,
+        binding_generation: generation,
+        execution: crate::harness::context::session_execution(
+            instance,
+            args.harness,
+            session,
+            None,
+        ),
+        session: SessionReference::Native(session.to_owned()),
+        role: Role::TopLevel,
+    };
+    let mut claim = bridge::caller_claim(&context).map_err(|_| invalid("session"))?;
+    claim.liveness = match hook_fingerprint(args.harness) {
+        Ok(fingerprint) => Some(fingerprint),
+        Err(failure) if event.kind == BindingEventKind::SubagentStart => return Err(failure),
+        Err(_) => None,
+    };
+    if let Some(agent) = &event.agent_id {
+        claim.role = crate::protocol::authority::CallerRole::Subagent;
+        claim.agent_id = Some(
+            crate::protocol::ids::AgentId::parse(agent.clone()).map_err(|_| invalid("agent id"))?,
+        );
+    }
+    let child_session = event
+        .child_session
+        .as_deref()
+        .map(|child| crate::protocol::ids::NativeSessionId::parse(child.to_owned()))
+        .transpose()
+        .map_err(|_| invalid("child session"))?;
+    let operation = OperationId::parse(format!("binding-event:{}", decoded.event_id))
+        .or_else(|_| OperationId::parse(format!("binding-event:{}", uuid::Uuid::new_v4())))
+        .map_err(|_| invalid("event id"))?;
+    client
+        .call(
+            Command::BindingEvent(BindingEvent {
+                claim,
+                kind: event.kind,
+                child_session,
+                operation,
+            }),
+            &budget(deadline, clock.as_ref()),
+        )
+        .map_err(|e| api_failure("binding event", &e))?;
+    Ok(())
+}
+
 /// Executes adapter-normalized intent. Ineligible callbacks never reach seat resolution.
 #[allow(clippy::too_many_arguments)]
 pub fn run_admitted_hook(
@@ -3216,10 +3570,56 @@ fn run_admitted_hook_since(
         record_observer_reset(args, decoded, env, deadline, clock.as_ref());
         return HookOutcome::default();
     }
+    // A start/stop/end event enrolls or disconnects its binding before anything else. The report
+    // is best effort (an unreachable daemon never blocks the harness); a subagent start still
+    // renders its child guidance below.
+    let binding_diagnostic = decoded.binding_event.as_ref().and_then(|event| {
+        // Child guidance follows a start, so a slow daemon must not spend the whole budget the
+        // guidance (and the watchdog's margin) needs; a stop or end renders nothing.
+        let report_deadline = if matches!(decoded.intent, EventIntent::Lifecycle(_)) {
+            deadline.min(Instant::now() + BINDING_EVENT_BEFORE_GUIDANCE)
+        } else {
+            deadline
+        };
+        report_binding_event(args, decoded, event, env, report_deadline, &clock)
+            .err()
+            .map(|failure| match failure {
+                Failure::Quiet(detail) | Failure::Unavailable(detail) => detail,
+                Failure::UnavailableDetail(reason, detail) => {
+                    format!("{reason}: {}", detail.escape_debug())
+                }
+            })
+    });
     if matches!(decoded.role, EventRole::Unknown)
         || matches!(decoded.delivery, DeliveryEligibility::Ineligible)
     {
-        return HookOutcome::default();
+        return HookOutcome {
+            diagnostic: binding_diagnostic,
+            ..HookOutcome::default()
+        };
+    }
+    // Whether this event may enroll is the adapter's declared policy, not a
+    // hard-coded intent. A qualified turn's normalized Startup/Clear is context
+    // preparation, not native lifecycle enrollment evidence.
+    let enrollment = decoded.enrollment(registration.enrollment_policy());
+    if enrollment == Some(EnrollmentKind::SessionStart) {
+        // Enroll only: no check-in, no context, empty output (the host ignores
+        // a start callback's return value).
+        let diagnostic = enroll_pane(args, env, deadline, clock, ensure_executable)
+            .err()
+            .map(|failure| match failure {
+                Failure::Quiet(detail) | Failure::Unavailable(detail) => detail,
+                Failure::UnavailableDetail(reason, detail) => {
+                    format!("{reason}: {}", detail.escape_debug())
+                }
+            });
+        return HookOutcome {
+            stdout: Vec::new(),
+            diagnostic,
+            attention: None,
+            lazy: None,
+            step_completion: None,
+        };
     }
     if let (EventRole::TopLevel, EventIntent::Observer, Some(step), Some(input)) = (
         decoded.role,
@@ -3238,7 +3638,14 @@ fn run_admitted_hook_since(
             clock.as_ref(),
         );
     }
-    if !decoded.can_check_in() || !matches!(decoded.delivery, DeliveryEligibility::Context) {
+    // A subagent's routine tool call reads its own binding's notices (ht-54r.9); nothing else
+    // of a subagent event checks in.
+    let subagent_notice = matches!(decoded.role, EventRole::Subagent)
+        && matches!(decoded.intent, EventIntent::Current)
+        && decoded.metadata.agent_id.is_some();
+    if (!decoded.can_check_in() && !subagent_notice)
+        || !matches!(decoded.delivery, DeliveryEligibility::Context)
+    {
         if matches!(decoded.role, EventRole::Subagent)
             && registration.output_policy().child_requires_endpoint
             && !child_endpoint_available(args)
@@ -3270,7 +3677,7 @@ fn run_admitted_hook_since(
             output_bytes(registration.encode(admitted, decoded, &neutral_offer(guidance)));
         return HookOutcome {
             stdout,
-            diagnostic,
+            diagnostic: diagnostic.or(binding_diagnostic),
             attention: None,
             lazy: None,
             step_completion: None,
@@ -3284,15 +3691,11 @@ fn run_admitted_hook_since(
         EventIntent::QualifiedTurn(turn) => Some(turn),
         _ => None,
     };
-    // Only original admitted lifecycle intent permits ordinary enrollment.
-    // A qualified turn's normalized Startup/Clear is context preparation, not
-    // native lifecycle enrollment evidence. Actual native metadata stays intact.
-    let enroll = matches!(
-        decoded.intent,
-        EventIntent::Lifecycle(EventKind::Startup | EventKind::Clear | EventKind::Resume)
-    ) && matches!(decoded.role, EventRole::TopLevel)
-        && matches!(decoded.delivery, DeliveryEligibility::Context)
-        && decoded.can_check_in();
+    let enroll = match enrollment {
+        Some(EnrollmentKind::Lifecycle) => Enroll::Lifecycle,
+        Some(EnrollmentKind::UnownedTurn) => Enroll::IfUnowned,
+        _ => Enroll::No,
+    };
     match check_in(
         args,
         &event,
@@ -3346,7 +3749,7 @@ fn run_admitted_hook_since(
             );
             // Inbox contents are the lowest priority: they only fill what
             // the ordinary context left under the bound, whole items only.
-            let (context, shown) = match &lazy {
+            let (context, shown, displayed) = match &lazy {
                 Some(offer) => {
                     // The fallback is the pane prefix plus `inbox --seat SEAT`.
                     let prefix = match fallback.len().checked_sub(3) {
@@ -3355,18 +3758,22 @@ fn run_admitted_hook_since(
                         }
                         _ => vec![CLI_ARGV0.to_owned()],
                     };
-                    super::hook_inbox::append(context, offer, &prefix, MAX_CONTEXT)
+                    super::hook_inbox::append_shown(context, offer, &prefix, MAX_CONTEXT)
                 }
-                None => (context, Vec::new()),
+                None => (context, Vec::new(), Vec::new()),
             };
             let (stdout, consumes, diagnostic) =
                 encode_prepared_result(registration, admitted, decoded, prepared_kind, context);
             let lazy = match (consumes, lazy, link) {
-                (true, Some(offer), Some(link)) if !shown.is_empty() => {
+                (true, Some(offer), Some(link))
+                    if !shown.is_empty() || (offer.cursors && !displayed.is_empty()) =>
+                {
                     Some(super::hook_inbox::LazyCommit {
                         link,
                         claim: offer.claim,
                         messages: shown,
+                        displayed,
+                        cursors: offer.cursors,
                         deadline,
                     })
                 }
@@ -3380,9 +3787,10 @@ fn run_admitted_hook_since(
                 step_completion: None,
             }
         }
+        // A subagent's routine call is never worth a diagnostic of its own.
         Err(Failure::Quiet(detail)) => HookOutcome {
             stdout: Vec::new(),
-            diagnostic: Some(detail),
+            diagnostic: (event.role == Role::TopLevel).then_some(detail),
             attention: None,
             lazy: None,
             step_completion: None,
@@ -3413,7 +3821,7 @@ fn run_admitted_hook_since(
                 } else {
                     Vec::new()
                 },
-                diagnostic: Some(detail),
+                diagnostic: (event.role == Role::TopLevel).then_some(detail),
                 attention: None,
                 lazy: None,
                 step_completion: None,
@@ -3513,6 +3921,21 @@ fn emit(outcome: &HookOutcome) -> bool {
         let _ = writeln!(io::stderr(), "herdr-threads hook: {detail}");
     }
     delivered
+}
+
+/// A harness's daemon-free hook-output rewrite (spec §1: a Claude subagent's `herdr-threads`/`ht`
+/// Bash call carries its `agent_id` to the CLI as `--agent-id`). The rewrite needs no daemon, so
+/// it rides on every outcome, including the quiet and unavailable ones.
+fn with_subagent_rewrite(args: &HookArgs, stdin: &[u8], mut outcome: HookOutcome) -> HookOutcome {
+    if let Some(stdout) = builtins()
+        .registrations()
+        .iter()
+        .find(|registration| registration.metadata().id == args.harness.as_str())
+        .and_then(|registration| registration.rewrite_hook_output(stdin, &outcome.stdout))
+    {
+        outcome.stdout = stdout;
+    }
+    outcome
 }
 
 /// Process boundary. Always returns exit status 0: plugin or daemon failure
@@ -3698,6 +4121,7 @@ pub fn run_process_with(
                 }))
                 .unwrap_or_else(|_| quiet_outcome("internal error".into()))
             })();
+            let outcome = with_subagent_rewrite(&args, &stdin, outcome);
             let delivered = emit(&outcome);
             // The local mark first: a slow completion (or the watchdog) must
             // never cost it.
@@ -3728,7 +4152,7 @@ pub fn run_process_with(
             deadline
         },
         |detail| {
-            emit(&quiet_outcome(detail));
+            emit(&with_subagent_rewrite(&args, &stdin, quiet_outcome(detail)));
         },
         |deadline| {
             if read_ok {
@@ -3817,6 +4241,8 @@ fn native_event_name(event: &LifecycleEvent) -> &'static str {
         "PreToolUse"
     } else if event.source == "SubagentStart" {
         "SubagentStart"
+    } else if event.source == "SubagentStop" {
+        "SubagentStop"
     } else {
         "SessionStart"
     }

@@ -48,9 +48,10 @@ unversioned public entry.
 
 `harness::setup::plan_codex_for_version` builds exactly the owned hook groups
 listed in `DECLARATION.owned_hooks` from an executable hook command argv:
-`SessionStart` (lifecycle), `SubagentStart` (child start) and a Bash
-`PreToolUse` group (matcher `^Bash$`) for tool-boundary attention context.
-Every group is context-only: its output is `hookSpecificOutput.{hookEventName,
+`SessionStart` (lifecycle), `SubagentStart` (child start), a Bash
+`PreToolUse` group (matcher `^Bash$`) for tool-boundary attention context, and
+the two end events `SubagentStop` and `SessionEnd`, which only disconnect the
+binding they name (no output at all). Every group is context-only: its output is `hookSpecificOutput.{hookEventName,
 additionalContext}` and never `permissionDecision` or `updatedInput`. The
 0.157.1 source, and the identical 0.158.0 output schema, accept that
 `PreToolUse` shape without a decision
@@ -62,7 +63,7 @@ tests assert that `encode_event_context` emits the same envelope for those
 live payloads. SubagentStart output delivery was not exercised, and 0.157.1
 output delivery was not run natively. `plan_codex_for_version` returns
 `-c hooks.Event=...` session arguments (a library seam). The public
-`herdr-threads setup codex` instead installs the same three groups (each with
+`herdr-threads setup codex` instead installs the same five groups (each with
 timeout 10) at user level, the way Herdr installs its own Codex hook: appended
 to `$CODEX_HOME/hooks.json` (default `~/.codex/hooks.json`) through
 `install_user_settings(SettingsKind::CodexUser, ..)`, with each exact group recorded

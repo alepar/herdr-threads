@@ -67,6 +67,26 @@ pub const CONTRACT: HarnessContract = HarnessContract {
                 f("agent_type", Str, false),
             ],
         },
+        EventContract {
+            event: "SubagentStart",
+            class: EventClass::Lifecycle,
+            fields: &[
+                f("hook_event_name", Str, true),
+                f("session_id", Str, true),
+                f("agent_id", Str, true),
+                f("agent_type", Str, true),
+            ],
+        },
+        EventContract {
+            event: "SubagentStop",
+            class: EventClass::Lifecycle,
+            fields: &[
+                f("hook_event_name", Str, true),
+                f("session_id", Str, true),
+                f("agent_id", Str, true),
+                f("agent_type", Str, true),
+            ],
+        },
     ],
 };
 
@@ -389,6 +409,7 @@ fn parse_hooks_2_1_283(
             field(&value, "tool_use_id")?.ok_or(ContextError::Invalid)?;
             (name, EventKind::Tool)
         }
+        "SubagentStart" | "SubagentStop" if agent_id.is_some() => (name, EventKind::Startup),
         "SessionStart" => {
             let source = field(&value, "source")?.ok_or(ContextError::Invalid)?;
             let kind = match source.as_str() {
@@ -410,6 +431,7 @@ fn parse_hooks_2_1_283(
         role,
         event_id: event_id.into(),
         capability: Capability::ObservedInput,
+        agent_id: agent_id.cloned(),
     })
 }
 
@@ -571,6 +593,44 @@ pub fn encode_tool_response(
         specific["additionalContext"] = budgeted_context(check_in_text, max_bytes)?;
     }
     encode(json!({"hookSpecificOutput":specific}))
+}
+
+/// The subagent attribution rewrite (spec §1 Claude row), independent of the daemon. For a Bash
+/// PreToolUse payload that carries `agent_id` and whose command runs `herdr-threads`/`ht`,
+/// return `existing_stdout` (the hook's output so far, possibly empty) with
+/// `hookSpecificOutput.updatedInput` set to the original `tool_input` and the rewritten
+/// `command`. Never emits `permissionDecision` (an `allow` would approve whole compound
+/// commands). `None`: nothing to rewrite, so the caller emits `existing_stdout` unchanged.
+pub fn subagent_rewrite_output(input_bytes: &[u8], existing_stdout: &[u8]) -> Option<Vec<u8>> {
+    let payload: Value = serde_json::from_slice(input_bytes).ok()?;
+    if payload.get("hook_event_name")?.as_str()? != "PreToolUse"
+        || payload.get("tool_name")?.as_str()? != "Bash"
+    {
+        return None;
+    }
+    let agent = crate::protocol::ids::AgentId::parse(payload.get("agent_id")?.as_str()?).ok()?;
+    let mut tool_input = payload.get("tool_input")?.as_object()?.clone();
+    let command = tool_input.get("command")?.as_str()?;
+    if command.len() > 65536 {
+        return None;
+    }
+    let rewritten = super::claude_rewrite::rewrite_command(command, &agent)?;
+    tool_input.insert("command".into(), Value::String(rewritten));
+    let mut output = if existing_stdout.is_empty() {
+        json!({})
+    } else {
+        serde_json::from_slice::<Value>(existing_stdout).ok()?
+    };
+    let root = output.as_object_mut()?;
+    let specific = root
+        .entry("hookSpecificOutput")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()?;
+    specific
+        .entry("hookEventName")
+        .or_insert_with(|| json!("PreToolUse"));
+    specific.insert("updatedInput".into(), Value::Object(tool_input));
+    serde_json::to_vec(&output).ok()
 }
 
 /// SessionStart can present a compact prompt, but cannot claim receipt. It
@@ -741,6 +801,14 @@ pub fn declared_hook_groups(command: &str) -> Vec<(&'static str, Value)> {
             "PreToolUse",
             json!({"matcher":"Bash","hooks":[{"type":"command","command":event_command(command, "PreToolUse"),"timeout":10}]}),
         ),
+        (
+            "SubagentStart",
+            json!({"hooks":[{"type":"command","command":event_command(command, "SubagentStart"),"timeout":10}]}),
+        ),
+        (
+            "SubagentStop",
+            json!({"hooks":[{"type":"command","command":event_command(command, "SubagentStop"),"timeout":10}]}),
+        ),
     ]
 }
 pub fn declared_hooks(hook_path: &str) -> Result<Value, super::setup::SetupError> {
@@ -869,6 +937,38 @@ impl HarnessAdapter for ClaudeAdapter {
     fn installer_policy(&self) -> Option<&dyn InstallerPolicy> {
         Some(self)
     }
+    /// Claude exports its own pid as `CLAUDE_PID` and its session as `CLAUDE_CODE_SESSION_ID`.
+    fn caller_env(&self) -> Option<CallerEnvShape> {
+        Some(CallerEnvShape {
+            process_names: &["claude"],
+            session_var: "CLAUDE_CODE_SESSION_ID",
+            role: None,
+            process_match: Some(|record| {
+                record
+                    .argv
+                    .iter()
+                    .any(|a| a.contains("@anthropic-ai/claude-code"))
+            }),
+            pid_var: Some("CLAUDE_PID"),
+            paneless: None,
+        })
+    }
+    /// Claude's hook passes a subagent's id to the CLI as `--agent-id`.
+    fn binding_policy(&self) -> BindingPolicy {
+        BindingPolicy {
+            hook_agent_id: true,
+            ..BindingPolicy::default()
+        }
+    }
+    fn required_hook_events(&self) -> Vec<&'static str> {
+        declared_hook_groups("")
+            .into_iter()
+            .map(|(event, _)| event)
+            .collect()
+    }
+    fn rewrite_hook_output(&self, input: &[u8], existing_stdout: &[u8]) -> Option<Vec<u8>> {
+        subagent_rewrite_output(input, existing_stdout)
+    }
     fn receipt_admission_summary(&self) -> Option<String> {
         Some("declared".into())
     }
@@ -990,7 +1090,20 @@ impl HarnessAdapter for ClaudeAdapter {
             domain: ContractDomain::Native,
             domain_id: "native_payload",
             origin: super::evidence::EvidenceOrigin::NativePayload,
-            events: super::evidence::LEGACY_EVENTS,
+            events: &[
+                super::evidence::LEGACY_EVENTS[0],
+                super::evidence::LEGACY_EVENTS[1],
+                super::evidence::EvidenceEvent {
+                    native_event: "SubagentStart",
+                    milestone: None,
+                    always_send: false,
+                },
+                super::evidence::EvidenceEvent {
+                    native_event: "SubagentStop",
+                    milestone: None,
+                    always_send: false,
+                },
+            ],
             required_milestones: &["lifecycle", "tool"],
             qualifications: &[],
             holding: super::evidence::AttributionHolding::UntilAttributed,
@@ -1053,7 +1166,7 @@ impl HarnessAdapter for ClaudeAdapter {
             }
         }
         parse_event_for_contract(&input.bytes, &uuid::Uuid::new_v4().to_string(), admitted)
-            .map(DecodedEvent::from_native)
+            .map(|event| DecodedEvent::from_native_payload(event, &input.bytes))
             .map_err(DecodeFailure::Native)
     }
     fn encode(

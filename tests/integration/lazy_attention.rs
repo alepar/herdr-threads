@@ -88,6 +88,8 @@ impl Fixture {
             .unwrap();
         if membership == "joined" {
             self.db.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES('t',?1,1,1)",[seat]).unwrap();
+            // A binding open while its seat joins holds a cursor for the thread (join seeds it).
+            self.db.execute("INSERT INTO binding_cursors(binding_id,thread_id,seq) SELECT binding_id,'t',0 FROM occupant_bindings WHERE seat_id=?1",[seat]).unwrap();
         }
     }
     fn claim(&self, seat: &str) -> CallerClaim {
@@ -105,6 +107,8 @@ impl Fixture {
             native_session: NativeSessionId::new(format!("session-{seat}")),
             execution: ExecutionId::new(saved_execution),
             target: HostTargetId::new(seat),
+            agent_id: None,
+            liveness: None,
         }
     }
     fn mutate(
@@ -154,10 +158,12 @@ impl Fixture {
     }
     fn check(&self, seat: &str, op: &str, startup: bool) -> CheckInResult {
         let mut claim = self.claim(seat);
+        claim.liveness = Some(herdr_threads::protocol::authority::LivenessFingerprint::TEST);
         if startup {
             claim.execution = ExecutionId::new(uuid::Uuid::new_v4().to_string());
         }
         let command = CheckIn {
+            lineage_parent: None,
             mode: if startup {
                 CheckInMode::Lifecycle {
                     expected_binding_generation: claim.binding_generation,
@@ -200,6 +206,7 @@ impl Fixture {
     }
     fn inbox(&self, seat: &str) -> Vec<MessageId> {
         let CommandResult::InboxBatchV2(page) = self.query(Command::InboxBatchV2(InboxQuery {
+            claim: None,
             seat: Some(SeatId::new(seat)),
             page: PageRequest::default(),
         })) else {
@@ -517,6 +524,7 @@ fn lazy_publication_does_not_create_recovery_recency() {
                     role: context::Role::TopLevel,
                     event_id: uuid::Uuid::new_v4().to_string(),
                     capability: Capability::ObservedInput,
+                    agent_id: None,
                 };
                 let output = encode_native(&event, b"", &[], None, None, None, recovery.as_ref());
                 let output = String::from_utf8(output).unwrap();

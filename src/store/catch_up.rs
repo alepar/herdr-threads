@@ -1,4 +1,4 @@
-//! Catch-up rows (spec §7): one per (seat, thread). Contract surface from
+//! Catch-up rows (spec §7): one per (binding, thread) since V34 (ht-54r.22). Contract surface from
 //! ht-1ip.1; the lifecycle and the pushed-attention hold are ht-1ip.6. Every
 //! `extension_until` write is ht-1ip.7, made through the hooks in `receipts`:
 //! nothing here computes or writes an extension value.
@@ -8,11 +8,12 @@
 //! (receipts above the frontier take `(release_seq, 0)` as their attention
 //! key) and re-derives the seat's wake reasons in the same transaction.
 use super::{
+    bindings,
     connection::{api_error, store_error},
     receipts, schema, summary, wake,
 };
 use crate::protocol::{
-    ids::{ExecutionId, SeatId, ThreadId},
+    ids::{BindingId, SeatId, ThreadId},
     results::{ApiError, ErrorCode},
     summary::{AuthorRole, SummarySettings, is_priority},
     time::UtcMillis,
@@ -21,12 +22,12 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use std::collections::HashMap;
 
 pub struct CatchUpEntry<'a> {
+    /// The caller's binding: the row belongs to it, not to the seat.
+    pub binding: &'a BindingId,
     pub seat: &'a SeatId,
     pub thread: &'a ThreadId,
     /// F computed by the summary handler (published head at decision time).
     pub frontier_seq: u64,
-    pub binding_generation: u64,
-    pub execution: &'a ExecutionId,
     pub now: UtcMillis,
 }
 
@@ -44,17 +45,6 @@ impl CatchUpEndReason {
             Self::Superseded => "superseded",
         }
     }
-}
-
-/// The seat's open binding as `(generation, execution_id)`.
-fn open_binding(conn: &Connection, seat: &SeatId) -> Result<Option<(i64, String)>, ApiError> {
-    conn.query_row(
-        "SELECT generation, execution_id FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL",
-        [seat.as_str()],
-        |r| Ok((r.get(0)?, r.get(1)?)),
-    )
-    .optional()
-    .map_err(store_error)
 }
 
 fn seat_instance(tx: &Transaction<'_>, seat: &SeatId) -> Result<String, ApiError> {
@@ -75,10 +65,11 @@ fn thread_instance(tx: &Transaction<'_>, thread: &ThreadId) -> Result<String, Ap
     .map_err(store_error)
 }
 
-/// Opens the (seat, thread) row or keeps an active one, in the deciding
+/// Opens the (binding, thread) row or keeps an active one, in the deciding
 /// transaction of a `Summary` that returns Work. Returns the frontier in
 /// force: an active row's F, unchanged, else `entry.frontier_seq`. The entry
-/// claim must equal the seat's open binding (generation and execution); there
+/// binding must be an open binding of the entry seat (every seat generation
+/// bump ends the seat's open bindings, so an open binding is current); there
 /// is no child-role gate (spec §7, r3). The entry extension hook runs unless
 /// this is a re-entry after a stall with no block stored since (spec §8,
 /// ht-hqg).
@@ -87,66 +78,50 @@ pub fn enter_or_keep(
     entry: &CatchUpEntry<'_>,
     settings: &SummarySettings,
 ) -> Result<u64, ApiError> {
-    let current = open_binding(tx, entry.seat)?;
-    if current.as_ref().is_none_or(|(generation, execution)| {
-        u64::try_from(*generation).ok() != Some(entry.binding_generation)
-            || execution != entry.execution.as_str()
-    }) {
+    let open = bindings::get(tx, entry.binding)?
+        .is_some_and(|b| b.ended_at.is_none() && b.seat == *entry.seat);
+    if !open {
         return Err(api_error(
             ErrorCode::CallerUnverified,
-            "catch-up entry requires the seat's current binding",
+            "catch-up entry requires an open binding of the seat",
         ));
     }
-    let active: Option<(i64, i64, String)> = tx
+    let active: Option<i64> = tx
         .query_row(
-            "SELECT frontier_seq, binding_generation, execution_id FROM catch_up WHERE seat_id=?1 AND thread_id=?2 AND state='active'",
-            params![entry.seat.as_str(), entry.thread.as_str()],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            "SELECT frontier_seq FROM catch_up WHERE binding_id=?1 AND thread_id=?2 AND state='active'",
+            params![entry.binding.as_str(), entry.thread.as_str()],
+            |r| r.get(0),
         )
         .optional()
         .map_err(store_error)?;
-    if let Some((frontier, generation, execution)) = active {
-        if u64::try_from(generation).ok() == Some(entry.binding_generation)
-            && execution == entry.execution.as_str()
-        {
-            return u64::try_from(frontier)
-                .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative catch-up frontier"));
-        }
-        end_row(
-            tx,
-            entry.seat,
-            entry.thread,
-            CatchUpEndReason::Superseded,
-            entry.now,
-        )?;
+    if let Some(frontier) = active {
+        return u64::try_from(frontier)
+            .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative catch-up frontier"));
     }
     // The entry extension is withheld only on re-entry after a stall with no
-    // progress since: the most recent row for this (seat, thread) ended
+    // progress since: the most recent row for this (binding, thread) ended
     // `stalled` and no summary block has been stored for the thread since it
     // ended. A first entry, or one after a ready or superseded row, earns one
     // fresh p99 (spec §8, ht-hqg). Read before the upsert below overwrites
-    // the ended row; a superseded active row (just ended above) is eligible.
+    // the ended row.
     let stalled_without_progress: bool = tx
         .query_row(
-            "SELECT EXISTS(SELECT 1 FROM catch_up c WHERE c.seat_id=?1 AND c.thread_id=?2 AND c.state='ended' AND c.end_reason='stalled' \
+            "SELECT EXISTS(SELECT 1 FROM catch_up c WHERE c.binding_id=?1 AND c.thread_id=?2 AND c.state='ended' AND c.end_reason='stalled' \
              AND NOT EXISTS (SELECT 1 FROM summary_blocks b WHERE b.thread_id=c.thread_id AND b.created_at>=c.ended_at))",
-            params![entry.seat.as_str(), entry.thread.as_str()],
+            params![entry.binding.as_str(), entry.thread.as_str()],
             |r| r.get(0),
         )
         .map_err(store_error)?;
     let frontier = i64::try_from(entry.frontier_seq)
         .map_err(|_| api_error(ErrorCode::InvalidRequest, "catch-up frontier out of range"))?;
-    let generation = i64::try_from(entry.binding_generation)
-        .map_err(|_| api_error(ErrorCode::InvalidRequest, "binding generation out of range"))?;
     tx.execute(
-        "INSERT INTO catch_up(seat_id,thread_id,frontier_seq,binding_generation,execution_id,entered_at,last_progress_at,state,end_reason,ended_at) VALUES (?1,?2,?3,?4,?5,?6,NULL,'active',NULL,NULL) \
-         ON CONFLICT(seat_id,thread_id) DO UPDATE SET frontier_seq=excluded.frontier_seq, binding_generation=excluded.binding_generation, execution_id=excluded.execution_id, entered_at=excluded.entered_at, last_progress_at=NULL, state='active', end_reason=NULL, ended_at=NULL",
+        "INSERT INTO catch_up(binding_id,seat_id,thread_id,frontier_seq,entered_at,last_progress_at,state,end_reason,ended_at) VALUES (?1,?2,?3,?4,?5,NULL,'active',NULL,NULL) \
+         ON CONFLICT(binding_id,thread_id) DO UPDATE SET frontier_seq=excluded.frontier_seq, entered_at=excluded.entered_at, last_progress_at=NULL, state='active', end_reason=NULL, ended_at=NULL",
         params![
+            entry.binding.as_str(),
             entry.seat.as_str(),
             entry.thread.as_str(),
             frontier,
-            generation,
-            entry.execution.as_str(),
             entry.now.0
         ],
     )
@@ -154,35 +129,25 @@ pub fn enter_or_keep(
     if !stalled_without_progress {
         let instance = seat_instance(tx, entry.seat)?;
         let p99 = summary::p99_job_duration(tx, &instance, settings)?;
-        receipts::extension_on_entry(tx, entry.seat, entry.thread, entry.now, p99)?;
+        receipts::extension_on_entry(tx, entry.binding, entry.thread, entry.now, p99)?;
     }
     Ok(entry.frontier_seq)
 }
 
-/// Ends the seat's active row on `thread` with `end_reason = ready` when a
-/// Ready answer goes to the same top-level binding; returns whether a row
-/// ended. The exit-grace extension is written by the contract hook.
+/// Ends the binding's active row on `thread` with `end_reason = ready` when a
+/// Ready answer goes to that same binding; returns whether a row ended. The
+/// exit-grace extension is written by the contract hook.
 pub fn on_ready(
     tx: &Transaction<'_>,
-    seat: &SeatId,
+    binding: &BindingId,
     thread: &ThreadId,
-    binding_generation: u64,
     now: UtcMillis,
     settings: &SummarySettings,
 ) -> Result<bool, ApiError> {
-    let active: Option<i64> = tx
-        .query_row(
-            "SELECT binding_generation FROM catch_up WHERE seat_id=?1 AND thread_id=?2 AND state='active'",
-            params![seat.as_str(), thread.as_str()],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(store_error)?;
-    if active.and_then(|g| u64::try_from(g).ok()) != Some(binding_generation) {
+    if end_row(tx, binding, thread, CatchUpEndReason::Ready, now)?.is_none() {
         return Ok(false);
     }
-    end_row(tx, seat, thread, CatchUpEndReason::Ready, now)?;
-    receipts::extension_on_exit(tx, seat, thread, now, settings.exit_grace_ms)?;
+    receipts::extension_on_exit(tx, binding, thread, now, settings.exit_grace_ms)?;
     Ok(true)
 }
 
@@ -207,71 +172,104 @@ pub fn on_progress(
 
 /// Ends an active row and releases what it held: allocates `release_seq`,
 /// re-derives the seat's wake reasons and bumps its inbox filter revision.
-/// A row that is not active is left alone (returns false).
+/// A row that is not active is left alone (returns `None`); otherwise the
+/// row's seat.
 fn end_row(
     tx: &Transaction<'_>,
-    seat: &SeatId,
+    binding: &BindingId,
     thread: &ThreadId,
     reason: CatchUpEndReason,
     now: UtcMillis,
-) -> Result<bool, ApiError> {
-    let active: bool = tx
+) -> Result<Option<SeatId>, ApiError> {
+    let seat: Option<String> = tx
         .query_row(
-            "SELECT EXISTS(SELECT 1 FROM catch_up WHERE seat_id=?1 AND thread_id=?2 AND state='active')",
-            params![seat.as_str(), thread.as_str()],
+            "SELECT seat_id FROM catch_up WHERE binding_id=?1 AND thread_id=?2 AND state='active'",
+            params![binding.as_str(), thread.as_str()],
             |r| r.get(0),
         )
+        .optional()
         .map_err(store_error)?;
-    if !active {
-        return Ok(false);
-    }
-    let instance = seat_instance(tx, seat)?;
+    let Some(seat) = seat.map(SeatId::new) else {
+        return Ok(None);
+    };
+    let instance = seat_instance(tx, &seat)?;
     let release = schema::next_decision_seq(tx, &instance)?;
     let release = i64::try_from(release)
         .map_err(|_| api_error(ErrorCode::SequenceExhausted, "decision sequence exhausted"))?;
     tx.execute(
-        "UPDATE catch_up SET state='ended', end_reason=?1, ended_at=?2, release_seq=?3 WHERE seat_id=?4 AND thread_id=?5 AND state='active'",
-        params![reason.as_str(), now.0, release, seat.as_str(), thread.as_str()],
+        "UPDATE catch_up SET state='ended', end_reason=?1, ended_at=?2, release_seq=?3 WHERE binding_id=?4 AND thread_id=?5 AND state='active'",
+        params![reason.as_str(), now.0, release, binding.as_str(), thread.as_str()],
     )
     .map_err(store_error)?;
-    wake::note_new_attention(tx, seat)?;
+    wake::note_new_attention(tx, &seat)?;
     schema::bump_filter_revision(tx, &instance, "inbox", seat.as_str())?;
-    Ok(true)
+    Ok(Some(seat))
 }
 
-/// Ends (`superseded`) and releases every active row of `seat` whose binding
-/// is no longer the seat's open binding (all of them when none is open).
-/// Called in the transaction that ends or replaces a binding; never touches
-/// bindings or seats.
-pub fn supersede_stale(
+fn supersede_threads(
     tx: &Transaction<'_>,
-    seat: &SeatId,
+    sql: &str,
+    key: &str,
     now: UtcMillis,
 ) -> Result<u32, ApiError> {
-    let threads: Vec<String> = {
-        let mut stmt = tx
-            .prepare(
-                "SELECT c.thread_id FROM catch_up c WHERE c.seat_id=?1 AND c.state='active' AND NOT EXISTS (SELECT 1 FROM occupant_bindings b WHERE b.seat_id=c.seat_id AND b.ended_at IS NULL AND b.generation=c.binding_generation AND b.execution_id=c.execution_id) ORDER BY c.thread_id",
-            )
-            .map_err(store_error)?;
-        stmt.query_map([seat.as_str()], |r| r.get(0))
+    let rows: Vec<(String, String)> = {
+        let mut stmt = tx.prepare(sql).map_err(store_error)?;
+        stmt.query_map([key], |r| Ok((r.get(0)?, r.get(1)?)))
             .map_err(store_error)?
             .collect::<Result<_, _>>()
             .map_err(store_error)?
     };
     let mut ended = 0;
-    for thread in threads {
+    for (binding, thread) in rows {
+        let binding = BindingId::parse(binding)
+            .map_err(|_| api_error(ErrorCode::StoreCorrupt, "invalid catch-up binding"))?;
         if end_row(
             tx,
-            seat,
+            &binding,
             &ThreadId::new(&thread),
             CatchUpEndReason::Superseded,
             now,
-        )? {
+        )?
+        .is_some()
+        {
             ended += 1;
         }
     }
     Ok(ended)
+}
+
+/// Ends (`superseded`) and releases every active row of `binding` when the
+/// binding itself has ended (or is gone). Another binding's rows, and a
+/// binding that is still open, are never touched: a check-in of one binding
+/// leaves the others' catch-up alone. Never touches bindings or seats.
+pub fn supersede_stale(
+    tx: &Transaction<'_>,
+    binding: &BindingId,
+    now: UtcMillis,
+) -> Result<u32, ApiError> {
+    supersede_threads(
+        tx,
+        "SELECT c.binding_id, c.thread_id FROM catch_up c WHERE c.binding_id=?1 AND c.state='active' AND NOT EXISTS (SELECT 1 FROM occupant_bindings b WHERE b.binding_id=c.binding_id AND b.ended_at IS NULL) ORDER BY c.thread_id",
+        binding.as_str(),
+        now,
+    )
+}
+
+/// `supersede_stale` for every binding of `seat` that has ended: the call for
+/// a transaction that ends or replaces bindings and does not hold one binding
+/// to name (unresolve, rebind, retire, a lifecycle check-in that replaces
+/// placeholder bindings). Open bindings' rows survive.
+pub fn supersede_ended_bindings(
+    tx: &Transaction<'_>,
+    seat: &SeatId,
+    now: UtcMillis,
+) -> Result<u32, ApiError> {
+    supersede_threads(
+        tx,
+        "SELECT c.binding_id, c.thread_id FROM catch_up c WHERE c.seat_id=?1 AND c.state='active' AND NOT EXISTS (SELECT 1 FROM occupant_bindings b WHERE b.binding_id=c.binding_id AND b.ended_at IS NULL) ORDER BY c.binding_id, c.thread_id",
+        seat.as_str(),
+        now,
+    )
 }
 
 /// Ends (`stalled`) and releases up to `limit` active rows whose
@@ -280,7 +278,7 @@ pub fn stall_scan(tx: &Transaction<'_>, now: UtcMillis, limit: u16) -> Result<u1
     let due: Vec<(String, String)> = {
         let mut stmt = tx
             .prepare(
-                "SELECT seat_id, thread_id FROM catch_up INDEXED BY catch_up_extension_until WHERE extension_until IS NOT NULL AND extension_until<=?1 AND state='active' ORDER BY extension_until, seat_id, thread_id LIMIT ?2",
+                "SELECT binding_id, thread_id FROM catch_up INDEXED BY catch_up_extension_until WHERE extension_until IS NOT NULL AND extension_until<=?1 AND state='active' ORDER BY extension_until, seat_id, thread_id, binding_id LIMIT ?2",
             )
             .map_err(store_error)?;
         stmt.query_map(params![now.0, i64::from(limit)], |r| {
@@ -291,14 +289,18 @@ pub fn stall_scan(tx: &Transaction<'_>, now: UtcMillis, limit: u16) -> Result<u1
         .map_err(store_error)?
     };
     let mut ended = 0;
-    for (seat, thread) in due {
+    for (binding, thread) in due {
+        let binding = BindingId::parse(binding)
+            .map_err(|_| api_error(ErrorCode::StoreCorrupt, "invalid catch-up binding"))?;
         if end_row(
             tx,
-            &SeatId::new(&seat),
+            &binding,
             &ThreadId::new(&thread),
             CatchUpEndReason::Stalled,
             now,
-        )? {
+        )?
+        .is_some()
+        {
             ended += 1;
         }
     }
@@ -352,10 +354,14 @@ impl HoldView {
     }
 }
 
+/// Seat-level view over the seat's per-binding rows for the thread: any
+/// active row holds (the lowest frontier wins); otherwise the most recently
+/// released row decides the attention key.
 pub fn hold_view(conn: &Connection, seat: &str, thread: &str) -> Result<HoldView, ApiError> {
     let row: Option<(String, i64, Option<i64>)> = conn
         .query_row(
-            "SELECT state, frontier_seq, release_seq FROM catch_up WHERE seat_id=?1 AND thread_id=?2",
+            "SELECT state, frontier_seq, release_seq FROM catch_up WHERE seat_id=?1 AND thread_id=?2 \
+             ORDER BY (state='active') DESC, CASE WHEN state='active' THEN frontier_seq END ASC, release_seq DESC LIMIT 1",
             params![seat, thread],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
@@ -506,7 +512,7 @@ mod tests {
 
     #[test]
     fn effective_deadline_is_the_frozen_deadline() {
-        let (mut db, seat, thread) = seeded();
+        let (mut db, _seat, thread) = seeded();
         let receipt = |deadline_at| EffectiveReceipt {
             source: ReceiptSource::Physical,
             message_id: "m".into(),
@@ -536,9 +542,10 @@ mod tests {
             None
         );
         let tx = db.transaction().unwrap();
-        receipts::extension_on_entry(&tx, &seat, &thread, UtcMillis(1), 90_000).unwrap();
+        let binding = BindingId::new("b");
+        receipts::extension_on_entry(&tx, &binding, &thread, UtcMillis(1), 90_000).unwrap();
         receipts::extension_on_progress(&tx, &thread, UtcMillis(2), 90_000).unwrap();
-        receipts::extension_on_exit(&tx, &seat, &thread, UtcMillis(3), 60_000).unwrap();
+        receipts::extension_on_exit(&tx, &binding, &thread, UtcMillis(3), 60_000).unwrap();
         tx.commit().unwrap();
         assert_eq!(catch_up_rows(&db), 0);
     }

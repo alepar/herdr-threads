@@ -1,0 +1,78 @@
+{
+  "format": "agy-fake-gemini/1",
+  "name": "run-command-env",
+  "aux_text": "Gate run_command env title",
+  "default": {
+    "text": "RUN-COMMAND-ENV-UNEXPECTED"
+  },
+  "vars": {
+    "cwd": "/unset"
+  },
+  "steps": [
+    {
+      "label": "env-call",
+      "match": {
+        "contains": [
+          "ENV-PROBE"
+        ]
+      },
+      "reply": {
+        "call": "run_command",
+        "args": {
+          "CommandLine": "env",
+          "Cwd": "{var.cwd}",
+          "WaitMsBeforeAsync": 1000,
+          "toolAction": "gate",
+          "toolSummary": "gate"
+        }
+      }
+    },
+    {
+      "label": "echo-call",
+      "match": {
+        "contains": [
+          "ENV-PROBE"
+        ]
+      },
+      "reply": {
+        "call": "run_command",
+        "args": {
+          "CommandLine": "echo ppid=$PPID",
+          "Cwd": "{var.cwd}",
+          "WaitMsBeforeAsync": 1000,
+          "toolAction": "gate",
+          "toolSummary": "gate"
+        }
+      }
+    },
+    {
+      "label": "inbox-call",
+      "match": {
+        "contains": [
+          "ENV-PROBE"
+        ]
+      },
+      "reply": {
+        "call": "run_command",
+        "args": {
+          "CommandLine": "herdr-threads inbox",
+          "Cwd": "{var.cwd}",
+          "WaitMsBeforeAsync": 1000,
+          "toolAction": "gate",
+          "toolSummary": "gate"
+        }
+      }
+    },
+    {
+      "label": "env-final",
+      "match": {
+        "contains": [
+          "ENV-PROBE"
+        ]
+      },
+      "reply": {
+        "text": "ENV-PROBE-DONE"
+      }
+    }
+  ]
+}

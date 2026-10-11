@@ -97,6 +97,9 @@ fn seat(i: usize, rng: &mut Rng) -> SeatSummary {
         generation: i as u64,
         created_at: UtcMillis(1_000 + i as i64),
         retired_at: None,
+        active: false,
+        bindings: Vec::new(),
+        availability: None,
     }
 }
 

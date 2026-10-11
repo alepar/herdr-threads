@@ -56,6 +56,9 @@ impl LocalClient for Client {
                     generation: self.generation.load(std::sync::atomic::Ordering::SeqCst),
                     created_at: UtcMillis(0),
                     retired_at: None,
+                    active: true,
+                    availability: None,
+                    bindings: Vec::new(),
                 },
                 mapping: MappingStatus {
                     state: ContinuityStatus::Resolved,
@@ -80,6 +83,8 @@ impl LocalClient for Client {
                     warnings: empty(),
                     notices: Default::default(),
                     inbox: empty(),
+                    fast_forward: None,
+                    first_contact: None,
                 }))
             }
             Command::WakeOn(q) => Ok(CommandResult::WakeOn(WakeOnState {
@@ -318,6 +323,8 @@ fn wire_shapes_round_trip_and_wake_on_is_snake_case() {
         native_session: NativeSessionId::new("n"),
         execution: ExecutionId::new("e"),
         target: HostTargetId::new("p"),
+        agent_id: None,
+        liveness: Some(crate::protocol::authority::LivenessFingerprint::TEST),
     };
     for command in [
         Command::SetWakeOn(SetWakeOn {

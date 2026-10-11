@@ -209,7 +209,8 @@ impl World {
         json: bool,
     ) -> Out {
         let mut command = crate::scrubbed_command(binary);
-        let args = if args.first() == Some(&"human") {
+        let is_person = args.first() == Some(&"human");
+        let args = if is_person {
             command.arg("human");
             &args[1..]
         } else {
@@ -224,6 +225,11 @@ impl World {
             .arg("--host-endpoint")
             .arg(&self.host);
         if let Some(caller) = caller {
+            herdr_threads::test_support::isolation::as_agent(
+                &mut command,
+                "claude",
+                session_of(caller.pane),
+            );
             command.args([
                 "--cooperative-seat",
                 caller.seat,
@@ -258,6 +264,14 @@ impl World {
             .stderr(Stdio::piped());
         if let Some(pane) = pane {
             command.env("HERDR_PANE_ID", pane).env("HERDR_ENV", "1");
+            // A pane-routed agent command runs as the harness session in that pane.
+            if !is_person {
+                herdr_threads::test_support::isolation::as_agent(
+                    &mut command,
+                    "claude",
+                    session_of(pane),
+                );
+            }
         }
         let mut child = command.spawn_owned().unwrap();
         if let Some(text) = stdin {
@@ -282,7 +296,10 @@ impl World {
                 .as_str()
                 .unwrap_or_else(|| panic!("no installed Claude registration for {event}"))
         };
-        let mut child = crate::scrubbed_command("/bin/sh")
+        let mut shell = crate::scrubbed_command("/bin/sh");
+        // The installed hook runs under its harness (the test process stands in for it).
+        herdr_threads::test_support::isolation::as_agent(&mut shell, harness, session_of(pane));
+        let mut child = shell
             .arg("-c")
             .arg(command)
             .env("HERDR_ENV", "1")
@@ -362,30 +379,66 @@ impl World {
         let envelope: Value = serde_json::from_slice(&encoded).unwrap();
         Ok(envelope["result"]["data"].clone())
     }
-    /// `seat`'s current occupant claim, read from the private context
-    /// journal its lifecycle check-in saved: the claim the CLI's cooperative
-    /// mutations send.
+    /// `seat`'s current occupant claim: its open binding's identity, the claim the CLI's
+    /// cooperative mutations send (an agent saves no context).
     fn seat_claim(&self, seat: &str) -> herdr_threads::protocol::authority::CallerClaim {
         use herdr_threads::{
             daemon::ownership::read_existing_namespace,
-            harness::{bridge::caller_claim, context::ContextJournal},
+            protocol::{
+                authority::{CallerRole, Harness, LivenessFingerprint},
+                ids::*,
+            },
         };
-        use sha2::{Digest, Sha256};
         let paths = InstancePaths::resolve(
             &RuntimeContext::explicit(self.state.clone(), self.host.clone(), None).unwrap(),
         )
         .unwrap();
         let instance = read_existing_namespace(&paths).unwrap().unwrap();
-        let dir = paths
-            .instance_dir
-            .canonicalize()
-            .unwrap()
-            .join("contexts")
-            .join(format!("{:x}", Sha256::digest(seat.as_bytes())));
-        let contexts = ContextJournal::open_existing(&dir, instance, Duration::from_secs(1))
-            .unwrap()
-            .expect("the seat's lifecycle check-in saved its context");
-        caller_claim(&contexts.current().unwrap().expect("a current context")).unwrap()
+        let db = rusqlite::Connection::open(&paths.database_path).unwrap();
+        #[allow(clippy::type_complexity)]
+        let (generation, harness, session, execution, target, pid, start): (
+            i64,
+            String,
+            String,
+            String,
+            String,
+            Option<i64>,
+            Option<i64>,
+        ) = db
+            .query_row(
+                "SELECT generation,harness,native_session,execution_id,target_id,liveness_pid,liveness_start FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL",
+                [seat],
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                        r.get(6)?,
+                    ))
+                },
+            )
+            .expect("the seat's lifecycle check-in opened its binding");
+        herdr_threads::protocol::authority::CallerClaim {
+            instance: instance.to_string(),
+            seat: SeatId::new(seat),
+            binding_generation: generation as u64,
+            role: CallerRole::TopLevel,
+            harness: herdr_threads::harness::registry::builtins()
+                .agent(&harness)
+                .map(Harness::Agent)
+                .unwrap(),
+            native_session: NativeSessionId::new(session),
+            execution: ExecutionId::new(execution),
+            target: HostTargetId::new(target),
+            agent_id: None,
+            liveness: pid.zip(start).map(|(pid, start)| LivenessFingerprint {
+                pid: pid as u32,
+                start: start as u64,
+            }),
+        }
     }
     /// One `send` as `claim`, called in process: the same `SendMessage` the
     /// CLI builds (`Lazy` unless an ACK recipient is named, as `send` picks)
@@ -445,6 +498,7 @@ impl World {
             pagination::PageRequest,
         };
         self.daemon_call(Command::InboxBatch(InboxQuery {
+            claim: None,
             seat: Some(SeatId::new(seat)),
             page: PageRequest {
                 limit: 100,
@@ -603,6 +657,17 @@ const PANE_B: &str = "w1:p2";
 const PANE_C: &str = "w1:p3";
 const PANE_D: &str = "w1:p4";
 const SESSION_B: &str = "SB";
+
+/// The harness session running in `pane`: the one its SessionStart hook registered (A, B), or the
+/// stand-in agent's (C, D).
+fn session_of(pane: &str) -> &'static str {
+    match pane {
+        PANE_A => "SA",
+        PANE_B => SESSION_B,
+        PANE_C => "SC",
+        _ => "SD",
+    }
+}
 
 /// How far [`Fixture::build_stage`] goes.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1149,7 +1214,7 @@ fn hold_and_bypass() {
         !offered.contains(&held),
         "the ordinary one is still held: {offered}"
     );
-    binding_change_supersedes_and_releases(&fx, &held);
+    binding_refresh_keeps_the_binding_row(&fx, &held);
 }
 
 /// What a completed catch-up leaves behind, for the cases that look at it.
@@ -1616,13 +1681,12 @@ fn stall_lapses_and_the_warning_fires_on_the_effective_deadline() {
     assert_eq!(fx.world.pending_for(&fx.b, &fx.ack)["overdue"], true);
 }
 
-/// Case 9: a new binding ends the row `superseded`; the successor does not
-/// inherit the hold, so what was held is offered. Runs on Case 3's active
-/// row, with `held` still held from B's digest.
-fn binding_change_supersedes_and_releases(fx: &Fixture, held: &str) {
-    let before = fx.world.wake_attention(&fx.b);
-    // A `clear` in B's pane is a new execution of the seat: the hook's
-    // lifecycle check-in registers it and ends B's row.
+/// Case 9: catch-up rows belong to the binding (ht-54r.22). A `clear` in B's
+/// pane that re-registers the same session on a new execution refreshes the
+/// same binding, so its row stays active and the hold stays in force. (A row
+/// ends `superseded` only when its binding ends; the unit tests in
+/// `store::catch_up` and the retirement path cover the release.)
+fn binding_refresh_keeps_the_binding_row(fx: &Fixture, held: &str) {
     let restarted = fx.world.hook(
         "claude",
         PANE_B,
@@ -1632,26 +1696,12 @@ fn binding_change_supersedes_and_releases(fx: &Fixture, held: &str) {
     let row = fx.world.catch_up(&fx.b, &fx.thread).unwrap();
     assert_eq!(
         (row.state.as_str(), row.end_reason.as_deref()),
-        ("ended", Some("superseded")),
+        ("active", None),
         "{row:?}"
     );
-    // The hook reads its digest before the check-in that ends the row, so the
-    // successor's next boundary is where the release arrives.
-    let successor = fx.boundary_b();
     assert!(
-        successor.contains(held),
-        "the successor is offered what the predecessor had held: {successor}"
-    );
-    assert!(
-        fx.world.wake_attention(&fx.b) > before,
-        "the row end re-derived the seat's wake reasons"
-    );
-    // The successor inherits no hold: a new ordinary message above F is
-    // offered at its next boundary.
-    let fresh = fx.send_as_a("a message after the change", &["--nudge"]);
-    assert!(
-        fx.boundary_b().contains(&fresh),
-        "no hold survives the binding change"
+        !fx.boundary_b().contains(held),
+        "the binding's hold survives its own re-registration"
     );
 }
 
@@ -3207,6 +3257,22 @@ fn inbox_first_useful_page_v2_sparse_settled_history() {
     fx.world
         .cli(Some(fx.caller_b()), None, &ack)
         .data("settle sparse history");
+    // B displayed this history before ACKing it (a display advances B's own cursors; an ACK
+    // alone does not), so only the retained settled receipts remain for the bounded Work pages.
+    fx.world
+        .daemon_call(herdr_threads::protocol::commands::Command::AdvanceCursors(
+            herdr_threads::protocol::commands::AdvanceCursors {
+                claim: fx.world.seat_claim(&fx.b),
+                operation: herdr_threads::protocol::ids::OperationId::new(
+                    "sparse-history-displayed",
+                ),
+                displayed: settled
+                    .iter()
+                    .map(|id| herdr_threads::protocol::ids::MessageId::new(id.as_str()))
+                    .collect(),
+            },
+        ))
+        .expect("advance B's cursors over the displayed history");
     for (pass, v1) in [false, true].into_iter().enumerate() {
         let mark = select_reader(&proxy, v1);
         let sent = fx.send_as_a(
@@ -3289,10 +3355,22 @@ fn inbox_first_useful_page_v2_sparse_settled_history() {
                 )
             })
             .count();
-        assert!(
-            display_pages > 1,
-            "the settled history must fill the first source page ({display_pages} pages read)"
-        );
+        // The v1 reader walks the retained settled receipts before it reaches the useful mail, so
+        // its first source page is filled by history and empty Work pages precede the body. The
+        // v2 reader serves the binding's own stream: the new mail is past its cursors, so the
+        // first page already carries it while the same settled-receipt walk fills the rest of
+        // the page's work (the page still reports more).
+        if v1 {
+            assert!(
+                display_pages > 1,
+                "the settled history must fill the first source page ({display_pages} pages read)"
+            );
+        } else {
+            assert_eq!(
+                display_pages, 1,
+                "the v2 stream serves the new mail on its first page ({display_pages} pages read)"
+            );
+        }
         eprintln!(
             "V2 SPARSE USEFUL: code={} stdout={:?} stderr={:?}",
             out.code, out.stdout, out.stderr

@@ -34,9 +34,9 @@ SCEN = GATE_DIR / "scenarios"
 HOOK_PROVENANCE = "cooperative_hook_delivery"
 
 
-def load(world, name):
+def load(world, name, **variables):
     scenario = _l6.load_scenario(SCEN / (name + ".json"))
-    scenario["vars"] = dict(scenario.get("vars", {}), cwd=str(world.ws))
+    scenario["vars"] = dict(scenario.get("vars", {}), cwd=str(world.ws), **variables)
     world.backend.load(scenario)
     return scenario
 
@@ -168,10 +168,12 @@ def ignore_phase(world, pane, sender, thread):
 
 
 def run(world):
-    scenario = load(world, "downgrade")
     setup = _l6.setup(world)
     world.check("setup agy succeeds", setup.returncode == 0, (setup.stderr or setup.stdout).strip()[:200])
     sender = world.sender()
+    # The thread exists before agy starts: the scripted accept (wake-join) names it.
+    thread = _l6.create_thread(world, sender, "gate-downgrade")
+    scenario = load(world, "downgrade", thread=thread)
     original = _l6.install_mutator(world)
     world.check("the mutator prefixes the PreInvocation command",
                 "step_mutator.py" in _l6.hooks_path(world).read_text() and _l6.hooks_path(world).read_bytes() != original)
@@ -182,16 +184,13 @@ def run(world):
     if binding is None:
         return
     seat, conversation = binding["seat_id"], binding["native_session"]
-    thread = _l6.create_thread(world, sender, "gate-downgrade")
     # The idle wake exists only while the invitation is pending: an accept that lands first removes the
     # reason to wake (ht-poh.46), so the wake is awaited between the invite and the accept.
-    invite = world.ht(["invite", thread, "--seat", seat], pane=sender.pane_id, check=False, human=True)
+    invite, accept = _l6.join(world, sender, pane, thread, seat)
     joined = _l5.await_step(world, "wake-join", 45)
     world.check("the join's idle wake was served (wake-join on 'herdr-threads: wake up')", joined is not None)
-    pane.wait("idle", 30)
-    accept = world.ht(["accept", thread], pane=pane.pane_id, check=False)
-    world.check("the sender invited the agy seat and it accepted", invite.returncode == 0 and accept.returncode == 0,
-                "invite=%s accept=%s" % (invite.stderr.strip(), accept.stderr.strip()))
+    world.check("the sender invited the agy seat and the agy session accepted (run_command, joined)",
+                invite.returncode == 0 and accept.ok, "invite=%s accept=%s" % (invite.stderr.strip(), accept.detail))
 
     abort_phase(world, pane, sender, thread, scenario)
     user_message_phase(world, pane, sender, thread, scenario)

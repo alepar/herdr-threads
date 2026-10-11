@@ -53,6 +53,7 @@ fn fixture() -> (
         role: Role::TopLevel,
         event_id: "start-one".into(),
         capability: Capability::SourceSupported,
+        agent_id: None,
     };
     (root, j, cj, c, e)
 }
@@ -210,6 +211,8 @@ impl crate::ports::LocalClient for Transport {
                 warnings: empty(),
                 notices: Default::default(),
                 inbox: empty(),
+                first_contact: None,
+                fast_forward: None,
             },
         ))
     }
@@ -1320,6 +1323,7 @@ fn cooperative_typed_rejection_discards_intent_but_transport_failure_keeps_it() 
     const DISCARDED: &[ErrorCode] = &[
         ErrorCode::InvalidRequest,
         ErrorCode::Unauthorized,
+        ErrorCode::SubagentReadOnly,
         ErrorCode::Archived,
         ErrorCode::Conflict,
         ErrorCode::OperationPayloadMismatch,
@@ -1446,6 +1450,8 @@ fn offer(
         warnings: empty(),
         notices: Default::default(),
         inbox: page,
+        first_contact: None,
+        fast_forward: None,
     }
 }
 fn inbox_item(thread: &str, invitations: u64, pending: u64) -> crate::protocol::results::InboxItem {
@@ -1513,6 +1519,7 @@ impl Mailbox {
         newest.truncate(MAX_DIGEST_IDS);
         AttentionDigest {
             lazy: None,
+            mail: None,
             version: DIGEST_VERSION,
             seat: crate::protocol::ids::SeatId::new("seat"),
             token: AttentionToken {
@@ -1635,6 +1642,7 @@ fn tool_event() -> LifecycleEvent {
         role: Role::TopLevel,
         event_id: "tool".into(),
         capability: Capability::SourceSupported,
+        agent_id: None,
     }
 }
 fn budget() -> crate::protocol::time::CallBudget {
@@ -1671,7 +1679,7 @@ fn register(
     .unwrap();
     match seeded {
         Some((execution, digest)) => {
-            cj.set_attention_mark(execution, &digest.token).unwrap();
+            cj.set_attention_mark(&execution, &digest.token).unwrap();
             true
         }
         None => false,
@@ -1691,7 +1699,7 @@ fn boundary(cj: &ContextJournal, client: &Mailbox, coalesce: bool) -> ToolBounda
     )
     .unwrap();
     if let Some((execution, token)) = &boundary.mark {
-        cj.set_attention_mark(*execution, token).unwrap();
+        cj.set_attention_mark(execution, token).unwrap();
     }
     boundary
 }
@@ -1715,13 +1723,13 @@ fn late_notice_projection_and_remaining_pages_survive_tool_coalescing() {
         let client = Mailbox::with(&[], &[]);
         register(&j, &cj, &event, &seed, &client);
         assert!(tool_call(&cj, &client).is_empty());
-        let execution = cj.current().unwrap().unwrap().execution;
-        let mark = cj.attention_mark(execution).unwrap();
+        let key = cj.current().unwrap().unwrap().mark_key();
+        let mark = cj.attention_mark(&key).unwrap();
         *client.pending_notices.lock().unwrap() = 17;
         let first = boundary(&cj, &client, true);
         assert!(first.summary.unwrap().contains("offered notices:"));
         assert_eq!(*client.pending_notices.lock().unwrap(), 1);
-        assert_eq!(cj.attention_mark(execution), Some(mark));
+        assert_eq!(cj.attention_mark(&key), Some(mark));
         assert!(
             boundary(&cj, &client, true)
                 .summary
@@ -1880,8 +1888,8 @@ fn digest_failure_fails_open_and_keeps_the_mark() {
     let (root, j, cj, seed, event) = fixture();
     let client = Mailbox::with(&["A"], &[]);
     assert!(register(&j, &cj, &event, &seed, &client));
-    let execution = cj.current().unwrap().unwrap().execution;
-    let mark = cj.attention_mark(execution);
+    let key = cj.current().unwrap().unwrap().mark_key();
+    let mark = cj.attention_mark(&key);
     let failing = Mailbox {
         fail_digest: true,
         ..Mailbox::with(&["A"], &[])
@@ -1891,7 +1899,7 @@ fn digest_failure_fails_open_and_keeps_the_mark() {
         assert!(!result.text.is_empty(), "digest failure was quiet");
         assert!(result.summary.is_none() && result.mark.is_none());
     }
-    assert_eq!(cj.attention_mark(execution), mark);
+    assert_eq!(cj.attention_mark(&key), mark);
     // A failed lifecycle digest read seeds nothing.
     let (root2, j2, cj2, seed2, event2) = fixture();
     let failing = Mailbox {
@@ -1911,14 +1919,14 @@ fn compaction_re_presents_without_lowering_the_mark() {
     let (root, j, cj, seed, event) = fixture();
     let client = Mailbox::with(&["A", "B"], &[]);
     assert!(register(&j, &cj, &event, &seed, &client));
-    let execution = cj.current().unwrap().unwrap().execution;
-    let before = cj.attention_mark(execution).unwrap();
+    let key = cj.current().unwrap().unwrap().mark_key();
+    let before = cj.attention_mark(&key).unwrap();
     client.ack(&["B"]);
     assert!(
         !boundary(&cj, &client, false).text.is_empty(),
         "A not re-presented"
     );
-    assert_eq!(cj.attention_mark(execution), Some(before));
+    assert_eq!(cj.attention_mark(&key), Some(before));
     assert!(
         tool_call(&cj, &client).is_empty(),
         "compaction lowered the mark"
@@ -2050,6 +2058,7 @@ fn qualified_turn_replay_restart_and_stale_order_keep_exact_operation_execution(
     let (root, journal, contexts, seed, mut event) = fixture();
     event.native_session = Some("opaque-native/session".into());
     let turn = QualifiedTurn {
+        lineage_parent: None,
         session: "opaque-native/session".into(),
         event_key: event.event_id.clone(),
         reset: None,
@@ -2132,6 +2141,7 @@ fn qualified_turn_replay_restart_and_stale_order_keep_exact_operation_execution(
 
 fn turn(event: &LifecycleEvent, nonce: u128, sequence: u64, at: i64, budget: u32) -> QualifiedTurn {
     QualifiedTurn {
+        lineage_parent: None,
         session: event.native_session.clone().unwrap(),
         event_key: event.event_id.clone(),
         reset: None,
@@ -2259,6 +2269,7 @@ fn qualified_turn_reset_requires_matching_prior_session_and_order_then_clears() 
             &contexts,
             &event,
             &QualifiedTurn {
+                lineage_parent: None,
                 session: "history-unknown".into(),
                 event_key: event.event_id.clone(),
                 reset: None,
@@ -2745,8 +2756,8 @@ fn tool_boundary_quiet_and_mark_unchanged_while_mod_channel_live() {
     let (root, j, cj, seed, event) = fixture();
     let client = Mailbox::with(&[], &[]);
     assert!(register(&j, &cj, &event, &seed, &client));
-    let execution = cj.current().unwrap().unwrap().execution;
-    let mark = cj.attention_mark(execution);
+    let key = cj.current().unwrap().unwrap().mark_key();
+    let mark = cj.attention_mark(&key);
     client.arrive(&["A"]);
     client.mod_live.store(true, Ordering::SeqCst);
     client.calls();
@@ -2756,7 +2767,7 @@ fn tool_boundary_quiet_and_mark_unchanged_while_mod_channel_live() {
     assert!(quiet.digest.is_none());
     assert!(quiet.mark.is_none());
     assert_eq!(client.calls(), vec!["digest"], "no CheckIn while live");
-    assert_eq!(cj.attention_mark(execution), mark, "mark not advanced");
+    assert_eq!(cj.attention_mark(&key), mark, "mark not advanced");
     // A compaction (coalesce: false) re-presents pending attention, but a
     // live channel owns that too.
     let compaction = boundary(&cj, &client, false);
@@ -2814,7 +2825,7 @@ fn notice_delivery_negotiation_negative_paths_preserve_marks_and_tool_authority(
         let mailbox = Mailbox::with(&[], &[]);
         register(&journal, &contexts, &event, &seed, &mailbox);
         let saved = contexts.current().unwrap().unwrap();
-        let mark = contexts.attention_mark(saved.execution);
+        let mark = contexts.attention_mark(&saved.mark_key());
         let client = Client {
             mailbox: &mailbox,
             mode,
@@ -2839,7 +2850,7 @@ fn notice_delivery_negotiation_negative_paths_preserve_marks_and_tool_authority(
             assert_eq!(&mailbox.calls.lock().unwrap()[before..], &["check_in"]);
         }
         assert_eq!(contexts.current().unwrap().unwrap(), saved);
-        assert_eq!(contexts.attention_mark(saved.execution), mark);
+        assert_eq!(contexts.attention_mark(&saved.mark_key()), mark);
         assert!(contexts.pending().unwrap().is_none());
         assert!(journal.page(&Default::default()).unwrap().items.is_empty());
         for (kind, role) in [

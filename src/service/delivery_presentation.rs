@@ -7,6 +7,7 @@ use super::{
 use crate::{
     ports::PresentationInput,
     protocol::{
+        authority::PeerIdentity,
         delivery::{
             DeliveryPresentationConfirmV2, DeliveryPullReplyV2, DeliveryPullV2,
             DeliveryRefusalReason, PresentationConsumer,
@@ -50,6 +51,7 @@ impl DomainService {
     pub(super) fn presentation_pull(
         &self,
         pull: &DeliveryPullV2,
+        peer: PeerIdentity,
         budget: &CallBudget,
     ) -> Result<CommandResult, ApiError> {
         pull.validate().map_err(ApiError::invalid_request)?;
@@ -58,9 +60,22 @@ impl DomainService {
             None => self.presentation.permit(&pull.claim.seat)?,
         };
         let _owner = permit.lock().unwrap_or_else(|e| e.into_inner());
+        let admitted = match pull.consumer {
+            PresentationConsumer::Hook => self.hook_presentation_view(&pull.claim, peer, budget),
+            PresentationConsumer::Watch => self.watch_presentation_view(&pull.claim, budget),
+        };
+        let (view, binding) = match admitted {
+            Ok(v) => v,
+            Err(reason) => {
+                return Ok(CommandResult::DeliveryPulledV2(
+                    DeliveryPullReplyV2::Refused { reason },
+                ));
+            }
+        };
         if pull.consumer == PresentationConsumer::Watch
             && !self.mod_channels().presentation_owner_live(
                 &pull.claim.seat,
+                &binding.binding_id,
                 pull.claim.binding_generation,
                 pull.claim.native_session.as_str(),
                 pull.presentation_lease.as_deref().unwrap_or_default(),
@@ -72,18 +87,6 @@ impl DomainService {
                 },
             ));
         }
-        let admitted = match pull.consumer {
-            PresentationConsumer::Hook => self.hook_presentation_view(&pull.claim, budget),
-            PresentationConsumer::Watch => self.watch_presentation_view(&pull.claim, budget),
-        };
-        let (view, binding) = match admitted {
-            Ok(v) => v,
-            Err(reason) => {
-                return Ok(CommandResult::DeliveryPulledV2(
-                    DeliveryPullReplyV2::Refused { reason },
-                ));
-            }
-        };
         use crate::{
             delivery::presentation::{
                 FrozenPresentationRender, PresentationRenderProfile as Profile, descriptor_key,
@@ -162,11 +165,9 @@ impl DomainService {
         let now = self.clock.utc_now();
         let (known, blocked, slots, due_snapshot) = {
             let mut ledger = self.delivery_pull.lock();
-            let Some(entry) = ledger.seat_mut(
-                &pull.claim.seat,
-                binding.generation,
-                &binding.native_session,
-            ) else {
+            let Some(entry) =
+                ledger.binding_mut(&pull.claim.seat, &binding.binding_id, binding.generation)
+            else {
                 return Ok(CommandResult::DeliveryPulledV2(
                     DeliveryPullReplyV2::Refused {
                         reason: DeliveryRefusalReason::Busy,
@@ -181,7 +182,7 @@ impl DomainService {
                     .filter(|(_, v)| !v.is_due(now))
                     .map(|(id, _)| id.clone())
                     .collect(),
-                crate::delivery::ledger::MAX_OFFERS_PER_SEAT.saturating_sub(entry.offers.len()),
+                crate::delivery::ledger::MAX_OFFERS_PER_BINDING.saturating_sub(entry.offers.len()),
                 entry.due_snapshot(pull.consumer),
             )
         };
@@ -197,6 +198,7 @@ impl DomainService {
         let version = attention_version(&view.fingerprint, view.newest_pending_notice);
         let output = self.store.presentation_pull(
             PresentationInput {
+                binding_id: binding.binding_id.clone(),
                 owner_replay,
                 ordinary_due_snapshot: Some(due_snapshot),
                 render_profile: profile,
@@ -225,11 +227,9 @@ impl DomainService {
         }
         let current = {
             let mut ledger = self.delivery_pull.lock();
-            if let Some(entry) = ledger.seat_mut(
-                &pull.claim.seat,
-                binding.generation,
-                &binding.native_session,
-            ) {
+            if let Some(entry) =
+                ledger.binding_mut(&pull.claim.seat, &binding.binding_id, binding.generation)
+            {
                 // Remove only the canonical terminal delta. Another route may
                 // have added offers since our snapshot; those must survive.
                 for id in &output.reclaimed_messages {
@@ -292,6 +292,7 @@ impl DomainService {
     pub(super) fn presentation_confirm(
         &self,
         request: &DeliveryPresentationConfirmV2,
+        peer: PeerIdentity,
         budget: &CallBudget,
     ) -> Result<CommandResult, ApiError> {
         request.validate().map_err(ApiError::invalid_request)?;
@@ -303,18 +304,11 @@ impl DomainService {
             None => self.presentation.permit(&request.claim.seat)?,
         };
         let _owner = permit.lock().unwrap_or_else(|e| e.into_inner());
-        let live = request.consumer != PresentationConsumer::Watch
-            || self.mod_channels().presentation_owner_live(
-                &request.claim.seat,
-                request.claim.binding_generation,
-                request.claim.native_session.as_str(),
-                request.presentation_lease.as_deref().unwrap_or_default(),
-            );
         let admitted = match request.consumer {
-            PresentationConsumer::Hook => self.hook_presentation_view(&request.claim, budget),
+            PresentationConsumer::Hook => self.hook_presentation_view(&request.claim, peer, budget),
             PresentationConsumer::Watch => self.watch_presentation_view(&request.claim, budget),
         };
-        if !live || admitted.is_err() {
+        if admitted.is_err() {
             return Ok(CommandResult::DeliveryPresentationConfirmedV2(
                 crate::protocol::delivery::DeliveryPresentationConfirmationReplyV2::empty(
                     crate::protocol::delivery::DeliveryPresentationConfirmationV2::StaleBinding,
@@ -322,6 +316,22 @@ impl DomainService {
             ));
         }
         let (_, binding) = admitted.expect("checked presentation admission");
+        let live = request.consumer != PresentationConsumer::Watch
+            || self.mod_channels().presentation_owner_live(
+                &request.claim.seat,
+                &binding.binding_id,
+                request.claim.binding_generation,
+                request.claim.native_session.as_str(),
+                request.presentation_lease.as_deref().unwrap_or_default(),
+            );
+        if !live {
+            return Ok(CommandResult::DeliveryPresentationConfirmedV2(
+                crate::protocol::delivery::DeliveryPresentationConfirmationReplyV2::empty(
+                    crate::protocol::delivery::DeliveryPresentationConfirmationV2::StaleBinding,
+                ),
+            ));
+        }
+
         let reply = self.store.presentation_confirm(request, budget)?;
         reply
             .validate_for(&request.emitted_controls)
@@ -342,6 +352,7 @@ impl DomainService {
         {
             self.mod_channels().record_presentation_attention_push(
                 &request.claim.seat,
+                &binding.binding_id,
                 binding.generation,
                 binding.native_session.as_str(),
                 request.presentation_lease.as_deref().unwrap_or_default(),
@@ -350,11 +361,9 @@ impl DomainService {
         }
         if !reply.acknowledged_controls.is_empty() {
             let mut ledger = self.delivery_pull.lock();
-            if let Some(entry) = ledger.seat_mut(
-                &request.claim.seat,
-                binding.generation,
-                &binding.native_session,
-            ) {
+            if let Some(entry) =
+                ledger.binding_mut(&request.claim.seat, &binding.binding_id, binding.generation)
+            {
                 for stamp in &reply.acknowledged_controls {
                     match stamp {
                         crate::protocol::delivery::PresentationControlStampV2::Attention {

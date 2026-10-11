@@ -36,11 +36,14 @@ fn event(role: EventRole, intent: EventIntent, delivery: DeliveryEligibility) ->
             domain: ContractDomain::Native,
             native_event: "test".into(),
             shape_fields: vec![],
+            agent_id: None,
+            enrollment_witness: None,
         },
         delivery,
         runtime: RuntimeAttribution::Unavailable {
             diagnostic: "test".into(),
         },
+        binding_event: None,
     }
 }
 

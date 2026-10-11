@@ -409,6 +409,12 @@ fn failed_page_retries_from_its_original_physical_cursor() {
 #[test]
 fn lazy_invitation_is_discoverable_but_never_due_or_waking() {
     let (context, mut conn, _, _) = setup(1_000);
+    let binding = crate::protocol::ids::BindingId::new(conn.query_row(
+        "INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at) VALUES('seat',1,'recipient-pane','binding-boot',1,'claude','lazy-recipient-session','00000000-0000-4000-8000-000000000001','cooperative_top_level',0) RETURNING binding_id",
+        [],
+        |row| row.get::<_, String>(0),
+    ).unwrap());
+
     conn.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('origin','host','resolved','native',1,0)", []).unwrap();
     conn.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,confirmation,inviter_seat_id) VALUES ('lazy','thread','seat',1,'pending',1,0,100,100,'lazy','origin')", []).unwrap();
     let batch = scan_invitation_due_batch(&context, &mut conn, None, 100).unwrap();
@@ -426,17 +432,17 @@ fn lazy_invitation_is_discoverable_but_never_due_or_waking() {
         "late acceptance/rejection/retirement must not retrospectively warn a lazy invitation"
     );
     tx.commit().unwrap();
+    let mod_view = crate::store::seats::mod_binding_view(
+        &conn,
+        "host",
+        &crate::protocol::ids::SeatId::new("seat"),
+        crate::ports::ModBindingRef::Id(&binding),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(mod_view.binding.as_ref().unwrap().binding_id, binding);
     assert_eq!(
-        crate::store::seats::mod_seat_view(
-            &conn,
-            "host",
-            &crate::protocol::ids::SeatId::new("seat")
-        )
-        .unwrap()
-        .unwrap()
-        .fingerprint
-        .other_pending,
-        0,
+        mod_view.fingerprint.other_pending, 0,
         "lazy invitations must not raise mod attention"
     );
     assert!(

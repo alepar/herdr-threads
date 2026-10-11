@@ -1,7 +1,7 @@
 agent_name: seat-recipien
 agent_name_source: seat
 argv: 
-binding.binding_generation: 2
+binding.binding_generation: 1
 binding.provenance: managed_launch
 binding.recorded: true
 binding.state: launched, not checked in

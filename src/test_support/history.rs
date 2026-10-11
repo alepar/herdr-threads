@@ -108,6 +108,10 @@ impl Actor {
             native_session: self.native_session.clone(),
             execution: self.execution.clone(),
             target: self.target.clone(),
+            agent_id: None,
+            // An agent claim that enrolls or reconnects carries its harness fingerprint.
+            liveness: (self.harness != Harness::Human)
+                .then_some(crate::protocol::authority::LivenessFingerprint::TEST),
         }
     }
     fn permit(

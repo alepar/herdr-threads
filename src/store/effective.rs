@@ -1994,7 +1994,7 @@ pub fn receipt_soft_poked_at(
     })
 }
 
-fn human_receipt_waived(
+pub(crate) fn human_receipt_waived(
     db: &Connection,
     seat: &str,
     message_seq: Option<i64>,

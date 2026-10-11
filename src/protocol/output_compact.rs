@@ -66,6 +66,19 @@ pub(super) fn render(result: &CommandResult, spec: &OutputSpec) -> Option<String
             for item in &page.items {
                 let lazy = matches!(item, InboxBatchV2Item::LazyMessage { .. });
                 let ordinary = match item {
+                    InboxBatchV2Item::FirstContact(first_contact) => {
+                        // Fixed plugin-composed lines (thread names escaped to one line); the
+                        // prefix keeps them from posing as a row or a command line.
+                        for line in crate::store::first_contact::render_first_contact(
+                            first_contact,
+                            super::render_now(),
+                        ) {
+                            out.push_str("first contact: ");
+                            out.push_str(&line);
+                            out.push('\n');
+                        }
+                        continue;
+                    }
                     InboxBatchV2Item::Invitation {
                         thread,
                         topic_data,
@@ -715,8 +728,10 @@ fn snake<T: serde::Serialize>(value: &T) -> String {
         .unwrap_or_default()
 }
 
-/// `SEAT STATE [self] [required invitation=I requirement=R revision=N]
-/// [retired]`.
+/// `SEAT STATE active|inactive [self] [required invitation=I requirement=R
+/// revision=N] [retired] [cleanup:S]`. `active` is the store's presence
+/// (a connected binding); every row names one so neither group is implied
+/// by absence.
 fn participant_row(participant: &Participant, out: &mut String) {
     out.push_str(participant.seat.as_str());
     out.push(' ');
@@ -727,6 +742,11 @@ fn participant_row(participant: &Participant, out: &mut String) {
             snake(&participant.physical_state)
         ));
     }
+    out.push_str(if participant.active {
+        " active"
+    } else {
+        " inactive"
+    });
     if participant.is_self {
         out.push_str(" self");
     }

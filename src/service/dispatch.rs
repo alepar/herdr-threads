@@ -9,10 +9,7 @@ use crate::{
         ServiceConnectionAuthority, StorePort,
     },
     protocol::{
-        authority::{
-            COOPERATIVE_TOP_LEVEL_PROVENANCE, CallerClaim, CallerRole, Harness, OperatorActor,
-            PeerIdentity,
-        },
+        authority::{CallerClaim, CallerRole, Harness, OperatorActor, PeerIdentity},
         commands::{AckModDelivered, Command, OperatorCommand, PermitMutation},
         output::OutputSpec,
         results::{ApiError, CommandResult, ErrorCode},
@@ -628,6 +625,98 @@ impl DomainService {
             .bootstrap_mutate(&runtime.canonical, mutation, permit, None, budget)
     }
 
+    /// A binding's own read position (spec §2): authorised like a cooperative call, but open to
+    /// declared subagents, since it never touches seat state. Decided by the store.
+    fn advance_cursors(
+        &self,
+        request: &crate::protocol::commands::AdvanceCursors,
+        peer: PeerIdentity,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        let (owner_uid, writer) = self.cooperative_runtime.as_ref().ok_or_else(|| {
+            error(
+                ErrorCode::CallerUnverified,
+                "cooperative elected runtime unavailable",
+            )
+        })?;
+        if peer.effective_uid() != *owner_uid {
+            return Err(error(
+                ErrorCode::Unauthorized,
+                "caller peer does not match elected owner",
+            ));
+        }
+        if request.claim.instance != self.instance {
+            return Err(error(
+                ErrorCode::CallerUnverified,
+                "caller instance does not match service",
+            ));
+        }
+        let _turn = writer.enter_foreground(budget, self.clock.as_ref())?;
+        self.store.advance_cursors(request, budget)
+    }
+
+    /// The hook pull's plain touch-or-reconnect of the claim's binding (spec §3), authorised like
+    /// a cooperative call and decided by the store in one write transaction that also reads the
+    /// resulting mod view.
+    pub(super) fn hook_plain_reconnect(
+        &self,
+        claim: &CallerClaim,
+        peer: PeerIdentity,
+        presentation: bool,
+        budget: &CallBudget,
+    ) -> Result<Option<crate::ports::ModSeatView>, ApiError> {
+        let (owner_uid, writer) = self.cooperative_runtime.as_ref().ok_or_else(|| {
+            error(
+                ErrorCode::CallerUnverified,
+                "cooperative elected runtime unavailable",
+            )
+        })?;
+        if peer.effective_uid() != *owner_uid {
+            return Err(error(
+                ErrorCode::Unauthorized,
+                "caller peer does not match elected owner",
+            ));
+        }
+        if claim.instance != self.instance {
+            return Err(error(
+                ErrorCode::CallerUnverified,
+                "caller instance does not match service",
+            ));
+        }
+        let _turn = writer.enter_foreground(budget, self.clock.as_ref())?;
+        self.store.hook_plain_reconnect(claim, presentation, budget)
+    }
+
+    /// A harness lifecycle event about a binding (spec §2, §3): authorised like a cooperative
+    /// call, open to declared subagents, since it changes no seat state. Decided by the store.
+    fn binding_event(
+        &self,
+        request: &crate::protocol::commands::BindingEvent,
+        peer: PeerIdentity,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        let (owner_uid, writer) = self.cooperative_runtime.as_ref().ok_or_else(|| {
+            error(
+                ErrorCode::CallerUnverified,
+                "cooperative elected runtime unavailable",
+            )
+        })?;
+        if peer.effective_uid() != *owner_uid {
+            return Err(error(
+                ErrorCode::Unauthorized,
+                "caller peer does not match elected owner",
+            ));
+        }
+        if request.claim.instance != self.instance {
+            return Err(error(
+                ErrorCode::CallerUnverified,
+                "caller instance does not match service",
+            ));
+        }
+        let _turn = writer.enter_foreground(budget, self.clock.as_ref())?;
+        self.store.binding_event(request, budget)
+    }
+
     pub(super) fn cooperative_mutation(
         &self,
         mutation: PermitMutation,
@@ -767,9 +856,12 @@ impl DomainService {
                     .collect(),
             }))
         };
-        let binding = self.store.mod_ack_binding(&self.instance, &seat, budget)?;
+        let binding = self
+            .store
+            .mod_ack_binding(&self.instance, &request.claim, budget)?;
         let Some(binding) = binding.filter(|binding| {
-            binding.provenance == COOPERATIVE_TOP_LEVEL_PROVENANCE
+            binding.connected
+                && binding.harness == request.claim.harness.as_str()
                 && crate::delivery::declares(&binding.harness, DeliveryMechanism::PushChannel)
         }) else {
             // The check-in that opens the binding may not have committed yet.
@@ -779,21 +871,12 @@ impl DomainService {
         else {
             return report(ModAckOutcome::Retryable, Some(ModAckReason::NoLiveChannel));
         };
-        let same_session = request.claim.native_session == binding.native_session;
-        let effective = if request.claim.binding_generation == binding.generation && same_session {
+        // The binding is the one the claim's key names: the ack settles on behalf of the
+        // channel's binding. The decision is against the canonical binding, never the stale
+        // client claim (a resumed session carries a new generation or execution).
+        let effective = if request.claim.binding_generation == binding.generation {
             request.clone()
-        } else if same_session
-            && binding
-                .previous
-                .as_ref()
-                .is_some_and(|(generation, session)| {
-                    *generation == request.claim.binding_generation
-                        && *session == binding.native_session
-                })
-        {
-            // Resume: the previous generation of the same native session. The
-            // decision is against the canonical current binding, never the
-            // stale client claim.
+        } else {
             AckModDelivered {
                 claim: CallerClaim {
                     instance: self.instance.clone(),
@@ -804,14 +887,14 @@ impl DomainService {
                     native_session: binding.native_session.clone(),
                     execution: binding.execution.clone(),
                     target: binding.target.clone(),
+                    agent_id: None,
+                    liveness: None,
                 },
                 ..request.clone()
             }
-        } else {
-            return report(ModAckOutcome::StaleGeneration, None);
         };
         // A channel in reconnect or rebind grace counts as live.
-        if !self.mod_channels.is_live(&seat, binding.generation) {
+        if !self.mod_channels.is_live(&seat, &binding.binding_id) {
             return report(ModAckOutcome::Retryable, Some(ModAckReason::NoLiveChannel));
         }
         let result = self.cooperative_mutation(
@@ -828,7 +911,7 @@ impl DomainService {
                 .any(|item| item.result.counts_as_mod_ack())
         {
             self.mod_channels
-                .record_ack(&seat, binding.generation, self.clock.utc_now());
+                .record_ack(&seat, &binding.binding_id, self.clock.utc_now());
         }
         Ok(result)
     }
@@ -863,12 +946,13 @@ impl DomainService {
 }
 
 impl LocalService for DomainService {
-    /// Spec D2: decide a mod watch registration against A2 in one read
-    /// transaction (the seat, its target's recovery hold, its open binding),
-    /// then record the channel with the binding's canonical generation. The
-    /// claim only names the seat and the native session it expects; nothing
-    /// the claim says about the generation is trusted. A store read that
-    /// fails is `busy` (retryable): the CLI retries with backoff.
+    /// Spec D2, §3 Wake: decide a mod watch registration against A2 in one read
+    /// transaction (the seat, its target's recovery hold, the claimed binding), then record the
+    /// channel under that binding. The claim's key (seat, harness, native session, no agent id)
+    /// must resolve to an open, connected, top-level binding of the seat: a subagent claim, an
+    /// unknown session or a disconnected binding holds no channel. Nothing the claim says about
+    /// the generation is trusted. A store read that fails is `busy` (retryable): the CLI retries
+    /// with backoff.
     fn watch_register(
         &self,
         request: &crate::protocol::watch::WatchRequest,
@@ -883,12 +967,16 @@ impl LocalService for DomainService {
         else {
             return Err(Refusal::NO_PUSH_CHANNEL);
         };
-        if claim.role != CallerRole::TopLevel {
+        if claim.role != CallerRole::TopLevel || claim.is_subagent() {
             return Err(Refusal::NO_PUSH_CHANNEL);
         }
         let view = self
             .store
-            .presentation_seat_view(&claim.seat, budget)
+            .presentation_seat_view(
+                &claim.seat,
+                crate::ports::ModBindingRef::Claim(claim),
+                budget,
+            )
             .map_err(|_| Refusal::Busy)?;
         let Some(view) = view else {
             return Err(Refusal::Unresolved);
@@ -905,11 +993,9 @@ impl LocalService for DomainService {
         if !crate::delivery::declares(&binding.harness, DeliveryMechanism::PushChannel) {
             return Err(Refusal::NO_PUSH_CHANNEL);
         }
-        if binding.provenance != crate::protocol::authority::COOPERATIVE_TOP_LEVEL_PROVENANCE {
+        // Role + liveness + harness, never the observation provenance (ht-54r.79).
+        if !binding.holds_channel() || binding.harness != claim.harness.as_str() {
             return Err(Refusal::NoBinding);
-        }
-        if binding.native_session != claim.native_session.as_str() {
-            return Err(Refusal::SessionMismatch);
         }
         if claim.instance != self.instance {
             return Err(Refusal::SessionMismatch);
@@ -917,6 +1003,7 @@ impl LocalService for DomainService {
         let channel = self.mod_channels.register(
             crate::ports::ModChannelRegistration {
                 seat: claim.seat.clone(),
+                binding: binding.binding_id.clone(),
                 binding_generation: binding.generation,
                 native_session: claim.native_session.clone(),
                 harness: claim.harness,
@@ -1001,6 +1088,18 @@ impl LocalService for DomainService {
             output: output.clone(),
             operation_scope: None,
         };
+        // Subagent bindings are read-only (ht-54r.20). This claim-shape check is only the cheap
+        // early refusal (stable code before `validate()`); the authority is the role on the
+        // binding row the store resolves (`control::require_top_level_binding`, TRUST-POLICY A2).
+        if command
+            .accountable_claim()
+            .is_some_and(crate::protocol::authority::CallerClaim::is_subagent)
+        {
+            return Err(error(
+                ErrorCode::SubagentReadOnly,
+                crate::protocol::authority::SUBAGENT_READ_ONLY_DETAIL,
+            ));
+        }
         if matches!(&command, Command::Search(_)) {
             let _search = self.search.enter(budget, self.clock.as_ref())?;
             return self.store.query(&command, &read, budget);
@@ -1048,17 +1147,26 @@ impl LocalService for DomainService {
             | Command::Diagnostics(_)
             | Command::RetirementJobs(_) => self.store.query(&command, &read, budget),
             Command::AttentionDigest(_) | Command::AttentionDigestDelivery(_) => {
-                let seat = match &command {
-                    Command::AttentionDigest(q) | Command::AttentionDigestDelivery(q) => {
-                        q.seat.clone()
-                    }
+                let query = match &command {
+                    Command::AttentionDigest(q) | Command::AttentionDigestDelivery(q) => q,
                     _ => unreachable!("matched above"),
                 };
-                let mut result = self.store.query(&command, &read, budget)?;
-                // Spec D7: any live or grace entry for the seat, which also
-                // covers the rebind grace of the SessionStart check-in that
-                // rotated the generation.
-                let live = self.seat_has_mod_channel(&seat);
+                let seat = query.seat.clone();
+                let claim = query
+                    .claim
+                    .as_ref()
+                    .filter(|claim| claim.harness != crate::protocol::authority::Harness::Human);
+                let (mut result, binding) =
+                    self.store.attention_digest_read(&command, &read, budget)?;
+                // Spec §2 Hook notifications / §3 Wake: the digest flag follows the binding the
+                // digest was read for, so one binding's channel never hides mail from another.
+                // A non-human claim with no binding yet has no channel; no claim (or a human
+                // claim) is the seat-level digest.
+                let live = match (&binding, claim) {
+                    (Some(binding), _) => self.mod_channels.binding_live(&seat, binding),
+                    (None, Some(_)) => false,
+                    (None, None) => self.seat_has_mod_channel(&seat),
+                };
                 match &mut result {
                     CommandResult::AttentionDigest(digest)
                     | CommandResult::AttentionDigestDelivery { digest, .. } => {
@@ -1075,7 +1183,9 @@ impl LocalService for DomainService {
             Command::AckModDelivered(request) => {
                 self.ack_mod_delivered(request, peer, budget, read)
             }
-            Command::DeliveryPull(pull) => self.delivery_pull(pull, budget, &read),
+            Command::AdvanceCursors(request) => self.advance_cursors(&request, peer, budget),
+            Command::BindingEvent(request) => self.binding_event(&request, peer, budget),
+            Command::DeliveryPull(pull) => self.delivery_pull(pull, peer, budget, &read),
             Command::DeliveryConfirm(confirm) => self.delivery_confirm(confirm, peer, budget, read),
             command @ (Command::BeginHandoff(_)
             | Command::CompleteHandoff(_)
@@ -1241,9 +1351,9 @@ impl LocalService for DomainService {
                 let _turn = writer.enter_foreground(budget, self.clock.as_ref())?;
                 self.store.record_managed_launch(launch, budget)
             }
-            Command::DeliveryPullV2(pull) => self.presentation_pull(&pull, budget),
+            Command::DeliveryPullV2(pull) => self.presentation_pull(&pull, peer, budget),
             Command::DeliveryPresentationConfirmV2(confirm) => {
-                self.presentation_confirm(&confirm, budget)
+                self.presentation_confirm(&confirm, peer, budget)
             }
             Command::LocalIntents(_) => Err(error(
                 ErrorCode::Unsupported,
@@ -1356,6 +1466,8 @@ mod operator_tests {
             native_session: NativeSessionId::new("n"),
             execution: ExecutionId::new("e"),
             target: HostTargetId::new("p"),
+            agent_id: None,
+            liveness: None,
         };
         let budget = || CallBudget {
             deadline: MonoInstant(clock.monotonic_now().0 + 5000),
@@ -1440,6 +1552,8 @@ mod operator_tests {
                         native_session: NativeSessionId::new("n"),
                         execution: ExecutionId::new("e"),
                         target: HostTargetId::new("p"),
+                        agent_id: None,
+                        liveness: None,
                     },
                 }),
                 PeerIdentity::from_kernel(501),

@@ -112,6 +112,9 @@ impl crate::ports::LocalService for Service {
             generation: 1,
             created_at: crate::protocol::time::UtcMillis(0),
             retired_at: None,
+            active: true,
+            availability: None,
+            bindings: Vec::new(),
         };
         match c {
             Command::Capabilities => Ok(CommandResult::Capabilities(CapabilityList {
@@ -171,6 +174,7 @@ impl crate::ports::LocalService for Service {
                         }],
                         ..none()
                     }),
+                    mail: None,
                 }))
             }
             Command::CheckIn(check_in) => {
@@ -186,6 +190,8 @@ impl crate::ports::LocalService for Service {
                     warnings: empty(),
                     notices: Default::default(),
                     inbox: empty(),
+                    fast_forward: None,
+                    first_contact: None,
                 }))
             }
             Command::InboxBatchV2(_) => {

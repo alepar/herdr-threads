@@ -79,14 +79,14 @@ use crate::{
     delivery::{Assembled, Assembler, DeliveryKind, invitation::InvitationContext},
     ports::{PresentationInput, PresentationOutput, PresentationWork},
     protocol::{
-        authority::{COOPERATIVE_TOP_LEVEL_PROVENANCE, CallerClaim, CallerRole},
+        authority::{CallerClaim, CallerRole},
         commands::InvitationConfirmation,
         delivery::{
             DeliveryPageV2, DeliveryPresentationConfirmV2,
             DeliveryPresentationConfirmationV2 as Confirmation, DeliveryPullReplyV2,
             PresentationConsumer, PresentationMessage,
         },
-        ids::MessageId,
+        ids::{BindingId, MessageId},
         time::CallBudget,
     },
 };
@@ -259,19 +259,37 @@ fn partial_json(partial: &HashMap<String, String>) -> Result<String, ApiError> {
 fn encode<T: Serialize>(value: &T) -> Result<String, ApiError> {
     serde_json::to_string(value).map_err(|e| corrupt(format!("presentation encoding: {e}")))
 }
-fn scope_matches(db: &Connection, claim: &CallerClaim) -> Result<bool, ApiError> {
-    if claim.role != CallerRole::TopLevel {
-        return Ok(false);
+/// Resolve the cooperative claim's exact canonical binding. Hints and wire
+/// generations never choose a sibling's presentation slot.
+pub(super) fn binding_scope(
+    db: &Connection,
+    claim: &CallerClaim,
+) -> Result<Option<BindingId>, ApiError> {
+    if claim.role != CallerRole::TopLevel || claim.is_subagent() {
+        return Ok(None);
+    }
+    let Some(binding) =
+        super::bindings::match_claim(db, &super::bindings::BindingKey::from_claim(claim))?
+    else {
+        return Ok(None);
+    };
+    if binding.role != super::bindings::BindingRole::TopLevel
+        || binding.liveness != super::bindings::Liveness::Connected
+        || binding.ended_at.is_some()
+    {
+        return Ok(None);
     }
     let Ok(generation) = i64::try_from(claim.binding_generation) else {
-        return Ok(false);
+        return Ok(None);
     };
-    db.query_row("SELECT EXISTS(SELECT 1 FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id AND b.generation=s.generation AND b.ended_at IS NULL WHERE s.id=?1 AND s.instance_id=?2 AND s.state='resolved' AND s.generation=?3 AND b.execution_id=?4 AND b.native_session=?5 AND b.observation_provenance=?6 AND s.target_id=?7 AND b.target_id=s.target_id AND b.target_generation=s.target_generation AND NOT EXISTS(SELECT 1 FROM recovery_holds h WHERE h.instance_id=s.instance_id AND h.target_id=s.target_id AND h.released_at IS NULL))",params![claim.seat.as_str(),claim.instance,generation,claim.execution.as_str(),claim.native_session.as_str(),COOPERATIVE_TOP_LEVEL_PROVENANCE,claim.target.as_str()],|r|r.get(0)).map_err(store_error)
+    let valid: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM occupant_bindings b JOIN seats s ON s.id=b.seat_id WHERE b.binding_id=?1 AND s.id=?2 AND s.instance_id=?3 AND s.state='resolved' AND b.generation=?4 AND b.execution_id=?5 AND s.target_id=?6 AND b.target_id=s.target_id AND b.target_generation=s.target_generation AND b.ended_at IS NULL AND b.role='top_level' AND b.liveness='connected' AND NOT EXISTS(SELECT 1 FROM recovery_holds h WHERE h.instance_id=s.instance_id AND h.target_id=s.target_id AND h.released_at IS NULL))",params![binding.binding_id.as_str(),claim.seat.as_str(),claim.instance,generation,claim.execution.as_str(),claim.target.as_str()],|r|r.get(0)).map_err(store_error)?;
+    Ok(valid.then_some(binding.binding_id))
 }
 
 fn load_raw(
     db: &Connection,
     claim: &CallerClaim,
+    binding: &BindingId,
     consumer: PresentationConsumer,
 ) -> Result<State, ApiError> {
     // The field set is this private typed state, never caller-selected SQL.
@@ -284,13 +302,13 @@ fn load_raw(
         .cloned()
         .collect::<Vec<_>>();
     let sql = format!(
-        "SELECT {} FROM {STATE_TABLE} WHERE seat_id=?1 AND consumer=?2",
+        "SELECT {} FROM {STATE_TABLE} WHERE binding_id=?1 AND consumer=?2 AND seat_id=?3",
         names.join(",")
     );
     let raw = db
         .query_row(
             &sql,
-            params![claim.seat.as_str(), consumer.as_str()],
+            params![binding.as_str(), consumer.as_str(), claim.seat.as_str()],
             |row| {
                 let mut map = serde_json::Map::new();
                 for (n, name) in names.iter().enumerate() {
@@ -399,9 +417,10 @@ fn load_raw(
 fn load(
     db: &Connection,
     claim: &CallerClaim,
+    binding: &BindingId,
     consumer: PresentationConsumer,
 ) -> Result<State, ApiError> {
-    let state = load_raw(db, claim, consumer)?;
+    let state = load_raw(db, claim, binding, consumer)?;
     let generation = i64::try_from(claim.binding_generation)
         .map_err(|_| corrupt("presentation generation overflow"))?;
     if state.generation == generation
@@ -454,6 +473,7 @@ fn load(
 fn save(
     db: &Connection,
     claim: &CallerClaim,
+    binding: &BindingId,
     consumer: PresentationConsumer,
     state: &State,
 ) -> Result<(), ApiError> {
@@ -462,10 +482,15 @@ fn save(
     let object = object
         .as_object()
         .ok_or_else(|| corrupt("presentation state"))?;
-    let mut columns = vec!["seat_id".to_owned(), "consumer".to_owned()];
+    let mut columns = vec![
+        "seat_id".to_owned(),
+        "consumer".to_owned(),
+        "binding_id".to_owned(),
+    ];
     let mut values = vec![
         Value::Text(claim.seat.as_str().into()),
         Value::Text(consumer.as_str().into()),
+        Value::Text(binding.as_str().into()),
     ];
     for (name, value) in object {
         columns.push(name.clone());
@@ -481,12 +506,12 @@ fn save(
     }
     let assignments = columns
         .iter()
-        .skip(2)
+        .skip(3)
         .map(|v| format!("{v}=excluded.{v}"))
         .collect::<Vec<_>>()
         .join(",");
     let sql = format!(
-        "INSERT INTO {STATE_TABLE}({}) VALUES ({}) ON CONFLICT(seat_id,consumer) DO UPDATE SET {assignments}",
+        "INSERT INTO {STATE_TABLE}({}) VALUES ({}) ON CONFLICT(binding_id,consumer) DO UPDATE SET {assignments}",
         columns.join(","),
         vec!["?"; columns.len()].join(",")
     );
@@ -577,10 +602,10 @@ pub(super) fn render_selection(
     claim: &CallerClaim,
     consumer: PresentationConsumer,
 ) -> Result<Option<crate::delivery::presentation::FrozenRenderIdentity>, ApiError> {
-    if !scope_matches(db, claim)? {
+    let Some(binding) = binding_scope(db, claim)? else {
         return Ok(None);
-    }
-    let state = load_raw(db, claim, consumer)?;
+    };
+    let state = load_raw(db, claim, &binding, consumer)?;
     if state.generation
         != i64::try_from(claim.binding_generation)
             .map_err(|_| corrupt("presentation generation"))?
@@ -674,7 +699,7 @@ fn advance_ordinary_publications(
         let recipient:Option<(String,String,String)>=db.query_row("SELECT message_id,thread_id,state FROM lazy_recipients WHERE preparation_id=?1 AND seat_id=?2",params![preparation,claim.seat.as_str()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(store_error)?;
         if recipient
             .as_ref()
-            .is_none_or(|(m, t, status)| m != &message || t != &thread || status != "pending")
+            .is_none_or(|(m, t, _)| m != &message || t != &thread)
         {
             continue;
         }
@@ -801,10 +826,10 @@ pub(super) fn confirm(
 ) -> Result<crate::protocol::delivery::DeliveryPresentationConfirmationReplyV2, ApiError> {
     use crate::protocol::delivery::DeliveryPresentationConfirmationReplyV2 as Reply;
     request.validate().map_err(ApiError::invalid_request)?;
-    if !scope_matches(db, &request.claim)? {
+    let Some(binding) = binding_scope(db, &request.claim)? else {
         return Ok(Reply::empty(Confirmation::StaleBinding));
-    }
-    let mut state = load(db, &request.claim, request.consumer)?;
+    };
+    let mut state = load(db, &request.claim, &binding, request.consumer)?;
     let current = state.outbox_token.as_deref() == Some(&request.token);
     let last = state.last_token.as_deref() == Some(&request.token);
     if !current && !last {
@@ -899,7 +924,7 @@ pub(super) fn confirm(
             retire_outbox(&mut state)?;
         }
         if changed {
-            save(db, &request.claim, request.consumer, &state)?;
+            save(db, &request.claim, &binding, request.consumer, &state)?;
         }
     }
     Ok(Reply {
@@ -1077,19 +1102,20 @@ struct ItemRender<'a> {
 }
 fn item(
     db: &Connection,
-    claim: &CallerClaim,
+    scope: (&CallerClaim, &BindingId),
     consumer: PresentationConsumer,
     context: &InvitationContext,
     ordinal: i64,
     render: ItemRender<'_>,
     source: Source,
 ) -> Result<Item, ApiError> {
+    let (claim, binding) = scope;
     let ItemRender {
         key: render_key,
         required_bytes,
     } = render;
     let key = context.key();
-    let existing=db.query_row("SELECT generation,execution,context_key,partial_count,complete_count,output_class FROM invitation_presentation_items WHERE seat_id=?1 AND invitation_id=?2 AND consumer=?3",params![claim.seat.as_str(),context.id.as_str(),consumer.as_str()],|r|Ok((r.get::<_,i64>(0)?,bounded_private_text(r,1,128)?,bounded_private_text(r,2,4096)?,r.get::<_,i64>(3)?,r.get::<_,i64>(4)?,r.get::<_,i64>(5)?))).optional().map_err(private_read_error)?;
+    let existing=db.query_row("SELECT generation,execution,context_key,partial_count,complete_count,output_class FROM invitation_presentation_items WHERE binding_id=?1 AND invitation_id=?2 AND consumer=?3",params![binding.as_str(),context.id.as_str(),consumer.as_str()],|r|Ok((r.get::<_,i64>(0)?,bounded_private_text(r,1,128)?,bounded_private_text(r,2,4096)?,r.get::<_,i64>(3)?,r.get::<_,i64>(4)?,r.get::<_,i64>(5)?))).optional().map_err(private_read_error)?;
     let proposed = match source {
         Source::Initial => 2,
         Source::Context => 3,
@@ -1110,7 +1136,7 @@ fn item(
     } else {
         i64::try_from(required_bytes).map_err(|_| corrupt("invitation render size overflow"))?
     };
-    db.execute("INSERT INTO invitation_presentation_items(seat_id,invitation_id,consumer,generation,execution,context_key,render_key,partial_count,complete_count,required_render_bytes,revisit_ordinal,mod_key,output_class) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,'',?12) ON CONFLICT(seat_id,invitation_id,consumer) DO UPDATE SET generation=excluded.generation,execution=excluded.execution,context_key=excluded.context_key,render_key=excluded.render_key,partial_count=excluded.partial_count,complete_count=excluded.complete_count,required_render_bytes=excluded.required_render_bytes,revisit_ordinal=excluded.revisit_ordinal,output_class=excluded.output_class",params![claim.seat.as_str(),context.id.as_str(),consumer.as_str(),claim.binding_generation as i64,claim.execution.as_str(),key,render_key,partial,complete,size,ordinal,output_class]).map_err(store_error)?;
+    db.execute("INSERT INTO invitation_presentation_items(binding_id,seat_id,invitation_id,consumer,generation,execution,context_key,render_key,partial_count,complete_count,required_render_bytes,revisit_ordinal,mod_key,output_class) VALUES (?1,?13,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,'',?12) ON CONFLICT(binding_id,invitation_id,consumer) DO UPDATE SET generation=excluded.generation,execution=excluded.execution,context_key=excluded.context_key,render_key=excluded.render_key,partial_count=excluded.partial_count,complete_count=excluded.complete_count,required_render_bytes=excluded.required_render_bytes,revisit_ordinal=excluded.revisit_ordinal,output_class=excluded.output_class",params![binding.as_str(),context.id.as_str(),consumer.as_str(),claim.binding_generation as i64,claim.execution.as_str(),key,render_key,partial,complete,size,ordinal,output_class,claim.seat.as_str()]).map_err(store_error)?;
     Ok(Item {
         key,
         partial,
@@ -1128,6 +1154,7 @@ fn item(
 fn revisit_candidates(
     db: &Connection,
     claim: &CallerClaim,
+    binding: &BindingId,
     consumer: PresentationConsumer,
     state: &mut State,
     limit: usize,
@@ -1136,11 +1163,11 @@ fn revisit_candidates(
     let mut visited = 0;
     let mut result = Vec::new();
     let cleanup_limit = limit.min(10);
-    let mut query=db.prepare("SELECT invitation_id,revisit_ordinal FROM invitation_presentation_items INDEXED BY invitation_presentation_cleanup WHERE seat_id=?1 AND consumer=?2 AND revisit_ordinal>?3 ORDER BY revisit_ordinal LIMIT ?4").map_err(store_error)?;
+    let mut query=db.prepare("SELECT invitation_id,revisit_ordinal FROM invitation_presentation_items INDEXED BY invitation_presentation_cleanup WHERE binding_id=?1 AND consumer=?2 AND revisit_ordinal>?3 ORDER BY revisit_ordinal LIMIT ?4").map_err(store_error)?;
     let rows = query
         .query_map(
             params![
-                claim.seat.as_str(),
+                binding.as_str(),
                 consumer.as_str(),
                 state.cleanup_after,
                 cleanup_limit as i64
@@ -1160,8 +1187,8 @@ fn revisit_candidates(
             // The fixed Watch row also carries a not-yet-observed passive
             // removal. Keep that current-row evidence until maintenance
             // advances its content version, but exclude it from output work.
-            db.execute("UPDATE invitation_presentation_items SET required_render_bytes=?4 WHERE seat_id=?1 AND consumer=?2 AND invitation_id=?3 AND consumer='watch' AND mod_key!=''",params![claim.seat.as_str(),consumer.as_str(),id.as_str(),i64::MAX]).map_err(store_error)?;
-            db.execute("DELETE FROM invitation_presentation_items WHERE seat_id=?1 AND consumer=?2 AND invitation_id=?3 AND (consumer!='watch' OR mod_key='')",params![claim.seat.as_str(),consumer.as_str(),id.as_str()]).map_err(store_error)?;
+            db.execute("UPDATE invitation_presentation_items SET required_render_bytes=?4 WHERE binding_id=?1 AND consumer=?2 AND invitation_id=?3 AND consumer='watch' AND mod_key!=''",params![binding.as_str(),consumer.as_str(),id.as_str(),i64::MAX]).map_err(store_error)?;
+            db.execute("DELETE FROM invitation_presentation_items WHERE binding_id=?1 AND consumer=?2 AND invitation_id=?3 AND (consumer!='watch' OR mod_key='')",params![binding.as_str(),consumer.as_str(),id.as_str()]).map_err(store_error)?;
         }
     }
     if rows.len() < cleanup_limit {
@@ -1170,11 +1197,11 @@ fn revisit_candidates(
     // On a render-key change, a bounded ordinal walk refreshes sizing. It
     // never resets allocation counters or initial/context discovery.
     if state.dirty_after < state.dirty_high && visited < limit {
-        let mut query=db.prepare("SELECT invitation_id,revisit_ordinal FROM invitation_presentation_items INDEXED BY invitation_presentation_cleanup WHERE seat_id=?1 AND consumer=?2 AND revisit_ordinal>?3 AND revisit_ordinal<=?4 ORDER BY revisit_ordinal LIMIT ?5").map_err(store_error)?;
+        let mut query=db.prepare("SELECT invitation_id,revisit_ordinal FROM invitation_presentation_items INDEXED BY invitation_presentation_cleanup WHERE binding_id=?1 AND consumer=?2 AND revisit_ordinal>?3 AND revisit_ordinal<=?4 ORDER BY revisit_ordinal LIMIT ?5").map_err(store_error)?;
         let rows = query
             .query_map(
                 params![
-                    claim.seat.as_str(),
+                    binding.as_str(),
                     consumer.as_str(),
                     state.dirty_after,
                     state.dirty_high,
@@ -1205,16 +1232,16 @@ fn revisit_candidates(
     if (state.revisit_after_bytes, state.revisit_after_ordinal)
         >= (state.revisit_high_bytes, state.revisit_high_ordinal)
     {
-        let high=db.query_row("SELECT required_render_bytes,revisit_ordinal FROM invitation_presentation_items INDEXED BY invitation_presentation_revisit WHERE seat_id=?1 AND consumer=?2 AND generation=?3 AND required_render_bytes<=?4 ORDER BY required_render_bytes DESC,revisit_ordinal DESC LIMIT 1",params![claim.seat.as_str(),consumer.as_str(),state.generation,standalone as i64],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?))).optional().map_err(store_error)?;
+        let high=db.query_row("SELECT required_render_bytes,revisit_ordinal FROM invitation_presentation_items INDEXED BY invitation_presentation_revisit WHERE binding_id=?1 AND consumer=?2 AND generation=?3 AND required_render_bytes<=?4 ORDER BY required_render_bytes DESC,revisit_ordinal DESC LIMIT 1",params![binding.as_str(),consumer.as_str(),state.generation,standalone as i64],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?))).optional().map_err(store_error)?;
         (state.revisit_high_bytes, state.revisit_high_ordinal) = high.unwrap_or((0, 0));
         state.revisit_after_bytes = 0;
         state.revisit_after_ordinal = 0;
     }
-    let mut query=db.prepare("SELECT invitation_id,required_render_bytes,revisit_ordinal FROM invitation_presentation_items INDEXED BY invitation_presentation_revisit WHERE seat_id=?1 AND consumer=?2 AND generation=?3 AND (required_render_bytes,revisit_ordinal)>(?4,?5) AND (required_render_bytes,revisit_ordinal)<=(?6,?7) AND required_render_bytes<=?8 ORDER BY required_render_bytes,revisit_ordinal LIMIT ?9").map_err(store_error)?;
+    let mut query=db.prepare("SELECT invitation_id,required_render_bytes,revisit_ordinal FROM invitation_presentation_items INDEXED BY invitation_presentation_revisit WHERE binding_id=?1 AND consumer=?2 AND generation=?3 AND (required_render_bytes,revisit_ordinal)>(?4,?5) AND (required_render_bytes,revisit_ordinal)<=(?6,?7) AND required_render_bytes<=?8 ORDER BY required_render_bytes,revisit_ordinal LIMIT ?9").map_err(store_error)?;
     let rows = query
         .query_map(
             params![
-                claim.seat.as_str(),
+                binding.as_str(),
                 consumer.as_str(),
                 state.generation,
                 state.revisit_after_bytes,
@@ -1667,10 +1694,10 @@ fn reclaim_terminal_offers(
     input: &mut PresentationInput,
     work: &mut PresentationWork,
 ) -> Result<Vec<MessageId>, ApiError> {
-    use crate::delivery::ledger::MAX_OFFERS_PER_SEAT;
-    if input.known_messages.len() > MAX_OFFERS_PER_SEAT
-        || input.blocked_messages.len() > MAX_OFFERS_PER_SEAT
-        || input.new_message_slots > MAX_OFFERS_PER_SEAT
+    use crate::delivery::ledger::MAX_OFFERS_PER_BINDING;
+    if input.known_messages.len() > MAX_OFFERS_PER_BINDING
+        || input.blocked_messages.len() > MAX_OFFERS_PER_BINDING
+        || input.new_message_slots > MAX_OFFERS_PER_BINDING
     {
         return Err(ApiError::invalid_request("ordinary offer snapshot bound"));
     }
@@ -1690,13 +1717,15 @@ fn reclaim_terminal_offers(
         ).optional().map_err(store_error)?;
         let terminal = match mode.as_deref() {
             Some("lazy") => {
-                // One unique recipient lookup and one manifest unique-key lookup.
-                work.offer_reconciliation_probes += 2;
-                let state: Option<String> = db.query_row(
-                    "SELECT r.state FROM lazy_recipients r JOIN send_manifests sm ON sm.preparation_id=r.preparation_id AND sm.message_id=r.message_id AND sm.thread_id=r.thread_id WHERE r.message_id=?1 AND r.seat_id=?2 AND sm.instance_id=?3",
-                    params![id.as_str(), claim.seat.as_str(), claim.instance], |r| r.get(0),
+                // Four exact relations plus two cursor probes and membership.
+                // Historical seat display state says nothing about this reader.
+                work.offer_reconciliation_probes += 7;
+                let unread: Option<bool> = db.query_row(
+                    concat!("SELECT ", super::lazy_delivery::binding_lazy_unread_sql!(),
+                        " FROM lazy_recipients r JOIN send_manifests sm ON sm.preparation_id=r.preparation_id AND sm.message_id=r.message_id AND sm.thread_id=r.thread_id JOIN messages m ON m.id=r.message_id JOIN occupant_bindings b ON b.binding_id=?4 AND b.seat_id=r.seat_id WHERE r.message_id=?1 AND r.seat_id=?2 AND sm.instance_id=?3"),
+                    params![id.as_str(),claim.seat.as_str(),claim.instance,input.binding_id.as_str()], |r| r.get(0),
                 ).optional().map_err(store_error)?;
-                state.as_deref() == Some("displayed")
+                unread == Some(false)
             }
             Some("ordinary") => {
                 // Logical addressed authority wins even when its sparse state
@@ -1715,10 +1744,22 @@ fn reclaim_terminal_offers(
                         params![id.as_str(), claim.seat.as_str()], |r| Ok((r.get(0)?,r.get(1)?)),
                     ).optional().map_err(store_error)?
                 };
-                state.is_some_and(|(state, not_required)| {
+                let seat_terminal = state.is_some_and(|(state, not_required)| {
                     matches!(state.as_str(), "acked" | "recipient_retired")
                         || (state == "pending" && not_required)
-                })
+                });
+                if seat_terminal {
+                    use super::read_cursors::{RECEIVABLE_FROM, RECEIVABLE_WHERE, UNREAD_EXTRA};
+                    // Published recipient, manifest, message, membership, cursor.
+                    work.offer_reconciliation_probes += 5;
+                    let unread: bool = db.query_row(
+                        &format!("SELECT EXISTS(SELECT 1 FROM {RECEIVABLE_FROM} WHERE {RECEIVABLE_WHERE} {UNREAD_EXTRA} AND m.id=?3)"),
+                        params![claim.seat.as_str(),input.binding_id.as_str(),id.as_str()], |r| r.get(0),
+                    ).map_err(store_error)?;
+                    !unread
+                } else {
+                    false
+                }
             }
             _ => false,
         };
@@ -1736,13 +1777,13 @@ fn reclaim_terminal_offers(
     input.new_message_slots = input
         .new_message_slots
         .saturating_add(reclaimed.len())
-        .min(MAX_OFFERS_PER_SEAT - known.len());
+        .min(MAX_OFFERS_PER_BINDING - known.len());
     input.known_messages = known.into_iter().collect();
     Ok(reclaimed)
 }
 
 fn validate_due_snapshot(input: &PresentationInput) -> Result<(), ApiError> {
-    use crate::delivery::ledger::MAX_OFFERS_PER_SEAT;
+    use crate::delivery::ledger::MAX_OFFERS_PER_BINDING;
     let Some(snapshot) = &input.ordinary_due_snapshot else {
         return Ok(());
     };
@@ -1757,21 +1798,21 @@ fn validate_due_snapshot(input: &PresentationInput) -> Result<(), ApiError> {
     if known.len() != input.known_messages.len()
         || blocked.len() != input.blocked_messages.len()
         || !blocked.is_subset(&known)
-        || snapshot.stamps.len() > MAX_OFFERS_PER_SEAT
+        || snapshot.stamps.len() > MAX_OFFERS_PER_BINDING
         || snapshot
             .stamps
             .keys()
             .collect::<std::collections::BTreeSet<_>>()
             != known
         || snapshot.generation != input.pull.claim.binding_generation
-        || snapshot.native_session != input.pull.claim.native_session.as_str()
+        || snapshot.binding_id != input.binding_id
         || snapshot
             .cache
             .scope
             .as_ref()
             .is_some_and(|scope| scope.passive_generation > i64::MAX as u64)
         || snapshot.stamps.values().any(|stamp| stamp.count == 0)
-        || snapshot.cache.deferred.len() > MAX_OFFERS_PER_SEAT
+        || snapshot.cache.deferred.len() > MAX_OFFERS_PER_BINDING
         || snapshot
             .cache
             .deferred
@@ -1791,12 +1832,13 @@ fn validate_owner_replay(input: &PresentationInput) -> Result<(), ApiError> {
     let valid = input.ordinary_due_snapshot.as_ref().is_some_and(|known| {
         input.pull.consumer == crate::protocol::delivery::PresentationConsumer::Watch
             && replay.scope.seat == input.pull.claim.seat
+            && replay.scope.binding_id == input.binding_id
             && replay.scope.generation == input.pull.claim.binding_generation
             && replay.scope.native_session == input.pull.claim.native_session.as_str()
             && replay.scope.execution == input.pull.claim.execution
             && Some(replay.scope.lease.as_str()) == input.pull.presentation_lease.as_deref()
             && replay.scope.incarnation == known.incarnation
-            && replay.remaining.len() <= crate::delivery::ledger::MAX_OFFERS_PER_SEAT
+            && replay.remaining.len() <= crate::delivery::ledger::MAX_OFFERS_PER_BINDING
             && (replay.active || replay.remaining.is_empty())
             && replay.remaining.iter().all(|(id, stamp)| {
                 stamp.count != 0
@@ -1950,7 +1992,8 @@ pub(super) fn pull(
     }
     let claim = &input.pull.claim;
     let consumer = input.pull.consumer;
-    if !scope_matches(db, claim)? {
+    let binding = binding_scope(db, claim)?;
+    if binding.as_ref() != Some(&input.binding_id) {
         return Ok(PresentationOutput {
             reply: DeliveryPullReplyV2::Refused {
                 reason: crate::protocol::delivery::DeliveryRefusalReason::SessionMismatch,
@@ -1961,6 +2004,7 @@ pub(super) fn pull(
             owner_replay: Default::default(),
         });
     }
+    let binding = binding.expect("canonical binding compared with admitted input");
     if render_selection(db, claim, consumer)?.as_ref()
         != input.frozen_render.as_ref().map(|v| &v.identity)
     {
@@ -2004,13 +2048,13 @@ pub(super) fn pull(
         .as_ref()
         .is_some_and(|v| !v.remaining.is_empty());
     let claim = &input.pull.claim;
-    let mut state = load(db, claim, consumer)?;
+    let mut state = load(db, claim, &binding, consumer)?;
     let mut sizer = presentation::Sizer::new();
     let publications = advance_ordinary_publications(db, claim, &mut state)?;
     work.ordinary_publication_visits = publications.visits;
     work.ordinary_publication_probes = publications.probes;
     work.ordinary_publication_seeks = publications.seeks;
-    let frontier = super::attention::notice_frontier(db, claim.seat.as_str())?;
+    let frontier = super::attention::binding_notice_frontier(db, binding.as_str())?;
     let proof = super::presentation_relevance::advance(db, claim, consumer, frontier, budget)?;
     work.relevance_calls = 1;
     work.relevance_sources = usize::from(proof.work.sources);
@@ -2044,7 +2088,7 @@ pub(super) fn pull(
         proof.relevance,
         proof.more || publications.more || replay_ordinary || owner_pending,
     )? {
-        save(db, claim, consumer, &state)?;
+        save(db, claim, &binding, consumer, &state)?;
         owner_progress.snapshot = input.owner_replay.take();
         return finish(
             reply,
@@ -2092,6 +2136,7 @@ pub(super) fn pull(
         revisit_candidates(
             db,
             claim,
+            &binding,
             consumer,
             &mut state,
             100 - work.initial - work.context,
@@ -2124,7 +2169,7 @@ pub(super) fn pull(
             .map_or_else(|bytes| bytes, |(_, bytes)| bytes);
         let row = item(
             db,
-            claim,
+            (claim, &binding),
             consumer,
             invitation,
             *ordinal,
@@ -2158,6 +2203,7 @@ pub(super) fn pull(
     }
     let mut carry = ordinary_carry(&state.ordinary_pending)?;
     let mut messages = std::mem::take(&mut carry.items);
+    let had_carry = !messages.is_empty();
     if messages.len() > 32 {
         return Err(corrupt("ordinary presentation carry bound"));
     }
@@ -2174,8 +2220,49 @@ pub(super) fn pull(
     } else {
         crate::ports::OrdinaryPresentationSource::LogicalDue
     };
+    if normal_mode && !control_only && had_carry {
+        let mut carry_work = PresentationWork::default();
+        let due_context = super::queries::ordinary_due_context(
+            db,
+            &claim.instance,
+            &claim.seat,
+            &binding,
+            &mut carry_work,
+        )?;
+        let mut current = Vec::with_capacity(messages.len());
+        for retained in &messages {
+            if budget.is_exhausted(context.clock()) {
+                return Err(api_error(
+                    ErrorCode::ReadBudgetExhausted,
+                    "ordinary carry budget exhausted",
+                ));
+            }
+            let value = super::queries::ordinary_presentation_message_by_id(
+                db,
+                &claim.instance,
+                &claim.seat,
+                &binding,
+                &retained.content.id,
+                due_context,
+                &mut carry_work,
+            )?;
+            if let Some(value) = value {
+                carry_work.ordinary_due_hydrated += 1;
+                let mut assembler = Assembler::new(None).with_command_prefix(carry.prefix.clone());
+                current.push(
+                    assemble_message(&mut assembler, value, &carry.prefix)?
+                        .ok_or_else(|| corrupt("incomplete exact carry body"))?,
+                );
+            }
+        }
+        work.ordinary_carry_key_probes = carry_work.ordinary_due_key_probes;
+        work.ordinary_carry_seeks = carry_work.ordinary_due_seeks;
+        work.ordinary_carry_hydrated = carry_work.ordinary_due_hydrated;
+        messages = current;
+    }
     if normal_mode
         && !control_only
+        && !had_carry
         && state.ordinary_done == 1
         && messages.is_empty()
         && (state.ordinary_version != input.ordinary_version.to_string()
@@ -2187,7 +2274,8 @@ pub(super) fn pull(
         state.ordinary_partial = "{}".into();
         state.ordinary_skip_body = None;
     }
-    if normal_mode && !control_only && messages.is_empty() && state.ordinary_done == 0 {
+    if normal_mode && !control_only && !had_carry && messages.is_empty() && state.ordinary_done == 0
+    {
         if state.ordinary_cursor.is_none() {
             state.ordinary_version = input.ordinary_version.to_string();
             state.ordinary_scan_passive_generation = state.ordinary_passive_generation;
@@ -2196,7 +2284,7 @@ pub(super) fn pull(
             db,
             context,
             &claim.instance,
-            &claim.seat,
+            claim,
             state.ordinary_cursor.clone(),
             budget,
         )?;
@@ -2259,7 +2347,7 @@ pub(super) fn pull(
     let notice_page = if control_only {
         Vec::new()
     } else {
-        super::attention::notice_offer_page(db, claim.seat.as_str(), 17)?
+        super::attention::notice_offer_page_for(db, claim.seat.as_str(), &binding, 17)?
     };
     work.notices = notice_page.len();
     let notices = notice_page
@@ -2304,6 +2392,7 @@ pub(super) fn pull(
                     db,
                     &claim.instance,
                     &claim.seat,
+                    &binding,
                     &mut work,
                 )?;
                 for id in candidates.into_iter().take(100) {
@@ -2321,6 +2410,7 @@ pub(super) fn pull(
                         db,
                         &claim.instance,
                         &claim.seat,
+                        &binding,
                         &id,
                         due_context,
                         &mut work,
@@ -2449,7 +2539,7 @@ pub(super) fn pull(
                         item: output.clone(),
                         context_key: Some(row.key.clone()),
                     });
-                    db.execute("UPDATE invitation_presentation_items SET output_class=CASE WHEN ?4=1 THEN 4 ELSE output_class END,partial_count=MAX(partial_count,?4),complete_count=MAX(complete_count,?5),required_render_bytes=CASE WHEN ?5=1 THEN ?6 ELSE required_render_bytes END WHERE seat_id=?1 AND consumer=?2 AND invitation_id=?3 AND generation=?7 AND execution=?8 AND context_key=?9",params![claim.seat.as_str(),consumer.as_str(),invitation.id.as_str(),i64::from(*partial),i64::from(!partial),i64::MAX,state.generation,state.execution,row.key]).map_err(store_error)?;
+                    db.execute("UPDATE invitation_presentation_items SET output_class=CASE WHEN ?4=1 THEN 4 ELSE output_class END,partial_count=MAX(partial_count,?4),complete_count=MAX(complete_count,?5),required_render_bytes=CASE WHEN ?5=1 THEN ?6 ELSE required_render_bytes END WHERE binding_id=?1 AND consumer=?2 AND invitation_id=?3 AND generation=?7 AND execution=?8 AND context_key=?9",params![binding.as_str(),consumer.as_str(),invitation.id.as_str(),i64::from(*partial),i64::from(!partial),i64::MAX,state.generation,state.execution,row.key]).map_err(store_error)?;
                 }
             }
         }
@@ -2492,8 +2582,7 @@ pub(super) fn pull(
         super::attention::settle_carried_notices(
             db,
             claim.seat.as_str(),
-            state.generation,
-            claim.execution.as_str(),
+            &binding,
             &carried_notices,
         )?;
     }
@@ -2544,7 +2633,7 @@ pub(super) fn pull(
             ),
         };
     }
-    let eligible:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM invitation_presentation_items INDEXED BY invitation_presentation_revisit WHERE seat_id=?1 AND consumer=?2 AND generation=?3 AND required_render_bytes<=?4)",params![claim.seat.as_str(),consumer.as_str(),state.generation,standalone as i64],|r|r.get(0)).map_err(store_error)?;
+    let eligible:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM invitation_presentation_items INDEXED BY invitation_presentation_revisit WHERE binding_id=?1 AND consumer=?2 AND generation=?3 AND required_render_bytes<=?4)",params![binding.as_str(),consumer.as_str(),state.generation,standalone as i64],|r|r.get(0)).map_err(store_error)?;
     let nonordinary_more = publications.more
         || proof.more
         // Relevance preceded notice settlement; revisit this active episode boundedly.
@@ -2610,7 +2699,7 @@ pub(super) fn pull(
             &mut sizer,
         )?
     };
-    save(db, claim, consumer, &state)?;
+    save(db, claim, &binding, consumer, &state)?;
     owner_progress.snapshot = input.owner_replay.take();
     finish(
         reply,
@@ -2634,6 +2723,19 @@ fn finish(
             reply.clone(),
         ))
         .map_err(|_| api_error(ErrorCode::Conflict, "presentation RPC result exceeds bound"))?;
+    if work.offer_reconciliation_visits > 256
+        || work.offer_reconciliation_probes > 2560
+        || work.ordinary_due_key_probes > 1803
+        || work.ordinary_due_seeks > 100
+        || work.ordinary_due_hydrated > 32
+        || work.ordinary_carry_key_probes > 579
+        || work.ordinary_carry_seeks > 32
+        || work.ordinary_carry_hydrated > 32
+        || (work.ordinary_carry_key_probes != 0
+            && (work.ordinary != 0 || work.ordinary_due_key_probes != 0))
+    {
+        return Err(corrupt("presentation ordinary work envelope"));
+    }
     work.output_passes = sizer.work.output_passes;
     work.output_bytes = sizer.work.output_bytes;
     work.rpc_passes = sizer.work.rpc_passes;
@@ -2654,13 +2756,14 @@ pub(super) fn refresh(
     db: &Connection,
     instance: &str,
     seat: &crate::protocol::ids::SeatId,
+    binding_id: &BindingId,
     generation: u64,
     native: &str,
 ) -> Result<Option<crate::ports::ModPresentationRefresh>, ApiError> {
     let Ok(generation_i64) = i64::try_from(generation) else {
         return Ok(None);
     };
-    let binding=db.query_row("SELECT b.harness,b.execution_id,s.target_id FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id AND b.generation=s.generation AND b.ended_at IS NULL WHERE s.id=?1 AND s.instance_id=?2 AND s.state='resolved' AND s.generation=?3 AND b.native_session=?4 AND b.observation_provenance=?5",params![seat.as_str(),instance,generation_i64,native,COOPERATIVE_TOP_LEVEL_PROVENANCE],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?))).optional().map_err(store_error)?;
+    let binding=db.query_row("SELECT b.harness,b.execution_id,s.target_id FROM occupant_bindings b JOIN seats s ON s.id=b.seat_id WHERE b.binding_id=?1 AND s.id=?2 AND s.instance_id=?3 AND s.state='resolved' AND b.generation=?4 AND b.native_session=?5 AND b.ended_at IS NULL AND b.role='top_level' AND b.agent_id='' AND b.liveness='connected'",params![binding_id.as_str(),seat.as_str(),instance,generation_i64,native],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?))).optional().map_err(store_error)?;
     let Some((harness, execution, target)) = binding else {
         return Ok(None);
     };
@@ -2674,12 +2777,14 @@ pub(super) fn refresh(
         native_session: crate::protocol::ids::NativeSessionId::parse(native).map_err(corrupt)?,
         execution: crate::protocol::ids::ExecutionId::parse(execution).map_err(corrupt)?,
         target: crate::protocol::ids::HostTargetId::parse(target).map_err(corrupt)?,
+        agent_id: None,
+        liveness: None,
     };
-    if !scope_matches(db, &claim)? {
+    if binding_scope(db, &claim)?.as_ref() != Some(binding_id) {
         return Ok(None);
     }
     let consumer = PresentationConsumer::Watch;
-    let mut state = load_raw(db, &claim, consumer)?;
+    let mut state = load_raw(db, &claim, binding_id, consumer)?;
     if !state.instance_id.is_empty() && state.instance_id != claim.instance {
         return Err(corrupt("foreign passive presentation instance"));
     }
@@ -2739,7 +2844,7 @@ pub(super) fn refresh(
     let hydrated = hydrate_many(db, &claim, &ids)?;
     for (id, (context, ordinal)) in hydrated {
         let key = context.key();
-        let old=db.query_row("SELECT mod_key,mod_generation,mod_execution FROM invitation_presentation_items WHERE seat_id=?1 AND consumer='watch' AND invitation_id=?2",params![seat.as_str(),id.as_str()],|r|Ok((bounded_private_text(r,0,4096)?,r.get::<_,i64>(1)?,bounded_private_text(r,2,128)?))).optional().map_err(private_read_error)?;
+        let old=db.query_row("SELECT mod_key,mod_generation,mod_execution FROM invitation_presentation_items WHERE binding_id=?1 AND consumer='watch' AND invitation_id=?2",params![binding_id.as_str(),id.as_str()],|r|Ok((bounded_private_text(r,0,4096)?,r.get::<_,i64>(1)?,bounded_private_text(r,2,128)?))).optional().map_err(private_read_error)?;
         if old.as_ref().is_none_or(|(old, g, e)| {
             old != &key || *g != generation_i64 || e != claim.execution.as_str()
         }) {
@@ -2749,17 +2854,17 @@ pub(super) fn refresh(
                     "passive content version exhausted",
                 )
             })?;
-            db.execute("INSERT INTO invitation_presentation_items(seat_id,invitation_id,consumer,generation,execution,context_key,render_key,output_class,partial_count,complete_count,required_render_bytes,revisit_ordinal,mod_key,mod_generation,mod_execution) VALUES (?1,?2,'watch',?3,?4,'','',2,0,0,?5,?6,?7,?3,?4) ON CONFLICT(seat_id,invitation_id,consumer) DO UPDATE SET mod_key=excluded.mod_key,mod_generation=excluded.mod_generation,mod_execution=excluded.mod_execution",params![seat.as_str(),id.as_str(),generation_i64,claim.execution.as_str(),i64::MAX,ordinal,key]).map_err(store_error)?;
+            db.execute("INSERT INTO invitation_presentation_items(binding_id,seat_id,invitation_id,consumer,generation,execution,context_key,render_key,output_class,partial_count,complete_count,required_render_bytes,revisit_ordinal,mod_key,mod_generation,mod_execution) VALUES (?1,?8,?2,'watch',?3,?4,'','',2,0,0,?5,?6,?7,?3,?4) ON CONFLICT(binding_id,invitation_id,consumer) DO UPDATE SET mod_key=excluded.mod_key,mod_generation=excluded.mod_generation,mod_execution=excluded.mod_execution",params![binding_id.as_str(),id.as_str(),generation_i64,claim.execution.as_str(),i64::MAX,ordinal,key,seat.as_str()]).map_err(store_error)?;
         }
     }
     if state.mod_cleanup_high == 0 {
-        state.mod_cleanup_high=db.query_row("SELECT revisit_ordinal FROM invitation_presentation_items INDEXED BY invitation_presentation_cleanup WHERE seat_id=?1 AND consumer='watch' ORDER BY revisit_ordinal DESC LIMIT 1",[seat.as_str()],|r|r.get(0)).optional().map_err(store_error)?.unwrap_or(0);
+        state.mod_cleanup_high=db.query_row("SELECT revisit_ordinal FROM invitation_presentation_items INDEXED BY invitation_presentation_cleanup WHERE binding_id=?1 AND consumer='watch' ORDER BY revisit_ordinal DESC LIMIT 1",[binding_id.as_str()],|r|r.get(0)).optional().map_err(store_error)?.unwrap_or(0);
     }
-    let mut query=db.prepare("SELECT invitation_id,revisit_ordinal,mod_key,mod_generation,mod_execution FROM invitation_presentation_items INDEXED BY invitation_presentation_cleanup WHERE seat_id=?1 AND consumer='watch' AND revisit_ordinal>?2 AND revisit_ordinal<=?3 ORDER BY revisit_ordinal LIMIT 10").map_err(store_error)?;
+    let mut query=db.prepare("SELECT invitation_id,revisit_ordinal,mod_key,mod_generation,mod_execution FROM invitation_presentation_items INDEXED BY invitation_presentation_cleanup WHERE binding_id=?1 AND consumer='watch' AND revisit_ordinal>?2 AND revisit_ordinal<=?3 ORDER BY revisit_ordinal LIMIT 10").map_err(store_error)?;
     let cleanup = query
         .query_map(
             params![
-                seat.as_str(),
+                binding_id.as_str(),
                 state.mod_cleanup_after,
                 state.mod_cleanup_high
             ],
@@ -2790,7 +2895,7 @@ pub(super) fn refresh(
                     )
                 })?;
             }
-            db.execute("DELETE FROM invitation_presentation_items WHERE seat_id=?1 AND consumer='watch' AND invitation_id=?2",params![seat.as_str(),id.as_str()]).map_err(store_error)?;
+            db.execute("DELETE FROM invitation_presentation_items WHERE binding_id=?1 AND consumer='watch' AND invitation_id=?2",params![binding_id.as_str(),id.as_str()]).map_err(store_error)?;
         }
     }
     let cleanup_more = cleanup.len() == 10 && state.mod_cleanup_after < state.mod_cleanup_high;
@@ -2814,7 +2919,7 @@ pub(super) fn refresh(
         || state.mod_context_after_seq < state.mod_context_high;
     let version = u64::try_from(state.mod_version)
         .map_err(|_| corrupt("negative passive content version"))?;
-    save(db, &claim, consumer, &state)?;
+    save(db, &claim, binding_id, consumer, &state)?;
     Ok(Some(crate::ports::ModPresentationRefresh {
         version,
         more,

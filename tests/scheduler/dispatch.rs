@@ -739,6 +739,7 @@ impl NotificationPort for FakeNotifier {
 }
 fn due_candidate() -> WakeCandidate {
     WakeCandidate {
+        targets: Vec::new(),
         seat: SeatId::new("seat"),
         attention_witness: Some(test_witness(true, false)),
         effectively_retired: false,
@@ -3476,6 +3477,11 @@ impl FakeHerdr {
                         continue;
                     }
                     "agent.get" => serde_json::json!({"type":"agent_info","agent":agent}),
+                    // The one foreground process is this test process: the composer wake
+                    // matches it against the binding's fingerprint pid (ht-54r.82).
+                    "pane.process_info" => serde_json::json!({"type":"pane_process_info",
+                        "process_info":{"pane_id":"w4:p1","shell_pid":1,
+                        "foreground_processes":[{"pid":std::process::id(),"name":"claude","argv0":"claude"}]}}),
                     "agent.read" => serde_json::json!({"type":"pane_read","read":{
                         "pane_id":"w4:p1","source":request["params"]["source"],
                         "text":"────────────────────\n❯\n────────────────────\n"}}),
@@ -3559,7 +3565,7 @@ fn cooperative_overdue_warning_wakes_idle_native_agent_exactly_once() {
             INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES ('m','t','seat','pending',500,0,500);\
         ").unwrap();
         db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','w4:p1',?1,1,1,0,'fresh','term_1',?2,'native_current_target',1)", rusqlite::params![observed.host_boot.as_str(), identity]).unwrap();
-        db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('seat',1,1,'w4:p1',?1,0,'claude','session','self-reported','cooperative_top_level',0,0,'term_1',?2)", rusqlite::params![observed.host_boot.as_str(), identity]).unwrap();
+        db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation,liveness_pid,liveness_start) VALUES ('seat',1,1,'w4:p1',?1,0,'claude','session','self-reported','cooperative_top_level',0,0,'term_1',?2,?3,1)", rusqlite::params![observed.host_boot.as_str(), identity, std::process::id()]).unwrap();
         drop(db);
         let store = Arc::new(
             SqliteStore::new(
@@ -3611,13 +3617,26 @@ fn cooperative_overdue_warning_wakes_idle_native_agent_exactly_once() {
             assert_eq!(prompts, [crate::notification::policy::MARKER], "{status}");
             assert_eq!(
                 methods,
-                ["pane.get", "agent.get", "agent.read", "agent.prompt"],
+                // The foreground read (`pane.process_info`) precedes the prompt: the
+                // composer wake needs the foreground-pid match even for one target.
+                [
+                    "pane.get",
+                    "pane.process_info",
+                    "agent.get",
+                    "agent.read",
+                    "agent.prompt"
+                ],
                 "{status}"
             );
             assert_eq!(outcome.as_deref(), Some("submitted"), "{status}");
         } else {
             assert!(prompts.is_empty(), "{status} must never be prompted");
-            assert_eq!(methods, ["pane.get", "agent.get"], "{status}");
+            // The foreground read still precedes the agent recheck that refuses.
+            assert_eq!(
+                methods,
+                ["pane.get", "pane.process_info", "agent.get"],
+                "{status}"
+            );
             assert_eq!(outcome.as_deref(), Some("unsafe"), "{status}");
         }
         assert_eq!(
@@ -3658,6 +3677,7 @@ fn cooperative_reservation_rechecks_structure_and_never_crosses_bases() {
     };
     let mut reservation = test_reservation();
     reservation.authority = ReservedWakeAuthority::Cooperative {
+        targets: Vec::new(),
         terminal: TerminalId::new("terminal"),
         incarnation: "incarnation".into(),
         binding_generation: None,
@@ -4751,8 +4771,13 @@ fn pre_send_errors_are_refusals_by_class_and_never_reach_submit() {
 struct CooperativeRecordingHost {
     observation: HostObservation,
     prompted: std::sync::Mutex<Vec<SafeWakeTarget>>,
+    /// What `foreground_pids` answers (Herdr's pane foreground processes).
+    foreground: Vec<u32>,
 }
 impl HostPort for CooperativeRecordingHost {
+    fn foreground_pids(&self, _: &HostTargetId, _: &HostCallContext) -> Result<Vec<u32>, ApiError> {
+        Ok(self.foreground.clone())
+    }
     fn observe_current_target_for_archival(
         &self,
         _: &crate::protocol::ids::HostTargetId,
@@ -4840,6 +4865,7 @@ fn dispatcher_passes_bound_harness_to_prompt_target() {
     for bound in [Some("claude"), Some("codex")] {
         let mut reservation = test_reservation();
         reservation.authority = ReservedWakeAuthority::Cooperative {
+            targets: Vec::new(),
             terminal: TerminalId::new("terminal"),
             incarnation: "incarnation".into(),
             binding_generation: None,
@@ -4853,6 +4879,7 @@ fn dispatcher_passes_bound_harness_to_prompt_target() {
         let host = CooperativeRecordingHost {
             observation,
             prompted: std::sync::Mutex::new(vec![]),
+            foreground: Vec::new(),
         };
         let check = FakeReservationCheck {
             current: true,
@@ -4889,6 +4916,7 @@ fn cooperative_reservation_without_harness_is_not_prompted() {
     };
     let mut reservation = test_reservation();
     reservation.authority = ReservedWakeAuthority::Cooperative {
+        targets: Vec::new(),
         terminal: TerminalId::new("terminal"),
         incarnation: "incarnation".into(),
         binding_generation: None,
@@ -4902,6 +4930,7 @@ fn cooperative_reservation_without_harness_is_not_prompted() {
     let host = CooperativeRecordingHost {
         observation,
         prompted: std::sync::Mutex::new(vec![]),
+        foreground: Vec::new(),
     };
     let check = FakeReservationCheck {
         current: true,
@@ -4914,6 +4943,287 @@ fn cooperative_reservation_without_harness_is_not_prompted() {
         WakeOutcome::Refused(RefusalCause::Unsafe)
     );
     assert!(host.prompted.lock().unwrap().is_empty());
+}
+
+fn binding_target(id: &str, harness: &str, pid: Option<u32>) -> crate::ports::WakeTarget {
+    crate::ports::WakeTarget {
+        binding: crate::protocol::ids::BindingId::new(id),
+        harness: harness.into(),
+        fingerprint_pid: pid,
+    }
+}
+
+/// One cooperative wake of a seat with `targets` in a pane showing `ui` whose foreground
+/// process Herdr reports as `foreground`: the outcome and the prompt targets handed to the host.
+fn composer_wake(
+    targets: Vec<crate::ports::WakeTarget>,
+    ui: HostUiState,
+    foreground: Option<u32>,
+) -> (WakeOutcome, Vec<SafeWakeTarget>) {
+    composer_wake_among(targets, ui, foreground.as_slice())
+}
+
+/// [`composer_wake`] with the pane's whole foreground set (a launcher and its native child).
+fn composer_wake_among(
+    targets: Vec<crate::ports::WakeTarget>,
+    ui: HostUiState,
+    foreground: &[u32],
+) -> (WakeOutcome, Vec<SafeWakeTarget>) {
+    let clock = FakeClock(AtomicU64::new(0));
+    let context = HostCallContext {
+        budget: CallBudget {
+            deadline: MonoInstant(5_000),
+            cancellation: Cancellation::default(),
+        },
+        expected_boot: Some(HostBootId::new("boot")),
+        expected_epoch: Some(1),
+    };
+    let mut reservation = test_reservation();
+    reservation.authority = ReservedWakeAuthority::Cooperative {
+        targets,
+        terminal: TerminalId::new("terminal"),
+        incarnation: "incarnation".into(),
+        binding_generation: None,
+        harness: Some("codex".into()),
+    };
+    let mut observation = fresh_observation();
+    observation.occupant = None;
+    observation.ui = ui;
+    observation.occupancy = StructuralOccupancy::Unknown;
+    observation.execution = ExecutionEvidence::Unknown;
+    let host = CooperativeRecordingHost {
+        observation,
+        prompted: std::sync::Mutex::new(vec![]),
+        foreground: foreground.to_vec(),
+    };
+    let check = FakeReservationCheck {
+        current: true,
+        calls: AtomicU64::new(0),
+    };
+    let outcome = NativeWakeDispatcher::new(&host, &check, &clock)
+        .attempt_wake(reservation, &context)
+        .unwrap();
+    let prompted = host.prompted.lock().unwrap().clone();
+    (outcome, prompted)
+}
+
+/// Kills: typing to every binding of the seat, or to the first one, instead of the binding
+/// whose process is the pane's foreground process (spec §3, roast r2).
+#[test]
+fn composer_wake_fires_once_to_the_foreground_binding() {
+    let two = || {
+        vec![
+            binding_target("a", "codex", Some(10)),
+            binding_target("b", "claude", Some(20)),
+        ]
+    };
+    let (outcome, prompted) = composer_wake(two(), HostUiState::Idle, Some(20));
+    assert_eq!(outcome, WakeOutcome::Submitted);
+    assert_eq!(prompted.len(), 1, "at most one composer wake per seat");
+    assert_eq!(
+        prompted[0].bound_harness.as_deref(),
+        Some("claude"),
+        "the prompt is for binding b, not the first target or the authority's harness"
+    );
+    let (_, prompted) = composer_wake(two(), HostUiState::Idle, Some(10));
+    assert_eq!(prompted[0].bound_harness.as_deref(), Some("codex"));
+}
+
+/// Kills: a guess (latest touch, first binding) when the foreground process matches none or
+/// several bindings, and when Herdr reports no foreground process at all.
+#[test]
+fn no_foreground_match_means_no_composer_wake() {
+    let two = || {
+        vec![
+            binding_target("a", "codex", Some(10)),
+            binding_target("b", "claude", Some(20)),
+        ]
+    };
+    for (label, targets, foreground) in [
+        ("other process", two(), Some(99)),
+        ("no foreground reported", two(), None),
+        (
+            "ambiguous: two bindings share the pid",
+            vec![
+                binding_target("a", "codex", Some(10)),
+                binding_target("b", "claude", Some(10)),
+            ],
+            Some(10),
+        ),
+        (
+            "bindings without a fingerprint",
+            vec![
+                binding_target("a", "codex", None),
+                binding_target("b", "claude", None),
+            ],
+            Some(10),
+        ),
+    ] {
+        let (outcome, prompted) = composer_wake(targets, HostUiState::Idle, foreground);
+        assert_eq!(
+            outcome,
+            WakeOutcome::Refused(RefusalCause::Unsafe),
+            "{label}: a pre-send refusal, the ladder does not climb"
+        );
+        assert!(prompted.is_empty(), "{label}");
+    }
+}
+
+/// Kills: a composer wake lost because the pane's foreground is a set: `codex` installed with
+/// npm runs a `node` launcher (20) and the native `codex` child (21, the harness process the
+/// binding fingerprints) in one foreground process group (ht-54r.89, evidence/ht-54r.89).
+#[test]
+fn composer_wake_matches_a_fingerprint_among_several_foreground_processes() {
+    for (label, targets, ui) in [
+        (
+            "one target",
+            vec![binding_target("a", "codex", Some(21))],
+            HostUiState::Unknown,
+        ),
+        (
+            "several targets",
+            vec![
+                binding_target("a", "codex", Some(21)),
+                binding_target("b", "claude", Some(30)),
+            ],
+            HostUiState::Idle,
+        ),
+    ] {
+        let (outcome, prompted) = composer_wake_among(targets, ui, &[20, 21]);
+        assert_eq!(outcome, WakeOutcome::Submitted, "{label}");
+        assert_eq!(prompted.len(), 1, "{label}: at most one composer wake");
+        assert_eq!(
+            prompted[0].bound_harness.as_deref(),
+            Some("codex"),
+            "{label}"
+        );
+    }
+}
+
+/// Kills: a guess when several bindings have a fingerprint in the foreground set (20 and 21):
+/// the match is ambiguous, so no composer wake; also a foreground set holding no fingerprint.
+#[test]
+fn composer_wake_refuses_an_ambiguous_or_absent_match_in_the_foreground_set() {
+    for (label, targets, foreground) in [
+        (
+            "two bindings in the set",
+            vec![
+                binding_target("a", "codex", Some(20)),
+                binding_target("b", "claude", Some(21)),
+            ],
+            vec![20, 21],
+        ),
+        (
+            "no binding in the set",
+            vec![
+                binding_target("a", "codex", Some(10)),
+                binding_target("b", "claude", Some(30)),
+            ],
+            vec![20, 21],
+        ),
+        (
+            "one target outside the set",
+            vec![binding_target("a", "codex", Some(10))],
+            vec![20, 21],
+        ),
+    ] {
+        let (outcome, prompted) = composer_wake_among(targets, HostUiState::Idle, &foreground);
+        assert_eq!(
+            outcome,
+            WakeOutcome::Refused(RefusalCause::Unsafe),
+            "{label}: a pre-send refusal"
+        );
+        assert!(prompted.is_empty(), "{label}");
+    }
+}
+
+/// Kills: typing into a multi-binding pane Herdr does not report idle.
+#[test]
+fn composer_wake_requires_idle() {
+    let two = vec![
+        binding_target("a", "codex", Some(10)),
+        binding_target("b", "claude", Some(20)),
+    ];
+    for ui in [
+        HostUiState::Unknown,
+        HostUiState::ApprovalOrQuestion,
+        HostUiState::ActiveTurn,
+        HostUiState::HumanInput,
+    ] {
+        let (outcome, prompted) = composer_wake(two.clone(), ui, Some(20));
+        assert!(
+            matches!(outcome, WakeOutcome::Refused(_) | WakeOutcome::Unsafe),
+            "{ui:?}: {outcome:?}"
+        );
+        assert!(prompted.is_empty(), "{ui:?}");
+    }
+}
+
+/// Kills: typing into the composer of a seat whose only target is not the pane's foreground
+/// process (spec §3, ht-54r.82), e.g. a hermes one-shot's wake typed into Claude's composer.
+#[test]
+fn single_target_composer_wake_requires_the_foreground_match() {
+    // The UI rule is unchanged for one target: `Unknown` still fires on a foreground match.
+    let (outcome, prompted) = composer_wake(
+        vec![binding_target("a", "claude", Some(10))],
+        HostUiState::Unknown,
+        Some(10),
+    );
+    assert_eq!(outcome, WakeOutcome::Submitted);
+    assert_eq!(prompted.len(), 1);
+    assert_eq!(prompted[0].bound_harness.as_deref(), Some("claude"));
+    for (label, targets, foreground) in [
+        (
+            "hermes one-shot target, Claude in the foreground",
+            vec![binding_target("h", "hermes", Some(30))],
+            Some(10),
+        ),
+        (
+            "other process in the foreground",
+            vec![binding_target("a", "claude", Some(10))],
+            Some(20),
+        ),
+        (
+            "no foreground reported",
+            vec![binding_target("a", "claude", Some(10))],
+            None,
+        ),
+        (
+            "target without a fingerprint",
+            vec![binding_target("a", "claude", None)],
+            Some(10),
+        ),
+    ] {
+        let (outcome, prompted) = composer_wake(targets, HostUiState::Unknown, foreground);
+        assert_eq!(
+            outcome,
+            WakeOutcome::Refused(RefusalCause::Unsafe),
+            "{label}: a pre-send refusal, the ladder does not climb"
+        );
+        assert!(prompted.is_empty(), "{label}");
+    }
+}
+
+/// Kills: a launch placeholder (`managed_launch`, fingerprinted with the started process pid
+/// that `foreground_pid` reads) losing the lost-prompt recovery wake.
+#[test]
+fn a_launch_placeholder_target_matches_the_started_process() {
+    let (outcome, prompted) = composer_wake(
+        vec![binding_target("launch", "codex", Some(42))],
+        HostUiState::Unknown,
+        Some(42),
+    );
+    assert_eq!(outcome, WakeOutcome::Submitted);
+    assert_eq!(prompted[0].bound_harness.as_deref(), Some("codex"));
+    // Only the started process matches: another foreground process is a pre-send refusal, the
+    // single-harness rule no longer types to a lone launch placeholder.
+    let (outcome, prompted) = composer_wake(
+        vec![binding_target("launch", "codex", Some(42))],
+        HostUiState::Unknown,
+        Some(43),
+    );
+    assert_eq!(outcome, WakeOutcome::Refused(RefusalCause::Unsafe));
+    assert!(prompted.is_empty());
 }
 
 /// A cooperative host that answers the plain observation with an unclassified
@@ -4935,6 +5245,7 @@ impl ComposerReadHost {
             inner: CooperativeRecordingHost {
                 observation,
                 prompted: std::sync::Mutex::new(vec![]),
+                foreground: Vec::new(),
             },
             plain_reads: AtomicU64::new(0),
             poke_reads: AtomicU64::new(0),
@@ -5038,6 +5349,7 @@ fn ordinary_wake_never_reads_the_composer_but_a_poke_does() {
     };
     let cooperative = |reservation: WakeReservation| WakeReservation {
         authority: ReservedWakeAuthority::Cooperative {
+            targets: Vec::new(),
             terminal: TerminalId::new("terminal"),
             incarnation: "incarnation".into(),
             binding_generation: None,
@@ -5099,6 +5411,7 @@ fn poke_receipt(message: &str, thread: &str, effective_deadline: i64) -> PokeRec
 }
 fn poke_due(seat: &str, receipts: Vec<PokeReceipt>) -> PokeDue {
     PokeDue {
+        targets: Vec::new(),
         seat: SeatId::new(seat),
         receipts: receipts
             .into_iter()
@@ -5137,6 +5450,8 @@ struct PokeStore {
     seq: AtomicU64,
     /// The largest `limit` `poke_candidates` was asked for.
     asked_limit: AtomicU64,
+    /// Each `before_wake_decision` call: the seat and how many store calls were logged before it.
+    rechecked: Mutex<Vec<(String, usize)>>,
 }
 impl PokeStore {
     fn new(clock: Arc<FakeClock>, due: Vec<PokeDue>) -> Self {
@@ -5149,6 +5464,7 @@ impl PokeStore {
             wake: Mutex::new(Vec::new()),
             seq: AtomicU64::new(0),
             asked_limit: AtomicU64::new(0),
+            rechecked: Mutex::new(Vec::new()),
         }
     }
     /// Due pokes minus the receipts a submitted attempt marked.
@@ -5166,6 +5482,7 @@ impl PokeStore {
                     .cloned()
                     .collect();
                 (!receipts.is_empty()).then(|| PokeDue {
+                    targets: Vec::new(),
                     seat: due.seat.clone(),
                     receipts,
                 })
@@ -5191,6 +5508,14 @@ impl PokeStore {
 impl WakePort for PokeStore {
     fn clock(&self) -> &dyn Clock {
         self.clock.as_ref()
+    }
+    fn before_wake_decision(&self, seat: &SeatId, _: &CallBudget) -> Result<(), ApiError> {
+        let logged = self.log.lock().unwrap().len();
+        self.rechecked
+            .lock()
+            .unwrap()
+            .push((seat.as_str().to_owned(), logged));
+        Ok(())
     }
     fn wake_candidates(
         &self,
@@ -5616,6 +5941,29 @@ fn idle_unfocused_target_gets_one_coalesced_poke() {
         ["reserve_poke", "complete_poke:Submitted:3"],
         "one reservation, settled once with the receipts it covered"
     );
+}
+
+// Kills: a soft poke that reserves without the store's liveness re-check (a dead binding poked
+// before the liveness pass disconnects it), or one that re-checks after the reservation.
+#[test]
+fn soft_poke_rechecks_liveness_before_reserving() {
+    let clock = Arc::new(FakeClock(AtomicU64::new(0)));
+    let store = PokeStore::new(clock, one_seat_due());
+    let host = PokeHost::new(HostUiState::Idle, false);
+    with_scheduler(
+        &store,
+        &host,
+        &crate::ports::NoPokeCapabilities,
+        |scheduler| {
+            scheduler.drive_pokes(&poke_budget()).unwrap();
+        },
+    );
+    assert_eq!(
+        *store.rechecked.lock().unwrap(),
+        [("seat".to_owned(), 0)],
+        "re-checked once, before reserve_poke logged anything"
+    );
+    assert_eq!(store.log(), ["reserve_poke", "complete_poke:Submitted:3"]);
 }
 
 #[test]
@@ -6517,6 +6865,7 @@ impl HostPort for CooperativeStashingHost {
 fn cooperative_reservation() -> WakeReservation {
     WakeReservation {
         authority: ReservedWakeAuthority::Cooperative {
+            targets: Vec::new(),
             terminal: TerminalId::new("terminal"),
             incarnation: "incarnation".into(),
             binding_generation: None,

@@ -227,6 +227,10 @@ fn probe_seat_managed_launch() {
         incarnation: "herdr-server:pid=1".into(),
         host_boot: HostBootId::new("boot"),
         target_generation: 1,
+        fingerprint: crate::protocol::authority::LivenessFingerprint {
+            pid: 4242,
+            start: 1,
+        },
     });
     assert!(command.validate().is_ok());
     let json = serde_json::to_value(&command).unwrap();
@@ -242,6 +246,7 @@ fn probe_inbox_batch() {
     use crate::protocol::commands::InboxQuery;
     let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
     let command = Command::InboxBatch(InboxQuery {
+        claim: None,
         seat: Some(crate::protocol::ids::SeatId::new("seat-probe")),
         page: Default::default(),
     });
@@ -266,6 +271,8 @@ fn capability_constants_are_stable() {
     assert_eq!(INBOX_BATCH, "inbox.batch_v1");
     assert_eq!(LAZY_HOOK_DELIVERY, "hook.lazy_delivery_v1");
     assert_eq!(DELIVERY_PRESENTATION_V2, "delivery.presentation_v2");
+    assert_eq!(BINDING_CURSORS, "inbox.binding_cursors_v1");
+    assert_eq!(BINDING_DIGEST, "attention.binding_digest_v1");
     assert_eq!(
         ADVERTISED,
         &[
@@ -293,7 +300,9 @@ fn capability_constants_are_stable() {
             "seat.wake_on_v1",
             "delivery.pull_v1",
             "hook.lazy_delivery_v1",
-            "delivery.presentation_v2"
+            "delivery.presentation_v2",
+            "inbox.binding_cursors_v1",
+            "attention.binding_digest_v1"
         ]
     );
 }
@@ -317,6 +326,7 @@ fn every_advertised_capability_has_a_handler() {
             INBOX_BATCH => probe_inbox_batch(),
             INBOX_BATCH_V2 => {
                 let command = Command::InboxBatchV2(crate::protocol::commands::InboxQuery {
+                    claim: None,
                     seat: Some(crate::protocol::ids::SeatId::new("seat-probe")),
                     page: Default::default(),
                 });
@@ -374,6 +384,8 @@ fn every_advertised_capability_has_a_handler() {
                                 "00000000-0000-4000-8000-000000000001",
                             ),
                             target: crate::protocol::ids::HostTargetId::new("p"),
+                            agent_id: None,
+                            liveness: None,
                         },
                     });
                 assert!(command.validate().is_ok());
@@ -395,6 +407,7 @@ fn every_advertised_capability_has_a_handler() {
                     crate::protocol::commands::AttentionDigestQuery {
                         seat: crate::protocol::ids::SeatId::new("s"),
                         lazy: false,
+                        claim: None,
                     },
                 );
                 assert!(command.validate().is_ok());
@@ -450,8 +463,43 @@ fn every_advertised_capability_has_a_handler() {
                     crate::protocol::commands::AttentionDigestQuery {
                         seat: crate::protocol::ids::SeatId::new("s"),
                         lazy: true,
+                        claim: None,
                     },
                 );
+                assert!(command.validate().is_ok());
+                let json = serde_json::to_value(&command).unwrap();
+                assert_eq!(serde_json::from_value::<Command>(json).unwrap(), command);
+                assert_eq!(
+                    handler
+                        .handle(command, PeerIdentity::from_kernel(501), &budget())
+                        .unwrap_err()
+                        .code,
+                    ErrorCode::NotFound
+                );
+            }
+            BINDING_CURSORS => probe_binding_cursors(),
+            BINDING_DIGEST => {
+                // A claimed digest request round-trips and is routed to the store's seat-scoped
+                // read: an unknown seat is NotFound, whoever the claim names.
+                let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
+                let command =
+                    Command::AttentionDigest(crate::protocol::commands::AttentionDigestQuery {
+                        seat: crate::protocol::ids::SeatId::new("s"),
+                        lazy: false,
+                        claim: Some(crate::protocol::authority::CallerClaim {
+                            instance: "probe-instance".into(),
+                            seat: crate::protocol::ids::SeatId::new("s"),
+                            binding_generation: 1,
+                            role: crate::protocol::authority::CallerRole::Subagent,
+                            harness: crate::protocol::authority::Harness::Claude,
+                            native_session: crate::protocol::ids::NativeSessionId::new("n"),
+                            execution: crate::protocol::ids::ExecutionId::new("e"),
+                            target: crate::protocol::ids::HostTargetId::new("p"),
+                            agent_id: Some(crate::protocol::ids::AgentId::new("ag")),
+                            liveness: None,
+                        }),
+                    });
+                // A subagent may read its own digest: validation does not refuse the role.
                 assert!(command.validate().is_ok());
                 let json = serde_json::to_value(&command).unwrap();
                 assert_eq!(serde_json::from_value::<Command>(json).unwrap(), command);
@@ -466,6 +514,56 @@ fn every_advertised_capability_has_a_handler() {
             other => panic!("{other} is advertised but has no handler probe here"),
         }
     }
+}
+
+/// The cursor command is served by the store, which decides it against the canonical view: a
+/// claim for a seat it does not know is refused (a store without the handler would answer
+/// `unsupported`).
+fn probe_binding_cursors() {
+    use crate::{
+        ports::StorePort,
+        protocol::{
+            authority::{CallerClaim, CallerRole, Harness},
+            commands::AdvanceCursors,
+            ids::{ExecutionId, HostTargetId, MessageId, NativeSessionId, OperationId, SeatId},
+        },
+        store::{SqliteStore, StoreSettings, connection::StoreContext},
+    };
+    let command = Command::AdvanceCursors(AdvanceCursors {
+        claim: CallerClaim {
+            instance: "probe-instance".into(),
+            seat: SeatId::new("nobody"),
+            binding_generation: 1,
+            role: CallerRole::Subagent,
+            harness: Harness::Claude,
+            native_session: NativeSessionId::new("n"),
+            execution: ExecutionId::new("e"),
+            target: HostTargetId::new("p"),
+            agent_id: Some(crate::protocol::ids::AgentId::new("ag")),
+            liveness: None,
+        },
+        operation: OperationId::new("op"),
+        displayed: vec![MessageId::new("m")],
+    });
+    // A subagent may send it: validation does not refuse the role.
+    assert!(command.validate().is_ok());
+    let json = serde_json::to_value(&command).unwrap();
+    assert_eq!(serde_json::from_value::<Command>(json).unwrap(), command);
+    let Command::AdvanceCursors(request) = command else {
+        unreachable!()
+    };
+    let isolation = crate::test_support::isolation::TestIsolation::new("cursors-capability");
+    let clock: Arc<dyn Clock> = Arc::new(FixedClock);
+    let store = SqliteStore::new(
+        StoreContext::new(isolation.path("store.db"), clock),
+        "probe-instance",
+        StoreSettings::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        store.advance_cursors(&request, &budget()).unwrap_err().code,
+        ErrorCode::CallerUnverified
+    );
 }
 
 /// The daemon's domain decides a watch registration against its store: a
@@ -509,6 +607,8 @@ fn probe_mod_watch() {
             native_session: NativeSessionId::new("n"),
             execution: ExecutionId::new("e"),
             target: HostTargetId::new("p"),
+            agent_id: None,
+            liveness: None,
         },
     };
     let refusal = domain
@@ -585,6 +685,8 @@ fn bare_daemon_advertises_legacy_capabilities_without_v2_recorder() {
             "delivery.pull_v1",
             "hook.lazy_delivery_v1",
             "delivery.presentation_v2",
+            "inbox.binding_cursors_v1",
+            "attention.binding_digest_v1",
             "invitation.confirmation_v1"
         ]
     );
@@ -1205,6 +1307,8 @@ fn probe_invitation_reject() {
             native_session: NativeSessionId::new("n"),
             execution: ExecutionId::new("e"),
             target: HostTargetId::new("w1:p1"),
+            agent_id: None,
+            liveness: None,
         },
     });
     assert!(command.validate().is_ok());
@@ -1726,6 +1830,8 @@ fn probe_thread_join() {
             native_session: crate::protocol::ids::NativeSessionId::new("n"),
             execution: crate::protocol::ids::ExecutionId::new("e"),
             target: crate::protocol::ids::HostTargetId::new("w1:p1"),
+            agent_id: None,
+            liveness: None,
         },
     });
     assert!(command.validate().is_ok());
@@ -1919,17 +2025,23 @@ fn presentation_capability_routes_use_configured_domain() {
         "configured actual capability response must advertise the selected routes"
     );
     let check_in = |seat: &str| {
+        let session = format!("session-{seat}");
         let claim = CallerClaim {
             instance: instance.to_string(),
             seat: SeatId::new(seat),
             binding_generation: 0,
             role: CallerRole::TopLevel,
             harness: Harness::Agent(builtins().agent("agy").unwrap()),
-            native_session: NativeSessionId::new(format!("session-{seat}")),
+            native_session: NativeSessionId::new(&session),
             execution: ExecutionId::new(Uuid::new_v4().to_string()),
             target: HostTargetId::new(seat),
+            agent_id: None,
+            liveness: Some(crate::test_support::isolation::stand_in_fingerprint(
+                "agy", &session,
+            )),
         };
         let CommandResult::CheckedIn(checked) = call(Command::CheckIn(CheckIn {
+            lineage_parent: None,
             mode: CheckInMode::Lifecycle {
                 expected_binding_generation: 0,
             },
