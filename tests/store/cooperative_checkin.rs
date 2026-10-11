@@ -137,6 +137,7 @@ fn request(command: &CheckIn) -> CooperativePermitRequest {
 fn mapped_generation_zero_can_issue_cooperative_permit_without_native_attestation() {
     let (store, conn, _) = fixture();
     let command = CheckIn {
+        lineage_parent: None,
         mode: CheckInMode::Lifecycle {
             expected_binding_generation: 0,
         },
@@ -187,6 +188,7 @@ fn check_in_as(
 }
 pub(crate) fn lifecycle(context: CallerClaim, operation: &str) -> CheckIn {
     CheckIn {
+        lineage_parent: None,
         mode: CheckInMode::Lifecycle {
             expected_binding_generation: context.binding_generation,
         },
@@ -203,6 +205,7 @@ fn lifecycle_cas_current_and_response_loss_replay_preserve_context_and_anchors()
     assert_eq!(result.context.binding_generation, 0);
     assert_eq!(check_in(&store, initial.clone()).unwrap(), result);
     let current = CheckIn {
+        lineage_parent: None,
         mode: CheckInMode::Current,
         claim: result.context.clone(),
         operation: OperationId::new("current"),
@@ -232,6 +235,7 @@ fn lifecycle_cas_current_and_response_loss_replay_preserve_context_and_anchors()
     let mut stale_claim = result.context;
     stale_claim.binding_generation = 7;
     let stale = CheckIn {
+        lineage_parent: None,
         mode: CheckInMode::Current,
         claim: stale_claim,
         operation: OperationId::new("stale"),
@@ -522,6 +526,7 @@ fn ended_uuid_wrong_instance_child_and_exact_payload_reuse_are_fenced() {
         check_in(
             &store,
             CheckIn {
+                lineage_parent: None,
                 mode: CheckInMode::Current,
                 claim: child,
                 operation: OperationId::new("child")
@@ -543,6 +548,7 @@ fn ended_uuid_wrong_instance_child_and_exact_payload_reuse_are_fenced() {
         check_in(
             &store,
             CheckIn {
+                lineage_parent: None,
                 mode: CheckInMode::Current,
                 claim: second.context,
                 operation: OperationId::new("declared-top-level")
@@ -1904,6 +1910,7 @@ fn cooperative_binding_records_observation_evidence_and_refuses_without_it() {
     )
     .unwrap();
     let current = CheckIn {
+        lineage_parent: None,
         mode: CheckInMode::Current,
         claim: result.context.clone(),
         operation: OperationId::new("current"),
@@ -1961,6 +1968,7 @@ fn pending_notices(conn: &Connection) -> ((u64, bool), i64) {
 
 fn current(context: &CallerClaim, operation: &str) -> CheckIn {
     CheckIn {
+        lineage_parent: None,
         mode: CheckInMode::Current,
         claim: context.clone(),
         operation: OperationId::new(operation),
@@ -3426,6 +3434,7 @@ fn current_check_in_never_adopts_a_managed_launch_binding() {
     exact.native_session = NativeSessionId::new(session);
     let _ = execution; // the placeholder execution is not a UUID; keep a canonical one
     let current = |context: CallerClaim| CheckIn {
+        lineage_parent: None,
         mode: CheckInMode::Current,
         claim: context,
         operation: OperationId::new(format!("current-{}", uuid::Uuid::new_v4())),
@@ -4099,4 +4108,199 @@ fn human_seat_receipt_waivers_and_no_wake_hold() {
     check_in(&store, lifecycle(agent_a(), "a")).unwrap();
     assert!(!held(&conn));
     assert_eq!((state("old"), state("owed")), (NotRequired, Pending));
+}
+
+// ---- ht-54r.17: Hermes lineage through the daemon check-in ----
+mod hermes_lineage {
+    use super::*;
+    use crate::protocol::authority::LivenessFingerprint;
+
+    fn hermes() -> Harness {
+        Harness::Agent(
+            crate::harness::registry::builtins()
+                .agent("hermes")
+                .unwrap(),
+        )
+    }
+    fn session_claim(session: &str, pid: u32) -> CallerClaim {
+        CallerClaim {
+            harness: hermes(),
+            native_session: NativeSessionId::new(session),
+            liveness: Some(LivenessFingerprint { pid, start: 9 }),
+            ..claim()
+        }
+    }
+    fn check_in_with(
+        store: &SqliteStore,
+        claim: CallerClaim,
+        operation: &str,
+        parent: Option<&str>,
+    ) {
+        // A lifecycle execution UUID is single-use: one per operation.
+        let mut claim = claim;
+        claim.execution = ExecutionId::new(format!(
+            "00000000-0000-4000-8000-{:012x}",
+            operation.bytes().fold(1u64, |h, b| h * 131 + u64::from(b)) & 0xffff_ffff_ffff
+        ));
+        let mut command = lifecycle(claim, operation);
+        command.lineage_parent = parent.map(NativeSessionId::new);
+        check_in(store, command).unwrap();
+    }
+    /// Two messages on one joined thread: a fresh binding starts at 2.
+    fn messages(conn: &Connection) {
+        conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0)", []).unwrap();
+        conn.execute(
+            "INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES ('t','s','joined',1)",
+            [],
+        )
+        .unwrap();
+        for (id, seq) in [("m1", 1), ("m2", 2)] {
+            conn.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i',?1,'t',?2,'ordinary','b',?2,?2)", rusqlite::params![id, seq]).unwrap();
+        }
+    }
+    fn binding_id(conn: &Connection, session: &str) -> String {
+        conn.query_row(
+            "SELECT binding_id FROM occupant_bindings WHERE native_session=?1 AND ended_at IS NULL",
+            [session],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+    fn cursor(conn: &Connection, session: &str) -> i64 {
+        conn.query_row(
+            "SELECT seq FROM binding_cursors WHERE binding_id=?1 AND thread_id='t'",
+            [binding_id(conn, session)],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+    fn set_cursor(conn: &Connection, session: &str, seq: i64) {
+        conn.execute(
+            "UPDATE binding_cursors SET seq=?2 WHERE binding_id=?1",
+            rusqlite::params![binding_id(conn, session), seq],
+        )
+        .unwrap();
+    }
+    fn lineage_from(conn: &Connection, session: &str) -> Option<String> {
+        conn.query_row(
+            "SELECT lineage_from FROM occupant_bindings WHERE native_session=?1 AND ended_at IS NULL",
+            [session],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+    fn liveness(conn: &Connection, session: &str) -> String {
+        conn.query_row(
+            "SELECT liveness FROM occupant_bindings WHERE native_session=?1 AND ended_at IS NULL",
+            [session],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+    fn open_hermes_bindings(conn: &Connection) -> i64 {
+        conn.query_row(
+            "SELECT count(*) FROM occupant_bindings WHERE harness='hermes' AND ended_at IS NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    // Kills: a compression successor seeded from the seat maximum (2, the other process's
+    // cursor) instead of its parent session's cursor (1); lineage_from unset; the parent left
+    // connected after the same-process successor enrolled.
+    #[test]
+    fn hermes_compression_lineage_carries_cursors() {
+        let (store, conn, _) = fixture();
+        messages(&conn);
+        check_in_with(&store, session_claim("P", 7), "p", None);
+        check_in_with(&store, session_claim("X", 8), "x", None);
+        set_cursor(&conn, "P", 1);
+        check_in_with(&store, session_claim("S", 7), "s", Some("P"));
+        assert_eq!(cursor(&conn, "S"), 1);
+        assert_eq!(lineage_from(&conn, "S"), Some(binding_id(&conn, "P")));
+        assert_eq!(liveness(&conn, "P"), "disconnected", "superseded");
+        assert_eq!(
+            liveness(&conn, "X"),
+            "connected",
+            "another process untouched"
+        );
+    }
+
+    // Kills: a parent_session_id trusted without the same-process check.
+    #[test]
+    fn hermes_lineage_from_another_process_is_ignored() {
+        let (store, conn, _) = fixture();
+        messages(&conn);
+        check_in_with(&store, session_claim("P", 7), "p", None);
+        check_in_with(&store, session_claim("X", 8), "x", None);
+        set_cursor(&conn, "P", 1);
+        check_in_with(&store, session_claim("S", 9), "s", Some("P"));
+        assert_eq!(lineage_from(&conn, "S"), None);
+        assert_eq!(cursor(&conn, "S"), 2, "fresh seed: the seat maximum");
+        assert_eq!(liveness(&conn, "P"), "connected");
+    }
+
+    // Kills: a CLI-first successor's later hint moving its cursor backwards to the parent's.
+    #[test]
+    fn hermes_cli_first_successor_links_lineage_without_moving_cursors_backwards() {
+        let (store, conn, _) = fixture();
+        messages(&conn);
+        check_in_with(&store, session_claim("P", 7), "p", None);
+        set_cursor(&conn, "P", 1);
+        // The successor's first claim carries no hint: it enrolls at the seat maximum.
+        check_in_with(&store, session_claim("S", 7), "s", None);
+        assert_eq!(cursor(&conn, "S"), 1);
+        set_cursor(&conn, "S", 2);
+        assert_eq!(lineage_from(&conn, "S"), None);
+        // The later pre_llm_call links lineage; the cursor stays ahead.
+        check_in_with(&store, session_claim("S", 7), "s-turn", Some("P"));
+        assert_eq!(lineage_from(&conn, "S"), Some(binding_id(&conn, "P")));
+        assert_eq!(cursor(&conn, "S"), 2, "never backwards");
+    }
+
+    // Kills: /new (no parent hint) inheriting the old session's cursors, and the old session
+    // surviving beside it.
+    #[test]
+    fn hermes_new_is_a_new_binding_and_supersedes() {
+        let (store, conn, _) = fixture();
+        messages(&conn);
+        check_in_with(&store, session_claim("P", 7), "p", None);
+        check_in_with(&store, session_claim("X", 8), "x", None);
+        set_cursor(&conn, "P", 1);
+        check_in_with(&store, session_claim("N", 7), "n", None);
+        assert_eq!(lineage_from(&conn, "N"), None);
+        assert_eq!(cursor(&conn, "N"), 2, "seat maximum, not P's cursor");
+        assert_eq!(liveness(&conn, "P"), "disconnected");
+    }
+
+    // Kills: a hint naming the claiming session itself or an unknown session creating
+    // lineage, and a hint ever adding a binding of its own.
+    #[test]
+    fn hermes_unknown_or_self_parent_hint_is_ignored() {
+        let (store, conn, _) = fixture();
+        messages(&conn);
+        check_in_with(&store, session_claim("S", 7), "s", Some("nobody"));
+        assert_eq!(lineage_from(&conn, "S"), None);
+        assert_eq!(open_hermes_bindings(&conn), 1);
+        // The wire form refuses a self-parent outright; the daemon would ignore it anyway.
+        let mut command = lifecycle(session_claim("S", 7), "self");
+        command.lineage_parent = Some(NativeSessionId::new("S"));
+        assert!(
+            crate::protocol::commands::Command::CheckIn(command)
+                .validate()
+                .is_err()
+        );
+    }
+
+    // Kills: a double-allocating daemon (two open bindings for one Hermes session key)
+    // passing the duplicate detector the hook concurrency test relies on.
+    #[test]
+    fn one_open_binding_per_hermes_session_after_repeated_check_ins() {
+        let (store, conn, _) = fixture();
+        messages(&conn);
+        check_in_with(&store, session_claim("S", 7), "a", None);
+        check_in_with(&store, session_claim("S", 7), "b", None);
+        assert_eq!(open_hermes_bindings(&conn), 1);
+    }
 }

@@ -2054,6 +2054,7 @@ fn qualified_turn_replay_restart_and_stale_order_keep_exact_operation_execution(
     let (root, journal, contexts, seed, mut event) = fixture();
     event.native_session = Some("opaque-native/session".into());
     let turn = QualifiedTurn {
+        lineage_parent: None,
         session: "opaque-native/session".into(),
         event_key: event.event_id.clone(),
         reset: None,
@@ -2136,6 +2137,7 @@ fn qualified_turn_replay_restart_and_stale_order_keep_exact_operation_execution(
 
 fn turn(event: &LifecycleEvent, nonce: u128, sequence: u64, at: i64, budget: u32) -> QualifiedTurn {
     QualifiedTurn {
+        lineage_parent: None,
         session: event.native_session.clone().unwrap(),
         event_key: event.event_id.clone(),
         reset: None,
@@ -2263,6 +2265,7 @@ fn qualified_turn_reset_requires_matching_prior_session_and_order_then_clears() 
             &contexts,
             &event,
             &QualifiedTurn {
+                lineage_parent: None,
                 session: "history-unknown".into(),
                 event_key: event.event_id.clone(),
                 reset: None,

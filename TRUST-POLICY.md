@@ -294,6 +294,13 @@ model open work, and summary closure never changes receipt state or installs glo
   predecessor is a top-level binding of the same seat and harness with the same process fingerprint (pid
   and start time) as the successor's claim; otherwise the hint is ignored and the successor seeds fresh.
   Linking an already enrolled successor copies with a maximum, so no cursor moves backwards.
+  Hermes transport (ht-54r.17): the hint is the `parent_session_id` of a non-delegate top-level
+  `pre_llm_call` (a compression or `/branch` successor), carried as `CheckIn.lineage_parent`. The daemon
+  resolves it to the open top-level Hermes binding of that session on the claim's seat and verifies it as
+  above; a delegate child (`platform` `subagent`) is answered locally by the bridge and is never lineage,
+  and a successor whose first claim is a plain CLI call enrolls at the seat maximum and is linked by its
+  next `pre_llm_call` (accepted limit). Without a parent in the payload, `/new` and compression alike are
+  a new binding.
 - *Shared seat*: memberships, invitations and receipts belong to the seat, so any binding's join or leave
   applies to every binding of the seat. Bindings of one seat are not separate participants.
 - *Human to agent* (ht-54r.4): a human-mode seat holds only its human binding. Any agent binding enrolled or

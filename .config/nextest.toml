@@ -149,6 +149,15 @@ filter = "binary(integration) & test(/^hermes_enrollment_smoke::/)"
 priority = 60
 test-group = "hermes-smoke"
 
+# The in-process Hermes enrollment hook tests (ht-4ne.3, punch list closed by ht-54r.17) drive
+# the installed-bridge envelopes under the production 1200 ms pre_llm_call cap against a spawned
+# fixture service and include a concurrent start/first-turn race; starved beside the suite a
+# callback fails open. They run one at a time, like the smoke above.
+[[profile.default.overrides]]
+filter = "binary_id(herdr-threads) & test(/^cli::hook::tests::registered_resume::startup_enrollment_hermes_/)"
+priority = 60
+test-group = "hermes-smoke"
+
 # CI: a JUnit report (per-test times; success output kept for the
 # skipped-Herdr summary).
 [profile.ci]

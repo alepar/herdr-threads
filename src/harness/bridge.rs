@@ -460,8 +460,17 @@ pub fn prepare_qualified_turn(
                 instance: seed.instance.to_string(),
                 seat: SeatId::parse(seed.seat.clone()).map_err(|_| ContextError::Invalid)?,
             };
-            let reference =
-                journal.record_check_in_as(scope, &turn.event_key, now, false, || {
+            let lineage = turn
+                .lineage_parent
+                .as_deref()
+                .and_then(|parent| NativeSessionId::parse(parent).ok());
+            let reference = journal.record_check_in_lineage(
+                scope,
+                &turn.event_key,
+                now,
+                false,
+                lineage,
+                || {
                     let next = if contexts.is_agent_caller() {
                         seed.for_agent_event(Some(turn.session.clone()))
                     } else {
@@ -475,7 +484,8 @@ pub fn prepare_qualified_turn(
                         },
                     };
                     Ok((contexts.claim(&next).map_err(context_io)?, mode))
-                })?;
+                },
+            )?;
             pending_request(journal, &reference)
         })?;
     Ok(Some(request))
@@ -1275,6 +1285,7 @@ pub fn tool_boundary_check_in<C: LocalClient + ?Sized>(
         mark = Some((saved.execution, next));
     }
     let command = Command::CheckIn(crate::protocol::commands::CheckIn {
+        lineage_parent: None,
         mode: WireMode::Current,
         claim,
         operation: OperationId::new(Uuid::new_v4().to_string()),

@@ -155,6 +155,7 @@ fn fresh_execution(mut claim: CallerClaim, n: u8) -> CallerClaim {
 /// Lifecycle check-in; returns the claim the daemon hands back.
 fn check_in(f: &Fixture, claim: CallerClaim, operation: &str) -> CallerClaim {
     let command = Command::CheckIn(CheckIn {
+        lineage_parent: None,
         mode: CheckInMode::Lifecycle {
             expected_binding_generation: claim.binding_generation,
         },

@@ -546,7 +546,11 @@ fn parse(input: &HookInput) -> Result<Envelope, DecodeFailure> {
         let granted = witness(association).map_err(|()| invalid())?;
         if !association_keys(&value["role_association"], false)
             || association.provenance != "explicit_parent"
-            || association.role != if parent.is_empty() { "top" } else { "child" }
+            // A parentless turn is top-level. A parented one is a delegate child, or a
+            // compression / branch successor the bridge forwards as top-level with its
+            // parent as the lineage hint (ht-54r.17).
+            || !(association.role == "top"
+                || (association.role == "child" && !parent.is_empty()))
             || Some(&association.session_id) != e.session_id.as_ref()
             || Some(turn) != e.turn_id.as_deref()
             || !text(turn, 256, false)
@@ -796,6 +800,12 @@ impl HarnessAdapter for HermesAdapter {
                 event_key: e.event_id.clone(),
                 reset: None,
                 ordering: Some(e.observation_order.generic()),
+                // A parented top-level turn (not a delegate child) is a compression or
+                // /branch successor; the daemon verifies the predecessor.
+                lineage_parent: (role == EventRole::TopLevel)
+                    .then(|| e.parent_session_id.clone())
+                    .flatten()
+                    .filter(|parent| !parent.is_empty()),
             })
         } else if e.callback == "on_session_reset" {
             EventIntent::DeclaredReset(super::context::DeclaredReset {
@@ -1435,6 +1445,34 @@ mod adapter_tests {
             }
         }
     }
+    // Kills: a lineage hint dropped from the decoded turn, one taken from a delegate child,
+    // one invented from an empty parent, a parentless child, and a parented top-level turn
+    // still refused or decoded as a child.
+    #[test]
+    fn hermes_pre_llm_call_decodes_parent_session_id_as_lineage_only_for_top_level_turns() {
+        let decode = |parent: &str, role: &str| {
+            let mut v = json(&fixture("pre_llm_call"));
+            v["parent_session_id"] = parent.into();
+            v["role_association"]["role"] = role.into();
+            let input = rebuild(&v);
+            parse(&input).ok()?;
+            let e = admit_decode(&input);
+            let EventIntent::QualifiedTurn(turn) = &e.intent else {
+                panic!("not a qualified turn");
+            };
+            Some((e.role, turn.lineage_parent.clone()))
+        };
+        assert_eq!(
+            decode("parent-session", "top"),
+            Some((EventRole::TopLevel, Some("parent-session".into())))
+        );
+        assert_eq!(decode("", "top"), Some((EventRole::TopLevel, None)));
+        assert_eq!(
+            decode("parent-session", "child"),
+            Some((EventRole::Subagent, None))
+        );
+        assert_eq!(decode("", "child"), None, "a child has a parent");
+    }
     #[test]
     fn hermes_enrollment_envelope_d2a_rows_round_trip_and_refusals() {
         use EnrollmentPolicy::{Lifecycle, WitnessedStartAndUnownedTurn as Witnessed};
@@ -1771,6 +1809,7 @@ mod adapter_tests {
         journal.install_reattached(current.clone()).unwrap();
         let at = now();
         let turn = QualifiedTurn {
+            lineage_parent: None,
             session: "new-session".into(),
             event_key: "new-turn".into(),
             reset: None,
@@ -1952,6 +1991,7 @@ mod adapter_tests {
         order.sequence += 1;
         order.observed_at_millis = now();
         let turn = QualifiedTurn {
+            lineage_parent: None,
             session: "fixture-session".into(),
             event_key: "after-reset".into(),
             reset: None,
@@ -2292,6 +2332,7 @@ mod adapter_tests {
             (3, "rotated", EventKind::Startup),
         ] {
             let turn = QualifiedTurn {
+                lineage_parent: None,
                 session: session.into(),
                 event_key: format!("result-{number}"),
                 reset: None,
@@ -2714,6 +2755,7 @@ mod adapter_tests {
                 .unwrap()
         );
         let turn = QualifiedTurn {
+            lineage_parent: None,
             session: "new".into(),
             event_key: "after-expiry".into(),
             reset: None,

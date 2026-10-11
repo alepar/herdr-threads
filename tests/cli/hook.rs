@@ -2927,6 +2927,7 @@ mod continuity_gate {
         );
         let mut call_clock = clock();
         let turn = crate::harness::context::QualifiedTurn {
+            lineage_parent: None,
             session: ev.native_session.clone().unwrap(),
             event_key: ev.event_id.clone(),
             reset: reset.then(|| crate::harness::context::ResetObservation {
@@ -8780,6 +8781,227 @@ mod registered_resume {
             assert!(f.service.seen.lock().unwrap().is_empty());
         }
     }
+    /// The seats the lifecycle CheckIns in `seen` name.
+    fn check_in_seats(seen: &[Command]) -> std::collections::BTreeSet<String> {
+        seen.iter()
+            .filter_map(|c| match c {
+                Command::CheckIn(c)
+                    if matches!(
+                        c.mode,
+                        crate::protocol::commands::CheckInMode::Lifecycle { .. }
+                    ) =>
+                {
+                    Some(c.claim.seat.as_str().to_owned())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+    /// Duplicate-binding detector (ht-4ne punch list). The daemon enrolls one binding per
+    /// (seat, harness, session) key a lifecycle CheckIn claims; a replay repeats its operation
+    /// key. Err when the Hermes session `session` is held by anything but exactly one operation
+    /// on exactly one seat, or when that seat holds more than `max_on_seat` open bindings.
+    fn one_open_hermes_binding(
+        seen: &[Command],
+        session: &str,
+        max_on_seat: usize,
+    ) -> Result<(), String> {
+        use std::collections::{BTreeMap, BTreeSet};
+        let mut keys: BTreeMap<(String, String, String), BTreeSet<String>> = BTreeMap::new();
+        for command in seen {
+            if let Command::CheckIn(c) = command
+                && matches!(
+                    c.mode,
+                    crate::protocol::commands::CheckInMode::Lifecycle { .. }
+                )
+            {
+                keys.entry((
+                    c.claim.seat.as_str().to_owned(),
+                    c.claim.harness.as_str().to_owned(),
+                    c.claim.native_session.as_str().to_owned(),
+                ))
+                .or_default()
+                .insert(c.operation.as_str().to_owned());
+            }
+        }
+        let mine: Vec<_> = keys
+            .iter()
+            .filter(|((_, harness, native), _)| harness == "hermes" && native == session)
+            .collect();
+        let [((seat, ..), operations)] = mine.as_slice() else {
+            return Err(format!(
+                "session {session} bound by {mine:?}, expected one key"
+            ));
+        };
+        if operations.len() != 1 {
+            return Err(format!(
+                "session {session} allocated {} bindings: {operations:?}",
+                operations.len()
+            ));
+        }
+        let on_seat = keys.keys().filter(|(s, ..)| s == seat).count();
+        if on_seat > max_on_seat {
+            return Err(format!(
+                "seat {seat} holds {on_seat} bindings, at most {max_on_seat} expected"
+            ));
+        }
+        Ok(())
+    }
+    // Kills: a detector that passes a double allocation (the same session enrolled under two
+    // operation keys, as a daemon that allocated twice would) or one that rejects a replay.
+    #[test]
+    fn duplicate_binding_detector_fails_against_a_double_allocating_stub() {
+        let r = task52_registration();
+        let f = unowned_fixture();
+        f.run(r, &hermes_cli_start("cli-a", 1));
+        let turn = hermes_cli_turn("cli-a", "t1", 2);
+        turn_output(&f.run(r, &turn), "startup", &turn);
+        let honest = f.service.seen.lock().unwrap().clone();
+        assert_eq!(one_open_hermes_binding(&honest, "cli-a", 1), Ok(()));
+        // A replay repeats the operation key: still one binding.
+        let mut replayed = honest.clone();
+        replayed.extend(honest.iter().cloned());
+        assert_eq!(one_open_hermes_binding(&replayed, "cli-a", 1), Ok(()));
+        // The stub allocates twice: the same lifecycle CheckIn under a second operation key.
+        let mut doubled = honest.clone();
+        let twin = honest
+            .iter()
+            .find_map(|c| match c {
+                Command::CheckIn(c)
+                    if matches!(
+                        c.mode,
+                        crate::protocol::commands::CheckInMode::Lifecycle { .. }
+                    ) =>
+                {
+                    Some(c.clone())
+                }
+                _ => None,
+            })
+            .expect("a lifecycle CheckIn");
+        doubled.push(Command::CheckIn(crate::protocol::commands::CheckIn {
+            operation: OperationId::new("double-allocation"),
+            ..twin.clone()
+        }));
+        assert!(one_open_hermes_binding(&doubled, "cli-a", 1).is_err());
+        // The same session under a second seat is a duplicate too.
+        let mut moved = honest.clone();
+        let mut elsewhere = twin.clone();
+        elsewhere.claim.seat = SeatId::new("other-seat");
+        elsewhere.operation = OperationId::new("other-seat-op");
+        moved.push(Command::CheckIn(elsewhere));
+        assert!(one_open_hermes_binding(&moved, "cli-a", 1).is_err());
+        // Another binding on the seat beyond the expected bound.
+        let mut crowded = honest.clone();
+        let mut neighbor = twin;
+        neighbor.claim.native_session = crate::protocol::ids::NativeSessionId::new("neighbor");
+        neighbor.operation = OperationId::new("neighbor-op");
+        crowded.push(Command::CheckIn(neighbor));
+        assert!(one_open_hermes_binding(&crowded, "cli-a", 1).is_err());
+        assert_eq!(one_open_hermes_binding(&crowded, "cli-a", 2), Ok(()));
+    }
+    fn lineage_parents(f: &Fixture) -> Vec<Option<String>> {
+        f.service
+            .seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|c| match c {
+                Command::CheckIn(c) => {
+                    Some(c.lineage_parent.as_ref().map(|p| p.as_str().to_owned()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+    // Kills: the parent_session_id of a compression or /branch successor's first turn not
+    // reaching the daemon as the lineage hint.
+    #[test]
+    fn hermes_compression_turn_forwards_parent_as_lineage_parent() {
+        let r = task52_registration();
+        let f = unowned_fixture();
+        f.run(r, &hermes_cli_start("succ", 1));
+        let turn = patch(&hermes_cli_turn("succ", "t1", 2), |p| {
+            p["parent_session_id"] = "pred".into();
+        });
+        let outcome = f.run(r, &turn);
+        turn_output(&outcome, "startup", &turn);
+        assert_eq!(lineage_parents(&f), vec![Some("pred".to_owned())]);
+    }
+    // Kills: an invented hint when the turn has no parent, which would link every session to
+    // some predecessor (/new is a new binding).
+    #[test]
+    fn hermes_new_session_turn_sends_no_lineage_parent() {
+        let r = task52_registration();
+        let f = unowned_fixture();
+        f.run(r, &hermes_cli_start("fresh", 1));
+        let turn = hermes_cli_turn("fresh", "t1", 2);
+        turn_output(&f.run(r, &turn), "startup", &turn);
+        assert_eq!(lineage_parents(&f), vec![None]);
+    }
+    // Kills: a delegate child's parent_session_id reaching the daemon as lineage, or the child
+    // checking in at all (the bridge answers real children locally; a parented child role that
+    // still reaches the hook is observer-only).
+    #[test]
+    fn hermes_delegate_child_turn_is_not_lineage() {
+        let r = task52_registration();
+        let f = unowned_fixture();
+        let child = hermes_input("pre_llm_call", "child-s", "t1", 1, "child");
+        let outcome = f.run(r, &child);
+        let output: serde_json::Value = serde_json::from_slice(&outcome.stdout).unwrap();
+        assert!(output["context"].is_null() && output["lifecycle_ack"].is_null());
+        assert!(
+            !f.service
+                .seen
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|c| matches!(c, Command::CheckIn(_))),
+            "a child never checks in"
+        );
+        assert_eq!(lineage_parents(&f), Vec::<Option<String>>::new());
+    }
+    // Kills: the cross-harness retire (ht-4ne D10): a Hermes enrollment and check-in beside a
+    // Claude one on the same seat, each checking in without ending the other's context
+    // handling; both harnesses' lifecycle CheckIns reach the daemon, as separate bindings.
+    #[test]
+    fn claude_binding_and_hermes_one_shot_coexist_on_one_seat() {
+        let r = task52_registration();
+        let c = claude_registration();
+        let f = unowned_fixture();
+        let outcome = f.run(c, &claude_session_start("claude-start-1"));
+        assert_eq!(outcome.diagnostic, None, "{outcome:?}");
+        f.run(r, &hermes_cli_start("cli-a", 1));
+        let turn = hermes_cli_turn("cli-a", "t1", 2);
+        let outcome = f.run(r, &turn);
+        turn_output(&outcome, "startup", &turn);
+        assert_eq!(outcome.diagnostic, None, "{outcome:?}");
+        let seen = f.service.seen.lock().unwrap().clone();
+        let bound: std::collections::BTreeSet<(String, String)> = seen
+            .iter()
+            .filter_map(|c| match c {
+                Command::CheckIn(c) => Some((
+                    c.claim.harness.as_str().to_owned(),
+                    c.claim.native_session.as_str().to_owned(),
+                )),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            bound,
+            [
+                ("claude".to_owned(), "claude-s".to_owned()),
+                ("hermes".to_owned(), "cli-a".to_owned())
+            ]
+            .into_iter()
+            .collect(),
+            "one claim per session, two harnesses on one seat"
+        );
+        assert_eq!(check_in_seats(&seen).len(), 1, "one seat: {seen:?}");
+        assert_eq!(one_open_hermes_binding(&seen, "cli-a", 2), Ok(()));
+        // Claude's next lifecycle event is not refused by the Hermes context.
+        let outcome = f.run(c, &claude_session_start("claude-start-2"));
+        assert_eq!(outcome.diagnostic, None, "{outcome:?}");
+    }
     #[test]
     fn startup_enrollment_hermes_concurrent_start_and_first_turn_one_seat() {
         let r = task52_registration();
@@ -8809,27 +9031,17 @@ mod registered_resume {
             assert!(output["context"].is_string(), "round {round}");
             *f.service.seen.lock().unwrap() =
                 read_fixture_json(&f.root.join("transcript.json"), 1024 * 1024).unwrap();
-            // One lifecycle check-in operation (a replay repeats its key).
-            let operations: std::collections::BTreeSet<String> = f
-                .service
-                .seen
-                .lock()
-                .unwrap()
-                .iter()
-                .filter_map(|c| match c {
-                    Command::CheckIn(c)
-                        if matches!(
-                            c.mode,
-                            crate::protocol::commands::CheckInMode::Lifecycle { .. }
-                        ) =>
-                    {
-                        Some(format!("{:?}", c.operation))
-                    }
-                    _ => None,
-                })
-                .collect();
-            assert_eq!(operations.len(), 1, "round {round}: {operations:?}");
-            assert_eq!(f.saved().unwrap().seat, "registered-seat");
+            // Exactly one open Hermes binding for the session key (a replay repeats its
+            // operation key), and the seat holds no binding beside it.
+            let seen = f.service.seen.lock().unwrap().clone();
+            if let Err(detail) = one_open_hermes_binding(&seen, "cli-a", 1) {
+                panic!("round {round}: {detail}");
+            }
+            assert_eq!(
+                f.saved().unwrap().seat,
+                check_in_seats(&seen).into_iter().next().unwrap(),
+                "the saved context names the seat the check-in enrolled"
+            );
             assert!(enrollment_counts(&f).0 >= 1);
         }
     }

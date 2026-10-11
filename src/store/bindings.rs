@@ -912,7 +912,7 @@ pub struct ResolveRequest<'a> {
     pub lifecycle: bool,
     pub placement: &'a BindingPlacement,
     /// Lineage predecessor hint (spec §1), honoured only when [`validate_lineage`] holds.
-    /// The Hermes bridge (ht-54r.17) passes it.
+    /// `seats::resolve_cooperative_with_lineage` passes it for a Hermes `parent_session_id` hint.
     pub lineage: Option<&'a BindingId>,
 }
 

@@ -316,6 +316,7 @@ fn registered_service_and_native_caller_complete_required_flow_with_exact_replay
             execution: ExecutionId::new("00000000-0000-4000-8000-000000000111"),
             target: HostTargetId::new("pane-pending"), agent_id: None, liveness: Some(herdr_threads::protocol::authority::LivenessFingerprint::TEST), };
         let checked = std::thread::scope(|scope| scope.spawn(|| ordinary.call(Command::CheckIn(CheckIn {
+            lineage_parent: None,
             mode: CheckInMode::Lifecycle { expected_binding_generation: 0 },
             claim: native, operation: OperationId::new("native-check-in"),
         }), &budget())).join().unwrap()).unwrap();
@@ -395,6 +396,7 @@ fn registered_service_and_native_caller_complete_required_flow_with_exact_replay
             execution: ExecutionId::new("00000000-0000-4000-8000-000000000112"),
             target: HostTargetId::new("pane-member-1"), agent_id: None, liveness: Some(herdr_threads::protocol::authority::LivenessFingerprint::TEST), };
         let checked_recipient = std::thread::scope(|scope| scope.spawn(|| ordinary.call(Command::CheckIn(CheckIn {
+            lineage_parent: None,
             mode: CheckInMode::Lifecycle { expected_binding_generation: 1 },
             claim: recipient_claim, operation: OperationId::new("recipient-check-in"),
         }), &budget())).join().unwrap()).unwrap();

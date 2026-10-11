@@ -1253,6 +1253,7 @@ fn public_facade_check_in_commits_anchor_and_exact_empty_offer() {
     drop(db);
     let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
     let command = CheckIn {
+        lineage_parent: None,
         mode: crate::protocol::commands::CheckInMode::Lifecycle {
             expected_binding_generation: 1,
         },
