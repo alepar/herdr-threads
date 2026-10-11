@@ -233,8 +233,9 @@ impl DomainService {
             return Err(Refusal::NoBinding);
         }
         // A same-session disconnected top-level binding: the same plain cooperative call a CLI
-        // `inbox` makes. The store re-adopts a V32-migrated binding whose stored session is the
-        // claim's and only touches any other disconnected one.
+        // `inbox` makes. The store reconnects the disconnected binding for a claim that carries a
+        // fingerprint (re-adopting a V32-migrated one with its placement and cursors); a claim
+        // without one was refused above.
         if claim.liveness.is_none() {
             return Err(Refusal::NoBinding);
         }

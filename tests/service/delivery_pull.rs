@@ -665,7 +665,7 @@ fn a_pull_without_a_fingerprint_does_not_re_adopt_and_is_refused_no_binding() {
 }
 
 #[test]
-fn a_pull_on_a_disconnected_non_migrated_binding_is_refused_no_binding() {
+fn a_pull_reconnects_a_disconnected_non_migrated_binding_and_delivers() {
     let f = fixture(1);
     let context = pull_seat(&f);
     f.db.execute(
@@ -673,13 +673,33 @@ fn a_pull_on_a_disconnected_non_migrated_binding_is_refused_no_binding() {
         [],
     )
     .unwrap();
-    assert_eq!(refusal(pull(&f, &context, None)), Refusal::NoBinding);
+    let (binding_id, _, _, provenance_before) = open_binding_row(&f);
+    let observed = |f: &Fixture| -> i64 {
+        f.db.query_row(
+            "SELECT observed_at FROM occupant_bindings WHERE seat_id='s' AND ended_at IS NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    let observed_before = observed(&f);
     assert_eq!(open_binding_row(&f).1, "disconnected");
+
+    let offered = page(pull(&f, &context, None));
+    assert!(offered.text.contains("m1"), "{}", offered.text);
+    let (after_id, liveness, pid, provenance) = open_binding_row(&f);
+    assert_eq!(after_id, binding_id);
+    assert_eq!(liveness, "connected");
+    assert_eq!(pid, context.liveness.map(|l| i64::from(l.pid)));
+    assert_eq!(
+        provenance, provenance_before,
+        "provenance stays as recorded"
+    );
+    assert_eq!(observed(&f), observed_before, "claim time stays");
     assert_eq!(
         confirm(&f, &context, &["m1"], "op-1"),
-        vec![("m1".to_owned(), Outcome::Retryable, None)]
+        vec![("m1".to_owned(), Outcome::Settled, None)]
     );
-    assert_eq!(open_binding_row(&f).1, "disconnected");
 }
 
 #[test]

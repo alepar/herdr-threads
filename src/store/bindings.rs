@@ -394,8 +394,9 @@ pub fn match_claim(db: &Connection, key: &BindingKey) -> Result<Option<BindingRo
     .next())
 }
 
-/// Refresh the fingerprint of an open binding; NEVER changes liveness (spec §1, r2). Returns
-/// whether an open binding was found.
+/// Refresh the fingerprint of an open binding; NEVER changes liveness (spec §1, r2). It is the
+/// primitive: `plain_reconnect` decides whether a plain call also reconnects. Returns whether an
+/// open binding was found.
 pub fn touch(
     tx: &Connection,
     binding: &BindingId,
@@ -489,12 +490,13 @@ pub(crate) fn disconnect_with_hooks(
     Ok(true)
 }
 
-/// What brought a binding back to connected. Only enrollment and lifecycle check-ins connect;
-/// a plain touch never does (spec §1, r2).
+/// What brought a binding back to connected: enrollment, a lifecycle check-in, or a plain call
+/// carrying a fingerprint (spec §3: any call the binding makes).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectTrigger {
     Enrollment,
     Lifecycle,
+    PlainCall,
 }
 
 /// The only connected transition: disconnected -> connected on an open binding (clears
@@ -952,6 +954,8 @@ const PLUGIN_CONTEXT_PREFIX: &str = "plugin_context:";
 pub enum Resolution {
     Existing {
         binding: BindingRow,
+        /// True only for a lifecycle reconnect or a V32 re-adoption (the resolutions that may
+        /// fast-forward); a plain-call reconnect reports false.
         reconnected: bool,
     },
     Enrolled {
@@ -1252,6 +1256,34 @@ pub(crate) fn resolve_claim_with_hooks(
     Ok(resolution)
 }
 
+/// A plain (non-lifecycle) call by an open binding: reconnect it when it is disconnected, its seat
+/// is resolved and the call carries a liveness fingerprint (spec §3), else touch it. A plain
+/// reconnect records the fingerprint and keeps the lifecycle claim time, placement, provenance and
+/// cursors; it runs no enroll hook, so it never supersedes or replaces a placeholder. Returns
+/// whether the binding reconnected.
+fn plain_reconnect(
+    tx: &Connection,
+    row: &BindingRow,
+    claim: &CallerClaim,
+    now: UtcMillis,
+) -> Result<bool, ApiError> {
+    if row.liveness == Liveness::Disconnected
+        && claim.liveness.is_some()
+        && seat_is_resolved(tx, &row.seat)?
+        && connect(
+            tx,
+            &row.binding_id,
+            claim.liveness,
+            ConnectTrigger::PlainCall,
+            now,
+        )?
+    {
+        return Ok(true);
+    }
+    touch(tx, &row.binding_id, claim.liveness, now)?;
+    Ok(false)
+}
+
 fn resolve_claim_inner(
     tx: &Connection,
     request: &ResolveRequest<'_>,
@@ -1272,7 +1304,7 @@ fn resolve_claim_inner(
         && !subagent
         && let Some(child) = registered_child(tx, &key)?
     {
-        touch(tx, &child.binding_id, claim.liveness, now)?;
+        plain_reconnect(tx, &child, claim, now)?;
         let binding = get(tx, &child.binding_id)?
             .ok_or_else(|| corrupt("touched registered child vanished"))?;
         return Ok(Resolution::Existing {
@@ -1314,8 +1346,9 @@ fn resolve_claim_inner(
     };
     if let Some(existing) = found {
         if !request.lifecycle && readopts {
-            // The one plain call that reconnects (TRUST-POLICY A4): a V32-migrated binding whose
-            // stored session is the claim's key. Structural match, cursors kept.
+            // Re-adoption: the plain-call reconnect of a V32-migrated binding, which also
+            // refreshes its placement and seeds `Readopt` cursors (TRUST-POLICY A4). Structural
+            // match: the stored session is the claim's key.
             connect(
                 tx,
                 &existing.binding_id,
@@ -1344,7 +1377,7 @@ fn resolve_claim_inner(
             });
         }
         if !request.lifecycle {
-            touch(tx, &existing.binding_id, claim.liveness, now)?;
+            plain_reconnect(tx, &existing, claim, now)?;
             let binding = get(tx, &existing.binding_id)?
                 .ok_or_else(|| corrupt("touched binding vanished"))?;
             return Ok(Resolution::Existing {

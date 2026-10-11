@@ -649,7 +649,37 @@ fn subagent_fast_forward_never_settles() {
 #[test]
 fn plain_touch_never_fast_forwards() {
     let (store, conn, first, _) = resumed(300, 60);
-    // A plain call (Current mode) by the disconnected-but-open binding is a touch.
+    // A plain call (Current mode) without a fingerprint by the disconnected-but-open binding is
+    // a touch: it cannot reconnect.
+    let mut bare = first.context.clone();
+    bare.liveness = None;
+    let current = crate::protocol::commands::CheckIn {
+        lineage_parent: None,
+        mode: crate::protocol::commands::CheckInMode::Current,
+        claim: bare,
+        operation: OperationId::new("touch"),
+    };
+    let touched = check_in(&store, current).unwrap();
+    assert!(touched.fast_forward.is_none() && touched.first_contact.is_none());
+    assert_eq!(cursor(&conn, "sess-A"), Some(1), "the cursor stayed");
+    assert_eq!(liveness_of(&conn, "sess-A"), "disconnected");
+    // A lifecycle check-in is what resumes it.
+    assert!(resume(&store, &first, "r1").fast_forward.is_some());
+}
+
+fn liveness_of(conn: &Connection, session: &str) -> String {
+    conn.query_row(
+        "SELECT liveness FROM occupant_bindings WHERE native_session=?1",
+        [session],
+        |r| r.get(0),
+    )
+    .unwrap()
+}
+
+#[test]
+fn plain_call_reconnect_never_fast_forwards() {
+    let (store, conn, first, _) = resumed(300, 60);
+    // The touch keeps its fingerprint, so the binding reconnects; that is not a lifecycle resume.
     let current = crate::protocol::commands::CheckIn {
         lineage_parent: None,
         mode: crate::protocol::commands::CheckInMode::Current,
@@ -658,9 +688,12 @@ fn plain_touch_never_fast_forwards() {
     };
     let touched = check_in(&store, current).unwrap();
     assert!(touched.fast_forward.is_none() && touched.first_contact.is_none());
+    assert_eq!(liveness_of(&conn, "sess-A"), "connected");
     assert_eq!(cursor(&conn, "sess-A"), Some(1), "the cursor stayed");
-    // A lifecycle check-in is what resumes it.
-    assert!(resume(&store, &first, "r1").fast_forward.is_some());
+    // Accepted limit (TRUST-POLICY): its own resume now finds it connected, so it is not a
+    // reconnect and does not fast-forward.
+    assert!(resume(&store, &first, "r1").fast_forward.is_none());
+    assert_eq!(cursor(&conn, "sess-A"), Some(1), "still unmoved");
 }
 
 #[test]

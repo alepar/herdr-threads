@@ -641,15 +641,55 @@ mod resolution {
         assert_eq!(r.binding().provenance, COOPERATIVE_TOP_LEVEL_PROVENANCE);
     }
 
+    fn observed_at(db: &Connection, id: &BindingId) -> i64 {
+        db.query_row(
+            "SELECT observed_at FROM occupant_bindings WHERE binding_id=?1",
+            [id.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
     #[test]
-    fn plain_touch_of_a_disconnected_binding_serves_it_without_reconnecting() {
+    fn plain_call_with_a_fingerprint_reconnects_a_disconnected_binding() {
+        let db = db();
+        let first = resolve(&db, &claim("sess-A", None), true).unwrap();
+        let id = first.binding().binding_id.clone();
+        let provenance = first.binding().provenance.clone();
+        disconnect(&db, &id, DisconnectReason::EndEvent, UtcMillis(20)).unwrap();
+        let observed_before = observed_at(&db, &id);
+        let mut c = claim("sess-A", None);
+        c.liveness = Some(LivenessFingerprint { pid: 8, start: 99 });
+        let r = resolve(&db, &c, false).unwrap();
+        let Resolution::Existing {
+            binding,
+            reconnected,
+        } = r
+        else {
+            panic!("expected Existing");
+        };
+        // Only a lifecycle reconnect or a re-adoption may fast-forward.
+        assert!(!reconnected);
+        assert_eq!(binding.binding_id, id);
+        assert_eq!(binding.liveness, Liveness::Connected);
+        assert_eq!(binding.disconnect_reason, None);
+        assert_eq!(binding.disconnected_at, None);
+        assert_eq!(binding.fingerprint, c.liveness);
+        assert_eq!(
+            binding.provenance, provenance,
+            "provenance stays as recorded"
+        );
+        assert_eq!(observed_at(&db, &id), observed_before, "claim time stays");
+    }
+
+    #[test]
+    fn plain_call_without_a_fingerprint_serves_a_disconnected_binding_without_reconnecting() {
         let db = db();
         let first = resolve(&db, &claim("sess-A", None), true).unwrap();
         let id = first.binding().binding_id.clone();
         disconnect(&db, &id, DisconnectReason::EndEvent, UtcMillis(20)).unwrap();
         let mut c = claim("sess-A", None);
-        c.liveness = Some(LivenessFingerprint { pid: 8, start: 99 });
-        // Required, yet a touch of an open binding needs and gets no reconnect.
+        c.liveness = None;
         let r = resolve(&db, &c, false).unwrap();
         let Resolution::Existing {
             binding,
@@ -665,7 +705,89 @@ mod resolution {
             binding.disconnect_reason.as_deref(),
             Some("liveness_end_event")
         );
-        assert_eq!(binding.fingerprint, c.liveness);
+    }
+
+    #[test]
+    fn superseded_binding_plain_call_reconnects_without_superseding() {
+        use std::sync::Mutex;
+        static SEEN: Mutex<Vec<EnrollTrigger>> = Mutex::new(Vec::new());
+        fn record(
+            _: &Connection,
+            e: &EnrollEvent<'_>,
+            _: UtcMillis,
+        ) -> Result<(), crate::protocol::results::ApiError> {
+            SEEN.lock().unwrap().push(e.trigger);
+            Ok(())
+        }
+        // The real registry plus a recorder, so a lifecycle enrollment supersedes as in production.
+        let hooks: &[(&str, EnrollHook)] = &[
+            ("launch_placeholder_replace", launch_placeholder_replace),
+            ("same_pid_supersede", same_pid_supersede),
+            ("record", record),
+        ];
+        let db = db();
+        let place = placement();
+        let enroll_lifecycle = |session: &str, at: i64| {
+            let c = claim(session, None);
+            resolve_claim_with_hooks(
+                &db,
+                &ResolveRequest {
+                    claim: &c,
+                    lifecycle: true,
+                    placement: &place,
+                    lineage: None,
+                },
+                UtcMillis(at),
+                hooks,
+            )
+            .unwrap()
+            .binding()
+            .binding_id
+            .clone()
+        };
+        let a = enroll_lifecycle("sess-A", 10);
+        let b = enroll_lifecycle("sess-B", 11);
+        let state = |id: &BindingId| get(&db, id).unwrap().unwrap();
+        assert_eq!(state(&a).disconnect_reason.as_deref(), Some("superseded"));
+        let seen_before = SEEN.lock().unwrap().len();
+        let c = claim("sess-A", None);
+        resolve_claim_with_hooks(
+            &db,
+            &ResolveRequest {
+                claim: &c,
+                lifecycle: false,
+                placement: &place,
+                lineage: None,
+            },
+            UtcMillis(12),
+            hooks,
+        )
+        .unwrap();
+        assert_eq!(state(&a).liveness, Liveness::Connected);
+        assert_eq!(
+            state(&b).liveness,
+            Liveness::Connected,
+            "the supersessor is not disconnected"
+        );
+        assert_eq!(
+            SEEN.lock().unwrap().len(),
+            seen_before,
+            "no enroll hook ran"
+        );
+    }
+
+    #[test]
+    fn plain_call_on_a_retired_seat_does_not_reconnect() {
+        let db = db();
+        let first = resolve(&db, &claim("sess-A", None), true).unwrap();
+        let id = first.binding().binding_id.clone();
+        disconnect(&db, &id, DisconnectReason::EndEvent, UtcMillis(20)).unwrap();
+        db.execute("UPDATE seats SET state='retired', retired_at=40", [])
+            .unwrap();
+        resolve(&db, &claim("sess-A", None), false).unwrap();
+        let row = get(&db, &id).unwrap().unwrap();
+        assert_eq!(row.liveness, Liveness::Disconnected);
+        assert_eq!(row.disconnect_reason.as_deref(), Some("liveness_end_event"));
     }
 
     #[test]

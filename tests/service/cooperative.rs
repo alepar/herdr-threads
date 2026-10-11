@@ -2107,6 +2107,61 @@ fn hermes_child_start_registers_the_child_session_and_its_cli_claim_is_read_only
     );
 }
 
+/// Kills: a Hermes child's CLI call after `subagent_stop` that leaves the child disconnected, or
+/// that reconnects it as a top-level binding or disturbs the parent (ht-54r.81, spec 3).
+#[test]
+fn hermes_registered_child_call_after_subagent_stop_reconnects_it() {
+    use crate::protocol::commands::{
+        AdvanceCursors,
+        BindingEventKind::{SubagentStart, SubagentStop},
+    };
+    let (service, db) = fixture();
+    let peer = PeerIdentity::from_kernel(501);
+    let parent = with_fingerprint(CallerClaim {
+        harness: hermes(),
+        native_session: NativeSessionId::new("hermes-parent"),
+        ..claim()
+    });
+    recorded(
+        &service,
+        binding_event(parent.clone(), SubagentStart, Some("hermes-child"), "start"),
+    );
+    recorded(
+        &service,
+        binding_event(parent.clone(), SubagentStop, Some("hermes-child"), "stop"),
+    );
+    let states = binding_states(&db);
+    assert_eq!(
+        (states[0].2.as_str(), states[1].2.as_str()),
+        ("connected", "disconnected")
+    );
+    // The child's next CLI claim (its session, no agent id, a fingerprint).
+    let child_cli = CallerClaim {
+        native_session: NativeSessionId::new("hermes-child"),
+        ..parent.clone()
+    };
+    service
+        .handle(
+            Command::AdvanceCursors(AdvanceCursors {
+                claim: child_cli,
+                operation: OperationId::new("child-after-stop"),
+                displayed: vec![],
+            }),
+            peer,
+            &budget(),
+        )
+        .unwrap();
+    let states = binding_states(&db);
+    assert_eq!(states.len(), 2, "no new binding: {states:?}");
+    assert_eq!(
+        states[1].1, "subagent",
+        "still the read-only subagent binding"
+    );
+    assert_eq!(states[1].2, "connected", "reconnected by its own call");
+    assert_eq!(states[1].3, None);
+    assert_eq!(states[0].2, "connected", "the parent is untouched");
+}
+
 /// Kills: a Hermes child's CLI call that arrives before `subagent_start` enrolls a top-level
 /// binding with the parent's process fingerprint and supersedes the parent (ht-54r.79).
 #[test]
