@@ -2832,6 +2832,42 @@ fn activation_v2_watch_replacement_replays_uncommitted_output() {
     // thread is accepted before the tested passive invitation even exists.
     activation_warn(&rig);
     let invitation = activation_invitation(&rig);
+    // Unlike the informational Warn, a pending timed invitation stays relevant
+    // after its contents are carried. Keep this independent from the passive
+    // invitation whose exact uncommitted output must replay below.
+    let attention_thread = rig
+        .cli(
+            Some((&rig.a, PANE_A)),
+            &[
+                "thread",
+                "create",
+                "--topic",
+                "activation replacement attention",
+            ],
+        )
+        .text("replacement attention thread");
+    rig.cli(
+        Some((&rig.a, PANE_A)),
+        &[
+            "invite",
+            &attention_thread,
+            "--seat",
+            &rig.b,
+            "--require-ack",
+        ],
+    )
+    .data("replacement timed invitation");
+    let confirming = || {
+        rig.db().query_row(
+        "SELECT count(*) FROM presentation_confirming_invitations p JOIN invitations i ON i.id=p.invitation_id AND i.seat_id=p.seat_id WHERE p.seat_id=?1 AND i.thread_id=?2 AND i.state='pending' AND i.confirmation='require_ack'",
+        [&rig.b, attention_thread.as_str()], |row| row.get::<_, i64>(0),
+    ).unwrap()
+    };
+    assert_eq!(
+        confirming(),
+        1,
+        "real timed invitation opens canonical relevance"
+    );
     // Ordinary mail is the no-receipt-ACK witness; it does not open the epoch.
     let ordinary = rig.send_ordinary("activation replacement ACK candidate");
     let relay = ActivationRelay::start(&rig, false, ConfirmFault::BeforeCommit);
@@ -2842,6 +2878,25 @@ fn activation_v2_watch_replacement_replays_uncommitted_output() {
     let page = activation_page(&relay, &old_confirm);
     old.wait_attention_marker();
     assert_eq!(old.exit_code(STEP), 1);
+    let notice = page["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["kind"] == "notice")
+        .unwrap();
+    let covered: bool = rig.db().query_row(
+        "SELECT d.ordinal<=COALESCE(o.offered_ordinal,0) FROM digest_programmatic_warnings d JOIN seats s ON s.id=d.seat_id JOIN occupant_bindings b ON b.seat_id=s.id AND b.generation=s.generation AND b.ended_at IS NULL LEFT JOIN digest_notice_offer o ON o.seat_id=s.id AND o.binding_generation=b.generation AND o.execution_id=b.execution_id WHERE d.seat_id=?1 AND d.warning_id=?2",
+        [&rig.b, notice["warning"].as_str().unwrap()], |row| row.get(0),
+    ).unwrap();
+    assert!(
+        covered,
+        "original real Pull already settled the Warn for the canonical execution"
+    );
+    assert_eq!(
+        confirming(),
+        1,
+        "replacement still has an independent open condition"
+    );
     assert_eq!(
         activation_pending(&rig).0,
         Some(
@@ -2936,6 +2991,11 @@ fn activation_v2_watch_replacement_replays_uncommitted_output() {
         )
         .unwrap();
     assert_eq!(pending, 1, "owner replay is not invitation acceptance");
+    assert_eq!(
+        confirming(),
+        1,
+        "owner replay does not accept the timed source invitation"
+    );
 }
 
 /// A committed response lost in transit permits exact idempotent recovery on
