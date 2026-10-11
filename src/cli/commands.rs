@@ -299,6 +299,7 @@ pub enum MutationSpec {
     Invite {
         thread: ThreadId,
         seat: SeatId,
+        confirmation: Option<InvitationConfirmation>,
         deadline_millis: Option<u64>,
         operator: bool,
     },
@@ -396,10 +397,11 @@ impl MutationSpec {
             Self::Invite {
                 thread,
                 seat,
+                confirmation,
                 deadline_millis,
                 operator: false,
             } => WireCommand::Invite(Invite {
-                confirmation: None,
+                confirmation,
                 thread,
                 seat,
                 deadline_millis,
@@ -411,6 +413,7 @@ impl MutationSpec {
                 seat,
                 deadline_millis,
                 operator: true,
+                ..
             } => WireCommand::OperatorOrphanInvite(OperatorOrphanInvite {
                 thread,
                 seat,
@@ -1083,7 +1086,13 @@ struct InviteArgs {
     /// Seat ID to invite.
     #[arg(long)]
     seat: Option<String>,
-    /// Invitation deadline in positive seconds.
+    /// Leave the invitation discoverable without timed confirmation (default).
+    #[arg(long, conflicts_with_all = ["require_ack", "deadline", "operator"])]
+    lazy: bool,
+    /// Require explicit acceptance by the invitation deadline.
+    #[arg(long, conflicts_with = "operator")]
+    require_ack: bool,
+    /// Acceptance deadline in positive seconds; implies --require-ack.
     #[arg(long)]
     deadline: Option<u64>,
     /// Mark this as an explicit operator invitation.
@@ -1711,6 +1720,13 @@ where
             1
         };
     }
+    if actor == InvocationActor::Human
+        && matches!(&cli.command, Top::Invite(args) if args.lazy || args.require_ack)
+    {
+        return Err(ParseFailure::Invalid(invalid(
+            "--lazy and --require-ack apply only to ordinary agent invitations",
+        )));
+    }
     let mut parsed = parse_cli_in_registry(cli, registry).map_err(|error| {
         if actor == InvocationActor::Agent && error.detail == "operator required" {
             invalid(format!(
@@ -1771,6 +1787,12 @@ where
     );
     if actor == InvocationActor::Agent && requires_human {
         return Err(ParseFailure::Invalid(invalid(guidance(&original, None))));
+    }
+    if actor == InvocationActor::Human
+        && let CliAction::Mutation(MutationSpec::Invite { confirmation, .. }) = &mut parsed.action
+    {
+        // Human/operator invitations retain their established semantics.
+        *confirmation = None;
     }
     parsed.actor = actor;
     Ok(parsed)
@@ -2134,7 +2156,20 @@ fn parse_cli_in_registry(
                 args.seat.unwrap_or_else(|| "pending-pane-selector".into()),
                 SeatId::parse,
             )?,
-            deadline_millis: deadline(args.deadline)?,
+            confirmation: (!args.operator).then_some(
+                if args.require_ack || args.deadline.is_some() {
+                    InvitationConfirmation::RequireAck
+                } else {
+                    InvitationConfirmation::Lazy
+                },
+            ),
+            deadline_millis: deadline(args.deadline)?
+                .map(|millis| {
+                    i64::try_from(millis)
+                        .map(|_| millis)
+                        .map_err(|_| invalid("invitation deadline must fit signed milliseconds"))
+                })
+                .transpose()?,
             operator: args.operator,
         }),
         Top::Participants { thread, page: args } => {

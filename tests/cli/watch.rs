@@ -1710,3 +1710,20 @@ fn every_chunk_failing_prints_nothing_and_exits_1() {
     assert!(out.is_empty());
     assert_eq!(sent_acks(&client).len(), 2);
 }
+
+#[test]
+fn invitation_policy_lazy_is_bookkeeping_while_timed_and_legacy_raise_attention() {
+    use crate::protocol::commands::InvitationConfirmation::{Lazy, RequireAck};
+    for (mode, waking) in [(Some(Lazy), false), (Some(RequireAck), true), (None, true)] {
+        let mut item = invitation();
+        if let InboxBatchV2Item::Invitation { confirmation, .. } = &mut item {
+            *confirmation = mode;
+        }
+        let mut state = EmitState::default();
+        let (_, lines) = run_drain(&paged_client(vec![vec![item]]), 5, &mut state);
+        assert_eq!(lines.len(), usize::from(waking), "{mode:?}: {lines:?}");
+        if waking {
+            assert_eq!(lines[0].id, "attention:5");
+        }
+    }
+}
