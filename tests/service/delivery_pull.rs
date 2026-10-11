@@ -6285,6 +6285,116 @@ fn presentation_reclamation_preserves_pending_truncated_and_reoffer_history() {
     );
 }
 
+fn full_pending_offer_window_with_fresh_carry() -> (OfferWindowFixture, Vec<MessageId>) {
+    use crate::protocol::commands::DeliveryMode;
+    let window = OfferWindowFixture::new(true);
+    let big = "x".repeat(WATCH_BODY_LIMIT_BYTES + 1);
+    let sent = (0..257)
+        .map(|n| window.send(n, DeliveryMode::Ordinary, if n == 0 { &big } else { "pending" }))
+        .collect::<Vec<_>>();
+    assert_eq!(window.drain(256), sent[..256].iter().cloned().collect());
+    let offers = window.offers();
+    assert_eq!(offers.len(), 256);
+    assert!(offers.values().all(|offer| offer.count == 1));
+    assert!(offers[&sent[0]].truncated);
+    assert!(!offers.contains_key(&sent[256]));
+    assert_eq!(window.f.db.query_row(
+        "SELECT count(*) FROM prepared_recipients pr JOIN send_manifests sm ON sm.preparation_id=pr.preparation_id LEFT JOIN receipt_state rs ON rs.message_id=sm.message_id AND rs.seat_id=pr.seat_id WHERE pr.seat_id='c' AND COALESCE(rs.state,'pending')='pending' AND pr.ack_required=1",
+        [], |r| r.get::<_,i64>(0),
+    ).unwrap(), 257, "real sends remain pending; presentation does not ACK");
+    (window, sent)
+}
+
+fn assert_full_pending_offer_work(window: &OfferWindowFixture) {
+    let work = window.f.service.presentation.last_work.lock().unwrap().unwrap();
+    assert!(work.initial + work.context + work.revisit + work.ordinary + work.notices <= 433,
+        "full pending carry must respect fresh discovery: {work:?}");
+    assert_eq!(work.offer_reconciliation_visits, 256);
+    assert_eq!(work.offer_reconciliation_probes, 1024);
+}
+
+// Kills: an unoffered fresh carry at zero slots driving endless actionable
+// page.more continuations despite every known offer being blocked until due.
+#[test]
+fn presentation_full_pending_carry_reaches_quiet_without_evicting_offers() {
+    use crate::protocol::delivery::DeliveryPullReplyV2;
+    let (window, sent) = full_pending_offer_window_with_fresh_carry();
+    let original = window.offers();
+    let mut quiet = false;
+    for _ in 0..16 {
+        match window.pull() {
+            DeliveryPullReplyV2::Unchanged { .. } => quiet = true,
+            DeliveryPullReplyV2::Page(page) => {
+                assert!(page.offered.is_empty() && page.truncated.is_empty(),
+                    "no offer is due and the fresh identity must wait at capacity");
+                quiet = !page.more;
+            }
+            other => panic!("live full-capacity owner refused: {other:?}"),
+        }
+        assert_full_pending_offer_work(&window);
+        assert_eq!(window.offers(), original, "quieting cannot evict or reset pending offers");
+        if quiet { break; }
+    }
+    assert!(quiet, "full pending carry must stop actionable continuation within bounded pulls");
+    assert!(!window.offers().contains_key(&sent[256]));
+}
+
+// Kills: quieting the full carry by permanently parking it, which also starves
+// already known pending offers once their original 60-second reoffer is due.
+#[test]
+fn presentation_full_pending_carry_serves_due_known_offers_without_admitting_fresh_id() {
+    use crate::protocol::delivery::DeliveryPullReplyV2;
+    let (window, sent) = full_pending_offer_window_with_fresh_carry();
+    let original = window.offers();
+    // Let ordinary discovery encounter the retained fresh ID before the clock
+    // advances, without requiring the separate quiet-continuation behavior.
+    for _ in 0..4 {
+        window.pull();
+        assert_full_pending_offer_work(&window);
+        assert_eq!(window.offers(), original);
+    }
+    advance(&window.f, REOFFER_AFTER_MS);
+    let due_at = window.f.clock.utc_now();
+    let mut shown = std::collections::BTreeSet::new();
+    for _ in 0..16 {
+        match window.pull() {
+            DeliveryPullReplyV2::Page(page) => {
+                for id in page.offered.iter().chain(&page.truncated) {
+                    assert!(original.contains_key(id), "only due known IDs fit at capacity");
+                    assert_ne!(id, &sent[256]);
+                    assert!(shown.insert(id.clone()), "same-time duplicate reoffer {id:?}");
+                }
+            }
+            DeliveryPullReplyV2::Unchanged { .. } => {}
+            other => panic!("live due-offer owner refused: {other:?}"),
+        }
+        assert_full_pending_offer_work(&window);
+        let retained = window.offers();
+        assert_eq!(retained.len(), 256);
+        for (id, before) in &original {
+            let after = retained[id];
+            assert_eq!(after.first_at, before.first_at);
+            assert_eq!(after.truncated, before.truncated);
+            assert_eq!(after.count, if shown.contains(id) { 2 } else { 1 });
+            assert_eq!(after.last_at, if shown.contains(id) { due_at } else { before.last_at });
+        }
+        if shown.len() == 256 { break; }
+    }
+    assert!(!shown.is_empty(), "due known offers must make progress past a retained fresh ID");
+    assert_eq!(shown, sent[..256].iter().cloned().collect(),
+        "the finite due set must progress within bounded pulls");
+    assert!(!window.offers().contains_key(&sent[256]));
+    let twice = window.offers();
+    for _ in 0..4 {
+        if let DeliveryPullReplyV2::Page(page) = window.pull() {
+            assert!(page.offered.is_empty() && page.truncated.is_empty(),
+                "due progress cannot reset the original reoffer spacing");
+        }
+        assert_full_pending_offer_work(&window);
+        assert_eq!(window.offers(), twice);
+    }
+}
+
 fn offer_reconciliation_input(
     f: &Fixture,
     claim: &CallerClaim,
