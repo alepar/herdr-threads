@@ -196,7 +196,7 @@ fn cooperative_routes_reject_wrong_owner_and_declared_child_without_decisions() 
             )
             .unwrap_err()
             .code,
-        ErrorCode::CallerUnverified
+        ErrorCode::SubagentReadOnly
     );
     assert_eq!(
         db.query_row("SELECT count(*) FROM operations", [], |r| r
@@ -1531,7 +1531,7 @@ fn lazy_inbox_fix_real_service_completion() {
     let mut sub = request.clone();
     sub.claim.role = CallerRole::Subagent;
     sub.operation = OperationId::new("sub");
-    assert_eq!(invoke(sub).unwrap_err().code, ErrorCode::CallerUnverified);
+    assert_eq!(invoke(sub).unwrap_err().code, ErrorCode::SubagentReadOnly);
     let mut stale = request.clone();
     stale.claim.binding_generation += 1;
     stale.operation = OperationId::new("stale");
@@ -1638,5 +1638,160 @@ fn two_sessions_on_one_seat_both_send() {
         )
         .unwrap(),
         2
+    );
+}
+
+/// A subagent claim of the same session: the declared role and an agent id.
+fn subagent_of(top: &CallerClaim) -> CallerClaim {
+    CallerClaim {
+        role: CallerRole::Subagent,
+        agent_id: Some(AgentId::new("agent-1")),
+        ..top.clone()
+    }
+}
+
+#[test]
+fn subagent_ack_send_accept_leave_invite_and_check_in_are_refused() {
+    use crate::protocol::commands::{Accept, Ack, Invite, Leave, Reject, SendMessage};
+    let (service, db) = fixture();
+    let top = checked(&service, lifecycle(claim(), "top")).context;
+    let peer = PeerIdentity::from_kernel(501);
+    let CommandResult::ThreadCreated(thread) = service
+        .handle(
+            Command::CreateThread(CreateThread {
+                name: None,
+                topic: "topic".into(),
+                goal: "goal".into(),
+                operation: OperationId::new("thread"),
+                claim: top.clone(),
+            }),
+            peer,
+            &budget(),
+        )
+        .unwrap()
+    else {
+        panic!("wrong result")
+    };
+    let before = |db: &Connection| {
+        db.query_row("SELECT count(*) FROM operations", [], |r| {
+            r.get::<_, i64>(0)
+        })
+        .unwrap()
+    };
+    let operations = before(&db);
+    // The declared-role shape and the bare agent-id shape are both recognized.
+    let bare_agent = CallerClaim {
+        agent_id: Some(AgentId::new("agent-2")),
+        ..top.clone()
+    };
+    for sub in [subagent_of(&top), bare_agent] {
+        let op = |n: &str| OperationId::new(n);
+        let commands = vec![
+            Command::Ack(Ack {
+                messages: vec![MessageId::new("m")],
+                operation: op("ack"),
+                claim: sub.clone(),
+            }),
+            Command::AckDisplayed(Ack {
+                messages: vec![MessageId::new("m")],
+                operation: op("ack-displayed"),
+                claim: sub.clone(),
+            }),
+            Command::SendMessage(SendMessage {
+                delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
+                thread: thread.clone(),
+                body: "from a subagent".into(),
+                invited_recipients: vec![],
+                deadline_millis: None,
+                operation: op("send"),
+                claim: sub.clone(),
+                relays_user: false,
+                user_intent: None,
+            }),
+            Command::Accept(Accept {
+                thread: thread.clone(),
+                operation: op("accept"),
+                claim: sub.clone(),
+            }),
+            Command::Reject(Reject {
+                thread: thread.clone(),
+                invitation: InvitationId::new("inv"),
+                reason: "no".into(),
+                operation: op("reject"),
+                claim: sub.clone(),
+            }),
+            Command::Leave(Leave {
+                thread: thread.clone(),
+                operation: op("leave"),
+                claim: sub.clone(),
+            }),
+            Command::Invite(Invite {
+                thread: thread.clone(),
+                seat: SeatId::new("other"),
+                deadline_millis: None,
+                operation: op("invite"),
+                claim: sub.clone(),
+            }),
+            lifecycle(sub.clone(), "check-in"),
+        ];
+        for command in commands {
+            let label = format!("{command:?}");
+            let error = service.handle(command, peer, &budget()).unwrap_err();
+            assert_eq!(error.code, ErrorCode::SubagentReadOnly, "{label}");
+            assert_eq!(
+                error.detail,
+                crate::protocol::authority::SUBAGENT_READ_ONLY_DETAIL
+            );
+        }
+    }
+    assert_eq!(before(&db), operations, "a refusal records no decision");
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM occupant_bindings WHERE agent_id<>''",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0,
+        "a refusal enrolls no subagent binding"
+    );
+}
+
+#[test]
+fn subagent_reads_and_advance_cursors_are_allowed() {
+    use crate::protocol::commands::AdvanceCursors;
+    let (service, _db) = fixture();
+    let top = checked(&service, lifecycle(claim(), "top")).context;
+    let peer = PeerIdentity::from_kernel(501);
+    let sub = subagent_of(&top);
+    let advanced = service
+        .handle(
+            Command::AdvanceCursors(AdvanceCursors {
+                claim: sub.clone(),
+                operation: OperationId::new("advance"),
+                displayed: vec![],
+            }),
+            peer,
+            &budget(),
+        )
+        .unwrap();
+    assert!(
+        matches!(advanced, CommandResult::CursorsAdvanced(_)),
+        "{advanced:?}"
+    );
+    let read = service
+        .handle(
+            Command::PendingReceipts(crate::protocol::commands::PendingReceiptsQuery {
+                seat: Some(sub.seat.clone()),
+                thread: None,
+                page: Default::default(),
+            }),
+            peer,
+            &budget(),
+        )
+        .unwrap();
+    assert!(
+        matches!(read, CommandResult::PendingReceipts(_)),
+        "{read:?}"
     );
 }

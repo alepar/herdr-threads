@@ -646,3 +646,49 @@ fn user_intent_send_priority_and_receipts_unchanged() {
         }
     }
 }
+
+// Kills: a send that leaves messages.sender_binding_id NULL, or stamps the seat's first binding
+// for a second session's send.
+#[test]
+fn send_records_sender_binding_id() {
+    let iso = TestIsolation::new("sender-binding");
+    let (context, mut conn) = setup(&iso);
+    conn.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES ('a',1,'pa','b',1,1,'codex','n2','00000000-0000-4000-8000-0000000000a2','cooperative_top_level',0,'term-pa','inc')", []).unwrap();
+    let binding_of = |conn: &Connection, session: &str| -> String {
+        conn.query_row(
+            "SELECT binding_id FROM occupant_bindings WHERE seat_id='a' AND native_session=?1",
+            [session],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    for (session, execution, operation) in [
+        ("n", "00000000-0000-4000-8000-0000000000aa", "op-1"),
+        ("n2", "00000000-0000-4000-8000-0000000000a2", "op-2"),
+    ] {
+        let mut request = send_request();
+        request.operation = OperationId::new(operation);
+        request.body = format!("from {session}");
+        request.claim.native_session = NativeSessionId::new(session);
+        request.claim.execution = ExecutionId::new(execution);
+        prepare_intent_send(&context, &mut conn, &request);
+        messages::publish_send(
+            &context,
+            &mut conn,
+            &request,
+            &mut permit(&request),
+            &budget(),
+            || messages::MAX_BODY_BYTES,
+        )
+        .unwrap();
+        let stamped: Option<String> = conn
+            .query_row(
+                "SELECT sender_binding_id FROM messages WHERE body=?1",
+                [format!("from {session}")],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stamped, Some(binding_of(&conn, session)), "{session}");
+    }
+    assert_ne!(binding_of(&conn, "n"), binding_of(&conn, "n2"));
+}

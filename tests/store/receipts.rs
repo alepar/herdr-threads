@@ -5,7 +5,7 @@ use crate::protocol::{
     time::{Clock, MonoInstant, UtcMillis},
 };
 use crate::store::{attention, connection::StoreContext, messages, receipts};
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use std::{
     path::PathBuf,
     sync::{
@@ -3645,5 +3645,184 @@ fn adapter_display_ack_rechecks_exact_binding_and_cooperative_provenance() {
             .unwrap(),
             None
         );
+    }
+}
+
+mod binding_attribution {
+    use super::*;
+    use crate::protocol::results::{CommandResult, ErrorCode};
+
+    const B2_EXECUTION: &str = "00000000-0000-4000-8000-0000000000b2";
+
+    fn budget() -> crate::protocol::time::CallBudget {
+        crate::protocol::time::CallBudget {
+            deadline: MonoInstant(u64::MAX),
+            cancellation: Default::default(),
+        }
+    }
+
+    /// Seat `b` gets a second connected top-level binding (session `nb2`); returns
+    /// (first binding id, second binding id).
+    fn two_bindings_on_b(conn: &Connection) -> (String, String) {
+        conn.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES ('b',1,'pb','b',1,1,'codex','nb2',?1,'cooperative_top_level',0,'term-pb','inc')", [B2_EXECUTION]).unwrap();
+        let id = |session: &str| -> String {
+            conn.query_row(
+                "SELECT binding_id FROM occupant_bindings WHERE seat_id='b' AND native_session=?1",
+                [session],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        (id("nb"), id("nb2"))
+    }
+
+    fn publish_to_b(context: &StoreContext, conn: &mut Connection, operation: &str) -> MessageId {
+        let mut request = send_request(vec![]);
+        request.operation = OperationId::new(operation);
+        match send_prepared(
+            context,
+            conn,
+            &request,
+            &mut permit(&request),
+            messages::MessageLimits::default(),
+        )
+        .unwrap()
+        {
+            CommandResult::MessageSent(id) => id,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    fn claim_of(session: &str, execution: &str) -> CallerClaim {
+        let mut claim = ack_request(vec![]).claim;
+        claim.native_session = NativeSessionId::new(session);
+        claim.execution = ExecutionId::new(execution);
+        claim
+    }
+
+    fn ack_as(
+        context: &StoreContext,
+        conn: &mut Connection,
+        claim: CallerClaim,
+        ids: Vec<MessageId>,
+        operation: &str,
+        displayed: bool,
+    ) -> Result<CommandResult, crate::protocol::results::ApiError> {
+        let mut request = ack_request(ids);
+        request.claim = claim;
+        request.operation = OperationId::new(operation);
+        if displayed {
+            let digest =
+                crate::store::schema::canonical_digest(&receipts::ack_displayed_payload(&request))
+                    .unwrap();
+            let mut permit = cooperative_permit(
+                &request.claim,
+                &request.operation,
+                ObligationRef::CheckIn(request.claim.seat.clone()),
+                digest,
+                (1, 0),
+            );
+            receipts::ack_displayed(context, conn, &budget(), &request, &mut permit)
+        } else {
+            receipts::ack(
+                context,
+                conn,
+                &budget(),
+                &request,
+                &mut ack_permit(&request),
+            )
+        }
+    }
+
+    fn ack_binding(conn: &Connection, message: &MessageId) -> Option<String> {
+        conn.query_row(
+            "SELECT ack_binding_id FROM receipt_state WHERE message_id=?1 AND seat_id='b'",
+            [message.as_str()],
+            |r| r.get(0),
+        )
+        .optional()
+        .unwrap()
+        .flatten()
+    }
+
+    #[test]
+    fn two_top_level_bindings_may_display_ack_settled_once() {
+        let (context, mut conn, _) = setup();
+        let (first, second) = two_bindings_on_b(&conn);
+        let id = publish_to_b(&context, &mut conn, "send-1");
+        let a = claim_of("nb", "00000000-0000-4000-8000-0000000000bb");
+        let b = claim_of("nb2", B2_EXECUTION);
+        let CommandResult::Acknowledged(settled) =
+            ack_as(&context, &mut conn, a, vec![id.clone()], "ack-a", true).unwrap()
+        else {
+            panic!("wrong result")
+        };
+        assert_eq!(settled.acknowledged, vec![id.clone()]);
+        assert_eq!(ack_binding(&conn, &id), Some(first.clone()));
+        let acked_at: i64 = conn
+            .query_row(
+                "SELECT acked_at FROM receipt_state WHERE message_id=?1 AND seat_id='b'",
+                [id.as_str()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let CommandResult::Acknowledged(again) =
+            ack_as(&context, &mut conn, b, vec![id.clone()], "ack-b", true).unwrap()
+        else {
+            panic!("wrong result")
+        };
+        assert!(again.acknowledged.is_empty());
+        assert_eq!(again.already_acknowledged, vec![id.clone()]);
+        assert_eq!(
+            ack_binding(&conn, &id),
+            Some(first),
+            "the first settler stays"
+        );
+        assert_ne!(ack_binding(&conn, &id), Some(second));
+        let after: i64 = conn
+            .query_row(
+                "SELECT acked_at FROM receipt_state WHERE message_id=?1 AND seat_id='b'",
+                [id.as_str()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(after, acked_at, "settled once: no second transition");
+    }
+
+    #[test]
+    fn explicit_ack_records_the_acting_binding() {
+        let (context, mut conn, _) = setup();
+        let (_first, second) = two_bindings_on_b(&conn);
+        let id = publish_to_b(&context, &mut conn, "send-1");
+        let b = claim_of("nb2", B2_EXECUTION);
+        ack_as(&context, &mut conn, b, vec![id.clone()], "ack-b", false).unwrap();
+        assert_eq!(ack_binding(&conn, &id), Some(second));
+        let generation: i64 = conn
+            .query_row(
+                "SELECT ack_generation FROM receipt_state WHERE message_id=?1 AND seat_id='b'",
+                [id.as_str()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(generation, 1, "ack_generation keeps its historical meaning");
+    }
+
+    #[test]
+    fn disconnected_binding_ack_is_refused_and_leaves_the_obligation_pending() {
+        let (context, mut conn, _) = setup();
+        let (_first, _second) = two_bindings_on_b(&conn);
+        conn.execute("UPDATE occupant_bindings SET liveness='disconnected',disconnected_at=5,disconnect_reason='process_exit' WHERE native_session='nb2'", []).unwrap();
+        let id = publish_to_b(&context, &mut conn, "send-1");
+        let b = claim_of("nb2", B2_EXECUTION);
+        let error = ack_as(&context, &mut conn, b, vec![id.clone()], "ack-b", false).unwrap_err();
+        assert_eq!(error.code, ErrorCode::CallerUnverified);
+        assert_eq!(
+            crate::store::effective::effective_receipt(&conn, id.as_str(), "b")
+                .unwrap()
+                .unwrap()
+                .state,
+            crate::store::effective::EffectiveReceiptState::Pending
+        );
+        assert_eq!(ack_binding(&conn, &id), None);
     }
 }

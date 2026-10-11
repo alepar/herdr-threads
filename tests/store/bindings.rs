@@ -1714,3 +1714,149 @@ mod availability {
         );
     }
 }
+
+// ---- ht-54r.20: lineage validation and linking ----
+
+mod lineage {
+    use super::*;
+    use crate::protocol::authority::{CallerClaim, CallerRole, Harness, LivenessFingerprint};
+
+    const EXEC: &str = "11111111-1111-4111-8111-111111111111";
+
+    fn claim(session: &str, pid: u32) -> CallerClaim {
+        CallerClaim {
+            instance: "i".into(),
+            seat: SeatId::new("s"),
+            binding_generation: 4,
+            role: CallerRole::TopLevel,
+            harness: Harness::Claude,
+            native_session: NativeSessionId::new(session),
+            execution: ExecutionId::new(EXEC),
+            target: HostTargetId::new("p"),
+            agent_id: None,
+            liveness: Some(LivenessFingerprint { pid, start: 9 }),
+        }
+    }
+    fn resolve(db: &Connection, claim: &CallerClaim, lineage: Option<&BindingId>) -> BindingRow {
+        let place = placement();
+        resolve_claim(
+            db,
+            &ResolveRequest {
+                claim,
+                lifecycle: true,
+                placement: &place,
+                lineage,
+            },
+            FingerprintRule::Required,
+            UtcMillis(50),
+        )
+        .unwrap()
+        .binding()
+        .clone()
+    }
+    fn cursor(db: &Connection, binding: &BindingRow) -> Option<u64> {
+        read_cursors::cursor_for(db, &binding.binding_id, &thread()).unwrap()
+    }
+    fn set_cursor(db: &Connection, binding: &BindingRow, seq: i64) {
+        db.execute(
+            "UPDATE binding_cursors SET seq=?2 WHERE binding_id=?1",
+            rusqlite::params![binding.binding_id.as_str(), seq],
+        )
+        .unwrap();
+    }
+
+    // Kills: a lineage successor seeded from the seat maximum (2, the other process's cursor)
+    // instead of its predecessor's cursor (1).
+    #[test]
+    fn lineage_successor_starts_at_predecessor_cursors() {
+        let db = db();
+        let predecessor = resolve(&db, &claim("sess-A", 7), None);
+        let other = resolve(&db, &claim("sess-X", 8), None);
+        set_cursor(&db, &predecessor, 1);
+        set_cursor(&db, &other, 2);
+        let successor = resolve(&db, &claim("sess-B", 7), Some(&predecessor.binding_id));
+        assert_eq!(successor.lineage_from, Some(predecessor.binding_id.clone()));
+        assert_eq!(cursor(&db, &successor), Some(1));
+        // The same-pid supersede ran after the copy.
+        assert_eq!(
+            get(&db, &predecessor.binding_id).unwrap().unwrap().liveness,
+            Liveness::Disconnected
+        );
+    }
+
+    // Kills: a lineage hint trusted blindly (successor 1 and lineage_from set) when the
+    // successor is another process.
+    #[test]
+    fn lineage_from_another_process_is_ignored() {
+        let db = db();
+        let predecessor = resolve(&db, &claim("sess-A", 7), None);
+        let other = resolve(&db, &claim("sess-X", 8), None);
+        set_cursor(&db, &predecessor, 1);
+        set_cursor(&db, &other, 2);
+        let stranger = claim("sess-B", 9);
+        assert!(!validate_lineage(&db, &stranger, &predecessor.binding_id).unwrap());
+        let successor = resolve(&db, &stranger, Some(&predecessor.binding_id));
+        assert_eq!(successor.lineage_from, None);
+        assert_eq!(cursor(&db, &successor), Some(2), "fresh seed: seat maximum");
+        assert_eq!(
+            get(&db, &predecessor.binding_id).unwrap().unwrap().liveness,
+            Liveness::Connected
+        );
+    }
+
+    #[test]
+    fn validate_lineage_requires_a_top_level_predecessor_of_the_same_seat_and_harness() {
+        let db = db();
+        let predecessor = resolve(&db, &claim("sess-A", 7), None);
+        let same_process = claim("sess-B", 7);
+        assert!(validate_lineage(&db, &same_process, &predecessor.binding_id).unwrap());
+        // Unknown predecessor.
+        assert!(!validate_lineage(&db, &same_process, &BindingId::new("nope")).unwrap());
+        // No fingerprint: nothing ties the successor to the process.
+        let mut bare = same_process.clone();
+        bare.liveness = None;
+        assert!(!validate_lineage(&db, &bare, &predecessor.binding_id).unwrap());
+        // Another harness.
+        let mut other_harness = same_process.clone();
+        other_harness.harness = Harness::Codex;
+        assert!(!validate_lineage(&db, &other_harness, &predecessor.binding_id).unwrap());
+        // Another seat.
+        db.execute_batch("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s2','i','resolved','native',4,0);").unwrap();
+        let mut other_seat = same_process.clone();
+        other_seat.seat = SeatId::new("s2");
+        assert!(!validate_lineage(&db, &other_seat, &predecessor.binding_id).unwrap());
+        // A subagent predecessor.
+        let subagent = {
+            let mut sub = claim("sess-A", 7);
+            sub.role = CallerRole::Subagent;
+            sub.agent_id = Some(AgentId::new("agent-1"));
+            resolve(&db, &sub, None)
+        };
+        assert_eq!(subagent.role, BindingRole::Subagent);
+        assert!(!validate_lineage(&db, &same_process, &subagent.binding_id).unwrap());
+    }
+
+    // Kills: a link that overwrites a higher successor cursor with the predecessor's lower one.
+    #[test]
+    fn link_lineage_never_moves_cursors_backwards() {
+        let db = db();
+        let predecessor = resolve(&db, &claim("sess-A", 7), None);
+        let successor = resolve(&db, &claim("sess-B", 8), None);
+        set_cursor(&db, &predecessor, 1);
+        set_cursor(&db, &successor, 2);
+        link_lineage(&db, &successor.binding_id, &predecessor.binding_id).unwrap();
+        assert_eq!(cursor(&db, &successor), Some(2), "ahead stays ahead");
+        assert_eq!(
+            get(&db, &successor.binding_id)
+                .unwrap()
+                .unwrap()
+                .lineage_from,
+            Some(predecessor.binding_id.clone())
+        );
+        // And a successor behind the predecessor catches up.
+        set_cursor(&db, &predecessor, 2);
+        set_cursor(&db, &successor, 1);
+        link_lineage(&db, &successor.binding_id, &predecessor.binding_id).unwrap();
+        assert_eq!(cursor(&db, &successor), Some(2));
+    }
+}

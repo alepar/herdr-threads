@@ -35,6 +35,8 @@ pub fn api_exit_code(code: &ErrorCode) -> i32 {
         | SessionClaimRequired
         | LivenessFingerprintRequired => EXIT_UNSUPPORTED,
         UnknownOutcome => EXIT_UNKNOWN_OUTCOME,
+        // A subagent's accountable command is refused like any other authorization failure.
+        Unauthorized | SubagentReadOnly => EXIT_FAILED,
         _ => EXIT_FAILED,
     }
 }

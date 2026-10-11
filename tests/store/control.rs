@@ -6950,6 +6950,8 @@ fn accountable_observation_has_one_shape_and_legacy_rows_read_back_in_it() {
         binding_generation: 2,
         observed_at_utc: UtcMillis(10),
         provenance: "cooperative_top_level",
+        binding_id: crate::protocol::ids::BindingId::new("b-1"),
+        binding_connected: true,
     };
     let written = actor.observation(11);
     let value: serde_json::Value = serde_json::from_str(&written).unwrap();
