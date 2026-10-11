@@ -1344,7 +1344,9 @@
       "src/protocol/wire.rs",
       "src/daemon/transport.rs",
       "src/client/local.rs",
-      "tests/daemon/transport.rs"
+      "tests/daemon/transport.rs",
+      "tests/store/direct_threads.rs",
+      "tests/service/cooperative.rs"
     ]
   },
   {
@@ -1419,7 +1421,8 @@
       "docs/agent-usage.md",
       "docs/dev/outside-adapter-report.md",
       "integrations/skill/SKILL.md",
-      "TRUST-POLICY.md"
+      "TRUST-POLICY.md",
+      "src/ports.rs"
     ]
   }
 ]

@@ -148,3 +148,7 @@ Lazy invitation confirmation/nativewake suppression MUST NOT suppress in-turn pa
 ### Actual fixture preflight
 
 Read task-15-preflight.md before first regression build. Canonical pending_invitation fixture is historicaltimed/manualwake, AGY sweep bootstrap assumes timedinvitationwake; neither proves modernLazy behavior unchanged. Real DomainService pull/registeredhook and actualcanonicalorigin/wake paths required.
+
+### Passive invitation version interface admission
+
+Admit src/ports.rs narrowly for canonical passive invitation change metadata on ModSeatView, independent of wake ModFingerprint. No unbounded pending-invitation scan/hash; actual canonical bounded source must invalidate after arrivals and removals even when latest pending key unchanged. Actual cached service pull tests cover these transitions. Preserve no Lazy ordinary native wake.
