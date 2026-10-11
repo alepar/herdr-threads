@@ -22,6 +22,19 @@ impl LocalClient for ReadOnly {
     }
     fn call(&self, command: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
         match command {
+            Command::Capabilities => Ok(CommandResult::Capabilities(
+                crate::protocol::results::CapabilityList {
+                    capabilities: crate::protocol::capabilities::ADVERTISED
+                        .iter()
+                        .copied()
+                        .chain([
+                            crate::protocol::capabilities::INVITATION_CONFIRMATION_V1,
+                            crate::protocol::capabilities::BOOTSTRAP_GUARDED_RESOLUTION_V1,
+                        ])
+                        .map(str::to_owned)
+                        .collect(),
+                },
+            )),
             Command::ResolveThread(q)
                 if q.selector == "chosen"
                     && q.caller.as_ref().map(|s| s.as_str()) == Some("sender")
@@ -38,6 +51,7 @@ impl LocalClient for ReadOnly {
 }
 fn request() -> Request {
     Request {
+        policy: None,
         new_tab: Some("same label".into()),
         existing: false,
         selector: PaneSelector::default(),
@@ -345,7 +359,7 @@ fn publication_public_route_refuses_unavailable_daemon_before_publication() {
         matches!(
             result,
             Err(RunError::Api(ApiError {
-                code: crate::protocol::results::ErrorCode::InvalidRequest,
+                code: crate::protocol::results::ErrorCode::HostUnavailable,
                 ..
             }))
         ),
@@ -449,6 +463,7 @@ fn publication_explicit_cwd_claude_options_and_invalid_inputs() {
             ..request()
         },
         Request {
+            policy: None,
             new_tab: Some(" ".into()),
             ..request()
         },
@@ -609,10 +624,15 @@ mod live {
                         capabilities: if s.fault == Fault::MissingCapability {
                             vec![]
                         } else {
-                            vec![
-                                crate::protocol::capabilities::BOOTSTRAP_GUARDED_RESOLUTION_V1
-                                    .into(),
-                            ]
+                            crate::protocol::capabilities::ADVERTISED
+                                .iter()
+                                .copied()
+                                .chain([
+                                    crate::protocol::capabilities::INVITATION_CONFIRMATION_V1,
+                                    crate::protocol::capabilities::BOOTSTRAP_GUARDED_RESOLUTION_V1,
+                                ])
+                                .map(str::to_owned)
+                                .collect()
                         },
                     },
                 ));
@@ -2309,6 +2329,10 @@ mod live {
                 "codex",
                 "--thread",
                 "chosen",
+                "--deadline",
+                "7",
+                "--invite-deadline",
+                "11",
                 "--file",
                 path.to_str().unwrap(),
             ])
@@ -2340,6 +2364,31 @@ mod live {
                 })
                 .unwrap();
             assert_eq!(saved, body);
+            let (confirmation, duration): (String, i64) = state
+                .db
+                .query_row(
+                    "SELECT confirmation,frozen_duration_ms FROM invitations",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!((confirmation.as_str(), duration), ("require_ack", 11000));
+            let message: String = state
+                .db
+                .query_row("SELECT id FROM messages WHERE body=?1", [&body], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            let recipient: String = state
+                .db
+                .query_row("SELECT seat_id FROM invitations", [], |r| r.get(0))
+                .unwrap();
+            let receipt =
+                crate::store::effective::effective_receipt(&state.db, &message, &recipient)
+                    .unwrap()
+                    .unwrap();
+            assert_eq!(receipt.frozen_duration_ms, 7000);
+            assert_eq!(receipt.deadline_at, Some(receipt.decision_at + 7000));
             drop(state);
             let terminal = read_terminal(&f.journal, &f.peer.reference)
                 .unwrap()

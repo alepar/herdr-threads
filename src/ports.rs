@@ -1710,7 +1710,7 @@ pub struct NativeLaunchRequest {
     /// Native agent arguments passed verbatim after Herdr's `agent start ... --`.
     /// The host adapter supplies the Herdr executable, kind, and explicit target.
     pub argv: Vec<String>,
-    pub configured_hook: ConfiguredHook,
+    pub configured_hook: Option<ConfiguredHook>,
     pub expected_terminal: TerminalId,
     pub expected_generation: u64,
     pub expected_incarnation: String,
@@ -1832,12 +1832,14 @@ impl NativeLaunchRequest {
         Self::validate_argv(&self.argv)?;
         if self.expected_incarnation.is_empty()
             || self.expected_incarnation.len() > 128
-            || self.configured_hook.scope.is_empty()
-            || self.configured_hook.scope.len() > 128
-            || self.configured_hook.path.is_empty()
-            || self.configured_hook.path.len() > 1024
-            || self.configured_hook.fingerprint.is_empty()
-            || self.configured_hook.fingerprint.len() > 256
+            || self.configured_hook.as_ref().is_some_and(|hook| {
+                hook.scope.is_empty()
+                    || hook.scope.len() > 128
+                    || hook.path.is_empty()
+                    || hook.path.len() > 1024
+                    || hook.fingerprint.is_empty()
+                    || hook.fingerprint.len() > 256
+            })
         {
             return Err("invalid native launch request: internal host or hook fields out of range");
         }

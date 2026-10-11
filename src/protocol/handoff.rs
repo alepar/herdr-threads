@@ -126,7 +126,20 @@ impl DeliveryMutation {
                 v.claim == self.claim
                     && v.operation == keys.invite
                     && v.seat == self.plan.recipient
-                    && v.deadline_millis.is_none()
+                    && v.deadline_millis
+                        == self
+                            .plan
+                            .payload
+                            .policy
+                            .as_ref()
+                            .and_then(|p| p.invite_deadline_millis)
+                    && v.confirmation
+                        == self
+                            .plan
+                            .payload
+                            .policy
+                            .as_ref()
+                            .map(|p| p.invitation_confirmation)
                     && thread_matches(&v.thread)
             }
             DeliveryAction::Send(v) => {
@@ -135,7 +148,13 @@ impl DeliveryMutation {
                     && v.operation == keys.send
                     && v.body == self.plan.payload.body
                     && v.invited_recipients == [self.plan.recipient.clone()]
-                    && v.deadline_millis.is_none()
+                    && v.deadline_millis
+                        == self
+                            .plan
+                            .payload
+                            .policy
+                            .as_ref()
+                            .and_then(|p| p.deadline_millis)
                     && !v.relays_user
                     && v.user_intent.is_none()
                     && thread_matches(&v.thread)
@@ -204,10 +223,40 @@ pub struct HandoffKeys {
     pub complete: OperationId,
 }
 
+/// Frozen independent receipt and invitation timing. Absence on the containing
+/// historical payload preserves the original child request bytes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HandoffPolicy {
+    pub deadline_millis: Option<u64>,
+    pub invitation_confirmation: super::commands::InvitationConfirmation,
+    pub invite_deadline_millis: Option<u64>,
+}
+impl HandoffPolicy {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self
+            .deadline_millis
+            .into_iter()
+            .chain(self.invite_deadline_millis)
+            .any(|v| v == 0 || v > i64::MAX as u64)
+        {
+            return Err("handoff deadline must fit positive signed milliseconds");
+        }
+        if self.invitation_confirmation == super::commands::InvitationConfirmation::Lazy
+            && self.invite_deadline_millis.is_some()
+        {
+            return Err("lazy invitation cannot have a deadline");
+        }
+        Ok(())
+    }
+}
+
 /// Shared immutable staging payload; delivery carries no launch requirement.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HandoffPayload {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy: Option<HandoffPolicy>,
     pub namespace: HandoffNamespace,
     pub keys: HandoffKeys,
     pub channel: HandoffChannel,
@@ -578,6 +627,9 @@ impl HandoffNamespace {
 impl HandoffPayload {
     pub fn validate(&self) -> Result<(), &'static str> {
         self.namespace.validate()?;
+        if let Some(policy) = &self.policy {
+            policy.validate()?;
+        }
         if self.body.is_empty() || self.body.len() > crate::store::messages::MAX_BODY_BYTES {
             return Err("invalid handoff body");
         }
@@ -919,6 +971,7 @@ pub(crate) mod topology_contract_tests {
     pub(crate) fn payload() -> BootstrapPayload {
         BootstrapPayload {
             handoff: HandoffPayload {
+                policy: None,
                 namespace: HandoffNamespace {
                     instance: "i".into(),
                     state_dir: "/state".into(),

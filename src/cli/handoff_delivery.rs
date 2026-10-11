@@ -23,7 +23,7 @@ use crate::{
         },
         ids::{OperationId, SeatId},
         pagination::PageRequest,
-        results::{ApiError, CommandResult, ContinuityStatus, SeatInspection},
+        results::{ApiError, CommandResult, ContinuityStatus, ErrorCode, SeatInspection},
         time::Clock,
     },
 };
@@ -76,6 +76,10 @@ pub fn prepare<C: LocalClient + ?Sized>(
     inputs: Preparation<'_, C>,
 ) -> Result<DeliveryPlan, RunError> {
     let fail = super::invalid_request;
+    if let Some(policy) = &request.policy {
+        policy.validate().map_err(super::invalid_request)?;
+        super::require_handoff_capabilities(inputs.client, inputs.clock, Some(policy))?;
+    }
     if !request.existing
         || request.new_tab.is_some()
         || request.cwd.is_some()
@@ -164,6 +168,7 @@ pub fn prepare<C: LocalClient + ?Sized>(
         version: 1,
         recipient,
         payload: HandoffPayload {
+            policy: request.policy.clone(),
             namespace: inputs.namespace.clone(),
             channel,
             body: request.body.clone(),
@@ -253,6 +258,18 @@ impl<'a, C: LocalClient + ?Sized> FrozenDeliveryClient<'a, C> {
     fn wrap(&self, command: Command) -> Result<Command, ApiError> {
         use crate::protocol::handoff::DeliveryAction;
         let action = match command {
+            Command::HandoffDelivery(envelope) => {
+                let mut expected = self.envelope.clone();
+                expected.action =
+                    crate::protocol::handoff::DeliveryAction::Status(expected.identity());
+                if *envelope != expected {
+                    return Err(ApiError::invalid_request(
+                        "delivery status differs from frozen envelope",
+                    ));
+                }
+                envelope.validate().map_err(ApiError::invalid_request)?;
+                return Ok(Command::HandoffDelivery(envelope));
+            }
             Command::BeginHandoff(v) => DeliveryAction::Begin(v),
             Command::CreateThread(v) => DeliveryAction::Create(v),
             Command::Invite(v) => DeliveryAction::Invite(v),
@@ -477,6 +494,25 @@ fn execute_locked<C: LocalClient + ?Sized>(
     {
         return Err(super::invalid_request("delivery original scope mismatch"));
     }
+    // Read the exact canonical frozen identity before deciding whether any new
+    // operation is needed. Local staged reports cannot establish completion.
+    let status_client = FrozenDeliveryClient::from_plan(
+        client,
+        pending.header.scope.clone(),
+        claim.clone(),
+        pending.header.semantic_digest.clone(),
+        (*plan).clone(),
+    )?;
+    let status = match status_client.query(false, clock) {
+        Ok(CommandResult::Handoff(current)) => Some(current),
+        Err(RunError::Api(error)) if error.code == ErrorCode::NotFound => None,
+        Err(error) => return Err(error),
+        Ok(_) => return Err(super::invalid_request("unexpected delivery status result")),
+    };
+    let completed = status.filter(|current| current.state == HandoffState::Completed);
+    if completed.is_none() {
+        super::require_handoff_capabilities(client, clock, plan.payload.policy.as_ref())?;
+    }
     let keys = &plan.payload.keys;
     let identity = HandoffIdentity {
         compound: keys.compound.clone(),
@@ -497,7 +533,9 @@ fn execute_locked<C: LocalClient + ?Sized>(
         staged: Default::default(),
         last_observed: None,
     });
-    let current = match handoff::keyed_fence(client, clock, &identity, keys.begin.clone(), false) {
+    let current = match completed.map(Ok).unwrap_or_else(|| {
+        handoff::keyed_fence(client, clock, &identity, keys.begin.clone(), false)
+    }) {
         Ok(current) => current,
         Err(error) => {
             if !begin_uncertain(&error) {
@@ -561,6 +599,7 @@ fn execute_locked<C: LocalClient + ?Sized>(
     };
     let staging = handoff::stage_work(
         handoff::Staging {
+            policy: plan.payload.policy.as_ref(),
             channel: &plan.payload.channel,
             body: &plan.payload.body,
             recipient: &plan.recipient,
@@ -858,18 +897,16 @@ pub fn retry_to_writer<C: LocalClient + ?Sized, W: Write>(
     }
     let terminal = if let Some(terminal) = retained {
         let claim = pending.semantic.frozen_claim().unwrap().clone();
-        let keys = &plan.payload.keys;
-        let identity = HandoffIdentity {
-            compound: keys.compound.clone(),
-            digest: pending.header.semantic_digest.clone(),
+        let frozen = FrozenDeliveryClient::from_plan(
+            client,
+            pending.header.scope.clone(),
             claim,
-            thread: plan.payload.channel.thread().cloned(),
-            recipient: plan.recipient.clone(),
-            create_key: keys.create.clone(),
-            invite_key: keys.invite.clone(),
-            send_key: keys.send.clone(),
+            pending.header.semantic_digest.clone(),
+            plan.clone(),
+        )?;
+        let CommandResult::Handoff(canonical) = frozen.query(false, clock)? else {
+            return Err(super::invalid_request("unexpected delivery status result"));
         };
-        let canonical = handoff::keyed_fence(client, clock, &identity, keys.begin.clone(), false)?;
         if canonical != terminal.completed {
             return Err(super::invalid_request(
                 "delivery terminal disagrees with canonical completion",

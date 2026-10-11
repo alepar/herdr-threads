@@ -2,6 +2,7 @@
 use super::{RunError, panes::PaneSelector};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Request {
+    pub policy: Option<crate::protocol::handoff::HandoffPolicy>,
     pub new_tab: Option<String>,
     pub existing: bool,
     pub selector: PaneSelector,
@@ -42,6 +43,10 @@ pub fn prepare<C: crate::ports::LocalClient + ?Sized>(
         results::CommandResult,
     };
     let fail = super::invalid_request;
+    if let Some(policy) = &request.policy {
+        policy.validate().map_err(super::invalid_request)?;
+        super::require_handoff_capabilities(inputs.client, inputs.clock, Some(policy))?;
+    }
     let label = request
         .new_tab
         .as_ref()
@@ -162,6 +167,7 @@ pub fn prepare<C: crate::ports::LocalClient + ?Sized>(
     };
     let payload = BootstrapPayload {
         handoff: HandoffPayload {
+            policy: request.policy.clone(),
             namespace,
             keys: HandoffKeys {
                 compound: compound.clone(),
@@ -361,7 +367,14 @@ pub fn resume_to_attachment<
         Ok(CommandResult::Capabilities(c))
             if c.capabilities.iter().any(|name| {
                 name == crate::protocol::capabilities::BOOTSTRAP_GUARDED_RESOLUTION_V1
-            }) => {}
+            }) && c
+                .capabilities
+                .iter()
+                .any(|name| name == crate::protocol::capabilities::SEND_TIME_RECEIPTS_V1)
+                && (identity.payload.handoff.policy.is_none()
+                    || c.capabilities.iter().any(|name| {
+                        name == crate::protocol::capabilities::INVITATION_CONFIRMATION_V1
+                    })) => {}
         _ => {
             return Err(super::unsupported(
                 "daemon lacks guarded bootstrap resolution capability",
@@ -593,6 +606,7 @@ fn downstream_plan(
     let plan = super::handoff::HandoffPlan {
         startup_input: None,
         request: super::handoff::HandoffRequest {
+            policy: payload.handoff.policy.clone(),
             thread,
             thread_name,
             topic,

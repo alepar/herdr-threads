@@ -26,6 +26,7 @@ pub(super) fn identity() -> BootstrapIdentity {
         digest: "a".repeat(64),
         payload: BootstrapPayload {
             handoff: HandoffPayload {
+                policy: None,
                 namespace: namespace(),
                 keys: HandoffKeys {
                     compound: OperationId::new("bootstrap"),

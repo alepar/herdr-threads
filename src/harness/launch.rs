@@ -649,7 +649,7 @@ pub fn prepare_managed_with_registry(
         Some(configuration) => {
             // Owned configuration at the caller's subcommand level (Codex) or
             // first (Claude); the caller's arguments keep their bytes and order.
-            let argv = match native_argv {
+            let argv = match native_argv.clone() {
                 Some(argv) => argv,
                 None => policy.compose_argv(request.argv.clone(), configuration.argv)?,
             };
@@ -676,9 +676,17 @@ pub fn prepare_managed_with_registry(
     }
     let seat = seats.resolve_for_launch(&request.target, &first, &budget)?;
     refuse_second_agent(registry, host, seats, &seat, &budget)?;
-    // A missing hook is reported only after the seat guards (TRUST-POLICY A4).
-    let (hook, argv) = configured
-        .ok_or_else(|| error(ErrorCode::MissingHook, "supported hook is not configured"))?;
+    // Readiness is advisory. No owned configuration means no fabricated descriptor.
+    let (hook, argv) = match configured {
+        Some((hook, argv)) => (Some(hook), argv),
+        None => (
+            None,
+            match native_argv {
+                Some(argv) => argv,
+                None => policy.compose_argv(request.argv.clone(), Vec::new())?,
+            },
+        ),
+    };
     if budget.is_exhausted(clock) {
         return Err(error(
             ErrorCode::DeadlineExceeded,
@@ -856,6 +864,15 @@ pub(crate) fn native_scope(
     })
 }
 
+pub(crate) fn optional_launch_hook(
+    status: &super::adapter::LocalSetupStatus,
+) -> Option<ConfiguredHook> {
+    status.configured_hook.clone().filter(|_| {
+        status.installed && status.enabled != Some(false) && status.admitted != Some(false)
+    })
+}
+
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn owned_launch_hook(
     status: &super::adapter::LocalSetupStatus,
 ) -> Result<ConfiguredHook, ApiError> {

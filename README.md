@@ -20,6 +20,15 @@ The installer downloads the latest published release, verifies its SHA-256, inst
 
 Codex requires one-time interactive hook review; without granted permissions it also asks for CLI commands. Follow the installer's next steps and [command approval guide](docs/install.md#codex-command-approvals). Linux archives are experimental: real Herdr integration remains unverified until the [clean-machine rehearsal](docs/release.md#post-merge-follow-on-checklist). Intel macOS archives are cross-built but unexercised; Windows is unsupported.
 
+Handoff invitations are lazy by default. `--require-invite-ack` requests timed acceptance;
+`--invite-deadline SECONDS` also requests it and sets its duration. The addressed handoff body
+always requires a separate message ACK, with `--deadline SECONDS` or the configured receipt
+default, starting at send time even if the recipient never registers or joins. Each missed
+requested deadline records a notification for the original sender. Explicit policy and durations
+freeze with the handoff; omitted numeric defaults resolve once when each canonical child is
+created. Retry preserves those original decisions. Hook readiness is diagnostic; native safety
+checks and harness approval requirements still apply.
+
 ## Try it yourself
 
 Use one Herdr tab with your shell and two empty shell panes. Run these commands from **your own shell pane**, except for naming the two new panes in step 2.

@@ -506,7 +506,7 @@ pub mod synthetic_fourth {
         ) -> Result<LaunchPreparation, crate::protocol::results::ApiError> {
             Ok(LaunchPreparation {
                 argv: self.compose_argv(request.argv.clone(), vec![])?,
-                hook: crate::harness::launch::owned_launch_hook(status)?,
+                hook: Some(crate::harness::launch::owned_launch_hook(status)?),
                 working_directory: scope.working_directory.clone(),
                 environment_overrides: Default::default(),
                 report: json!({"synthetic": true, "runtime": null}),

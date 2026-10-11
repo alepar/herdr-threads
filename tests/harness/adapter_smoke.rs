@@ -327,9 +327,13 @@ fn fourth_author_consumers() {
         )
         .unwrap();
     assert_eq!(prepared.argv, ["--synthetic-only", "synthetic-prompt"]);
-    assert_eq!(prepared.hook.fingerprint, status.fingerprint.unwrap());
+    let configured = prepared
+        .hook
+        .as_ref()
+        .expect("installed synthetic fixture hook");
+    assert_eq!(configured.fingerprint, status.fingerprint.unwrap());
     let host = launch_fixture::Host(std::sync::atomic::AtomicU64::new(1));
-    let hooks = launch_fixture::Hooks(prepared.hook.clone());
+    let hooks = launch_fixture::Hooks(configured.clone());
     let managed = herdr_threads::harness::launch::prepare_managed_with_registry(
         registry,
         &host,

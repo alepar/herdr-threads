@@ -426,7 +426,7 @@ fn claude_launch_starts_with_caller_argv_and_reports_durable_handoff() {
     assert_eq!(submitted.len(), 1);
     assert_eq!(submitted[0].argv, caller);
     assert_eq!(submitted[0].harness, Harness::Claude);
-    assert_eq!(submitted[0].configured_hook.scope, "user");
+    assert_eq!(submitted[0].configured_hook.as_ref().unwrap().scope, "user");
     assert_eq!(submitted[0].seat.as_str(), "seat_launch");
     assert_eq!(seats.calls.load(Ordering::SeqCst), 1);
     assert_eq!(out.report["outcome"], "started");
@@ -451,68 +451,63 @@ fn claude_launch_starts_with_caller_argv_and_reports_durable_handoff() {
     assert_eq!(records[0]["seat"], "seat_launch");
 }
 
-/// Kills: launching without the owned installation (a missing hook must
-/// refuse with the setup command, before any start).
+/// Missing, wrong-profile and uncovered hook readiness cannot veto a structurally safe native launch.
 #[test]
-fn claude_without_owned_hooks_refuses_with_setup_hint() {
-    let s = Scratch::new();
-    s.harness("claude", "2.1.285 (Claude Code)", b"");
-    let (host, seats, handoff) = (FakeHost::new(), seats(), handoff());
-    let result = s.launch(
-        &host,
-        &seats,
-        &handoff,
-        request(ContextHarness::Claude, &[]),
-    );
-    match result {
-        Err(RunError::Api(error)) => {
-            assert_eq!(error.code, ErrorCode::MissingHook);
-            assert!(error.detail.contains("herdr-threads setup claude"));
-            assert!(error.detail.contains("settings.json"));
+fn handoff_policy_readiness_is_advisory_for_missing_wrong_profile_and_uncovered_hooks() {
+    for mode in [
+        "missing",
+        "wrong_profile",
+        "uncovered",
+        "disabled",
+        "stale",
+        "malformed",
+    ] {
+        let mut s = Scratch::new();
+        s.harness(
+            "claude",
+            if mode == "uncovered" {
+                "2.1.200 (Claude Code)"
+            } else {
+                "2.1.285 (Claude Code)"
+            },
+            b"",
+        );
+        if mode == "wrong_profile" {
+            s.setup_claude();
+            s.env.claude_config_dir = Some(s.root.join("other config"));
         }
-        other => panic!("expected missing hook, got {other:?}"),
+        if ["disabled", "stale", "malformed"].contains(&mode) {
+            s.setup_claude();
+            let file = s
+                .env
+                .claude_config_dir
+                .as_ref()
+                .unwrap()
+                .join("settings.json");
+            if mode == "malformed" {
+                fs::write(file, b"{").unwrap();
+            } else {
+                let mut settings: Value =
+                    serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+                if mode == "disabled" {
+                    settings["disableAllHooks"] = json!(true);
+                } else {
+                    settings["hooks"] = json!({});
+                }
+                fs::write(file, serde_json::to_vec(&settings).unwrap()).unwrap();
+            }
+        }
+        let (host, seats, handoff) = (FakeHost::new(), seats(), handoff());
+        let result = s.launch(
+            &host,
+            &seats,
+            &handoff,
+            request(ContextHarness::Claude, &[]),
+        );
+        assert!(result.is_ok(), "{mode}: {result:?}");
+        assert_eq!(host.submitted().len(), 1, "{mode}");
+        assert_eq!(s.records().len(), 1, "{mode}");
     }
-    assert!(host.submitted().is_empty());
-    assert!(s.records().is_empty());
-}
-
-/// Claude loads user hooks from the settings of its own CLAUDE_CONFIG_DIR.
-/// Kills: accepting an installation recorded for another config directory.
-#[test]
-fn claude_launch_inspects_the_resolved_config_dir_only() {
-    let mut s = Scratch::new();
-    s.harness("claude", "2.1.285 (Claude Code)", b"");
-    s.setup_claude();
-    s.env.claude_config_dir = Some(s.root.join("other config"));
-    let (host, seats, handoff) = (FakeHost::new(), seats(), handoff());
-    assert_eq!(
-        code(s.launch(
-            &host,
-            &seats,
-            &handoff,
-            request(ContextHarness::Claude, &[])
-        )),
-        ErrorCode::MissingHook
-    );
-    assert!(host.submitted().is_empty());
-}
-
-/// Kills a residual version gate before hook inspection.
-#[test]
-fn uncovered_metadata_still_requires_owned_hooks() {
-    let s = Scratch::new();
-    s.harness("claude", "2.1.200 (Claude Code)", b"");
-    let (host, seats, handoff) = (FakeHost::new(), seats(), handoff());
-    assert_eq!(
-        code(s.launch(
-            &host,
-            &seats,
-            &handoff,
-            request(ContextHarness::Claude, &[])
-        )),
-        ErrorCode::MissingHook
-    );
-    assert!(host.submitted().is_empty());
 }
 
 /// A recovery-held target refuses through the ordinary resolver. Kills:
@@ -601,15 +596,16 @@ fn codex_launch_needs_the_user_installation_without_injected_daemon_flags() {
     s.harness("codex", "codex-cli 0.159.2", &committed_codex_schemas());
     let (host, seats, handoff) = (FakeHost::new(), seats(), handoff());
     let caller = ["--model", "gpt-test", "-a", "on-request"];
-    assert_eq!(
-        code(s.launch(
-            &host,
-            &seats,
-            &handoff,
-            request(ContextHarness::Codex, &caller)
-        )),
-        ErrorCode::MissingHook
-    );
+    s.launch(
+        &host,
+        &seats,
+        &handoff,
+        request(ContextHarness::Codex, &caller),
+    )
+    .unwrap();
+    assert!(host.submitted()[0].configured_hook.is_none());
+    assert_eq!(host.submitted()[0].argv, caller);
+    let host = FakeHost::new();
     let report = s.setup(ContextHarness::Codex);
     assert_eq!(report["sandbox"]["present"], false, "{report}");
     let out = s
@@ -624,7 +620,10 @@ fn codex_launch_needs_the_user_installation_without_injected_daemon_flags() {
     let argv = &host.submitted()[0].argv;
     assert_eq!(argv, &caller);
     assert!(!argv.iter().any(|a| a.contains("bypass") || a == "--yolo"));
-    assert_eq!(host.submitted()[0].configured_hook.scope, "user");
+    assert_eq!(
+        host.submitted()[0].configured_hook.as_ref().unwrap().scope,
+        "user"
+    );
 
     // A caller that already passes --no-daemon keeps exactly one.
     let host = FakeHost::new();
@@ -1164,29 +1163,18 @@ fn launch_checks_the_config_dir_it_hands_the_pane() {
         codex_home: Some(b.display().to_string()),
         claude_config_dir: None,
     };
-    match s.launch_with_probe(
-        &host,
-        &seats,
-        &handoff,
-        request(ContextHarness::Codex, &[]),
-        &pane_b,
-    ) {
-        Err(RunError::Api(error)) => {
-            assert_eq!(error.code, ErrorCode::MissingHook);
-            assert!(
-                error.detail.contains(&b.display().to_string()),
-                "{}",
-                error.detail
-            );
-            assert!(
-                !error.detail.contains(&a.display().to_string()),
-                "{}",
-                error.detail
-            );
-        }
-        other => panic!("expected a refusal naming the pane's CODEX_HOME, got {other:?}"),
-    }
-    assert!(host.submitted().is_empty());
+    let out = s
+        .launch_with_probe(
+            &host,
+            &seats,
+            &handoff,
+            request(ContextHarness::Codex, &[]),
+            &pane_b,
+        )
+        .unwrap();
+    assert_eq!(out.report["config_dir"]["path"], b.display().to_string());
+    assert_eq!(out.report["config_dir"]["source"], "pane_shell");
+    assert!(host.submitted()[0].configured_hook.is_none());
 
     // The pane shell exports A itself: launch inspects A and reports it.
     let pane_a = PaneExports {
@@ -1231,20 +1219,20 @@ fn launch_checks_the_config_dir_it_hands_the_pane() {
         codex_home: None,
         claude_config_dir: Some(other.display().to_string()),
     };
-    match s.launch_with_probe(
-        &host,
-        &seats,
-        &handoff,
-        request(ContextHarness::Claude, &[]),
-        &pane_other,
-    ) {
-        Err(RunError::Api(error)) => {
-            assert_eq!(error.code, ErrorCode::MissingHook);
-            assert!(error.detail.contains(&other.display().to_string()));
-        }
-        other => panic!("expected a refusal naming the pane's config dir, got {other:?}"),
-    }
-    assert!(host.submitted().is_empty());
+    let out = s
+        .launch_with_probe(
+            &host,
+            &seats,
+            &handoff,
+            request(ContextHarness::Claude, &[]),
+            &pane_other,
+        )
+        .unwrap();
+    assert_eq!(
+        out.report["config_dir"]["path"],
+        other.display().to_string()
+    );
+    assert!(host.submitted()[0].configured_hook.is_none());
 }
 
 /// Wave 28: the report answers "was my Codex profile applied?" with the
@@ -1865,7 +1853,7 @@ pub(crate) mod fourth_adapter {
         ) -> Result<LaunchPreparation, ApiError> {
             Ok(LaunchPreparation {
                 argv: self.compose_argv(request.argv.clone(), vec![])?,
-                hook: crate::harness::launch::owned_launch_hook(status)?,
+                hook: Some(crate::harness::launch::owned_launch_hook(status)?),
                 working_directory: scope.working_directory.clone(),
                 environment_overrides: Default::default(),
                 report: json!({"fourth": {"mode": "fixture"}}),
@@ -2657,6 +2645,12 @@ fn stage_a_registered_options_validate_keys_and_preserve_literal_tokens() {
 pub(in crate::cli) fn task48_hermes_native_fixture<R>(
     run: impl FnOnce(&mut crate::cli::handoff::NativeLauncher<'_>, LaunchRequest) -> R,
 ) -> (R, Vec<NativeLaunchRequest>, usize, Vec<Value>) {
+    task10_hermes_native_fixture(true, run)
+}
+pub(in crate::cli) fn task10_hermes_native_fixture<R>(
+    installed: bool,
+    run: impl FnOnce(&mut crate::cli::handoff::NativeLauncher<'_>, LaunchRequest) -> R,
+) -> (R, Vec<NativeLaunchRequest>, usize, Vec<Value>) {
     use crate::harness::hermes::{assets, runtime};
     let mut scratch = Scratch::new();
     let profile_home = scratch.root.join("profile");
@@ -2673,6 +2667,9 @@ pub(in crate::cli) fn task48_hermes_native_fixture<R>(
     profile["physical_home"] = json!(profile_home);
     profile["interpreter"] = json!(interpreter);
     profile["disabled"] = json!([]);
+    if !installed {
+        profile["enabled"] = json!([]);
+    }
     let mut prelaunch = profile.clone();
     prelaunch["schema_version"] = json!(3);
     prelaunch["evidence_stage"] = json!("prelaunch_api_profile_observation");
@@ -2708,13 +2705,15 @@ pub(in crate::cli) fn task48_hermes_native_fixture<R>(
         "default",
     )
     .unwrap();
-    assets::setup(
-        &observed,
-        scratch.env.state_dir.as_ref().unwrap(),
-        &scratch.env.executable,
-        scratch.env.host_endpoint.as_ref().unwrap(),
-    )
-    .unwrap();
+    if installed {
+        assets::setup(
+            &observed,
+            scratch.env.state_dir.as_ref().unwrap(),
+            &scratch.env.executable,
+            scratch.env.host_endpoint.as_ref().unwrap(),
+        )
+        .unwrap();
+    }
     let host = Task48HintHost(FakeHost::new());
     let seats = seats();
     let handoff = handoff();
@@ -2890,4 +2889,56 @@ pub(in crate::cli) fn task48_fourth_native_fixture<R>(
         request(harness, &["literal", "", "$HOME $(id)"]),
     );
     (result, host.submitted(), seats.calls.load(Ordering::SeqCst))
+}
+
+#[test]
+fn handoff_policy_hermes_missing_owned_readiness_still_launches_selected_native_profile() {
+    use crate::cli::handoff::HandoffLauncher;
+    let (result, submitted, _, records) =
+        task10_hermes_native_fixture(false, |launcher, request| launcher.preflight(&request));
+    assert!(
+        result.is_ok(),
+        "selected native profile without owned hooks: {result:?}"
+    );
+    assert!(submitted.is_empty(), "preflight never submits");
+    assert!(records.is_empty());
+}
+
+#[test]
+fn handoff_policy_hermes_unused_readiness_change_allows_submit_but_native_profile_change_refuses() {
+    use crate::cli::handoff::HandoffLauncher;
+    for change in ["readiness", "profile"] {
+        let (result, submitted, _, _) = task10_hermes_native_fixture(false, |launcher, request| {
+            let interpreter = launcher
+                .parts
+                .env
+                .snapshot()
+                .cwd
+                .join("bin/synthetic-interpreter");
+            launcher.launch(&request, &SeatId::new("seat_launch"), &mut |entering| {
+                if entering {
+                    let script = fs::read_to_string(&interpreter).unwrap();
+                    let (from, to) = if change == "readiness" {
+                        ("\"enabled\":[]", "\"enabled\":[\"herdr-threads\"]")
+                    } else {
+                        ("\"profile\":\"default\"", "\"profile\":\"different\"")
+                    };
+                    assert!(script.contains(from), "real prelaunch fixture changed");
+                    fs::write(&interpreter, script.replace(from, to)).unwrap();
+                }
+                Ok(())
+            })
+        });
+        if change == "readiness" {
+            assert!(
+                result.is_ok(),
+                "unused diagnostic config changed: {result:?}"
+            );
+            assert_eq!(submitted.len(), 1);
+            assert!(submitted[0].configured_hook.is_none());
+        } else {
+            assert!(result.is_err(), "selected native profile must recheck");
+            assert!(submitted.is_empty());
+        }
+    }
 }

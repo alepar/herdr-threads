@@ -628,7 +628,7 @@ pub struct LaunchScope {
 }
 pub struct LaunchPreparation {
     pub argv: Vec<String>,
-    pub hook: crate::ports::ConfiguredHook,
+    pub hook: Option<crate::ports::ConfiguredHook>,
     pub working_directory: std::path::PathBuf,
     pub environment_overrides: std::collections::BTreeMap<String, OsString>,
     pub report: serde_json::Value,

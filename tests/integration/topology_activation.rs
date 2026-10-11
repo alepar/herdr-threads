@@ -1153,10 +1153,20 @@ fn elected_public_new_tab_completes_one_native_create_and_start_then_replays_his
             .unwrap()
     );
     let invite = Command::Invite(herdr_threads::protocol::commands::Invite {
-        confirmation: None,
+        confirmation: identity
+            .payload
+            .handoff
+            .policy
+            .as_ref()
+            .map(|p| p.invitation_confirmation),
         thread: completed.retained.thread.clone(),
         seat: completed.retained.recipient.clone(),
-        deadline_millis: None,
+        deadline_millis: identity
+            .payload
+            .handoff
+            .policy
+            .as_ref()
+            .and_then(|p| p.invite_deadline_millis),
         operation: identity.payload.handoff.keys.invite.clone(),
         claim: identity.claim.clone(),
     });
@@ -1165,7 +1175,12 @@ fn elected_public_new_tab_completes_one_native_create_and_start_then_replays_his
         thread: completed.retained.thread.clone(),
         body: identity.payload.handoff.body.clone(),
         invited_recipients: vec![completed.retained.recipient.clone()],
-        deadline_millis: None,
+        deadline_millis: identity
+            .payload
+            .handoff
+            .policy
+            .as_ref()
+            .and_then(|p| p.deadline_millis),
         operation: identity.payload.handoff.keys.send.clone(),
         claim: identity.claim.clone(),
         relays_user: false,
@@ -1448,10 +1463,20 @@ fn elected_live_registered_phase_replays_recheck_current_caller_recipient_and_pa
                 .unwrap(),
         );
     let invite = Command::Invite(herdr_threads::protocol::commands::Invite {
-        confirmation: None,
+        confirmation: identity
+            .payload
+            .handoff
+            .policy
+            .as_ref()
+            .map(|p| p.invitation_confirmation),
         thread: thread.clone(),
         seat: attachment.resolved_seat.clone(),
-        deadline_millis: None,
+        deadline_millis: identity
+            .payload
+            .handoff
+            .policy
+            .as_ref()
+            .and_then(|p| p.invite_deadline_millis),
         operation: identity.payload.handoff.keys.invite.clone(),
         claim: identity.claim.clone(),
     });
@@ -1460,7 +1485,12 @@ fn elected_live_registered_phase_replays_recheck_current_caller_recipient_and_pa
         thread,
         body: identity.payload.handoff.body.clone(),
         invited_recipients: vec![attachment.resolved_seat.clone()],
-        deadline_millis: None,
+        deadline_millis: identity
+            .payload
+            .handoff
+            .policy
+            .as_ref()
+            .and_then(|p| p.deadline_millis),
         operation: identity.payload.handoff.keys.send.clone(),
         claim: identity.claim.clone(),
         relays_user: false,
@@ -2183,6 +2213,7 @@ fn elected_generic_refuses_fresh_and_saved_recovery_before_publication_or_effect
     };
     let payload = BootstrapPayload {
         handoff: HandoffPayload {
+            policy: None,
             namespace: HandoffNamespace {
                 instance: f.instance.to_string(),
                 state_dir: f.context.state_dir.clone(),
