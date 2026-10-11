@@ -1,14 +1,14 @@
-status: completed with 0 unresolved Blocking, 2 escalations [degraded: final review: not ready (invocation 8 final review: no Critical; Important S1 agy informational notices only at lifecycle check-ins; unmeasured branch; flaky ht-01s + two unclassified flakes) — code-final-review-8.md]
-qualifier: final review: not ready (invocation 8 final review: no Critical; Important S1 agy informational notices only at lifecycle check-ins; unmeasured branch; flaky ht-01s + two unclassified flakes) — code-final-review-8.md
+status: completed with 0 unresolved Blocking, 0 escalations — reopened fix pass (main's merge review S1, flakes) landed; final reviews 9–10 findings fixed or filed; scoped audit clean
+qualifier: none — sweep 4926/4926 at 9af7ae9f (287 s), native gate 14/14 at 9af7ae9f, live smoke PASS at 2bf61304, probe merge with main 6107075f conflict-free and clippy/neutral-check clean
 metrics: docs/superpowers/runs/2026-10-09-agy-harness-adapter/upstream-feedback-draft.md — delivered to the superpowers workspace agent (wB:p8) per the user's standing preference; 4 defects, 2 design questions, 1 doc gap
 
-> Reader note: the phase-6 sweep ran after final review 8 and passed at the tip: 4904 passed, 0 failed, 44 skipped, 272 s, host quiet, `@ 417c534f`. That resolves the review's "unmeasured branch" item. S1 and the flakes are still open. — run.md `codeBuckets.sweep`
+> Reader note: this report was reopened after main's merge review. The phase-6 sweep re-ran at the final code `9af7ae9f`: 4926 passed, 0 failed, 44 skipped, 287 s, leak check clean. — run.md `codeBuckets.sweep`
 
-Branch `super-auto/agy-harness-adapter` @ `9ec7da52` · base `main` @ `7c40c83c` (the merge-base; main's v0.6.0 and v0.6.1/v0.6.2 were absorbed). Run dir: `docs/superpowers/runs/2026-10-09-agy-harness-adapter/`.
+Branch `super-auto/agy-harness-adapter` @ `5876c21a` (final code `9af7ae9f`) · base `main`, merge-base `7c40c83c` (main's v0.6.0 and v0.6.1/v0.6.2 were absorbed; main has since moved to `6107075f` v0.6.3, and `git merge-tree` reports a conflict-free merge). Run dir: `docs/superpowers/runs/2026-10-09-agy-harness-adapter/`.
 
 ## Adapter-model accounting (R13): what changed outside the agy adapter
 
-**Short answer.** The adapter model held for agy, but only because a large neutral core was built first. On the corrected diff, the run changed 104 `src/` files outside `src/harness/agy/` (+7673/−3137). The adapter's own source is 11 files (+3799). After the neutral core landed, the agy leaf beads made three small production edits outside the adapter that the R13 target did not allow (+19/−4 lines). The target was missed narrowly, and on those three edits only. The bigger costs, each recorded as an R13 finding, were the neutral seams agy needed: `hook_step`, `local_evidence`, bootstrap V2 and HookPull.
+**Short answer.** The adapter model held for agy, but only because a large neutral core was built first. On the corrected diff, the run changed 104 `src/` files outside `src/harness/agy/` (+7673/−3137). The adapter's own source is 11 files (+3799). After the neutral core landed, the agy leaf beads made three small production edits outside the adapter that the R13 target did not allow (+19/−4 lines). Then main's merge review (S1) reopened the run: making agy see informational notices between check-ins took a dedicated core bead, ht-poh.53 (`414c918b`), of about +290 lines in 6 core files, plus ht-poh.57's wake-gate fix (`8aa6c95c`, +~30 in 2 of those files). So the target was missed: narrowly at the leaves, and with one real core gap that HookPull had left (notices rode only on lifecycle check-ins, which Claude's push channel never needed). The bigger costs, each recorded as an R13 finding, were the neutral seams agy needed: `hook_step`, `local_evidence`, bootstrap V2 and HookPull.
 
 **Correcting for final review 8's S2.** `outside-adapter-report.md` measures `f3431b31..1eaf635b`. That range includes main's own v0.6.1/v0.6.2 work: 11 commits, 43 files, +1365/−25. The figures below use `git diff --numstat main...HEAD`. Its merge-base is `7c40c83c` (main tip), so both base absorbs (`d342add2`, `cc885360`) fall outside the range. They are partitioned with the tool's own adapter rule from `docs/dev/outside-adapter-report.md`. — git diff; code-final-review-8.md S2
 
@@ -18,6 +18,7 @@ Branch `super-auto/agy-harness-adapter` @ `9ec7da52` · base `main` @ `7c40c83c`
 | — of which `src/harness/agy/**` | 11 | +3799/−0 |
 | outside: `src/` trait files (`adapter.rs`, `registry.rs`) | 2 | +590/−12 |
 | outside: other `src/` | 102 | +7083/−3125 |
+| — reopened pass `417c534f..9af7ae9f` (`src/` outside agy; included in the line above only for the earlier tip, not re-partitioned) | 9 | +308/−12 |
 | — of which the other adapters (`src/harness/{claude,codex,hermes}*`) | 13 | +1567/−465 |
 | outside: tests (non-agy) | 270 | +13920/−481 |
 | outside: agy test infra (`scripts/agy-*`, `docs/validation/agy-native.md`, `docs/evidence/agy-*`) | 156 | +18327/−0 |
@@ -27,7 +28,7 @@ Branch `super-auto/agy-harness-adapter` @ `9ec7da52` · base `main` @ `7c40c83c`
 | outside: docs/manifest/CI | 12 | +326/−51 |
 | outside: run dir | 40 | +6236/−0 |
 
-— git diff main...HEAD (partitioned by drafter); tool's own figures (uncorrected): adapter 81 / outside 631 files, outside-adapter-report.md §Summary
+Totals at the final code: `src/` outside `src/harness/agy/` 104 files +7976/−3144; `src/harness/agy/**` 11 files +3814. The bucket rows above are the `9ec7da52` partition. — git diff main...HEAD (partitioned by drafter); tool's own figures (uncorrected): adapter 81 / outside 631 files, outside-adapter-report.md §Summary
 
 **(1) Trait extensions: was the adapter's scope extended? Yes. 13 new `HarnessAdapter` methods, plus 1 on `DeliveryPolicy` and 1 on an existing trait.**
 - `local_evidence` → `LocalEvidence`/`RoleWitness::decide` (fails toward child). Added for agy, which has no payload role. Recorded as an R13 finding. `8a29a8d3` (ht-poh.4.1) — agy-adapter-design D4; root spec §Refinements
@@ -62,8 +63,10 @@ Branch `super-auto/agy-harness-adapter` @ `9ec7da52` · base `main` @ `7c40c83c`
 - Not allowed: `src/harness/launch.rs` `owned_launch_hook` appends the repair text for a disabled plugin (+8/−1, `0902d2e3`, ht-poh.4.6). — ledger line 196 `[outside-adapter-source]`
 - Not allowed: `src/harness/setup.rs` allow-member writes switched from `write_replacement` to `write_user_config` (+3/−3, `a32dc4f3`, ht-poh.18). Forced by main v0.6.0's backup model. — ledger line 250 `[core-change-outside-brief]`
 - Test-infra (R12, not leakage): `scripts/agy-fake-gemini/scenario.py` `FRAME_HEADER` changed outside the brief (ht-poh.6.6). — ledger line 297; test-infra-design D13
+- Not allowed, reopened pass (agy-driven core, in dedicated fix beads, not leaves): ht-poh.53 `414c918b` — `src/ports.rs` (+40, a `StorePort` method with a neutral default), `src/store/attention.rs` (+55, `settle_pulled_notices`), `src/store/mod.rs` (+63, `pull_notice_page`), `src/store/seats.rs` (+1), `src/protocol/watch.rs` (+18, `notice` blocks), `src/service/delivery_pull.rs` (+~90); ht-poh.57 `8aa6c95c` — `src/delivery/ledger.rs` (+7/−1, `notices_pending`), `src/service/delivery_pull.rs` (+~16). All neutral: HookPull seats of any harness get notices on the pull page. — git diff --numstat 417c534f..9af7ae9f; code-final-review-9.md N2
+- Not agy-driven: ht-poh.55/58 single-write JSON in `src/cli/journal.rs` and `src/cli/handoff.rs` (+18/−7), a flake root cause that also exists on main. — ledger
 - Reverse coupling: the adapter imports core internals `crate::service::delivery_pull::PAGE_MAX_BLOCKS` and `crate::cli::hook::resolve_on_path`. — code-final-review-6.md S5
-- **Verdict.** The R13 target ("zero edits outside `src/harness/agy/` beyond builtins row + TRUST/docs once the neutral core landed") was **not met, narrowly**. After the core landed there were 3 production edits outside the adapter, +19/−4 lines in 3 shared files, plus one test-infra edit. Every one was flagged as a deferred minor. The heavier agy-driven core work went into dedicated core beads before or alongside the leaves, not into the leaves: `hook_step`, `local_evidence`, bootstrap V2, `handoff --new-tab` V2, the HookPull at-least-once fix. — ledger; git show; root spec §6
+- **Verdict.** The R13 target ("zero edits outside `src/harness/agy/` beyond builtins row + TRUST/docs once the neutral core landed") was **not met**. After the core landed there were 3 leaf production edits outside the adapter, +19/−4 lines in 3 shared files, plus one test-infra edit, each flagged as a deferred minor; and main's merge review exposed one missing neutral capability (notices on the HookPull page), closed by ht-poh.53/57 with ~+320 core lines in 7 files. The lesson for the next adapter: a delivery mechanism's design must enumerate every class of model-visible item (messages, attention, notices), not only messages. The heavier agy-driven core work went into dedicated core beads before or alongside the leaves, not into the leaves: `hook_step`, `local_evidence`, bootstrap V2, `handoff --new-tab` V2, the HookPull at-least-once fix. — ledger; git show; root spec §6
 - Trailer accounting is unreliable: 25 non-merge commits lack an `Outside-adapter:` trailer, and the tool lists 70+ including design and bookkeeping commits. The diff is authoritative. — code-final-review-8.md Deferred; integration-sweep.md finding 5
 
 ## Implemented
@@ -88,20 +91,20 @@ Branch `super-auto/agy-harness-adapter` @ `9ec7da52` · base `main` @ `7c40c83c`
 - Round-1 fix beads: ht-poh.45 (genuine post-tool-call confirm capture), 46 (flaky tests: WAIT raised), 49 (attention-block `marker_prefix`), 50 (probation ends after one turn), 51 (relay reserves worst-case cost), 52 (docs describe shipped behaviour). — ledger; handoff-continuation.md
 - Native gate: all 14 flows passed on genuine agy 1.3.2 with Herdr 0.9.1 at `c2f51b51`, the first run with R17 and R18 together. — `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/summary.txt`; code-final-review-8.md
 - Live smoke passed at `4d2ec663`: google/gemini-2.5-flash via the relay, 7 requests, $0.022; wake, injection, ACK and reply, with `cooperative_hook_delivery` settled. — `docs/evidence/agy-live-smoke/2026-10-10-4d2ec663dbfa/report.md`
+- Reopened pass for main's merge review (ht-poh.53–58, `417c534f..9af7ae9f`): S1 notices reach agy at the next turn-start pull and settle against the canonical frontier (ht-poh.53); leftover notices never count as wake work (ht-poh.57); SKILL fallback for a bare `wake up` (ht-poh.56, S3); flake root cause — fixtures staged the snapshot once — fixed in golden_surfaces and the topology fixtures, WAIT back to 15 s (ht-poh.54, ht-01s closed; ht-poh.55); single-write JSON in handoff/journal (ht-poh.55, 58). Final reviews 9 and 10, then a two-seat scoped audit: 0 Blocking, 0 Should-fix. — code-final-review-9.md, -10.md, 2026-10-10-agy-harness-adapter-scoped-audit-417c534f-9af7ae9f.md
+- Native gate re-run at the final code `9af7ae9f`: 14/14 PASS, leak check clean. — `docs/evidence/agy-native-gate/2026-10-10-9af7ae9f3985/`
+- Live smoke re-run at `2bf61304` (docs-only after `9af7ae9f`): PASS, 7 requests, $0.029; run total 14 requests, $0.051 of the approved 40 / $0.50. — `docs/evidence/agy-live-smoke/2026-10-11-2bf61304750f/report.md`
 - R13 accounting tool `scripts/outside-adapter-report` (ht-poh.9, `46e2ad7..bd130dc`); final-SHA evidence task ht-poh.6.9 (`94e73c1..417c534`). — ledger
 
 ## Remaining
 
-- **S1 (Important), final review:** agy never sees informational notices (invitation rejections, overdue/cleared) between lifecycle check-ins. TRUST-POLICY A7, the SKILL and the agy README promise "next hook/check-in". Needs a fix or a recorded accepted limit. — code-final-review-8.md
+- **S1 (Important), final review 8:** resolved by ht-poh.53 (+ ht-poh.57); verified on genuine agy by the final-SHA native gate.
 - **S2, final review:** the R13 report range includes main's changes and has no before-count. This report corrects for it above; the run-dir file itself is not regenerated. — code-final-review-8.md
-- **S3, final review:** no SKILL fallback for a bare `wake up` with nothing injected (prior F1). — code-final-review-8.md
+- **S3, final review 8:** resolved by ht-poh.56.
 - **S4, final review:** `DowngradeRecord.misses` collides across conversations; fails safe. — code-final-review-8.md
-- **Flakes, final review:**
-  - ht-01s `golden_surfaces::handoff_bootstrap_plans` (new on the branch, open);
-  - two unclassified, with no bead: `cooperative_overdue_warning_wakes_idle_native_agent_exactly_once` and `pending_public_retry_from_different_valid_caller_is_silent`;
-  - ht-veq, ht-vrg, ht-2w9 open, to classify against main.
-
-  — code-final-review-8.md; bd show
+- **Flakes:** ht-01s fixed and closed (ht-poh.54); ht-veq, ht-vrg, ht-2w9, ht-8zt fixed by ht-poh.55 and annotated to close when this branch lands on main; ht-yqj (`cooperative_overdue_warning_wakes_idle_native_agent_exactly_once`) stays open — it fails on main (42/360) from main's real-clock pacer, not on this branch (0/360); ht-86a filed for the same single-shot snapshot-staging pattern in ~11 other fixtures (also on main).
+- **Follow-ups from the scoped audit (Minor):** ht-7jh — a notice settled on pull is lost if a probation-step `systemMessage` injection silently misses (a new trigger of the documented settle-before-delivery limit); ht-10p — notice blocks repeat fixed text per block, the `notice` kind is undocumented in SKILL and its text is not inlined (token-efficiency rules a/b; parity with check-ins, not a regression).
+- **Known limits from final reviews 9–10 (deferred):** pull settles notices before the reply, so a hook-deadline overrun or agy abort loses them (TRUST-POLICY "response loss"); a pull with pending notices takes the writer lock inside the hook's 1.5 s budget; a new notice re-shows a pending invitation's attention block; the resume turn's inv0 runs the check-in, so bodies wait one invocation.
 - 20 round-1 punch-list items, **out of scope (filtered)**, each with its recorded reason in run.md `scopeFilter-round-1`: `src/delivery/ledger.rs:137`, `:96`; `src/harness/agy/delivery.rs:873/880`, `:647/644`, `:830`, `:325`, `:909` + `tests/harness/agy_delivery.rs:794`; `src/cli/hook.rs:2960`, `:2878`; `scripts/agy-sandbox/fetch-agy:124`; `src/cli/topology_handoff.rs:192`; `src/service/delivery_pull.rs:384`, `:297`, `:176`; `src/harness/agy/decode.rs:98`; `src/harness/agy/plugin.rs:60`; `src/protocol/delivery.rs:1/3`; `TRUST-POLICY.md:211`; `src/store/schema.rs:411/409`; `src/harness/agy/setup.rs:379`. — run.md; roast-pr-1-punch-list.txt
 - 2 round-2 punch-list items, **out of scope (filtered)**:
   - `src/harness/agy/delivery.rs:913`: a fix-regression from `1693fc18`; another conversation's Stop can cancel a probation it did not open.
@@ -114,7 +117,7 @@ Branch `super-auto/agy-harness-adapter` @ `9ec7da52` · base `main` @ `7c40c83c`
   - `hook-silent-failures`: `HookStep::run` returns a diagnostic.
   - `stale-docs`: one pass making every doc describe shipped behaviour. ht-poh.52 later applied part of this.
 - Unreviewed conflict hunk: the `integrations/skill/SKILL.md` resolution in base merge `cc885360` (main v0.6.1/v0.6.2, after the fix loop exited). No roast reviewed it. — run.md `baseAbsorbed`; `git show cc885360`
-- Kept worktree `task-ht-poh.13`: uncommitted partial R17 work (10 modified files), superseded by ht-poh.41. Remove it. The `task-ht-poh.4.5` entry no longer exists (merged). — run.md `codeBuckets.worktreesKept`; git worktree list; code-final-review-8.md
+- Kept worktrees: none (task-ht-poh.13 removed; reopened-pass task worktrees swept).
 - Parked escalation: Herdr may report agy idle while a subagent generates (herdr #2354). It was patched in-design: the composer reads a live `Agent(<name>)` row as Unreadable. The human still needs to confirm on Herdr 0.9.1. — run.md `parked`
 - Parked graph changes:
   - ht-poh.5 <- ht-poh.4.5 drop (super-code invocation 1);
@@ -183,7 +186,7 @@ Branch `super-auto/agy-harness-adapter` @ `9ec7da52` · base `main` @ `7c40c83c`
 - `tests/service/delivery_pull.rs:723`: the guard test never reaches the guard. The smell: a regression pin that removing the guard leaves green. — roast-pr-2.md
 - `migrations/0029_seat_wake_on.sql:5` keeps the column name `last_lazy_ordinal` while storing `decision_seq`. The smell: two orderings, easy to confuse, renamable only until 0029 ships. — roast-pr-2.md spot-checked Nit
 - ht-poh.2.7 and ht-poh.3.4 merged their fix passes without a second review. The smell: hook-stdout goldens pinned only against a daemon with no Herdr host; a TRUST-POLICY bullet re-nested. — ledger lines 51, 150
-- ht-poh.46 raised the `handoff_topology_cli` WAIT from 15 s to 60 s. The smell: it masks the flakes, against the AGENTS.md speed-budget rule. — code-final-review-7.md F4; code-final-review-8.md
+- ht-poh.46 raised the `handoff_topology_cli` WAIT from 15 s to 60 s to mask flakes; ht-poh.55 found the real cause (single-shot fixture staging) and restored 15 s. The smell: a budget raised before a root cause was found. — code-final-review-7.md F4; ledger ht-poh.55
 - The adapter imports `service::delivery_pull::PAGE_MAX_BLOCKS` and `cli::hook::resolve_on_path`. The smell: an adapter coupled to core internals. — code-final-review-6.md S5
 - The Claude idle path settles at append, before any turn runs (R18). The smell: items can settle unseen after a `/clear` (documented in TRUST-POLICY). — code-final-review-6.md S4
 - Deferred out-of-brief edits: `context_source` refine (ht-poh.4.3), `launch.rs` repair text (ht-poh.4.6), `setup.rs` `write_user_config` (ht-poh.18), `codex.rs` launch_notes (ht-poh.2.2), `scenario.py` FRAME_HEADER (ht-poh.6.6), `mod_delivery.rs` (ht-poh.49). The smell: shared-code changes beyond each brief. — ledger lines 115, 182, 196, 250, 297, 426

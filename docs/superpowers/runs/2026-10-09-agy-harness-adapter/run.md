@@ -6,7 +6,7 @@ resumeChange: 2026-10-10 · "I think this is way too much text… marks everythi
 resumeChange: 2026-10-10 · "the nudge should probably say something minimal, like 'wake up' and then let hook inject the actual message" · added leaf for adapter-declared minimal wake text (R18): agy and Claude mod wake with 'wake up', bodies injected at turn start
 resumeChange: 2026-10-10 · "also let's add to AGENTS.md that when designing comms, we strive to design the protocols to be token efficient as much as possible" · folded into ht-poh.13: AGENTS.md 'Token-efficient communication' rule (no dedicated token-efficiency research found in ~/Documents)
 resumeChange: 2026-10-10 · main merge review mZG2gj0pM (owner Main, user-delegated merge authority): fix S1 (agy informational notices between lifecycle check-ins) and dispose flaky ht-01s + unclassified failures without weakening budgets · reopened epic; fix beads filed; re-enter super-code, scoped post-cap audit, re-sweep
-phase: report
+phase: finish
 codeMechanism: Workflow
 
 spec: 2026-10-09-agy-harness-adapter-design.md
@@ -32,15 +32,15 @@ feedback: herdr prompt to superpowers workspace pane wB:p8 (2026-10-10), draft u
 friction: 6 events
 
 codeBuckets:
-  completed: every task bead in the tree (root ht-poh closed, stopReason root-closed); ht-poh.13 and ht-poh.27 closed as superseded
+  completed: every task bead in the tree incl. reopened ht-poh.53–58 (root ht-poh closed, stopReason root-closed); ht-poh.13 and ht-poh.27 closed as superseded
   escalated: none (ht-poh.13 superseded by ht-poh.41 after the human ran the golden generator; gate ht-poh.19 released)
   pendingRetry:
   parked:
   stalled: false
-  review: not ready (invocation 8 final review: no Critical; Important S1 agy informational notices only at lifecycle check-ins; unmeasured branch; flaky ht-01s + two unclassified flakes) — code-final-review-8.md
-  sweep: 417c534 — 4904 passed, 0 failed, 0 errors, 44 skipped; failing: none; command: nice cargo nextest run --locked --all-targets --all-features (272 s, host quiet; an earlier run under other tabs' build load timed out manifest::failpoints_are_compiled_out_of_release_builds at 340 s, which passed alone in 98 s) @ 417c534f
+  review: ready — final reviews 9–10 must-fixes landed (ht-poh.57, 58, SKILL N2, R13 report, final-SHA evidence); scoped post-cap audit 417c534f..9af7ae9f 0 Blocking / 0 Should-fix; Minors filed ht-7jh, ht-10p, ht-86a — code-final-review-9.md, code-final-review-10.md, 2026-10-10-agy-harness-adapter-scoped-audit-417c534f-9af7ae9f.md
+  sweep: 9af7ae9 — 4926 passed, 0 failed, 0 errors, 44 skipped; failing: none; command: nice cargo nextest run --locked --all-targets --all-features (287 s; check-no-leaked-processes --run-id clean) @ 9af7ae9f
   slowness: round 1 allowlist hot-file cap raised to 4; round 2 graph-bound, edge audit armed; audit 1 left ht-poh.5 <- ht-poh.4.5 drop for an operator (parked)
-  worktreesKept: task-ht-poh.13 — uncommitted partial R17 work (BLOCKED-AUTH), task-ht-poh.4.5 — unmerged (blocked on agy binary, since resolved)
+  worktreesKept: none
   processSweep: stopped 0 · survived 0
 
 stepBackCode-round-1: patch — round 1, no recurrence; 24 findings mostly independent; clusters agy-state-files, ledger-monotonic, hook-silent-failures, attention-block, stale-docs
