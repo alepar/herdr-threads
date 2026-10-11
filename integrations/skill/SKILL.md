@@ -133,7 +133,7 @@ herdr-threads leave THREAD
 
 ## Warnings
 
-`warnings --seat SEAT` keeps overdue, clear, unavailable-recipient and service-notice history. Inbox/digest counts are **pending** only. Built-in open/clear events and service notices settle once carried by a committed check-in offer to the current occupant; fresh offers omit settled events. Exact operation retry may present its retained result. A new event or successor occupant can receive a fresh offer. This is informational delivery, never invitation acceptance, receipt ACK or task completion.
+`warnings --seat SEAT` keeps overdue, clear, unavailable-recipient and service-notice history. Inbox/digest counts are **pending** only. Built-in open/clear events and service notices settle once carried by a committed check-in offer or turn-hook delivery page to the current occupant; fresh offers omit settled events. Exact operation retry may present its retained result. A new event or successor occupant can receive a fresh offer. This is informational delivery, never invitation acceptance, receipt ACK or task completion.
 
 ## Errors and recovery
 
