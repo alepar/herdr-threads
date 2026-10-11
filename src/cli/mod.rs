@@ -2067,6 +2067,15 @@ where
         return Ok(());
     }
     let (instance, client) = connection.get()?;
+    if matches!(
+        &parsed.action,
+        CliAction::Mutation(MutationSpec::Send {
+            delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
+            ..
+        })
+    ) {
+        require_send_time_receipts_capability(client, clock.as_ref())?;
+    }
     let allocate = |target: crate::protocol::ids::HostTargetId| -> Result<crate::protocol::ids::SeatId, RunError> {
         let journal = journal::Journal::open(paths.instance_dir.join("intents"))?;
         let (_, result) = retry::run_new_api_to_writer_discarding_rejection(
@@ -2750,6 +2759,11 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
             if semantic.is_lazy_send() {
                 require_lazy_send_capability(client, clock)?;
             }
+            if semantic.kind() == crate::protocol::results::IntentKind::SendMessage
+                && !semantic.is_lazy_send()
+            {
+                require_send_time_receipts_capability(client, clock)?;
+            }
             retry::run_new_api_to_writer_discarding_rejection(
                 journal,
                 scope,
@@ -2846,6 +2860,11 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
                 require_invitation_confirmation_capability(client, clock, &pending.semantic)?;
                 if pending.semantic.is_lazy_send() {
                     require_lazy_send_capability(client, clock)?;
+                }
+                if pending.semantic.kind() == crate::protocol::results::IntentKind::SendMessage
+                    && !pending.semantic.is_lazy_send()
+                {
+                    require_send_time_receipts_capability(client, clock)?;
                 }
                 retry::run_retry_api_to_writer(
                     journal,
@@ -3037,6 +3056,27 @@ fn require_join_capability<C: LocalClient + ?Sized>(
         crate::protocol::capabilities::THREAD_JOIN,
         "joining threads",
     )
+}
+
+/// Shared preflight for ordinary sends and future handoff delivery consumers.
+/// Discovery failure is unsupported; no mutation may silently use legacy timing.
+pub(crate) fn require_send_time_receipts_capability<C: LocalClient + ?Sized>(
+    client: &C,
+    clock: &dyn Clock,
+) -> Result<(), RunError> {
+    match client.call(Command::Capabilities, &cooperative_budget(clock)) {
+        Ok(CommandResult::Capabilities(list))
+            if list
+                .capabilities
+                .iter()
+                .any(|name| name == crate::protocol::capabilities::SEND_TIME_RECEIPTS_V1) =>
+        {
+            Ok(())
+        }
+        _ => Err(unsupported(
+            "daemon lacks messages.send_time_receipts_v1; use a compatible daemon before sending ACK-required messages",
+        )),
+    }
 }
 
 fn require_mutation_capability<C: LocalClient + ?Sized>(

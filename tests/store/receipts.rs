@@ -635,10 +635,10 @@ fn availability_uses_frozen_duration_and_scan_warns_once_at_equality() {
         .unwrap();
     let duration:i64=conn.query_row("SELECT pr.frozen_duration_ms FROM prepared_recipients pr JOIN send_manifests sm ON sm.preparation_id=pr.preparation_id WHERE sm.message_id=?1 AND pr.seat_id='b'",[id.as_str()],|r|r.get(0)).unwrap();
     let deadline = effective.deadline_at.unwrap();
-    assert_eq!((duration, deadline), (50, 1150));
-    conn.execute("INSERT INTO receipt_state(message_id,seat_id,state,available_at,deadline_at) VALUES (?1,'b','pending',1100,1150)",[id.as_str()]).unwrap();
+    assert_eq!((duration, deadline), (50, 1050));
+    conn.execute("INSERT INTO receipt_state(message_id,seat_id,state,available_at,deadline_at) VALUES (?1,'b','pending',1100,1050)",[id.as_str()]).unwrap();
     let before_revision: i64 = conn.query_row("SELECT COALESCE((SELECT revision FROM filter_revisions WHERE instance_id='i' AND scope_kind='inbox' AND scope_key='b'),0)", [], |r| r.get(0)).unwrap();
-    clock.0.store(1150, Ordering::SeqCst);
+    clock.0.store(1050, Ordering::SeqCst);
     let mut cursor = receipts::ReceiptDueCursor::default();
     assert_eq!(
         receipts::scan_due(&context, &mut conn, 10, &mut cursor)
@@ -1060,7 +1060,7 @@ fn unavailable_joined_recipient_gets_one_warning_for_its_episode() {
 }
 
 #[test]
-fn send_does_not_start_timer_from_stale_registered_binding() {
+fn stale_registered_binding_keeps_availability_absent_with_send_time_deadline() {
     let (context, mut conn, _) = setup();
     conn.execute("UPDATE occupant_bindings SET host_boot='old',host_epoch=0,target_generation=0,registered_at=0 WHERE seat_id='b'", []).unwrap();
     let send = send_request(vec![]);
@@ -1076,11 +1076,11 @@ fn send_does_not_start_timer_from_stale_registered_binding() {
         crate::protocol::results::CommandResult::MessageSent(id) => id,
         _ => panic!(),
     };
-    let start = crate::store::effective::effective_receipt(&conn, id.as_str(), "b")
+    let receipt = crate::store::effective::effective_receipt(&conn, id.as_str(), "b")
         .unwrap()
-        .unwrap()
-        .available_at;
-    assert_eq!(start, None);
+        .unwrap();
+    assert_eq!(receipt.available_at, None);
+    assert_eq!(receipt.deadline_at, Some(301000));
 }
 
 #[test]
@@ -1562,7 +1562,7 @@ fn first_anchor_makes_sparse_receipt_due_for_late_ack() {
         .unwrap()
         .unwrap();
     assert_eq!(effective.available_at, Some(1500));
-    assert_eq!(effective.deadline_at, Some(2000));
+    assert_eq!(effective.deadline_at, Some(1500));
     clock.0.store(2000, Ordering::SeqCst);
     let ack = ack_request(vec![id.clone()]);
     receipts::ack(

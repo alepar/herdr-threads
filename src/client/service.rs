@@ -627,6 +627,31 @@ impl PersistentServiceClient {
             }
         }
     }
+    async fn require_send_time_receipts(
+        &self,
+        budget: &CallBudget,
+        daemon_boot: &str,
+    ) -> Result<(), ApiError> {
+        let boot = Uuid::parse_str(daemon_boot)
+            .map_err(|_| error(ErrorCode::UnknownOutcome, "invalid service daemon boot"))?;
+        let client = super::local::LocalSocketClient::new(
+            self.path.clone(),
+            Arc::clone(&self.clock),
+            self.instance,
+            Some(boot),
+        );
+        let supported = matches!(client.call_async(crate::protocol::commands::Command::Capabilities,budget).await,
+            Ok(crate::protocol::results::CommandResult::Capabilities(list)) if list.capabilities.iter().any(|name|name==crate::protocol::capabilities::SEND_TIME_RECEIPTS_V1));
+        if supported {
+            Ok(())
+        } else {
+            Err(error(
+                ErrorCode::Unsupported,
+                "daemon lacks messages.send_time_receipts_v1; use a compatible daemon before sending ACK-required messages",
+            ))
+        }
+    }
+
     /// Persist the exact envelope, key and payload before its first submission.
     pub async fn submit(
         &self,
@@ -651,6 +676,14 @@ impl PersistentServiceClient {
             error: error(ErrorCode::ServiceNotRegistered, "register service first"),
             pending: None,
         })?;
+        if matches!(&operation, ServiceOperation::Send(_)) {
+            self.require_send_time_receipts(budget, &session.registration.daemon_boot)
+                .await
+                .map_err(|error| ServiceCallError::Api {
+                    error,
+                    pending: None,
+                })?;
+        }
         let request = self.request(ServiceRequest::Operation(operation));
         request.validate().map_err(|detail| ServiceCallError::Api {
             error: error(ErrorCode::InvalidRequest, detail),
@@ -760,6 +793,17 @@ impl PersistentServiceClient {
                 ),
                 pending: Some(key.clone()),
             });
+        }
+        if matches!(
+            &saved.request.service,
+            ServiceRequest::Operation(ServiceOperation::Send(_))
+        ) {
+            self.require_send_time_receipts(budget, &session.registration.daemon_boot)
+                .await
+                .map_err(|error| ServiceCallError::Api {
+                    error,
+                    pending: Some(key.clone()),
+                })?;
         }
         self.remaining(budget)
             .map_err(|error| ServiceCallError::Api {
@@ -1761,6 +1805,108 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    async fn receipt_capabilities(listener: &UnixListener, supported: bool) {
+        use crate::protocol::{
+            commands::Command,
+            results::{CapabilityList, CommandResult},
+            wire::{WireRequest, WireResponse},
+        };
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let request = WireRequest::decode(&read_frame(&mut stream).await.unwrap()).unwrap();
+        assert_eq!(request.command, Command::Capabilities);
+        let response = WireResponse {
+            version: PROTOCOL_VERSION,
+            request_id: request.request_id,
+            instance: INSTANCE.into(),
+            daemon_boot: BOOT.into(),
+            result: Ok(CommandResult::Capabilities(CapabilityList {
+                capabilities: if supported {
+                    vec!["messages.send_time_receipts_v1".into()]
+                } else {
+                    vec![]
+                },
+            })),
+        };
+        let body = encode_json(&response).unwrap();
+        stream
+            .write_all(&(body.len() as u32).to_be_bytes())
+            .await
+            .unwrap();
+        stream.write_all(&body).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn service_send_refuses_old_daemon_before_journaling() {
+        let root = temp();
+        fs::create_dir_all(&root).unwrap();
+        let socket = root.join("socket");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let register = incoming(&mut stream).await;
+            respond(&mut stream, &register, BOOT, Ok(registration())).await;
+            tokio::select! {
+                _ = receipt_capabilities(&listener, false) => {},
+                request = incoming(&mut stream) => panic!("send submitted before discovery: {request:?}"),
+            }
+        });
+        let client = make_client(socket, &root.join("intents"));
+        client.register(&budget()).await.unwrap();
+        let error = client
+            .send(send_request("send-1"), &budget())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, ServiceCallError::Api { error, pending: None } if error.code == ErrorCode::Unsupported && error.detail.contains("messages.send_time_receipts_v1"))
+        );
+        assert!(client.journal().pending().unwrap().is_empty());
+        server.await.unwrap();
+        drop(client);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn pending_service_send_retry_refuses_old_daemon_preserving_bytes() {
+        let root = temp();
+        fs::create_dir_all(&root).unwrap();
+        let socket = root.join("socket");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let register = incoming(&mut stream).await;
+            respond(&mut stream, &register, BOOT, Ok(registration())).await;
+            tokio::select! {
+                _ = receipt_capabilities(&listener, false) => {},
+                request = incoming(&mut stream) => panic!("retry submitted before discovery: {request:?}"),
+            }
+        });
+        let client = make_client(socket, &root.join("intents"));
+        let registered = client.register(&budget()).await.unwrap();
+        let key = OperationId::new("historical-send");
+        let request = client.request(ServiceRequest::Operation(ServiceOperation::Send(
+            send_request(key.as_str()),
+        )));
+        client
+            .journal
+            .record(
+                &key,
+                &SavedServiceIntent {
+                    author: registered.author,
+                    request: request.clone(),
+                },
+            )
+            .unwrap();
+        let error = client.replay(&key, &budget()).await.unwrap_err();
+        assert!(
+            matches!(error,ServiceCallError::Api { error,pending: Some(pending) } if error.code == ErrorCode::Unsupported && pending == key)
+        );
+        assert_eq!(client.journal.inspect(&key).unwrap().request, request);
+        assert_eq!(client.journal.pending().unwrap(), vec![key]);
+        server.await.unwrap();
+        drop(client);
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[tokio::test]
     async fn typed_send_returns_message_sent() {
         let root = temp();
@@ -1771,6 +1917,7 @@ mod tests {
             let (mut stream, _) = listener.accept().await.unwrap();
             let register = incoming(&mut stream).await;
             respond(&mut stream, &register, BOOT, Ok(registration())).await;
+            receipt_capabilities(&listener, true).await;
             let send = incoming(&mut stream).await;
             let ServiceRequest::Operation(ServiceOperation::Send(request)) = &send.service else {
                 panic!("expected a send frame: {send:?}");
@@ -1800,8 +1947,14 @@ mod tests {
         assert_eq!(sent.recipient_count, 3);
         assert_eq!(sent.summary.message.as_str(), "m-1");
         assert!(client.journal().pending().unwrap().is_empty());
-        assert_eq!(client.journal().completed().unwrap(), vec![key]);
+        assert_eq!(client.journal().completed().unwrap(), vec![key.clone()]);
         server.await.unwrap();
+        let retained = client.journal().inspect_completed(&key).unwrap();
+        // The daemon/socket is now gone. Completed local presentation must not
+        // perform fresh capability discovery or submit the immutable send again.
+        assert!(matches!(client.replay(&key, &budget()).await,
+            Err(ServiceCallError::Api { error, pending: None }) if error.code == ErrorCode::InvalidRequest && error.detail == "operation already completed"));
+        assert_eq!(client.journal().inspect_completed(&key).unwrap(), retained);
         fs::remove_dir_all(root).unwrap();
     }
 

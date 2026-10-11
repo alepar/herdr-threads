@@ -143,6 +143,11 @@ fn fixture() -> Connection {
     let db = Connection::open_in_memory().unwrap();
     db.pragma_update(None, "foreign_keys", "ON").unwrap();
     schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
+    populate_fixture(&db);
+    db
+}
+
+fn populate_fixture(db: &Connection) {
     db.execute_batch("\
         INSERT INTO host_instances(id, created_at, decision_seq) VALUES ('i', 0, 10);\
         INSERT INTO seats(id, instance_id, state, role, generation, created_at) VALUES ('s', 'i', 'resolved', 'native', 1, 0);\
@@ -150,6 +155,45 @@ fn fixture() -> Connection {
         INSERT INTO send_preparations(id, instance_id, operation_scope, operation_key, digest, thread_id, captured_membership_revision, captured_lifecycle_revision, captured_eligibility_revision, captured_timeline_revision, captured_config_revision, interval_high_water, recipient_high_water, status) VALUES ('p', 'i', 'actor', 'o', zeroblob(32), 't', 0, 0, 0, 0, 0, 0, 1, 'sealed');\
         INSERT INTO prepared_recipients(preparation_id, thread_id, seat_id, receipt_ordinal, frozen_duration_ms, eligible_at_snapshot) VALUES ('p', 't', 's', 1, 300, 0);\
     ").unwrap();
+}
+
+fn v28_fixture() -> Connection {
+    let db = Connection::open_in_memory().unwrap();
+    for migration in [
+        include_str!("../../migrations/0001_initial.sql"),
+        include_str!("../../migrations/0002_service_substrate.sql"),
+        include_str!("../../migrations/0003_invitation_cancellations.sql"),
+        include_str!("../../migrations/0004_voluntary_membership.sql"),
+        include_str!("../../migrations/0005_service_notifications.sql"),
+        include_str!("../../migrations/0006_retirement_health.sql"),
+        include_str!("../../migrations/0007_attention_digest.sql"),
+        include_str!("../../migrations/0008_digest_pending_paths.sql"),
+        include_str!("../../migrations/0009_human_occupant.sql"),
+        include_str!("../../migrations/0010_b5_trust_guards.sql"),
+        include_str!("../../migrations/0011_cooperative_only.sql"),
+        include_str!("../../migrations/0012_harness_version_evidence.sql"),
+        include_str!("../../migrations/0013_thread_summaries.sql"),
+        include_str!("../../migrations/0014_catch_up_release.sql"),
+        include_str!("../../migrations/0015_preparation_retention.sql"),
+        include_str!("../../migrations/0016_human_receipt_waivers.sql"),
+        include_str!("../../migrations/0017_wake_batches.sql"),
+        include_str!("../../migrations/0018_warning_conditions.sql"),
+        include_str!("../../migrations/0019_thread_names.sql"),
+        include_str!("../../migrations/0020_recent_activity.sql"),
+        include_str!("../../migrations/0021_invitation_rejections.sql"),
+        include_str!("../../migrations/0022_user_message_intent.sql"),
+        include_str!("../../migrations/0023_channel_archival.sql"),
+        include_str!("../../migrations/0024_harness_contract_diagnostics.sql"),
+        include_str!("../../migrations/0025_warning_notice_delivery.sql"),
+        include_str!("../../migrations/0026_lazy_message_delivery.sql"),
+        include_str!("../../migrations/0027_harness_adapters.sql"),
+        include_str!("../../migrations/0028_handoff_topology.sql"),
+    ] {
+        db.execute_batch(migration).unwrap();
+    }
+    db.pragma_update(None, "user_version", 28).unwrap();
+    db.pragma_update(None, "foreign_keys", true).unwrap();
+    populate_fixture(&db);
     db
 }
 
@@ -299,7 +343,7 @@ fn new_unregistered_seat_starts_in_a_real_unavailability_episode() {
 }
 
 #[test]
-fn unpublished_staging_is_invisible_and_first_later_anchor_is_immutable() {
+fn unpublished_staging_is_invisible_and_send_deadline_survives_availability() {
     let db = fixture();
     assert!(effective_receipt(&db, "m", "s").unwrap().is_none());
     db.execute_batch("\
@@ -319,14 +363,14 @@ fn unpublished_staging_is_invisible_and_first_later_anchor_is_immutable() {
     assert_eq!(before.source, ReceiptSource::Manifest);
     assert_eq!(before.warning_message_id, None);
     assert_eq!(before.available_at, None);
-    assert_eq!(before.deadline_at, None);
+    assert_eq!(before.deadline_at, Some(1300));
     db.execute_batch("\
         INSERT INTO seat_availability(seat_id, decision_seq, decision_at, binding_generation, observation_provenance) VALUES ('s', 11, 1200, 1, 'verified');\
         INSERT INTO seat_availability(seat_id, decision_seq, decision_at, binding_generation, observation_provenance) VALUES ('s', 12, 500, 1, 'verified');\
     ").unwrap();
     let after = effective_receipt(&db, "m", "s").unwrap().unwrap();
     assert_eq!(after.available_at, Some(1200));
-    assert_eq!(after.deadline_at, Some(1500));
+    assert_eq!(after.deadline_at, Some(1300));
     assert_eq!(after.state, EffectiveReceiptState::Pending);
 }
 
@@ -862,4 +906,337 @@ fn warning_timeline_equals_the_full_timeline_restricted_to_warnings() {
         assert!(!bounded.has_more);
         assert_eq!(bounded.position.after_sequence, 9);
     }
+}
+
+#[test]
+fn manifest_preserves_preexisting_running_deadline() {
+    let db = fixture();
+    db.execute_batch("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i','m','t',1,'ordinary','body',1000,10); INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('i','p','m','t',10,1000,1,0,1,0); INSERT INTO receipt_state(message_id,seat_id,state,available_at,deadline_at) VALUES ('m','s','pending',1200,1500);").unwrap();
+    let receipt = effective_receipt(&db, "m", "s").unwrap().unwrap();
+    assert_eq!(receipt.deadline_at, Some(1500));
+    assert_eq!(receipt.available_at, Some(1200));
+}
+
+#[test]
+fn historical_sparse_running_deadline_survives_semantics_cutover_and_restart() {
+    let db = v28_fixture();
+    db.execute_batch("UPDATE host_instances SET decision_seq=11 WHERE id='i'; INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i','m','t',1,'ordinary','body',1000,10); INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('i','p','m','t',10,1000,1,0,1,0); INSERT INTO seat_availability(seat_id,decision_seq,decision_at,binding_generation,observation_provenance) VALUES('s',11,1200,1,'cooperative_top_level');").unwrap();
+    schema::initialize(&db, || UtcMillis(0)).unwrap();
+    assert_eq!(
+        effective_receipt(&db, "m", "s")
+            .unwrap()
+            .unwrap()
+            .deadline_at,
+        Some(1500)
+    );
+    db.execute("UPDATE host_instances SET decision_seq=99 WHERE id='i'", [])
+        .unwrap();
+    schema::initialize(&db, || UtcMillis(999999)).unwrap();
+    assert_eq!(
+        effective_receipt(&db, "m", "s")
+            .unwrap()
+            .unwrap()
+            .deadline_at,
+        Some(1500)
+    );
+    let cutoff: i64 = db
+        .query_row(
+            "SELECT historical_decision_seq FROM receipt_send_time_cutovers WHERE instance_id='i'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(cutoff, 11);
+}
+
+#[test]
+fn historical_dormant_sparse_deadline_does_not_restart_after_cutover() {
+    let db = fixture();
+    db.execute_batch("INSERT INTO receipt_send_time_cutovers(instance_id,historical_decision_seq) VALUES('i',10); INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i','m','t',1,'ordinary','body',1000,10); INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('i','p','m','t',10,1000,1,0,1,0);").unwrap();
+    assert_eq!(
+        effective_receipt(&db, "m", "s")
+            .unwrap()
+            .unwrap()
+            .deadline_at,
+        Some(1300)
+    );
+    db.execute_batch("INSERT INTO seat_availability(seat_id,decision_seq,decision_at,binding_generation,observation_provenance) VALUES('s',11,1200,1,'cooperative_top_level');").unwrap();
+    let receipt = effective_receipt(&db, "m", "s").unwrap().unwrap();
+    assert_eq!(receipt.available_at, Some(1200));
+    assert_eq!(receipt.deadline_at, Some(1300));
+}
+
+fn receipt_upgrade_snapshot(db: &Connection, table: &str) -> Vec<Vec<rusqlite::types::Value>> {
+    let mut statement = db
+        .prepare(&format!("SELECT rowid,* FROM {table} ORDER BY rowid"))
+        .unwrap();
+    let columns = statement.column_count();
+    statement
+        .query_map([], |row| (0..columns).map(|i| row.get(i)).collect())
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+}
+
+#[test]
+fn receipt_send_time_upgrade_preserves_populated_v28_and_v29_graph_and_restarts_once() {
+    for version in [28, 29] {
+        let db = v28_fixture();
+        if version == 29 {
+            db.execute_batch(include_str!(
+                "../../migrations/0029_invitation_confirmation.sql"
+            ))
+            .unwrap();
+            db.pragma_update(None, "user_version", 29).unwrap();
+            db.execute_batch("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,confirmation,inviter_seat_id) VALUES ('modern','t','s',1,'pending',1,100,50,150,'require_ack','s'),('quiet','t','s',2,'pending',2,100,50,150,'lazy','s');").unwrap();
+        }
+        for (index, (name, state, available, required)) in [
+            ("running", "pending", Some(1200), 1),
+            ("dormant", "pending", None, 1),
+            ("acked", "acked", Some(1200), 1),
+            ("acked_absent", "acked", None, 1),
+            ("retired", "recipient_retired", None, 1),
+            ("waived", "pending", None, 0),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            db.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES('i',?1,'t',?2,'ordinary','retained body',1000,?2)",rusqlite::params![name,index as i64+1]).unwrap();
+            db.execute("INSERT INTO receipts(ordinal,message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at,ack_required,ack_observation) VALUES(?1,?2,'t','s',?3,300,?4,?5,?6,'retained provenance')",rusqlite::params![index as i64+20,name,state,available,available.map(|at|at+300),required]).unwrap();
+            db.execute("INSERT INTO receipt_state(rowid,message_id,seat_id,state,available_at,deadline_at,ack_required,ack_observation) VALUES(?1,?2,'s',?3,?4,?5,?6,'retained provenance')",rusqlite::params![index as i64+40,name,state,available,available.map(|at|at+300),required]).unwrap();
+        }
+        db.execute_batch("UPDATE sqlite_sequence SET seq=99 WHERE name='receipts'; CREATE TABLE receipt_upgrade_child(ordinal INTEGER REFERENCES receipts(ordinal), message_id TEXT, seat_id TEXT, FOREIGN KEY(message_id,seat_id) REFERENCES receipt_state(message_id,seat_id)); INSERT INTO receipt_upgrade_child VALUES(20,'running','s');").unwrap();
+        let tables = [
+            "receipts",
+            "receipt_state",
+            "messages",
+            "send_preparations",
+            "prepared_recipients",
+            "receipt_upgrade_child",
+            "digest_pending_manifest_receipts",
+        ];
+        let before: Vec<_> = tables
+            .iter()
+            .map(|name| receipt_upgrade_snapshot(&db, name))
+            .collect();
+        let objects = |db: &Connection| {
+            let mut statement=db.prepare("SELECT sql FROM sqlite_master WHERE tbl_name IN ('receipts','receipt_state') AND type IN ('trigger','index') AND sql IS NOT NULL ORDER BY name").unwrap();
+            statement
+                .query_map([], |r| r.get::<_, String>(0))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+        };
+        let old_objects = objects(&db);
+        schema::initialize(&db, || UtcMillis(0)).unwrap();
+        assert_eq!(objects(&db), old_objects);
+        assert_eq!(
+            db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                .unwrap(),
+            30
+        );
+        for (name, expected) in tables.iter().zip(before) {
+            assert_eq!(receipt_upgrade_snapshot(&db, name), expected, "{name}");
+        }
+        assert_eq!(
+            db.query_row(
+                "SELECT seq FROM sqlite_sequence WHERE name='receipts'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            99
+        );
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+                .get::<_, i64>(
+                0
+            ))
+            .unwrap(),
+            0
+        );
+        assert!(
+            db.pragma_query_value(None, "foreign_keys", |r| r.get::<_, bool>(0))
+                .unwrap()
+        );
+        db.execute_batch("UPDATE host_instances SET decision_seq=99; UPDATE receipt_state SET available_at=NULL,deadline_at=1300 WHERE message_id='dormant'; UPDATE receipts SET available_at=NULL,deadline_at=1300 WHERE message_id='dormant';").unwrap();
+        assert!(
+            db.execute("UPDATE receipts SET ordinal=200 WHERE ordinal=20", [])
+                .is_err(),
+            "immutable ordinal trigger lost"
+        );
+        schema::initialize(&db, || UtcMillis(9999)).unwrap();
+        assert_eq!(
+        db.query_row(
+            "SELECT historical_decision_seq FROM receipt_send_time_cutovers WHERE instance_id='i'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        10
+    );
+        if version == 29 {
+            let invitations: Vec<(String, String, String, i64)> = db.prepare("SELECT id,confirmation,inviter_seat_id,deadline_at FROM invitations ORDER BY id").unwrap().query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap().collect::<Result<_, _>>().unwrap();
+            assert_eq!(
+                invitations,
+                [
+                    ("modern".into(), "require_ack".into(), "s".into(), 150),
+                    ("quiet".into(), "lazy".into(), "s".into(), 150)
+                ]
+            );
+            assert!(
+                db.execute(
+                    "UPDATE invitations SET confirmation='lazy' WHERE id='modern'",
+                    []
+                )
+                .is_err()
+            );
+            assert!(
+                db.execute(
+                    "UPDATE invitations SET inviter_seat_id=NULL WHERE id='modern'",
+                    []
+                )
+                .is_err()
+            );
+            let due: Vec<String> = db.prepare("SELECT id FROM invitations INDEXED BY invitations_confirmation_due WHERE state='pending' AND warning_message_id IS NULL AND reject_recorded=0 AND (confirmation IS NULL OR confirmation='require_ack') ORDER BY deadline_at,ordinal").unwrap().query_map([], |r| r.get(0)).unwrap().collect::<Result<_, _>>().unwrap();
+            assert_eq!(due, ["modern"]);
+        }
+    }
+}
+
+#[test]
+fn receipt_send_time_upgrade_failure_rolls_back_constraint_and_cutover_then_retries() {
+    for version in [28, 29] {
+        for foreign_keys in [false, true] {
+            let db = v28_fixture();
+            if version == 29 {
+                db.execute_batch(include_str!(
+                    "../../migrations/0029_invitation_confirmation.sql"
+                ))
+                .unwrap();
+                db.pragma_update(None, "user_version", 29).unwrap();
+            }
+            db.execute_batch(
+                "CREATE TABLE receipt_upgrade_child(ordinal INTEGER REFERENCES receipts(ordinal));",
+            )
+            .unwrap();
+            db.pragma_update(None, "foreign_keys", false).unwrap();
+            db.execute("INSERT INTO receipt_upgrade_child VALUES(999)", [])
+                .unwrap();
+            db.pragma_update(None, "foreign_keys", foreign_keys)
+                .unwrap();
+            assert!(schema::initialize(&db, || UtcMillis(0)).is_err());
+            assert!(db.is_autocommit());
+            assert_eq!(
+                db.pragma_query_value(None, "foreign_keys", |r| r.get::<_, bool>(0))
+                    .unwrap(),
+                foreign_keys
+            );
+            assert_eq!(
+                db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                    .unwrap(),
+                29
+            );
+            assert_eq!(
+                db.query_row(
+                    "SELECT count(*) FROM sqlite_master WHERE name='receipt_send_time_cutovers'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+                0
+            );
+            for table in ["receipts", "receipt_state"] {
+                let ddl: String = db
+                    .query_row(
+                        "SELECT sql FROM sqlite_master WHERE name=?1",
+                        [table],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                assert!(ddl.contains("CHECK((available_at IS NULL) = (deadline_at IS NULL))"));
+            }
+            db.execute("DELETE FROM receipt_upgrade_child", []).unwrap();
+            schema::initialize(&db, || UtcMillis(0)).unwrap();
+            assert_eq!(
+                db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                    .unwrap(),
+                30
+            );
+            schema::initialize(&db, || UtcMillis(1)).unwrap();
+            assert_eq!(
+                db.pragma_query_value(None, "foreign_keys", |r| r.get::<_, bool>(0))
+                    .unwrap(),
+                foreign_keys
+            );
+        }
+    }
+}
+
+#[test]
+fn historical_sparse_retired_before_cutover_preserves_absent_deadline() {
+    let db = v28_fixture();
+    db.execute_batch("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES('i','m','t',1,'ordinary','body',1000,5); INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('i','p','m','t',5,1000,1,0,1,0); UPDATE seats SET state='retired',retired_at=1100,retired_seq=6 WHERE id='s'; INSERT INTO seat_availability(seat_id,decision_seq,decision_at,binding_generation,observation_provenance) VALUES('s',11,1200,1,'cooperative_top_level');").unwrap();
+    schema::initialize(&db, || UtcMillis(0)).unwrap();
+    let receipt = effective_receipt(&db, "m", "s").unwrap().unwrap();
+    assert_eq!(receipt.state, EffectiveReceiptState::RecipientRetired);
+    assert_eq!(receipt.deadline_at, None);
+    assert_eq!(receipt.available_at, None);
+}
+
+#[test]
+fn historical_sparse_acknowledged_absent_deadline_survives_upgrade_and_later_availability() {
+    let db = v28_fixture();
+    // A live cooperative binding can ACK before its first registration. On
+    // v28 this leaves both availability and deadline absent at settlement.
+    db.execute_batch("UPDATE host_instances SET host_boot='b',host_epoch=1 WHERE id='i'; UPDATE seats SET target_id='p',target_generation=1 WHERE id='s'; INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES('i','p','b',1,1,1100,'fresh','term-p','inc','coherent_enumeration',1); INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES('s',1,'p','b',1,1,'codex','ns','00000000-0000-4000-8000-0000000000aa','cooperative_top_level',1100,'term-p','inc'); INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES('i','m','t',1,'ordinary','retained body',1000,5); INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('i','p','m','t',5,1000,1,0,1,0);").unwrap();
+    let observation = crate::store::control::AccountableActor {
+        harness: crate::protocol::authority::Harness::Codex,
+        native_session: crate::protocol::ids::NativeSessionId::new("ns"),
+        execution: crate::protocol::ids::ExecutionId::new("00000000-0000-4000-8000-0000000000aa"),
+        host_boot: crate::protocol::ids::HostBootId::new("b"),
+        target_generation: 1,
+        binding_generation: 1,
+        observed_at_utc: UtcMillis(1100),
+        provenance: "cooperative_top_level",
+    }
+    .observation(1100);
+    db.execute("INSERT INTO receipt_state(message_id,seat_id,state,ack_actor_seat_id,ack_generation,ack_observation,acked_at) VALUES('m','s','acked','s',1,?1,1100)",[&observation]).unwrap();
+    assert_eq!(
+        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        28
+    );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+            .get::<_, i64>(
+            0
+        ))
+        .unwrap(),
+        0
+    );
+    let retained = receipt_upgrade_snapshot(&db, "receipt_state");
+    schema::initialize(&db, || UtcMillis(0)).unwrap();
+    assert_eq!(
+        effective_receipt(&db, "m", "s")
+            .unwrap()
+            .unwrap()
+            .deadline_at,
+        None
+    );
+    // A real later availability event may update observed availability, but it
+    // cannot invent a running clock for a historical acknowledged receipt.
+    db.execute_batch("UPDATE host_instances SET decision_seq=11 WHERE id='i'; UPDATE occupant_bindings SET registered_at=1200 WHERE seat_id='s' AND generation=1; INSERT INTO seat_availability(seat_id,decision_seq,decision_at,binding_generation,observation_provenance) VALUES('s',11,1200,1,'cooperative_top_level');").unwrap();
+    schema::initialize(&db, || UtcMillis(1200)).unwrap();
+    let receipt = effective_receipt(&db, "m", "s").unwrap().unwrap();
+    assert_eq!(receipt.state, EffectiveReceiptState::Acknowledged);
+    assert_eq!(receipt.deadline_at, None);
+    assert_eq!(receipt.ack_actor_seat_id.as_deref(), Some("s"));
+    assert_eq!(receipt.ack_generation, Some(1));
+    assert_eq!(
+        receipt.ack_observation.as_deref(),
+        Some(observation.as_str())
+    );
+    assert_eq!(receipt.acked_at, Some(1100));
+    assert_eq!(receipt_upgrade_snapshot(&db, "receipt_state"), retained);
 }

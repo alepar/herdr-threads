@@ -160,7 +160,7 @@ Client-local state (`contexts/`, `intents/`) only selects what to ask; it never 
 | `operator_human` | bindings, receipts | A person declared this pane human with `ht human me init` and acted from it. Best effort: refused where the system sees evidence of an agent (A4). |
 | `cooperative_continuity` | seat rebinds only | The seat was reattached because a resumed harness session id matched (C1). Never on receipts. |
 | `operator:local-user:<uid>` | audit of administrative decisions | The local account made a repair or recovery decision. Never on receipts. |
-| `managed_launch` | bindings only | Herdr's guarded `agent.start` in this pane was observed starting the harness; the agent has not checked in. Never on receipts; authorizes nothing but a wake prompt (an ordinary wake or a soft-deadline poke) to the bound harness. The daemon records it only after the launcher's host-correlated `ObservedStartup` (never on an unconfirmed start), only on a seat with no open binding, decided against the effective observation (A2). Its session and execution are `launch:` placeholders no caller claim can match, it has no `registered_at`, and it starts no availability or receipt timer. |
+| `managed_launch` | bindings only | Herdr's guarded `agent.start` in this pane was observed starting the harness; the agent has not checked in. Never on receipts; authorizes nothing but a wake prompt (an ordinary wake or a soft-deadline poke) to the bound harness. The daemon records it only after the launcher's host-correlated `ObservedStartup` (never on an unconfirmed start), only on a seat with no open binding, decided against the effective observation (A2). Its session and execution are `launch:` placeholders no caller claim can match, it has no `registered_at`, and it establishes no availability. Receipt deadlines start at send time independently of this binding. |
 | `canonical_binding_composer` | archival sample association only | The daemon associated a fresh registered-parser composer read with an already registered cooperative top-level binding after exact canonical binding, structural, activity and timing validation. The harness/session/execution in the association come from that binding; the host does not attest occupancy or current execution. This value authorizes no seat, binding, membership, receipt or invitation transition. |
 | `daemon_lifecycle` | automatic archive events only | The daemon applied the configured quiet-channel lifecycle policy after complete canonical validation. No actor seat, binding or receipt claim; no membership or continuity change. |
 | `legacy_local_journal_hint` | handoff archival vetoes only | A bounded read-only scan found a pending compound in this instance's intents directory. It can only prevent automatic archival; it authorizes no action and claims no native execution. |
@@ -378,7 +378,29 @@ for its prior marked clear to publish, so a blocked send can return `StoreBusy` 
 operation after bounded preparation cleanup. A sweep cannot clear conditions opened after its
 boundary or claim that an unprocessed clear event was delivered.
 
-**A6. Effective receipt deadlines.** A receipt's effective deadline is the later of its frozen deadline and
+**A6. Effective receipt deadlines.** New durable ACK-required sends freeze their duration
+and original deadline at canonical committed send time plus that duration. This applies to
+unbound, unregistered, unavailable and invited recipients; later registration, acceptance,
+restart or rebind cannot restart the clock. Availability remains observed availability and
+confers no new wake or receipt authority. Lazy delivery and canonical human waivers remain
+free of ACK obligations. The durable per-instance send-time cutover preserves every previously
+running sparse deadline using the earliest canonical availability recorded before the cutover
+and before retirement; stored running deadlines and terminal receipt provenance are preserved.
+Previously dormant obligations derive their deadline from immutable send time and duration.
+
+Modern clients require `messages.send_time_receipts_v1` before a new ACK-required send;
+absent or refused discovery fails explicitly without a legacy fallback. Lazy sends are exempt.
+Accepted mixed-version limit: ordinary CLI and service clients cannot prove that the canonical
+recipient audience is entirely human-waived, so an ordinary send that can create an agent
+obligation conservatively requires the capability, even when its eventual audience is all human.
+The sender's human harness never implies a recipient waiver. Completed retained compound
+results and service journal records remain inspectable unchanged without new send effects.
+Public ordinary CLI operation-status reads require a verified scope unavailable on that wire path,
+so the client cannot recover an exact pending key's committed outcome through that command.
+Ordinary commit-unknown CLI retries and service pending replays without locally retained completion
+conservatively require the capability even if their original send may already have committed. Immutable request bytes, keys, digests and outcomes are never rewritten.
+
+A receipt's effective deadline is the later of its frozen deadline and
 the `extension_until` of the latest catch-up row for the receipt's (seat, thread). The daemon decides it (A2)
 from catch-up state the seat itself entered through its accountable claim (a `summary` call that returned
 work). The first entry, and any entry after a ready or superseded row, grants one p99 job duration;

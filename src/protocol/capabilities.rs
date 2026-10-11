@@ -15,6 +15,9 @@ pub const PICKER_DIRECTORY_V1: &str = "picker.directory_v1";
 
 pub const HISTORY_FULL_BODIES: &str = "history.full_bodies";
 pub const HOOK_PARSE_FAILURE_REPORT: &str = "hook.parse_failure_report";
+/// Ordinary send handlers anchor original ACK deadlines to committed send time.
+pub const SEND_TIME_RECEIPTS_V1: &str = "messages.send_time_receipts_v1";
+
 pub const SERVICE_SEND_V1: &str = "service.send_v1";
 pub const HARNESS_EVIDENCE_V2: &str = "hook.harness_evidence_v2";
 pub const HARNESS_EVIDENCE: &str = "hook.harness_evidence";
@@ -57,6 +60,7 @@ pub const ADVERTISED: &[&str] = &[
     HISTORY_FULL_BODIES,
     HOOK_PARSE_FAILURE_REPORT,
     SERVICE_SEND_V1,
+    SEND_TIME_RECEIPTS_V1,
     HARNESS_EVIDENCE,
     HARNESS_EVIDENCE_V2,
     HARNESS_STATES,

@@ -533,20 +533,29 @@ fn v7_upgrade_backfills_only_pending_rows_into_the_digest_projections() {
 #[test]
 fn v6_upgrade_carries_the_current_occupant_offer_into_the_notice_frontier() {
     let db = v6_database();
-    // Seed only the rows the backfill reads (the publications' preparation
-    // rows are not needed for it).
-    db.pragma_update(None, "foreign_keys", "OFF").unwrap();
+    // Keep the old publication graph realizable: publication rows retain their
+    // canonical preparations even though the notice backfill does not read them.
+    db.pragma_update(None, "foreign_keys", "ON").unwrap();
     db.execute_batch("\
         INSERT INTO host_instances(id,created_at,decision_seq) VALUES ('i',0,10);\
         INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('s','i','resolved','native',1,0),('o','i','resolved','native',1,0);\
         INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0);\
         INSERT INTO service_authors(id,instance_id,created_at) VALUES ('svc','i',0);\
         INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,event_json,decision_at,author_kind,author_service_id) VALUES ('n1','i','t',1,'warn',3,'{}',0,'programmatic','svc'),('n2','i','t',2,'warn',5,'{}',0,'programmatic','svc');\
+        INSERT INTO service_notification_preparations(id,instance_id,author_id,operation_key,digest,thread_id,membership_revision,lifecycle_revision,interval_high_water,requirement_high_water,recipient_count,status) VALUES ('p1','i','svc','p1',zeroblob(32),'t',0,0,0,0,2,'published'),('p2','i','svc','p2',zeroblob(32),'t',0,0,0,0,2,'published');\
         INSERT INTO service_notification_publications(preparation_id,message_id,decision_seq,recipient_count) VALUES ('p1','n1',3,2),('p2','n2',5,2);\
         INSERT INTO warning_recipients(warning_id,seat_id,generation) VALUES ('n2','s',5),('n2','o',5),('n1','s',3),('n1','o',3);\
         INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at) VALUES ('s',1,'ps','b',1,'codex','ns','exec-s','fresh',0),('o',1,'po','b',1,'codex','no','exec-o','fresh',0);\
         INSERT INTO warning_offer(seat_id,binding_generation,execution_id,offered_through_seq) VALUES ('s',1,'exec-s',3),('o',1,'predecessor',5);\
     ").unwrap();
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+            .get::<_, i64>(
+            0
+        ))
+        .unwrap(),
+        0
+    );
     schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
     let pending = |seat: &str| -> Vec<String> {
         crate::store::attention::seat_pending_warnings(&db, seat, &|| Ok(()))
@@ -5687,7 +5696,7 @@ fn user_intent_schema22_fresh_and_v21_upgrade() {
             "SELECT json_array(id,fetched_at,created_at) FROM summary_jobs ORDER BY id",
         ].into_iter().flat_map(|sql| db.prepare(sql).unwrap().query_map([], |r| r.get::<_,String>(0)).unwrap().map(Result::unwrap).collect::<Vec<_>>()).collect();
         let roots = db
-            .prepare("SELECT name,rootpage FROM sqlite_master WHERE type='table' AND name NOT IN ('archival_instances','channel_archival','seat_archival','channel_handoff_fences','harness_contract_diagnostics','lazy_recipients','bootstrap_handoffs','bootstrap_child_keys','bootstrap_attempts','bootstrap_recovery_decisions','bootstrap_attachments','bootstrap_reports') ORDER BY name")
+            .prepare("SELECT name,rootpage FROM sqlite_master WHERE type='table' AND name NOT IN ('archival_instances','channel_archival','seat_archival','channel_handoff_fences','harness_contract_diagnostics','lazy_recipients','bootstrap_handoffs','bootstrap_child_keys','bootstrap_attempts','bootstrap_recovery_decisions','bootstrap_attachments','bootstrap_reports','receipt_send_time_cutovers') ORDER BY name")
             .unwrap()
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
             .unwrap()
@@ -6254,7 +6263,7 @@ fn absorption_main24_and25_to26_preserves_diagnostics_and_matches_fresh_catalog(
         assert_eq!(catalog(&db), catalog(&fresh));
         assert_eq!(
             catalog(&fresh).iter().filter(|r| r.0 == "table").count(),
-            74
+            75
         );
         assert_eq!(
             catalog(&fresh).iter().filter(|r| r.0 == "index").count(),

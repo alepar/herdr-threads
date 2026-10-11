@@ -66,7 +66,8 @@ const V27: &str = include_str!("../../migrations/0027_harness_adapters.sql");
 const V28: &str = include_str!("../../migrations/0028_handoff_topology.sql");
 const V29: &str = include_str!("../../migrations/0029_invitation_confirmation.sql");
 
-pub(crate) const LATEST_VERSION: i64 = 29;
+const V30: &str = include_str!("../../migrations/0030_receipt_send_time.sql");
+pub(crate) const LATEST_VERSION: i64 = 30;
 
 /// Decode only persisted results, after the caller's digest has matched. Live
 /// protocol responses still require disposition. Missing original context
@@ -169,7 +170,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
                 .and_then(|_| conn.execute_batch(V27))
                 .and_then(|_| conn.execute_batch(V28))
                 .and_then(|_| conn.execute_batch(V29))
-                .and_then(|_| conn.pragma_update(None, "user_version", LATEST_VERSION));
+                .and_then(|_| conn.pragma_update(None, "user_version", 29));
             match result {
                 Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
                 Err(error) => {
@@ -409,7 +410,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             verify_existing(conn)
         }
         17 => verify_existing(conn),
-        18..=29 => verify_existing(conn),
+        18..=30 => verify_existing(conn),
         _ => Err(api_error(
             ErrorCode::IncompatibleSchema,
             format!("unsupported schema version {version}"),
@@ -596,7 +597,11 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             }
         }
     }
-    verify_existing_v29(conn)
+    verify_existing_v29(conn)?;
+    if version <= 29 {
+        migrate_receipts_v29_to_v30(conn)?;
+    }
+    verify_receipt_send_time_schema(conn)
 }
 
 fn verify_existing_v29(conn: &Connection) -> Result<(), ApiError> {
@@ -635,6 +640,83 @@ fn verify_existing_v29(conn: &Connection) -> Result<(), ApiError> {
             return Err(api_error(
                 ErrorCode::IncompatibleSchema,
                 format!("missing or altered invitation confirmation {kind} {name}"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn migrate_receipts_v29_to_v30(conn: &Connection) -> Result<(), ApiError> {
+    if !conn.is_autocommit() {
+        return Err(api_error(
+            ErrorCode::IncompatibleSchema,
+            "receipt upgrade requires autocommit",
+        ));
+    }
+    let foreign_keys: bool = conn
+        .pragma_query_value(None, "foreign_keys", |r| r.get(0))
+        .map_err(store_error)?;
+    conn.pragma_update(None, "foreign_keys", false)
+        .map_err(store_error)?;
+    let result = (|| {
+        conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
+        conn.execute_batch(V30).map_err(store_error)?;
+        verify_receipt_send_time_schema(conn)?;
+        let violation: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_foreign_key_check)",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(store_error)?;
+        if violation {
+            return Err(api_error(
+                ErrorCode::IncompatibleSchema,
+                "receipt upgrade foreign key violation",
+            ));
+        }
+        conn.pragma_update(None, "user_version", 30)
+            .map_err(store_error)?;
+        conn.execute_batch("COMMIT").map_err(store_error)
+    })();
+    if result.is_err() {
+        let _ = conn.execute_batch("ROLLBACK");
+    }
+    let restored = conn
+        .pragma_update(None, "foreign_keys", foreign_keys)
+        .map_err(store_error);
+    result.and(restored)
+}
+
+/// The marker and constraint upgrade commit together before capabilities are served.
+/// Existing instance sequences are captured once; later instances have cutoff zero.
+fn verify_receipt_send_time_schema(conn: &Connection) -> Result<(), ApiError> {
+    let ddl = V30
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("--"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    for statement in ddl
+        .split("\n\n")
+        .map(str::trim)
+        .filter(|s| s.starts_with("CREATE ") && !s.starts_with("CREATE TEMP "))
+    {
+        let sql = statement.trim_end_matches(';');
+        let words = sql.split_whitespace().collect::<Vec<_>>();
+        let kind = words[1].to_ascii_lowercase();
+        let name = words[2];
+        let actual: Option<String> = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type=?1 AND name=?2",
+                params![kind, name],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(store_error)?;
+        if actual.as_deref().map(str::trim) != Some(sql) {
+            return Err(api_error(
+                ErrorCode::IncompatibleSchema,
+                format!("missing or altered receipt send-time {kind} {name}"),
             ));
         }
     }

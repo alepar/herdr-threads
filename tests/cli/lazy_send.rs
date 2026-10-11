@@ -96,12 +96,14 @@ impl Drop for Fixture {
 }
 struct Client {
     capability: Result<bool, ErrorCode>,
+    send_time_capability: bool,
     calls: Mutex<Vec<Command>>,
 }
 impl Client {
     fn new(capability: Result<bool, ErrorCode>) -> Self {
         Self {
             capability,
+            send_time_capability: true,
             calls: Mutex::new(vec![]),
         }
     }
@@ -121,7 +123,11 @@ impl LocalClient for Client {
             Command::Capabilities => match self.capability {
                 Ok(supported) => Ok(CommandResult::Capabilities(CapabilityList {
                     capabilities: if supported {
-                        vec!["send.lazy_v1".into()]
+                        let mut names = vec!["send.lazy_v1".into()];
+                        if self.send_time_capability {
+                            names.push("messages.send_time_receipts_v1".into());
+                        }
+                        names
                     } else {
                         vec![]
                     },
@@ -294,7 +300,7 @@ fn ordinary_send_omits_mode_and_preserves_digest() {
             .get("delivery_mode")
             .is_none()
     );
-    let client = Client::new(Ok(false));
+    let client = Client::new(Ok(true));
     f.run(
         &["ht", "send", "t1", "--body", "announcement", "--nudge"],
         &client,
@@ -303,7 +309,7 @@ fn ordinary_send_omits_mode_and_preserves_digest() {
     .unwrap();
     assert!(matches!(
         client.calls.lock().unwrap().as_slice(),
-        [Command::SendMessage(_)]
+        [Command::Capabilities, Command::SendMessage(_)]
     ));
 }
 #[test]
@@ -433,4 +439,94 @@ fn lazy_send_default_refuses_deadline_and_explicit_mode_conflicts() {
         argv.extend(options);
         assert!(parse_argv(argv).is_err());
     }
+}
+
+#[test]
+fn ordinary_send_refuses_unsupported_daemon_before_intent() {
+    for capability in [
+        Ok(false),
+        Err(ErrorCode::Unsupported),
+        Err(ErrorCode::InvalidRequest),
+    ] {
+        let f = Fixture::new();
+        let client = Client::new(capability);
+        let result = f.run(
+            &["ht", "send", "t1", "--body", "urgent", "--nudge"],
+            &client,
+            &mut Vec::new(),
+        );
+        let Err(RunError::Api(error)) = result else {
+            panic!("unsupported send was not refused")
+        };
+        assert_eq!(error.code, ErrorCode::Unsupported);
+        assert!(error.detail.contains("messages.send_time_receipts_v1"));
+        assert_eq!(*client.calls.lock().unwrap(), vec![Command::Capabilities]);
+        assert!(
+            f.journal
+                .page(&Default::default())
+                .unwrap()
+                .items
+                .is_empty()
+        );
+    }
+}
+
+#[test]
+fn ordinary_historical_retry_refuses_unsupported_without_rewriting_intent() {
+    for capability in [
+        Ok(false),
+        Err(ErrorCode::Unsupported),
+        Err(ErrorCode::InvalidRequest),
+    ] {
+        let f = Fixture::new();
+        let legacy: SemanticMutation = serde_json::from_str(r#"{"kind":"send_message","thread":"t1","body":"historical body","invited_recipients":[],"deadline_millis":null}"#).unwrap();
+        let reference = f
+            .journal
+            .record(
+                IntentScope::Cooperative {
+                    instance: f.context.instance.to_string(),
+                    seat: herdr_threads::protocol::ids::SeatId::new(f.context.seat.clone()),
+                },
+                SemanticMutation::freeze(legacy, caller_claim(&f.context).unwrap()).unwrap(),
+                0,
+            )
+            .unwrap();
+        let original = f.journal.load(&reference).unwrap();
+        let client = Client::new(capability);
+        let result = f.run(
+            &["ht", "retry", &reference.recovery_ref()],
+            &client,
+            &mut Vec::new(),
+        );
+        assert!(
+            matches!(result,Err(RunError::Api(error)) if error.code==ErrorCode::Unsupported && error.detail.contains("messages.send_time_receipts_v1"))
+        );
+        assert_eq!(*client.calls.lock().unwrap(), vec![Command::Capabilities]);
+        let retained = f.journal.load(&reference).unwrap();
+        assert_eq!(
+            retained.header.semantic_digest,
+            original.header.semantic_digest
+        );
+        assert_eq!(retained.operation, original.operation);
+        assert_eq!(
+            serde_json::to_value(retained.semantic).unwrap(),
+            serde_json::to_value(original.semantic).unwrap()
+        );
+    }
+}
+
+#[test]
+fn lazy_send_does_not_require_send_time_receipts_capability() {
+    let f = Fixture::new();
+    let mut client = Client::new(Ok(true));
+    client.send_time_capability = false;
+    f.run(
+        &["ht", "send", "t1", "--body", "passive"],
+        &client,
+        &mut Vec::new(),
+    )
+    .unwrap();
+    assert!(
+        matches!(client.calls.lock().unwrap().as_slice(),[Command::Capabilities,Command::SendMessage(send)] if send.delivery_mode==DeliveryMode::Lazy)
+    );
 }
