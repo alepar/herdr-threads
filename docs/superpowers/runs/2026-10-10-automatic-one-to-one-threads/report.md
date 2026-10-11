@@ -1,5 +1,5 @@
 status: clean [degraded: design roast low coverage, PR roast low coverage]
-metrics: pending (upstream-feedback not yet run)
+metrics: upstream-feedback-draft.md (parked locally; not filed)
 
 ## Implemented
 

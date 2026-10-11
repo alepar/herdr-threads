@@ -68,3 +68,5 @@ PR roast2 disposition: clean (1 nits) [low coverage], 0new/1carried/0resolved/0r
 Report phase entered: exact-tip fullsuite readiness verification pending before report.md is written. Separate ordinary/test-support release preparation and all-target nextest no-run are required before timed execution; no historical pass reuse.
 
 First successful postroast gate:979e4993,4,621/4,621pass44skipped,wall194.052s<300, scopedleakclean. Separate release-default109.691s/test-support86.460s/nextestprepare19.931s excluded from timedgate; exactclippy16.956/default6.433/fmt/diffpass. Report.md written from durable buckets/ledger/reviews. Upstream analysis pending exactlyonce; later documentation finish commits require final ignored exact-tip fullgate before notification.
+
+Upstream analysis completed exactlyonce after report: fresh strongestgpt-6-astra, no tools. Four candidates triaged into installed-helper defect, native packet transport doc gap and two policy design questions; parked local upstream-feedback-draft.md for alepar/superpowers. No issue/ghwrite or feedbackURL; only report metrics line changed after analysis.
