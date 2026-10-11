@@ -238,6 +238,8 @@ pub enum SemanticMutation {
     HandoffDelivery(Box<DeliveryPlan>),
     /// Separate local-account decision; nested original agent claim is a reference.
     OperatorRecoverBootstrap(Box<super::topology_recover::RecoveryPlan>),
+    /// Separate durable operator decision for a frozen V2 automatic parent.
+    OperatorRecoverAutomaticBootstrap(Box<super::topology_recover::automatic::RecoveryPlan>),
 }
 
 /// Independent versioned immutable plans; old HandoffPlan stays byte-for-byte.
@@ -281,6 +283,9 @@ impl SemanticMutation {
             Self::AutomaticHandoff(p) => Some(&p.delivery.payload.namespace),
             Self::OperatorRecoverBootstrap(p) => {
                 Some(&p.request.identity.payload.handoff.namespace)
+            }
+            Self::OperatorRecoverAutomaticBootstrap(p) => {
+                Some(&p.request.identity.plan.payload.handoff.namespace)
             }
             Self::Frozen { mutation, .. } => mutation.namespace(),
             _ => None,
@@ -345,6 +350,7 @@ impl SemanticMutation {
             Self::AutomaticBootstrap(plan) => plan.validate().map_err(invalid),
             Self::AutomaticHandoff(plan) => plan.validate().map_err(invalid),
             Self::OperatorRecoverBootstrap(plan) => plan.validate(),
+            Self::OperatorRecoverAutomaticBootstrap(plan) => plan.validate(),
             Self::Frozen { mutation, .. } => {
                 if mutation.is_operator()
                     || matches!(
@@ -480,6 +486,7 @@ impl SemanticMutation {
                 | Self::OperatorReplace { .. }
                 | Self::OperatorOrphanInvite { .. }
                 | Self::OperatorRecoverBootstrap(_)
+                | Self::OperatorRecoverAutomaticBootstrap(_)
         )
     }
     pub fn kind(&self) -> IntentKind {
@@ -489,7 +496,9 @@ impl SemanticMutation {
             Self::AutomaticDelivery(_) => IntentKind::HandoffDelivery,
             Self::HandoffBootstrap(_) | Self::AutomaticBootstrap(_) => IntentKind::HandoffBootstrap,
             Self::HandoffDelivery(_) => IntentKind::HandoffDelivery,
-            Self::OperatorRecoverBootstrap(_) => IntentKind::OperatorRecoverBootstrap,
+            Self::OperatorRecoverBootstrap(_) | Self::OperatorRecoverAutomaticBootstrap(_) => {
+                IntentKind::OperatorRecoverBootstrap
+            }
             Self::Frozen { mutation, .. } => mutation.kind(),
             Self::CooperativeCheckIn { .. } => IntentKind::CheckIn,
             Self::ResolveSeat { .. } => IntentKind::ResolveSeat,
@@ -558,7 +567,8 @@ impl SemanticMutation {
             | Self::AutomaticBootstrap(_)
             | Self::HandoffBootstrap(_)
             | Self::HandoffDelivery(_)
-            | Self::OperatorRecoverBootstrap(_) => {
+            | Self::OperatorRecoverBootstrap(_)
+            | Self::OperatorRecoverAutomaticBootstrap(_) => {
                 return Err(invalid("topology contract is inert"));
             }
             Self::Frozen { claim, mutation } => {
@@ -1865,6 +1875,10 @@ fn scope_matches(scope: &IntentScope, semantic: &SemanticMutation) -> bool {
         (
             IntentScope::Operator { local_user_uid, .. },
             SemanticMutation::OperatorRecoverBootstrap(plan),
+        ) => *local_user_uid == plan.operator_uid,
+        (
+            IntentScope::Operator { local_user_uid, .. },
+            SemanticMutation::OperatorRecoverAutomaticBootstrap(plan),
         ) => *local_user_uid == plan.operator_uid,
         (IntentScope::Operator { .. }, request) => request.is_operator(),
         _ => false,
