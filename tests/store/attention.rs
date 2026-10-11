@@ -2359,3 +2359,30 @@ fn settle_pulled_notices_refuses_a_stale_generation_another_session_or_a_non_pre
     );
     assert_eq!(frontier(), before);
 }
+
+// Main review F2. Kills: a bound reader's informational-notice check that follows the seat's
+// newest top-level binding instead of the reader's own frontier. B (the newest) was offered n1;
+// A was not, so A's bound read still owes it while the seat view (B's) does not, and the reverse.
+#[test]
+fn bound_reader_informational_notice_follows_its_own_frontier() {
+    let db = per_binding();
+    notice(&db, 1);
+    db.execute(
+        "INSERT INTO warning_conditions(condition_kind,thread_id,condition_id,affected_seat_id,open_warning_id,opened_seq) VALUES ('unavailable','t','c1','s','n1',21)",
+        [],
+    )
+    .unwrap();
+    display(&db, "bind-B", 0);
+    assert!(binding_notice_frontier(&db, "bind-B").unwrap() > 0);
+    let pending =
+        |binding: Option<&str>| informational_notice_pending_for(&db, "s", "n1", binding).unwrap();
+    assert_eq!(pending(None), Some(false), "the seat view follows B");
+    assert_eq!(pending(Some("bind-B")), Some(false));
+    assert_eq!(
+        pending(Some("bind-A")),
+        Some(true),
+        "A was never offered n1"
+    );
+    // A subagent of A reads its parent's frontier until it has its own.
+    assert_eq!(pending(Some("bind-C")), Some(true));
+}

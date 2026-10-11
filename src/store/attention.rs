@@ -833,6 +833,10 @@ fn judged_warning(
     }))
 }
 
+/// SQL for a bound reader's warning offer frontier: its own `warning_offer` row, else (a
+/// subagent without one) its parent's. Bind `?1` = the binding. Like `binding_notice_frontier`.
+pub const BINDING_WARNING_OFFER_SQL: &str = "SELECT COALESCE((SELECT o.offered_through_seq FROM warning_offer o WHERE o.binding_id=?1),(SELECT p.offered_through_seq FROM occupant_bindings b JOIN warning_offer p ON p.binding_id=b.parent_binding WHERE b.binding_id=?1 AND b.role='subagent'))";
+
 /// SQL for the id of the binding a seat-level reader follows (see [`seat_notice_binding`]); bind
 /// `?1` = the seat. Embed as a scalar subquery.
 pub const SEAT_NOTICE_BINDING_SQL: &str = "SELECT b.binding_id FROM occupant_bindings b WHERE b.seat_id=?1 AND b.ended_at IS NULL AND b.role='top_level' ORDER BY (b.liveness='connected') DESC, b.ordinal DESC LIMIT 1";
@@ -886,6 +890,17 @@ pub fn informational_notice_pending(
     seat_id: &str,
     warning_id: &str,
 ) -> Result<Option<bool>, ApiError> {
+    informational_notice_pending_for(db, seat_id, warning_id, None)
+}
+
+/// [`informational_notice_pending`] against `binding`'s own notice frontier when the reader is
+/// bound (spec §2: per-binding frontiers), else the seat view's.
+pub fn informational_notice_pending_for(
+    db: &Connection,
+    seat_id: &str,
+    warning_id: &str,
+    binding: Option<&str>,
+) -> Result<Option<bool>, ApiError> {
     let informational: bool = db.query_row(
         "SELECT EXISTS(SELECT 1 FROM warning_conditions c WHERE c.open_warning_id=?1 OR c.clear_warning_id=?1) OR EXISTS(SELECT 1 FROM messages m JOIN service_notification_publications p ON p.message_id=m.id WHERE m.id=?1 AND m.kind='warn' AND m.author_kind='programmatic')",
         [warning_id], |r| r.get(0),
@@ -906,7 +921,11 @@ pub fn informational_notice_pending(
     let Some(ordinal) = ordinal else {
         return Ok(Some(true));
     };
-    Ok(Some(ordinal > notice_frontier(db, seat_id)?))
+    let frontier = match binding {
+        Some(binding) => binding_notice_frontier(db, binding)?,
+        None => notice_frontier(db, seat_id)?,
+    };
+    Ok(Some(ordinal > frontier))
 }
 
 /// One seat-leading indexed probe of attributed notices above the exact

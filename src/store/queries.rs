@@ -6310,18 +6310,30 @@ mod inbox_v2 {
             )
             .map_err(store_error)
         };
-        let offered = db
-            .query_row(
-                &format!(
-                    "SELECT o.offered_through_seq FROM warning_offer o WHERE o.binding_id=({})",
-                    super::super::attention::SEAT_NOTICE_BINDING_SQL
-                ),
-                [seat.as_str()],
-                |r| r.get(0),
-            )
-            .optional()
-            .map_err(store_error)?
-            .unwrap_or(0);
+        // A bound reader's warning cutoff is its own binding's offer frontier (spec §2); a
+        // seat-level reader follows the seat's notice binding.
+        let offered: i64 = match bound(reader) {
+            Some(binding) => db
+                .query_row(
+                    super::super::attention::BINDING_WARNING_OFFER_SQL,
+                    [binding.as_str()],
+                    |r| r.get::<_, Option<i64>>(0),
+                )
+                .map_err(store_error)?
+                .unwrap_or(0),
+            None => db
+                .query_row(
+                    &format!(
+                        "SELECT o.offered_through_seq FROM warning_offer o WHERE o.binding_id=({})",
+                        super::super::attention::SEAT_NOTICE_BINDING_SQL
+                    ),
+                    [seat.as_str()],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(store_error)?
+                .unwrap_or(0),
+        };
         Ok(State {
             seat: seat.clone(),
             binding_generation: generation,
@@ -6716,10 +6728,11 @@ mod inbox_v2 {
                     if let Some(warning) = effective_warning_by_id(db, &candidate.id)?
                         && is_warning_recipient(db, &candidate.id, seat.as_str())?
                         && warning_condition_actionable(db, &warning)?
-                        && super::super::attention::informational_notice_pending(
+                        && super::super::attention::informational_notice_pending_for(
                             db,
                             seat.as_str(),
                             &candidate.id,
+                            reading.map(BindingId::as_str),
                         )?
                         .unwrap_or(
                             warning.event_seq > state.attention.latest_warning_offset.unwrap_or(0),

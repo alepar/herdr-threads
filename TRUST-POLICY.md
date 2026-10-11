@@ -633,8 +633,10 @@ notice shows once per binding. The pull's version includes the newest notice pen
 so an unchanged reply never hides one; notices never wake. A subagent binding never checks in and
 settles nothing: its hook reads its own binding's digest (unread mail past its own cursor, notices
 above its parent's frontier) and presents it with read-only wording, compared only with its own
-client-local mark (a hint keyed by the binding key, never authority). Seat-level readers (wake,
-receipts) follow the seat's newest open top-level binding, a connected one first. The mod channel is
+client-local mark (a hint keyed by the binding key, never authority). A caller-bound inbox read
+decides its warning cutoff and informational-notice view against the reading binding's own frontiers
+(a subagent's against its parent's until it has its own), never a sibling's. Seat-level readers (wake,
+receipts, an unbound inbox) follow the seat's newest open top-level binding, a connected one first. The mod channel is
 held per connected top-level binding of a push-channel harness, not per seat. A global decision
 watermark cannot settle uncarried events, including late attribution.
 History and immutable operation results remain readable. A successor occupant gets its own offers;
