@@ -39,7 +39,7 @@ use std::{
 use uuid::Uuid;
 
 const BIN: &str = env!("CARGO_BIN_EXE_herdr-threads");
-const WAIT: Duration = Duration::from_secs(60);
+const WAIT: Duration = Duration::from_secs(15);
 pub(super) const BODY: &str = "literal '$HOME' \"quoted\" work\n--agent-arg=body stays here";
 const OPTIONS: &str = "--model 'env model' --config 'note=\"literal $HOME\"' --config repeat=true";
 const FROZEN: &[&str] = &[
@@ -492,15 +492,24 @@ impl Fixture {
                 &budget,
             )
             .unwrap();
-        store
-            .stage_snapshot_targets(
-                &stage.id,
-                0,
-                &snapshot.targets,
-                DurableWorkAdmission::new(16).unwrap(),
-                &budget,
-            )
-            .unwrap();
+        // A writer turn stages only a prefix when its 5 ms quantum runs out
+        // (a loaded machine): stage the rest in the following turns, as
+        // `reconcile` does, or the seal sees an incomplete target set.
+        let admission_limit = DurableWorkAdmission::new(16).unwrap();
+        let mut staged = 0usize;
+        while staged < snapshot.targets.len() {
+            let progress = store
+                .stage_snapshot_targets(
+                    &stage.id,
+                    staged as u64,
+                    &snapshot.targets[staged..],
+                    admission_limit,
+                    &budget,
+                )
+                .unwrap();
+            assert!(progress.visited > 0, "snapshot staging must advance");
+            staged += usize::from(progress.visited);
+        }
         store.seal_snapshot_stage(&stage.id, &budget).unwrap();
         store.publish_snapshot_stage(&stage.id, &budget).unwrap();
         let execution = Uuid::new_v4();

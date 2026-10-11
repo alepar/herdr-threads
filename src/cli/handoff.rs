@@ -399,12 +399,16 @@ pub(crate) fn save_progress_at<T: Serialize>(
     let temp = journal
         .root()
         .join(format!(".handoff-{}", uuid::Uuid::new_v4()));
+    // One buffer, one write: `to_writer` on the bare file issues a write(2) per
+    // JSON token (hundreds for a maximal progress record), and under suite load
+    // each of those stalled the CLI's exit for seconds (ht-poh.55).
+    let bytes = serde_json::to_vec(progress)?;
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
         .mode(0o600)
         .open(&temp)?;
-    serde_json::to_writer(&mut file, progress)?;
+    file.write_all(&bytes)?;
     file.sync_all()?;
     fs::rename(temp, path)?;
     File::open(journal.root())?.sync_all()
