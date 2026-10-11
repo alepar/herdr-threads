@@ -52,10 +52,12 @@ fn a_rotated_generation_discards_the_seats_offers_and_flag() {
     let entry = ledger.seat_mut(&seat(1), 4, "n").unwrap();
     entry.record(&id(1), at(0), false);
     entry.more_pending = true;
+    entry.whole_read = Some(9);
     let entry = ledger.seat_mut(&seat(1), 5, "n").unwrap();
     assert_eq!(entry.generation, 5);
     assert!(entry.offers.is_empty());
     assert!(!entry.more_pending);
+    assert_eq!(entry.whole_read, None);
 }
 
 #[test]

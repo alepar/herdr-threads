@@ -86,6 +86,21 @@ pub fn attention_version(fingerprint: &ModFingerprint, newest_notice: Option<i64
 #[derive(Default)]
 pub struct DeliveryPullState {
     ledger: Mutex<OfferedLedger>,
+    #[cfg(any(test, feature = "test-support"))]
+    probe: PullProbe,
+}
+
+/// Runs once on the ledger just before a pull records its page (a rotation racing the pull).
+#[cfg(any(test, feature = "test-support"))]
+type LedgerRace = Box<dyn FnOnce(&mut OfferedLedger) + Send>;
+
+/// Test-only probes of the pull (never compiled into ordinary builds).
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Default)]
+struct PullProbe {
+    /// Pending items the drains read, summed over pulls.
+    items_read: std::sync::atomic::AtomicUsize,
+    before_record: Mutex<Option<LedgerRace>>,
 }
 
 impl DeliveryPullState {
@@ -247,7 +262,9 @@ impl DomainService {
         let now = self.clock.utc_now();
         let version = attention_version(&view.fingerprint, view.newest_pending_notice);
         let seen_current = pull.seen_attention_version == Some(version);
-        let known: HashMap<MessageId, Offer> = {
+        // The pending set this pull reads; notices are read on their own and are not part of it.
+        let pending_version = attention_version(&view.fingerprint, None);
+        let (known, whole_read_current): (HashMap<MessageId, Offer>, bool) = {
             let mut ledger = self.delivery_pull.lock();
             // A newer generation's entry: this request read the binding before a rotation.
             let Some(entry) = ledger.seat_mut(seat, binding.generation, &binding.native_session)
@@ -266,11 +283,14 @@ impl DomainService {
                     },
                 ));
             }
-            entry
-                .offers
-                .iter()
-                .map(|(id, offer)| (id.clone(), *offer))
-                .collect()
+            (
+                entry
+                    .offers
+                    .iter()
+                    .map(|(id, offer)| (id.clone(), *offer))
+                    .collect(),
+                entry.whole_read == Some(pending_version),
+            )
         };
 
         let mut source = StorePageSource {
@@ -320,44 +340,59 @@ impl DomainService {
         });
         let mut room_for_new = MAX_OFFERS_PER_SEAT.saturating_sub(known.len());
         let mut withheld = false;
-        let drained = drain_pages(
-            &mut source,
-            &mut assembler,
-            version,
-            MAX_DRAIN_PAGES,
-            |event| -> Result<Stop, std::convert::Infallible> {
-                let DrainEvent::Item(item) = event else {
-                    return Ok(Stop::Continue);
-                };
-                pending.insert(item.id.clone());
-                let offered = known.get(&item.id);
-                if offered.is_some_and(|offer| !offer.is_due(now)) {
-                    return Ok(Stop::Continue);
-                }
-                // A full offer table takes no new id: it stays pending and unshown, parked for `inbox`
-                // (holds_parked).
-                if offered.is_none() && room_for_new == 0 {
-                    withheld = true;
-                    return Ok(Stop::Continue);
-                }
-                let block = frame_item(&item);
-                let bytes = block_bytes(&block);
-                if !blocks.is_empty()
-                    && (blocks.len() + reserved_blocks >= PAGE_MAX_BLOCKS
-                        || text_bytes + bytes + reserved_bytes > PAGE_MAX_TEXT_BYTES)
-                {
-                    more = true;
-                    return Ok(Stop::Halt);
-                }
-                if offered.is_none() {
-                    room_for_new -= 1;
-                }
-                text_bytes += bytes;
-                shown.push((item.id.clone(), item.message.truncated));
-                blocks.push(block);
-                Ok(Stop::Continue)
-            },
-        );
+        // A full table whose last whole read saw this same pending set can show only its due offers: the drain stops
+        // once it has met them all (or never starts), so it does not walk the backlog. A moved pending set (an
+        // arrival, a settle elsewhere) reads the whole set, and `retain_pending` frees slots.
+        let mut due_left = known.values().filter(|offer| offer.is_due(now)).count();
+        let skip_drain = whole_read_current && room_for_new == 0 && due_left == 0;
+        let mut short = skip_drain;
+        let drained = if skip_drain {
+            Ok(())
+        } else {
+            drain_pages(
+                &mut source,
+                &mut assembler,
+                version,
+                MAX_DRAIN_PAGES,
+                |event| -> Result<Stop, std::convert::Infallible> {
+                    let DrainEvent::Item(item) = event else {
+                        return Ok(Stop::Continue);
+                    };
+                    pending.insert(item.id.clone());
+                    let offered = known.get(&item.id);
+                    let due = offered.is_some_and(|offer| offer.is_due(now));
+                    if due {
+                        due_left = due_left.saturating_sub(1);
+                    }
+                    if offered.is_none() && room_for_new == 0 {
+                        // A full offer table takes no new id: it stays pending and unshown, parked for `inbox`
+                        // (holds_parked).
+                        withheld = true;
+                    } else if offered.is_none() || due {
+                        let block = frame_item(&item);
+                        let bytes = block_bytes(&block);
+                        if !blocks.is_empty()
+                            && (blocks.len() + reserved_blocks >= PAGE_MAX_BLOCKS
+                                || text_bytes + bytes + reserved_bytes > PAGE_MAX_TEXT_BYTES)
+                        {
+                            more = true;
+                            return Ok(Stop::Halt);
+                        }
+                        if offered.is_none() {
+                            room_for_new -= 1;
+                        }
+                        text_bytes += bytes;
+                        shown.push((item.id.clone(), item.message.truncated));
+                        blocks.push(block);
+                    }
+                    if whole_read_current && room_for_new == 0 && due_left == 0 {
+                        short = true;
+                        return Ok(Stop::Halt);
+                    }
+                    Ok(Stop::Continue)
+                },
+            )
+        };
         match drained {
             Ok(()) => {}
             Err(delivery::DrainPagesError::Page(_)) => return refused(DeliveryRefusalReason::Busy),
@@ -371,8 +406,15 @@ impl DomainService {
             }
             Err(delivery::DrainPagesError::Sink(never)) => match never {},
         }
+        #[cfg(any(test, feature = "test-support"))]
+        self.delivery_pull
+            .probe
+            .items_read
+            .fetch_add(pending.len(), std::sync::atomic::Ordering::SeqCst);
         let mut notices_settled = false;
         let mut notices_has_more = false;
+        let notice_start = blocks.len();
+        let mut carried_blocks = 0;
         let room = PAGE_MAX_BLOCKS.saturating_sub(blocks.len() + usize::from(with_attention));
         let limit = room.min(MAX_NOTICE_PAGE_ITEMS);
         if limit > 0 && view.newest_pending_notice.is_some() {
@@ -414,6 +456,7 @@ impl DomainService {
                 }
             };
             if notices_settled {
+                carried_blocks = notice_blocks.len();
                 blocks.append(&mut notice_blocks);
             }
         }
@@ -437,19 +480,45 @@ impl DomainService {
         }
         {
             let mut ledger = self.delivery_pull.lock();
-            // Rotated meanwhile: the page belongs to a superseded generation; nothing is recorded or shown.
+            #[cfg(any(test, feature = "test-support"))]
+            if let Some(race) = self
+                .delivery_pull
+                .probe
+                .before_record
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .take()
+            {
+                race(&mut ledger);
+            }
             let Some(entry) = ledger.seat_mut(seat, binding.generation, &binding.native_session)
             else {
-                return refused(DeliveryRefusalReason::Busy);
+                // Rotated meanwhile: the page belongs to a superseded generation, so no message is recorded or shown
+                // (they stay pending for the new one). Notices this pull settled are committed as carried: return
+                // them rather than lose them to a refusal.
+                if carried_blocks == 0 {
+                    return refused(DeliveryRefusalReason::Busy);
+                }
+                drop(ledger);
+                return Ok(CommandResult::DeliveryPulled(DeliveryPullReply::Page(
+                    DeliveryPage {
+                        attention_version: reply_version,
+                        text: frame(&blocks[notice_start..notice_start + carried_blocks]),
+                        offered: Vec::new(),
+                        truncated: Vec::new(),
+                        more: false,
+                    },
+                )));
             };
             for (id, truncated) in &shown {
                 // Never false here unless a concurrent pull of this generation filled the slots first; such an
-                // id is not shown again while the table is full.
+                // id was shown once unrecorded (at most one extra showing).
                 entry.record(id, now, *truncated);
             }
-            if !more {
+            if !more && !short {
                 // The whole pending set was read: what is no longer in it left.
                 entry.retain_pending(&pending);
+                entry.whole_read = Some(pending_version);
             }
             // An id withheld at capacity while this whole read freed slots is shown by the next pull instead of
             // hiding behind `Unchanged`.

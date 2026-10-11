@@ -48,9 +48,14 @@ pub struct SeatOffers {
     /// notice read). It defeats the `Unchanged` reply so the next pull carries them, but it is never wake
     /// work: notices never wake, so [`Self::next_pull`] ignores it.
     pub notices_pending: bool,
-    /// The seat's wake attention counter at the last pull of this process that read the whole pending set. `None` on
-    /// a new entry (a new process, an evicted seat and a rotated generation all start there).
+    /// The seat's wake attention counter at the last pull of this process that read the whole pending set, or
+    /// stopped short over the set that read saw (see [`Self::whole_read`]). `None` on a new entry (a new process, an
+    /// evicted seat and a rotated generation all start there).
     pub read_attention: Option<u64>,
+    /// The pending-set version (the seat fingerprint's attention version without notices) at this process's last
+    /// pull that read the whole pending set. While it is current a full table can neither free a slot nor take a
+    /// new id, so a pull reads only as far as its due offers. `None` on a new entry.
+    pub whole_read: Option<u64>,
     pub offers: BTreeMap<MessageId, Offer>,
     touched: u64,
 }
@@ -177,6 +182,7 @@ impl OfferedLedger {
                     more_pending: false,
                     notices_pending: false,
                     read_attention: None,
+                    whole_read: None,
                     offers: BTreeMap::new(),
                     touched,
                 },
