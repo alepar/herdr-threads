@@ -102,6 +102,32 @@ fn execute(w: &World, ambient: Option<&World>, who: usize, argv: &[String]) -> O
     command.output().unwrap()
 }
 
+/// Waits until every `send_attention` projection job of `w` has completed: the
+/// daemon projects receipt rows in 5 ms work quanta, so under load the rows for a
+/// two-recipient send can land after `send` returns (seen on a hosted Linux runner
+/// as `QueryReturnedNoRows` in [`receipt`]).
+fn wait_for_send_projection(w: &World) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let open: i64 = w
+            .db()
+            .query_row(
+                "SELECT count(*) FROM work_jobs WHERE kind='send_attention' AND status<>'complete'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        if open == 0 {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "send_attention projection still open after 30 s ({open} job(s))"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
 fn receipt(w: &World, message: &str, who: usize) -> String {
     w.db().query_row(
         "SELECT state FROM receipt_state WHERE message_id=?1 AND seat_id=?2 UNION SELECT state FROM receipts WHERE message_id=?1 AND seat_id=?2",
@@ -136,6 +162,8 @@ fn recovery_case(human: bool, second_record_failure: bool, remove_ambient: bool)
         let ordinary_a = a.send("original ordinary body", &["--require-ack", &a.seats[1]]);
         let lazy_b = b.send("unrelated passive body", &[]);
         let ordinary_b = b.send("unrelated ordinary body", &["--require-ack", &b.seats[1]]);
+        wait_for_send_projection(&a);
+        wait_for_send_projection(&b);
         let journal_a = Journal::open(a.paths().instance_dir.join("intents")).unwrap();
         if second_record_failure {
             std::fs::write(
