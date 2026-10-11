@@ -1,7 +1,7 @@
 # super-auto run — 2026-10-10-automatic-one-to-one-threads
 
 flags: planOneShot=true skipPlanRoast=false skipCodeRoast=false autonomous=true
-phase: code
+phase: roast-code
 
 idea: Use $super-auto, fully autonomous end to end with both roasts on, to implement this feature in this repo: automatic 1:1 threads. An agent can send a message to another agent by giving only a target seat ID, without specifying a thread. The plugin automatically creates (or reuses an existing) "1:1" thread with exactly two participants, the sender and the recipient, which otherwise behaves like a normal thread. The handoff command gets the same treatment: if no thread is specified, the handoff goes through the 1:1 thread. When the integration branch is ready for merge, run `herdr-threads join dev-herdr-threads` (thread taQXwBH7X) and send a --nudge message there stating that this feature is ready for integration into main.
 branch: super-auto/automatic-one-to-one-threads
@@ -28,11 +28,11 @@ codeBuckets:
   pendingRetry:
   parked:
   stalled: false
-  review: PENDING
+  review: CLEAN
 
 Code phase started: ht-e99.6 is closed design-only repair at ce11790f, with no implementation merge.
 
-roastCodeRound: 1
+roastCodeRound: 2
 
 Whole-epic successor: `.superpowers/sdd/ht-e99-plan/whole-epic-review-2.md` is CLEAN at 75d6fb5f662d4f10ccdc540accd909fc935e6969 against main6107075f; original NEEDS_FIX review preserved. Task9 repair independently verified. Full suite remains unmeasured. PR roast round 1 begins at the checkpoint containing this state.
 
@@ -55,3 +55,5 @@ Current-base refresh merged: ht-e99.9 at cbf055c709bf3f15fcfc38b993ce2adbb490c98
 Whole-epic-review-3: CLEAN at0d21f5f9 against incorporatedmainbcb49485, no required findings. Review preserved. Root requery then found main945107f6acd8b05ade7b5e2d9f8b293282aa06f4: one test-only commit fixing partial snapshot staging in two topology fixtures. Required Task12 will import this final-suite-relevant fix through reviewed pipeline before successor whole review and PR2. Current codeBuckets.review stays PENDING for the next combined candidate; phase code remains, no fresh full-suite success.
 
 Topology fixture refresh merged: ht-e99.10 at8f661e1cafd047756a71141d75d3124a0a3a2e67, reviewed source10f81048, identical tree77619f64. Main945107f6 ancestry verified; imported fixture loops byte-identical to main, feature two direct_recipient None fields retained. Fresh task review CLEAN; serial29/29 focused and fmt/lint/default/diff/scopedleak passed. All source/helpers quiescent. Fresh whole-epic-review-4 PENDING at next checkpoint; phase code/reviewPENDING remain until persisted verdict.
+
+Whole-epic final successor: `.superpowers/sdd/ht-e99-plan/whole-epic-review-4.md` CLEAN atfa4c97b0 against main945107f6; all13 scoped leaves closed, remaining buckets empty/stalledfalse. Fresh reviewed baseline plus complete two-file import delta verified; original reviews and failed full gate preserved. Latestmetrics5:12 implementation merges versus13 leaves (design-only.6). PR roast round2 begins at this exact checkpoint; prior round1 report supplied, late-round stance/regression lane required. Fullsuite/five-minute proof remains outstanding after roast.
