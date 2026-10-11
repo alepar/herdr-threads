@@ -35,11 +35,11 @@ use std::io::{self, Write};
 ///    automatic handoff uses handoff.automatic_v1 within version 6.
 pub const PROTOCOL_VERSION: u16 = 6;
 pub const MAX_WIRE_FRAME_BYTES: usize = 1_048_576;
-/// Only replies to the automatic topology request family may use this envelope.
+/// Only replies to modern explicitly frozen-policy automatic topology requests use this envelope.
 pub const MAX_AUTOMATIC_RESPONSE_FRAME_BYTES: usize = 2 * MAX_WIRE_FRAME_BYTES;
 
 pub fn automatic_response_request(command: &Command) -> bool {
-    matches!(command, Command::AutomaticBootstrap(_))
+    matches!(command, Command::AutomaticBootstrap(request) if request.identity.plan.payload.handoff.policy.is_some())
 }
 pub fn automatic_response_result(result: &Result<CommandResult, ApiError>) -> bool {
     matches!(

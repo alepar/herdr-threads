@@ -653,8 +653,12 @@ parent. It derives supported generated startup prompts, frozen template/native a
 operator reason and every request/result/reservation/recovery/local envelope. Independent
 metadata maxima may therefore be refused even when the body itself is within 65,536
 UTF-8 bytes. No retained identity, body or history is clipped. The framed response
-exception is exactly 2 MiB for the AutomaticBootstrap request/result family; every
-other request, response, watch, service and error keeps its existing 1 MiB ceiling.
+exception is exactly 2 MiB only for a known AutomaticBootstrap request with a frozen
+modern policy (Some) and its matching result family. Historical absent-policy (None)
+requests retain their preexisting 1 MiB response ceiling, as do every other request,
+response, watch, service and error. The historical 256 KiB canonical recovery-result
+limit is separate: transport does not add a semantic validator for handcrafted
+historical results between 256 KiB and 1 MiB.
 The client chooses its allocation limit from the known request before reading the
 frame body and checks result family plus request/instance/boot and embedded original
 identity correlation.

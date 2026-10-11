@@ -5777,6 +5777,9 @@ mod live {
                 Self::with_body(kind, "literal work")
             }
             fn with_body(kind: &'static str, body: &str) -> Self {
+                Self::with_body_policy(kind, body, false)
+            }
+            fn with_body_policy(kind: &'static str, body: &str, historical: bool) -> Self {
                 let base = Fixture::aligned(Fault::None, None);
                 base.journal.complete(&base.peer.reference).unwrap();
                 let parsed = super::super::super::super::commands::parse_argv([
@@ -5796,7 +5799,7 @@ mod live {
                     panic!("parsed new-tab route")
                 };
                 assert!(request.automatic);
-                let identity = prepare_automatic(
+                let mut identity = prepare_automatic(
                     &request,
                     Preparation {
                         claim: &base.peer.identity.claim,
@@ -5809,6 +5812,11 @@ mod live {
                     },
                 )
                 .unwrap();
+                if historical {
+                    identity.plan.payload.handoff.policy = None;
+                    identity.digest = identity.semantic_digest().unwrap();
+                    identity.validate().unwrap();
+                }
                 let reference = publish_automatic(&base.journal, &identity, 1).unwrap();
                 let store = crate::store::SqliteStore::new(
                     crate::store::connection::StoreContext::new(
@@ -6342,6 +6350,223 @@ mod live {
                 created.witness = request.expected_witness.clone();
                 CreateTabOutcome::Created(Box::new(created))
             }
+        }
+
+        fn attached_recovery_fixture(
+            historical: bool,
+            large: bool,
+        ) -> (
+            AutoPeer,
+            AutomaticBootstrapMutation,
+            AutomaticBootstrapResult,
+        ) {
+            let body = if large {
+                "\0".repeat(16000)
+            } else {
+                "work".into()
+            };
+            let peer = AutoPeer::with_body_policy("codex", &body, historical);
+            let attempt = BootstrapAttempt::first();
+            let call = |action| {
+                peer.call(
+                    Command::AutomaticBootstrap(Box::new(AutomaticBootstrapMutation {
+                        identity: peer.identity.clone(),
+                        action,
+                    })),
+                    &super::super::super::super::cooperative_budget(&peer.base.clock),
+                )
+            };
+            call(AutomaticBootstrapAction::Begin).unwrap();
+            call(AutomaticBootstrapAction::Reserve { attempt }).unwrap();
+            let mut created = crate::protocol::handoff::topology_contract_tests::created();
+            created.witness = peer.base.witness.clone();
+            call(AutomaticBootstrapAction::RecordCreated {
+                attempt,
+                evidence: created.clone(),
+            })
+            .unwrap();
+            let CommandResult::SeatResolved(recipient) =
+                call(AutomaticBootstrapAction::Resolve { attempt }).unwrap()
+            else {
+                panic!("resolved")
+            };
+            let attachment =
+                AutomaticBootstrapAttachment::derive(&peer.identity, attempt, created, recipient)
+                    .unwrap();
+            call(AutomaticBootstrapAction::Attach(Box::new(
+                attachment.clone(),
+            )))
+            .unwrap();
+            let mut expected = peer.status();
+            let inspection = expected.recovery_inspection().unwrap();
+            let disposition = AutomaticBootstrapRecoveryDisposition::Cancelled {
+                reason: "inspected cancellation".into(),
+                quiescence: BootstrapQuiescenceAssertion::InspectedQuiescence,
+                attached_child: Some(Box::new(attachment.child)),
+            };
+            let request = AutomaticBootstrapMutation {
+                identity: peer.identity.clone(),
+                action: AutomaticBootstrapAction::Recover {
+                    attempt,
+                    inspection: inspection.clone(),
+                    disposition: disposition.clone(),
+                },
+            };
+            request.validate().unwrap();
+            let uid = unsafe { libc::geteuid() };
+            expected.state = BootstrapState::Cancelled;
+            expected.administrative_revision = 1;
+            expected.recovery = Some(AutomaticBootstrapRecoveryResult {
+                operation: request.operation().unwrap(),
+                attempt,
+                inspection,
+                disposition,
+                operator_uid: uid,
+                operator_provenance: format!("operator:local-user:{uid}"),
+                state: BootstrapState::Cancelled,
+                administrative_revision: 1,
+            });
+            let bytes = serde_json::to_vec(&CommandResult::AutomaticBootstrap(Box::new(
+                expected.clone(),
+            )))
+            .unwrap();
+            if large {
+                assert!(bytes.len() > 262144 && bytes.len() < 2097152);
+                assert!(serde_json::to_vec(&request).unwrap().len() <= 262144);
+            } else {
+                assert!(bytes.len() <= 262144);
+            }
+            (peer, request, expected)
+        }
+        fn recovery_counts(peer: &AutoPeer) -> (i64, i64, String, i64) {
+            let state = peer.base.peer.state.lock().unwrap();
+            state.db.query_row("SELECT (SELECT count(*) FROM automatic_bootstrap_recoveries),(SELECT count(*) FROM automatic_bootstrap_keys),state,administrative_revision FROM automatic_bootstrap_parents", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).unwrap()
+        }
+        fn install_oversized_historical_recovery(
+            peer: &AutoPeer,
+            expected: &AutomaticBootstrapResult,
+        ) {
+            let bytes = serde_json::to_vec(&CommandResult::AutomaticBootstrap(Box::new(
+                expected.clone(),
+            )))
+            .unwrap();
+            let recovery = expected.recovery.as_ref().unwrap();
+            let state = peer.base.peer.state.lock().unwrap();
+            // A coherent typed row models retained historical corruption; no malformed JSON.
+            state.db.execute("UPDATE automatic_bootstrap_parents SET state='cancelled',administrative_revision=1", []).unwrap();
+            state.db.execute("INSERT INTO automatic_bootstrap_recoveries(parent_id,attempt,decision_kind,operation,revision,result_json) SELECT id,1,'cancellation',?1,1,?2 FROM automatic_bootstrap_parents", rusqlite::params![recovery.operation.as_str(), bytes]).unwrap();
+        }
+        #[test]
+        fn historical_automatic_recovery_over_limit_write_refuses_atomically() {
+            let (peer, request, _) = attached_recovery_fixture(true, true);
+            let before = recovery_counts(&peer);
+            let status = peer.status();
+            let result = peer.call(
+                Command::AutomaticBootstrap(Box::new(request)),
+                &super::super::super::super::cooperative_budget(&peer.base.clock),
+            );
+            assert!(
+                result
+                    .is_err_and(|e| e.code == crate::protocol::results::ErrorCode::InvalidRequest),
+                "historical oversized result was retained"
+            );
+            assert_eq!(recovery_counts(&peer), before);
+            assert_eq!(peer.status(), status);
+        }
+        #[test]
+        fn historical_automatic_recovery_over_limit_read_refuses() {
+            let (peer, request, expected) = attached_recovery_fixture(true, true);
+            install_oversized_historical_recovery(&peer, &expected);
+            let result = peer.call(
+                Command::AutomaticBootstrap(Box::new(AutomaticBootstrapMutation {
+                    identity: request.identity,
+                    action: AutomaticBootstrapAction::Status,
+                })),
+                &super::super::super::super::cooperative_budget(&peer.base.clock),
+            );
+            assert!(
+                result.is_err_and(|e| e.code == crate::protocol::results::ErrorCode::StoreCorrupt),
+                "oversized historical recovery was readable"
+            );
+        }
+        #[test]
+        fn historical_automatic_recovery_over_limit_replay_refuses() {
+            let (peer, request, expected) = attached_recovery_fixture(true, true);
+            install_oversized_historical_recovery(&peer, &expected);
+            let result = peer.call(
+                Command::AutomaticBootstrap(Box::new(request)),
+                &super::super::super::super::cooperative_budget(&peer.base.clock),
+            );
+            assert!(
+                result.is_err_and(|e| e.code == crate::protocol::results::ErrorCode::StoreCorrupt),
+                "oversized historical recovery replayed"
+            );
+        }
+        #[test]
+        fn historical_automatic_recovery_below_limit_replays_exact_bytes() {
+            let (peer, request, expected) = attached_recovery_fixture(true, false);
+            let budget = super::super::super::super::cooperative_budget(&peer.base.clock);
+            let expected = CommandResult::AutomaticBootstrap(Box::new(expected));
+            assert_eq!(
+                peer.call(
+                    Command::AutomaticBootstrap(Box::new(request.clone())),
+                    &budget
+                )
+                .unwrap(),
+                expected
+            );
+            let saved: Vec<u8> = peer
+                .base
+                .peer
+                .state
+                .lock()
+                .unwrap()
+                .db
+                .query_row(
+                    "SELECT result_json FROM automatic_bootstrap_recoveries",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(saved, serde_json::to_vec(&expected).unwrap());
+            assert_eq!(
+                peer.call(Command::AutomaticBootstrap(Box::new(request)), &budget)
+                    .unwrap(),
+                expected
+            );
+            let after: Vec<u8> = peer
+                .base
+                .peer
+                .state
+                .lock()
+                .unwrap()
+                .db
+                .query_row(
+                    "SELECT result_json FROM automatic_bootstrap_recoveries",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(after, saved);
+        }
+        #[test]
+        fn modern_automatic_recovery_above_historical_limit_succeeds_and_replays() {
+            let (peer, request, expected) = attached_recovery_fixture(false, true);
+            let budget = super::super::super::super::cooperative_budget(&peer.base.clock);
+            let expected = CommandResult::AutomaticBootstrap(Box::new(expected));
+            assert_eq!(
+                peer.call(
+                    Command::AutomaticBootstrap(Box::new(request.clone())),
+                    &budget
+                )
+                .unwrap(),
+                expected
+            );
+            assert_eq!(
+                peer.call(Command::AutomaticBootstrap(Box::new(request)), &budget)
+                    .unwrap(),
+                expected
+            );
         }
 
         #[test]

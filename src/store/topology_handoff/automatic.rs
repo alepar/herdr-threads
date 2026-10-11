@@ -58,6 +58,13 @@ fn decode<T: DeserializeOwned + Serialize>(b: &[u8], limit: usize) -> Result<T, 
     }
     Ok(decoded)
 }
+fn recovery_result_limit(id: &AutomaticBootstrapIdentity) -> usize {
+    if id.plan.payload.handoff.policy.is_some() {
+        2097152
+    } else {
+        262144
+    }
+}
 fn same<T: Serialize>(a: &T, b: &T) -> Result<bool, ApiError> {
     Ok(encode(a, 2097152)? == encode(b, 2097152)?)
 }
@@ -174,9 +181,10 @@ pub(crate) fn current(
             return Err(corrupt());
         }
     }
-    let recovery_bytes:Option<Vec<u8>>=db.query_row("SELECT substr(result_json,1,2097153) FROM automatic_bootstrap_recoveries WHERE parent_id=?1 ORDER BY revision DESC LIMIT 1",[parent],|r|r.get(0)).optional().map_err(store_error)?;
+    let recovery_limit = recovery_result_limit(id);
+    let recovery_bytes:Option<Vec<u8>>=db.query_row("SELECT substr(result_json,1,?2) FROM automatic_bootstrap_recoveries WHERE parent_id=?1 ORDER BY revision DESC LIMIT 1",params![parent,(recovery_limit+1) as u32],|r|r.get(0)).optional().map_err(store_error)?;
     let recovery = if let Some(bytes) = recovery_bytes {
-        let CommandResult::AutomaticBootstrap(saved) = decode(&bytes, 2097152)? else {
+        let CommandResult::AutomaticBootstrap(saved) = decode(&bytes, recovery_limit)? else {
             return Err(corrupt());
         };
         let recovery = saved.recovery.ok_or_else(corrupt)?;
@@ -953,9 +961,10 @@ pub(crate) fn recovery_replay(
     };
     let operation = request.operation().map_err(ApiError::invalid_request)?;
     let p = parent(db, id)?;
-    let bytes:Option<Vec<u8>>=db.query_row("SELECT substr(result_json,1,2097153) FROM automatic_bootstrap_recoveries WHERE parent_id=?1 AND operation=?2",params![p,operation.as_str()],|r|r.get(0)).optional().map_err(store_error)?;
+    let recovery_limit = recovery_result_limit(id);
+    let bytes:Option<Vec<u8>>=db.query_row("SELECT substr(result_json,1,?3) FROM automatic_bootstrap_recoveries WHERE parent_id=?1 AND operation=?2",params![p,operation.as_str(),(recovery_limit+1) as u32],|r|r.get(0)).optional().map_err(store_error)?;
     let Some(bytes) = bytes else { return Ok(None) };
-    let result: CommandResult = decode(&bytes, 2097152)?;
+    let result: CommandResult = decode(&bytes, recovery_limit)?;
     let CommandResult::AutomaticBootstrap(saved) = &result else {
         return Err(corrupt());
     };
@@ -1080,7 +1089,7 @@ pub(crate) fn recover(
         administrative_revision: s.administrative_revision,
     });
     let result = CommandResult::AutomaticBootstrap(Box::new(s.clone()));
-    let bytes = encode(&result, 2097152)?;
+    let bytes = encode(&result, recovery_result_limit(id))?;
     register_key(tx, id, p, kind, &operation, attempt.get())?;
     match s.state {
         BootstrapState::Prepared => {

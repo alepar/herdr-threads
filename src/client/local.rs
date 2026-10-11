@@ -207,7 +207,7 @@ impl LocalSocketClient {
                 "unknown outcome after request submission",
             )
         })?;
-        if automatic
+        if matches!(&request.command, Command::AutomaticBootstrap(_))
             && response.result.is_ok()
             && !crate::protocol::wire::automatic_response_result(&response.result)
             || response_bytes.len() > MAX_FRAME_BYTES
@@ -226,7 +226,15 @@ impl LocalSocketClient {
                 }
                 _ => None,
             };
-            if actual.is_some_and(|actual| actual != &expected.identity) {
+            if actual.is_some_and(|actual| {
+                match (
+                    serde_json::to_vec(actual),
+                    serde_json::to_vec(&expected.identity),
+                ) {
+                    (Ok(actual), Ok(expected)) => actual != expected,
+                    _ => true,
+                }
+            }) {
                 return Err(Self::error(
                     ErrorCode::UnknownOutcome,
                     "unknown outcome: automatic original mismatch",
