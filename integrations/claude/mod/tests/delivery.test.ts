@@ -541,6 +541,20 @@ test('lazy rows are appended at once, busy or idle, and acked via append', async
   expect(idle.submits.length).toBe(0)
 })
 
+test('a message another binding already settled (ack_required false) is appended like a lazy row and never wakes an idle session', async () => {
+  const idle = await harness({ state: IDLE }).boot()
+  idle.line(msg('m1', { ack_required: false }))
+  await flush()
+  expect(idle.appends.length).toBe(1)
+  expect(idle.submits.length).toBe(0)
+  expect(idle.ackRuns()[0].slice(5)).toEqual(['--via', 'append', 'm1'])
+  const busy = await harness({ state: busyState() }).boot()
+  busy.line(msg('m1', { ack_required: false }))
+  await flush()
+  expect(busy.appends.length).toBe(1)
+  expect(busy.submits.length).toBe(0)
+})
+
 test('an append with deny keeps the lazy row and is retried later', async () => {
   const h = await harness({ state: IDLE }).boot()
   h.appendResult = () => ({ deny: 'readonly' })
@@ -692,7 +706,7 @@ test('per-id ack results: only retryable ids stay for a retry', async () => {
   expect(h.core.snapshot().rec.delivered.m1).toBe('context')
 })
 
-test('an already-settled message line is delivered and acked like a pending one', async () => {
+test('an already-settled message line is delivered (appended, like a lazy row) and acked', async () => {
   const h = await harness({ state: busyState() }).boot()
   h.ackResult = () => ({ code: 0, stdout: JSON.stringify({ id: 'm9', result: 'already_settled' }) })
   h.line(msg('m9', { ack_required: false }))
@@ -700,7 +714,7 @@ test('an already-settled message line is delivered and acked like a pending one'
   await flush()
   expect(h.ackRuns().length).toBe(1)
   expect(h.ackRuns()[0]).toContain('m9')
-  expect(h.core.snapshot().rec.delivered.m9).toBe('context')
+  expect(h.core.snapshot().rec.delivered.m9).toBe('append')
   expect(Object.keys(h.core.snapshot().rec.unacked)).toEqual([])
 })
 

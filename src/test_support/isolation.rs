@@ -199,8 +199,16 @@ pub fn ambient_harness_vars() -> (Vec<&'static str>, Vec<String>) {
     (names, prefixes)
 }
 
+/// Whether `name` is a harness config-dir variable (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`,
+/// `HERMES_HOME`, ...): isolation, not attribution, so the prefix scrub keeps it. Dropping an
+/// inherited isolated config dir would let the child fall back to the real user config.
+fn is_config_dir_var(name: &str) -> bool {
+    name.ends_with("_HOME") || name.ends_with("_CONFIG_DIR")
+}
+
 /// `env_remove` every ambient harness variable of `inherited` that `command` does not already
-/// set or remove explicitly (an explicit choice wins).
+/// set or remove explicitly (an explicit choice wins). Config-dir variables are never removed by
+/// prefix ([`is_config_dir_var`]).
 pub(super) fn remove_ambient_harness_env(
     command: &mut Command,
     inherited: impl IntoIterator<Item = OsString>,
@@ -215,7 +223,10 @@ pub(super) fn remove_ambient_harness_env(
     }
     for key in inherited {
         let lossy = key.to_string_lossy();
-        if !explicit.contains(&key) && prefixes.iter().any(|prefix| lossy.starts_with(prefix)) {
+        if !explicit.contains(&key)
+            && !is_config_dir_var(&lossy)
+            && prefixes.iter().any(|prefix| lossy.starts_with(prefix))
+        {
             command.env_remove(&key);
         }
     }
@@ -495,6 +506,8 @@ mod tests {
             [
                 "CODEX_THREAD_ID",
                 "CODEX_HOME",
+                "CLAUDE_CONFIG_DIR",
+                "HERMES_HOME",
                 "HERMES_X",
                 "ANTIGRAVITY_AGENT",
                 "CLAUDECODE",
@@ -509,7 +522,6 @@ mod tests {
             .collect();
         for removed in [
             "CODEX_THREAD_ID",
-            "CODEX_HOME",
             "HERMES_X",
             "ANTIGRAVITY_AGENT",
             "CLAUDECODE",
@@ -525,6 +537,11 @@ mod tests {
             Some(&Some(OsString::from("explicit")))
         );
         assert!(!envs.contains_key("PATH") && !envs.contains_key("HOME"));
+        // Config-dir variables are isolation, not attribution: an inherited isolated config dir
+        // must reach the child, never be dropped so it falls back to the real user config.
+        for kept in ["CODEX_HOME", "CLAUDE_CONFIG_DIR", "HERMES_HOME"] {
+            assert!(!envs.contains_key(kept), "{kept} kept");
+        }
     }
 
     #[test]

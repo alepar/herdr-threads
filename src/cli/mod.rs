@@ -1142,12 +1142,14 @@ where
         )?;
         return Ok(None);
     }
+    let text_read = text_display(&parsed);
     match parsed.action {
         CliAction::Wire(command) => {
             let (_, client) = connection.get()?;
             let read = command.clone();
             let result = run_wire_result(command, &parsed.output, client, budget, writer)?;
-            if let Some(message) = full_body_read(&read, &result)
+            if text_read
+                && let Some(message) = full_body_read(&read, &result)
                 && let Some(claim) = body_reader_claim(
                     &parsed.output,
                     caller_pane,
@@ -1278,6 +1280,13 @@ fn run_wire_result<C: LocalClient + ?Sized, W: Write>(
         }
     };
     Ok(result)
+}
+
+/// Whether this read is a text display (not `--json`, not `--machine`). Like `inbox`, only a
+/// text display moves the reading binding's cursor; machine reads are read-only.
+fn text_display(parsed: &commands::ParsedCli) -> bool {
+    parsed.output.format == OutputFormat::Text
+        && parsed.presentation != output::Presentation::Machine
 }
 
 /// The message a `body` read showed whole (ht-54r F1): the written chunk reaches the end of the
@@ -3074,6 +3083,7 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
             role,
         );
     }
+    let text_read = text_display(&parsed);
     if let CliAction::Wire(mut command) = parsed.action {
         // An agent's machine read of its own inbox carries its claim so the daemon serves that
         // binding's stream (every role); machine reads move no cursor.
@@ -3099,7 +3109,8 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
             &|| cooperative_budget(clock),
             writer,
         )?;
-        if let Some(message) = full_body_read(&read, &result)
+        if text_read
+            && let Some(message) = full_body_read(&read, &result)
             && let Ok(Some(context)) = contexts.current()
             && let Ok(claim) = role_claim(contexts, &context, role)
         {

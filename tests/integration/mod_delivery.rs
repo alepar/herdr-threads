@@ -1656,6 +1656,45 @@ fn full_body_read_passes_later_message_the_binding_already_displayed() {
     assert_eq!(rig.receipt_state(&long), "pending", "body settles nothing");
 }
 
+/// ht-54r F1: like `inbox --json` and `inbox --machine`, a `--json` or `--machine` body read is
+/// read-only, even when whole; only the text display moves the reading binding's cursor.
+#[test]
+fn machine_and_json_body_reads_do_not_advance_binding_cursor() {
+    let rig = Rig::new();
+    let mut watch = rig.raw_watch(SESSION_B);
+    watch.wait_connected();
+    let long = rig.send_ordinary(&"j".repeat(9000));
+    let line = watch.wait_item(&long);
+    let refused = rig.ack_result(SESSION_B, "context", &long);
+    assert_eq!(refused["result"], "refused_terminal", "{refused}");
+    let (binding, _, _) = open_binding_of(&rig, SESSION_B).expect("SB binding");
+    let before = cursor_of(&rig, &binding);
+    let body_step = rig.marker_steps(line["body"].as_str().unwrap()).remove(0);
+    for flag in ["--json", "--machine"] {
+        let mut argv = body_step.clone();
+        argv.extend([
+            flag.to_owned(),
+            "--max-bytes".to_owned(),
+            "65536".to_owned(),
+        ]);
+        let out = rig.run_marker_step(&argv);
+        assert_eq!(out.code, 0, "{argv:?}: {}{}", out.stdout, out.stderr);
+        assert!(
+            out.stdout.matches('j').count() >= 9000,
+            "whole: {}",
+            out.stdout
+        );
+        assert_eq!(
+            cursor_of(&rig, &binding),
+            before,
+            "{flag} body read is read-only"
+        );
+    }
+    let out = rig.run_marker_step(&body_step);
+    assert_eq!(out.code, 0, "{body_step:?}: {}{}", out.stdout, out.stderr);
+    assert_eq!(cursor_of(&rig, &binding), Some(sequence_of(&rig, &long)));
+}
+
 /// ht-54r F1: only a full read advances. A first chunk, or a read that starts at an explicit
 /// offset and reaches the end, leaves the cursor where it was; following the body's own
 /// continuation to the end is a full read.

@@ -719,8 +719,9 @@ enroll). It is the one write a declared subagent may send, because it changes no
 actor, creates no receipt, settles no obligation and attributes no action. A cursor never moves backwards,
 never moves past an unshown message the seat can receive, and a read never enrolls. A client that fails to
 send it only causes redisplay (at least once). Only a top-level binding's display ACK settles the seat's
-obligation; other bindings see that message in their own stream marked settled. A full `body <id>` read is
-such a display (ht-54r F1): when the written chunk reaches the end of the body and the read began at byte 0
+obligation; other bindings see that message in their own stream marked settled. A full text `body <id>` read
+is such a display (ht-54r F1; a `--json` or `--machine` body read, like a machine inbox read, is read-only and
+moves nothing): when the written chunk reaches the end of the body and the read began at byte 0
 or followed the body's own continuation, the CLI sends that one id in the calling binding's `AdvanceCursors`
 (any role; a subagent moves only its own cursor). So a message delivered truncated, whose mod or hook
 settlement is refused, no longer holds the binding's cursor once it is read whole. A partial read (a chunk
@@ -1035,7 +1036,7 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   generation and its offered ledger, not the process.
 - **The offered ledger is process-local.** A daemon restart loses it: a later confirm is `not_offered`, the items
   stay pending, and the next pull offers them again (at-least-once): a pull is never answered unchanged before the
-  daemon process has read the seat's whole pending set, whatever version the hook last saw.
+  daemon process has read the binding's whole stream (pending plus settled-but-unread), whatever version the hook last saw.
 - **Re-offers are bounded.** An unconfirmed id is shown at most 3 times per binding generation, 60 s apart, to
   each binding; after that it waits for `inbox`. Each binding has its own offered ledger: at most 256 ids, never
   evicting one. While it is full, new ids are not shown to that binding by the hook (they stay pending). While a

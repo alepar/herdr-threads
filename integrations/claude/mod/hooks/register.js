@@ -288,6 +288,8 @@ export function createCore(io) {
         user_intent: o.user_intent ?? null,
         body: String(o.body ?? ''),
         truncated,
+        // mail another binding already settled carries no obligation: appended like a lazy row, never an idle wake
+        passive: o.kind === 'lazy' || o.ack_required === false,
         run: S.run,
         ackable: !truncated && (o.kind === 'lazy' || o.kind === 'message'),
       })
@@ -410,7 +412,7 @@ export function createCore(io) {
         S.turns.wake = null
         persistTurns()
       }
-      const items = S.queue.filter((q) => q.kind !== 'lazy' && !q.inflight && q.run === S.run && !predHas(q.id))
+      const items = S.queue.filter((q) => !q.passive && !q.inflight && q.run === S.run && !predHas(q.id))
       if (!(items.length || S.turns.wake) || S.submitInflight) return
       if (busy()) return
       const ids = items.map((i) => i.id)
@@ -427,7 +429,7 @@ export function createCore(io) {
         if (io.now() - S.draftSince < DRAFT_WAIT_MS) return held('draft', ids)
       }
       S.draftSince = null
-      const batch = S.queue.filter((q) => q.kind !== 'lazy' && !q.inflight && q.run === S.run && !predHas(q.id))
+      const batch = S.queue.filter((q) => !q.passive && !q.inflight && q.run === S.run && !predHas(q.id))
       if (!batch.length && !S.turns.wake) return
       const gen = S.gen
       for (const it of batch) it.inflight = true
@@ -514,7 +516,7 @@ export function createCore(io) {
   async function pumpLazy() {
     if (S.inert || S.disposed || S.appendInflight || !S.live) return
     if (io.now() < S.appendBackoffUntil) return
-    const batch = S.queue.filter((q) => q.kind === 'lazy' && !q.inflight && q.run === S.run)
+    const batch = S.queue.filter((q) => q.passive && !q.inflight && q.run === S.run)
     if (!batch.length) return
     const gen = S.gen
     for (const it of batch) it.inflight = true
@@ -708,7 +710,7 @@ export function createCore(io) {
     const answered =
       result && result.result !== undefined && result.deny === undefined && result.isError !== true
     if (!answered || !S.live) return result
-    const batch = S.queue.filter((q) => q.kind !== 'lazy' && !q.inflight && q.run === S.run && !predHas(q.id))
+    const batch = S.queue.filter((q) => !q.passive && !q.inflight && q.run === S.run && !predHas(q.id))
     if (!batch.length) return result
     void complete(batch, 'context')
     return { ...result, context: [...(result.context ?? []), frame(batch)] }
