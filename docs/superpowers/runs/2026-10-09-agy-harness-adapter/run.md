@@ -6,7 +6,7 @@ resumeChange: 2026-10-10 · "I think this is way too much text… marks everythi
 resumeChange: 2026-10-10 · "the nudge should probably say something minimal, like 'wake up' and then let hook inject the actual message" · added leaf for adapter-declared minimal wake text (R18): agy and Claude mod wake with 'wake up', bodies injected at turn start
 resumeChange: 2026-10-10 · "also let's add to AGENTS.md that when designing comms, we strive to design the protocols to be token efficient as much as possible" · folded into ht-poh.13: AGENTS.md 'Token-efficient communication' rule (no dedicated token-efficiency research found in ~/Documents)
 resumeChange: 2026-10-10 · main merge review mZG2gj0pM (owner Main, user-delegated merge authority): fix S1 (agy informational notices between lifecycle check-ins) and dispose flaky ht-01s + unclassified failures without weakening budgets · reopened epic; fix beads filed; re-enter super-code, scoped post-cap audit, re-sweep
-phase: fix-loop
+phase: finish
 codeMechanism: Workflow
 
 spec: 2026-10-09-agy-harness-adapter-design.md
@@ -32,13 +32,13 @@ feedback: herdr prompt to superpowers workspace pane wB:p8 (2026-10-10), draft u
 friction: 6 events
 
 codeBuckets:
-  completed: every task bead in the tree incl. reopened ht-poh.53–58 (root ht-poh closed, stopReason root-closed); ht-poh.13 and ht-poh.27 closed as superseded
+  completed: every task bead in the tree incl. reopened ht-poh.53–61 (root ht-poh closed, stopReason root-closed); ht-poh.13 and ht-poh.27 closed as superseded
   escalated: none (ht-poh.13 superseded by ht-poh.41 after the human ran the golden generator; gate ht-poh.19 released)
   pendingRetry:
   parked:
   stalled: false
-  review: ready — final reviews 9–10 must-fixes landed (ht-poh.57, 58, SKILL N2, R13 report, final-SHA evidence); scoped post-cap audit 417c534f..9af7ae9f 0 Blocking / 0 Should-fix; Minors filed ht-7jh, ht-10p, ht-86a — code-final-review-9.md, code-final-review-10.md, 2026-10-10-agy-harness-adapter-scoped-audit-417c534f-9af7ae9f.md
-  sweep: 9af7ae9 — 4926 passed, 0 failed, 0 errors, 44 skipped; failing: none; command: nice cargo nextest run --locked --all-targets --all-features (287 s; check-no-leaked-processes --run-id clean) @ 9af7ae9f
+  review: ready — final review 13 (38c5fef6): no Critical/Important code defect; its must-fixes were records + final-SHA evidence, now done; ht-poh.59–61 landed; v0.6.4/v0.7.0 absorbed — code-final-review-9.md … -13.md
+  sweep: 38c5fef — 5066 passed, 0 failed, 0 errors, 44 skipped; failing: none; command: nice cargo nextest run --locked --all-targets --all-features (266 s; check-no-leaked-processes --run-id clean) @ 38c5fef6
   slowness: round 1 allowlist hot-file cap raised to 4; round 2 graph-bound, edge audit armed; audit 1 left ht-poh.5 <- ht-poh.4.5 drop for an operator (parked)
   worktreesKept: none
   processSweep: stopped 0 · survived 0
@@ -88,3 +88,5 @@ approvals:
 - top-split · auto · ht-poh.1 LEAF, ht-poh.7 LEAF, ht-poh.2 PROMOTE, ht-poh.3 PROMOTE, ht-poh.4 PROMOTE, ht-poh.5 LEAF, ht-poh.6 PROMOTE
 - coverage-round-1 · c1 auto applied, c2 auto applied, c3 auto applied, c4 auto applied, c5 auto rejected, c6 auto applied, c7 auto applied, c8 auto applied, c9 auto applied, c10 auto rejected, c11 auto applied, c12 auto rejected, c13 auto applied, c14 auto applied, c15 auto rejected · R1–R13 canonical (+R14 R15 R16 from r-new) · requirements: 13 · mapped: 12 · unmapped: 1 (R13)
 - coverage-round-2 · c16–c28 auto applied, c29 auto rejected, c30 auto applied, c31 auto rejected, c32 auto rejected, c33–c35 auto applied, c36 auto rejected, c37 auto applied · requirements: 16 · mapped: 16 · unmapped: 0 · divergence: findings 14 → 26, novel 85%, widening: yes (round 1 inputs hid owns lines and mis-matched epic goals; fixed for round 2) · integration sweep ht-poh.11
+baseAbsorbed: 945107f6 (main v0.6.4) -> d9c19759 — 1 conflict (integrations/claude/mod/README.md) + 1 silent mod-test break (delivery.test.ts:249)
+baseAbsorbed: 478ec4a9 (main v0.7.0) -> d79e6b6d — 11 conflicts; branch migration 0029_seat_wake_on renumbered to 0031; main's automatic new-tab harness literals moved behind the registry; follow-up ht-poh.61
