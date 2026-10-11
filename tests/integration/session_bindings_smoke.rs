@@ -784,15 +784,8 @@ fn config1_claude_main_and_two_subagents() {
     );
 }
 
-// FINDING (ht-54r.19): a subagent's plain `ht inbox` (the default text route) cannot display and
-// cannot move its own cursor. `run_cooperative` sends only top-level callers to
-// `run_display_inbox`, so a subagent's text inbox reaches the daemon with no seat
-// ("selected seat required for this query"); with that gate lifted the page displays, but the
-// `AdvanceCursors` that follows carries the subagent's claim and the daemon's write refusal
-// (`subagent_read_only`) drops it silently, so the cursor stays put. Spec §2 says a subagent's
-// display advances its own cursor. Ignored until ht-6v2 fixes the product.
+// Kills: a subagent's text inbox that cannot display or advance its own cursor (fixed by ht-54r.58).
 #[test]
-#[ignore = "product gap ht-6v2: a subagent's text inbox cannot display or advance its own cursor"]
 fn config1_subagent_display_advances_its_own_cursor() {
     let Some(mut smoke) = Smoke::new("config1_subagent_display_advances_its_own_cursor") else {
         return;
