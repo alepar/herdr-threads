@@ -1145,7 +1145,19 @@ where
     match parsed.action {
         CliAction::Wire(command) => {
             let (_, client) = connection.get()?;
-            run_wire(command, &parsed.output, client, budget, writer)?;
+            let read = command.clone();
+            let result = run_wire_result(command, &parsed.output, client, budget, writer)?;
+            if let Some(message) = full_body_read(&read, &result)
+                && let Some(claim) = body_reader_claim(
+                    &parsed.output,
+                    caller_pane,
+                    paths,
+                    connection,
+                    clock.as_ref(),
+                )
+            {
+                advance_over_body_read(client, clock.as_ref(), claim, message);
+            }
             Ok(None)
         }
         action => {
@@ -1171,6 +1183,17 @@ pub(crate) fn run_wire<C: LocalClient + ?Sized, W: Write>(
     budget: &dyn Fn() -> CallBudget,
     writer: &mut W,
 ) -> Result<(), RunError> {
+    run_wire_result(command, output_spec, client, budget, writer).map(|_| ())
+}
+
+/// [`run_wire`], returning the result exactly as it was written.
+fn run_wire_result<C: LocalClient + ?Sized, W: Write>(
+    command: Command,
+    output_spec: &OutputSpec,
+    client: &C,
+    budget: &dyn Fn() -> CallBudget,
+    writer: &mut W,
+) -> Result<CommandResult, RunError> {
     let command = match command {
         Command::Inbox(query)
             // A continuation must stay in the protocol that captured it.
@@ -1254,7 +1277,97 @@ pub(crate) fn run_wire<C: LocalClient + ?Sized, W: Write>(
             modes.write(bytes, max_bytes, writer)?;
         }
     };
-    Ok(())
+    Ok(result)
+}
+
+/// The message a `body` read showed whole (ht-54r F1): the written chunk reaches the end of the
+/// body and the read either started at byte 0 or followed the body's own continuation. A read
+/// from an explicit `--offset` past 0, or a chunk short of the end, is partial.
+fn full_body_read(
+    command: &Command,
+    result: &CommandResult,
+) -> Option<crate::protocol::ids::MessageId> {
+    let Command::Message(query) = command else {
+        return None;
+    };
+    let CommandResult::Message(details) = result else {
+        return None;
+    };
+    let crate::protocol::results::MessageContent::Ordinary {
+        body_offset,
+        body_complete: true,
+        ..
+    } = &details.content
+    else {
+        return None;
+    };
+    (*body_offset == 0 || query.body.cursor.is_some()).then(|| query.message.clone())
+}
+
+/// After a full `body` read, best effort: the calling agent binding's cursors move over the
+/// message it displayed whole (`AdvanceCursors`, the same display walk as a text inbox page;
+/// every role, subagents included). It settles nothing, prints nothing, and a failure only
+/// leaves the message unread for that binding.
+fn advance_over_body_read<C: LocalClient + ?Sized>(
+    client: &C,
+    clock: &dyn Clock,
+    claim: crate::protocol::authority::CallerClaim,
+    message: crate::protocol::ids::MessageId,
+) {
+    if claim.harness == crate::protocol::authority::Harness::Human
+        || !client.supports_capability(
+            crate::protocol::capabilities::BINDING_CURSORS,
+            &cooperative_budget(clock),
+        )
+    {
+        return;
+    }
+    let _ = client.call(
+        Command::AdvanceCursors(crate::protocol::commands::AdvanceCursors {
+            claim,
+            operation: crate::protocol::ids::OperationId::new(uuid::Uuid::new_v4().to_string()),
+            displayed: vec![message],
+        }),
+        &cooperative_budget(clock),
+    );
+}
+
+/// The claim of the agent session calling from `caller_pane` (no explicit selection), derived
+/// as every seat-acting command derives it; `None` for a person or when anything is missing.
+fn body_reader_claim<C, F>(
+    output: &OutputSpec,
+    caller_pane: Option<&str>,
+    paths: &InstancePaths,
+    connection: &LazyConnection<C, F>,
+    clock: &dyn Clock,
+) -> Option<crate::protocol::authority::CallerClaim>
+where
+    C: LocalClient,
+    F: Fn() -> Result<(uuid::Uuid, C), RunError>,
+{
+    let Some(caller::CallerOrigin::Agent(env)) = caller::active() else {
+        return None;
+    };
+    let pane = parse_pane(caller_pane.filter(|pane| !pane.is_empty())?).ok()?;
+    let (_, client) = connection.get().ok()?;
+    let seat = pane_seat(client, output, &pane, clock).ok().flatten()?;
+    let instance = read_existing_namespace(paths).ok().flatten()?;
+    let selection = CooperativeSelection {
+        seat,
+        target: pane,
+        harness: crate::harness::context::Harness::from(env.harness),
+        role: caller::role_of(env.role),
+    };
+    let generation = seat_generation(client, output, &selection, clock).ok()?;
+    let contexts = caller_journal(
+        seat_contexts(paths, instance, &selection.seat).ok()?,
+        instance,
+        &selection,
+        generation,
+    )
+    .ok()?;
+    let context = contexts.current().ok().flatten()?;
+    role_claim(&contexts, &context, selection.role).ok()
 }
 
 fn read_byte_bound(command: &Command) -> u32 {
@@ -2978,13 +3091,21 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
             query.seat = Some(claim.seat.clone());
             query.claim = Some(claim);
         }
-        return run_wire(
+        let read = command.clone();
+        let result = run_wire_result(
             command,
             &parsed.output,
             client,
             &|| cooperative_budget(clock),
             writer,
-        );
+        )?;
+        if let Some(message) = full_body_read(&read, &result)
+            && let Ok(Some(context)) = contexts.current()
+            && let Ok(claim) = role_claim(contexts, &context, role)
+        {
+            advance_over_body_read(client, clock, claim, message);
+        }
+        return Ok(());
     }
     if let CliAction::CachedCheckIn(request) = parsed.action {
         let saved = contexts

@@ -153,3 +153,105 @@ fn subagent_text_inbox_advances_only_its_own_cursor() {
     assert_eq!(settled, 0, "a subagent display settles nothing");
     assert_eq!(owed, 1, "the ACK the seat owes is still pending");
 }
+
+// ht-54r F1. Kills: a subagent's full `body <id>` read that moves no cursor, one that moves the
+// top-level binding's cursor (the claim built as its parent's), and one that settles the ACK.
+#[test]
+fn subagent_full_body_read_advances_only_its_own_cursor() {
+    let world = World::new(true);
+    let seat = world.seat("w1:p1");
+    let _peer_seat = world.seat("w1:p2");
+    for (session, pane, event) in [
+        ("sess-main", "w1:p1", "ev-main"),
+        ("sess-peer", "w1:p2", "ev-peer"),
+    ] {
+        let out = world.agent(
+            "claude",
+            Some(session),
+            pane,
+            &["check-in", "--lifecycle-event", event],
+        );
+        assert!(out.status.success(), "{out:?} {}", stderr(&out));
+    }
+    let thread = World::data(&world.agent(
+        "claude",
+        Some("sess-peer"),
+        "w1:p2",
+        &["thread", "create", "--topic", "subagent body"],
+    ))
+    .as_str()
+    .unwrap()
+    .to_owned();
+    World::data(&world.agent(
+        "claude",
+        Some("sess-peer"),
+        "w1:p2",
+        &["invite", &thread, "--seat", &seat],
+    ));
+    World::data(&world.agent("claude", Some("sess-main"), "w1:p1", &["accept", &thread]));
+    let first = world.agent_text("sess-main", "w1:p1", &["--agent-id=agent-1", "inbox"]);
+    assert!(first.status.success(), "{first:?} {}", stderr(&first));
+    let sent = World::data(&world.agent(
+        "claude",
+        Some("sess-peer"),
+        "w1:p2",
+        &[
+            "send",
+            &thread,
+            "--body",
+            "read me by id",
+            "--require-ack",
+            &seat,
+        ],
+    ));
+    let id = sent.as_str().unwrap().to_owned();
+    let read = world.agent_text("sess-main", "w1:p1", &["--agent-id=agent-1", "body", &id]);
+    assert!(read.status.success(), "{read:?} {}", stderr(&read));
+    assert!(
+        String::from_utf8_lossy(&read.stdout).contains("read me by id"),
+        "{read:?}"
+    );
+
+    let db = world.db();
+    let binding = |agent: &str| -> String {
+        db.query_row(
+            "SELECT binding_id FROM occupant_bindings WHERE seat_id=?1 AND native_session='sess-main' \
+             AND agent_id=?2 AND ended_at IS NULL",
+            [&seat, agent],
+            |r| r.get(0),
+        )
+        .unwrap_or_else(|e| panic!("binding {agent:?}: {e}"))
+    };
+    let cursor = |binding: &str| -> Option<i64> {
+        db.query_row(
+            "SELECT seq FROM binding_cursors WHERE binding_id=?1 AND thread_id=?2",
+            [binding, thread.as_str()],
+            |r| r.get(0),
+        )
+        .ok()
+    };
+    let sequence: i64 = db
+        .query_row("SELECT sequence FROM messages WHERE id=?1", [&id], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    let (sub, top) = (binding("agent-1"), binding(""));
+    assert_eq!(
+        cursor(&sub),
+        Some(sequence),
+        "the subagent's full read moved its own cursor past the message"
+    );
+    assert!(
+        cursor(&top).is_none_or(|seq| seq < sequence),
+        "the top-level binding's cursor did not move: {:?}",
+        cursor(&top)
+    );
+    let state: String = db
+        .query_row(
+            "SELECT state FROM receipt_state WHERE seat_id=?1 AND message_id=?2",
+            [&seat, &id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(state, "pending", "a subagent body read settles nothing");
+}

@@ -1572,6 +1572,119 @@ fn truncated_lazy_row_marker_names_only_body() {
     assert_eq!(rig.lazy_state(&id), "pending", "reading completes nothing");
 }
 
+/// ht-54r F1: a truncated ordinary message is refused by the mod's settlement, so the binding's
+/// cursor stays behind it. The agent's full `body <id>` read is a whole display of it: the
+/// calling binding's cursor passes it, so a later message the mod displays is no longer unread.
+/// The read settles nothing; the explicit `ack` that follows does.
+#[test]
+fn full_body_read_of_truncated_message_unblocks_binding_cursor() {
+    let rig = Rig::new();
+    let mut watch = rig.raw_watch(SESSION_B);
+    watch.wait_connected();
+    let long = rig.send_ordinary(&"t".repeat(9000));
+    let line = watch.wait_item(&long);
+    assert_eq!(line["truncated"], true, "{line}");
+    let refused = rig.ack_result(SESSION_B, "context", &long);
+    assert_eq!(refused["result"], "refused_terminal", "{refused}");
+    let (binding, _, _) = open_binding_of(&rig, SESSION_B).expect("SB binding");
+    let seq_long = sequence_of(&rig, &long);
+    assert!(
+        cursor_of(&rig, &binding).is_none_or(|seq| seq < seq_long),
+        "the refused display leaves the cursor behind it"
+    );
+    let steps = rig.marker_steps(line["body"].as_str().unwrap());
+    let out = rig.run_marker_step(&steps[0]);
+    assert_eq!(out.code, 0, "{:?}: {}{}", steps[0], out.stdout, out.stderr);
+    assert!(
+        !out.stdout.contains("more: "),
+        "one full read: {}",
+        out.stdout
+    );
+    assert_eq!(
+        cursor_of(&rig, &binding),
+        Some(seq_long),
+        "a full body read moves the reading binding's cursor past the message"
+    );
+    assert_eq!(rig.receipt_state(&long), "pending", "body settles nothing");
+    let later = rig.send_ordinary("after the long one");
+    watch.wait_item(&later);
+    let settled = rig.ack_result(SESSION_B, "context", &later);
+    assert_eq!(settled["result"], "settled", "{settled}");
+    let read_to = cursor_of(&rig, &binding);
+    assert!(
+        read_to.is_some_and(|seq| seq >= sequence_of(&rig, &later)),
+        "the later message is read: the cursor is no longer stuck: {read_to:?}"
+    );
+    let out = rig.run_marker_step(&steps[1]);
+    assert_eq!(out.code, 0, "{:?}: {}{}", steps[1], out.stdout, out.stderr);
+    assert_eq!(rig.receipt_state(&long), "acked");
+    assert!(
+        cursor_of(&rig, &binding) >= read_to,
+        "the explicit ACK of the fully read message never moves the cursor back"
+    );
+}
+
+/// ht-54r F1: only a full read advances. A first chunk, or a read that starts at an explicit
+/// offset and reaches the end, leaves the cursor where it was; following the body's own
+/// continuation to the end is a full read.
+#[test]
+fn partial_body_read_does_not_advance_binding_cursor() {
+    let rig = Rig::new();
+    let mut watch = rig.raw_watch(SESSION_B);
+    watch.wait_connected();
+    let long = rig.send_ordinary(&"p".repeat(9000));
+    let line = watch.wait_item(&long);
+    let refused = rig.ack_result(SESSION_B, "context", &long);
+    assert_eq!(refused["result"], "refused_terminal", "{refused}");
+    let (binding, _, _) = open_binding_of(&rig, SESSION_B).expect("SB binding");
+    let before = cursor_of(&rig, &binding);
+    let seq_long = sequence_of(&rig, &long);
+    let body_step = rig.marker_steps(line["body"].as_str().unwrap()).remove(0);
+    let mut first = body_step.clone();
+    first.extend(["--max-bytes".to_owned(), "4096".to_owned()]);
+    let out = rig.run_marker_step(&first);
+    assert_eq!(out.code, 0, "{first:?}: {}{}", out.stdout, out.stderr);
+    let more = out
+        .stdout
+        .lines()
+        .find_map(|l| l.strip_prefix("more: "))
+        .unwrap_or_else(|| panic!("a partial read names its continuation: {}", out.stdout))
+        .to_owned();
+    assert_eq!(
+        cursor_of(&rig, &binding),
+        before,
+        "a first chunk is partial"
+    );
+    let mut tail = body_step.clone();
+    tail.extend(["--offset".to_owned(), "8000".to_owned()]);
+    let out = rig.run_marker_step(&tail);
+    assert_eq!(out.code, 0, "{tail:?}: {}{}", out.stdout, out.stderr);
+    assert!(!out.stdout.contains("more: "), "{}", out.stdout);
+    assert_eq!(
+        cursor_of(&rig, &binding),
+        before,
+        "a read from an explicit offset skipped the start"
+    );
+    let mut argv = shlex::split(&more).unwrap();
+    for _ in 0..8 {
+        let out = rig.run_marker_step(&argv);
+        assert_eq!(out.code, 0, "{argv:?}: {}{}", out.stdout, out.stderr);
+        match out.stdout.lines().find_map(|l| l.strip_prefix("more: ")) {
+            Some(next) => {
+                assert_eq!(cursor_of(&rig, &binding), before, "still partial");
+                argv = shlex::split(next).unwrap();
+            }
+            None => break,
+        }
+    }
+    assert_eq!(
+        cursor_of(&rig, &binding),
+        Some(seq_long),
+        "following the continuation to the end is a full read"
+    );
+    assert_eq!(rig.receipt_state(&long), "pending", "body settles nothing");
+}
+
 /// Spec D7: while a channel is live no native wake prompt is sent for the
 /// seat, and the pending item stays pending until acked.
 #[test]

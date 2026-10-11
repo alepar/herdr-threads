@@ -719,7 +719,17 @@ enroll). It is the one write a declared subagent may send, because it changes no
 actor, creates no receipt, settles no obligation and attributes no action. A cursor never moves backwards,
 never moves past an unshown message the seat can receive, and a read never enrolls. A client that fails to
 send it only causes redisplay (at least once). Only a top-level binding's display ACK settles the seat's
-obligation; other bindings see that message in their own stream marked settled.
+obligation; other bindings see that message in their own stream marked settled. A full `body <id>` read is
+such a display (ht-54r F1): when the written chunk reaches the end of the body and the read began at byte 0
+or followed the body's own continuation, the CLI sends that one id in the calling binding's `AdvanceCursors`
+(any role; a subagent moves only its own cursor). So a message delivered truncated, whose mod or hook
+settlement is refused, no longer holds the binding's cursor once it is read whole. A partial read (a chunk
+short of the end, or a read from an explicit offset past 0) moves nothing, and neither the read nor an
+explicit `ack` settles or moves anything else: an `ack` carries no display, and a message the binding read
+whole was already passed by that read. Accepted limits: a continuation chain begun at an explicit offset
+counts as whole (the continuation does not record where the read began); and a whole display of a later
+message made while the cursor was held behind the truncated one is not remembered, so that message stays in
+the binding's unread stream (already settled, so it creates no wake work) until an inbox page shows it again.
 
 **First-contact stats and fast-forward.** Two bounded, informational summaries ride on the response that
 creates or resumes a binding; neither is authority and neither writes a receipt. The lifecycle check-in that
