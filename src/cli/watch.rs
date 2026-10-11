@@ -547,6 +547,10 @@ pub(crate) fn drain(
         };
         for item in page.items {
             match item {
+                InboxBatchV2Item::Invitation {
+                    confirmation: Some(crate::protocol::commands::InvitationConfirmation::Lazy),
+                    ..
+                } => {}
                 InboxBatchV2Item::Invitation { .. }
                 | InboxBatchV2Item::Warning {
                     informational: false,

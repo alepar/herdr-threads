@@ -2452,3 +2452,79 @@ fn adapters_discovery_refuses_invalid_provider_before_daemon_dispatch() {
     let parsed=parse_argv(["ht","adapters","--json"]).unwrap();
     assert!(adapter_discovery_output(&parsed,&registry).is_err());
 }
+
+#[test]
+fn invitation_policy_defaults_lazy_and_materializes_explicit_timing() {
+    use crate::protocol::commands::InvitationConfirmation::{Lazy, RequireAck};
+    for (flags, mode, millis) in [
+        (vec![], Lazy, None),
+        (vec!["--lazy"], Lazy, None),
+        (vec!["--require-ack"], RequireAck, None),
+        (vec!["--deadline", "7"], RequireAck, Some(7000)),
+        (
+            vec!["--require-ack", "--deadline", "7"],
+            RequireAck,
+            Some(7000),
+        ),
+    ] {
+        let mut argv = vec!["ht", "invite", "t1", "--seat", "s1"];
+        argv.extend(flags);
+        let parsed = parse_argv(argv.clone()).unwrap();
+        let CliAction::Mutation(spec) = parsed.action else {
+            panic!("mutation expected")
+        };
+        let command = spec
+            .into_command(Some(claim()), OperationId::new("invite-op"))
+            .unwrap();
+        let WireCommand::Invite(invite) = command else {
+            panic!("ordinary invitation expected")
+        };
+        assert_eq!(invite.confirmation, Some(mode), "{argv:?}");
+        assert_eq!(invite.deadline_millis, millis, "{argv:?}");
+    }
+}
+
+#[test]
+fn invitation_policy_conflicts_and_invalid_deadlines_refuse_at_parse() {
+    for flags in [
+        vec!["--lazy", "--require-ack"],
+        vec!["--lazy", "--deadline", "7"],
+        vec!["--deadline", "0"],
+        vec!["--deadline", "18446744073709551615"],
+        vec!["--deadline", "9223372036854776"],
+    ] {
+        let mut argv = vec!["ht", "invite", "t1", "--seat", "s1"];
+        argv.extend(flags);
+        assert!(parse_argv(argv.clone()).is_err(), "{argv:?}");
+    }
+}
+
+#[test]
+fn invitation_policy_explicit_flags_parse_and_human_keeps_legacy_semantics() {
+    for flags in [
+        vec!["--lazy"],
+        vec!["--require-ack"],
+        vec!["--deadline", "7"],
+    ] {
+        let mut argv = vec!["ht", "invite", "t1", "--seat", "s1"];
+        argv.extend(flags);
+        assert!(parse_argv(argv.clone()).is_ok(), "{argv:?}");
+    }
+    for flags in [vec![], vec!["--deadline", "7"]] {
+        let mut argv = vec!["ht", "human", "invite", "t1", "--seat", "s1"];
+        argv.extend(flags);
+        let CliAction::Mutation(spec) = parse_argv(argv).unwrap().action else {
+            panic!("mutation")
+        };
+        let WireCommand::Invite(invite) = spec
+            .into_command(Some(claim()), OperationId::new("human-invite"))
+            .unwrap()
+        else {
+            panic!("invite")
+        };
+        assert_eq!(invite.confirmation, None);
+    }
+    for flag in ["--lazy", "--require-ack"] {
+        assert!(parse_argv(["ht", "human", "invite", "t1", "--seat", "s1", flag]).is_err());
+    }
+}

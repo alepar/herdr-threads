@@ -217,3 +217,124 @@ impl std::io::Write for FlushSink {
         Ok(())
     }
 }
+
+#[test]
+fn invitation_policy_compact_keeps_lazy_discoverable_and_timed_deadline_honest() {
+    use crate::protocol::{
+        commands::InvitationConfirmation,
+        ids::{InvitationId, ThreadId},
+        pagination::{Consistency, Page, StopReason},
+        results::InboxBatchItem,
+        time::UtcMillis,
+    };
+    for (mode, deadline, expected) in [
+        (
+            Some(InvitationConfirmation::Lazy),
+            None,
+            "confirmation: lazy",
+        ),
+        (
+            Some(InvitationConfirmation::RequireAck),
+            Some(UtcMillis(7000)),
+            "confirmation: acceptance required",
+        ),
+        (
+            None,
+            None,
+            "confirmation: acceptance required",
+        ),
+    ] {
+        let result = CommandResult::InboxBatch(Page {
+            items: vec![InboxBatchItem::Invitation {
+                thread: ThreadId::new("thread-1"),
+                topic_data: "topic".into(),
+                goal_data: Some("goal".into()),
+                invitation: InvitationId::new("invitation-1"),
+                confirmation: mode,
+                deadline_at: deadline,
+                required_service: None,
+            }],
+            next_cursor: None,
+            next_argv: None,
+            high_water_ordinal: 1,
+            scope_revision: None,
+            has_more: false,
+            stop_reason: StopReason::Complete,
+            consistency: Consistency::BoundedLive,
+        });
+        let spec = OutputSpec {
+            format: crate::protocol::output::OutputFormat::Text,
+            ..OutputSpec::default()
+        };
+        let bytes = crate::protocol::output::encode_selected(&result, &spec).unwrap();
+        let text = String::from_utf8(bytes).unwrap();
+        assert!(text.contains(expected), "{text}");
+        assert!(text.contains("invitation-1 thread-1"), "{text}");
+        assert!(text.contains("accept thread-1"), "{text}");
+        assert_eq!(text.contains("deadline"), deadline.is_some(), "{text}");
+        let bytes =
+            crate::protocol::output::encode_selected(&result, &OutputSpec::default()).unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let item = &json["result"]["data"]["items"][0];
+        match mode {
+            Some(InvitationConfirmation::Lazy) => assert_eq!(item["confirmation"], "lazy"),
+            Some(InvitationConfirmation::RequireAck) => {
+                assert_eq!(item["confirmation"], "require_ack")
+            }
+            None => assert!(item.get("confirmation").is_none()),
+        }
+        assert_eq!(
+            item.get("deadline_at").and_then(serde_json::Value::as_i64),
+            deadline.map(|v| v.0)
+        );
+    }
+}
+
+#[test]
+fn invitation_policy_lazy_hook_display_remains_recoverable_without_acceptance() {
+    use crate::protocol::{
+        authority::{CallerClaim, CallerRole, Harness},
+        commands::InvitationConfirmation,
+        ids::*,
+        pagination::{Consistency, Page, StopReason},
+        results::InboxBatchV2Item,
+    };
+    let offer = crate::cli::hook_inbox::InboxOffer {
+        claim: CallerClaim {
+            instance: "instance".into(),
+            seat: SeatId::new("seat"),
+            binding_generation: 1,
+            role: CallerRole::TopLevel,
+            harness: Harness::Codex,
+            native_session: NativeSessionId::new("session"),
+            execution: ExecutionId::new("execution"),
+            target: HostTargetId::new("w:p"),
+        },
+        page: Page {
+            items: vec![InboxBatchV2Item::Invitation {
+                thread: ThreadId::new("thread-1"),
+                topic_data: "topic".into(),
+                invitation: InvitationId::new("invitation-1"),
+                confirmation: Some(InvitationConfirmation::Lazy),
+                deadline_at: None,
+                required_service: None,
+            }],
+            next_cursor: None,
+            next_argv: None,
+            high_water_ordinal: 1,
+            scope_revision: None,
+            has_more: false,
+            stop_reason: StopReason::Complete,
+            consistency: Consistency::BoundedLive,
+        },
+    };
+    let (context, completions) =
+        crate::cli::hook_inbox::append(String::new(), &offer, &["herdr-threads".into()], 4096);
+    assert!(context.contains("invitation-1 thread-1"), "{context}");
+    assert!(context.contains("confirmation: lazy"), "{context}");
+    assert!(context.contains("accept thread-1"), "{context}");
+    assert!(
+        completions.is_empty(),
+        "invitation presentation must not settle membership or messages"
+    );
+}

@@ -1878,6 +1878,7 @@ fn operator_semantic(mutation: &MutationSpec) -> Option<SemanticMutation> {
             seat,
             deadline_millis,
             operator: true,
+            ..
         } => SemanticMutation::OperatorOrphanInvite {
             thread: thread.clone(),
             seat: seat.clone(),
@@ -2075,6 +2076,23 @@ where
         })
     ) {
         require_send_time_receipts_capability(client, clock.as_ref())?;
+    }
+    if matches!(
+        &parsed.action,
+        CliAction::Mutation(MutationSpec::Invite {
+            confirmation: Some(_),
+            operator: false,
+            ..
+        })
+    ) {
+        // Pane resolution is itself journaled: refuse unsupported policy before
+        // allocating a recipient, not only before the later invitation intent.
+        require_mutation_capability(
+            client,
+            clock.as_ref(),
+            crate::protocol::capabilities::INVITATION_CONFIRMATION_V1,
+            "requesting invitation confirmation policy",
+        )?;
     }
     let allocate = |target: crate::protocol::ids::HostTargetId| -> Result<crate::protocol::ids::SeatId, RunError> {
         let journal = journal::Journal::open(paths.instance_dir.join("intents"))?;
@@ -2915,10 +2933,11 @@ fn cooperative_semantic(mutation: MutationSpec) -> io::Result<SemanticMutation> 
         MutationSpec::Invite {
             thread,
             seat,
+            confirmation,
             deadline_millis,
             operator: false,
         } => SemanticMutation::Invite {
-            confirmation: None,
+            confirmation,
             thread,
             seat,
             deadline_millis,

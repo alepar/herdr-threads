@@ -1929,6 +1929,14 @@ fn recipient_panes_reads_do_not_allocate_and_invite_uses_guarded_resolution() {
         ) -> Result<CommandResult, ApiError> {
             self.calls.lock().unwrap().push(command.clone());
             match command {
+                Command::Capabilities => Ok(CommandResult::Capabilities(
+                    crate::protocol::results::CapabilityList {
+                        capabilities: vec![
+                            crate::protocol::capabilities::INVITATION_CONFIRMATION_V1.into(),
+                            crate::protocol::capabilities::SEND_TIME_RECEIPTS_V1.into(),
+                        ],
+                    },
+                )),
                 Command::Seats(query) => {
                     assert_eq!(query.target, Some(HostTargetId::new("w1:p2")));
                     Ok(CommandResult::Seats(Page {
@@ -2011,8 +2019,8 @@ fn recipient_panes_reads_do_not_allocate_and_invite_uses_guarded_resolution() {
             "recipient must not become caller"
         );
         let calls = connection.get().unwrap().1.calls.lock().unwrap();
-        assert_eq!(calls.len(), 1);
         if is_read {
+            assert_eq!(calls.len(), 1);
             assert!(matches!(calls[0], Command::Seats(_)));
             assert!(
                 matches!(parsed.action, crate::cli::commands::CliAction::Wire(Command::Inbox(ref q)) if q.seat == Some(SeatId::new("recipient")))
@@ -2022,7 +2030,9 @@ fn recipient_panes_reads_do_not_allocate_and_invite_uses_guarded_resolution() {
                 "reads must not journal allocations"
             );
         } else {
-            assert!(matches!(calls[0], Command::ResolveSeat(_)));
+            assert_eq!(calls.len(), 2);
+            assert!(matches!(calls[0], Command::Capabilities));
+            assert!(matches!(calls[1], Command::ResolveSeat(_)));
             match parsed.action {
                 crate::cli::commands::CliAction::Mutation(
                     crate::cli::commands::MutationSpec::Invite { seat, .. },
@@ -4445,6 +4455,380 @@ mod main539_composition {
             )
         }
     }
+    // Actual parser, frozen journal and canonical store consumer, not a policy helper.
+    #[test]
+    fn invitation_policy_public_cli_freezes_modes_and_duplicate_keeps_episode() {
+        for (flags, expected, duration) in [
+            (vec![], "lazy", 300_000),
+            (vec!["--lazy"], "lazy", 300_000),
+            (vec!["--require-ack"], "require_ack", 300_000),
+            (vec!["--deadline", "7"], "require_ack", 7000),
+        ] {
+            let f = Fixture::new(false);
+            let db = rusqlite::Connection::open(f.root.join("state.db")).unwrap();
+            db.execute("INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES ('t',?1,'joined',0)", [f.claim.seat.as_str()]).unwrap();
+            db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('recipient',?1,'resolved','native','w1:p2',1,1,0)", [&f.claim.instance]).unwrap();
+            let mut argv = vec!["ht", "invite", "t", "--seat", "recipient"];
+            argv.extend(flags);
+            f.run(
+                argv.into_iter().map(str::to_owned).collect(),
+                &mut Vec::new(),
+            )
+            .unwrap();
+            let read = || {
+                db.query_row("SELECT id,confirmation,frozen_duration_ms,created_at,deadline_at,inviter_seat_id FROM invitations WHERE thread_id='t' AND seat_id='recipient'", [], |r| Ok((r.get::<_,String>(0)?,r.get::<_,Option<String>>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?,r.get::<_,i64>(4)?,r.get::<_,Option<String>>(5)?))).unwrap()
+            };
+            let before = read();
+            assert_eq!(before.1.as_deref(), Some(expected));
+            assert_eq!(before.2, duration);
+            assert_eq!(before.4 - before.3, duration);
+            assert_eq!(before.5.as_deref(), Some(f.claim.seat.as_str()));
+            let commands = f.client.calls.lock().unwrap();
+            let invite = commands
+                .iter()
+                .find_map(|command| match command {
+                    Command::Invite(v) => Some(v),
+                    _ => None,
+                })
+                .unwrap();
+            assert_eq!(
+                serde_json::to_value(invite).unwrap()["confirmation"],
+                expected
+            );
+            drop(commands);
+            let duplicate = if expected == "lazy" {
+                vec![
+                    "ht",
+                    "invite",
+                    "t",
+                    "--seat",
+                    "recipient",
+                    "--deadline",
+                    "9",
+                ]
+            } else {
+                vec!["ht", "invite", "t", "--seat", "recipient"]
+            };
+            f.run(
+                duplicate.into_iter().map(str::to_owned).collect(),
+                &mut Vec::new(),
+            )
+            .unwrap();
+            assert_eq!(
+                read(),
+                before,
+                "duplicate must preserve policy, timing and origin"
+            );
+            assert_eq!(
+                db.query_row("SELECT count(*) FROM invitations", [], |r| r
+                    .get::<_, i64>(0))
+                    .unwrap(),
+                1
+            );
+        }
+    }
+
+    struct InvitationClient<'a> {
+        base: &'a Client,
+        supported: bool,
+        fail_invite: bool,
+    }
+    impl LocalClient for InvitationClient<'_> {
+        crate::default_output_local_client!();
+        fn call(
+            &self,
+            command: Command,
+            budget: &CallBudget,
+        ) -> Result<CommandResult, crate::protocol::results::ApiError> {
+            if self.fail_invite && matches!(command, Command::Invite(_)) {
+                self.base.calls.lock().unwrap().push(command);
+                return Err(crate::protocol::results::ApiError::new(
+                    crate::protocol::results::ErrorCode::HostUnavailable,
+                    "test transport before invite submission",
+                ));
+            }
+            let result = self.base.call(command, budget)?;
+            if let CommandResult::Capabilities(mut caps) = result {
+                if !self.supported {
+                    caps.capabilities
+                        .retain(|v| v != crate::protocol::capabilities::INVITATION_CONFIRMATION_V1);
+                }
+                Ok(CommandResult::Capabilities(caps))
+            } else {
+                Ok(result)
+            }
+        }
+    }
+    #[test]
+    fn invitation_policy_public_capability_refuses_before_intent() {
+        let f = Fixture::new(false);
+        let before = actor_fixture_snapshot(f.journal.root());
+        let client = InvitationClient {
+            base: &f.client,
+            supported: false,
+            fail_invite: false,
+        };
+        let error = crate::cli::run_cooperative(
+            crate::cli::commands::parse_argv(["ht", "invite", "t", "--seat", "recipient"]).unwrap(),
+            &f.journal,
+            &f.contexts,
+            None,
+            crate::harness::context::Role::TopLevel,
+            &client,
+            &crate::app::SystemClock::new(),
+            &mut Vec::new(),
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("invitation.confirmation_v1"),
+            "{error}"
+        );
+        assert_eq!(actor_fixture_snapshot(f.journal.root()), before);
+        assert_eq!(*f.client.calls.lock().unwrap(), vec![Command::Capabilities]);
+    }
+    #[test]
+    fn invitation_policy_public_pane_capability_refuses_before_allocation() {
+        let f = Fixture::new(false);
+        let runtime = crate::daemon::paths::RuntimeContext::explicit(
+            f.root.join("isolated-state"),
+            f.root.join("absent-host.sock"),
+            None,
+        )
+        .unwrap();
+        let paths = crate::daemon::paths::InstancePaths::resolve(&runtime).unwrap();
+        let clock: Arc<dyn Clock> = Arc::new(crate::app::SystemClock::new());
+        let connection = crate::cli::LazyConnection::new(|| {
+            Ok((
+                uuid::Uuid::parse_str(&f.claim.instance).unwrap(),
+                InvitationClient {
+                    base: &f.client,
+                    supported: false,
+                    fail_invite: false,
+                },
+            ))
+        });
+        let mut parsed = crate::cli::commands::parse_argv([
+            "ht",
+            "--cooperative-seat",
+            f.claim.seat.as_str(),
+            "--cooperative-target",
+            f.claim.target.as_str(),
+            "--cooperative-harness",
+            "codex",
+            "--cooperative-role",
+            "top-level",
+            "invite",
+            "t",
+            "--pane",
+            "w1:p2",
+        ])
+        .unwrap();
+        crate::cli::panes::resolve_cli_targets(
+            &mut parsed,
+            || panic!("exact pane"),
+            || panic!("exact pane"),
+        )
+        .unwrap();
+        let error = crate::cli::run_caller_scoped(
+            parsed,
+            None,
+            &runtime,
+            &paths,
+            &connection,
+            &clock,
+            &|| crate::cli::cooperative_budget(clock.as_ref()),
+            &mut Vec::new(),
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("invitation.confirmation_v1"),
+            "{error}"
+        );
+        assert_eq!(*f.client.calls.lock().unwrap(), vec![Command::Capabilities]);
+        assert!(
+            !paths.instance_dir.join("intents").exists(),
+            "no allocation journal before capability"
+        );
+        let db = rusqlite::Connection::open(f.root.join("state.db")).unwrap();
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM seats", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+    }
+    #[test]
+    fn invitation_policy_legacy_retry_keeps_absent_fields_bytes_digest_and_key() {
+        let f = Fixture::new(false);
+        let db = rusqlite::Connection::open(f.root.join("state.db")).unwrap();
+        db.execute(
+            "INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES ('t',?1,'joined',0)",
+            [f.claim.seat.as_str()],
+        )
+        .unwrap();
+        db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('recipient',?1,'resolved','native','w1:p2',1,1,0)",[&f.claim.instance]).unwrap();
+        let legacy: SemanticMutation = serde_json::from_str(
+            r#"{"kind":"invite","thread":"t","seat":"recipient","deadline_millis":7000}"#,
+        )
+        .unwrap();
+        let reference = f
+            .journal
+            .record(
+                IntentScope::Cooperative {
+                    instance: f.claim.instance.clone(),
+                    seat: f.claim.seat.clone(),
+                },
+                SemanticMutation::freeze(legacy, f.claim.clone()).unwrap(),
+                0,
+            )
+            .unwrap();
+        let path = f.journal.root().join(format!(
+            "{:020}-{}.intent",
+            reference.ordinal,
+            reference.operation.as_str()
+        ));
+        let before = std::fs::read(&path).unwrap();
+        let digest = f.journal.load(&reference).unwrap().header.semantic_digest;
+        let parsed =
+            crate::cli::commands::parse_argv(["ht", "retry", &reference.recovery_ref()]).unwrap();
+        let error = crate::cli::run_cooperative(
+            parsed,
+            &f.journal,
+            &f.contexts,
+            None,
+            crate::harness::context::Role::TopLevel,
+            &InvitationClient {
+                base: &f.client,
+                supported: false,
+                fail_invite: true,
+            },
+            &crate::app::SystemClock::new(),
+            &mut Vec::new(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("test transport"), "{error}");
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(
+            f.journal.load(&reference).unwrap().header.semantic_digest,
+            digest
+        );
+        f.run(
+            vec!["ht".into(), "retry".into(), reference.recovery_ref()],
+            &mut Vec::new(),
+        )
+        .unwrap();
+        let calls = f.client.calls.lock().unwrap();
+        assert_eq!(
+            calls.len(),
+            2,
+            "legacy retry must not negotiate the new representation"
+        );
+        for command in calls.iter() {
+            let Command::Invite(v) = command else {
+                panic!("legacy invite")
+            };
+            assert_eq!(v.confirmation, None);
+            assert_eq!(v.operation, reference.operation);
+            assert_eq!(v.deadline_millis, Some(7000));
+            assert_eq!(v.claim, f.claim);
+            assert!(
+                serde_json::to_value(v)
+                    .unwrap()
+                    .get("confirmation")
+                    .is_none()
+            );
+        }
+        assert_eq!(
+            db.query_row("SELECT confirmation FROM invitations", [], |r| r
+                .get::<_, Option<String>>(0))
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn invitation_policy_modern_failed_submission_retains_frozen_mode_and_duration() {
+        for flags in [vec![], vec!["--require-ack"], vec!["--deadline", "7"]] {
+            let f = Fixture::new(false);
+            let client = InvitationClient {
+                base: &f.client,
+                supported: true,
+                fail_invite: true,
+            };
+            let mut argv = vec!["ht", "invite", "t", "--seat", "recipient"];
+            argv.extend(flags.iter().copied());
+            let error = crate::cli::run_cooperative(
+                crate::cli::commands::parse_argv(argv).unwrap(),
+                &f.journal,
+                &f.contexts,
+                None,
+                crate::harness::context::Role::TopLevel,
+                &client,
+                &crate::app::SystemClock::new(),
+                &mut Vec::new(),
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("test transport"), "{error}");
+            let reference = f.journal.resolve_recovery_ref("local:1").unwrap();
+            let path = f.journal.root().join(format!(
+                "{:020}-{}.intent",
+                reference.ordinal,
+                reference.operation.as_str()
+            ));
+            let before = std::fs::read(&path).unwrap();
+            let pending = f.journal.load(&reference).unwrap();
+            let Command::Invite(invite) = pending
+                .semantic
+                .to_command(reference.operation.clone(), None)
+                .unwrap()
+            else {
+                panic!("frozen invite")
+            };
+            assert_eq!(
+                invite.confirmation,
+                Some(if flags.is_empty() {
+                    crate::protocol::commands::InvitationConfirmation::Lazy
+                } else {
+                    crate::protocol::commands::InvitationConfirmation::RequireAck
+                })
+            );
+            assert_eq!(
+                invite.deadline_millis,
+                if flags.first() == Some(&"--deadline") {
+                    Some(7000)
+                } else {
+                    None
+                }
+            );
+            let retry =
+                crate::cli::commands::parse_argv(["ht", "retry", &reference.recovery_ref()])
+                    .unwrap();
+            assert!(
+                crate::cli::run_cooperative(
+                    retry,
+                    &f.journal,
+                    &f.contexts,
+                    None,
+                    crate::harness::context::Role::TopLevel,
+                    &client,
+                    &crate::app::SystemClock::new(),
+                    &mut Vec::new()
+                )
+                .is_err()
+            );
+            assert_eq!(std::fs::read(&path).unwrap(), before);
+            let calls = f.client.calls.lock().unwrap();
+            let invites: Vec<_> = calls
+                .iter()
+                .filter(|c| matches!(c, Command::Invite(_)))
+                .collect();
+            assert_eq!(invites.len(), 2);
+            assert_eq!(
+                invites[0], invites[1],
+                "retry must submit the identical frozen request"
+            );
+        }
+    }
+
     #[test]
     fn fresh_agent_and_human_join_capability_refusal_precedes_publication() {
         for human in [false, true] {

@@ -172,8 +172,9 @@ pub(super) fn render(result: &CommandResult, spec: &OutputSpec) -> Option<String
                             topic_data,
                             goal_data,
                             invitation,
+                            confirmation,
+                            deadline_at,
                             required_service,
-                            ..
                         } => {
                             out.push_str(&format!(
                                 "invitation {} {}: {}\n",
@@ -181,6 +182,21 @@ pub(super) fn render(result: &CommandResult, spec: &OutputSpec) -> Option<String
                                 thread.as_str(),
                                 one_line(topic_data)
                             ));
+                            if required_service.is_none() {
+                                if *confirmation
+                                    == Some(crate::protocol::commands::InvitationConfirmation::Lazy)
+                                {
+                                    out.push_str(
+                                        "  confirmation: lazy (no timed acceptance request)\n",
+                                    );
+                                } else {
+                                    out.push_str("  confirmation: acceptance required");
+                                    if let Some(deadline) = deadline_at {
+                                        out.push_str(&format!("; deadline {}", clock(*deadline)));
+                                    }
+                                    out.push('\n');
+                                }
+                            }
                             match goal_data.as_deref().filter(|goal| !goal.is_empty()) {
                                 Some(goal) => {
                                     out.push_str(&format!("  goal: {}\n", one_line(goal)))
