@@ -10,9 +10,11 @@ on:
   workflow_dispatch:
     inputs:
       harness:
-        description: Harness to check
+        # `all` also selects exact-runtime adapters (Hermes), which need a --runtime-command-file this
+        # workflow never supplies: they always end inconclusive and fail the run. Choose `all` on purpose.
+        description: Harness to check (both = claude and codex; all adds exact-runtime adapters)
         type: string
-        default: all
+        default: both
       versions:
         description: latest, since-verified, or a comma-separated version list
         type: string
@@ -104,7 +106,7 @@ jobs:
       - name: Run canary
         id: canary
         env:
-          CANARY_HARNESS: ${{ inputs.harness || 'all' }}
+          CANARY_HARNESS: ${{ inputs.harness || 'both' }}
           CANARY_VERSIONS: ${{ inputs.versions || 'since-verified' }}
           CANARY_MODEL_TIER: ${{ inputs.model_tier || 'auto' }}
           # Empty when the secret is absent: tier 1 is then skipped for that harness.
