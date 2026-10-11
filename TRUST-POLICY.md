@@ -4,8 +4,8 @@ Status: adopted 2026-10-01; B5 guards implemented (epic `ht-rzi`). Normative for
 attribution, receipt provenance and operator repair. Where an older design document requires adversarial
 proof of who is calling, this policy supersedes it. C5's guard is owned by B4 (`ht-p03.2`) and is the one
 guard still marked **required**. Amended 2026-10-02 for thread summaries and deadline extension (epic ht-1ip), and 2026-10-03 for the
-`managed_launch` binding (ht-5n6), and 2026-10-03 for human receipt waivers. Amended 2026-10-10 for the session-keyed binding vocabulary (ht-54r; defined,
-behaviour lands in later beads; human exclusivity and the launch placeholder landed with ht-54r.4).
+`managed_launch` binding (ht-5n6), and 2026-10-03 for human receipt waivers. Amended 2026-10-10 for the session-keyed binding vocabulary (ht-54r; implemented
+end to end, swept by ht-54r.25: every provenance value below has a production writer).
 
 ## Abstract
 
@@ -238,7 +238,7 @@ model open work, and summary closure never changes receipt state or installs glo
   never reopened; a subagent claim attaches a `subagent` binding to its parent (enrolling the parent first
   when it is unknown), attachment only; a session id seen on another seat gets a new binding on that seat and
   nothing moves or merges (cross-pane resume). Lineage (copy-before-supersede of a predecessor's cursors) is
-  named here and implemented by ht-54r.20 and ht-54r.17. A person and an agent still never hold a seat
+  specified under *Lineage* below (ht-54r.20, ht-54r.17). A person and an agent still never hold a seat
   together and the first agent lifecycle check-in replaces `managed_launch` (both below, ended as
   `replaced`, through the enroll-hook registry and the one disconnect transition; ht-54r.4). A plain human call never enrolls a binding. The one exception to "a plain call never reconnects" is re-adoption (ht-54r.24): a V29-migrated binding (`migrated`, disconnected for reason `migrated`) is reconnected, its fingerprint recorded and its cursors kept, by any agent call whose claim matches its stored session exactly (the key the migration kept); a claim with another session enrolls its own binding and nothing is matched by heuristic.
 - *Binding liveness (ht-54r.10)*: a binding is connected or disconnected. Disconnection never ends a

@@ -109,12 +109,16 @@ mod operator_ux;
 #[cfg(feature = "test-support")]
 #[path = "integration/pane_close_retirement.rs"]
 mod pane_close_retirement;
-#[path = "integration/session_bindings_subagent.rs"]
-mod session_bindings_subagent;
+/// ht-54r.25: session-binding flows the smoke configurations do not assert (settle once, one-shot).
+#[cfg(feature = "test-support")]
+#[path = "integration/session_bindings_e2e.rs"]
+mod session_bindings_e2e;
 /// ht-54r.19: the nine session-binding configurations end to end (real daemon, isolated Herdr).
 #[cfg(feature = "test-support")]
 #[path = "integration/session_bindings_smoke.rs"]
 mod session_bindings_smoke;
+#[path = "integration/session_bindings_subagent.rs"]
+mod session_bindings_subagent;
 /// ht-54r.5: agent callers are attributed from the harness environment, the real
 /// binary under a synthetic harness parent.
 #[cfg(feature = "test-support")]
