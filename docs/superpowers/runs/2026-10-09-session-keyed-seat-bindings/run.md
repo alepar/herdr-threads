@@ -1,7 +1,7 @@
 # super-auto run — 2026-10-09-session-keyed-seat-bindings
 
 flags: planOneShot=f skipPlanRoast=f skipCodeRoast=f autonomous=t
-phase: fix-loop
+phase: finish
 codeMechanism: Workflow
 
 idea: Goal: implement the new herdr-threads seat-bindings model we designed in this session, absorbing the Hermes global-enrollment work (ht-4ne, branch super-auto/hermes-global-enrollment, unmerged) it sprang from. Flags: planOneShot=false (interactive Mode A design for remaining questions), skipPlanRoast=false, skipCodeRoast=false, autonomous=true from after the design. The Codex CODEX_EXEC_SERVER_URL pane-env installer step runs separately on branch codex-daemon-env and is out of scope here.
@@ -37,8 +37,8 @@ codeBuckets:
   pendingRetry: 
   parked: ht-54r.5 ht-54r.12 ht-54r.19
   stalled: false
-  review: ready (final review 7 @ b0343515: no open Critical/Important; F1 fixed f39ccbf4/bacec8cc; main review of a79a326c I1/I2/M1 + trust_policy env leak fixed ht-54r.93–.96; independent review of round 3 + F1: no Critical/Important, 4 Minor fixed 575c5280; sweep green @ 575c5280)
-  sweep: 575c5280 — 5552 passed, 0 failed, 0 errors, 44 skipped; failing: none; command: nice cargo nextest run --locked --all-targets --all-features --no-fail-fast (+ scripts/check-harness-neutral exit 0, check-no-leaked-processes clean, scripts/test-claude-mod 97/97, wall 258s) @ 575c5280
+  review: ready (main review of cbd09563: I1/I2/F2 fixed d65180f2/5ff8c236/16bb9785; independent review: correct, no security issue, 3 Minor fixed 9b3cc65f; earlier: final review 7 no open Critical/Important, main's a79a326c findings fixed; sweep green @ 9b3cc65f)
+  sweep: 9b3cc65f — 5557 passed, 0 failed, 0 errors, 44 skipped; failing: none; command: nice cargo nextest run --locked --all-targets --all-features --no-fail-fast (+ scripts/check-harness-neutral exit 0, check-no-leaked-processes clean, scripts/test-claude-mod 98/98, wall 258s) @ 9b3cc65f
   slowness: round 1 hook.rs hot-file cap raised to 4; merge queue peaked at 3
   worktreesKept: 
   processSweep: stopped 0 · survived 0

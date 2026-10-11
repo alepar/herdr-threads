@@ -99,3 +99,14 @@ Independent review of the audit-2 fixes (99bc9a63, 25893108, 0160c11e, 14b4a4df)
 | TRUST-POLICY pull "seat's whole pending set" wording; body-read output format rule (independent review, Minor) | fixed | 575c5280 |
 
 Independent review of round 3 + F1: no Critical/Important; security: no path to advance or settle for another binding, subagents cursor-only, no revival of superseded/ended/retired bindings.
+
+## Main review of cbd09563 (m5MpzkhQL)
+
+| Finding (source) | Disposition | Evidence |
+|---|---|---|
+| I1: Claude mod treated wake_on:all promoted lazy (kind=message, ack_required:false) like sibling-settled ordinary → promoted lazy never woke an idle session (main, Important; regression from 575c5280) | fixed | d65180f2: watch line `wakes` marker set only for promoted lazy rows (serde default, schema unchanged, no model-visible text); mod passive only when `wakes` absent; mod test + Rust promotion test + real-path `mod_delivery::wake_on_all_promoted_lazy_line_carries_wakes`, red→green |
+| I2: link_lineage late link MAX-copied predecessor cursors → plain-first successor skips unseen mail (main, Important; was deferred F3) | fixed | 5ff8c236: late link records `lineage_from` only, moves no cursor; brand-new successor still inherits via SeedMode::Lineage; regression `hermes_plain_first_successor_late_link_never_moves_its_cursor` red→green; TRUST-POLICY reconciled |
+| F2: bound inbox warning/notice frontier used the seat's newest binding (main, Minor) | fixed | 16bb9785 (+ 9b3cc65f test of the warning cutoff incl. subagent→parent fallback, red with either half reverted) |
+| Independent review of round 4: watch.rs doc table split; F2 cutoff untested; TRUST-POLICY lineage-supersede sentence unqualified (Minor ×3) | fixed | 9b3cc65f (docs/policy/tests only) |
+
+Independent review of round 4: I1/I2/F2 correct, no security issue (no new path to advance/settle for another binding, no subagent write, no revival). Caveat noted: a new mod against an old watch child lacks `wakes` (version-mismatch only).
