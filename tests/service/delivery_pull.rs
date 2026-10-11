@@ -7664,13 +7664,24 @@ fn presentation_capacity_missing_due_keys_finish_a_finite_pass() {
     use crate::protocol::delivery::DeliveryPullReplyV2;
     let window = OfferWindowFixture::new(true);
     // Prime independent controls/publication before installing conservative hints.
-    for _ in 0..4 { window.pull(); }
+    for _ in 0..4 {
+        window.pull();
+    }
     {
         let mut ledger = window.f.state.lock();
-        let entry = ledger.seat_mut(&window.recipient.seat, window.recipient.binding_generation,
-            window.recipient.native_session.as_str()).unwrap();
+        let entry = ledger
+            .seat_mut(
+                &window.recipient.seat,
+                window.recipient.binding_generation,
+                window.recipient.native_session.as_str(),
+            )
+            .unwrap();
         for n in 0..256 {
-            entry.record(&MessageId::new(format!("absent-{n:03}")), window.f.clock.utc_now(), false);
+            entry.record(
+                &MessageId::new(format!("absent-{n:03}")),
+                window.f.clock.utc_now(),
+                false,
+            );
         }
     }
     advance(&window.f, REOFFER_AFTER_MS);
@@ -7678,15 +7689,45 @@ fn presentation_capacity_missing_due_keys_finish_a_finite_pass() {
     let mut visits = Vec::new();
     for _ in 0..3 {
         let reply = window.pull();
-        visits.push(window.f.service.presentation.last_work.lock().unwrap().unwrap().ordinary);
-        assert_eq!(window.offers(), original, "a missing row is not terminal evidence");
-        assert!(matches!(reply, DeliveryPullReplyV2::Unchanged { .. }) ||
-            matches!(reply, DeliveryPullReplyV2::Page(ref page) if page.offered.is_empty() && page.truncated.is_empty()));
+        visits.push(
+            window
+                .f
+                .service
+                .presentation
+                .last_work
+                .lock()
+                .unwrap()
+                .unwrap()
+                .ordinary,
+        );
+        assert_eq!(
+            window.offers(),
+            original,
+            "a missing row is not terminal evidence"
+        );
+        assert!(
+            matches!(reply, DeliveryPullReplyV2::Unchanged { .. })
+                || matches!(reply, DeliveryPullReplyV2::Page(ref page) if page.offered.is_empty() && page.truncated.is_empty())
+        );
     }
     assert_eq!(visits, vec![100, 100, 56]);
     for _ in 0..3 {
-        assert!(matches!(window.pull(), DeliveryPullReplyV2::Unchanged { .. }));
-        assert_eq!(window.f.service.presentation.last_work.lock().unwrap().unwrap().ordinary, 0);
+        assert!(matches!(
+            window.pull(),
+            DeliveryPullReplyV2::Unchanged { .. }
+        ));
+        assert_eq!(
+            window
+                .f
+                .service
+                .presentation
+                .last_work
+                .lock()
+                .unwrap()
+                .unwrap()
+                .ordinary,
+            0
+        );
         assert_eq!(window.offers(), original);
     }
 }
@@ -7699,15 +7740,27 @@ fn presentation_capacity_reclaimed_or_initially_free_with_missing_due_keys_quiet
         let window = OfferWindowFixture::new(true);
         let terminal = reclaim.then(|| window.send(0, DeliveryMode::Ordinary, "settled"));
         if let Some(id) = &terminal {
-            assert_eq!(window.drain(1), std::collections::BTreeSet::from([id.clone()]));
+            assert_eq!(
+                window.drain(1),
+                std::collections::BTreeSet::from([id.clone()])
+            );
             window.ack(std::slice::from_ref(id), false, false, "capacity-terminal");
         }
         {
             let mut ledger = window.f.state.lock();
-            let entry = ledger.seat_mut(&window.recipient.seat, window.recipient.binding_generation,
-                window.recipient.native_session.as_str()).unwrap();
+            let entry = ledger
+                .seat_mut(
+                    &window.recipient.seat,
+                    window.recipient.binding_generation,
+                    window.recipient.native_session.as_str(),
+                )
+                .unwrap();
             for n in 0..255 {
-                entry.record(&MessageId::new(format!("absent-{n:03}")), window.f.clock.utc_now(), false);
+                entry.record(
+                    &MessageId::new(format!("absent-{n:03}")),
+                    window.f.clock.utc_now(),
+                    false,
+                );
             }
         }
         advance(&window.f, REOFFER_AFTER_MS);
@@ -7720,11 +7773,18 @@ fn presentation_capacity_reclaimed_or_initially_free_with_missing_due_keys_quiet
                 DeliveryPullReplyV2::Page(page) => !page.more,
                 other => panic!("admitted fixture refused: {other:?}"),
             };
-            if quiet { break; }
+            if quiet {
+                break;
+            }
         }
-        assert!(quiet, "missing due hints cannot restart a finished positive-capacity pass");
+        assert!(
+            quiet,
+            "missing due hints cannot restart a finished positive-capacity pass"
+        );
         let retained = window.offers();
         assert_eq!(retained.len(), 255);
-        for (id, stamp) in retained { assert_eq!(original[&id], stamp); }
+        for (id, stamp) in retained {
+            assert_eq!(original[&id], stamp);
+        }
     }
 }
