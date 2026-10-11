@@ -23,7 +23,7 @@ parked:
 Design hand-off: ht-e99 ready for caller-owned code phase; two design-roast rounds, one design-only repair ht-e99.6 closed at ce11790f. No implementation code delivered.
 
 codeBuckets:
-  completed: ht-e99.1.1, ht-e99.1.2, ht-e99.2, ht-e99.3.1, ht-e99.3.2, ht-e99.3.3, ht-e99.4, ht-e99.5, ht-e99.6, ht-e99.7, ht-e99.8, ht-e99.9
+  completed: ht-e99.1.1, ht-e99.1.2, ht-e99.2, ht-e99.3.1, ht-e99.3.2, ht-e99.3.3, ht-e99.4, ht-e99.5, ht-e99.6, ht-e99.7, ht-e99.8, ht-e99.9, ht-e99.10
   escalated:
   pendingRetry:
   parked:
@@ -53,3 +53,5 @@ Current-base refresh pending: main advanced to bcb49485a4dd72837bef311d0065a0f7a
 Current-base refresh merged: ht-e99.9 at cbf055c709bf3f15fcfc38b993ce2adbb490c983, reviewed source6239a9a, identical tree2e5607f7. Current main bcb49485 ancestry and all seven imported files matching main byte-for-byte independently verified. Fresh task review CLEAN; serial focused38/38, lint/default/fmt/diff and scoped leak checks passed. All12 mapped leaves closed; root scoped closure completed. Fresh whole-epic-review-3 remains PENDING at the next checkpoint; PR round2 and exact-tip full-suite gates still required. Earlier full-suite failure remains preserved.
 
 Whole-epic-review-3: CLEAN at0d21f5f9 against incorporatedmainbcb49485, no required findings. Review preserved. Root requery then found main945107f6acd8b05ade7b5e2d9f8b293282aa06f4: one test-only commit fixing partial snapshot staging in two topology fixtures. Required Task12 will import this final-suite-relevant fix through reviewed pipeline before successor whole review and PR2. Current codeBuckets.review stays PENDING for the next combined candidate; phase code remains, no fresh full-suite success.
+
+Topology fixture refresh merged: ht-e99.10 at8f661e1cafd047756a71141d75d3124a0a3a2e67, reviewed source10f81048, identical tree77619f64. Main945107f6 ancestry verified; imported fixture loops byte-identical to main, feature two direct_recipient None fields retained. Fresh task review CLEAN; serial29/29 focused and fmt/lint/default/diff/scopedleak passed. All source/helpers quiescent. Fresh whole-epic-review-4 PENDING at next checkpoint; phase code/reviewPENDING remain until persisted verdict.
