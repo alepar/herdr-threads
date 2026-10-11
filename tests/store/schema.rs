@@ -5696,7 +5696,7 @@ fn user_intent_schema22_fresh_and_v21_upgrade() {
             "SELECT json_array(id,fetched_at,created_at) FROM summary_jobs ORDER BY id",
         ].into_iter().flat_map(|sql| db.prepare(sql).unwrap().query_map([], |r| r.get::<_,String>(0)).unwrap().map(Result::unwrap).collect::<Vec<_>>()).collect();
         let roots = db
-            .prepare("SELECT name,rootpage FROM sqlite_master WHERE type='table' AND name NOT IN ('archival_instances','channel_archival','seat_archival','channel_handoff_fences','harness_contract_diagnostics','lazy_recipients','bootstrap_handoffs','bootstrap_child_keys','bootstrap_attempts','bootstrap_recovery_decisions','bootstrap_attachments','bootstrap_reports','receipt_send_time_cutovers','receipt_deadline_backfill') ORDER BY name")
+            .prepare("SELECT name,rootpage FROM sqlite_master WHERE type='table' AND name NOT IN ('archival_instances','channel_archival','seat_archival','channel_handoff_fences','harness_contract_diagnostics','lazy_recipients','bootstrap_handoffs','bootstrap_child_keys','bootstrap_attempts','bootstrap_recovery_decisions','bootstrap_attachments','bootstrap_reports','receipt_send_time_cutovers','receipt_deadline_backfill','receipt_discovery_backfill','receipt_due_sparse','receipt_warning_origins') ORDER BY name")
             .unwrap()
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
             .unwrap()
@@ -6263,15 +6263,15 @@ fn absorption_main24_and25_to26_preserves_diagnostics_and_matches_fresh_catalog(
         assert_eq!(catalog(&db), catalog(&fresh));
         assert_eq!(
             catalog(&fresh).iter().filter(|r| r.0 == "table").count(),
-            76
+            79
         );
         assert_eq!(
             catalog(&fresh).iter().filter(|r| r.0 == "index").count(),
-            144
+            148
         );
         assert_eq!(
             catalog(&fresh).iter().filter(|r| r.0 == "trigger").count(),
-            184
+            194
         );
     }
 }
@@ -6338,36 +6338,18 @@ fn absorption_main25_missing_warning_guard_refuses_before_adapter_rebuild() {
 // neither a rewritten version stamp nor adapter tables are used as the precursor.
 #[test]
 fn absorption_main24_backfills_warning_delivery_before_adapter26() {
-    let mut db = adapter_historical_database(24);
+    let db = adapter_historical_database(24);
     user_intent_seed(&db);
     db.execute_batch("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES ('upgrade-warning','t','s',1,'pending',0,1,50,50)").unwrap();
-    let tx = db.transaction().unwrap();
-    let warning = schema::record_overdue_if_pending(
-        &tx,
-        &crate::protocol::authority::ObligationRef::Invitation(
-            crate::protocol::ids::InvitationId::new("upgrade-warning"),
-        ),
-        &crate::ports::TimeBasis::Decision,
-        UtcMillis(100),
-    )
-    .unwrap()
-    .warning
-    .unwrap();
-    tx.commit().unwrap();
-    let budget = CallBudget {
-        deadline: MonoInstant(1000),
-        cancellation: Default::default(),
-    };
-    while crate::store::materialization::advance_work(
-        &mut db,
-        &format!("work:{}", warning.as_str()),
-        crate::ports::DurableWorkAdmission { max_units: 16 },
-        &budget,
-        &FixedClock,
-    )
-    .unwrap()
-    .has_more
-    {}
+    // Seed the completed immutable24 event, condition and exact recipient
+    // using its historical schema. Current post33 judges require confirmation
+    // columns and cannot be used as historical fixture writers.
+    let warning = crate::protocol::ids::MessageId::new("upgrade-warning-event");
+    db.execute_batch("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_key,event_json,decision_at,decision_seq,source_invitation_id,author_kind) VALUES ('upgrade-warning-event','i','t',1,'warn','overdue:invitation:upgrade-warning','{\"obligation\":\"invitation\",\"seat\":\"s\",\"deadline_at\":50,\"classified_at\":100,\"materialized_at\":100,\"current_status\":\"pending\",\"physical_status\":\"pending\"}',100,2,'upgrade-warning','built_in');
+        UPDATE invitations SET warning_message_id='upgrade-warning-event' WHERE id='upgrade-warning';
+        INSERT INTO warning_conditions(condition_kind,thread_id,condition_id,affected_seat_id,open_warning_id,opened_seq) VALUES ('invitation','t','upgrade-warning','s','upgrade-warning-event',2);
+        INSERT INTO warning_recipients(warning_id,seat_id,generation) VALUES ('upgrade-warning-event','s',2);
+        UPDATE threads SET next_sequence=2 WHERE id='t'; UPDATE host_instances SET decision_seq=2 WHERE id='i';").unwrap();
     assert_eq!(
         db.query_row(
             "SELECT count(*) FROM warning_recipients WHERE warning_id=?1",

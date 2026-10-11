@@ -1046,10 +1046,10 @@ pub struct WakeProbe {
     pub sql: &'static str,
 }
 
-/// The seven pending access paths wake discovery probes per live non-human
+/// The eight pending access paths wake discovery probes per live non-human
 /// seat (spec D2), in probe order. Each is an `INDEXED BY` seat-leading
 /// existence lookup. `wake_work` is deliberately not probed.
-pub const WAKE_PROBES: [WakeProbe; 7] = [
+pub const WAKE_PROBES: [WakeProbe; 8] = [
     WakeProbe {
         index: "digest_pending_invitations_seat",
         sql: "SELECT EXISTS(SELECT 1 FROM digest_pending_invitations INDEXED BY digest_pending_invitations_seat WHERE seat_id=?1)",
@@ -1075,12 +1075,16 @@ pub const WAKE_PROBES: [WakeProbe; 7] = [
         sql: "SELECT EXISTS(SELECT 1 FROM digest_programmatic_warnings INDEXED BY digest_programmatic_warnings_seat WHERE seat_id=?1 AND ordinal>?2)",
     },
     WakeProbe {
+        index: "receipt_warning_origins_seat",
+        sql: "SELECT EXISTS(SELECT 1 FROM receipt_warning_origins INDEXED BY receipt_warning_origins_seat WHERE instance_id=(SELECT instance_id FROM seats WHERE id=?1) AND seat_id=?1)",
+    },
+    WakeProbe {
         index: "warning_conditions_invitation_origin",
         sql: "SELECT EXISTS(SELECT 1 FROM warning_conditions INDEXED BY warning_conditions_invitation_origin WHERE invitation_originator_instance_id=(SELECT instance_id FROM seats WHERE id=?1) AND invitation_originator_seat_id=?1 AND condition_kind='invitation' AND clear_warning_id IS NULL AND invitation_originator_seat_id IS NOT NULL)",
     },
 ];
 
-/// Does any pending access path hold a row for the seat? At most seven O(1)
+/// Does any pending access path hold a row for the seat? At most eight O(1)
 /// probes, stopping at the first hit. A hit is only a reason to examine the
 /// seat: the canonical judges still decide whether the work is actionable.
 pub fn seat_has_pending_rows(db: &Connection, seat_id: &str) -> Result<bool, ApiError> {
@@ -1117,8 +1121,8 @@ pub struct WakeSeatAttention {
 
 /// May this pending warning wake `seat_id`? A canonical condition transition
 /// is an informational notice for every member (TRUST-POLICY A7): it wakes
-/// the affected seat of a still-open condition and the original inviter of an
-/// overdue invitation. Other members, and every clear, receive
+/// the affected seat of a still-open condition, each canonical original sender
+/// of associated receipts, and the original inviter of an overdue invitation. Other members, and every clear, receive
 /// it on their next check-in offer instead of a prompt whose inbox has
 /// nothing for them. Other warnings keep their judged actionability. Unique
 /// index probes only.
@@ -1129,6 +1133,10 @@ pub fn warning_wakes_seat(
 ) -> Result<bool, ApiError> {
     if effective::is_invitation_rejection_notice(db, warning_id)? {
         return Ok(false);
+    }
+    let receipt_origin:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM receipt_warning_origins INDEXED BY receipt_warning_origins_exact WHERE instance_id=(SELECT instance_id FROM seats WHERE id=?1) AND seat_id=?1 AND warning_id=?2)",params![seat_id,warning_id],|r|r.get(0)).map_err(store_error)?;
+    if receipt_origin {
+        return Ok(true);
     }
     let origin: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM warning_conditions WHERE open_warning_id=?1 AND condition_kind='invitation' AND clear_warning_id IS NULL AND invitation_originator_seat_id=?2)",params![warning_id,seat_id],|r|r.get(0)).map_err(store_error)?;
     if origin {
@@ -1180,6 +1188,47 @@ pub fn open_invitation_origin_warnings(
     Ok(gather.finish())
 }
 
+/// All canonical native authors associated with each still-open shared
+/// receipt condition. This bounded seat-leading source is independent of
+/// informational notice delivery and current thread membership.
+pub fn open_receipt_origin_warnings(
+    db: &Connection,
+    seat_id: &str,
+) -> Result<PendingSet, ApiError> {
+    let window: Vec<PendingItem> = rows(
+        db,
+        "SELECT o.warning_id,m.thread_id,m.decision_seq,m.event_offset FROM (SELECT warning_id FROM receipt_warning_origins INDEXED BY receipt_warning_origins_seat WHERE instance_id=(SELECT instance_id FROM seats WHERE id=?1 AND state!='retired') AND seat_id=?1 AND ordinal<=(SELECT COALESCE(MAX(ordinal),0) FROM receipt_warning_origins INDEXED BY receipt_warning_origins_seat WHERE instance_id=(SELECT instance_id FROM seats WHERE id=?1) AND seat_id=?1) ORDER BY ordinal DESC LIMIT ?2) o JOIN messages m ON m.id=o.warning_id",
+        params![seat_id, WINDOW_SQL],
+        |r| {
+            Ok(PendingItem {
+                id: r.get(0)?,
+                thread_id: r.get(1)?,
+                key: (r.get(2)?, r.get(3)?),
+            })
+        },
+    )?;
+    let mut gather = Gather::default();
+    gather.window(window.len());
+    for item in window {
+        gather.add(item);
+    }
+    Ok(gather.finish())
+}
+
+/// Independent open-origin attention shared by native candidate loading and
+/// the mod fingerprint. Each source has its own finite indexed window.
+pub fn open_origin_warnings(db: &Connection, seat_id: &str) -> Result<PendingSet, ApiError> {
+    let invitations = open_invitation_origin_warnings(db, seat_id)?;
+    let receipts = open_receipt_origin_warnings(db, seat_id)?;
+    let mut gather = Gather {
+        steps: invitations.work_steps + receipts.work_steps,
+        ..Gather::default()
+    };
+    gather.merge(&invitations);
+    gather.merge(&receipts);
+    Ok(gather.finish())
+}
+
 /// Narrow a seat's pending-warning set to the warnings that wake it
 /// (`warning_wakes_seat`). A saturated walk can hide an older waking notice (a
 /// service notice behind a full window of other seats' transitions).
@@ -1201,7 +1250,7 @@ pub fn wake_warnings(
     if !(wakes.is_empty() && warnings.saturated) {
         warnings.items = wakes;
     }
-    let origins = open_invitation_origin_warnings(db, seat_id)?;
+    let origins = open_origin_warnings(db, seat_id)?;
     let mut gather = Gather {
         steps: warnings.work_steps + origins.work_steps,
         ..Gather::default()

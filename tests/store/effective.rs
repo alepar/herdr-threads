@@ -1100,7 +1100,7 @@ fn dormant_upgrade_actual_v31_backfill32_reopens_and_rolls_back_without_recaptur
             .map(|table| receipt_upgrade_snapshot(&db, table))
             .collect();
         let catalog = |db: &Connection| {
-            db.prepare("SELECT type,name,tbl_name,rootpage,sql FROM sqlite_master WHERE name NOT IN ('receipt_deadline_backfill','invitations_confirmation_scan','invitations_confirmation_pending_seat','invitations_confirmation_pending_thread','warning_conditions_invitation_origin','warning_conditions_invitation_origin_immutable') ORDER BY type,name").unwrap()
+            db.prepare("SELECT type,name,tbl_name,rootpage,sql FROM sqlite_master WHERE name NOT IN ('receipt_deadline_backfill','invitations_confirmation_scan','invitations_confirmation_pending_seat','invitations_confirmation_pending_thread','warning_conditions_invitation_origin','warning_conditions_invitation_origin_immutable','receipt_discovery_backfill','receipt_due_sparse','receipt_due_sparse_delete','receipt_due_sparse_insert','receipt_due_sparse_update','receipt_warning_origin_attention','receipt_warning_origin_clear','receipt_warning_origin_condition','receipt_warning_origin_receipt_state_insert','receipt_warning_origin_receipt_state_update','receipt_warning_origin_receipts_insert','receipt_warning_origin_receipts_update','receipt_warning_origins','receipt_warning_origins_exact','receipt_warning_origins_seat','receipt_warning_origins_warning','receipts_required_due_ordinal','sqlite_autoindex_receipt_due_sparse_1','sqlite_autoindex_receipt_warning_origins_1') ORDER BY type,name").unwrap()
                 .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)?, r.get::<_, Option<String>>(4)?)))
                 .unwrap().map(Result::unwrap).collect::<Vec<_>>()
         };
@@ -1174,7 +1174,7 @@ fn dormant_upgrade_actual_v31_backfill32_reopens_and_rolls_back_without_recaptur
         assert_eq!(
             catalog(&db),
             expected_catalog,
-            "composed additive32..34 preserves old definitions/rootpages and adds exact origin columns"
+            "composed additive32..35 preserves old definitions/rootpages and adds exact origin columns"
         );
         for (table, retained) in tables.iter().zip(&before) {
             assert_eq!(&receipt_upgrade_snapshot(&db, table), retained, "{table}");
@@ -1291,8 +1291,18 @@ fn dormant_upgrade_bounded_batches_survive_restart_and_continuing_arrivals() {
         path.clone(),
         std::sync::Arc::new(UpgradeClock),
     );
+    let repair_position = |db: &Connection| -> u64 {
+        db.query_row("SELECT a.physical_after+a.prepared_after+b.physical_after+b.sparse_after FROM receipt_deadline_backfill a CROSS JOIN receipt_discovery_backfill b",[],|r|r.get::<_,i64>(0)).unwrap().try_into().unwrap()
+    };
+    let mut previous_repair = repair_position(&db);
+    assert_eq!(previous_repair, 0);
+    let mut actual_d = 0u64;
     let mut cursor = crate::store::receipts::ReceiptDueCursor::default();
     let first = crate::store::receipts::scan_due(&context, &mut db, 100, &mut cursor).unwrap();
+    let first_repair = repair_position(&db);
+    assert!(first_repair - previous_repair <= 50);
+    actual_d += u64::from(first.inspected) - (first_repair - previous_repair);
+    previous_repair = first_repair;
     assert_eq!(first.inspected, 100);
     assert!(
         first.more,
@@ -1309,6 +1319,15 @@ fn dormant_upgrade_bounded_batches_survive_restart_and_continuing_arrivals() {
     schema::initialize(&db, || UtcMillis(9000)).unwrap();
     cursor = crate::store::receipts::ReceiptDueCursor::default();
     let mut finished = false;
+    let initial_warned: i64 = db
+        .query_row(
+            "SELECT count(*) FROM receipts WHERE warning_message_id IS NOT NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let mut captured_arrival_warned_before_repair = false;
+    let mut turns = 0;
     for turn in 0..20 {
         // New due work keeps arriving above the captured historical high-water.
         let sequence: i64 = db
@@ -1335,6 +1354,14 @@ fn dormant_upgrade_bounded_batches_survive_restart_and_continuing_arrivals() {
         db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,deadline_at) VALUES(?1,'t','s','pending',300,1200)",[&message]).unwrap();
         let page = crate::store::receipts::scan_due(&context, &mut db, 100, &mut cursor).unwrap();
         assert!(page.inspected <= 100);
+        let next_repair = repair_position(&db);
+        let repair = next_repair - previous_repair;
+        assert!(
+            repair <= 50,
+            "all four producers share the repair half allowance"
+        );
+        actual_d += u64::from(page.inspected) - repair;
+        previous_repair = next_repair;
         let warned: i64 = db.query_row("SELECT (SELECT count(*) FROM receipts WHERE message_id GLOB 'old*' AND warning_message_id IS NOT NULL)+(SELECT count(*) FROM receipt_state WHERE message_id GLOB 'old*' AND warning_message_id IS NOT NULL)",[],|r|r.get(0)).unwrap();
         if turn == 0 {
             assert!(
@@ -1342,14 +1369,31 @@ fn dormant_upgrade_bounded_batches_survive_restart_and_continuing_arrivals() {
                 "fixture must still have historical repair backlog"
             );
             assert!(
-                db.query_row(
-                    "SELECT warning_message_id IS NOT NULL FROM receipts WHERE message_id=?1",
-                    [&message],
-                    |r| r.get::<_, bool>(0)
-                )
-                .unwrap(),
-                "repair must not starve a new due receipt"
+                warned > initial_warned,
+                "ordinary due work progresses while historical repair remains unfinished"
             );
+            assert_eq!(
+                page.inspected, 100,
+                "the full shared repair/due allowance remains available"
+            );
+        }
+        turns += 1;
+        let combined: bool = db
+            .query_row(
+                "SELECT completed FROM receipt_discovery_backfill",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let captured_arrival: bool = db
+            .query_row(
+                "SELECT warning_message_id IS NOT NULL FROM receipts WHERE message_id='arrival0'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        if !combined && captured_arrival {
+            captured_arrival_warned_before_repair = true;
         }
         if warned == 500 {
             finished = true;
@@ -1363,6 +1407,20 @@ fn dormant_upgrade_bounded_batches_survive_restart_and_continuing_arrivals() {
     assert!(
         finished,
         "finite historical backlog starved by arrivals or restart"
+    );
+    assert!(
+        captured_arrival_warned_before_repair,
+        "a finite arrival inside the restarted ordinal snapshot is discovered before combined repair exhaustion"
+    );
+    // H=1001: Task5 physical250/prepared251 plus35 physical250/sparse250.
+    // D counts actual ordinary candidate visits, including repeats across the
+    // restart and the single combined reset; it is never a distinct-row count.
+    assert!(previous_repair <= 1001);
+    let receipt_turn_bound = 1001u64.div_ceil(50) + 2 + actual_d.div_ceil(100) + 1;
+    assert!(
+        turns < receipt_turn_bound,
+        "actual receipt turns respect the upgrade envelope: H=1001, visitedH={previous_repair}, D={actual_d}, turns={}",
+        turns + 1
     );
     for index in 0..500 {
         assert_upgrade_warning_link(
@@ -1865,7 +1923,7 @@ fn receipt_send_time_upgrade_preserves_populated_v28_and_v29_graph_and_restarts_
             .map(|name| receipt_upgrade_snapshot(&db, name))
             .collect();
         let objects = |db: &Connection| {
-            let mut statement=db.prepare("SELECT sql FROM sqlite_master WHERE tbl_name IN ('receipts','receipt_state') AND type IN ('trigger','index') AND sql IS NOT NULL ORDER BY name").unwrap();
+            let mut statement=db.prepare("SELECT sql FROM sqlite_master WHERE tbl_name IN ('receipts','receipt_state') AND type IN ('trigger','index') AND name NOT IN ('receipt_due_sparse_delete','receipt_due_sparse_insert','receipt_due_sparse_update','receipt_warning_origin_receipt_state_insert','receipt_warning_origin_receipt_state_update','receipt_warning_origin_receipts_insert','receipt_warning_origin_receipts_update','receipts_required_due_ordinal') AND sql IS NOT NULL ORDER BY name").unwrap();
             statement
                 .query_map([], |r| r.get::<_, String>(0))
                 .unwrap()

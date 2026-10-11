@@ -705,7 +705,7 @@ fn invitation_confirmation_prior_schema_upgrade_preserves_exact_open_origins() {
     assert_eq!(
         conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        34
+        35
     );
     for origin in ["origin", "legacy"] {
         assert!(
@@ -838,7 +838,7 @@ fn invitation_confirmation_actual32_upgrade_rolls_back_reopens_and_preserves_rec
             assert_eq!(
                 db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
                     .unwrap(),
-                34
+                35
             );
             assert_eq!(db.query_row("SELECT physical_after,physical_high_water,prepared_after,prepared_high_water,completed FROM receipt_deadline_backfill", [], |r| Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?,r.get::<_,i64>(4)?))).unwrap(),(2,7,3,9,0));
             assert_eq!(db.query_row("SELECT historical_decision_seq FROM receipt_send_time_cutovers WHERE instance_id='host'", [], |r| r.get::<_,i64>(0)).unwrap(),12);
@@ -850,7 +850,7 @@ fn invitation_confirmation_actual32_upgrade_rolls_back_reopens_and_preserves_rec
         assert_eq!(
             db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
                 .unwrap(),
-            34
+            35
         );
         drop(db);
         std::fs::remove_file(path).unwrap();

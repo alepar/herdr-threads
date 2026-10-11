@@ -400,7 +400,8 @@ fn due_receipt_cursor_retains_both_physical_and_sparse_positions() {
         after_deadline: Some(UtcMillis(100)),
         after_ordinal: 7,
         receipt_sparse: Some(ReceiptSparseCursor {
-            high_water_rowid: 80,
+            high_water_ordinal: 80,
+            after_ordinal: 8,
             after_deadline: Some(UtcMillis(101)),
             after_message: Some(MessageId::new("m")),
             after_seat: Some(SeatId::new("s")),
@@ -418,6 +419,8 @@ fn due_receipt_cursor_retains_both_physical_and_sparse_positions() {
             invitations: None,
             receipts: Some(cursor.clone()),
             next_phase: DuePhase::Receipts,
+            invitations_complete: false,
+            receipts_complete: false,
         },
         max_candidates: 100,
         run_invitations: false,
@@ -882,6 +885,7 @@ fn due_scan_keeps_independent_phase_errors_and_explicit_continuation() {
             ..state
         },
         examined_candidates: 0,
+        maintenance_sessions: 0,
         warnings_added: 0,
         invitations: DuePhaseProgress::Failed(
             herdr_threads::protocol::results::ErrorCode::StoreBusy,

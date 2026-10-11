@@ -194,6 +194,7 @@ impl DeadlinePort for ScriptedDeadlines {
         Ok(DueScanProgress {
             state: request.state,
             examined_candidates: 0,
+            maintenance_sessions: 0,
             warnings_added: 0,
             invitations: if request.run_invitations {
                 invitations

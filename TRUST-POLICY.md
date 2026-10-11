@@ -448,6 +448,17 @@ canonical closure; the informational offer remains settled and creates no repeat
 The open episode freezes its instance and original inviter address; historical
 rows use only their exact canonical invitation-creation event's recorded inviter, never a current member
 or later duplicate caller. Unknown historical/service/operator origins do not manufacture a native seat.
+A still-open receipt deadline condition also wakes every canonical native seat author of its exactly
+associated physical or published-manifest receipts, including authors who left the thread. The shared
+thread/recipient condition retains one open event: later associations add derived origin addresses,
+not new warning events or receipt provenance. Informational offers cannot settle this independent
+open-origin attention. The indexed origin projection persists for all associated authors while any
+required, pending, unwaived receipt remains; settling a subset cannot withdraw another author's
+warning. Final settlement clears it once, passively. Canonical closure alone removes these waking
+addresses. Unknown and programmatic authors create no native seat address. Historical projection
+bootstrap and deadline repair run in bounded transactional turns; durable warning discovery remains
+independent of native wake admission, so composer drafts, active turns and host outages may defer
+key submission indefinitely.
 A clear remains passive, as do transitions about another seat for other observers; they wait for the
 recipient's next check-in offer. Accepted limit: an idle
 member learns of another seat's overdue or cleared obligation only when its pane next checks in. When

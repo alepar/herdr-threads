@@ -5293,11 +5293,31 @@ fn mixed_retirement_preserves_committed_prefix_across_failed_quantum_and_reopen(
         .unwrap(),
         1
     );
+    let actual_receipts:Vec<String>=conn.prepare("SELECT source_message_id FROM messages WHERE kind='warn' AND json_extract(event_json,'$.obligation')='receipt' ORDER BY source_message_id").unwrap().query_map([],|r|r.get(0)).unwrap().collect::<Result<_,_>>().unwrap();
+    let mut expected_receipts = (1..17)
+        .map(|n| format!("retire-message-{n}"))
+        .collect::<Vec<_>>();
+    expected_receipts.extend(
+        [
+            "retire-b-message",
+            "retire-logical-overdue",
+            "retire-logical-equality",
+            "retire-logical-unstarted",
+        ]
+        .map(str::to_owned),
+    );
+    expected_receipts.sort();
+    assert_eq!(
+        actual_receipts, expected_receipts,
+        "send-time90 expires even without recipient availability before cutover100"
+    );
+    let actual_invitations:Vec<String>=conn.prepare("SELECT source_invitation_id FROM messages WHERE kind='warn' AND json_extract(event_json,'$.obligation')='invitation'").unwrap().query_map([],|r|r.get(0)).unwrap().collect::<Result<_,_>>().unwrap();
+    assert_eq!(actual_invitations, vec!["retire-invite"]);
     assert_eq!(
         conn.query_row("SELECT count(*) FROM messages WHERE kind='warn'", [], |r| r
             .get::<_, i64>(0))
             .unwrap(),
-        20
+        21
     );
     assert_eq!(
         conn.query_row(
@@ -5317,7 +5337,15 @@ fn mixed_retirement_preserves_committed_prefix_across_failed_quantum_and_reopen(
         .unwrap(),
         "s2"
     );
-    assert_eq!(conn.query_row("SELECT count(*) FROM messages WHERE source_message_id='retire-logical-predeadline' OR source_message_id='retire-logical-unstarted'",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM messages WHERE source_message_id='retire-logical-predeadline'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
     assert_eq!(
         conn.query_row(
             "SELECT count(*) FROM retirement_audits WHERE job_id=?1",
