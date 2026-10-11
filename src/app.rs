@@ -1409,6 +1409,7 @@ where
                     },
                     mod_delivery,
                 )
+                .with_connection_cap(config.watch_connection_cap())
                 .with_log({
                     let log = Arc::clone(&rate_limited_log);
                     Arc::new(move |line: &str| log.write_line(line))

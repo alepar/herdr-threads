@@ -110,6 +110,12 @@ struct Fixture {
     logs: Arc<Mutex<Vec<String>>>,
 }
 fn fixture_with(setting: ModDeliverySetting) -> Fixture {
+    fixture_build(setting, None)
+}
+fn fixture_with_cap(cap: usize) -> Fixture {
+    fixture_build(ModDeliverySetting::On, Some(cap))
+}
+fn fixture_build(setting: ModDeliverySetting, cap: Option<usize>) -> Fixture {
     let clock = Arc::new(FakeClock(AtomicI64::new(1_000_000)));
     let store = Arc::new(FakeStore::default());
     let kicks = Arc::new(AtomicUsize::new(0));
@@ -130,6 +136,15 @@ fn fixture_with(setting: ModDeliverySetting) -> Fixture {
             log_lines.lock().unwrap().push(line.to_owned())
         })),
     );
+    let registry = match cap {
+        Some(cap) => Arc::new(
+            Arc::try_unwrap(registry)
+                .ok()
+                .expect("sole owner")
+                .with_connection_cap(cap),
+        ),
+        None => registry,
+    };
     Fixture {
         clock,
         store,
@@ -775,6 +790,19 @@ fn registration_over_the_connection_bound_is_busy_but_replacement_is_not() {
         f.registry.status().unwrap().channels.len(),
         MAX_WATCH_CONNECTIONS
     );
+}
+
+#[test]
+fn registration_over_a_configured_cap_is_busy_but_replacement_is_not() {
+    let f = fixture_with_cap(2);
+    f.register("seat-0", 1);
+    f.register("seat-1", 1);
+    assert_eq!(
+        f.try_register("seat-2", 1).err(),
+        Some(WatchRefusalReason::Busy)
+    );
+    f.try_register("seat-0", 1).unwrap();
+    assert_eq!(f.registry.status().unwrap().channels.len(), 2);
 }
 
 #[test]
