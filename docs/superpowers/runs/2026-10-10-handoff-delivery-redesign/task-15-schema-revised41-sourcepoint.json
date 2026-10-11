@@ -1,0 +1,14 @@
+{
+  "manifest_method": "sorted compact JSON OBJECT path to sha256; tracked plus nonignored untracked files",
+  "source_hash": "e931cdad0cf045b12c1366e87c337c9732c52cdecbc0a2cba44888fee30b20af",
+  "dirty_diff": "158f7c1fcd58b7ee28db8c497746ee14130fe84140aa9fccb7994e75ddfc2b5a",
+  "files": 3533,
+  "working_directory": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2",
+  "target_dir": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target",
+  "command": "CARGO_BUILD_JOBS=4 nice cargo test --locked --all-features --lib presentation_schema_populated_ -- --nocapture",
+  "log": "/private/tmp/ht-task15-schema-revised41-green.log",
+  "classification": "source frozen during actual compile; previous initialization failure is schema integration failure, no delivery semantic result",
+  "log_sha256": {
+    "/private/tmp/ht-task15-schema-revised41-green.log": "0ed497ac2ce7da5d813144ac607229b9e84f975e32b60d5324473e58713c04fc"
+  }
+}

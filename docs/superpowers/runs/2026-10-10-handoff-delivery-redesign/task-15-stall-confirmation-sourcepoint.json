@@ -1,0 +1,19 @@
+{
+  "source_hash": "0ef9ba556c4191ad2c45acc6245c5ba9dbe706b3e8a64e6a360e8895524aee7d",
+  "dirty_diff": "5a6781dbd8adf8b5359f619abe2954c60ce71c697803334eb2124d57ba4327c3",
+  "manifest_method": "sorted compact JSON OBJECT path to sha256",
+  "files": 3533,
+  "working_directory": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2",
+  "target_dir": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target",
+  "build_jobs": 4,
+  "red_log": "/private/tmp/ht-task15-stall-confirmation-red.log",
+  "green_log": "/private/tmp/ht-task15-stall-confirmation-green.log",
+  "filter": "presentation_watch_fresh_confirmation_records_exact_owner_publication_cutoff_once",
+  "scope": "real registered Watch/public ordinary receipt/timed invitation/exact Confirm; single control; discarded confirmation reply, actual receipt ACK isolates older receipt, AlreadyConfirmed must preserve publication cutoff",
+  "log_sha256": {
+    "/private/tmp/ht-task15-stall-confirmation-red.log": "63d7dc878f71fc6a02eed796be298a01884fd438432361b2b893499ac6b8a619",
+    "/private/tmp/ht-task15-stall-confirmation-green.log": "5e727c66f308e491144cf2e8484c0582e552b54bff7b36746f243eaefab66189",
+    "/private/tmp/ht-task15-stall-exact-owner-green.log": "94d197dc4484be073bae71ab2c4d6bdba19a59a46730298494165fd4c2cc2f85",
+    "/private/tmp/ht-task15-publication-scalars-green.log": "b53a7bee59a5b4d7d0910d33f618eec341d82616228d5a0652d1b8c2e6d5ca3d"
+  }
+}

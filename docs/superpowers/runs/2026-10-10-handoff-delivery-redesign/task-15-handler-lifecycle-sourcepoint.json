@@ -1,0 +1,13 @@
+{
+  "source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2",
+  "target_dir": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target",
+  "manifest_method": "sorted git tracked+untracked nonignored regular files compact JSON list(path,sha256)",
+  "source_manifest_sha256": "0a553e133f297529d1c0692f7ff76db1dcc3b82d0191c4a2a342dab6a9552969",
+  "dirtydiff_sha256": "00cbc47a3f63506687dc4ab71e3ee16d0117009437238422395c93bae3bfa584",
+  "source_count": 3533,
+  "command": "CARGO_TARGET_DIR=/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target CARGO_BUILD_JOBS=4 nice cargo test --locked --all-features --lib presentation_handler_ -- --nocapture",
+  "expected_selected": 2,
+  "log": "/private/tmp/ht-task15-handler-lifecycle-selected.log",
+  "status": "frozen running; no outcome claim",
+  "leak_run_id": null
+}

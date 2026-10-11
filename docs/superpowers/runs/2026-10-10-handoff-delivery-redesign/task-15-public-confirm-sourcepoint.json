@@ -1,0 +1,35 @@
+{
+  "manifest_method": "Sorted compact JSON object mapping repository-relative path to sha256; git tracked plus nonignored untracked files",
+  "source_sha256": "7332b57580412c84d3f87e2cf9b278a2659ec1fd6f01dfe54fd0be3204cf9df3",
+  "dirty_diff_sha256": "f72dc5c9fe8d5ad1720f5530ded90217895b688abad42a99324383b13d93328b",
+  "file_count": 3533,
+  "working_directory": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2",
+  "target_dir": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target",
+  "source_frozen_during_command": true,
+  "log": "/private/tmp/ht-task15-public-partial-confirm.log",
+  "test": "presentation_handler_partial_confirmation_retains_canonical_slots_across_restart",
+  "scope": "actual canonical timed invitation + service explicit partial Confirm/replay/restart/foreign/lost reply; diagnostic relevance baseline known Important, not corrected helper verification",
+  "results": [
+    {
+      "name": "presentation_handler_partial_confirmation_retains_canonical_slots_across_restart",
+      "selected": 1,
+      "passed": 1,
+      "failed": 0,
+      "build_seconds": 18.76,
+      "test_seconds": 0.26,
+      "log": "/private/tmp/ht-task15-public-partial-confirm.log",
+      "log_sha256": "a66effdfd864d2d1653b649dbf7a4e780f67b4f79e1c73092828863cbd4d9dac"
+    },
+    {
+      "name": "presentation_private_state_rejects_typed_corruption_without_confirmation_effects",
+      "selected": 1,
+      "passed": 1,
+      "failed": 0,
+      "build_seconds": 0.03,
+      "test_seconds": 0.62,
+      "log": "/private/tmp/ht-task15-private-typed-corruption.log",
+      "log_sha256": "03fabccdca06e6314d6abcb7db0a2d445ef58764c397d035f92261e598521dac"
+    }
+  ],
+  "limitations": "Known-Important diagnostic relevance baseline, independent canonical confirming-invitation positive path. Final corrected-helper integration must recheck affected scopes. No physical native consumer claim for direct service fixture."
+}

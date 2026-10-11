@@ -1,0 +1,12 @@
+{
+  "source_hash": "9e4b90e93fdd7ecf65d16206fa2a6f50d4b7a2521356f2a80217cd28e72a2928",
+  "dirty_diff": "dbde9c833b004677d41402bb9423c9de9ada60e9391abf456a176b7c549bf08b",
+  "manifest_method": "sorted compact JSON OBJECT path to sha256; source frozen from command start through capture",
+  "files": 3533,
+  "working_directory": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2",
+  "target_dir": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target",
+  "log": "/private/tmp/ht-task15-passive-remaining-batch.log",
+  "expected": 7,
+  "leak_run_id": null,
+  "ordinary_predrain_expectation": "Unsupported expectation, NOT production RED; canonical materializer liveness fixture successor pending. Warn pre-materializer requirement separate."
+}

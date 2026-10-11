@@ -1,0 +1,35 @@
+{
+  "source": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2",
+  "target_dir": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target",
+  "manifest_method": "sorted compact JSON OBJECT mapping path to sha256",
+  "full_source_sha256": "6de02398ad2640a0a8e235b19118f2056a9f13033b61562ca089ce72722ad31f",
+  "dirtydiff_sha256": "0b6238b3c5ce4a58e41c3ce67f7bc27bebf77a4b7b5fa08ddd166ecc85d5855e",
+  "source_count": 3533,
+  "command": "CARGO_TARGET_DIR=/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target CARGO_BUILD_JOBS=4 nice cargo test --locked --all-features --lib presentation_confirm_rejects_oversized_private_json_before_decoding -- --nocapture",
+  "log": "/private/tmp/ht-task15-confirm-private-bound-red.log",
+  "expected_selected": 1,
+  "status": "frozen running; no result claim",
+  "leak_run_id": null,
+  "result": "Actual RED oversized last_descriptors accepted AlreadyConfirmed; GREEN after preallocation ValueRef bounds with unchanged caps/schema",
+  "checks": [
+    {
+      "test": "presentation_confirm_rejects_oversized_private_json_before_decoding",
+      "selected": 1,
+      "passed": 1,
+      "build_seconds": 36.7,
+      "test_seconds": 0.33,
+      "log": "/private/tmp/ht-task15-confirm-private-bound-green.log",
+      "log_sha256": "bd3d47b04af9884f132ba7b809546a25c39061a1e36282f18d4341d94f6d7baf"
+    },
+    {
+      "test": "presentation_last_token_control_serializer_has_exact_bounded_witness",
+      "selected": 1,
+      "passed": 1,
+      "log": "/private/tmp/ht-task15-last-token-serializer-witness.log",
+      "actual_stamp_bytes": 82,
+      "actual_array_bytes": 2657,
+      "cap_bytes": 4096,
+      "log_sha256": "f0201c851c92fc5c2085d5a2a98e073575622973d0a0137104bea0609a738bd4"
+    }
+  ]
+}

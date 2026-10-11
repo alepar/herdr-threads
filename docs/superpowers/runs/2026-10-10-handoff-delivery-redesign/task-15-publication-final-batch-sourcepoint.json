@@ -1,0 +1,14 @@
+{
+  "source_hash": "2b216b4d2ea6114b2070038fec80a2f8247f44aad25107a30a9e961d33a69e28",
+  "dirty_diff": "3fe0c39c440b4047c1b9aa864ff8d14307195b53130e666e74bf1c183cec96f4",
+  "manifest_method": "sorted compact JSON OBJECT mapping path to sha256",
+  "files": 3533,
+  "working_directory": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2",
+  "target_dir": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target",
+  "command": "CARGO_BUILD_JOBS=4 nice cargo nextest run --locked --all-features --lib --test combined -E 'test(presentation_publication_) | test(presentation_handler_initial_ordinary_receipt_emits_attention_without_invitation)'",
+  "log": "/private/tmp/ht-task15-publication-final-batch-2.log",
+  "expected": 10,
+  "scope": "frozen corrected guard/private text loaders/realcapAccepted; successor activecapture fixture and CHECK helper; actual initial ordinary relevance",
+  "leak_run_id": null,
+  "sweep": false
+}

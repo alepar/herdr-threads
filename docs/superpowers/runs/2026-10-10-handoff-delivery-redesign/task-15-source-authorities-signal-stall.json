@@ -1,0 +1,8 @@
+{
+  "parent_authorized": true,
+  "passive_signal": "48daad34d8b371ec8781404e4f6e4ddac788f01f0d976946e3a66028391a5cb7",
+  "reset_refinement": "74411f83c159007270a4158de0d47503b3693e62be691e9ed7a411c25efe3051",
+  "stall_exact_owner": "bc8b2fc1681b55d93fbdef28c92755e811a50edf96334c62df473271b67acc23",
+  "authority": "Explicit coordinator parent rulings received before corresponding production edits; root briefs/checkpoints retained by coordinator. Stall production remains test-first: registered-channel real RED required.",
+  "scope": "433 Pull/160 Refresh +declared probes, four scalar columns in unlanded41 only, no carry/body/frame cap change, no stamped41 migration claim, Refresh preserves presentation state, first same-instance owner initializes signal once, Watch-only fresh exact acknowledged Attention health evidence."
+}

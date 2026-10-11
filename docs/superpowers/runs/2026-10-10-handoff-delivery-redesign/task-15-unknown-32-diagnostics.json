@@ -1,0 +1,4994 @@
+[
+  {
+    "fence": 631,
+    "proof": {
+      "absent": false,
+      "claim": {
+        "binding_generation": 1,
+        "execution": "00000000-0000-4000-8000-000000000001",
+        "harness": "synthetic_fourth",
+        "instance": "i",
+        "native_session": "n1",
+        "role": "top_level",
+        "seat": "s",
+        "target": "p"
+      },
+      "fallback_rotation": 0,
+      "fence": 631,
+      "frontier": 0,
+      "native_version": 1,
+      "slots": [
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 4,
+            "row": 4
+          },
+          "candidate": null,
+          "exhausted": false,
+          "high": 301,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 9223372036854775807
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 4,
+            "row": 4
+          },
+          "candidate": null,
+          "exhausted": false,
+          "high": 301,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        }
+      ],
+      "source_rotation": 0,
+      "witness": null
+    },
+    "quantum": 0,
+    "work": "PresentationWork { relevance_calls: 1, relevance_sources: 42, relevance_fallback: 0, relevance_point_probes: 18, relevance_seeks: 8, relevance_witness_probes: 0, output_passes: 1, output_bytes: 0, rpc_passes: 1, rpc_bytes: 296, initial: 0, context: 0, revisit: 0, ordinary: 0, notices: 0, notice_validations: 0, replay: 1 }"
+  },
+  {
+    "fence": 631,
+    "proof": {
+      "absent": false,
+      "claim": {
+        "binding_generation": 1,
+        "execution": "00000000-0000-4000-8000-000000000001",
+        "harness": "synthetic_fourth",
+        "instance": "i",
+        "native_session": "n1",
+        "role": "top_level",
+        "seat": "s",
+        "target": "p"
+      },
+      "fallback_rotation": 0,
+      "fence": 631,
+      "frontier": 0,
+      "native_version": 1,
+      "slots": [
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 6,
+            "row": 6
+          },
+          "candidate": null,
+          "exhausted": false,
+          "high": 301,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 9223372036854775807
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 6,
+            "row": 6
+          },
+          "candidate": null,
+          "exhausted": false,
+          "high": 301,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        }
+      ],
+      "source_rotation": 0,
+      "witness": null
+    },
+    "quantum": 1,
+    "work": "PresentationWork { relevance_calls: 1, relevance_sources: 42, relevance_fallback: 0, relevance_point_probes: 18, relevance_seeks: 8, relevance_witness_probes: 0, output_passes: 1, output_bytes: 0, rpc_passes: 1, rpc_bytes: 296, initial: 0, context: 0, revisit: 0, ordinary: 0, notices: 0, notice_validations: 0, replay: 1 }"
+  },
+  {
+    "fence": 631,
+    "proof": {
+      "absent": false,
+      "claim": {
+        "binding_generation": 1,
+        "execution": "00000000-0000-4000-8000-000000000001",
+        "harness": "synthetic_fourth",
+        "instance": "i",
+        "native_session": "n1",
+        "role": "top_level",
+        "seat": "s",
+        "target": "p"
+      },
+      "fallback_rotation": 0,
+      "fence": 631,
+      "frontier": 0,
+      "native_version": 1,
+      "slots": [
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 8,
+            "row": 8
+          },
+          "candidate": null,
+          "exhausted": false,
+          "high": 301,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 9223372036854775807
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 8,
+            "row": 8
+          },
+          "candidate": null,
+          "exhausted": false,
+          "high": 301,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        }
+      ],
+      "source_rotation": 0,
+      "witness": null
+    },
+    "quantum": 2,
+    "work": "PresentationWork { relevance_calls: 1, relevance_sources: 42, relevance_fallback: 0, relevance_point_probes: 18, relevance_seeks: 8, relevance_witness_probes: 0, output_passes: 1, output_bytes: 0, rpc_passes: 1, rpc_bytes: 296, initial: 0, context: 0, revisit: 0, ordinary: 0, notices: 0, notice_validations: 0, replay: 1 }"
+  },
+  {
+    "fence": 631,
+    "proof": {
+      "absent": false,
+      "claim": {
+        "binding_generation": 1,
+        "execution": "00000000-0000-4000-8000-000000000001",
+        "harness": "synthetic_fourth",
+        "instance": "i",
+        "native_session": "n1",
+        "role": "top_level",
+        "seat": "s",
+        "target": "p"
+      },
+      "fallback_rotation": 0,
+      "fence": 631,
+      "frontier": 0,
+      "native_version": 1,
+      "slots": [
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 10,
+            "row": 10
+          },
+          "candidate": null,
+          "exhausted": false,
+          "high": 301,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 9223372036854775807
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 10,
+            "row": 10
+          },
+          "candidate": null,
+          "exhausted": false,
+          "high": 301,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        }
+      ],
+      "source_rotation": 0,
+      "witness": null
+    },
+    "quantum": 3,
+    "work": "PresentationWork { relevance_calls: 1, relevance_sources: 42, relevance_fallback: 0, relevance_point_probes: 18, relevance_seeks: 8, relevance_witness_probes: 0, output_passes: 1, output_bytes: 0, rpc_passes: 1, rpc_bytes: 296, initial: 0, context: 0, revisit: 0, ordinary: 0, notices: 0, notice_validations: 0, replay: 1 }"
+  },
+  {
+    "fence": 631,
+    "proof": {
+      "absent": false,
+      "claim": {
+        "binding_generation": 1,
+        "execution": "00000000-0000-4000-8000-000000000001",
+        "harness": "synthetic_fourth",
+        "instance": "i",
+        "native_session": "n1",
+        "role": "top_level",
+        "seat": "s",
+        "target": "p"
+      },
+      "fallback_rotation": 0,
+      "fence": 631,
+      "frontier": 0,
+      "native_version": 1,
+      "slots": [
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 12,
+            "row": 12
+          },
+          "candidate": null,
+          "exhausted": false,
+          "high": 301,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 9223372036854775807
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 12,
+            "row": 12
+          },
+          "candidate": null,
+          "exhausted": false,
+          "high": 301,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        }
+      ],
+      "source_rotation": 0,
+      "witness": null
+    },
+    "quantum": 4,
+    "work": "PresentationWork { relevance_calls: 1, relevance_sources: 42, relevance_fallback: 0, relevance_point_probes: 18, relevance_seeks: 8, relevance_witness_probes: 0, output_passes: 1, output_bytes: 0, rpc_passes: 1, rpc_bytes: 296, initial: 0, context: 0, revisit: 0, ordinary: 0, notices: 0, notice_validations: 0, replay: 1 }"
+  },
+  {
+    "fence": 631,
+    "proof": {
+      "absent": false,
+      "claim": {
+        "binding_generation": 1,
+        "execution": "00000000-0000-4000-8000-000000000001",
+        "harness": "synthetic_fourth",
+        "instance": "i",
+        "native_session": "n1",
+        "role": "top_level",
+        "seat": "s",
+        "target": "p"
+      },
+      "fallback_rotation": 0,
+      "fence": 631,
+      "frontier": 0,
+      "native_version": 1,
+      "slots": [
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 14,
+            "row": 14
+          },
+          "candidate": null,
+          "exhausted": false,
+          "high": 301,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 9223372036854775807
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 14,
+            "row": 14
+          },
+          "candidate": null,
+          "exhausted": false,
+          "high": 301,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        }
+      ],
+      "source_rotation": 0,
+      "witness": null
+    },
+    "quantum": 5,
+    "work": "PresentationWork { relevance_calls: 1, relevance_sources: 42, relevance_fallback: 0, relevance_point_probes: 18, relevance_seeks: 8, relevance_witness_probes: 0, output_passes: 1, output_bytes: 0, rpc_passes: 1, rpc_bytes: 296, initial: 0, context: 0, revisit: 0, ordinary: 0, notices: 0, notice_validations: 0, replay: 1 }"
+  },
+  {
+    "fence": 631,
+    "proof": {
+      "absent": false,
+      "claim": {
+        "binding_generation": 1,
+        "execution": "00000000-0000-4000-8000-000000000001",
+        "harness": "synthetic_fourth",
+        "instance": "i",
+        "native_session": "n1",
+        "role": "top_level",
+        "seat": "s",
+        "target": "p"
+      },
+      "fallback_rotation": 0,
+      "fence": 631,
+      "frontier": 0,
+      "native_version": 1,
+      "slots": [
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 16,
+            "row": 16
+          },
+          "candidate": null,
+          "exhausted": false,
+          "high": 301,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 9223372036854775807
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 16,
+            "row": 16
+          },
+          "candidate": null,
+          "exhausted": false,
+          "high": 301,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        }
+      ],
+      "source_rotation": 0,
+      "witness": null
+    },
+    "quantum": 6,
+    "work": "PresentationWork { relevance_calls: 1, relevance_sources: 42, relevance_fallback: 0, relevance_point_probes: 18, relevance_seeks: 8, relevance_witness_probes: 0, output_passes: 1, output_bytes: 0, rpc_passes: 1, rpc_bytes: 296, initial: 0, context: 0, revisit: 0, ordinary: 0, notices: 0, notice_validations: 0, replay: 1 }"
+  },
+  {
+    "fence": 631,
+    "proof": {
+      "absent": false,
+      "claim": {
+        "binding_generation": 1,
+        "execution": "00000000-0000-4000-8000-000000000001",
+        "harness": "synthetic_fourth",
+        "instance": "i",
+        "native_session": "n1",
+        "role": "top_level",
+        "seat": "s",
+        "target": "p"
+      },
+      "fallback_rotation": 0,
+      "fence": 631,
+      "frontier": 0,
+      "native_version": 1,
+      "slots": [
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 18,
+            "row": 18
+          },
+          "candidate": null,
+          "exhausted": false,
+          "high": 301,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 9223372036854775807
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 18,
+            "row": 18
+          },
+          "candidate": null,
+          "exhausted": false,
+          "high": 301,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        }
+      ],
+      "source_rotation": 0,
+      "witness": null
+    },
+    "quantum": 7,
+    "work": "PresentationWork { relevance_calls: 1, relevance_sources: 42, relevance_fallback: 0, relevance_point_probes: 18, relevance_seeks: 8, relevance_witness_probes: 0, output_passes: 1, output_bytes: 0, rpc_passes: 1, rpc_bytes: 296, initial: 0, context: 0, revisit: 0, ordinary: 0, notices: 0, notice_validations: 0, replay: 1 }"
+  },
+  {
+    "fence": 631,
+    "proof": {
+      "absent": false,
+      "claim": {
+        "binding_generation": 1,
+        "execution": "00000000-0000-4000-8000-000000000001",
+        "harness": "synthetic_fourth",
+        "instance": "i",
+        "native_session": "n1",
+        "role": "top_level",
+        "seat": "s",
+        "target": "p"
+      },
+      "fallback_rotation": 0,
+      "fence": 631,
+      "frontier": 0,
+      "native_version": 1,
+      "slots": [
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 20,
+            "row": 20
+          },
+          "candidate": null,
+          "exhausted": false,
+          "high": 301,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 9223372036854775807
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 20,
+            "row": 20
+          },
+          "candidate": null,
+          "exhausted": false,
+          "high": 301,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        }
+      ],
+      "source_rotation": 0,
+      "witness": null
+    },
+    "quantum": 8,
+    "work": "PresentationWork { relevance_calls: 1, relevance_sources: 42, relevance_fallback: 0, relevance_point_probes: 18, relevance_seeks: 8, relevance_witness_probes: 0, output_passes: 1, output_bytes: 0, rpc_passes: 1, rpc_bytes: 296, initial: 0, context: 0, revisit: 0, ordinary: 0, notices: 0, notice_validations: 0, replay: 1 }"
+  },
+  {
+    "fence": 631,
+    "proof": {
+      "absent": false,
+      "claim": {
+        "binding_generation": 1,
+        "execution": "00000000-0000-4000-8000-000000000001",
+        "harness": "synthetic_fourth",
+        "instance": "i",
+        "native_session": "n1",
+        "role": "top_level",
+        "seat": "s",
+        "target": "p"
+      },
+      "fallback_rotation": 0,
+      "fence": 631,
+      "frontier": 0,
+      "native_version": 1,
+      "slots": [
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 22,
+            "row": 22
+          },
+          "candidate": null,
+          "exhausted": false,
+          "high": 301,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 9223372036854775807
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 22,
+            "row": 22
+          },
+          "candidate": null,
+          "exhausted": false,
+          "high": 301,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        }
+      ],
+      "source_rotation": 0,
+      "witness": null
+    },
+    "quantum": 9,
+    "work": "PresentationWork { relevance_calls: 1, relevance_sources: 42, relevance_fallback: 0, relevance_point_probes: 18, relevance_seeks: 8, relevance_witness_probes: 0, output_passes: 1, output_bytes: 0, rpc_passes: 1, rpc_bytes: 296, initial: 0, context: 0, revisit: 0, ordinary: 0, notices: 0, notice_validations: 0, replay: 1 }"
+  },
+  {
+    "fence": 631,
+    "proof": {
+      "absent": false,
+      "claim": {
+        "binding_generation": 1,
+        "execution": "00000000-0000-4000-8000-000000000001",
+        "harness": "synthetic_fourth",
+        "instance": "i",
+        "native_session": "n1",
+        "role": "top_level",
+        "seat": "s",
+        "target": "p"
+      },
+      "fallback_rotation": 0,
+      "fence": 631,
+      "frontier": 0,
+      "native_version": 1,
+      "slots": [
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 24,
+            "row": 24
+          },
+          "candidate": null,
+          "exhausted": false,
+          "high": 301,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 9223372036854775807
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 24,
+            "row": 24
+          },
+          "candidate": null,
+          "exhausted": false,
+          "high": 301,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        }
+      ],
+      "source_rotation": 0,
+      "witness": null
+    },
+    "quantum": 10,
+    "work": "PresentationWork { relevance_calls: 1, relevance_sources: 42, relevance_fallback: 0, relevance_point_probes: 18, relevance_seeks: 8, relevance_witness_probes: 0, output_passes: 1, output_bytes: 0, rpc_passes: 1, rpc_bytes: 296, initial: 0, context: 0, revisit: 0, ordinary: 0, notices: 0, notice_validations: 0, replay: 1 }"
+  },
+  {
+    "fence": 631,
+    "proof": {
+      "absent": false,
+      "claim": {
+        "binding_generation": 1,
+        "execution": "00000000-0000-4000-8000-000000000001",
+        "harness": "synthetic_fourth",
+        "instance": "i",
+        "native_session": "n1",
+        "role": "top_level",
+        "seat": "s",
+        "target": "p"
+      },
+      "fallback_rotation": 0,
+      "fence": 631,
+      "frontier": 0,
+      "native_version": 1,
+      "slots": [
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 26,
+            "row": 26
+          },
+          "candidate": null,
+          "exhausted": false,
+          "high": 301,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 9223372036854775807
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 26,
+            "row": 26
+          },
+          "candidate": null,
+          "exhausted": false,
+          "high": 301,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        }
+      ],
+      "source_rotation": 0,
+      "witness": null
+    },
+    "quantum": 11,
+    "work": "PresentationWork { relevance_calls: 1, relevance_sources: 42, relevance_fallback: 0, relevance_point_probes: 18, relevance_seeks: 8, relevance_witness_probes: 0, output_passes: 1, output_bytes: 0, rpc_passes: 1, rpc_bytes: 296, initial: 0, context: 0, revisit: 0, ordinary: 0, notices: 0, notice_validations: 0, replay: 1 }"
+  },
+  {
+    "fence": 631,
+    "proof": {
+      "absent": false,
+      "claim": {
+        "binding_generation": 1,
+        "execution": "00000000-0000-4000-8000-000000000001",
+        "harness": "synthetic_fourth",
+        "instance": "i",
+        "native_session": "n1",
+        "role": "top_level",
+        "seat": "s",
+        "target": "p"
+      },
+      "fallback_rotation": 0,
+      "fence": 631,
+      "frontier": 0,
+      "native_version": 1,
+      "slots": [
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 28,
+            "row": 28
+          },
+          "candidate": null,
+          "exhausted": false,
+          "high": 301,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 9223372036854775807
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 28,
+            "row": 28
+          },
+          "candidate": null,
+          "exhausted": false,
+          "high": 301,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        }
+      ],
+      "source_rotation": 0,
+      "witness": null
+    },
+    "quantum": 12,
+    "work": "PresentationWork { relevance_calls: 1, relevance_sources: 42, relevance_fallback: 0, relevance_point_probes: 18, relevance_seeks: 8, relevance_witness_probes: 0, output_passes: 1, output_bytes: 0, rpc_passes: 1, rpc_bytes: 296, initial: 0, context: 0, revisit: 0, ordinary: 0, notices: 0, notice_validations: 0, replay: 1 }"
+  },
+  {
+    "fence": 631,
+    "proof": {
+      "absent": false,
+      "claim": {
+        "binding_generation": 1,
+        "execution": "00000000-0000-4000-8000-000000000001",
+        "harness": "synthetic_fourth",
+        "instance": "i",
+        "native_session": "n1",
+        "role": "top_level",
+        "seat": "s",
+        "target": "p"
+      },
+      "fallback_rotation": 0,
+      "fence": 631,
+      "frontier": 0,
+      "native_version": 1,
+      "slots": [
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 30,
+            "row": 30
+          },
+          "candidate": null,
+          "exhausted": false,
+          "high": 301,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 9223372036854775807
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 30,
+            "row": 30
+          },
+          "candidate": null,
+          "exhausted": false,
+          "high": 301,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        }
+      ],
+      "source_rotation": 0,
+      "witness": null
+    },
+    "quantum": 13,
+    "work": "PresentationWork { relevance_calls: 1, relevance_sources: 42, relevance_fallback: 0, relevance_point_probes: 18, relevance_seeks: 8, relevance_witness_probes: 0, output_passes: 1, output_bytes: 0, rpc_passes: 1, rpc_bytes: 296, initial: 0, context: 0, revisit: 0, ordinary: 0, notices: 0, notice_validations: 0, replay: 1 }"
+  },
+  {
+    "fence": 631,
+    "proof": {
+      "absent": false,
+      "claim": {
+        "binding_generation": 1,
+        "execution": "00000000-0000-4000-8000-000000000001",
+        "harness": "synthetic_fourth",
+        "instance": "i",
+        "native_session": "n1",
+        "role": "top_level",
+        "seat": "s",
+        "target": "p"
+      },
+      "fallback_rotation": 0,
+      "fence": 631,
+      "frontier": 0,
+      "native_version": 1,
+      "slots": [
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 32,
+            "row": 32
+          },
+          "candidate": null,
+          "exhausted": false,
+          "high": 301,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 9223372036854775807
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 32,
+            "row": 32
+          },
+          "candidate": null,
+          "exhausted": false,
+          "high": 301,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        }
+      ],
+      "source_rotation": 0,
+      "witness": null
+    },
+    "quantum": 14,
+    "work": "PresentationWork { relevance_calls: 1, relevance_sources: 42, relevance_fallback: 0, relevance_point_probes: 18, relevance_seeks: 8, relevance_witness_probes: 0, output_passes: 1, output_bytes: 0, rpc_passes: 1, rpc_bytes: 296, initial: 0, context: 0, revisit: 0, ordinary: 0, notices: 0, notice_validations: 0, replay: 1 }"
+  },
+  {
+    "fence": 631,
+    "proof": {
+      "absent": false,
+      "claim": {
+        "binding_generation": 1,
+        "execution": "00000000-0000-4000-8000-000000000001",
+        "harness": "synthetic_fourth",
+        "instance": "i",
+        "native_session": "n1",
+        "role": "top_level",
+        "seat": "s",
+        "target": "p"
+      },
+      "fallback_rotation": 0,
+      "fence": 631,
+      "frontier": 0,
+      "native_version": 1,
+      "slots": [
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 34,
+            "row": 34
+          },
+          "candidate": null,
+          "exhausted": false,
+          "high": 301,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 9223372036854775807
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 34,
+            "row": 34
+          },
+          "candidate": null,
+          "exhausted": false,
+          "high": 301,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        }
+      ],
+      "source_rotation": 0,
+      "witness": null
+    },
+    "quantum": 15,
+    "work": "PresentationWork { relevance_calls: 1, relevance_sources: 42, relevance_fallback: 0, relevance_point_probes: 18, relevance_seeks: 8, relevance_witness_probes: 0, output_passes: 1, output_bytes: 0, rpc_passes: 1, rpc_bytes: 296, initial: 0, context: 0, revisit: 0, ordinary: 0, notices: 0, notice_validations: 0, replay: 1 }"
+  },
+  {
+    "fence": 631,
+    "proof": {
+      "absent": false,
+      "claim": {
+        "binding_generation": 1,
+        "execution": "00000000-0000-4000-8000-000000000001",
+        "harness": "synthetic_fourth",
+        "instance": "i",
+        "native_session": "n1",
+        "role": "top_level",
+        "seat": "s",
+        "target": "p"
+      },
+      "fallback_rotation": 0,
+      "fence": 631,
+      "frontier": 0,
+      "native_version": 1,
+      "slots": [
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 36,
+            "row": 36
+          },
+          "candidate": null,
+          "exhausted": false,
+          "high": 301,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 9223372036854775807
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 36,
+            "row": 36
+          },
+          "candidate": null,
+          "exhausted": false,
+          "high": 301,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        }
+      ],
+      "source_rotation": 0,
+      "witness": null
+    },
+    "quantum": 16,
+    "work": "PresentationWork { relevance_calls: 1, relevance_sources: 42, relevance_fallback: 0, relevance_point_probes: 18, relevance_seeks: 8, relevance_witness_probes: 0, output_passes: 1, output_bytes: 0, rpc_passes: 1, rpc_bytes: 296, initial: 0, context: 0, revisit: 0, ordinary: 0, notices: 0, notice_validations: 0, replay: 1 }"
+  },
+  {
+    "fence": 631,
+    "proof": {
+      "absent": false,
+      "claim": {
+        "binding_generation": 1,
+        "execution": "00000000-0000-4000-8000-000000000001",
+        "harness": "synthetic_fourth",
+        "instance": "i",
+        "native_session": "n1",
+        "role": "top_level",
+        "seat": "s",
+        "target": "p"
+      },
+      "fallback_rotation": 0,
+      "fence": 631,
+      "frontier": 0,
+      "native_version": 1,
+      "slots": [
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 38,
+            "row": 38
+          },
+          "candidate": null,
+          "exhausted": false,
+          "high": 301,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 9223372036854775807
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 38,
+            "row": 38
+          },
+          "candidate": null,
+          "exhausted": false,
+          "high": 301,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        }
+      ],
+      "source_rotation": 0,
+      "witness": null
+    },
+    "quantum": 17,
+    "work": "PresentationWork { relevance_calls: 1, relevance_sources: 42, relevance_fallback: 0, relevance_point_probes: 18, relevance_seeks: 8, relevance_witness_probes: 0, output_passes: 1, output_bytes: 0, rpc_passes: 1, rpc_bytes: 296, initial: 0, context: 0, revisit: 0, ordinary: 0, notices: 0, notice_validations: 0, replay: 1 }"
+  },
+  {
+    "fence": 631,
+    "proof": {
+      "absent": false,
+      "claim": {
+        "binding_generation": 1,
+        "execution": "00000000-0000-4000-8000-000000000001",
+        "harness": "synthetic_fourth",
+        "instance": "i",
+        "native_session": "n1",
+        "role": "top_level",
+        "seat": "s",
+        "target": "p"
+      },
+      "fallback_rotation": 0,
+      "fence": 631,
+      "frontier": 0,
+      "native_version": 1,
+      "slots": [
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 40,
+            "row": 40
+          },
+          "candidate": null,
+          "exhausted": false,
+          "high": 301,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 9223372036854775807
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 40,
+            "row": 40
+          },
+          "candidate": null,
+          "exhausted": false,
+          "high": 301,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        }
+      ],
+      "source_rotation": 0,
+      "witness": null
+    },
+    "quantum": 18,
+    "work": "PresentationWork { relevance_calls: 1, relevance_sources: 42, relevance_fallback: 0, relevance_point_probes: 18, relevance_seeks: 8, relevance_witness_probes: 0, output_passes: 1, output_bytes: 0, rpc_passes: 1, rpc_bytes: 296, initial: 0, context: 0, revisit: 0, ordinary: 0, notices: 0, notice_validations: 0, replay: 1 }"
+  },
+  {
+    "fence": 631,
+    "proof": {
+      "absent": false,
+      "claim": {
+        "binding_generation": 1,
+        "execution": "00000000-0000-4000-8000-000000000001",
+        "harness": "synthetic_fourth",
+        "instance": "i",
+        "native_session": "n1",
+        "role": "top_level",
+        "seat": "s",
+        "target": "p"
+      },
+      "fallback_rotation": 0,
+      "fence": 631,
+      "frontier": 0,
+      "native_version": 1,
+      "slots": [
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 42,
+            "row": 42
+          },
+          "candidate": null,
+          "exhausted": false,
+          "high": 301,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 9223372036854775807
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 42,
+            "row": 42
+          },
+          "candidate": null,
+          "exhausted": false,
+          "high": 301,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        }
+      ],
+      "source_rotation": 0,
+      "witness": null
+    },
+    "quantum": 19,
+    "work": "PresentationWork { relevance_calls: 1, relevance_sources: 42, relevance_fallback: 0, relevance_point_probes: 18, relevance_seeks: 8, relevance_witness_probes: 0, output_passes: 1, output_bytes: 0, rpc_passes: 1, rpc_bytes: 296, initial: 0, context: 0, revisit: 0, ordinary: 0, notices: 0, notice_validations: 0, replay: 1 }"
+  },
+  {
+    "fence": 631,
+    "proof": {
+      "absent": false,
+      "claim": {
+        "binding_generation": 1,
+        "execution": "00000000-0000-4000-8000-000000000001",
+        "harness": "synthetic_fourth",
+        "instance": "i",
+        "native_session": "n1",
+        "role": "top_level",
+        "seat": "s",
+        "target": "p"
+      },
+      "fallback_rotation": 0,
+      "fence": 631,
+      "frontier": 0,
+      "native_version": 1,
+      "slots": [
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 44,
+            "row": 44
+          },
+          "candidate": null,
+          "exhausted": false,
+          "high": 301,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 9223372036854775807
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 44,
+            "row": 44
+          },
+          "candidate": null,
+          "exhausted": false,
+          "high": 301,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        }
+      ],
+      "source_rotation": 0,
+      "witness": null
+    },
+    "quantum": 20,
+    "work": "PresentationWork { relevance_calls: 1, relevance_sources: 42, relevance_fallback: 0, relevance_point_probes: 18, relevance_seeks: 8, relevance_witness_probes: 0, output_passes: 1, output_bytes: 0, rpc_passes: 1, rpc_bytes: 296, initial: 0, context: 0, revisit: 0, ordinary: 0, notices: 0, notice_validations: 0, replay: 1 }"
+  },
+  {
+    "fence": 631,
+    "proof": {
+      "absent": false,
+      "claim": {
+        "binding_generation": 1,
+        "execution": "00000000-0000-4000-8000-000000000001",
+        "harness": "synthetic_fourth",
+        "instance": "i",
+        "native_session": "n1",
+        "role": "top_level",
+        "seat": "s",
+        "target": "p"
+      },
+      "fallback_rotation": 0,
+      "fence": 631,
+      "frontier": 0,
+      "native_version": 1,
+      "slots": [
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 46,
+            "row": 46
+          },
+          "candidate": null,
+          "exhausted": false,
+          "high": 301,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 9223372036854775807
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 46,
+            "row": 46
+          },
+          "candidate": null,
+          "exhausted": false,
+          "high": 301,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        }
+      ],
+      "source_rotation": 0,
+      "witness": null
+    },
+    "quantum": 21,
+    "work": "PresentationWork { relevance_calls: 1, relevance_sources: 42, relevance_fallback: 0, relevance_point_probes: 18, relevance_seeks: 8, relevance_witness_probes: 0, output_passes: 1, output_bytes: 0, rpc_passes: 1, rpc_bytes: 296, initial: 0, context: 0, revisit: 0, ordinary: 0, notices: 0, notice_validations: 0, replay: 1 }"
+  },
+  {
+    "fence": 631,
+    "proof": {
+      "absent": false,
+      "claim": {
+        "binding_generation": 1,
+        "execution": "00000000-0000-4000-8000-000000000001",
+        "harness": "synthetic_fourth",
+        "instance": "i",
+        "native_session": "n1",
+        "role": "top_level",
+        "seat": "s",
+        "target": "p"
+      },
+      "fallback_rotation": 0,
+      "fence": 631,
+      "frontier": 0,
+      "native_version": 1,
+      "slots": [
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 48,
+            "row": 48
+          },
+          "candidate": null,
+          "exhausted": false,
+          "high": 301,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 9223372036854775807
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 48,
+            "row": 48
+          },
+          "candidate": null,
+          "exhausted": false,
+          "high": 301,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        }
+      ],
+      "source_rotation": 0,
+      "witness": null
+    },
+    "quantum": 22,
+    "work": "PresentationWork { relevance_calls: 1, relevance_sources: 42, relevance_fallback: 0, relevance_point_probes: 18, relevance_seeks: 8, relevance_witness_probes: 0, output_passes: 1, output_bytes: 0, rpc_passes: 1, rpc_bytes: 296, initial: 0, context: 0, revisit: 0, ordinary: 0, notices: 0, notice_validations: 0, replay: 1 }"
+  },
+  {
+    "fence": 631,
+    "proof": {
+      "absent": false,
+      "claim": {
+        "binding_generation": 1,
+        "execution": "00000000-0000-4000-8000-000000000001",
+        "harness": "synthetic_fourth",
+        "instance": "i",
+        "native_session": "n1",
+        "role": "top_level",
+        "seat": "s",
+        "target": "p"
+      },
+      "fallback_rotation": 0,
+      "fence": 631,
+      "frontier": 0,
+      "native_version": 1,
+      "slots": [
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 50,
+            "row": 50
+          },
+          "candidate": null,
+          "exhausted": false,
+          "high": 301,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 9223372036854775807
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 50,
+            "row": 50
+          },
+          "candidate": null,
+          "exhausted": false,
+          "high": 301,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        }
+      ],
+      "source_rotation": 0,
+      "witness": null
+    },
+    "quantum": 23,
+    "work": "PresentationWork { relevance_calls: 1, relevance_sources: 42, relevance_fallback: 0, relevance_point_probes: 18, relevance_seeks: 8, relevance_witness_probes: 0, output_passes: 1, output_bytes: 0, rpc_passes: 1, rpc_bytes: 296, initial: 0, context: 0, revisit: 0, ordinary: 0, notices: 0, notice_validations: 0, replay: 1 }"
+  },
+  {
+    "fence": 631,
+    "proof": {
+      "absent": false,
+      "claim": {
+        "binding_generation": 1,
+        "execution": "00000000-0000-4000-8000-000000000001",
+        "harness": "synthetic_fourth",
+        "instance": "i",
+        "native_session": "n1",
+        "role": "top_level",
+        "seat": "s",
+        "target": "p"
+      },
+      "fallback_rotation": 0,
+      "fence": 631,
+      "frontier": 0,
+      "native_version": 1,
+      "slots": [
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 52,
+            "row": 52
+          },
+          "candidate": null,
+          "exhausted": false,
+          "high": 301,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 9223372036854775807
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 52,
+            "row": 52
+          },
+          "candidate": null,
+          "exhausted": false,
+          "high": 301,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        }
+      ],
+      "source_rotation": 0,
+      "witness": null
+    },
+    "quantum": 24,
+    "work": "PresentationWork { relevance_calls: 1, relevance_sources: 42, relevance_fallback: 0, relevance_point_probes: 18, relevance_seeks: 8, relevance_witness_probes: 0, output_passes: 1, output_bytes: 0, rpc_passes: 1, rpc_bytes: 296, initial: 0, context: 0, revisit: 0, ordinary: 0, notices: 0, notice_validations: 0, replay: 1 }"
+  },
+  {
+    "fence": 631,
+    "proof": {
+      "absent": false,
+      "claim": {
+        "binding_generation": 1,
+        "execution": "00000000-0000-4000-8000-000000000001",
+        "harness": "synthetic_fourth",
+        "instance": "i",
+        "native_session": "n1",
+        "role": "top_level",
+        "seat": "s",
+        "target": "p"
+      },
+      "fallback_rotation": 0,
+      "fence": 631,
+      "frontier": 0,
+      "native_version": 1,
+      "slots": [
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 54,
+            "row": 54
+          },
+          "candidate": null,
+          "exhausted": false,
+          "high": 301,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 9223372036854775807
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 54,
+            "row": 54
+          },
+          "candidate": null,
+          "exhausted": false,
+          "high": 301,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        }
+      ],
+      "source_rotation": 0,
+      "witness": null
+    },
+    "quantum": 25,
+    "work": "PresentationWork { relevance_calls: 1, relevance_sources: 42, relevance_fallback: 0, relevance_point_probes: 18, relevance_seeks: 8, relevance_witness_probes: 0, output_passes: 1, output_bytes: 0, rpc_passes: 1, rpc_bytes: 296, initial: 0, context: 0, revisit: 0, ordinary: 0, notices: 0, notice_validations: 0, replay: 1 }"
+  },
+  {
+    "fence": 631,
+    "proof": {
+      "absent": false,
+      "claim": {
+        "binding_generation": 1,
+        "execution": "00000000-0000-4000-8000-000000000001",
+        "harness": "synthetic_fourth",
+        "instance": "i",
+        "native_session": "n1",
+        "role": "top_level",
+        "seat": "s",
+        "target": "p"
+      },
+      "fallback_rotation": 0,
+      "fence": 631,
+      "frontier": 0,
+      "native_version": 1,
+      "slots": [
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 56,
+            "row": 56
+          },
+          "candidate": null,
+          "exhausted": false,
+          "high": 301,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 9223372036854775807
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 56,
+            "row": 56
+          },
+          "candidate": null,
+          "exhausted": false,
+          "high": 301,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        }
+      ],
+      "source_rotation": 0,
+      "witness": null
+    },
+    "quantum": 26,
+    "work": "PresentationWork { relevance_calls: 1, relevance_sources: 42, relevance_fallback: 0, relevance_point_probes: 18, relevance_seeks: 8, relevance_witness_probes: 0, output_passes: 1, output_bytes: 0, rpc_passes: 1, rpc_bytes: 296, initial: 0, context: 0, revisit: 0, ordinary: 0, notices: 0, notice_validations: 0, replay: 1 }"
+  },
+  {
+    "fence": 631,
+    "proof": {
+      "absent": false,
+      "claim": {
+        "binding_generation": 1,
+        "execution": "00000000-0000-4000-8000-000000000001",
+        "harness": "synthetic_fourth",
+        "instance": "i",
+        "native_session": "n1",
+        "role": "top_level",
+        "seat": "s",
+        "target": "p"
+      },
+      "fallback_rotation": 0,
+      "fence": 631,
+      "frontier": 0,
+      "native_version": 1,
+      "slots": [
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 58,
+            "row": 58
+          },
+          "candidate": null,
+          "exhausted": false,
+          "high": 301,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 9223372036854775807
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 58,
+            "row": 58
+          },
+          "candidate": null,
+          "exhausted": false,
+          "high": 301,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        }
+      ],
+      "source_rotation": 0,
+      "witness": null
+    },
+    "quantum": 27,
+    "work": "PresentationWork { relevance_calls: 1, relevance_sources: 42, relevance_fallback: 0, relevance_point_probes: 18, relevance_seeks: 8, relevance_witness_probes: 0, output_passes: 1, output_bytes: 0, rpc_passes: 1, rpc_bytes: 296, initial: 0, context: 0, revisit: 0, ordinary: 0, notices: 0, notice_validations: 0, replay: 1 }"
+  },
+  {
+    "fence": 631,
+    "proof": {
+      "absent": false,
+      "claim": {
+        "binding_generation": 1,
+        "execution": "00000000-0000-4000-8000-000000000001",
+        "harness": "synthetic_fourth",
+        "instance": "i",
+        "native_session": "n1",
+        "role": "top_level",
+        "seat": "s",
+        "target": "p"
+      },
+      "fallback_rotation": 0,
+      "fence": 631,
+      "frontier": 0,
+      "native_version": 1,
+      "slots": [
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 60,
+            "row": 60
+          },
+          "candidate": null,
+          "exhausted": false,
+          "high": 301,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 9223372036854775807
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 60,
+            "row": 60
+          },
+          "candidate": null,
+          "exhausted": false,
+          "high": 301,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        }
+      ],
+      "source_rotation": 0,
+      "witness": null
+    },
+    "quantum": 28,
+    "work": "PresentationWork { relevance_calls: 1, relevance_sources: 42, relevance_fallback: 0, relevance_point_probes: 18, relevance_seeks: 8, relevance_witness_probes: 0, output_passes: 1, output_bytes: 0, rpc_passes: 1, rpc_bytes: 296, initial: 0, context: 0, revisit: 0, ordinary: 0, notices: 0, notice_validations: 0, replay: 1 }"
+  },
+  {
+    "fence": 631,
+    "proof": {
+      "absent": false,
+      "claim": {
+        "binding_generation": 1,
+        "execution": "00000000-0000-4000-8000-000000000001",
+        "harness": "synthetic_fourth",
+        "instance": "i",
+        "native_session": "n1",
+        "role": "top_level",
+        "seat": "s",
+        "target": "p"
+      },
+      "fallback_rotation": 0,
+      "fence": 631,
+      "frontier": 0,
+      "native_version": 1,
+      "slots": [
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 62,
+            "row": 62
+          },
+          "candidate": null,
+          "exhausted": false,
+          "high": 301,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 9223372036854775807
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 62,
+            "row": 62
+          },
+          "candidate": null,
+          "exhausted": false,
+          "high": 301,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        }
+      ],
+      "source_rotation": 0,
+      "witness": null
+    },
+    "quantum": 29,
+    "work": "PresentationWork { relevance_calls: 1, relevance_sources: 42, relevance_fallback: 0, relevance_point_probes: 18, relevance_seeks: 8, relevance_witness_probes: 0, output_passes: 1, output_bytes: 0, rpc_passes: 1, rpc_bytes: 296, initial: 0, context: 0, revisit: 0, ordinary: 0, notices: 0, notice_validations: 0, replay: 1 }"
+  },
+  {
+    "fence": 631,
+    "proof": {
+      "absent": false,
+      "claim": {
+        "binding_generation": 1,
+        "execution": "00000000-0000-4000-8000-000000000001",
+        "harness": "synthetic_fourth",
+        "instance": "i",
+        "native_session": "n1",
+        "role": "top_level",
+        "seat": "s",
+        "target": "p"
+      },
+      "fallback_rotation": 0,
+      "fence": 631,
+      "frontier": 0,
+      "native_version": 1,
+      "slots": [
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 64,
+            "row": 64
+          },
+          "candidate": null,
+          "exhausted": false,
+          "high": 301,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 9223372036854775807
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 64,
+            "row": 64
+          },
+          "candidate": null,
+          "exhausted": false,
+          "high": 301,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        }
+      ],
+      "source_rotation": 0,
+      "witness": null
+    },
+    "quantum": 30,
+    "work": "PresentationWork { relevance_calls: 1, relevance_sources: 42, relevance_fallback: 0, relevance_point_probes: 18, relevance_seeks: 8, relevance_witness_probes: 0, output_passes: 1, output_bytes: 0, rpc_passes: 1, rpc_bytes: 296, initial: 0, context: 0, revisit: 0, ordinary: 0, notices: 0, notice_validations: 0, replay: 1 }"
+  },
+  {
+    "fence": 631,
+    "proof": {
+      "absent": false,
+      "claim": {
+        "binding_generation": 1,
+        "execution": "00000000-0000-4000-8000-000000000001",
+        "harness": "synthetic_fourth",
+        "instance": "i",
+        "native_session": "n1",
+        "role": "top_level",
+        "seat": "s",
+        "target": "p"
+      },
+      "fallback_rotation": 0,
+      "fence": 631,
+      "frontier": 0,
+      "native_version": 1,
+      "slots": [
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 66,
+            "row": 66
+          },
+          "candidate": null,
+          "exhausted": false,
+          "high": 301,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 9223372036854775807
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 66,
+            "row": 66
+          },
+          "candidate": null,
+          "exhausted": false,
+          "high": 301,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        },
+        {
+          "after": {
+            "ordinal": 0,
+            "row": 0
+          },
+          "candidate": null,
+          "exhausted": true,
+          "high": 0,
+          "judge": null
+        }
+      ],
+      "source_rotation": 0,
+      "witness": null
+    },
+    "quantum": 31,
+    "work": "PresentationWork { relevance_calls: 1, relevance_sources: 42, relevance_fallback: 0, relevance_point_probes: 18, relevance_seeks: 8, relevance_witness_probes: 0, output_passes: 1, output_bytes: 0, rpc_passes: 1, rpc_bytes: 296, initial: 0, context: 0, revisit: 0, ordinary: 0, notices: 0, notice_validations: 0, replay: 1 }"
+  }
+]

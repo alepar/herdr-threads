@@ -1,0 +1,34 @@
+{
+  "working_directory": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2",
+  "target_dir": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target",
+  "source_files": 3533,
+  "source_manifest_sha256": "206da0b40bfca65fd53916c6ef6130e85bf9cc0c0ac9f02d6d2a910a059072c7",
+  "manifest_method": "sorted compact JSON OBJECT mapping git tracked and nonignored untracked relative file paths to SHA256; files only",
+  "dirty_diff_sha256": "a4a29ff118d217cc2f8117340146a8951bad70a8a2554dd5562d8d5cfcd67c01",
+  "session": 63980,
+  "expected_selected": 4,
+  "log": "/private/tmp/ht-task15-healthy-channel-sqlite-batch.log",
+  "sweep_uuid": null,
+  "scope": "focused checks; source frozen for compilation and execution",
+  "outcome": {
+    "selected": 4,
+    "passed": 3,
+    "failed": 1,
+    "build_seconds": 37.09,
+    "runtime_seconds": 1.309,
+    "failure_classification": "unsupported Watch.text fixture assertion; diagnostic ordereditems already contain exact ordinary body; not product RED",
+    "followup": {
+      "log": "/private/tmp/ht-task15-healthy-ordinary-green.log",
+      "selected": 1,
+      "passed": 1,
+      "build_seconds": 33.68,
+      "runtime_seconds": 0.521
+    }
+  },
+  "logs": {
+    "/private/tmp/ht-task15-healthy-channel-sqlite-batch.log": "483ebdac11a4360da75fc8de5de88336a7db9f3c7bfe52f3869176d0a96c9610",
+    "/private/tmp/ht-task15-healthy-ordinary-diagnostic.log": "576d9070e228cd0c48883bede06f014bf8d054241ca658c741e0a1c8c36fedf2",
+    "/private/tmp/ht-task15-healthy-ordinary-green.log": "f7cfed990cd93b2a6d37ed4487d644e7502b5e8f34c7e5bd4d0bfb2f0830e111",
+    "/private/tmp/ht-task15-passive-remaining-batch.log": "5ace5d2ee5df436fc5e0a96b122ac4966234030bb8245fffe84081b30188a2d7"
+  }
+}

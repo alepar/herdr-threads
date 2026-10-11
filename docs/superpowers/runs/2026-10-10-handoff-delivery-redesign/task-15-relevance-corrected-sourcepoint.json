@@ -1,0 +1,83 @@
+{
+  "manifest_method": "Sorted compact JSON OBJECT mapping repo-relative paths to sha256, tracked and nonignored untracked",
+  "source_sha256": "179e2339c82240c6c020fac89dc5f9012a4819ba697eccf8d838df9e2ebf3805",
+  "dirty_diff_sha256": "73b1abb903692c43a9223a72ea3c0194057c5a13b51f307fba09eb57cac677ba",
+  "files": 3533,
+  "working_directory": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2",
+  "target_dir": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target",
+  "command": "CARGO_TARGET_DIR=/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target CARGO_BUILD_JOBS=4 nice cargo test --locked --all-features --lib presentation_relevance_ -- --nocapture",
+  "expected_selected": 13,
+  "log": "/private/tmp/ht-task15-relevance-corrected-13.log",
+  "helper_commit": "367da744905c1df11dbdf72d811c133e6bdf9e21",
+  "source_frozen": true,
+  "sweep_run_id": null,
+  "first_result": {
+    "selected": 13,
+    "passed": 11,
+    "failed": 2,
+    "build_seconds": 84,
+    "runtime_seconds": 1.05,
+    "log": "/private/tmp/ht-task15-relevance-corrected-13.log",
+    "scope": "Exact reviewed367 initial application; two setup fixture failures excluded as semantic RED",
+    "log_sha256": "5593d34bf0b9a1d93cba6c70fe7eebd2d1ffbfc51519049bd9412aeb10064d6a",
+    "actual_names": [
+      "store::attention::tests::presentation_relevance_direct_association_survives_prepared_same_id",
+      "store::attention::tests::presentation_relevance_quiet_proof_does_not_fence_itself_and_overflow_aborts_writer",
+      "store::attention::tests::presentation_relevance_all_thirteen_physical_sources_progress_through_stale_candidates",
+      "store::attention::tests::presentation_relevance_sweep_mutations_fence_and_overflow_roll_back_without_self_invalidation",
+      "store::attention::tests::presentation_relevance_canonical_receipt_sweep_closes_before_clear_publication",
+      "store::attention::tests::presentation_relevance_required_lazy_overlay_tracks_digest_and_requirement",
+      "store::attention::tests::presentation_relevance_unavailable_exact_episode_and_late_publication_are_swept",
+      "store::attention::tests::presentation_relevance_direct_legacy_survives_canonical_lazy_churn",
+      "store::attention::tests::presentation_relevance_suspended_membership_unchanged_high_still_opens",
+      "store::attention::tests::presentation_relevance_coverage_reserves_fallback_progress_under_source_load",
+      "store::attention::tests::presentation_relevance_walks_retained_membership_and_revalidates_exact_witness",
+      "store::attention::tests::presentation_relevance_suspended_membership_respects_repaired_current_high",
+      "store::attention::tests::presentation_relevance_successor_plan_and_vm_stay_bounded_in_retained_canonical_sweeps"
+    ]
+  },
+  "fixture_followup": {
+    "log": "/private/tmp/ht-task15-relevance-corrected-13-fixtures.log",
+    "selected": 13,
+    "passed": 13,
+    "failed": 0,
+    "build_seconds": 48.22,
+    "runtime_seconds": 1.06,
+    "changes": "Only test prerequisite: close baseline other-seat unavailable episode before retained same-ID union; assert/use existing trigger-created programmatic projection instead of duplicate INSERT. Schema tests also strengthened; production helper unchanged367. Full followup pre-run manifest was not separately captured; initial snapshot hash must not be mislabeled followup hash.",
+    "log_sha256": "a3e511999c7481ab10c97762d2cf3605c04959fc017660b5219ffaee90515895",
+    "actual_names": [
+      "store::attention::tests::presentation_relevance_direct_association_survives_prepared_same_id",
+      "store::attention::tests::presentation_relevance_sweep_mutations_fence_and_overflow_roll_back_without_self_invalidation",
+      "store::attention::tests::presentation_relevance_required_lazy_overlay_tracks_digest_and_requirement",
+      "store::attention::tests::presentation_relevance_all_thirteen_physical_sources_progress_through_stale_candidates",
+      "store::attention::tests::presentation_relevance_canonical_receipt_sweep_closes_before_clear_publication",
+      "store::attention::tests::presentation_relevance_unavailable_exact_episode_and_late_publication_are_swept",
+      "store::attention::tests::presentation_relevance_quiet_proof_does_not_fence_itself_and_overflow_aborts_writer",
+      "store::attention::tests::presentation_relevance_suspended_membership_unchanged_high_still_opens",
+      "store::attention::tests::presentation_relevance_direct_legacy_survives_canonical_lazy_churn",
+      "store::attention::tests::presentation_relevance_coverage_reserves_fallback_progress_under_source_load",
+      "store::attention::tests::presentation_relevance_walks_retained_membership_and_revalidates_exact_witness",
+      "store::attention::tests::presentation_relevance_suspended_membership_respects_repaired_current_high",
+      "store::attention::tests::presentation_relevance_successor_plan_and_vm_stay_bounded_in_retained_canonical_sweeps"
+    ]
+  },
+  "handler_followup": {
+    "log": "/private/tmp/ht-task15-handler-corrected-relevance.log",
+    "selected": 3,
+    "passed": 3,
+    "runtime_seconds": 0.55,
+    "build_seconds": 0.04,
+    "same_source_as_initial": true,
+    "names": [
+      "presentation_handler_partial_confirmation_retains_canonical_slots_across_restart",
+      "presentation_handler_published_warn_reopens_at_unchanged_native_version",
+      "presentation_handler_clears_unconfirmed_epoch_then_reopens_new_episode"
+    ],
+    "log_sha256": "c5e50836466228d1aed19f7f92c71fd696a65a05059280b397bda3bb3ed5d7de",
+    "actual_names": [
+      "service::delivery_pull::tests::presentation_handler_partial_confirmation_retains_canonical_slots_across_restart",
+      "service::delivery_pull::tests::presentation_handler_published_warn_reopens_at_unchanged_native_version",
+      "service::delivery_pull::tests::presentation_handler_clears_unconfirmed_epoch_then_reopens_new_episode"
+    ]
+  }
+}
