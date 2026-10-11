@@ -149,6 +149,20 @@ pub(crate) fn try_completed<C: LocalClient + ?Sized>(
     clock: &dyn Clock,
     writer: &mut dyn Write,
 ) -> Result<bool, RunError> {
+    let ns = namespace(selected, instance);
+    try_completed_with_namespace(parsed, journal, &ns, client, clock, writer)
+}
+
+/// The same historical dispatcher called by the public retry wrapper. Keeping
+/// the selected namespace explicit lets fake-port tests use their real store.
+pub(crate) fn try_completed_with_namespace<C: LocalClient + ?Sized>(
+    parsed: &ParsedCli,
+    journal: &Journal,
+    ns: &HandoffNamespace,
+    client: &C,
+    clock: &dyn Clock,
+    writer: &mut dyn Write,
+) -> Result<bool, RunError> {
     let mut sink = ForwardWriter(writer);
     let writer = &mut sink;
     let CliAction::Retry(recovery) = &parsed.action else {
@@ -156,7 +170,6 @@ pub(crate) fn try_completed<C: LocalClient + ?Sized>(
     };
     let original = super::retry::load_original_for_actor(journal, recovery.as_str())?;
     let reference = &original.header.reference;
-    let ns = namespace(selected, instance);
     match original_kind(&original.semantic) {
         SemanticMutation::AutomaticDelivery(_) | SemanticMutation::AutomaticHandoff(_) => {
             super::handoff_delivery::require_automatic_capability(client, clock)?;
@@ -186,7 +199,7 @@ pub(crate) fn try_completed<C: LocalClient + ?Sized>(
                         journal,
                         reference,
                         parsed.actor,
-                        &ns,
+                        ns,
                         client,
                         None,
                         clock,
@@ -206,7 +219,7 @@ pub(crate) fn try_completed<C: LocalClient + ?Sized>(
             super::topology_handoff::try_completed_automatic(
                 journal,
                 reference,
-                &ns,
+                ns,
                 client,
                 clock,
                 &parsed.output,
@@ -218,7 +231,7 @@ pub(crate) fn try_completed<C: LocalClient + ?Sized>(
             super::topology_handoff::try_completed(
                 journal,
                 reference,
-                &ns,
+                ns,
                 client,
                 clock,
                 &parsed.output,
@@ -234,7 +247,7 @@ pub(crate) fn try_completed<C: LocalClient + ?Sized>(
                         journal,
                         reference,
                         parsed.actor,
-                        &ns,
+                        ns,
                         &guarded,
                         clock,
                         &parsed.output,
