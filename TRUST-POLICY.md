@@ -516,15 +516,11 @@ addresses. Unknown and programmatic authors create no native seat address. Histo
 bootstrap and deadline repair run in bounded transactional turns; durable warning discovery remains
 independent of native wake admission, so composer drafts, active turns and host outages may defer
 key submission indefinitely.
-A clear remains passive, as do transitions about another seat for other observers; they wait for the
-recipient's next check-in offer. Accepted limit: an idle
-member learns of another seat's overdue or cleared obligation only when its pane next checks in. When
-
-Delivery is not a wake. A built-in transition wakes only the affected seat of a still-open
-condition (the hard-deadline backstop for the obligation that seat owes); a clear, and every
-transition about another seat, waits for the member's next check-in offer or hook-pull page. Accepted
-limit: an idle member learns of another seat's overdue or cleared obligation only when its pane next
-checks in or, on a hook-pull harness, at its next turn-start pull. When
+A clear remains passive. Apart from the canonical origin wakes above, transitions about another
+seat remain passive for other observers and wait for the recipient's next check-in offer or
+hook-pull page. Accepted limit: an idle member who is only a passive observer learns of another
+seat's overdue or cleared obligation only when its pane next checks in or, on a hook-pull harness,
+at its next turn-start pull. When
 more than the bounded window of pending warnings or unoffered notices is visible, narrowing cannot rule
 out an older waking notice (such as a service notice), so the wake keeps its unnarrowed answer and the
 offer probe stays conservative: it may still wake, never silently drop one.
