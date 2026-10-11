@@ -191,5 +191,37 @@ class L4HelperTests(unittest.TestCase):
         self.assertIn(("every scenario step was consumed", False), world.checks)
 
 
+class RunCommandEnvTests(unittest.TestCase):
+    def flow_module(self):
+        spec = importlib.util.spec_from_file_location("rce", str(HERE / "flows" / "run_command_env.py"))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_flow_is_discovered(self):
+        flows = {f.name: f for f in gate.discover(HERE / "flows")}
+        self.assertEqual(flows["run_command_env"].requires, ("ht-poh.4.4",))
+
+    def test_steps_chain_env_echo_inbox_then_text(self):
+        data = load("run-command-env")
+        cursor = scenario.Cursor(data)
+        labels = [cursor.select("ENV-PROBE go")["label"] for _ in range(4)]
+        self.assertEqual(labels, ["env-call", "echo-call", "inbox-call", "env-final"])
+        commands = [s["reply"]["args"]["CommandLine"] for s in data["steps"][:3]]
+        self.assertEqual(commands, ["env", "echo ppid=$PPID", "herdr-threads inbox"])
+
+    def test_parse_ppid_reads_the_echoed_pid(self):
+        module = self.flow_module()
+        self.assertEqual(module.parse_ppid("Output:\nppid=4242\r\n"), 4242)
+        self.assertIsNone(module.parse_ppid("zsh:1: operation not permitted: ps"))
+
+    def test_agy_family_names_match_exactly(self):
+        module = self.flow_module()
+        self.assertTrue(module.is_agy_family("/x/y/agy"))
+        self.assertTrue(module.is_agy_family("antigravity-cli"))
+        self.assertFalse(module.is_agy_family("/bin/zsh"))
+        self.assertFalse(module.is_agy_family("agy-helper"))
+
+
 if __name__ == "__main__":
     unittest.main()
