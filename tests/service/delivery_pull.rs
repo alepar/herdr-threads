@@ -10249,7 +10249,7 @@ fn presentation_owner_replay_owner_permit_fences_replacement_during_store() {
             .presentation_owner(&window.recipient.seat)
             .unwrap()
             .unwrap();
-        let replacing = scope.spawn(|| {
+        let replacing = scope.spawn(move || {
             let replacement_permit = registry
                 .presentation_owner(&register.claim.seat)
                 .unwrap()
