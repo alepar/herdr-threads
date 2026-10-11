@@ -2782,6 +2782,18 @@ mod continuity_gate {
             (reference, execution)
         }
         fn record_with(&self, session: &str, execution: String) -> crate::cli::journal::IntentRef {
+            self.record_with_liveness(
+                session,
+                execution,
+                Some(crate::protocol::authority::LivenessFingerprint::TEST),
+            )
+        }
+        fn record_with_liveness(
+            &self,
+            session: &str,
+            execution: String,
+            liveness: Option<crate::protocol::authority::LivenessFingerprint>,
+        ) -> crate::cli::journal::IntentRef {
             self.journal()
                 .record(
                     IntentScope::Continuity {
@@ -2795,7 +2807,7 @@ mod continuity_gate {
                         source: "resume".into(),
                         event_id: "evt-recorded".into(),
                         execution: crate::protocol::ids::ExecutionId::new(execution),
-                        liveness: Some(crate::protocol::authority::LivenessFingerprint::TEST),
+                        liveness,
                     },
                     1,
                 )
@@ -3492,6 +3504,54 @@ mod continuity_gate {
         assert_eq!(requests[0].operation, reference.operation);
         assert_eq!(requests[0].execution.as_str(), execution.to_string());
         assert!(pane.pending().is_none());
+    }
+
+    // Kills: submitting a reused intent's journaled fingerprint (an earlier process's, which the
+    // liveness worker would disconnect) instead of this hook's.
+    #[test]
+    fn a_reused_intent_with_another_fingerprint_submits_the_current_one() {
+        let pane = Pane::new();
+        let reference = pane.record_with_liveness(
+            "S-1",
+            uuid::Uuid::new_v4().to_string(),
+            Some(crate::protocol::authority::LivenessFingerprint { pid: 999, start: 3 }),
+        );
+        let daemon = Daemon::new(vec![reattached("saved", 2)]).with_lookups(vec![vec!["saved"]]);
+        assert!(
+            pane.call(&daemon)
+                .reattach_by_continuity(&resume(Harness::Claude), false)
+                .done()
+                .is_some()
+        );
+        let requests = daemon.continuity_requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].operation, reference.operation);
+        assert_eq!(
+            requests[0].liveness,
+            Some(crate::protocol::authority::LivenessFingerprint::TEST)
+        );
+    }
+
+    // Kills: a pre-.70 intent (no fingerprint) being submitted as is and refused
+    // `liveness_fingerprint_required`.
+    #[test]
+    fn a_reused_intent_without_a_fingerprint_submits_the_current_one() {
+        let pane = Pane::new();
+        let reference = pane.record_with_liveness("S-1", uuid::Uuid::new_v4().to_string(), None);
+        let daemon = Daemon::new(vec![reattached("saved", 2)]).with_lookups(vec![vec!["saved"]]);
+        assert!(
+            pane.call(&daemon)
+                .reattach_by_continuity(&resume(Harness::Claude), false)
+                .done()
+                .is_some()
+        );
+        let requests = daemon.continuity_requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].operation, reference.operation);
+        assert_eq!(
+            requests[0].liveness,
+            Some(crate::protocol::authority::LivenessFingerprint::TEST)
+        );
     }
 
     // Kills: an intent with an execution that is not a UUID being reused (no

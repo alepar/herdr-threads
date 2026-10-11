@@ -8317,7 +8317,7 @@ fn continuity_never_matches_retired_sentinel_human_or_empty_sessions() {
     c1_unresolved_seat(&conn, "s-sentinel", "claude", "plugin_context:abc");
     c1_unresolved_seat(&conn, "s-human", "human", "sess-h");
     c1_unresolved_seat(&conn, "s-empty", "claude", "");
-    // A different harness with the same id, and a superseded (not latest) binding.
+    // A different harness with the same id, and a superseded (not newest) binding.
     c1_unresolved_seat(&conn, "s-codex", "codex", "sess-c");
     c1_unresolved_seat(&conn, "s-old", "claude", "sess-old");
     c1_bind(&conn, "s-old", 2, "claude", "sess-new");
@@ -8337,12 +8337,181 @@ fn continuity_never_matches_retired_sentinel_human_or_empty_sessions() {
         ask("claude", "sess-c").is_empty(),
         "other harness's session"
     );
-    assert!(ask("claude", "sess-old").is_empty(), "superseded binding");
+    // ht-54r.78: a superseded (not newest) top-level binding still matches.
+    assert_eq!(
+        ask("claude", "sess-old"),
+        vec!["s-old"],
+        "superseded binding"
+    );
     // Controls: the live matches are found, so the empties above are real.
     assert_eq!(ask("codex", "sess-c"), vec!["s-codex"]);
     assert_eq!(ask("claude", "sess-new"), vec!["s-old"]);
     assert_eq!(ask("claude", "sess-1"), vec!["s1"]);
     drop(tx);
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+/// A binding row the way the real unresolve leaves it: ended `seat_unresolved`.
+fn c1_unresolved_binding(conn: &Connection, seat: &str, generation: i64, session: &str) -> String {
+    c1_bind(conn, seat, generation, "claude", session);
+    conn.execute(
+        "UPDATE occupant_bindings SET liveness='disconnected',disconnected_at=50,disconnect_reason='seat_unresolved',role='top_level',agent_id='' WHERE seat_id=?1 AND generation=?2 AND native_session=?3",
+        rusqlite::params![seat, generation, session],
+    )
+    .unwrap();
+    conn.query_row(
+        "SELECT binding_id FROM occupant_bindings WHERE seat_id=?1 AND generation=?2 AND native_session=?3",
+        rusqlite::params![seat, generation, session],
+        |r| r.get(0),
+    )
+    .unwrap()
+}
+
+/// Thread `ct` of `messages` ordinary messages receivable by `s1`, which has joined it.
+fn c1_history(conn: &Connection, messages: i64) {
+    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('ct','i','topic','goal',0,0)", []).unwrap();
+    conn.execute(
+        "INSERT INTO memberships(thread_id,seat_id,state) VALUES ('ct','s1','joined')",
+        [],
+    )
+    .unwrap();
+    for n in 1..=messages {
+        conn.execute_batch(&format!(
+            "INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i','cm{n}','ct',{n},'ordinary','body',{n},{n});
+             INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES ('cp{n}','i','actor','cm{n}',zeroblob(32),'ct',0,0,0,0,0,0,1,'sealed');
+             INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES ('cp{n}','ct','s1',1,300,1);
+             INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('cp{n}','cm{n}','i','ct',{n},{n},{n},0,1,0);"
+        ))
+        .unwrap();
+    }
+}
+
+fn c1_set_cursor(conn: &Connection, binding: &str, seq: i64) {
+    conn.execute(
+        "INSERT OR REPLACE INTO binding_cursors(binding_id,thread_id,seq) VALUES (?1,'ct',?2)",
+        rusqlite::params![binding, seq],
+    )
+    .unwrap();
+}
+
+#[test]
+fn continuity_reattach_reopens_the_sessions_binding_with_its_cursors() {
+    use crate::store::read_cursors;
+    let (context, mut conn, path) = c1_fixture();
+    conn.execute("DELETE FROM occupant_bindings WHERE seat_id='s1'", [])
+        .unwrap();
+    let ended = c1_unresolved_binding(&conn, "s1", 1, "sess-1");
+    c1_history(&conn, 5);
+    c1_set_cursor(&conn, &ended, 5);
+    let rows_before: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM occupant_bindings WHERE seat_id='s1' AND native_session='sess-1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let CommandResult::ContinuityReattached(reply) = c1_decide(
+        &context,
+        &mut conn,
+        &c1_command("held-pane", "sess-1", "c1-reopen"),
+        "match",
+    )
+    .unwrap() else {
+        panic!("not reattached")
+    };
+    assert_eq!(reply.seat, SeatId::new("s1"));
+    let (open, ended_at, liveness, pid, start, rows): (String, Option<i64>, String, i64, i64, i64) = conn
+        .query_row(
+            "SELECT binding_id,ended_at,liveness,liveness_pid,liveness_start,(SELECT count(*) FROM occupant_bindings WHERE seat_id='s1' AND native_session='sess-1') FROM occupant_bindings WHERE seat_id='s1' AND native_session='sess-1' AND ended_at IS NULL",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+        )
+        .unwrap();
+    assert_eq!(open, ended, "the session's own row is reopened");
+    assert_eq!(ended_at, None);
+    assert_eq!(liveness, "connected");
+    assert_eq!((pid, start), (4242, 7));
+    assert_eq!(rows, rows_before, "no new row");
+    let id = BindingId::new(ended);
+    assert_eq!(
+        read_cursors::cursor_for(&conn, &id, &ThreadId::new("ct")).unwrap(),
+        Some(5)
+    );
+    assert!(!read_cursors::has_unread(&conn, &id).unwrap());
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn continuity_reattach_matches_when_a_later_binding_enrolled_after_the_main_session() {
+    let (context, mut conn, path) = c1_fixture();
+    conn.execute("DELETE FROM occupant_bindings WHERE seat_id='s1'", [])
+        .unwrap();
+    let main = c1_unresolved_binding(&conn, "s1", 1, "sess-1");
+    let oneshot = c1_unresolved_binding(&conn, "s1", 1, "sess-z");
+    let CommandResult::ContinuityReattached(reply) = c1_decide(
+        &context,
+        &mut conn,
+        &c1_command("held-pane", "sess-1", "c1-later"),
+        "match",
+    )
+    .unwrap() else {
+        panic!("not reattached")
+    };
+    assert_eq!(reply.seat, SeatId::new("s1"));
+    let ended_of = |id: &str| -> Option<i64> {
+        conn.query_row(
+            "SELECT ended_at FROM occupant_bindings WHERE binding_id=?1",
+            [id],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    assert_eq!(ended_of(&main), None, "the main row is reopened");
+    assert!(ended_of(&oneshot).is_some(), "the one-shot stays ended");
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn continuity_reattach_without_a_reopenable_row_enrolls_at_the_seat_read_position() {
+    use crate::store::read_cursors;
+    let (context, mut conn, path) = c1_fixture();
+    conn.execute("DELETE FROM occupant_bindings WHERE seat_id='s1'", [])
+        .unwrap();
+    let died = c1_unresolved_binding(&conn, "s1", 1, "sess-1");
+    conn.execute(
+        "UPDATE occupant_bindings SET disconnect_reason='liveness_process_exit' WHERE binding_id=?1",
+        [&died],
+    )
+    .unwrap();
+    c1_history(&conn, 5);
+    c1_set_cursor(&conn, &died, 5);
+    let CommandResult::ContinuityReattached(_) = c1_decide(
+        &context,
+        &mut conn,
+        &c1_command("held-pane", "sess-1", "c1-fresh-row"),
+        "match",
+    )
+    .unwrap() else {
+        panic!("not reattached")
+    };
+    let fresh: String = conn
+        .query_row(
+            "SELECT binding_id FROM occupant_bindings WHERE seat_id='s1' AND ended_at IS NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_ne!(fresh, died, "a dead-process row is never reopened");
+    let id = BindingId::new(fresh);
+    assert_eq!(
+        read_cursors::cursor_for(&conn, &id, &ThreadId::new("ct")).unwrap(),
+        Some(5),
+        "the new binding starts at the seat's furthest-read point"
+    );
+    assert!(!read_cursors::has_unread(&conn, &id).unwrap());
     drop(conn);
     let _ = std::fs::remove_file(path);
 }

@@ -1942,25 +1942,33 @@ impl PaneCall<'_> {
     }
 
     /// Submit a recorded continuity intent under its operation key until the
-    /// daemon answers or the hook deadline passes. The same command is sent
-    /// every time, so the daemon's idempotent replay returns the recorded seat
-    /// and generation. A definitive refusal completes the intent; busy,
+    /// daemon answers or the hook deadline passes. The same operation key and
+    /// payload digest are sent every time (the fingerprint is always this
+    /// hook's, never the journaled one), so the daemon's idempotent replay
+    /// returns the recorded seat and generation. A definitive refusal completes the intent; busy,
     /// stale-observation (a Herdr restart the daemon has not yet caught up
     /// with), transport and uncertain outcomes retry with backoff.
     fn submit_continuity(
         &self,
         journal: &super::journal::Journal,
         reference: &super::journal::IntentRef,
+        liveness: crate::protocol::authority::LivenessFingerprint,
     ) -> ContinuityOutcome {
         let Ok(pending) = journal.load(reference) else {
             return ContinuityOutcome::Kept;
         };
-        let Ok(command) = pending
+        let Ok(mut command) = pending
             .semantic
             .to_command(reference.operation.clone(), None)
         else {
             return ContinuityOutcome::Kept;
         };
+        // The journaled fingerprint is an earlier process's (or absent in a pre-.70 intent):
+        // the digest excludes it, so the current one rides under the reused operation key.
+        let Command::ContinuityCheckIn(check_in) = &mut command else {
+            return ContinuityOutcome::Kept;
+        };
+        check_in.liveness = Some(liveness);
         let mut backoff = CONTINUITY_BACKOFF_START;
         loop {
             match self
@@ -2068,7 +2076,7 @@ impl PaneCall<'_> {
     }
 
     /// C1 attempt: a top-level `resume` asks the daemon to reattach the
-    /// unresolved seat whose last binding holds this session (a pane whose
+    /// unresolved seat one of whose bindings holds this session (a pane whose
     /// resolved mapping is current is refused, its target being owned; there
     /// `pane_resolved` is set and no pending intent is reused). The daemon's
     /// one transaction rebinds the seat and opens the successor binding; the
@@ -2112,7 +2120,7 @@ impl PaneCall<'_> {
         else {
             return Reattach::Pending;
         };
-        let mut reattached = match self.submit_continuity(&journal, &reference) {
+        let mut reattached = match self.submit_continuity(&journal, &reference, liveness) {
             ContinuityOutcome::Reattached(reattached) => reattached,
             ContinuityOutcome::Refused(code) => return Reattach::Refused(code),
             ContinuityOutcome::Kept => return Reattach::Pending,
@@ -2131,7 +2139,7 @@ impl PaneCall<'_> {
                         return Reattach::Pending;
                     };
                     reference = fresh;
-                    reattached = match self.submit_continuity(&journal, &reference) {
+                    reattached = match self.submit_continuity(&journal, &reference, liveness) {
                         ContinuityOutcome::Reattached(reattached) => reattached,
                         ContinuityOutcome::Refused(code) => return Reattach::Refused(code),
                         ContinuityOutcome::Kept => return Reattach::Pending,

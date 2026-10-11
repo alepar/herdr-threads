@@ -3399,10 +3399,12 @@ fn reconciliation_lags(tx: &Transaction<'_>, instance: &str) -> Result<bool, Api
 }
 
 /// TRUST-POLICY C1 candidates: nonretired unresolved seats of the instance
-/// whose *latest* binding is this harness's session `native_session`.
+/// whose bindings include this harness's session `native_session` (any
+/// top-level row, open or ended, not only the newest: a one-shot or `/clear`
+/// successor enrolled later must not hide the main session, ht-54r.78).
 /// Sentinel (`plugin_context:`), empty and human values never match, and a
-/// latest `managed_launch` binding (no session: the agent never checked in)
-/// makes the seat no candidate (ht-5n6); NULL
+/// `managed_launch` binding (no session: the agent never checked in)
+/// never counts (ht-5n6); NULL
 /// never equals anything. Returns at most two (the caller only needs to tell
 /// zero, one and several apart).
 pub(crate) fn continuity_candidates(
@@ -3413,7 +3415,7 @@ pub(crate) fn continuity_candidates(
 ) -> Result<Vec<SeatId>, ApiError> {
     let mut statement = tx
         .prepare(
-            "SELECT s.id FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id AND b.ordinal=(SELECT MAX(l.ordinal) FROM occupant_bindings l WHERE l.seat_id=s.id) WHERE s.instance_id=?1 AND s.state='unresolved' AND b.harness=?2 AND b.harness<>'human' AND b.observation_provenance<>'managed_launch' AND b.native_session=?3 AND b.native_session<>'' AND substr(b.native_session,1,15)<>'plugin_context:' ORDER BY s.id LIMIT 2",
+            "SELECT DISTINCT s.id FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id WHERE s.instance_id=?1 AND s.state='unresolved' AND b.harness=?2 AND b.harness<>'human' AND b.role='top_level' AND b.agent_id='' AND b.observation_provenance<>'managed_launch' AND b.native_session=?3 AND b.native_session<>'' AND substr(b.native_session,1,15)<>'plugin_context:' ORDER BY s.id LIMIT 2",
         )
         .map_err(store_error)?;
     let rows = statement
@@ -3491,7 +3493,7 @@ pub fn replay_continuity(
     Ok(Some(result))
 }
 
-/// TRUST-POLICY C1: reattach the one unresolved seat whose last binding holds
+/// TRUST-POLICY C1: reattach the one unresolved seat one of whose bindings holds
 /// the resumed session id onto the (held or unowned) target, in one deciding
 /// transaction that is a complete lifecycle check-in. The match is cooperative
 /// and structural only: Herdr's `agent_session` (`diagnostic`) is recorded,
@@ -3719,12 +3721,45 @@ pub fn decide_continuity(
                     "a resumed session's reattachment must carry its liveness fingerprint",
                 )
             })?;
-            let liveness_start = checked_host_number(fingerprint.start)?;
-            tx.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation,liveness_pid,liveness_start) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?11,?12,?13,?14,?15)",
-                params![seat.as_str(),new_generation,target.as_str(),expected_boot.as_str(),expected_epoch_sql,expected_generation_sql,
-                    command.harness.as_str(),command.native_session.as_str(),command.execution.as_str(),
-                    crate::protocol::authority::COOPERATIVE_TOP_LEVEL_PROVENANCE,at.utc.0,terminal,incarnation,
-                    i64::from(fingerprint.pid),liveness_start]).map_err(store_error)?;
+            // ht-54r.78: the general resolver. The unresolve ended every binding of the seat, so
+            // it reopens the session's own row ended `seat_unresolved` (cursors kept) or enrolls
+            // one at the seat's read position; both run the enroll hooks.
+            let claim = crate::protocol::authority::CallerClaim {
+                instance: instance.clone(),
+                seat: seat.clone(),
+                binding_generation: u64::try_from(new_generation)
+                    .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative seat generation"))?,
+                role: crate::protocol::authority::CallerRole::TopLevel,
+                harness: command.harness,
+                native_session: command.native_session.clone(),
+                execution: command.execution.clone(),
+                target: target.clone(),
+                agent_id: None,
+                liveness: Some(fingerprint),
+            };
+            let placement = bindings::BindingPlacement {
+                generation: claim.binding_generation,
+                target_generation: expected_generation,
+                target: target.as_str().to_owned(),
+                terminal,
+                incarnation,
+                host_boot: expected_boot.as_str().to_owned(),
+                host_epoch: expected_epoch,
+                execution: command.execution.as_str().to_owned(),
+                provenance: crate::protocol::authority::COOPERATIVE_TOP_LEVEL_PROVENANCE.to_owned(),
+                observed_at: at.utc,
+                registered_at: Some(at.utc),
+            };
+            bindings::resolve_claim(
+                tx,
+                &bindings::ResolveRequest {
+                    claim: &claim,
+                    lifecycle: true,
+                    placement: &placement,
+                    lineage: None,
+                },
+                at.utc,
+            )?;
             catch_up::supersede_ended_bindings(tx, seat, at.utc)?;
             tx.execute("UPDATE wake_work SET binding_generation=?1 WHERE seat_id=?2 AND reservation_id IS NULL",
                 params![new_generation,seat.as_str()]).map_err(store_error)?;

@@ -68,7 +68,7 @@ explicitly, so that a weakness is a documented decision rather than a surprise.
 | Path | Trigger | Recorded as |
 |---|---|---|
 | Structural reconfirm | Same terminal, same Herdr boot and incarnation | automatic, no new provenance |
-| Cooperative continuity | A resumed top-level session (SessionStart source `resume`) whose harness session id uniquely matches an unresolved seat's last binding | `cooperative_continuity` |
+| Cooperative continuity | A resumed top-level session (SessionStart source `resume`) whose harness session id uniquely matches a top-level binding (any of its bindings, not only the latest) of an unresolved seat | `cooperative_continuity` |
 | Operator decision | `ht human seat rebind`, `ht human seat resolve --new-seat`, `ht human seat retire`, `ht human seat rebind --replace` (each with `--operator`) | `operator:local-user:<uid>` |
 
 Seats are never merged. Pane labels, saved addresses, terminal-id hints and Herdr's agent field may *suggest*
@@ -262,9 +262,11 @@ model open work, and summary closure never changes receipt state or installs glo
   A binding whose process no longer exists, whose pid now has another start time, or that is
   connected with no fingerprint is disconnected `liveness_process_exit` (decision 9: every
   connected agent binding without a fingerprint is disconnected, migrated or not; the migrated 24 h
-  grace is archival only; human bindings stay exempt). A C1 reattachment is a lifecycle check-in: the
-  successor binding records the resumed session's fingerprint, and a reattachment request without one is
-  refused `liveness_fingerprint_required` (decision 9). Among connected top-level bindings
+  grace is archival only; human bindings stay exempt). A C1 reattachment is a lifecycle check-in
+  through the general resolver: it reopens the session's own binding when the unresolve ended it (its
+  cursors kept), else enrolls one at the seat's read position, runs the enroll hooks, and records the
+  hook's current fingerprint (a retried intent submits the current one, never the journaled one); a
+  reattachment request without one is refused `liveness_fingerprint_required` (decision 9). Among connected top-level bindings
   of one instance and harness sharing one fingerprint, only the latest lifecycle claim stays connected
   and the others are disconnected `superseded` (subagents excluded). Disconnection on liveness evidence
   is structural evidence, never a heuristic: it goes through the one `store::bindings::disconnect`
