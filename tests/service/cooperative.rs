@@ -2311,9 +2311,7 @@ fn hermes_child_early_call_then_subagent_start(parent_lifecycle: bool) {
         harness: None,
         targets,
     };
-    match authority.composer_choice(Some(
-        crate::protocol::authority::LivenessFingerprint::TEST.pid,
-    )) {
+    match authority.composer_choice(&[crate::protocol::authority::LivenessFingerprint::TEST.pid]) {
         crate::ports::ComposerChoice::Binding(target) => {
             assert_eq!(target.binding.as_str(), parent_id);
         }
