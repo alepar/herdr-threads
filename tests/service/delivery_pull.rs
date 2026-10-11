@@ -2433,7 +2433,8 @@ fn presentation_v2_replays_one_canonical_invitation_until_emit_confirmation() {
     );
     canonical_lazy_invitation_backlog(&f, &recipient, &inviter, 1, "durable-v2");
     let wire = json!({"kind":"delivery_pull_v2","args":{
-        "claim":recipient,"consumer":"hook"
+        "claim":recipient,"consumer":"hook",
+        "render":{"kind":"hook","confirmable_selector":0,"passive_selector":0}
     }});
     let command = serde_json::from_value::<Command>(wire.clone());
     assert!(
@@ -2454,8 +2455,15 @@ fn presentation_v2_replays_one_canonical_invitation_until_emit_confirmation() {
             .unwrap()
             .contains("durable-v2-topic-0")
     );
+    let items = page["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["kind"], "invitation");
+    // This ordered invitation-only page emits no Attention or Cleared controls.
+    let expected_controls = json!([]);
+    assert_eq!(page["emitted_controls"], expected_controls);
     let token = page["presentation_token"].as_str().unwrap().to_owned();
     assert_eq!(token.len(), 32);
+    assert!(crate::protocol::delivery::valid_presentation_token(&token));
     assert_eq!(
         f.db.query_row(
             "SELECT count(*) FROM invitations WHERE state='pending'",
@@ -2477,18 +2485,19 @@ fn presentation_v2_replays_one_canonical_invitation_until_emit_confirmation() {
         .unwrap();
     assert_eq!(serde_json::to_value(replay).unwrap(), first);
     let wrong = json!({"kind":"delivery_presentation_confirm_v2","args":{
-        "claim":recipient,"consumer":"hook","token":"ffffffffffffffffffffffffffffffff"
+        "claim":recipient,"consumer":"hook","token":"ffffffffffffffffffffffffffffffff",
+        "emitted_controls":expected_controls
     }});
     let wrong = f
         .service
         .handle(serde_json::from_value(wrong).unwrap(), peer(), &budget())
         .unwrap();
-    assert_eq!(
-        serde_json::to_value(wrong).unwrap()["data"],
-        "not_current_page"
-    );
+    let wrong = serde_json::to_value(wrong).unwrap();
+    assert_eq!(wrong["data"]["status"], "not_current_page");
+    assert_eq!(wrong["data"]["acknowledged_controls"], expected_controls);
     let confirmation = json!({"kind":"delivery_presentation_confirm_v2","args":{
-        "claim":recipient,"consumer":"hook","token":token
+        "claim":recipient,"consumer":"hook","token":token,
+        "emitted_controls":expected_controls
     }});
     let settled = f
         .service
@@ -2498,7 +2507,9 @@ fn presentation_v2_replays_one_canonical_invitation_until_emit_confirmation() {
             &budget(),
         )
         .unwrap();
-    assert_eq!(serde_json::to_value(settled).unwrap()["data"], "confirmed");
+    let settled = serde_json::to_value(settled).unwrap();
+    assert_eq!(settled["data"]["status"], "confirmed");
+    assert_eq!(settled["data"]["acknowledged_controls"], expected_controls);
     let duplicate = f
         .service
         .handle(
@@ -2507,9 +2518,11 @@ fn presentation_v2_replays_one_canonical_invitation_until_emit_confirmation() {
             &budget(),
         )
         .unwrap();
+    let duplicate = serde_json::to_value(duplicate).unwrap();
+    assert_eq!(duplicate["data"]["status"], "already_confirmed");
     assert_eq!(
-        serde_json::to_value(duplicate).unwrap()["data"],
-        "already_confirmed"
+        duplicate["data"]["acknowledged_controls"],
+        expected_controls
     );
     assert_eq!(
         f.db.query_row(
@@ -2520,6 +2533,12 @@ fn presentation_v2_replays_one_canonical_invitation_until_emit_confirmation() {
         .unwrap(),
         1,
         "presentation never accepts or ACKs"
+    );
+    assert_eq!(
+        f.db.query_row("SELECT count(*) FROM receipts", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        0,
+        "presentation confirmation creates no receipt ACK"
     );
 }
 
