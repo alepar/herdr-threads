@@ -549,20 +549,6 @@ fn join_gives_every_open_binding_a_cursor_at_the_join_point() {
 // admitted, and a re-adoption enrolling a second binding.
 #[test]
 fn no_duplicate_delivery_after_v29_migration() {
-    v29_migration_scenario(false);
-}
-
-// The same scenario with the exact page rows, ACK-candidate flags included. The product lists
-// these messages with a false flag today because an env-session binding is not yet an accountable
-// top-level (ht-54r.59), so this stays ignored until that bead lands; then drop the ignore and the
-// `strict` parameter.
-#[test]
-#[ignore = "ht-54r.59: ACK-candidate flag of env-session bindings"]
-fn v29_migration_pages_carry_ack_candidate_flags() {
-    v29_migration_scenario(true);
-}
-
-fn v29_migration_scenario(strict: bool) {
     let old = crate::store::connection::tests::adapter_historical_database(28);
     old.execute_batch(
         "INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'b',1,50);
@@ -613,7 +599,13 @@ fn v29_migration_scenario(strict: bool) {
         "the migrated binding starts at the thread head"
     );
     let want = vec![Row::Msg("m2".into(), true), Row::Msg("m3".into(), true)];
-    assert_eq!(page(&fx, Some(&claim("b", "nb1", EXEC_B1, None))), want);
+    // Until it is re-adopted the migrated binding is disconnected: it is not an accountable
+    // top-level binding, so it lists the same messages without offering to ACK them.
+    let before_readopt = vec![Row::Msg("m2".into(), false), Row::Msg("m3".into(), false)];
+    assert_eq!(
+        page(&fx, Some(&claim("b", "nb1", EXEC_B1, None))),
+        before_readopt
+    );
     let state = |conn: &Connection| {
         conn.query_row(
             "SELECT liveness, disconnect_reason, liveness_pid, liveness_start, migrated FROM occupant_bindings WHERE binding_id=?1",
@@ -685,38 +677,16 @@ fn v29_migration_scenario(strict: bool) {
         read_cursors::cursor_for(&conn, &migrated, &ThreadId::new("t")).unwrap(),
         Some(3)
     );
-    // With `strict` unset the ACK-candidate flag is not compared (ht-54r.59, see above).
-    let flags = |rows: &[Row]| {
-        if strict {
-            rows.to_vec()
-        } else {
-            ignoring_ack_flag(rows)
-        }
-    };
     let rows = page(&fx, Some(&readopter));
-    let listed = flags(&rows);
     assert!(
-        !ignoring_ack_flag(&rows).is_empty()
+        !rows.is_empty()
             && !rows.contains(&Row::Msg("m1".into(), true))
             && !rows.contains(&Row::Msg("m1".into(), false)),
         "no duplicate delivery: m1 was displayed and ACKed before the upgrade, got {rows:?}"
     );
-    assert_eq!(listed, want, "pending obligations are listed once each");
+    assert_eq!(rows, want, "pending obligations are listed once each");
     // A session the upgrade never saw starts at the seat maximum: the same obligations, once.
-    assert_eq!(
-        flags(&page(&fx, Some(&claim_fp("b", "fresh", EXEC_B2)))),
-        want
-    );
-}
-
-/// The rows with every message's ACK-candidate flag set (see ht-54r.59 in the test above).
-fn ignoring_ack_flag(rows: &[Row]) -> Vec<Row> {
-    rows.iter()
-        .map(|row| match row {
-            Row::Msg(id, _) => Row::Msg(id.clone(), true),
-            other => other.clone(),
-        })
-        .collect()
+    assert_eq!(page(&fx, Some(&claim_fp("b", "fresh", EXEC_B2))), want);
 }
 
 fn binding_of_in(conn: &Connection, claim: &CallerClaim) -> BindingId {

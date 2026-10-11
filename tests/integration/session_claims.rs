@@ -132,7 +132,23 @@ impl World {
         args: &[&str],
         managed_daemon: bool,
     ) -> Output {
-        let routing = self.routing();
+        self.agent_raw(harness, session, pane, args, managed_daemon, true)
+    }
+
+    /// `json` false drops `--json`, so the command prints its human text form.
+    fn agent_raw(
+        &self,
+        harness: &str,
+        session: Option<&str>,
+        pane: &str,
+        args: &[&str],
+        managed_daemon: bool,
+        json: bool,
+    ) -> Output {
+        let mut routing = self.routing();
+        if !json {
+            routing.retain(|word| word != "--json");
+        }
         let argv: Vec<&str> = routing
             .iter()
             .map(String::as_str)
@@ -382,4 +398,110 @@ fn a_person_shell_in_an_agent_pane_has_no_agent_identity() {
     let out = world.human_in("w1:p1", &["thread", "create", "--topic", "impostor"]);
     assert!(!out.status.success(), "{out:?}");
     assert_eq!(world.bindings(&seat).len(), 1, "no binding was enrolled");
+}
+
+// Kills: a display ACK that demands `cooperative_top_level` provenance on the binding. An agent
+// enrolled by a plain call holds `cooperative_env_session`; it is still the seat's connected
+// top-level agent, so reading its inbox in text must settle the receipt (A5, ht-54r.59).
+#[test]
+fn plain_call_enrolled_agent_display_acks() {
+    let world = World::new(true);
+    let seat_a = world.seat("w1:p1");
+    let seat_b = world.seat("w1:p2");
+    let check_in = world.agent(
+        "claude",
+        Some("session-A"),
+        "w1:p1",
+        &["check-in", "--lifecycle-event", "ev-a"],
+    );
+    assert!(
+        check_in.status.success(),
+        "{check_in:?} {}",
+        stderr(&check_in)
+    );
+    let thread = World::data(&world.agent(
+        "claude",
+        Some("session-A"),
+        "w1:p1",
+        &["thread", "create", "--topic", "display ack"],
+    ))
+    .as_str()
+    .expect("thread create returns the thread id")
+    .to_owned();
+    let invite = world.agent(
+        "claude",
+        Some("session-A"),
+        "w1:p1",
+        &["invite", &thread, "--seat", &seat_b],
+    );
+    assert!(invite.status.success(), "{invite:?} {}", stderr(&invite));
+    // B never checks in: its first plain call (accept) enrolls it.
+    let join = world.agent("claude", Some("session-B"), "w1:p2", &["accept", &thread]);
+    assert!(join.status.success(), "{join:?} {}", stderr(&join));
+    let open = world.bindings(&seat_b);
+    assert_eq!(open.len(), 1, "{open:?}");
+    assert_eq!(open[0].3, "cooperative_env_session", "{open:?}");
+    let send = world.agent(
+        "claude",
+        Some("session-A"),
+        "w1:p1",
+        &[
+            "send",
+            &thread,
+            "--body",
+            "please read",
+            "--require-ack",
+            &seat_b,
+        ],
+    );
+    assert!(send.status.success(), "{send:?} {}", stderr(&send));
+    let receipt = || -> Vec<String> {
+        let db = rusqlite::Connection::open(&world.paths.database_path).unwrap();
+        db.busy_timeout(Duration::from_secs(3)).unwrap();
+        let mut statement = db
+            .prepare(
+                "SELECT COALESCE((SELECT rs.state FROM receipt_state rs WHERE rs.message_id=m.message_id AND rs.seat_id=pr.seat_id),'pending') \
+                 FROM prepared_recipients pr JOIN send_manifests m ON m.preparation_id=pr.preparation_id \
+                 WHERE pr.seat_id=?1 \
+                 UNION ALL SELECT state FROM receipts WHERE seat_id=?1",
+            )
+            .unwrap();
+        statement
+            .query_map([&seat_b], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    };
+    assert_eq!(receipt(), vec!["pending".to_owned()]);
+    // A real agent's harness process outlives its calls; this test's per-command shim does not,
+    // so the liveness worker has already disconnected B. Put B back to connected (no fingerprint,
+    // so nothing judges it again) to model the long-lived agent.
+    {
+        let db = rusqlite::Connection::open(&world.paths.database_path).unwrap();
+        db.busy_timeout(Duration::from_secs(3)).unwrap();
+        db.execute(
+            "UPDATE occupant_bindings SET liveness='connected',disconnected_at=NULL,disconnect_reason=NULL,\
+             liveness_pid=NULL,liveness_start=NULL WHERE seat_id=?1 AND ended_at IS NULL",
+            [&seat_b],
+        )
+        .unwrap();
+    }
+    let inbox = world.agent_raw(
+        "claude",
+        Some("session-B"),
+        "w1:p2",
+        &["inbox"],
+        false,
+        false,
+    );
+    assert!(inbox.status.success(), "{inbox:?} {}", stderr(&inbox));
+    assert!(
+        String::from_utf8_lossy(&inbox.stdout).contains("please read"),
+        "{inbox:?}"
+    );
+    assert_eq!(
+        receipt(),
+        vec!["acked".to_owned()],
+        "displaying the message settles the ACK obligation; seat A is {seat_a}"
+    );
 }

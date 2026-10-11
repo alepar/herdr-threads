@@ -3592,7 +3592,8 @@ fn ack_after_frozen_deadline_during_extension_records_no_late_warning() {
 #[test]
 fn adapter_display_ack_rechecks_exact_binding_and_cooperative_provenance() {
     for change in [
-        "observation_provenance='verified'",
+        "liveness='disconnected',disconnected_at=1",
+        "role='subagent',agent_id='x'",
         "harness='future_agent'",
         "native_session='different'",
         "execution_id='different'",
@@ -3825,4 +3826,82 @@ mod binding_attribution {
         );
         assert_eq!(ack_binding(&conn, &id), None);
     }
+}
+
+/// Runs a display ACK of message `displayed` (addressed to seat `b`) through the store.
+fn display_ack_for_b(
+    context: &StoreContext,
+    conn: &mut Connection,
+) -> Result<crate::protocol::results::CommandResult, crate::protocol::results::ApiError> {
+    conn.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq) VALUES ('displayed','i','t',1,'ordinary','a','read body',0,2)", []).unwrap();
+    conn.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('displayed','t','b','pending',300000)", []).unwrap();
+    conn.execute("UPDATE threads SET next_sequence=2 WHERE id='t'", [])
+        .unwrap();
+    conn.execute("UPDATE host_instances SET decision_seq=2 WHERE id='i'", [])
+        .unwrap();
+    let request = ack_request(vec![MessageId::new("displayed")]);
+    let digest =
+        crate::store::schema::canonical_digest(&receipts::ack_displayed_payload(&request)).unwrap();
+    let mut grant = cooperative_permit(
+        &request.claim,
+        &request.operation,
+        ObligationRef::CheckIn(SeatId::new("b")),
+        digest,
+        (1, 0),
+    );
+    receipts::ack_displayed(
+        context,
+        conn,
+        &crate::protocol::time::CallBudget {
+            deadline: MonoInstant(u64::MAX),
+            cancellation: Default::default(),
+        },
+        &request,
+        &mut grant,
+    )
+}
+fn receipt_state_b(conn: &Connection) -> String {
+    conn.query_row(
+        "SELECT state FROM receipts WHERE message_id='displayed' AND seat_id='b'",
+        [],
+        |r| r.get(0),
+    )
+    .unwrap()
+}
+
+#[test]
+fn display_ack_settles_for_a_plain_call_enrolled_binding() {
+    let (context, mut conn, _) = setup();
+    conn.execute("UPDATE occupant_bindings SET observation_provenance='cooperative_env_session',liveness='connected',registered_at=0 WHERE seat_id='b'", []).unwrap();
+    display_ack_for_b(&context, &mut conn).unwrap();
+    assert_eq!(receipt_state_b(&conn), "acked");
+    let observation: String = conn
+        .query_row(
+            "SELECT ack_observation FROM receipts WHERE message_id='displayed' AND seat_id='b'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let observation: serde_json::Value = serde_json::from_str(&observation).unwrap();
+    assert_eq!(observation["provenance"], "cooperative_top_level");
+}
+
+#[test]
+fn display_ack_refused_for_a_disconnected_plain_call_enrolled_binding() {
+    let (context, mut conn, _) = setup();
+    conn.execute("UPDATE occupant_bindings SET observation_provenance='cooperative_env_session',liveness='disconnected',disconnected_at=1,registered_at=0 WHERE seat_id='b'", []).unwrap();
+    let error = display_ack_for_b(&context, &mut conn).unwrap_err();
+    assert_eq!(
+        error.code,
+        crate::protocol::results::ErrorCode::CallerUnverified
+    );
+    assert_eq!(receipt_state_b(&conn), "pending");
+}
+
+#[test]
+fn display_ack_settles_for_a_readopted_migrated_binding() {
+    let (context, mut conn, _) = setup();
+    conn.execute("UPDATE occupant_bindings SET observation_provenance='cooperative_env_session',migrated=1,liveness='connected',registered_at=0 WHERE seat_id='b'", []).unwrap();
+    display_ack_for_b(&context, &mut conn).unwrap();
+    assert_eq!(receipt_state_b(&conn), "acked");
 }
