@@ -981,85 +981,92 @@ fn receipt_upgrade_snapshot(db: &Connection, table: &str) -> Vec<Vec<rusqlite::t
 #[test]
 fn receipt_send_time_upgrade_preserves_populated_v28_and_v29_graph_and_restarts_once() {
     for version in [28, 29] {
-    let db = v28_fixture();
-    if version == 29 {
-        db.execute_batch(include_str!("../../migrations/0029_invitation_confirmation.sql")).unwrap();
-        db.pragma_update(None, "user_version", 29).unwrap();
-        db.execute_batch("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,confirmation,inviter_seat_id) VALUES ('modern','t','s',1,'pending',1,100,50,150,'require_ack','s'),('quiet','t','s',2,'pending',2,100,50,150,'lazy','s');").unwrap();
-    }
-    for (index, (name, state, available, required)) in [
-        ("running", "pending", Some(1200), 1),
-        ("dormant", "pending", None, 1),
-        ("acked", "acked", Some(1200), 1),
-        ("acked_absent", "acked", None, 1),
-        ("retired", "recipient_retired", None, 1),
-        ("waived", "pending", None, 0),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        db.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES('i',?1,'t',?2,'ordinary','retained body',1000,?2)",rusqlite::params![name,index as i64+1]).unwrap();
-        db.execute("INSERT INTO receipts(ordinal,message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at,ack_required,ack_observation) VALUES(?1,?2,'t','s',?3,300,?4,?5,?6,'retained provenance')",rusqlite::params![index as i64+20,name,state,available,available.map(|at|at+300),required]).unwrap();
-        db.execute("INSERT INTO receipt_state(rowid,message_id,seat_id,state,available_at,deadline_at,ack_required,ack_observation) VALUES(?1,?2,'s',?3,?4,?5,?6,'retained provenance')",rusqlite::params![index as i64+40,name,state,available,available.map(|at|at+300),required]).unwrap();
-    }
-    db.execute_batch("UPDATE sqlite_sequence SET seq=99 WHERE name='receipts'; CREATE TABLE receipt_upgrade_child(ordinal INTEGER REFERENCES receipts(ordinal), message_id TEXT, seat_id TEXT, FOREIGN KEY(message_id,seat_id) REFERENCES receipt_state(message_id,seat_id)); INSERT INTO receipt_upgrade_child VALUES(20,'running','s');").unwrap();
-    let tables = [
-        "receipts",
-        "receipt_state",
-        "messages",
-        "send_preparations",
-        "prepared_recipients",
-        "receipt_upgrade_child",
-        "digest_pending_manifest_receipts",
-    ];
-    let before: Vec<_> = tables
-        .iter()
-        .map(|name| receipt_upgrade_snapshot(&db, name))
-        .collect();
-    let objects = |db: &Connection| {
-        let mut statement=db.prepare("SELECT sql FROM sqlite_master WHERE tbl_name IN ('receipts','receipt_state') AND type IN ('trigger','index') AND sql IS NOT NULL ORDER BY name").unwrap();
-        statement
-            .query_map([], |r| r.get::<_, String>(0))
-            .unwrap()
-            .collect::<Result<Vec<_>, _>>()
-            .unwrap()
-    };
-    let old_objects = objects(&db);
-    schema::initialize(&db, || UtcMillis(0)).unwrap();
-    assert_eq!(objects(&db), old_objects);
-    assert_eq!(db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 30);
-    for (name, expected) in tables.iter().zip(before) {
-        assert_eq!(receipt_upgrade_snapshot(&db, name), expected, "{name}");
-    }
-    assert_eq!(
-        db.query_row(
-            "SELECT seq FROM sqlite_sequence WHERE name='receipts'",
-            [],
-            |r| r.get::<_, i64>(0)
-        )
-        .unwrap(),
-        99
-    );
-    assert_eq!(
-        db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
-            .get::<_, i64>(
+        let db = v28_fixture();
+        if version == 29 {
+            db.execute_batch(include_str!(
+                "../../migrations/0029_invitation_confirmation.sql"
+            ))
+            .unwrap();
+            db.pragma_update(None, "user_version", 29).unwrap();
+            db.execute_batch("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,confirmation,inviter_seat_id) VALUES ('modern','t','s',1,'pending',1,100,50,150,'require_ack','s'),('quiet','t','s',2,'pending',2,100,50,150,'lazy','s');").unwrap();
+        }
+        for (index, (name, state, available, required)) in [
+            ("running", "pending", Some(1200), 1),
+            ("dormant", "pending", None, 1),
+            ("acked", "acked", Some(1200), 1),
+            ("acked_absent", "acked", None, 1),
+            ("retired", "recipient_retired", None, 1),
+            ("waived", "pending", None, 0),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            db.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES('i',?1,'t',?2,'ordinary','retained body',1000,?2)",rusqlite::params![name,index as i64+1]).unwrap();
+            db.execute("INSERT INTO receipts(ordinal,message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at,ack_required,ack_observation) VALUES(?1,?2,'t','s',?3,300,?4,?5,?6,'retained provenance')",rusqlite::params![index as i64+20,name,state,available,available.map(|at|at+300),required]).unwrap();
+            db.execute("INSERT INTO receipt_state(rowid,message_id,seat_id,state,available_at,deadline_at,ack_required,ack_observation) VALUES(?1,?2,'s',?3,?4,?5,?6,'retained provenance')",rusqlite::params![index as i64+40,name,state,available,available.map(|at|at+300),required]).unwrap();
+        }
+        db.execute_batch("UPDATE sqlite_sequence SET seq=99 WHERE name='receipts'; CREATE TABLE receipt_upgrade_child(ordinal INTEGER REFERENCES receipts(ordinal), message_id TEXT, seat_id TEXT, FOREIGN KEY(message_id,seat_id) REFERENCES receipt_state(message_id,seat_id)); INSERT INTO receipt_upgrade_child VALUES(20,'running','s');").unwrap();
+        let tables = [
+            "receipts",
+            "receipt_state",
+            "messages",
+            "send_preparations",
+            "prepared_recipients",
+            "receipt_upgrade_child",
+            "digest_pending_manifest_receipts",
+        ];
+        let before: Vec<_> = tables
+            .iter()
+            .map(|name| receipt_upgrade_snapshot(&db, name))
+            .collect();
+        let objects = |db: &Connection| {
+            let mut statement=db.prepare("SELECT sql FROM sqlite_master WHERE tbl_name IN ('receipts','receipt_state') AND type IN ('trigger','index') AND sql IS NOT NULL ORDER BY name").unwrap();
+            statement
+                .query_map([], |r| r.get::<_, String>(0))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+        };
+        let old_objects = objects(&db);
+        schema::initialize(&db, || UtcMillis(0)).unwrap();
+        assert_eq!(objects(&db), old_objects);
+        assert_eq!(
+            db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                .unwrap(),
+            30
+        );
+        for (name, expected) in tables.iter().zip(before) {
+            assert_eq!(receipt_upgrade_snapshot(&db, name), expected, "{name}");
+        }
+        assert_eq!(
+            db.query_row(
+                "SELECT seq FROM sqlite_sequence WHERE name='receipts'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            99
+        );
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+                .get::<_, i64>(
+                0
+            ))
+            .unwrap(),
             0
-        ))
-        .unwrap(),
-        0
-    );
-    assert!(
-        db.pragma_query_value(None, "foreign_keys", |r| r.get::<_, bool>(0))
-            .unwrap()
-    );
-    db.execute_batch("UPDATE host_instances SET decision_seq=99; UPDATE receipt_state SET available_at=NULL,deadline_at=1300 WHERE message_id='dormant'; UPDATE receipts SET available_at=NULL,deadline_at=1300 WHERE message_id='dormant';").unwrap();
-    assert!(
-        db.execute("UPDATE receipts SET ordinal=200 WHERE ordinal=20", [])
-            .is_err(),
-        "immutable ordinal trigger lost"
-    );
-    schema::initialize(&db, || UtcMillis(9999)).unwrap();
-    assert_eq!(
+        );
+        assert!(
+            db.pragma_query_value(None, "foreign_keys", |r| r.get::<_, bool>(0))
+                .unwrap()
+        );
+        db.execute_batch("UPDATE host_instances SET decision_seq=99; UPDATE receipt_state SET available_at=NULL,deadline_at=1300 WHERE message_id='dormant'; UPDATE receipts SET available_at=NULL,deadline_at=1300 WHERE message_id='dormant';").unwrap();
+        assert!(
+            db.execute("UPDATE receipts SET ordinal=200 WHERE ordinal=20", [])
+                .is_err(),
+            "immutable ordinal trigger lost"
+        );
+        schema::initialize(&db, || UtcMillis(9999)).unwrap();
+        assert_eq!(
         db.query_row(
             "SELECT historical_decision_seq FROM receipt_send_time_cutovers WHERE instance_id='i'",
             [],
@@ -1068,70 +1075,102 @@ fn receipt_send_time_upgrade_preserves_populated_v28_and_v29_graph_and_restarts_
         .unwrap(),
         10
     );
-    if version == 29 {
-        let invitations: Vec<(String, String, String, i64)> = db.prepare("SELECT id,confirmation,inviter_seat_id,deadline_at FROM invitations ORDER BY id").unwrap().query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap().collect::<Result<_, _>>().unwrap();
-        assert_eq!(invitations, [("modern".into(), "require_ack".into(), "s".into(), 150), ("quiet".into(), "lazy".into(), "s".into(), 150)]);
-        assert!(db.execute("UPDATE invitations SET confirmation='lazy' WHERE id='modern'", []).is_err());
-        assert!(db.execute("UPDATE invitations SET inviter_seat_id=NULL WHERE id='modern'", []).is_err());
-        let due: Vec<String> = db.prepare("SELECT id FROM invitations INDEXED BY invitations_confirmation_due WHERE state='pending' AND warning_message_id IS NULL AND reject_recorded=0 AND (confirmation IS NULL OR confirmation='require_ack') ORDER BY deadline_at,ordinal").unwrap().query_map([], |r| r.get(0)).unwrap().collect::<Result<_, _>>().unwrap();
-        assert_eq!(due, ["modern"]);
+        if version == 29 {
+            let invitations: Vec<(String, String, String, i64)> = db.prepare("SELECT id,confirmation,inviter_seat_id,deadline_at FROM invitations ORDER BY id").unwrap().query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap().collect::<Result<_, _>>().unwrap();
+            assert_eq!(
+                invitations,
+                [
+                    ("modern".into(), "require_ack".into(), "s".into(), 150),
+                    ("quiet".into(), "lazy".into(), "s".into(), 150)
+                ]
+            );
+            assert!(
+                db.execute(
+                    "UPDATE invitations SET confirmation='lazy' WHERE id='modern'",
+                    []
+                )
+                .is_err()
+            );
+            assert!(
+                db.execute(
+                    "UPDATE invitations SET inviter_seat_id=NULL WHERE id='modern'",
+                    []
+                )
+                .is_err()
+            );
+            let due: Vec<String> = db.prepare("SELECT id FROM invitations INDEXED BY invitations_confirmation_due WHERE state='pending' AND warning_message_id IS NULL AND reject_recorded=0 AND (confirmation IS NULL OR confirmation='require_ack') ORDER BY deadline_at,ordinal").unwrap().query_map([], |r| r.get(0)).unwrap().collect::<Result<_, _>>().unwrap();
+            assert_eq!(due, ["modern"]);
+        }
     }
-    }
-
 }
 
 #[test]
 fn receipt_send_time_upgrade_failure_rolls_back_constraint_and_cutover_then_retries() {
     for version in [28, 29] {
-    for foreign_keys in [false, true] {
-    let db = v28_fixture();
-    if version == 29 {
-        db.execute_batch(include_str!("../../migrations/0029_invitation_confirmation.sql")).unwrap();
-        db.pragma_update(None, "user_version", 29).unwrap();
-    }
-    db.execute_batch(
-        "CREATE TABLE receipt_upgrade_child(ordinal INTEGER REFERENCES receipts(ordinal));",
-    )
-    .unwrap();
-    db.pragma_update(None, "foreign_keys", false).unwrap();
-    db.execute("INSERT INTO receipt_upgrade_child VALUES(999)", [])
-        .unwrap();
-    db.pragma_update(None, "foreign_keys", foreign_keys).unwrap();
-    assert!(schema::initialize(&db, || UtcMillis(0)).is_err());
-    assert!(db.is_autocommit());
-    assert_eq!(db.pragma_query_value(None, "foreign_keys", |r| r.get::<_, bool>(0)).unwrap(), foreign_keys);
-    assert_eq!(
-        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
-            .unwrap(),
-        29
-    );
-    assert_eq!(
-        db.query_row(
-            "SELECT count(*) FROM sqlite_master WHERE name='receipt_send_time_cutovers'",
-            [],
-            |r| r.get::<_, i64>(0)
-        )
-        .unwrap(),
-        0
-    );
-    for table in ["receipts", "receipt_state"] {
-        let ddl: String = db
-            .query_row(
-                "SELECT sql FROM sqlite_master WHERE name=?1",
-                [table],
-                |r| r.get(0),
+        for foreign_keys in [false, true] {
+            let db = v28_fixture();
+            if version == 29 {
+                db.execute_batch(include_str!(
+                    "../../migrations/0029_invitation_confirmation.sql"
+                ))
+                .unwrap();
+                db.pragma_update(None, "user_version", 29).unwrap();
+            }
+            db.execute_batch(
+                "CREATE TABLE receipt_upgrade_child(ordinal INTEGER REFERENCES receipts(ordinal));",
             )
             .unwrap();
-        assert!(ddl.contains("CHECK((available_at IS NULL) = (deadline_at IS NULL))"));
+            db.pragma_update(None, "foreign_keys", false).unwrap();
+            db.execute("INSERT INTO receipt_upgrade_child VALUES(999)", [])
+                .unwrap();
+            db.pragma_update(None, "foreign_keys", foreign_keys)
+                .unwrap();
+            assert!(schema::initialize(&db, || UtcMillis(0)).is_err());
+            assert!(db.is_autocommit());
+            assert_eq!(
+                db.pragma_query_value(None, "foreign_keys", |r| r.get::<_, bool>(0))
+                    .unwrap(),
+                foreign_keys
+            );
+            assert_eq!(
+                db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                    .unwrap(),
+                29
+            );
+            assert_eq!(
+                db.query_row(
+                    "SELECT count(*) FROM sqlite_master WHERE name='receipt_send_time_cutovers'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+                0
+            );
+            for table in ["receipts", "receipt_state"] {
+                let ddl: String = db
+                    .query_row(
+                        "SELECT sql FROM sqlite_master WHERE name=?1",
+                        [table],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                assert!(ddl.contains("CHECK((available_at IS NULL) = (deadline_at IS NULL))"));
+            }
+            db.execute("DELETE FROM receipt_upgrade_child", []).unwrap();
+            schema::initialize(&db, || UtcMillis(0)).unwrap();
+            assert_eq!(
+                db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                    .unwrap(),
+                30
+            );
+            schema::initialize(&db, || UtcMillis(1)).unwrap();
+            assert_eq!(
+                db.pragma_query_value(None, "foreign_keys", |r| r.get::<_, bool>(0))
+                    .unwrap(),
+                foreign_keys
+            );
+        }
     }
-    db.execute("DELETE FROM receipt_upgrade_child", []).unwrap();
-    schema::initialize(&db, || UtcMillis(0)).unwrap();
-    assert_eq!(db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 30);
-    schema::initialize(&db, || UtcMillis(1)).unwrap();
-    assert_eq!(db.pragma_query_value(None, "foreign_keys", |r| r.get::<_, bool>(0)).unwrap(), foreign_keys);
-    }
-    }
-
 }
 
 #[test]
