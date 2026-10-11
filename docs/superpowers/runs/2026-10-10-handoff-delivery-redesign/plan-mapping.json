@@ -1436,7 +1436,10 @@
       "tests/service/mod_channels.rs",
       "src/protocol/results.rs",
       "tests/protocol/lazy_inbox_v2.rs",
-      "tests/store/queries.rs"
+      "tests/store/queries.rs",
+      "src/protocol/output_compact.rs",
+      "tests/cli/lazy_display.rs",
+      "tests/cli/output.rs"
     ]
   }
 ]
