@@ -2651,79 +2651,6 @@ fn activation_v2_watch_full_pending_capacity_parks_until_real_channel_input() {
         sent.iter().collect::<std::collections::BTreeSet<_>>().len(),
         257
     );
-    // This is a stable-capacity oracle. Finish the actual background source
-    // first: an outstanding send_attention job may otherwise invalidate a
-    // warning-absence proof between the parked response and channel stimulus.
-    // Include bootstrap jobs as well as these 257 sends. Completion is
-    // monotone; no send/notify follows, and UTC remains frozen for deadlines.
-    let attention_work_diagnostic = || {
-        let db = rig.db();
-        let metadata = |sql: &str| -> Value {
-            match db.query_row(sql, [], |row| row.get::<_, String>(0)) {
-                Ok(raw) => serde_json::from_str(&raw)
-                    .unwrap_or_else(|error| json!({"decode_error": error.to_string()})),
-                Err(error) => json!({"query_error": error.to_string()}),
-            }
-        };
-        json!({
-            "utc": rig.clock.utc_now().0,
-            "monotonic": rig.clock.monotonic_now().0,
-            "deadline_idle_events": rig.probe.registered_idle_events(Lane::Deadlines),
-            "deadline_health": rig.probe.lane_health(Lane::Deadlines).map(|detail| diagnostic_text(&detail, 512)),
-            "by_status": metadata("SELECT json_group_array(json_object('kind',kind,'status',status,'count',n,'min_ordinal',lo,'max_ordinal',hi,'min_position',pmin,'max_position',pmax,'min_high_water',hmin,'max_high_water',hmax,'min_completed_units',umin,'max_completed_units',umax,'last_error',error)) FROM (SELECT kind,status,count(*) n,min(ordinal) lo,max(ordinal) hi,min(position) pmin,max(position) pmax,min(high_water) hmin,max(high_water) hmax,min(completed_units) umin,max(completed_units) umax,substr(max(last_error),1,128) error FROM work_jobs GROUP BY kind,status ORDER BY kind,status LIMIT 18)"),
-            "incomplete": metadata("SELECT json_group_array(json_object('id',substr(id,1,128),'ordinal',ordinal,'kind',kind,'status',status,'position',position,'high_water',high_water,'completed_units',completed_units,'last_error',substr(last_error,1,128))) FROM (SELECT id,ordinal,kind,status,position,high_water,completed_units,last_error FROM work_jobs WHERE kind='send_attention' AND status<>'complete' ORDER BY ordinal LIMIT 20)"),
-            // Per-job retry deadlines are private monotonic driver state,
-            // not work_jobs columns. Lane health is the exposed retry view.
-        })
-    };
-    let attention_work_before = attention_work_diagnostic();
-    let mut last_kicked_idle = None;
-    let attention_work_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        wait_until(
-            "all fixture send_attention jobs to complete before Watch",
-            STEP,
-            || {
-                let (total, complete, outstanding): (i64, i64, i64) = rig.db().query_row(
-                "SELECT count(*),COALESCE(sum(status='complete'),0),COALESCE(sum(status<>'complete'),0) FROM work_jobs WHERE kind='send_attention'",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            ).unwrap();
-                if outstanding == 0 {
-                    return Some((total, complete));
-                }
-                // Setup-only stepping: completed small jobs otherwise wait
-                // for the next safety tick. One ordinary kick per observed
-                // finished pass keeps real worker quanta and backoff intact.
-                let idle = rig.probe.registered_idle_events(Lane::Deadlines);
-                if last_kicked_idle != Some(idle) {
-                    last_kicked_idle = Some(idle);
-                    rig.probe.kick_registered(Lane::Deadlines);
-                }
-                None
-            },
-        )
-    }));
-    let (attention_jobs, completed_jobs) = attention_work_result.unwrap_or_else(|failure| {
-        let diagnostic = format!(
-            "capacity attention-work timeout diagnostic={}",
-            json!({
-                "before": attention_work_before,
-                "after": attention_work_diagnostic(),
-            })
-        );
-        // The daemon owns stderr until Rig::drop restores it. Preserve this
-        // metadata alongside the fixture's captured original panic instead.
-        rig.panics
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(diagnostic);
-        std::panic::resume_unwind(failure)
-    });
-    assert_eq!(attention_jobs, completed_jobs);
-    assert!(
-        attention_jobs >= sent.len() as i64,
-        "the terminal source barrier includes every seeded send, not an empty projection"
-    );
     let watch_start = relay.snapshot().len();
     let mut watch = rig.watch(SESSION_B);
     watch.wait_connected();
@@ -2773,6 +2700,79 @@ fn activation_v2_watch_full_pending_capacity_parks_until_real_channel_input() {
         "full pending capacity must reach a terminal reply; empty Page.more is not runnable work",
     );
     assert_eq!(offered, sent[..256].iter().cloned().collect());
+    // Keep the terminal response held and Attention credits at zero while
+    // the registered channel observes real background commits. Finish every
+    // send_attention job before releasing this response, so the later real
+    // frame cannot restart a nonempty warning-source sweep. Include bootstrap
+    // jobs; no send/notify follows, and UTC remains frozen for deadlines.
+    let attention_work_diagnostic = || {
+        let db = rig.db();
+        let metadata = |sql: &str| -> Value {
+            match db.query_row(sql, [], |row| row.get::<_, String>(0)) {
+                Ok(raw) => serde_json::from_str(&raw)
+                    .unwrap_or_else(|error| json!({"decode_error": error.to_string()})),
+                Err(error) => json!({"query_error": error.to_string()}),
+            }
+        };
+        json!({
+            "utc": rig.clock.utc_now().0,
+            "monotonic": rig.clock.monotonic_now().0,
+            "deadline_idle_events": rig.probe.registered_idle_events(Lane::Deadlines),
+            "deadline_health": rig.probe.lane_health(Lane::Deadlines).map(|detail| diagnostic_text(&detail, 512)),
+            "by_status": metadata("SELECT json_group_array(json_object('kind',kind,'status',status,'count',n,'min_ordinal',lo,'max_ordinal',hi,'min_position',pmin,'max_position',pmax,'min_high_water',hmin,'max_high_water',hmax,'min_completed_units',umin,'max_completed_units',umax,'last_error',error)) FROM (SELECT kind,status,count(*) n,min(ordinal) lo,max(ordinal) hi,min(position) pmin,max(position) pmax,min(high_water) hmin,max(high_water) hmax,min(completed_units) umin,max(completed_units) umax,substr(max(last_error),1,128) error FROM work_jobs GROUP BY kind,status ORDER BY kind,status LIMIT 18)"),
+            "incomplete": metadata("SELECT json_group_array(json_object('id',substr(id,1,128),'ordinal',ordinal,'kind',kind,'status',status,'position',position,'high_water',high_water,'completed_units',completed_units,'last_error',substr(last_error,1,128))) FROM (SELECT id,ordinal,kind,status,position,high_water,completed_units,last_error FROM work_jobs WHERE kind='send_attention' AND status<>'complete' ORDER BY ordinal LIMIT 20)"),
+            // Per-job retry deadlines are private monotonic driver state,
+            // not work_jobs columns. Lane health is the exposed retry view.
+        })
+    };
+    let attention_work_before = attention_work_diagnostic();
+    let mut last_kicked_idle = None;
+    let attention_work_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        wait_until(
+            "all fixture send_attention jobs to complete before releasing held terminal",
+            STEP,
+            || {
+                let (total, complete, outstanding): (i64, i64, i64) = rig.db().query_row(
+                "SELECT count(*),COALESCE(sum(status='complete'),0),COALESCE(sum(status<>'complete'),0) FROM work_jobs WHERE kind='send_attention'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            ).unwrap();
+                if outstanding == 0 {
+                    return Some((total, complete));
+                }
+                // Setup-only stepping: completed small jobs otherwise wait
+                // for the next safety tick. One ordinary kick per observed
+                // finished pass keeps real worker quanta and backoff intact.
+                let idle = rig.probe.registered_idle_events(Lane::Deadlines);
+                if last_kicked_idle != Some(idle) {
+                    last_kicked_idle = Some(idle);
+                    rig.probe.kick_registered(Lane::Deadlines);
+                }
+                None
+            },
+        )
+    }));
+    let (attention_jobs, completed_jobs) = attention_work_result.unwrap_or_else(|failure| {
+        let diagnostic = format!(
+            "capacity attention-work timeout diagnostic={}",
+            json!({
+                "before": attention_work_before,
+                "after": attention_work_diagnostic(),
+            })
+        );
+        // The daemon owns stderr until Rig::drop restores it. Preserve this
+        // metadata alongside the fixture's captured original panic instead.
+        rig.panics
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(diagnostic);
+        std::panic::resume_unwind(failure)
+    });
+    assert_eq!(attention_jobs, completed_jobs);
+    assert!(
+        attention_jobs >= sent.len() as i64,
+        "the terminal source barrier includes every seeded send, not an empty projection"
+    );
     // Diagnostic-only snapshots while the existing relay holds each real
     // response. Fixed metadata and bounded descriptor identities omit bodies.
     let diagnostic_state = || {
