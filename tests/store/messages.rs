@@ -59,6 +59,7 @@ fn send_request() -> SendMessage {
         delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
         thread: ThreadId::new("t"),
         body: "hello".into(),
+        direct_recipient: None,
         invited_recipients: vec![],
         deadline_millis: None,
         operation: OperationId::new("op"),
@@ -641,5 +642,71 @@ fn user_intent_send_priority_and_receipts_unchanged() {
                 baseline = Some(comparison);
             }
         }
+    }
+}
+
+#[test]
+fn direct_recipient_hash_binds_target_and_preserves_absent_payload() {
+    use crate::store::schema::canonical_digest;
+    let mut request = send_request();
+    let historical = serde_json::json!({"kind":"send_message","thread":request.thread,"body":request.body,"invited_recipients":[],"deadline_millis":null,"claim":request.claim});
+    assert_eq!(messages::send_payload(&request), historical);
+    let absent = canonical_digest(&historical).unwrap();
+    assert_eq!(
+        canonical_digest(&messages::send_payload(&request)).unwrap(),
+        absent
+    );
+    request.direct_recipient = Some(SeatId::new("b"));
+    let target_b = canonical_digest(&messages::send_payload(&request)).unwrap();
+    assert_ne!(target_b, absent);
+    request.direct_recipient = Some(SeatId::new("c"));
+    assert_ne!(
+        canonical_digest(&messages::send_payload(&request)).unwrap(),
+        target_b
+    );
+}
+
+#[test]
+fn direct_recipient_nonpair_store_refuses_preparation_and_publication() {
+    use crate::{
+        ports::StorePort,
+        protocol::commands::PermitMutation,
+        store::{SqliteStore, StoreSettings},
+    };
+    let iso = TestIsolation::new("direct-nonpair-store");
+    let (context, db) = setup(&iso);
+    let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
+    let mut request = send_request();
+    request.direct_recipient = Some(SeatId::new("b"));
+    assert_eq!(
+        store
+            .prepare_send_step(
+                &request,
+                crate::ports::DurableWorkAdmission::new(16).unwrap(),
+                &budget()
+            )
+            .unwrap_err()
+            .code,
+        ErrorCode::InvalidRequest
+    );
+    assert_eq!(
+        store
+            .mutate(
+                PermitMutation::SendMessage(request.clone()),
+                permit(&request),
+                &budget()
+            )
+            .unwrap_err()
+            .code,
+        ErrorCode::InvalidRequest
+    );
+    for table in ["messages", "send_preparations", "operations"] {
+        assert_eq!(
+            db.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0,
+            "{table}"
+        );
     }
 }

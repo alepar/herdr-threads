@@ -924,6 +924,7 @@ fn stopped_daemon_is_unavailable_for_every_descriptor_read() {
                     startup_input: None,
                     request: HandoffRequest {
                         policy: None,
+                        automatic: false,
                         thread: Some(ThreadId::new("t")),
                         thread_name: None,
                         topic: None,

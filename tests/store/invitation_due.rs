@@ -628,23 +628,23 @@ fn invitation_confirmation_prior_schema_upgrade_preserves_exact_open_origins() {
             .filter(|path| {
                 path.file_name().unwrap().to_str().unwrap()[..4]
                     .parse::<u32>()
-                    .is_ok_and(|version| version <= 33)
+                    .is_ok_and(|version| version <= 35)
             })
             .collect();
     migrations.sort();
-    assert_eq!(migrations.len(), 33);
+    assert_eq!(migrations.len(), 35);
     for migration in migrations {
         conn.execute_batch(&std::fs::read_to_string(migration).unwrap())
             .unwrap();
     }
-    conn.pragma_update(None, "user_version", 33).unwrap();
+    conn.pragma_update(None, "user_version", 35).unwrap();
     drop(conn);
     let conn = Connection::open(&path).unwrap();
     conn.pragma_update(None, "foreign_keys", "ON").unwrap();
     assert_eq!(
         conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        33
+        35
     );
     conn.execute(
         "INSERT INTO host_instances(id,created_at,decision_seq) VALUES ('host',0,10)",
@@ -705,7 +705,7 @@ fn invitation_confirmation_prior_schema_upgrade_preserves_exact_open_origins() {
     assert_eq!(
         conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        35
+        38
     );
     for origin in ["origin", "legacy"] {
         assert!(
@@ -838,7 +838,7 @@ fn invitation_confirmation_actual32_upgrade_rolls_back_reopens_and_preserves_rec
             assert_eq!(
                 db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
                     .unwrap(),
-                35
+                38
             );
             assert_eq!(db.query_row("SELECT physical_after,physical_high_water,prepared_after,prepared_high_water,completed FROM receipt_deadline_backfill", [], |r| Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?,r.get::<_,i64>(4)?))).unwrap(),(2,7,3,9,0));
             assert_eq!(db.query_row("SELECT historical_decision_seq FROM receipt_send_time_cutovers WHERE instance_id='host'", [], |r| r.get::<_,i64>(0)).unwrap(),12);
@@ -850,7 +850,7 @@ fn invitation_confirmation_actual32_upgrade_rolls_back_reopens_and_preserves_rec
         assert_eq!(
             db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
                 .unwrap(),
-            35
+            38
         );
         drop(db);
         std::fs::remove_file(path).unwrap();

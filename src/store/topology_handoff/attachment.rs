@@ -159,6 +159,7 @@ pub(crate) fn guard_unscoped_child_phase(
     actor: &str,
     key: &str,
 ) -> Result<(), ApiError> {
+    handoff::automatic::guard_unscoped_key(db, instance, actor, key)?;
     let saved: Option<Vec<u8>> = db.query_row("SELECT substr(p.identity_json,1,?4) FROM bootstrap_child_keys k JOIN bootstrap_handoffs p ON p.id=k.parent_id WHERE k.instance_id=?1 AND k.actor_scope=?2 AND k.operation_key=?3 AND k.role IN ('create','invite','send') LIMIT 1", params![instance,actor,key,(super::MAX_IDENTITY_BYTES+1) as u32], |r|r.get(0)).optional().map_err(store_error)?;
     if let Some(bytes) = saved {
         let identity: BootstrapIdentity = decode(&bytes, super::MAX_IDENTITY_BYTES)?;
@@ -234,6 +235,12 @@ pub(crate) fn validate_selected_child_phase(
         ));
     }
     let actor = format!("seat:{}", claim.seat.as_str());
+    if let PermitMutation::SendMessage(send) = command
+        && handoff::automatic::selected_send(db, canonical, send, replay)?
+    {
+        return Ok(());
+    }
+    handoff::automatic::guard_unscoped_key(db, &claim.instance, &actor, operation.as_str())?;
     let Some((identity, status)) =
         canonical_parent(db, canonical, &actor, registered_key.as_str(), role)?
     else {
@@ -295,6 +302,7 @@ pub(crate) fn validate_selected_child_phase(
         }
         PermitMutation::SendMessage(v) => {
             v.delivery_mode.is_ordinary()
+                && v.direct_recipient.is_none()
                 && v.body == identity.payload.handoff.body
                 && v.invited_recipients == [attachment.resolved_seat.clone()]
                 && v.deadline_millis

@@ -1049,17 +1049,22 @@ fn dormant_upgrade_actual_v31_backfill32_reopens_and_rolls_back_without_recaptur
         // initialize latest and rewind its version to manufacture a precursor.
         db.pragma_update(None, "foreign_keys", false).unwrap();
         for (version, migration) in [
-            (
-                29,
-                include_str!("../../migrations/0029_invitation_confirmation.sql"),
-            ),
+            (29, include_str!("../../migrations/0029_direct_threads.sql")),
             (
                 30,
-                include_str!("../../migrations/0030_receipt_send_time.sql"),
+                include_str!("../../migrations/0030_automatic_handoff.sql"),
             ),
             (
                 31,
-                include_str!("../../migrations/0031_handoff_body_bounds.sql"),
+                include_str!("../../migrations/0031_invitation_confirmation.sql"),
+            ),
+            (
+                32,
+                include_str!("../../migrations/0032_receipt_send_time.sql"),
+            ),
+            (
+                33,
+                include_str!("../../migrations/0033_handoff_body_bounds.sql"),
             ),
         ] {
             db.execute_batch("BEGIN IMMEDIATE").unwrap();
@@ -1116,7 +1121,7 @@ fn dormant_upgrade_actual_v31_backfill32_reopens_and_rolls_back_without_recaptur
         expected
             .execute_batch(warning.4.as_deref().unwrap())
             .unwrap();
-        let additions = include_str!("../../migrations/0034_invitation_warning_origin.sql")
+        let additions = include_str!("../../migrations/0036_invitation_warning_origin.sql")
             .split("WITH origins AS")
             .next()
             .unwrap();
@@ -1886,11 +1891,15 @@ fn receipt_send_time_upgrade_preserves_populated_v28_and_v29_graph_and_restarts_
     for version in [28, 29] {
         let db = v28_fixture();
         if version == 29 {
+            db.execute_batch(include_str!("../../migrations/0029_direct_threads.sql"))
+                .unwrap();
+            db.execute_batch(include_str!("../../migrations/0030_automatic_handoff.sql"))
+                .unwrap();
             db.execute_batch(include_str!(
-                "../../migrations/0029_invitation_confirmation.sql"
+                "../../migrations/0031_invitation_confirmation.sql"
             ))
             .unwrap();
-            db.pragma_update(None, "user_version", 29).unwrap();
+            db.pragma_update(None, "user_version", 31).unwrap();
             db.execute_batch("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,confirmation,inviter_seat_id) VALUES ('modern','t','s',1,'pending',1,100,50,150,'require_ack','s'),('quiet','t','s',2,'pending',2,100,50,150,'lazy','s');").unwrap();
         }
         for (index, (name, state, available, required)) in [
@@ -2013,11 +2022,15 @@ fn receipt_send_time_upgrade_failure_rolls_back_constraint_and_cutover_then_retr
         for foreign_keys in [false, true] {
             let db = v28_fixture();
             if version == 29 {
+                db.execute_batch(include_str!("../../migrations/0029_direct_threads.sql"))
+                    .unwrap();
+                db.execute_batch(include_str!("../../migrations/0030_automatic_handoff.sql"))
+                    .unwrap();
                 db.execute_batch(include_str!(
-                    "../../migrations/0029_invitation_confirmation.sql"
+                    "../../migrations/0031_invitation_confirmation.sql"
                 ))
                 .unwrap();
-                db.pragma_update(None, "user_version", 29).unwrap();
+                db.pragma_update(None, "user_version", 31).unwrap();
             }
             db.execute_batch(
                 "CREATE TABLE receipt_upgrade_child(ordinal INTEGER REFERENCES receipts(ordinal));",

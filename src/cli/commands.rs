@@ -317,6 +317,7 @@ pub enum MutationSpec {
         expected_revision: u64,
     },
     Leave(ThreadId),
+    DirectSend(super::direct_send::Request),
     Send {
         delivery_mode: DeliveryMode,
         thread: ThreadId,
@@ -459,6 +460,11 @@ impl MutationSpec {
                 operation,
                 claim: claim.unwrap(),
             }),
+            Self::DirectSend(_) => {
+                return Err(ApiError::unsupported(
+                    "direct send requires compound coordinator",
+                ));
+            }
             Self::Send {
                 delivery_mode,
                 thread,
@@ -471,6 +477,7 @@ impl MutationSpec {
                 delivery_mode,
                 thread,
                 body,
+                direct_recipient: None,
                 invited_recipients: require_ack,
                 deadline_millis,
                 operation,
@@ -624,7 +631,11 @@ enum Top {
     },
     /// Leave a thread without changing other participants.
     Leave { thread: String },
-    /// Send a message to a thread, with optional explicit ACK recipients.
+    /// Send to THREAD or use --seat SEAT for its canonical automatic pair channel.
+    /// Lazy by default (--body TEXT, --file PATH or --stdin); --nudge notifies.
+    /// Direct ACK requests name only the target; --require-ack-pane is refused.
+    /// Creation invites the peer without accepting; lifecycle repair is explicit.
+    /// Immediate human send uses the same recipient routing.
     Send(SendArgs),
     /// ACK exact message IDs after reading them.
     Ack {
@@ -1103,8 +1114,12 @@ struct InviteArgs {
 struct SendArgs {
     #[command(flatten)]
     selector: super::panes::PaneSelector,
-    /// Thread that receives the message.
-    thread: String,
+    /// Thread that receives the message, or select a direct recipient with --seat.
+    #[arg(required_unless_present = "seat", conflicts_with = "seat")]
+    thread: Option<String>,
+    /// Exact recipient seat for an automatic one-to-one channel.
+    #[arg(long, required_unless_present = "thread", conflicts_with = "thread")]
+    seat: Option<String>,
     /// Message body given directly on the command line.
     #[arg(long, group = "body_source")]
     body: Option<String>,
@@ -1319,7 +1334,7 @@ struct HandoffArgs {
     cwd: Option<std::path::PathBuf>,
     #[command(flatten)]
     selector: super::panes::PaneSelector,
-    #[arg(long, required_unless_present = "thread", conflicts_with = "thread")]
+    #[arg(long, conflicts_with = "thread")]
     new_thread: bool,
     #[arg(long)]
     thread: Option<String>,
@@ -2011,6 +2026,13 @@ fn parse_cli_in_registry(
             selector.is_explicit().then(|| selector.clone())
         }
         Top::Send(args) => {
+            if args.seat.is_some()
+                && (args.selector.is_explicit() || !args.require_ack_pane.is_empty())
+            {
+                return Err(invalid(
+                    "direct send accepts only its --seat recipient; pane ACK selectors are not supported",
+                ));
+            }
             let explicit_ack = !args.require_ack.is_empty() || !args.require_ack_pane.is_empty();
             if args.lazy && (explicit_ack || args.deadline.is_some()) {
                 return Err(invalid(
@@ -2072,7 +2094,7 @@ fn parse_cli_in_registry(
         | Top::Reopen { thread } => Some(thread.clone()),
         Top::Handoff(args) if args.new_tab.is_none() && !args.existing => args.thread.clone(),
         Top::Invite(args) => Some(args.thread.clone()),
-        Top::Send(args) => Some(args.thread.clone()),
+        Top::Send(args) => args.thread.clone(),
         Top::Read(args) => args.thread.clone(),
         Top::PendingReceipts(args) => args.thread.clone(),
         Top::Diagnostics(args) => args.thread.clone(),
@@ -2231,11 +2253,18 @@ fn parse_cli_in_registry(
             if args.require_ack.len() > MAX_BATCH_ITEMS {
                 return Err(invalid("too many explicit recipients"));
             }
-            let recipients = args
+            let mut recipients = args
                 .require_ack
                 .into_iter()
                 .map(|s| id(s, SeatId::parse))
                 .collect::<Result<Vec<_>, _>>()?;
+            let direct_target = args.seat.map(|seat| id(seat, SeatId::parse)).transpose()?;
+            if let Some(target) = &direct_target {
+                if recipients.iter().any(|seat| seat != target) {
+                    return Err(invalid("direct ACK requests may name only the target seat"));
+                }
+                recipients.dedup();
+            }
             if recipients
                 .iter()
                 .collect::<std::collections::HashSet<_>>()
@@ -2244,19 +2273,31 @@ fn parse_cli_in_registry(
             {
                 return Err(invalid("duplicate explicit recipient"));
             }
-            let thread = thread_id(args.thread)?;
+            let thread = args.thread.map(thread_id).transpose()?;
             let deadline_millis = deadline(args.deadline)?;
             let relays_user = args.relays_user;
             let body = crate::cli::input::read_body(args.body, args.file, args.stdin)?;
-            CliAction::Mutation(MutationSpec::Send {
-                delivery_mode,
-                thread,
-                body,
-                require_ack: recipients,
-                deadline_millis,
-                relays_user,
-                user_intent: args.user_intent,
-            })
+            if let Some(target) = direct_target {
+                CliAction::Mutation(MutationSpec::DirectSend(super::direct_send::Request {
+                    target,
+                    delivery_mode,
+                    body,
+                    require_ack: recipients,
+                    deadline_millis,
+                    relays_user,
+                    user_intent: args.user_intent,
+                }))
+            } else {
+                CliAction::Mutation(MutationSpec::Send {
+                    delivery_mode,
+                    thread: thread.expect("clap requires selector"),
+                    body,
+                    require_ack: recipients,
+                    deadline_millis,
+                    relays_user,
+                    user_intent: args.user_intent,
+                })
+            }
         }
         Top::Ack { messages } => {
             if messages.len() > MAX_BATCH_ITEMS {
@@ -2641,6 +2682,7 @@ fn parse_cli_in_registry(
                 }
                 CliAction::TopologyHandoff(super::topology_handoff::Request {
                     policy: Some(policy),
+                    automatic: !args.new_thread && args.thread.is_none(),
                     new_tab: args.new_tab,
                     existing: args.existing,
                     selector: args.selector,
@@ -2659,6 +2701,7 @@ fn parse_cli_in_registry(
             } else {
                 CliAction::Handoff(super::handoff::HandoffRequest {
                     policy: Some(policy),
+                    automatic: !args.new_thread && args.thread.is_none(),
                     thread: args.thread.map(thread_id).transpose()?,
                     thread_name: args.thread_name,
                     topic: args.topic.map(|s| bounded(s, "topic")).transpose()?,
@@ -2823,7 +2866,7 @@ fn parse_cli_in_registry(
 pub fn reject_inert_handoff(
     semantic: &super::journal::SemanticMutation,
 ) -> Result<(), crate::protocol::results::ApiError> {
-    if semantic.namespace().is_some() {
+    if semantic.namespace().is_some() && super::direct_send::plan(semantic).is_none() {
         return Err(crate::protocol::results::ApiError::new(
             crate::protocol::results::ErrorCode::Unsupported,
             "bootstrap, delivery and recovery execution require canonical guards and original actor classification",

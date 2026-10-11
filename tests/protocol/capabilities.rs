@@ -280,6 +280,7 @@ fn capability_constants_are_stable() {
             "inbox.batch_v1",
             "invitation.reject_v1",
             "thread.join_v1",
+            "thread.direct_v1",
             "participants.locations_v1",
             "picker.directory_v1",
             "attention.notice_delivery_v1",
@@ -345,6 +346,34 @@ fn every_advertised_capability_has_a_handler() {
             }
             INVITATION_REJECT => probe_invitation_reject(),
             THREAD_JOIN => probe_thread_join(),
+            DIRECT_THREADS_V1 => {
+                let command =
+                    Command::EnsureDirectThread(crate::protocol::commands::EnsureDirectThread {
+                        recipient: crate::protocol::ids::SeatId::new("peer"),
+                        operation: crate::protocol::ids::OperationId::new("direct-probe"),
+                        claim: crate::protocol::authority::CallerClaim {
+                            instance: "i".into(),
+                            seat: crate::protocol::ids::SeatId::new("sender"),
+                            binding_generation: 1,
+                            role: crate::protocol::authority::CallerRole::TopLevel,
+                            harness: crate::protocol::authority::Harness::Codex,
+                            native_session: crate::protocol::ids::NativeSessionId::new("n"),
+                            execution: crate::protocol::ids::ExecutionId::new(
+                                "00000000-0000-4000-8000-000000000001",
+                            ),
+                            target: crate::protocol::ids::HostTargetId::new("p"),
+                        },
+                    });
+                assert!(command.validate().is_ok());
+                assert_eq!(
+                    daemon_handler(Uuid::new_v4(), Uuid::new_v4())
+                        .handle(command, PeerIdentity::from_kernel(501), &budget())
+                        .unwrap_err()
+                        .code,
+                    ErrorCode::NotFound
+                );
+                assert!(!ADVERTISED.contains(&AUTOMATIC_HANDOFF_V1));
+            }
             PARTICIPANT_LOCATIONS => probe_participant_locations(),
             PICKER_DIRECTORY_V1 => probe_picker_directory(),
             MESSAGE_DELIVERY_MODES => probe_message_delivery_modes(),
@@ -498,6 +527,7 @@ fn bare_daemon_advertises_legacy_capabilities_without_v2_recorder() {
             "inbox.batch_v1",
             "invitation.reject_v1",
             "thread.join_v1",
+            "thread.direct_v1",
             "participants.locations_v1",
             "picker.directory_v1",
             "attention.notice_delivery_v1",
@@ -1754,5 +1784,26 @@ fn invitation_confirmation_capability_is_advertised_with_active_lifecycle() {
             .capabilities
             .iter()
             .any(|value| value == INVITATION_CONFIRMATION_V1)
+    );
+}
+
+#[test]
+fn automatic_contract_declarations_do_not_advertise_an_unimplemented_runtime() {
+    let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
+    let CommandResult::Capabilities(caps) = handler
+        .handle(
+            Command::Capabilities,
+            PeerIdentity::from_kernel(501),
+            &budget(),
+        )
+        .unwrap()
+    else {
+        panic!("capability reply")
+    };
+    assert!(
+        !caps
+            .capabilities
+            .iter()
+            .any(|cap| cap == AUTOMATIC_HANDOFF_V1)
     );
 }

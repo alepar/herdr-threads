@@ -23,13 +23,15 @@ use std::{
     os::unix::fs::OpenOptionsExt,
 };
 
-pub const HANDOFF_HELP: &str = "Choose exactly one channel: --new-thread or --thread ID_OR_NAME.
+pub const HANDOFF_HELP: &str =
+    "Omit --new-thread and --thread for the canonical automatic two-seat channel.
+Optionally override it with --new-thread or --thread ID_OR_NAME.
 Choose one target mode:
   --pane PANE --kind claude|codex launches in an existing explicit pane;
   --new-tab LABEL --kind claude|codex creates a tab and launches there;
   --existing with exactly one --seat SEAT or --pane PANE delivers durable work
     to an existing canonical seat without launching or restarting its session.
-New modes require an original top-level Agent and the guarded daemon capability.
+Handoff requires an original top-level Agent and the guarded daemon capability.
 --new-tab conflicts with --existing, --tab, --pane and --seat. --cwd is new-tab
 only: an absolute existing directory, defaulting to the invocation cwd, normalized
 before publication. --space selects one live workspace by exact ID or unique label;
@@ -41,8 +43,15 @@ launch-option environment. An unresolved, held, retired or foreign seat refuses.
 An unbound resolved seat may receive staged work; this does not establish a
 working or available session. Delivery reports staged work, not a launch result.
 
-New threads join the sender; existing threads require a joined sender. --thread-name,
---topic and --goal apply only to new threads. Topic defaults to Handoff to DISPLAY:
+Automatic routing ensures the immutable pair, then sends; launch modes then launch.
+Creation joins the caller and invites the peer, reserving two seats, not accepting
+for the peer. No third seat can enroll. New-tab resolves its seat before Ensure.
+Archive requires reopen THREAD; a caller who left uses join THREAD, an invited
+caller uses accept THREAD; a target who left/rejected needs invite THREAD --seat SEAT.
+No automatic reopen, join or reinvite occurs. Repair reuses the same pair.
+Explicit new threads join the sender; explicit existing threads require a joined sender.
+--thread-name, --topic and --goal require --new-thread. Automatic topic and goal
+are 1:1 SEAT_A SEAT_B with sorted IDs. Explicit new topic defaults to Handoff to DISPLAY:
 legacy launch uses the pane display, new-tab uses its label, delivery uses the
 canonical seat ID. Goal defaults to topic. --name names the native agent, not the channel.
 Select exactly one instruction source: a quoted body after --, --file PATH, or --stdin.
@@ -53,7 +62,8 @@ is unchanged. HERDR_THREADS_CODEX_OPTS / HERDR_THREADS_CLAUDE_OPTS prepend optio
 arguments using shell-style quotes and escapes without variable or command
 expansion. Unset or empty adds nothing. Launch handoff freezes the combined options
 before preflight; retry uses saved arguments even if the environment changes.
-Handoff stages an invitation when needed and a message addressed to the exact
+Explicit ordinary channels stage an invitation when needed; automatic channels
+use Ensure for initial invitation only. Handoff stages a message addressed to the exact
 recipient; launch modes then perform guarded launch. Startup gets fixed inbox
 instructions, not a second copy of the body. Handoff never accepts or ACKs for
 the recipient, nor declares task adoption or task completion.
@@ -100,6 +110,8 @@ attempt. Product cleanup never closes created topology.";
 pub struct HandoffRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub policy: Option<crate::protocol::handoff::HandoffPolicy>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub automatic: bool,
     pub thread: Option<ThreadId>,
     pub thread_name: Option<String>,
     pub topic: Option<String>,
@@ -148,6 +160,11 @@ impl HandoffRequest {
 }
 impl HandoffPlan {
     pub fn validate(&self) -> io::Result<()> {
+        if self.request.automatic {
+            return Err(io::Error::other(
+                "automatic handoff requires its additive V2 plan",
+            ));
+        }
         self.request.validate()?;
         if let Some(template) = &self.startup_input {
             template
@@ -205,6 +222,9 @@ pub(crate) fn stage_work<C: LocalClient + ?Sized>(
     *phase = "create";
     if progress.thread.is_none() {
         progress.thread = Some(match plan.channel {
+            HandoffChannel::Automatic => {
+                return Err(super::unsupported("automatic handoff producer unavailable"));
+            }
             HandoffChannel::Existing { thread } => thread.clone(),
             HandoffChannel::New { name, topic, goal } => match call(
                 SemanticMutation::CreateThread {
@@ -263,6 +283,7 @@ pub(crate) fn stage_work<C: LocalClient + ?Sized>(
                 delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
                 thread,
                 body: plan.body.into(),
+                direct_recipient: None,
                 invited_recipients: vec![plan.recipient.clone()],
                 deadline_millis: plan.policy.and_then(|p| p.deadline_millis),
                 relays_user: false,
@@ -657,6 +678,130 @@ fn prepare_saved_startup(
     Ok(envelope)
 }
 
+pub(crate) fn prepare_automatic_startup(
+    launcher: &mut dyn HandoffLauncher,
+    plan: &crate::protocol::handoff::AutomaticHandoffPlan,
+    claim: &CallerClaim,
+    thread: &ThreadId,
+) -> Result<LaunchRequest, RunError> {
+    let template = plan
+        .startup_input
+        .as_ref()
+        .ok_or_else(|| super::invalid_request("automatic handoff lacks frozen startup template"))?;
+    let envelope = startup_envelope(
+        &plan.launch,
+        &plan.context,
+        &claim.instance,
+        Some(thread),
+        template,
+    )?;
+    let prepared =
+        launcher.preflight_saved(&plan.launch, &envelope.request, &plan.delivery.recipient)?;
+    if prepared.recipient != plan.delivery.recipient {
+        return Err(super::invalid_request(
+            "automatic handoff frozen recipient changed",
+        ));
+    }
+    validate_whole_input(&envelope, &prepared.native_argv)?;
+    Ok(envelope.request)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn start_automatic<C: LocalClient + ?Sized, W: Write>(
+    journal: &Journal,
+    request: HandoffRequest,
+    claim: CallerClaim,
+    client: &C,
+    launcher: &mut dyn HandoffLauncher,
+    clock: &dyn Clock,
+    output: &OutputSpec,
+    writer: &mut W,
+) -> Result<(), RunError> {
+    use crate::protocol::handoff::{
+        AUTOMATIC_PLAN_VERSION, AutomaticDeliveryPlan, AutomaticHandoffPayload,
+        AutomaticHandoffPlan, AutomaticOriginal, HandoffNamespace,
+    };
+    request.validate()?;
+    if !request.automatic
+        || request.thread.is_some()
+        || request.thread_name.is_some()
+        || request.topic.is_some()
+        || request.goal.is_some()
+    {
+        return Err(super::invalid_request(
+            "invalid automatic launched-pane request",
+        ));
+    }
+    super::handoff_delivery::require_automatic_capability(client, clock)?;
+    let namespace = HandoffNamespace {
+        instance: claim.instance.clone(),
+        state_dir: output
+            .context
+            .state_dir
+            .as_ref()
+            .ok_or_else(|| super::invalid_request("automatic handoff needs state directory"))?
+            .into(),
+        host_endpoint: output
+            .context
+            .host
+            .as_ref()
+            .ok_or_else(|| super::invalid_request("automatic handoff needs host endpoint"))?
+            .into(),
+    };
+    namespace.validate().map_err(super::invalid_request)?;
+    let template = launcher.select_startup_input(&request.launch)?;
+    let envelope = startup_envelope(
+        &request.launch,
+        &output.context,
+        &claim.instance,
+        None,
+        &template,
+    )?;
+    validate_whole_input(&envelope, &launcher.native_input(&envelope.request)?)?;
+    let prepared = launcher.preflight_startup(&request.launch, &envelope.request)?;
+    validate_whole_input(&envelope, &prepared.native_argv)?;
+    let payload = AutomaticHandoffPayload::new(
+        namespace.clone(),
+        OperationId::new(uuid::Uuid::new_v4().to_string()),
+        request.body,
+    )
+    .map_err(super::invalid_request)?;
+    let delivery =
+        AutomaticDeliveryPlan::new(payload, prepared.recipient).map_err(super::invalid_request)?;
+    let original = AutomaticOriginal::Handoff(Box::new(AutomaticHandoffPlan {
+        version: AUTOMATIC_PLAN_VERSION,
+        delivery,
+        launch: request.launch,
+        context: output.context.clone(),
+        startup_input: Some(template),
+    }));
+    let preparation = super::handoff_delivery::automatic_envelope(&claim, original.clone())?;
+    match client.call(
+        Command::AutomaticHandoffDelivery(Box::new(preparation)),
+        &super::cooperative_budget(clock),
+    )? {
+        CommandResult::SeatResolved(seat) if seat == original.delivery().recipient => {}
+        _ => {
+            return Err(super::invalid_request(
+                "unexpected automatic handoff preparation result",
+            ));
+        }
+    }
+    let reference = super::handoff_delivery::publish_automatic(journal, original, claim, clock)?;
+    super::handoff_delivery::retry_automatic_to_writer(
+        journal,
+        &reference,
+        super::actor_route::InvocationActor::Agent,
+        &namespace,
+        client,
+        Some(launcher),
+        clock,
+        output,
+        writer,
+    )?;
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn start<C: LocalClient + ?Sized, W: Write>(
     journal: &Journal,
@@ -669,6 +814,11 @@ pub fn start<C: LocalClient + ?Sized, W: Write>(
     output: &OutputSpec,
     writer: &mut W,
 ) -> Result<(), RunError> {
+    if request.automatic {
+        return start_automatic(
+            journal, request, claim, client, launcher, clock, output, writer,
+        );
+    }
     request.validate()?;
     super::require_handoff_capabilities(client, clock, request.policy.as_ref())?;
     if claim.role != crate::protocol::authority::CallerRole::TopLevel || claim.instance.is_empty() {
@@ -1171,6 +1321,13 @@ pub(crate) fn try_completed_retry<C: LocalClient + ?Sized, W: Write>(
     let super::commands::CliAction::Retry(recovery) = &parsed.action else {
         return Ok(false);
     };
+    let original = super::retry::load_original_for_actor(journal, recovery.as_str())?;
+    if matches!(&original.semantic,
+        SemanticMutation::Frozen { mutation, .. }
+            if matches!(mutation.as_ref(), SemanticMutation::AutomaticHandoff(_))
+    ) {
+        return Ok(false);
+    }
     let reference = journal.resolve_recovery_ref(recovery.as_str())?;
     let pending = journal.load(&reference)?;
     if !is_handoff(&pending.semantic) {
@@ -1772,7 +1929,7 @@ fn report_core(
 pub(crate) fn is_handoff(semantic: &SemanticMutation) -> bool {
     match semantic {
         SemanticMutation::Frozen { mutation, .. } => is_handoff(mutation),
-        SemanticMutation::Handoff(_) => true,
+        SemanticMutation::Handoff(_) | SemanticMutation::AutomaticHandoff(_) => true,
         _ => false,
     }
 }
@@ -1916,6 +2073,51 @@ fn retained_retry_phase(journal: &Journal, reference: &IntentRef) -> io::Result<
     };
     Ok(classify_progress(&plan, &load(journal, reference)?))
 }
+#[allow(clippy::too_many_arguments)]
+fn retry_automatic_live<C: LocalClient + ?Sized, W: Write>(
+    journal: &Journal,
+    recovery: &str,
+    current_claim: &CallerClaim,
+    actor: super::actor_route::InvocationActor,
+    namespace: &crate::protocol::handoff::HandoffNamespace,
+    client: &C,
+    launcher: &mut dyn HandoffLauncher,
+    clock: &dyn Clock,
+    output: &OutputSpec,
+    writer: &mut W,
+) -> Result<bool, RunError> {
+    let original = super::retry::load_original_for_actor(journal, recovery)?;
+    if !matches!(&original.semantic,
+        SemanticMutation::Frozen { mutation, .. }
+            if matches!(mutation.as_ref(), SemanticMutation::AutomaticHandoff(_))
+    ) {
+        return Ok(false);
+    }
+    if original.header.scope
+        != (IntentScope::Cooperative {
+            instance: current_claim.instance.clone(),
+            seat: current_claim.seat.clone(),
+        })
+        || original.semantic.frozen_claim() != Some(current_claim)
+    {
+        return Err(super::invalid_request(
+            "live retry differs from original caller",
+        ));
+    }
+    super::handoff_delivery::require_automatic_capability(client, clock)?;
+    super::handoff_delivery::retry_automatic_to_writer(
+        journal,
+        &original.header.reference,
+        actor,
+        namespace,
+        client,
+        Some(launcher),
+        clock,
+        output,
+        writer,
+    )?;
+    Ok(true)
+}
 /// Called only after the shared caller mapping/context checks in run_selected.
 pub(crate) fn run<W: Write>(
     parsed: super::commands::ParsedCli,
@@ -1929,8 +2131,16 @@ pub(crate) fn run<W: Write>(
     let clock: Arc<dyn Clock> = Arc::new(super::SystemClock::new());
     let (instance, _, client) = super::connect(paths, &clock)?;
     if let super::commands::CliAction::Retry(recovery) = &parsed.action {
-        let reference = journal.resolve_recovery_ref(recovery.as_str())?;
-        if retained_retry_phase(journal, &reference)? != ProgressPhase::LaunchEligible {
+        let original = super::retry::load_original_for_actor(journal, recovery.as_str())?;
+        let automatic = matches!(&original.semantic,
+            SemanticMutation::Frozen { mutation, .. }
+                if matches!(mutation.as_ref(), SemanticMutation::AutomaticHandoff(_))
+        );
+        if !automatic
+            && retained_retry_phase(journal, &original.header.reference)?
+                != ProgressPhase::LaunchEligible
+        {
+            let reference = original.header.reference;
             let scope = IntentScope::Cooperative {
                 instance: claim.instance.clone(),
                 seat: claim.seat.clone(),
@@ -1968,6 +2178,11 @@ pub(crate) fn run<W: Write>(
     let mut output = parsed.output.clone();
     output.context.state_dir = Some(runtime.state_dir.display().to_string());
     output.context.host = Some(runtime.host_endpoint.display().to_string());
+    let namespace = crate::protocol::handoff::HandoffNamespace {
+        instance: instance.to_string(),
+        state_dir: runtime.state_dir.clone(),
+        host_endpoint: runtime.host_endpoint.clone(),
+    };
     let host = crate::host::native::NativeCli::new(runtime.host_endpoint, Arc::clone(&clock));
     let seats = super::launch::DaemonSeatResolver::new(&client, journal, instance, clock.as_ref());
     let shell = super::launch::SystemShellProbe::from_process();
@@ -2015,7 +2230,22 @@ pub(crate) fn run<W: Write>(
             )
         }
         super::commands::CliAction::Retry(recovery) => {
-            let reference = journal.resolve_recovery_ref(recovery.as_str())?;
+            if retry_automatic_live(
+                journal,
+                recovery.as_str(),
+                &claim,
+                parsed.actor,
+                &namespace,
+                &client,
+                &mut launcher,
+                clock.as_ref(),
+                &output,
+                writer,
+            )? {
+                return Ok(());
+            }
+            let original = super::retry::load_original_for_actor(journal, recovery.as_str())?;
+            let reference = original.header.reference;
             let scope = IntentScope::Cooperative {
                 instance: claim.instance,
                 seat: claim.seat,

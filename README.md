@@ -31,7 +31,7 @@ checks and harness approval requirements still apply.
 
 ## Try it yourself
 
-Use one Herdr tab with your shell and two empty shell panes. Run these commands from **your own shell pane**, except for naming the two new panes in step 2.
+Use one Herdr tab with your shell and two empty shell panes. Run the human commands from **your own shell pane**. In steps 3 and 4, ask your existing top-level coordinating agent to run the handoff commands from its own claimed agent pane. Name the two new panes in step 2.
 
 **1. Claim your pane as a human participant.**
 
@@ -53,18 +53,18 @@ herdr pane rename "$HERDR_PANE_ID" bob
 
 Return to your own pane. Use a tab without existing panes named `alice` or `bob`, or choose different names consistently below.
 
-**3. Start a conversation with Alice on Claude.** Handoff creates the named thread, invites Alice's seat, stores your assignment with a receipt request, and starts the agent in the empty pane:
+**3. Have your coordinating agent start a conversation with Alice on Claude.** Handoff creates the named thread, invites Alice's seat, stores your assignment with a receipt request, and starts the agent in the empty pane:
 
 ```sh
-herdr-threads human handoff --new-thread --thread-name review \
+herdr-threads handoff --new-thread --thread-name review \
   --topic "Tabs or spaces?" --pane alice --kind claude -- \
   "You are Alice. Make the case for spaces in this thread. Wait for Bob to say he is ready, then debate the tradeoffs with him."
 ```
 
-**4. Bring Bob on Codex into the same thread.**
+**4. Have the coordinating agent bring Bob on Codex into the same thread.**
 
 ```sh
-herdr-threads human handoff --thread review --pane bob --kind codex \
+herdr-threads handoff --thread review --pane bob --kind codex \
   -- \
   "You are Bob. Make the case for tabs in this thread. After joining, tell Alice you are ready, then debate and agree on a recommendation with her."
 ```
@@ -73,9 +73,10 @@ Without granted permissions, approve Codex's CLI permission request when it appe
 
 **5. Watch and participate.**
 
-Send a question and check outstanding receipts:
+From your human shell pane, join the ordinary group thread, send a question and check outstanding receipts:
 
 ```sh
+herdr-threads human join review
 herdr-threads human send review --require-ack-pane alice --require-ack-pane bob \
   --body "Please settle on one recommendation and explain the tradeoff."
 herdr-threads pending-receipts --thread review
@@ -101,7 +102,7 @@ command to search further, including after an empty work-limited page. The CLI d
 not automatically traverse every page. The interactive picker's fuzzy filtering is
 separate from this literal CLI search. Then use
 `herdr-threads join THREAD` with an exact ID or name to join an active thread without
-an invitation. Pending invitations require `accept` or exact-revision `accept-required`
+an invitation (automatic pair channels allow only their two reserved seats). Pending invitations require `accept` or exact-revision `accept-required`
 instead. Archived threads must be reopened by a member or service owner. Repeated join
 is a no-op; joining after leaving starts a fresh membership interval and does not ACK
 old messages. An upgraded daemon advertising `thread.join_v1` is required.
@@ -111,6 +112,40 @@ old messages. An upgraded daemon advertising `thread.join_v1` is required.
 Names select panes within your current tab. Use `--space` and `--tab` to address another workspace or tab. Threads can span those locations; a duplicate thread name requires the exact ID printed by the CLI. Bare `herdr-threads read` opens a channel picker in a human terminal; bare `herdr-threads follow` selects a channel and then follows it. Rows show active/archived status, joined participant count, sampled messages per minute, and a compact last-message preview. Active channels come first, ranked by participants × (1 + sampled messages/minute). The sample uses the latest 512 timeline positions, counting ordinary messages over the elapsed time through now with a one-minute minimum. Participant counts exclude retired seats and pending invitations, and include accepted service requirements. Color highlights activity and selection on supporting terminals and honors `NO_COLOR`. Agents, scripts, `--machine`, and `--json` require an explicit thread name or ID. If the daemon lacks picker support, upgrade it or use an exact thread ID.
 
 The [recording recipe](docs/media/try-it.md) reproduces this walkthrough with bounded debate turns. The [earlier tea-party script](scripts/demo-tea-party.sh) and its [recording](docs/media/tea-party.mp4) remain historical examples. Every command has `--help`; [the agent guide](integrations/skill/SKILL.md) explains how agents participate.
+
+## Automatic direct channels
+
+Use an exact recipient seat when the work belongs in a continuing one-to-one conversation:
+
+```sh
+herdr-threads send --seat SEAT --body "Nonurgent work"
+herdr-threads send --seat SEAT --file assignment.txt
+herdr-threads send --seat SEAT --stdin
+herdr-threads send --seat SEAT --nudge --body "Please review"
+herdr-threads send --seat SEAT --require-ack SEAT --body "Please confirm receipt"
+herdr-threads human send --seat SEAT --body "A question"
+```
+
+`--seat` selects the recipient, never the caller. Choose either `send THREAD` (unchanged ordinary thread delivery) or `send --seat SEAT`; a thread and seat cannot be combined. Direct send reuses the instance's canonical channel for that exact pair of seats, independent of names or topics. It never adopts an unrelated manually created thread or follows a retired seat to a replacement. Missing, retired, foreign, unresolved, held or self targets refuse; a resolved unbound recipient is valid.
+
+Send remains lazy by default: it freezes the invited target in the audience without waking it or promising receipt, acceptance or task adoption. `--nudge` selects ordinary attention and wake behavior. Direct `--require-ack` may name only the target seat (duplicates deduplicate); sender/third-seat requests and `--require-ack-pane` refuse. Body, deadline and relay rules remain the ordinary send rules.
+
+Creation joins the caller and ordinarily invites the recipient. The immutable pair reserves two seats, including an invited seat; it does not mean both have joined. A pending recipient accepts explicitly with `accept THREAD` (or the reported exact `accept-required` command). No third seat can enroll, and services cannot adopt or own the channel. Names and topics are presentation; the default topic and goal are `1:1 SEAT_A SEAT_B` with sorted canonical seat IDs.
+
+Lifecycle decisions require explicit repair on the reported channel: `reopen THREAD` after archive, `join THREAD` after the caller leaves, `accept THREAD` for an invited caller, and `invite THREAD --seat SEAT` after the target leaves or rejects. Required invitations retain their ordinary acceptance rules. Direct routing never reopens, rejoins or reinvites automatically and never creates a replacement pair. Repair reuses the same channel and preserves existing messages and obligations.
+
+Direct send durably ensures the channel, then uses ordinary send. A later refusal or crash can leave an empty channel and invitation; use the reported `retry REF` or `pending-ops` rather than sending again. Retry keeps the original recipient, body and operation keys. A completed retry prints historical thread/message results without repeating effects.
+
+Handoff also selects this automatic pair when both channel flags are omitted:
+
+```sh
+herdr-threads handoff --existing --seat SEAT -- "Review this change"
+herdr-threads handoff --existing --pane PANE -- "Review this change"
+herdr-threads handoff --pane PANE --kind codex -- "Review this change"
+herdr-threads handoff --new-tab review --kind codex -- "Review this change"
+```
+
+All handoffs require an original top-level Agent. Automatic handoff ensures the pair and sends the addressed assignment before guarded launch, where requested; it never accepts or ACKs for the peer. New-tab resolves its recipient before ensuring the pair. Use explicit `--thread THREAD` to deliver into a compatible joined channel, or `--new-thread` for a separate ordinary channel as in the group quickstart above. `--thread-name`, `--topic` and `--goal` require `--new-thread`. Automatic routing requires the new daemon capability and refuses older daemons before effects.
 
 ## A role that survives its session
 

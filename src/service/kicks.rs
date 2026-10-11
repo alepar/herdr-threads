@@ -129,6 +129,17 @@ const DEADLINE_TABLES: &[&str] = &[
 /// lane). A new table must be added to one list; the exhaustive
 /// classification test fails until it is.
 pub const KNOWN_UNMAPPED: &[&str] = &[
+    // Pair identity is passive; its ordinary invitation/membership writes kick their own lanes.
+    "direct_threads",
+    // Immutable automatic identities accompany the archival fence parent.
+    "automatic_handoff_companions",
+    "automatic_bootstrap_parents",
+    "automatic_bootstrap_keys",
+    "automatic_bootstrap_attempts",
+    "automatic_bootstrap_attachments",
+    "automatic_bootstrap_reports",
+    "automatic_bootstrap_recoveries",
+    "automatic_handoff_keys",
     // Bootstrap proof/history transitions also update the archival barrier parent.
     "bootstrap_child_keys",
     "bootstrap_attempts",

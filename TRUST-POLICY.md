@@ -340,6 +340,20 @@ voluntary invitation creates a fresh timed episode and preserves the old invitat
 outcome. Releasing that requirement leaves the original Lazy invitation discoverable without a timer.
 Explicit human/operator invitation semantics remain separate and unchanged.
 
+**Automatic pair reservation.** `EnsureDirectThread` resolves one immutable canonical channel for
+exactly the caller and recipient seats, under the caller's ordinary `cooperative_top_level` or
+`operator_human` claim and the A2 deciding transaction. Initial creation joins only the caller and
+creates an ordinary invitation for the recipient; reservation is never acceptance, check-in or ACK.
+All ordinary, operator and service enrollment paths preserve the two-seat participant universe;
+services cannot adopt or own these channels. Invited seats remain reserved even before acceptance.
+Explicit leave, rejection and archival require ordinary join/accept/reinvite/reopen repair, never
+automatic resurrection or replacement. Exact operation replay returns historical selection before
+fresh A2/lifecycle checks; it grants no permission for a new send. Direct markers freeze the exact
+other pair seat independently of ACK requests and are validated at preparation and publication,
+including corrupt participant/audience refusal. Lazy messages retain A8; a first Ensure may separately
+produce ordinary invitation attention and wake. Pair identity remains with its channel history;
+there is no seat merge, remapping or generation rollover and no new provenance value.
+
 **Voluntary self-join.** An explicit `join THREAD` enrolls the caller's seat in an active
 thread of its instance under the ordinary A2 deciding transaction and its existing
 `cooperative_top_level` or `operator_human` claim. The immutable native-authored join
@@ -531,7 +545,7 @@ payload from canonical child-key registration, full frozen parent and attachment
 Missing selected context refuses even cached history; unregistered legacy phases
 retain their existing behavior. Completed linked history skips only live guards.
 
-A retained successful version-1 bootstrap launch report (the only plan version) is
+A retained successful version-1 bootstrap launch report is
 validated against frozen V1 composition: the original generated prompt bytes and the
 original Codex/Claude acceptance grammar with empty owned argv, never today's renderer
 or registry. Deciding completion, completed preview, terminal decode and presentation
@@ -545,6 +559,38 @@ Fresh Root preparation and launch still apply today's native admission and geome
 and refuse before effects when today's composer would differ from frozen V1, so a
 future composer change stops new Root launches rather than producing reports that
 completion cannot validate.
+
+Canonical automatic handoff storage retains the full normalized V2 original request,
+including frozen scope, caller, digest, namespace, child keys and any outer launch,
+context and startup template, within 128 KiB of encoded JSON. JSON escaping counts;
+a syntactically valid plan can exceed this representation ceiling. Shared request
+validation refuses it before local publication or canonical effects; no fields are
+truncated or omitted to make it fit. Exact historical presentation compares this
+complete immutable original and canonical attachment. This bound creates no new
+provenance, receipt authority or permission from local data.
+
+The additive V2 automatic topology parent retains the full original agent claim,
+scope, namespace, topology, launch, startup template and delivery payload within
+128 KiB. Its exact typed attachment is derived from that original and canonical
+creation and ordinary resolution; it has the same 128 KiB bound. V2 has no Invite
+phase or wire key. A registered child cannot fall back to unlinked admission.
+Possible-start checks require fresh sealed canonical creation evidence, original
+claim, exact recipient owner and current pair lifecycle; Send success grants no
+start authority. Exact child-completed/parent-incomplete reconciliation retains
+only the original successful report and absorbing tombstones, even after binding
+or membership changes. It cannot create another message or launch.
+
+V2 recovery uses the authenticated local-account operator lane and an immutable
+inspection digest. Its request and complete retained historical result each fit
+256 KiB of encoded JSON; escaping and nested copies count. Fresh overflow refuses
+atomically. At most one creation/noncreation decision and one subsequent
+cancellation are retained per attempt. Recovery never replaces the original agent
+claim, allocates a seat, proves quiescence or authorizes native submission. An
+unknown attempt cannot become transport-proven not-submitted; an inspected
+noncreation decision starts a distinct attempt while retaining the unknown record.
+Live automatic parents protect archival before child registration and on the exact
+selected thread. Completed or cancelled tombstones release only that parent veto;
+replay cannot restore it or cancel a live downstream child fence or journal hint.
 
 Canonical topology storage has encoded-byte ceilings for retained bootstrap envelopes:
 512 KiB for the full frozen identity; 128 KiB for metadata-only creation evidence

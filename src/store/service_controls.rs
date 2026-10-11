@@ -188,6 +188,7 @@ pub(super) fn require_owner(
     thread: &ThreadId,
     author: &crate::protocol::ids::ServiceAuthorId,
 ) -> Result<(), ApiError> {
+    super::control::guard_pair_service_owner(tx, thread)?;
     let owner: Option<(String, Option<String>)> = tx
         .query_row(
             "SELECT instance_id,managed_owner_author_id FROM threads WHERE id=?1",
@@ -233,6 +234,7 @@ fn ensure_thread(
     v: &crate::protocol::service::EnsureManagedThread,
     at: UtcMillis,
 ) -> Result<ServiceResult, ApiError> {
+    super::control::guard_pair_service_owner(tx, &v.thread)?;
     if v.topic.is_empty() || v.topic.len() > 1024 || v.goal.is_empty() || v.goal.len() > 1024 {
         return Err(api_error(
             ErrorCode::InvalidRequest,
@@ -269,6 +271,7 @@ fn invite(
     at: UtcMillis,
     default_ms: Option<u64>,
 ) -> Result<ServiceResult, ApiError> {
+    super::control::guard_pair_member(tx, &v.thread, &v.seat)?;
     let (thread_instance, owner): (String, Option<String>) = tx
         .query_row(
             "SELECT instance_id,managed_owner_author_id FROM threads WHERE id=?1",

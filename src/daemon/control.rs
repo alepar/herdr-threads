@@ -68,6 +68,7 @@ pub struct ControlService<H, S> {
     health: H,
     domain: S,
     bootstrap_guarded: bool,
+    automatic_guarded: bool,
     hook_parse_failures: Option<std::sync::Arc<crate::daemon::logs::HookParseFailures>>,
     /// The harness version manifest (the evidence recorder and the version
     /// states hold their own handles). Not read here.
@@ -92,6 +93,7 @@ where
             health,
             domain,
             bootstrap_guarded: false,
+            automatic_guarded: false,
             hook_parse_failures: None,
             harness_manifest: None,
             harness_evidence: None,
@@ -173,7 +175,9 @@ where
                 "bootstrap runtime composition incomplete",
             ));
         }
+        let automatic_guarded = domain.automatic_available();
         let mut service = Self::new(stop, health, domain);
+        service.automatic_guarded = automatic_guarded;
         service.bootstrap_guarded = true;
         Ok(service)
     }
@@ -327,6 +331,10 @@ where
                         .chain(self.bootstrap_guarded.then_some(
                             crate::protocol::capabilities::BOOTSTRAP_INSPECTED_RECOVERY_V1,
                         ))
+                        .chain(
+                            self.automatic_guarded
+                                .then_some(crate::protocol::capabilities::AUTOMATIC_HANDOFF_V1),
+                        )
                         .map(str::to_owned)
                         .collect(),
                 }))

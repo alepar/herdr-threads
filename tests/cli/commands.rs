@@ -1730,7 +1730,6 @@ fn handoff_new_tab_conflicts_and_required_fields() {
     }
     for argv in [
         vec!["herdr-threads", "handoff", "--new-tab", "peer", "--new-thread", "--", "work"],
-        vec!["herdr-threads", "handoff", "--new-tab", "peer", "--kind", "codex", "--", "work"],
         vec!["herdr-threads", "handoff", "--new-tab", "peer", "--new-thread", "--kind", "codex"],
         vec!["herdr-threads", "handoff", "--pane", "w1:p1", "--cwd", "/tmp", "--new-thread", "--kind", "codex", "--", "work"],
     ] { assert!(parse_argv(argv.clone()).is_err(), "accepted missing/conflict: {argv:?}"); }
@@ -2526,5 +2525,77 @@ fn invitation_policy_explicit_flags_parse_and_human_keeps_legacy_semantics() {
     }
     for flag in ["--lazy", "--require-ack"] {
         assert!(parse_argv(["ht", "human", "invite", "t1", "--seat", "s1", flag]).is_err());
+    }
+}
+
+
+#[test]
+fn direct_send_accepts_target_body_and_human_forms() {
+    for argv in [
+        vec!["ht", "send", "--seat", "seat-b", "--body", "hello"],
+        vec!["ht", "human", "send", "--seat", "seat-b", "--body", "hello", "--nudge"],
+        vec!["ht", "send", "--seat", "seat-b", "--body", "hello", "--require-ack", "seat-b", "seat-b"],
+    ] {
+        assert!(parse_argv(argv.clone()).is_ok(), "{argv:?}");
+    }
+}
+
+
+#[test]
+fn direct_send_rejects_ambiguous_selectors_and_broadened_ack() {
+    for argv in [
+        vec!["ht", "send", "--body", "hello"],
+        vec!["ht", "send", "t1", "--seat", "seat-b", "--body", "hello"],
+        vec!["ht", "send", "--seat", "seat-b", "--body", "hello", "--require-ack", "seat-c"],
+        vec!["ht", "send", "--seat", "seat-b", "--body", "hello", "--require-ack-pane", "pane-b"],
+        vec!["ht", "send", "--seat", "seat-b", "--body", "hello", "--pane", "pane-b"],
+    ] {
+        assert!(parse_argv(argv.clone()).is_err(), "{argv:?}");
+    }
+}
+
+
+#[test]
+fn direct_send_file_and_options_preserve_frozen_input() {
+    let path = std::env::temp_dir().join(format!("ht-direct-body-{}", uuid::Uuid::new_v4()));
+    std::fs::write(&path, "first\n雪\n").unwrap();
+    let parsed = parse_argv(["ht", "send", "--seat", "seat-b", "--file", path.to_str().unwrap(), "--nudge", "--deadline", "30", "--relays-user", "--user-intent", "request"]).unwrap();
+    std::fs::remove_file(path).unwrap();
+    assert!(matches!(parsed.action, CliAction::Mutation(MutationSpec::DirectSend(request)) if request.target.as_str() == "seat-b" && request.body == "first\n雪\n" && request.delivery_mode == DeliveryMode::Ordinary && request.deadline_millis == Some(30_000) && request.relays_user && request.user_intent == Some(UserIntent::Request)));
+    for argv in [
+        vec!["ht", "send", "--seat", "seat-b", "--body", "x", "--deadline", "30"],
+        vec!["ht", "send", "--seat", "seat-b", "--body", "x", "--lazy", "--require-ack", "seat-b"],
+        vec!["ht", "send", "--seat", "seat-b", "--body", "x", "--nudge", "--deadline", "0"],
+    ] {
+        assert!(parse_argv(argv).is_err());
+    }
+}
+
+
+#[test]
+fn direct_send_stdin_grammar_uses_shared_bounded_utf8_source() {
+    let cli = Cli::try_parse_from(["ht", "send", "--seat", "seat-b", "--stdin"]).unwrap();
+    let Top::Send(args) = cli.command else { panic!("send expected") };
+    assert_eq!(args.seat.as_deref(), Some("seat-b"));
+    assert!(args.thread.is_none());
+    let mut input = "line one\n雪\n".as_bytes();
+    assert_eq!(crate::cli::input::read_body_from(args.body, args.file, args.stdin, &mut input).unwrap(), "line one\n雪\n");
+}
+
+
+#[test]
+fn automatic_handoff_channel_omission_parses_for_every_destination() {
+    for args in [
+        vec!["ht", "handoff", "--existing", "--seat", "s1", "--", "work"],
+        vec!["ht", "handoff", "--existing", "--pane", "w1:p2", "--", "work"],
+        vec!["ht", "handoff", "--pane", "w1:p2", "--kind", "codex", "--", "work"],
+        vec!["ht", "handoff", "--new-tab", "peer", "--kind", "codex", "--", "work"],
+    ] {
+        let parsed = parse_argv(args.clone()).unwrap_or_else(|e| panic!("automatic channel rejected: {args:?}: {e:?}"));
+        match parsed.action {
+            CliAction::Handoff(request) => assert!(request.automatic),
+            CliAction::TopologyHandoff(request) => assert!(request.automatic),
+            _ => panic!("unexpected automatic parser route"),
+        }
     }
 }

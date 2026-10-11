@@ -64,15 +64,17 @@ const V25: &str = include_str!("../../migrations/0025_warning_notice_delivery.sq
 const V26: &str = include_str!("../../migrations/0026_lazy_message_delivery.sql");
 const V27: &str = include_str!("../../migrations/0027_harness_adapters.sql");
 const V28: &str = include_str!("../../migrations/0028_handoff_topology.sql");
-const V29: &str = include_str!("../../migrations/0029_invitation_confirmation.sql");
+const V29: &str = include_str!("../../migrations/0029_direct_threads.sql");
+const V30: &str = include_str!("../../migrations/0030_automatic_handoff.sql");
+const V31: &str = include_str!("../../migrations/0031_invitation_confirmation.sql");
 
-const V30: &str = include_str!("../../migrations/0030_receipt_send_time.sql");
-const V31: &str = include_str!("../../migrations/0031_handoff_body_bounds.sql");
-const V32: &str = include_str!("../../migrations/0032_receipt_deadline_backfill.sql");
-const V33: &str = include_str!("../../migrations/0033_invitation_lifecycle.sql");
-const V34: &str = include_str!("../../migrations/0034_invitation_warning_origin.sql");
-const V35: &str = include_str!("../../migrations/0035_receipt_warning_origins.sql");
-pub(crate) const LATEST_VERSION: i64 = 35;
+const V32: &str = include_str!("../../migrations/0032_receipt_send_time.sql");
+const V33: &str = include_str!("../../migrations/0033_handoff_body_bounds.sql");
+const V34: &str = include_str!("../../migrations/0034_receipt_deadline_backfill.sql");
+const V35: &str = include_str!("../../migrations/0035_invitation_lifecycle.sql");
+const V36: &str = include_str!("../../migrations/0036_invitation_warning_origin.sql");
+const V37: &str = include_str!("../../migrations/0037_receipt_warning_origins.sql");
+pub(crate) const LATEST_VERSION: i64 = 37;
 
 /// Decode only persisted results, after the caller's digest has matched. Live
 /// protocol responses still require disposition. Missing original context
@@ -175,7 +177,9 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
                 .and_then(|_| conn.execute_batch(V27))
                 .and_then(|_| conn.execute_batch(V28))
                 .and_then(|_| conn.execute_batch(V29))
-                .and_then(|_| conn.pragma_update(None, "user_version", 29));
+                .and_then(|_| conn.execute_batch(V30))
+                .and_then(|_| conn.execute_batch(V31))
+                .and_then(|_| conn.pragma_update(None, "user_version", 31));
             match result {
                 Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
                 Err(error) => {
@@ -415,7 +419,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             verify_existing(conn)
         }
         17 => verify_existing(conn),
-        18..=35 => verify_existing(conn),
+        18..=37 => verify_existing(conn),
         _ => Err(api_error(
             ErrorCode::IncompatibleSchema,
             format!("unsupported schema version {version}"),
@@ -583,7 +587,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             }
         }
     }
-    if version <= 30 {
+    if version <= 32 {
         verify_existing_v28(conn)?;
     } else {
         verify_handoff_body_bounds_schema(conn)?;
@@ -607,19 +611,57 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
         }
     }
     verify_existing_v29(conn)?;
-    if version <= 29 {
-        migrate_receipts_v29_to_v30(conn)?;
-    }
-    verify_receipt_send_time_schema(conn)?;
-    if version <= 30 {
-        migrate_handoff_v30_to_v31(conn)?;
-    }
-    verify_handoff_body_bounds_schema(conn)?;
-    if version <= 31 {
+    if (1..=29).contains(&version) {
         conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
         let result = conn
-            .execute_batch(V32)
-            .and_then(|_| conn.pragma_update(None, "user_version", 32));
+            .execute_batch(V30)
+            .map_err(store_error)
+            .and_then(|_| verify_existing_v30(conn))
+            .and_then(|_| {
+                conn.pragma_update(None, "user_version", 30)
+                    .map_err(store_error)
+            });
+        match result {
+            Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(error);
+            }
+        }
+    }
+    verify_existing_v30(conn)?;
+    if (1..=30).contains(&version) {
+        conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
+        let result = conn
+            .execute_batch(V31)
+            .map_err(store_error)
+            .and_then(|_| verify_existing_v31(conn))
+            .and_then(|_| {
+                conn.pragma_update(None, "user_version", 31)
+                    .map_err(store_error)
+            });
+        match result {
+            Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(error);
+            }
+        }
+    }
+    verify_existing_v31(conn)?;
+    if version <= 31 {
+        migrate_receipts_v31_to_v32(conn)?;
+    }
+    verify_receipt_send_time_schema(conn)?;
+    if version <= 32 {
+        migrate_handoff_v32_to_v33(conn)?;
+    }
+    verify_handoff_body_bounds_schema(conn)?;
+    if version <= 33 {
+        conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
+        let result = conn
+            .execute_batch(V34)
+            .and_then(|_| conn.pragma_update(None, "user_version", 34));
         match result {
             Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
             Err(error) => {
@@ -629,14 +671,14 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
         }
     }
     verify_receipt_deadline_backfill_schema(conn)?;
-    if version <= 32 {
+    if version <= 34 {
         conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
         let result = conn
-            .execute_batch(V33)
+            .execute_batch(V35)
             .map_err(store_error)
             .and_then(|_| verify_invitation_lifecycle_schema(conn))
             .and_then(|_| {
-                conn.pragma_update(None, "user_version", 33)
+                conn.pragma_update(None, "user_version", 35)
                     .map_err(store_error)
             });
         match result {
@@ -648,14 +690,14 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
         }
     }
     verify_invitation_lifecycle_schema(conn)?;
-    if version <= 33 {
+    if version <= 35 {
         conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
         let result = conn
-            .execute_batch(V34)
+            .execute_batch(V36)
             .map_err(store_error)
             .and_then(|_| verify_invitation_warning_origin_schema(conn))
             .and_then(|_| {
-                conn.pragma_update(None, "user_version", 34)
+                conn.pragma_update(None, "user_version", 36)
                     .map_err(store_error)
             });
         match result {
@@ -667,14 +709,14 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
         }
     }
     verify_invitation_warning_origin_schema(conn)?;
-    if version <= 34 {
+    if version <= 36 {
         conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
         let result = conn
-            .execute_batch(V35)
+            .execute_batch(V37)
             .map_err(store_error)
             .and_then(|_| verify_receipt_warning_origins_schema(conn))
             .and_then(|_| {
-                conn.pragma_update(None, "user_version", 35)
+                conn.pragma_update(None, "user_version", 37)
                     .map_err(store_error)
             });
         match result {
@@ -698,7 +740,7 @@ fn verify_receipt_warning_origins_schema(conn: &Connection) -> Result<(), ApiErr
     // Population statements require the canonical parent schema. Parse only
     // CREATE objects, retaining whole trigger bodies.
     let mut sql = String::new();
-    for line in V35.lines() {
+    for line in V37.lines() {
         if sql.is_empty() && !line.trim_start().starts_with("CREATE ") {
             continue;
         }
@@ -763,14 +805,14 @@ fn verify_invitation_warning_origin_schema(conn: &Connection) -> Result<(), ApiE
             ));
         }
     }
-    let index = V34
+    let index = V36
         .split("CREATE INDEX ")
         .nth(1)
         .unwrap()
         .split(';')
         .next()
         .unwrap();
-    let trigger = V34
+    let trigger = V36
         .split("CREATE TRIGGER ")
         .nth(1)
         .unwrap()
@@ -800,7 +842,7 @@ fn verify_invitation_warning_origin_schema(conn: &Connection) -> Result<(), ApiE
 }
 
 fn verify_invitation_lifecycle_schema(conn: &Connection) -> Result<(), ApiError> {
-    let ddl = V33
+    let ddl = V35
         .lines()
         .filter(|line| !line.trim_start().starts_with("--"))
         .collect::<Vec<_>>()
@@ -826,7 +868,7 @@ fn verify_invitation_lifecycle_schema(conn: &Connection) -> Result<(), ApiError>
 }
 
 fn verify_receipt_deadline_backfill_schema(conn: &Connection) -> Result<(), ApiError> {
-    let expected = V32
+    let expected = V34
         .lines()
         .filter(|line| !line.trim_start().starts_with("--"))
         .collect::<Vec<_>>()
@@ -867,6 +909,29 @@ fn verify_receipt_deadline_backfill_schema(conn: &Connection) -> Result<(), ApiE
 }
 
 fn verify_existing_v29(conn: &Connection) -> Result<(), ApiError> {
+    let expected = V29
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("--"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let actual: Option<String> = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='direct_threads'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(store_error)?;
+    if actual.as_deref().map(str::trim) != Some(expected.trim().trim_end_matches(';')) {
+        return Err(api_error(
+            ErrorCode::IncompatibleSchema,
+            "missing or altered direct pair registry",
+        ));
+    }
+    Ok(())
+}
+
+fn verify_existing_v31(conn: &Connection) -> Result<(), ApiError> {
     let table: String = conn
         .query_row(
             "SELECT sql FROM sqlite_master WHERE type='table' AND name='invitations'",
@@ -885,7 +950,7 @@ fn verify_existing_v29(conn: &Connection) -> Result<(), ApiError> {
             ));
         }
     }
-    for statement in V29.split("\n\n").filter(|sql| sql.starts_with("CREATE ")) {
+    for statement in V31.split("\n\n").filter(|sql| sql.starts_with("CREATE ")) {
         let expected = statement.trim().trim_end_matches(';');
         let mut words = expected.split_whitespace().skip(1);
         let kind = words.next().unwrap_or_default().to_ascii_lowercase();
@@ -908,7 +973,7 @@ fn verify_existing_v29(conn: &Connection) -> Result<(), ApiError> {
     Ok(())
 }
 
-fn migrate_receipts_v29_to_v30(conn: &Connection) -> Result<(), ApiError> {
+fn migrate_receipts_v31_to_v32(conn: &Connection) -> Result<(), ApiError> {
     if !conn.is_autocommit() {
         return Err(api_error(
             ErrorCode::IncompatibleSchema,
@@ -922,7 +987,7 @@ fn migrate_receipts_v29_to_v30(conn: &Connection) -> Result<(), ApiError> {
         .map_err(store_error)?;
     let result = (|| {
         conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
-        conn.execute_batch(V30).map_err(store_error)?;
+        conn.execute_batch(V32).map_err(store_error)?;
         verify_receipt_send_time_schema(conn)?;
         let violation: bool = conn
             .query_row(
@@ -937,7 +1002,7 @@ fn migrate_receipts_v29_to_v30(conn: &Connection) -> Result<(), ApiError> {
                 "receipt upgrade foreign key violation",
             ));
         }
-        conn.pragma_update(None, "user_version", 30)
+        conn.pragma_update(None, "user_version", 32)
             .map_err(store_error)?;
         conn.execute_batch("COMMIT").map_err(store_error)
     })();
@@ -953,7 +1018,7 @@ fn migrate_receipts_v29_to_v30(conn: &Connection) -> Result<(), ApiError> {
 /// The marker and constraint upgrade commit together before capabilities are served.
 /// Existing instance sequences are captured once; later instances have cutoff zero.
 fn verify_receipt_send_time_schema(conn: &Connection) -> Result<(), ApiError> {
-    let ddl = V30
+    let ddl = V32
         .lines()
         .filter(|line| !line.trim_start().starts_with("--"))
         .collect::<Vec<_>>()
@@ -4344,7 +4409,7 @@ fn verify_existing_v24(conn: &Connection) -> Result<(), ApiError> {
     Ok(())
 }
 
-fn migrate_handoff_v30_to_v31(conn: &Connection) -> Result<(), ApiError> {
+fn migrate_handoff_v32_to_v33(conn: &Connection) -> Result<(), ApiError> {
     // SQLite ignores foreign_keys changes inside a transaction. Disable it
     // before BEGIN so rebuilding the cyclic parent/recovery tables cannot
     // delete child rows; verify the complete graph before committing.
@@ -4361,7 +4426,7 @@ fn migrate_handoff_v30_to_v31(conn: &Connection) -> Result<(), ApiError> {
         .map_err(store_error)?;
     let migrate = (|| {
         conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
-        conn.execute_batch(V31).map_err(store_error)?;
+        conn.execute_batch(V33).map_err(store_error)?;
         verify_handoff_body_bounds_schema(conn)?;
         let violation: Option<String> = conn
             .query_row("PRAGMA foreign_key_check", [], |r| r.get(0))
@@ -4373,7 +4438,7 @@ fn migrate_handoff_v30_to_v31(conn: &Connection) -> Result<(), ApiError> {
                 "handoff bounds migration found a foreign-key violation",
             ));
         }
-        conn.pragma_update(None, "user_version", 31)
+        conn.pragma_update(None, "user_version", 33)
             .map_err(store_error)?;
         conn.execute_batch("COMMIT").map_err(store_error)
     })();
@@ -4387,7 +4452,7 @@ fn migrate_handoff_v30_to_v31(conn: &Connection) -> Result<(), ApiError> {
 }
 
 fn verify_existing_v28(conn: &Connection) -> Result<(), ApiError> {
-    verify_bootstrap_ddl(conn, V28)
+    verify_ddl(conn, V28, "bootstrap topology")
 }
 fn verify_handoff_body_bounds_schema(conn: &Connection) -> Result<(), ApiError> {
     let ddl = V28
@@ -4399,9 +4464,12 @@ fn verify_handoff_body_bounds_schema(conn: &Connection) -> Result<(), ApiError> 
             "length(result_json)<=262144",
             "length(result_json)<=1048576",
         );
-    verify_bootstrap_ddl(conn, &ddl)
+    verify_ddl(conn, &ddl, "bootstrap topology")
 }
-fn verify_bootstrap_ddl(conn: &Connection, source: &str) -> Result<(), ApiError> {
+fn verify_existing_v30(conn: &Connection) -> Result<(), ApiError> {
+    verify_ddl(conn, V30, "automatic handoff")
+}
+fn verify_ddl(conn: &Connection, source: &str, label: &str) -> Result<(), ApiError> {
     let ddl = source
         .lines()
         .filter(|line| !line.trim_start().starts_with("--"))
@@ -4431,7 +4499,7 @@ fn verify_bootstrap_ddl(conn: &Connection, source: &str) -> Result<(), ApiError>
         if installed.as_deref().map(normalize) != Some(normalize(&sql)) {
             return Err(api_error(
                 ErrorCode::IncompatibleSchema,
-                format!("missing or altered bootstrap topology {kind} {name}"),
+                format!("missing or altered {label} {kind} {name}"),
             ));
         }
     }

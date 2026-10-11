@@ -266,7 +266,12 @@ fn every_table_is_classified() {
     for name in &mapped {
         assert!(tables.iter().any(|t| t == name), "stale mapped {name}");
     }
-    for table in ["snapshot_generations", "snapshot_targets", "host_instances"] {
+    for table in [
+        "snapshot_generations",
+        "snapshot_targets",
+        "host_instances",
+        "direct_threads",
+    ] {
         assert_eq!(lanes_for_table(table), LaneSet::EMPTY, "{table}");
         assert!(KNOWN_UNMAPPED.contains(&table));
     }

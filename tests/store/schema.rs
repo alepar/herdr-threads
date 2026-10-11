@@ -6483,3 +6483,190 @@ fn invitation_confirmation_schema_refuses_missing_policy_guard() {
         ErrorCode::IncompatibleSchema
     );
 }
+
+#[test]
+fn direct_pair_migration_preserves_v28_and_enforces_identity() {
+    let db = Connection::open_in_memory().unwrap();
+    db.pragma_update(None, "foreign_keys", true).unwrap();
+    let mut migrations = std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect::<Vec<_>>();
+    migrations.sort();
+    for path in migrations
+        .into_iter()
+        .filter(|path| path.file_name().unwrap().to_str().unwrap() < "0029")
+    {
+        db.execute_batch(&std::fs::read_to_string(path).unwrap())
+            .unwrap();
+    }
+    db.pragma_update(None, "user_version", 28).unwrap();
+    db.execute_batch("INSERT INTO host_instances(id,created_at) VALUES ('i',0); INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('a','i','resolved','native',0,0),('b','i','resolved','native',0,0),('c','i','resolved','native',0,0); INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0),('u','i','other','goal',0,0); INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i','m','t',1,'ordinary','retained body',0,1);").unwrap();
+    let dump = |table: &str| {
+        let mut statement = db
+            .prepare(&format!("SELECT * FROM {table} ORDER BY ordinal"))
+            .unwrap();
+        let columns = statement.column_count();
+        statement
+            .query_map([], |row| {
+                (0..columns)
+                    .map(|n| row.get::<_, rusqlite::types::Value>(n))
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    };
+    let before = [dump("seats"), dump("threads"), dump("messages")];
+    schema::initialize(&db, || UtcMillis(0)).unwrap();
+    assert_eq!(before, [dump("seats"), dump("threads"), dump("messages")]);
+    assert_eq!(
+        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        30
+    );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM direct_threads", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    db.execute(
+        "INSERT INTO direct_threads(instance_id,seat_a,seat_b,thread_id) VALUES ('i','a','b','t')",
+        [],
+    )
+    .unwrap();
+    for (a, b, t) in [
+        ("a", "a", "u"),
+        ("b", "a", "u"),
+        ("a", "b", "u"),
+        ("a", "c", "t"),
+        ("a", "missing", "u"),
+        ("a", "c", "missing"),
+    ] {
+        assert!(db.execute("INSERT INTO direct_threads(instance_id,seat_a,seat_b,thread_id) VALUES ('i',?1,?2,?3)",params![a,b,t]).is_err(),"{a}/{b}/{t}");
+    }
+    assert!(db.execute("INSERT INTO direct_threads(instance_id,seat_a,seat_b,thread_id) VALUES ('missing','a','c','u')",[]).is_err());
+    let plan: String = db.query_row("EXPLAIN QUERY PLAN SELECT thread_id FROM direct_threads WHERE instance_id='i' AND seat_a='a' AND seat_b='b'",[],|r|r.get(3)).unwrap();
+    assert!(
+        plan.contains("SEARCH direct_threads USING") && plan.contains("INDEX"),
+        "{plan}"
+    );
+    db.execute(
+        "INSERT INTO direct_threads(instance_id,seat_a,seat_b,thread_id) VALUES ('i','a','c','u')",
+        [],
+    )
+    .unwrap();
+    assert!(db.execute("DELETE FROM threads WHERE id='u'", []).is_err());
+    assert!(db.execute("DELETE FROM seats WHERE id='b'", []).is_err());
+}
+
+// Catches losing released direct/automatic rows or omitting the additive capacity upgrade.
+#[test]
+fn released_main30_populated_automatic_graph_physically_upgrades_and_reopens() {
+    let path = std::env::temp_dir().join(format!("main30-upgrade-{}.db", uuid::Uuid::new_v4()));
+    let db = Connection::open(&path).unwrap();
+    db.pragma_update(None, "foreign_keys", true).unwrap();
+    let mut migrations = std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations"))
+        .unwrap()
+        .map(|p| p.unwrap().path())
+        .collect::<Vec<_>>();
+    migrations.sort();
+    for migration in migrations.into_iter().take(30) {
+        db.execute_batch(&std::fs::read_to_string(migration).unwrap())
+            .unwrap();
+    }
+    db.pragma_update(None, "user_version", 30).unwrap();
+    db.execute_batch(r#"INSERT INTO host_instances(id,created_at) VALUES('i',0);
+      INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES('a','i','resolved','native',1,0),('b','i','resolved','native',1,0);
+      INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('t','i','topic','goal',0,0);
+      INSERT INTO direct_threads VALUES('i','a','b','t');
+      INSERT INTO channel_handoff_fences(instance_id,actor_scope,compound,digest,claim_json,recipient,create_key,invite_key,send_key,original_thread,thread_id,origin,state,created_at) VALUES('i','seat:a','child',printf('%064d',0),'{"generation":1,"provenance":"cooperative_top_level"}','b','begin','ensure','send',NULL,'t','cooperative_pending_claim','live',7);
+      INSERT INTO automatic_handoff_companions VALUES('i','seat:a','child','/state','/host',x'7b7d','begin','ensure','send','complete');
+      INSERT INTO automatic_handoff_keys VALUES('i','seat:a','child','send','send');
+      INSERT INTO automatic_bootstrap_parents VALUES(9,'i','seat:a','parent','/state','/host',x'7b7d','attached',1,1,'t');
+      INSERT INTO automatic_bootstrap_keys VALUES('i','seat:a','parent-key',9,'compound',0);
+      INSERT INTO automatic_bootstrap_attempts VALUES(9,1,'created',0,x'7b7d');
+      INSERT INTO automatic_bootstrap_attachments VALUES(9,1,x'7b7d');
+      INSERT INTO automatic_bootstrap_reports VALUES(9,x'7b7d');
+      INSERT INTO automatic_bootstrap_recoveries VALUES(9,1,'recovery','recovery-key',1,x'7b7d');"#).unwrap();
+    let tables = [
+        "direct_threads",
+        "channel_handoff_fences",
+        "automatic_handoff_companions",
+        "automatic_handoff_keys",
+        "automatic_bootstrap_parents",
+        "automatic_bootstrap_keys",
+        "automatic_bootstrap_attempts",
+        "automatic_bootstrap_attachments",
+        "automatic_bootstrap_reports",
+        "automatic_bootstrap_recoveries",
+    ];
+    let snapshot = |db: &Connection| {
+        tables
+            .iter()
+            .map(|table| {
+                let columns = db
+                    .prepare(&format!("PRAGMA table_info({table})"))
+                    .unwrap()
+                    .query_map([], |r| r.get::<_, String>(1))
+                    .unwrap()
+                    .map(Result::unwrap)
+                    .collect::<Vec<_>>();
+                let values = columns
+                    .iter()
+                    .map(|column| format!("quote({column})"))
+                    .collect::<Vec<_>>()
+                    .join("||','||");
+                db.prepare(&format!("SELECT {values} FROM {table} ORDER BY rowid"))
+                    .unwrap()
+                    .query_map([], |r| r.get::<_, String>(0))
+                    .unwrap()
+                    .map(Result::unwrap)
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>()
+    };
+    let before = snapshot(&db);
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+            .get::<_, i64>(
+            0
+        ))
+        .unwrap(),
+        0
+    );
+    drop(db);
+    let db = Connection::open(&path).unwrap();
+    db.pragma_update(None, "foreign_keys", true).unwrap();
+    assert_eq!(
+        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        30
+    );
+    schema::initialize(&db, || UtcMillis(99)).unwrap();
+    assert_eq!(
+        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        38
+    );
+    assert_eq!(snapshot(&db), before);
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+            .get::<_, i64>(
+            0
+        ))
+        .unwrap(),
+        0
+    );
+    assert!(
+        db.pragma_query_value(None, "foreign_keys", |r| r.get::<_, bool>(0))
+            .unwrap()
+    );
+    drop(db);
+    let db = Connection::open(&path).unwrap();
+    schema::initialize(&db, || UtcMillis(100)).unwrap();
+    assert_eq!(snapshot(&db), before);
+    drop(db);
+    std::fs::remove_file(path).unwrap();
+}
