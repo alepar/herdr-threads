@@ -1,0 +1,24 @@
+{
+  "workspace": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2",
+  "branch": "task-ht-0lo.8.4",
+  "head": "ee1e598c3ee96566ddc9b397185cdc97c8bf6218",
+  "head_tree": "6ab6831b7972af18ce600b553647db7185c31ccc",
+  "dirty_diff_sha256": "db9c2e209689b945b395866758125398d0b5053765faad0dd954c7ba5e6b55b9",
+  "source_content_sha256": "a3a306e386069949d51fa157fb60f1fdaf5f22cfd0307ce9178731ac2635bc61",
+  "freshness_invalidated_paths": 487,
+  "includes_untracked_source": true,
+  "target": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target",
+  "target_from_branch": "task-ht-0lo.8.2",
+  "target_from_head": "7d432fe0f4ad3de85c96a029aedfb6e5b5ff5845",
+  "manifest": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/Cargo.toml",
+  "targets": [
+    "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/src/lib.rs",
+    "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/src/main.rs",
+    "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/tests/combined.rs",
+    "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/tests/hook_entrypoint.rs",
+    "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/tests/integration.rs",
+    "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/tests/package.rs",
+    "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/tests/service.rs"
+  ],
+  "evidence_rule": "require actual owned crate Compiling and unique selected count>0; metadata/cache identity alone insufficient"
+}
