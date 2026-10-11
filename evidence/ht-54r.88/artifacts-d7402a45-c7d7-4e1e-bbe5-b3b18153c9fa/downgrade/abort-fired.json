@@ -1,0 +1,9 @@
+{
+  "child_path": "/private/tmp/ih.SjxvaK/agybin/1:/private/tmp/ih.SjxvaK/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+  "frame_ids": [
+    "m2KN3YA1Y"
+  ],
+  "mode": "abort",
+  "original_stdout": "{\"injectSteps\":[{\"systemMessage\":{\"systemMessage\":\"[herdr-threads] new messages:\\n\\n[herdr-threads] message m2KN3YA1Y in tXTpzjeej \\\"gate-downgrade\\\" from sMnXcZM1v [human]:\\n  DOWN-M1 abort me\"}}]}",
+  "parent_image": "/private/tmp/ih.SjxvaK/agybin/1/agy"
+}

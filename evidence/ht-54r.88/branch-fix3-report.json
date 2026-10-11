@@ -1,0 +1,300 @@
+{
+  "agy": {
+    "bin": "/tmp/sp-ede3b852/ht-54r.88/agy/1.3.3/agy",
+    "sha512": "4d2f079548ea79ccd4dd8a6b98cc543aff4986542bd344646d8e79f147d5e2773e62ea7431555fc9c8535ceaf7f687ac56add80ff7a3ee1d2caff7b8d96b5a2f",
+    "size": 180718224
+  },
+  "flows": [
+    {
+      "agy": {
+        "inode": 151183613,
+        "sha512": "4d2f079548ea79ccd4dd8a6b98cc543aff4986542bd344646d8e79f147d5e2773e62ea7431555fc9c8535ceaf7f687ac56add80ff7a3ee1d2caff7b8d96b5a2f",
+        "size": 180718224,
+        "stage": 1,
+        "version": "1.3.3"
+      },
+      "artifacts": "/Users/alepar/AleCode/herdr-threads/.worktrees/super-auto/session-keyed-seat-bindings/.worktrees/super-auto-session-keyed-seat-bindings--task-ht-54r.88/evidence/ht-54r.88/artifacts-bed2ea37-cc1b-4a95-8b82-e699ba0729a1/wake",
+      "checks": [
+        {
+          "detail": "action: installed\nallow_entry.file: /private/tmp/ih.zUq6d0/home/.gemini/antigravity-cli/settings.json\nallow_entry.rule: command(herdr-threads)\nallow_entry.state: owned\nfiles: {\"action\":\"created\",\"path",
+          "name": "setup agy succeeds",
+          "ok": true
+        },
+        {
+          "detail": "",
+          "name": "the agy seat is enrolled",
+          "ok": true
+        },
+        {
+          "detail": "invite= accept=ran=True refusals=[] membership=joined output='Created At: 2026-10-11T11:26:34-07:00\\nCompleted At: 2026-10-11T11:26:34-07:00\\n\\nThe command exited with code 0.\\nOutput:\\naccepted\\r\\nvalue: \"is8rO1rKv\"\\r\\n\\n'",
+          "name": "the sender invited the agy seat and the agy session accepted (run_command, joined)",
+          "ok": true
+        },
+        {
+          "detail": "",
+          "name": "join: the agent returned to idle",
+          "ok": true
+        },
+        {
+          "detail": "",
+          "name": "a: N1 was sent",
+          "ok": true
+        },
+        {
+          "detail": "untyped=2",
+          "name": "a: within 60 s an untyped user request arrives (the wake)",
+          "ok": true
+        },
+        {
+          "detail": "frames=['m7v8ASXN1'] n1=m7v8ASXN1",
+          "name": "a: the same request's system messages hold N1's frame",
+          "ok": true
+        },
+        {
+          "detail": "receipt={'state': 'acked', 'actor': 'ssE3EHWXb', 'provenance': None, 'observation': {'binding_generation': 1, 'decided_at': 1791743225376, 'execution': '30b8ac81-8d47-5e43-a7a4-a9d675a18e4f', 'harness': 'agy', 'host_boot': 'herdr-server:pid=58883:start=1791743181.783447:uid=501', 'observed_at': 1791743225376, 'provenance': 'cooperative_top_level', 'session': '8acf331d-0fa3-4a96-842d-b6ded032d055', 'target_generation': 1}}",
+          "name": "a: the woken turn ACKed N1",
+          "ok": true
+        },
+        {
+          "detail": "",
+          "name": "a: the agent returned to idle",
+          "ok": true
+        },
+        {
+          "detail": "",
+          "name": "b: Z1 was sent",
+          "ok": true
+        },
+        {
+          "detail": "added=0 untyped=0",
+          "name": "b: no new main request within 15 s",
+          "ok": true
+        },
+        {
+          "detail": "state=pending",
+          "name": "b: Z1 is still pending",
+          "ok": true
+        },
+        {
+          "detail": "",
+          "name": "c: the busy turn was served",
+          "ok": true
+        },
+        {
+          "detail": "",
+          "name": "c: N2 was sent during the busy step",
+          "ok": true
+        },
+        {
+          "detail": "frames=['m7v8ASXN1', 'msC7H274X', 'mr9BZhv2f'] n2=mr9BZhv2f",
+          "name": "c: N2 is delivered in-turn at the next PreInvocation",
+          "ok": true
+        },
+        {
+          "detail": "",
+          "name": "c: the agent returned to idle",
+          "ok": true
+        },
+        {
+          "detail": "N2={'state': 'acked', 'actor': 'ssE3EHWXb', 'provenance': 'cooperative_hook_delivery', 'observation': {'action_provenance': 'cooperative_hook_delivery', 'binding_generation': 1, 'decided_at': 1791743252843, 'execution': '30b8ac81-8d47-5e43-a7a4-a9d675a18e4f', 'harness': 'agy', 'host_boot': 'herdr-server:pid=58883:start=1791743181.783447:uid=501', 'observed_at': 1791743252843, 'provenance': 'cooperative_top_level', 'session': '8acf331d-0fa3-4a96-842d-b6ded032d055', 'target_generation': 1, 'via': 'transcript'}}",
+          "name": "c: N2 settles (cooperative_hook_delivery) after the post-tool-call injection",
+          "ok": true
+        },
+        {
+          "detail": "downgrade.json=None",
+          "name": "c: no injection miss is recorded and the identity is not downgraded",
+          "ok": true
+        },
+        {
+          "detail": "untyped 2 -> 2",
+          "name": "c: no untyped user request during or after the busy turn",
+          "ok": true
+        },
+        {
+          "detail": "",
+          "name": "d: N3 was sent",
+          "ok": true
+        },
+        {
+          "detail": "added=0 untyped=0",
+          "name": "d: no wake while a draft is in the composer",
+          "ok": true
+        },
+        {
+          "detail": "",
+          "name": "d: the draft is intact in the detection text",
+          "ok": true
+        },
+        {
+          "detail": "",
+          "name": "d: no request was served while drafting",
+          "ok": true
+        },
+        {
+          "detail": "frames=['m7v8ASXN1', 'msC7H274X', 'mHmKLOJqx']",
+          "name": "d: the submitted draft is the turn that delivers N3",
+          "ok": true
+        },
+        {
+          "detail": "",
+          "name": "d: the agent returned to idle",
+          "ok": true
+        },
+        {
+          "detail": "",
+          "name": "d: still no untyped user request",
+          "ok": true
+        },
+        {
+          "detail": "",
+          "name": "e: the model's wake-on call was served",
+          "ok": true
+        },
+        {
+          "detail": "responses=[{'name': 'run_command', 'id': '8f36f0bb-c2fd-432b-b7e3-f60b4f7c2c3b'}, {'name': 'run_command', 'id': 'd8344f08-20c9-4a6a-9489-7aa9fea386a8'}, {'name': 'run_command', 'id': '8b4ac59b-c33a-4bd7-ac41-35be9a765d6f'}, {'name': 'run_command', 'id': 'e471d45c-fc46-4efa-ac25-57601ac04b6a'}]",
+          "name": "e: the request after the call carries a run_command functionResponse",
+          "ok": true
+        },
+        {
+          "detail": "",
+          "name": "e: the agent returned to idle",
+          "ok": true
+        },
+        {
+          "detail": "seats=[{'id': 'ssE3EHWXb', 'wake_on': 'all'}]",
+          "name": "e: the seat's wake preference is now all",
+          "ok": true
+        },
+        {
+          "detail": "",
+          "name": "e: Z2 was sent",
+          "ok": true
+        },
+        {
+          "detail": "untyped=3",
+          "name": "e: lazy Z2 wakes the idle agent",
+          "ok": true
+        },
+        {
+          "detail": "frames=['m7v8ASXN1', 'msC7H274X', 'mHmKLOJqx', 'm9t3RJDKF']",
+          "name": "e: the woken request holds Z2's frame",
+          "ok": true
+        },
+        {
+          "detail": "",
+          "name": "e: the agent returned to idle",
+          "ok": true
+        },
+        {
+          "detail": "unconsumed=[]",
+          "name": "wake: every step consumed",
+          "ok": true
+        },
+        {
+          "detail": "",
+          "name": "f: the child request was served",
+          "ok": true
+        },
+        {
+          "detail": "",
+          "name": "f: the note was sent",
+          "ok": true
+        },
+        {
+          "detail": "detection tail=\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n  \u25cf Agent(self: Gate Child)  Working \u00b7 1s\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n? for shortcuts                                                                     Gemini 3.1 Pro \u00b7 low \u00b7 1 subagent(s)\n",
+          "name": "f: the Agent(<name>) row is live",
+          "ok": true
+        },
+        {
+          "detail": "main requests added=0 untyped=0",
+          "name": "f: no wake while the Agent row is live",
+          "ok": true
+        },
+        {
+          "detail": "",
+          "name": "f: the parent finished its turn",
+          "ok": true
+        },
+        {
+          "detail": "",
+          "name": "f: the Agent row cleared",
+          "ok": true
+        },
+        {
+          "detail": "wake=False untyped=3",
+          "name": "f: once the row is gone the pending note is delivered",
+          "ok": true
+        },
+        {
+          "detail": "",
+          "name": "f: the agent returned to idle",
+          "ok": true
+        },
+        {
+          "detail": "",
+          "name": "g: the child request was served",
+          "ok": true
+        },
+        {
+          "detail": "",
+          "name": "g: the note was sent",
+          "ok": true
+        },
+        {
+          "detail": "detection tail=\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n  \u25cf Agent(self: Gate Child)  gate \u00b7 2s\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n? for shortcuts                                                                     Gemini 3.1 Pro \u00b7 low \u00b7 1 subagent(s)\n",
+          "name": "g: the Agent(<name>) row is live",
+          "ok": true
+        },
+        {
+          "detail": "main requests added=1 untyped=0",
+          "name": "g: no wake while the Agent row is live",
+          "ok": true
+        },
+        {
+          "detail": "",
+          "name": "g: the parent finished its turn",
+          "ok": true
+        },
+        {
+          "detail": "main requests added=0 untyped=0",
+          "name": "g: the row is still live and still no wake",
+          "ok": true
+        },
+        {
+          "detail": "unconsumed=[]",
+          "name": "subagent: every step consumed",
+          "ok": true
+        },
+        {
+          "detail": "",
+          "name": "no unmatched or template-error request",
+          "ok": true
+        }
+      ],
+      "duration_s": 213.98,
+      "error": null,
+      "name": "wake",
+      "requires": [
+        "ht-poh.4.5",
+        "ht-poh.5",
+        "ht-poh.3.4",
+        "ht-poh.3.6"
+      ],
+      "root": "/private/tmp/ih.zUq6d0",
+      "status": "pass"
+    }
+  ],
+  "herdr": "herdr 0.9.1",
+  "herdr_threads": {
+    "bin": "/tmp/sp-ede3b852/ht-54r.88/target-branch/debug/herdr-threads",
+    "dirty": true,
+    "sha": "f7341e918cae1d1ca2cd21da16a5dd14b79f0047"
+  },
+  "interrupted": false,
+  "leak_check": {
+    "ok": true,
+    "output": "no leaked test processes\n"
+  },
+  "owner_pid": 58824,
+  "run_id": "bed2ea37-cc1b-4a95-8b82-e699ba0729a1"
+}

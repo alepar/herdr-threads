@@ -1,0 +1,42 @@
+{
+  "A1": {
+    "actor": "sfgya1N8b",
+    "observation": {
+      "binding_generation": 1,
+      "decided_at": 1791742755659,
+      "execution": "967eda33-9849-5acc-a80e-344ae18437b4",
+      "harness": "agy",
+      "host_boot": "herdr-server:pid=25699:start=1791742698.229832:uid=501",
+      "observed_at": 1791742755659,
+      "provenance": "cooperative_top_level",
+      "session": "aac05e88-9804-4c9f-be13-73db3876b021",
+      "target_generation": 1
+    },
+    "provenance": null,
+    "state": "acked"
+  },
+  "O1": {
+    "actor": "sfgya1N8b",
+    "observation": {
+      "action_provenance": "cooperative_hook_delivery",
+      "binding_generation": 1,
+      "decided_at": 1791742755713,
+      "execution": "967eda33-9849-5acc-a80e-344ae18437b4",
+      "harness": "agy",
+      "host_boot": "herdr-server:pid=25699:start=1791742698.229832:uid=501",
+      "observed_at": 1791742755713,
+      "provenance": "cooperative_top_level",
+      "session": "aac05e88-9804-4c9f-be13-73db3876b021",
+      "target_generation": 1,
+      "via": "transcript"
+    },
+    "provenance": "cooperative_hook_delivery",
+    "state": "acked"
+  },
+  "T1": {
+    "actor": null,
+    "observation": {},
+    "provenance": null,
+    "state": "pending"
+  }
+}

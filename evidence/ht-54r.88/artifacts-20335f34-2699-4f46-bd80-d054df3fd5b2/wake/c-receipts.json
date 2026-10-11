@@ -1,0 +1,56 @@
+{
+  "N2": {
+    "actor": "slTHIJ6aB",
+    "observation": {
+      "action_provenance": "cooperative_hook_delivery",
+      "binding_generation": 1,
+      "decided_at": 1791742452645,
+      "execution": "a991b3b0-a1e3-58df-96f8-02e781ec1f24",
+      "harness": "agy",
+      "host_boot": "herdr-server:pid=10670:start=1791742382.383859:uid=501",
+      "observed_at": 1791742452645,
+      "provenance": "cooperative_top_level",
+      "session": "fb9df28c-b62a-490e-99c3-85dbb74d1204",
+      "target_generation": 1,
+      "via": "transcript"
+    },
+    "provenance": "cooperative_hook_delivery",
+    "state": "acked"
+  },
+  "tables": {
+    "receipt_state": [
+      {
+        "ack_actor_seat_id": "slTHIJ6aB",
+        "ack_binding_id": "fa18a76959882622a55a23cc42e018cb",
+        "ack_generation": 1,
+        "ack_observation": "{\"binding_generation\":1,\"decided_at\":1791742425812,\"execution\":\"a991b3b0-a1e3-58df-96f8-02e781ec1f24\",\"harness\":\"agy\",\"host_boot\":\"herdr-server:pid=10670:start=1791742382.383859:uid=501\",\"observed_at\":1791742425812,\"provenance\":\"cooperative_top_level\",\"session\":\"fb9df28c-b62a-490e-99c3-85dbb74d1204\",\"target_generation\":1}",
+        "ack_required": 1,
+        "acked_at": 1791742425812,
+        "available_at": 1791742397265,
+        "deadline_at": 1791742697265,
+        "message_id": "mFKLuPCx1",
+        "retired_at": null,
+        "seat_id": "slTHIJ6aB",
+        "soft_poked_at": null,
+        "state": "acked",
+        "warning_message_id": null
+      },
+      {
+        "ack_actor_seat_id": "slTHIJ6aB",
+        "ack_binding_id": "fa18a76959882622a55a23cc42e018cb",
+        "ack_generation": 1,
+        "ack_observation": "{\"action_provenance\":\"cooperative_hook_delivery\",\"binding_generation\":1,\"decided_at\":1791742452645,\"execution\":\"a991b3b0-a1e3-58df-96f8-02e781ec1f24\",\"harness\":\"agy\",\"host_boot\":\"herdr-server:pid=10670:start=1791742382.383859:uid=501\",\"observed_at\":1791742452645,\"provenance\":\"cooperative_top_level\",\"session\":\"fb9df28c-b62a-490e-99c3-85dbb74d1204\",\"target_generation\":1,\"via\":\"transcript\"}",
+        "ack_required": 1,
+        "acked_at": 1791742452645,
+        "available_at": 1791742443553,
+        "deadline_at": 1791742743553,
+        "message_id": "m2r7T6lnc",
+        "retired_at": null,
+        "seat_id": "slTHIJ6aB",
+        "soft_poked_at": null,
+        "state": "acked",
+        "warning_message_id": null
+      }
+    ]
+  }
+}

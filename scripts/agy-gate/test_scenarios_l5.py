@@ -106,13 +106,16 @@ class L5QueryTests(unittest.TestCase):
         (root / "ht" / "i").mkdir(parents=True)
         conn = sqlite3.connect(str(root / "ht" / "i" / "threads.sqlite3"))
         conn.execute("CREATE TABLE seats(id INTEGER)")
-        conn.execute("CREATE TABLE occupant_bindings(seat_id INTEGER, ordinal INTEGER, generation INTEGER,"
-                     " harness TEXT, native_session TEXT, observation_provenance TEXT, ended_at INTEGER)")
+        conn.execute("CREATE TABLE occupant_bindings(binding_id TEXT, seat_id INTEGER, ordinal INTEGER,"
+                     " generation INTEGER, harness TEXT, native_session TEXT, observation_provenance TEXT,"
+                     " role TEXT, liveness TEXT, lineage_from TEXT, ended_at INTEGER)")
         conn.execute("INSERT INTO seats VALUES (1)")
-        rows = [(1, 1, 1, "agy", "old", "cooperative_top_level", 5),
-                (1, 2, 2, "agy", "new", "cooperative_top_level", None),
-                (2, 1, 1, "human", "h", "human", None)]
-        conn.executemany("INSERT INTO occupant_bindings VALUES (?,?,?,?,?,?,?)", rows)
+        rows = [("b1", 1, 1, 1, "agy", "old", "cooperative_top_level", "top_level", "disconnected", None, None),
+                ("b2", 1, 2, 1, "agy", "new", "cooperative_top_level", "top_level", "connected", "b1", None),
+                ("b3", 1, 3, 1, "agy", "kid", "cooperative_subagent", "subagent", "connected", "b2", None),
+                ("b4", 1, 4, 1, "agy", "gone", "cooperative_top_level", "top_level", "connected", None, 5),
+                ("b5", 2, 1, 1, "human", "h", "human", "top_level", "connected", None, None)]
+        conn.executemany("INSERT INTO occupant_bindings VALUES (?,?,?,?,?,?,?,?,?,?,?)", rows)
         conn.commit()
         conn.close()
         presence = root / "home" / ".gemini" / "antigravity-cli" / "presence"
@@ -124,9 +127,19 @@ class L5QueryTests(unittest.TestCase):
             agy_data = root / "home" / ".gemini" / "antigravity-cli"
         self.world = World()
 
-    def test_live_binding_is_the_unended_agy_row_and_ignores_other_harnesses(self):
+    def test_live_binding_is_the_connected_open_top_level_agy_row(self):
+        """Session-keyed (ht-54r.88): the old session's disconnected row, a subagent row, an ended row and a
+        human row are not the live binding, and ``generation`` is not what picks it."""
         binding = self.l5.live_binding(self.world)
-        self.assertEqual((binding["generation"], binding["native_session"]), (2, "new"))
+        self.assertEqual((binding["binding_id"], binding["native_session"]), ("b2", "new"))
+        self.assertEqual([b["binding_id"] for b in self.l5.live_bindings(self.world)], ["b2"])
+
+    def test_binding_for_finds_a_session_whatever_its_state(self):
+        self.assertEqual(self.l5.binding_for(self.world, "old")["liveness"], "disconnected")
+        self.assertEqual(self.l5.binding_for(self.world, "gone")["ended_at"], 5)
+        self.assertIsNone(self.l5.binding_for(self.world, "kid"), "a subagent row is not a top-level binding")
+        self.assertIsNone(self.l5.binding_for(self.world, "nope"))
+        self.assertEqual([b["binding_id"] for b in self.l5.all_bindings(self.world)], ["b1", "b2", "b3", "b4"])
 
     def test_seat_count_and_presence_ids(self):
         self.assertEqual(self.l5.seat_count(self.world), 1)

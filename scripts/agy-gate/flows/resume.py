@@ -1,8 +1,9 @@
 """``resume``: A, exit, fresh B, exit, ``--conversation A``, exit, ``-c`` (test-infra spec D7).
 
-Everything runs in one pane so the seat is the same. After ``--conversation A``: same seat, binding
-native session A, no new seat. ``-c`` resumes the most recent conversation, which is A only because
-A was the most recent at that point: no rotation, generation unchanged. Neither resume start fires
+Everything runs in one pane so the seat is the same. Bindings are session-keyed (spec §1): each native
+session owns one row on the seat. After ``--conversation A``: same seat, A's own row (same ``binding_id``) is
+connected again and B's row is not, no new seat. ``-c`` resumes the most recent conversation, which is A only
+because A was the most recent at that point: no new row, A's binding unchanged. Neither resume start fires
 ``SessionStart``, so no request carries a second SessionStart-injected startup check-in. The Resume
 lifecycle's own notice ("this conversation is the pane's top-level session") restates the startup
 text by design (PRE_INVOCATION_LIFECYCLE_PREFIX) and is not a SessionStart injection.
@@ -52,25 +53,38 @@ def run(world):
     pane = world.start_agy(args=["--conversation", conv_a or ""], pane=pane.pane_id)
     third, _ = _l5.run_turn(world, pane, "ALPHA-TWO hello", "a2")
     world.check("--conversation A's step was served", third is not None)
-    bind_a2 = _l5.await_binding(world, lambda b: b["native_session"] == conv_a)
-    world.check("--conversation A rebinds the same seat to native session A",
-                bind_a2 is not None and bind_a2["seat_id"] == seat,
-                "seat=%s A=%s binding=%s" % (seat, conv_a, _l5.live_binding(world)))
+
+    def connected(session):
+        row = _l5.binding_for(world, session)
+        return row if row is not None and row["liveness"] == "connected" and row["ended_at"] is None else None
+
+    bind_a2 = observe.wait_until(lambda: connected(conv_a), 20)
+    world.check("--conversation A reconnects A's own binding on the same seat",
+                bind_a2 is not None and bind_a2["seat_id"] == seat and bind_a is not None
+                and bind_a2["binding_id"] == bind_a["binding_id"],
+                "seat=%s A=%s A-row=%s bindings=%s" % (seat, conv_a, bind_a2, _l5.all_bindings(world)))
+    left = observe.wait_until(lambda: (lambda r: r is not None and r["liveness"] != "connected")(
+        _l5.binding_for(world, bind_b["native_session"] if bind_b else None)), 20)
+    world.check("the conversation just left (B) is no longer connected", bool(left),
+                "B-row=%s" % _l5.binding_for(world, bind_b["native_session"] if bind_b else None))
     world.check("--conversation A creates no new seat", _l5.seat_count(world) == seats,
                 "before=%s after=%s" % (seats, _l5.seat_count(world)))
+    rows = len(_l5.all_bindings(world))
     pane.exit()
 
     pane = world.start_agy(args=["-c"], pane=pane.pane_id)
     fourth, _ = _l5.run_turn(world, pane, "ALPHA-THREE hello", "a3")
     world.check("-c's step was served", fourth is not None)
-    bind_c = _l5.live_binding(world)
-    world.check("-c resumes A without rotation: seat, generation and native session unchanged",
+    bind_c = observe.wait_until(lambda: connected(conv_a), 20)
+    world.check("-c resumes A without a new binding: seat, binding and native session unchanged",
                 bind_a2 is not None and bind_c is not None
-                and (bind_c["seat_id"], bind_c["generation"], bind_c["native_session"])
-                == (bind_a2["seat_id"], bind_a2["generation"], conv_a),
-                "before=%s after=%s" % (bind_a2, bind_c))
+                and (bind_c["seat_id"], bind_c["binding_id"], bind_c["native_session"])
+                == (bind_a2["seat_id"], bind_a2["binding_id"], conv_a)
+                and len(_l5.all_bindings(world)) == rows,
+                "before=%s after=%s rows=%s/%s" % (bind_a2, bind_c, rows, len(_l5.all_bindings(world))))
     world.check("-c creates no new seat", _l5.seat_count(world) == seats,
                 "before=%s after=%s" % (seats, _l5.seat_count(world)))
+    world.artifact("bindings.json", _l5.all_bindings(world))
     pane.exit()
 
     mains = observe.main_requests(world)

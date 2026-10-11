@@ -1,0 +1,33 @@
+PATH=/private/tmp/ih.keNCjQ/bin:"$PATH" /private/tmp/ih.keNCjQ/bin/agy
+alepar@mbp-alepar ws % PATH=/private/tmp/ih.keNCjQ/bin:"$PATH" /private/tmp/ih.keNCjQ/bin/agy
+
+      ▄▀▀▄        Antigravity CLI 1.3.3
+     ▀▀▀▀▀▀       Gemini API key
+    ▀▀▀▀▀▀▀▀      Gemini 3.1 Pro (Low)
+   ▄▀▀    ▀▀▄     /private/tmp/ih.keNCjQ/ws
+  ▄▀▀      ▀▀▄
+
+────────────────────────────────────────────────────────────
+> DOWN-WARM hello
+
+  DOWN-WARM-OK
+
+────────────────────────────────────────────────────────────
+> herdr-threads: wake up
+
+  DOWN-WAKE-OK
+
+────────────────────────────────────────────────────────────
+> DOWN-BUSY1 start
+
+  DOWN-BUSY1-DONE
+
+────────────────────────────────────────────────────────────
+> DOWN-GO1 now
+
+  DOWN-TAIL
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+>
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+? for shortcuts                                                                                     Gemini 3.1 Pro · low

@@ -1,0 +1,39 @@
+PATH=/private/tmp/ih.tOuk8H/bin:"$PATH" /private/tmp/ih.tOuk8H/bin/agy
+alepar@mbp-alepar ws % PATH=/private/tmp/ih.tOuk8H/bin:"$PATH" /private/tmp/ih.tOuk8H/bin/agy
+
+      ▄▀▀▄        Antigravity CLI 1.3.3
+     ▀▀▀▀▀▀       Gemini API key
+    ▀▀▀▀▀▀▀▀      Gemini 3.1 Pro (Low)
+   ▄▀▀    ▀▀▄     /private/tmp/ih.tOuk8H/ws
+  ▄▀▀      ▀▀▄
+
+────────────────────────────────────────────────────────────
+> WAKE-WARM hello
+
+  WAKE-WARM-OK
+
+────────────────────────────────────────────────────────────
+> herdr-threads: wake up
+
+● Ran (herdr-threads accept taF1BRhkS) (ctrl+o to expand)
+
+  WAKE-JOIN-OK
+
+────────────────────────────────────────────────────────────
+> herdr-threads: wake up
+
+● Ran (herdr-threads ack mtm3fOfCS) (ctrl+o to expand)
+
+  WAKE-A-DONE
+
+────────────────────────────────────────────────────────────
+> WAKE-BUSY-C go
+
+● Ran (herdr-threads wake-on) (ctrl+o to expand)
+
+  WAKE-C-DONE
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+> WAKE-DRAFT keep me
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+                                                                                                    Gemini 3.1 Pro · low

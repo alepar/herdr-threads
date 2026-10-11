@@ -1,0 +1,40 @@
+[
+  {
+    "body": "bodies/000001.json",
+    "function_calls": [],
+    "function_responses": [],
+    "kind": "aux",
+    "model": "gemini-3.1-flash-lite-preview",
+    "path": "/v1beta/models/gemini-3.1-flash-lite-preview:streamGenerateContent",
+    "roles": [
+      "user"
+    ],
+    "seq": 1,
+    "step": null,
+    "system_messages": [],
+    "t": 1791742684.135465,
+    "template_error": null,
+    "unmatched": false,
+    "user_requests": []
+  },
+  {
+    "body": "bodies/000002.json",
+    "function_calls": [],
+    "function_responses": [],
+    "kind": "main",
+    "model": "gemini-3.1-pro-preview",
+    "path": "/v1beta/models/gemini-3.1-pro-preview:streamGenerateContent",
+    "roles": [
+      "user"
+    ],
+    "seq": 2,
+    "step": "boot",
+    "system_messages": [],
+    "t": 1791742684.148976,
+    "template_error": null,
+    "unmatched": false,
+    "user_requests": [
+      "hi"
+    ]
+  }
+]

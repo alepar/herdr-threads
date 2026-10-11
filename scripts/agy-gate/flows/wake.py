@@ -133,9 +133,13 @@ def phase_e(world, pane, sender, thread, typed):
                 done is not None and any(r.get("name") == "run_command" for r in done.get("function_responses") or []),
                 "responses=%s" % (done or {}).get("function_responses"))
     settle(world, pane, "e")
-    rc, data = _l6.ht_json(world, ["wake-on"], pane=pane.pane_id)
-    world.artifact("e-wake-on.json", {"rc": rc, "data": data})
-    world.check("e: the seat's wake preference is now all", "all" in str(data), "data=%s" % data)
+    # Read from the daemon database: `wake-on` run from the gate process is an unattributable caller (agent seats
+    # have no pane-context journal); only the agy session itself, through run_command, may act as the seat.
+    seats = _l5.query(world, "SELECT DISTINCT s.id, s.wake_on FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id "
+                             "WHERE b.harness='agy' AND b.role='top_level' AND b.liveness='connected'")
+    world.artifact("e-wake-on.json", seats)
+    world.check("e: the seat's wake preference is now all", len(seats) == 1 and seats[0]["wake_on"] == "all",
+                "seats=%s" % seats)
     base = _l7.untyped_count(world, typed)
     z2 = _l6.send(world, sender, thread, "WAKE-Z2 lazy", "--lazy")
     world.check("e: Z2 was sent", bool(z2))
@@ -184,9 +188,11 @@ def run(world):
     setup = _l6.setup(world)
     world.check("setup agy succeeds", setup.returncode == 0, (setup.stderr or setup.stdout).strip()[:200])
     sender = world.sender()
+    # The thread exists before agy starts: the scripted accept (wake-join) names it.
+    thread = _l6.create_thread(world, sender, "gate-wake")
     typed = _l7.Typed()
     pane = _l6.start_agy(world)
-    scenario = _l7.load(world, "wake")
+    scenario = _l7.load(world, "wake", thread=thread)
     typed.prompt(pane, "WAKE-WARM hello")
     _l5.await_step(world, "warm", 30)
     pane.wait("idle", 30)
@@ -194,10 +200,9 @@ def run(world):
     world.check("the agy seat is enrolled", binding is not None)
     if binding is None:
         return
-    thread = _l6.create_thread(world, sender, "gate-wake")
     invite, accept = _l6.join(world, sender, pane, thread, binding["seat_id"])
-    world.check("the sender invited the agy seat and it accepted", invite.returncode == 0 and accept.returncode == 0,
-                "invite=%s accept=%s" % (invite.stderr.strip(), accept.stderr.strip()))
+    world.check("the sender invited the agy seat and the agy session accepted (run_command, joined)",
+                invite.returncode == 0 and accept.ok, "invite=%s accept=%s" % (invite.stderr.strip(), accept.detail))
     _l5.await_step(world, "wake-join", 10)
     settle(world, pane, "join")
     phase_a(world, pane, sender, thread, typed)

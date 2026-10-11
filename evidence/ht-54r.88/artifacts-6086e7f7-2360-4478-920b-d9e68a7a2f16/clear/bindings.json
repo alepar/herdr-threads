@@ -1,0 +1,28 @@
+[
+  {
+    "binding_id": "7d2d414f51879eb78bc7547e26948ec6",
+    "ended_at": null,
+    "generation": 1,
+    "harness": "agy",
+    "lineage_from": null,
+    "liveness": "disconnected",
+    "native_session": "44c52660-e1cf-4897-90e9-4d63a61159a7",
+    "observation_provenance": "cooperative_top_level",
+    "ordinal": 1,
+    "role": "top_level",
+    "seat_id": "sDxoVSBXJ"
+  },
+  {
+    "binding_id": "c00ba67dbf6780b7ddd3172c38abd939",
+    "ended_at": null,
+    "generation": 1,
+    "harness": "agy",
+    "lineage_from": null,
+    "liveness": "connected",
+    "native_session": "b43895fb-d8b8-4295-b7bf-7b69f12a2908",
+    "observation_provenance": "cooperative_top_level",
+    "ordinal": 2,
+    "role": "top_level",
+    "seat_id": "sDxoVSBXJ"
+  }
+]
