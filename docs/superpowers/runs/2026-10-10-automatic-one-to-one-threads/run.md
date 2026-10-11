@@ -1,7 +1,7 @@
 # super-auto run — 2026-10-10-automatic-one-to-one-threads
 
 flags: planOneShot=true skipPlanRoast=false skipCodeRoast=false autonomous=true
-phase: fix-loop (skipped)
+phase: report
 
 idea: Use $super-auto, fully autonomous end to end with both roasts on, to implement this feature in this repo: automatic 1:1 threads. An agent can send a message to another agent by giving only a target seat ID, without specifying a thread. The plugin automatically creates (or reuses an existing) "1:1" thread with exactly two participants, the sender and the recipient, which otherwise behaves like a normal thread. The handoff command gets the same treatment: if no thread is specified, the handoff goes through the 1:1 thread. When the integration branch is ready for merge, run `herdr-threads join dev-herdr-threads` (thread taQXwBH7X) and send a --nudge message there stating that this feature is ready for integration into main.
 branch: super-auto/automatic-one-to-one-threads
@@ -64,3 +64,5 @@ scopeFilter-round-2:
 scope-filter: 0 in-scope · 1 punch-listed
 
 PR roast2 disposition: clean (1 nits) [low coverage], 0new/1carried/0resolved/0regressed,12/12scouts,0raw/deduped/panels/spots; no judge seats required, zero stage loss/retries/caps/escalations. Fresh scope filter routes carriedNit to punch list. Fix-loop skipped: no in-scope finding. Both design2 and PR2 degraded qualifiers are preserved; autonomous proceed, no pointless third round. Actual47packetfiles preserved in `.superpowers/sdd/ht-e99-plan/roast-pr-2/`. Final fullsuite gate starts only after this disposition.
+
+Report phase entered: exact-tip fullsuite readiness verification pending before report.md is written. Separate ordinary/test-support release preparation and all-target nextest no-run are required before timed execution; no historical pass reuse.
