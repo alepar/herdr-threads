@@ -70,7 +70,7 @@ ids are retried on the next Attention, after the next registration and every 30 
 does not. On resume the mod may re-ack items delivered under the immediately previous generation
 of the same native session; older ones are `stale_generation` and are re-streamed. A drop starts a
 30 s reconnect grace (same-generation re-registration cancels it); `Close{binding_changed}` starts
-a 30 s seat-level rebind grace. A stalled channel (10 min without ack while an ordinary receipt
+a 30 s rebind grace for that binding (it keeps authorizing its late acks; it does not suppress wakes or the SessionStart digest for the new binding). A stalled channel (10 min without ack while an ordinary receipt
 waits) is closed with `stalled` and refused for 10 minutes. See spec D5-D7.
 
 ## Behaviour

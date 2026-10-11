@@ -1506,7 +1506,10 @@ fn seat_live_counts_every_unexpired_entry_whatever_its_generation() {
     assert!(f.registry.seat_live(&seat("a")), "reconnect grace");
     f.registry
         .close(&bid("a", 1), WatchCloseReason::BindingChanged, f.now());
-    assert!(f.registry.seat_live(&seat("a")), "rebind grace");
+    assert!(
+        !f.registry.seat_live(&seat("a")),
+        "rebind grace does not suppress wakes or the digest"
+    );
     f.register("a", 2);
     assert!(f.registry.seat_live(&seat("a")), "live at generation 2");
 }
@@ -1524,6 +1527,24 @@ fn seat_live_ignores_an_expired_grace_before_the_sweep() {
         .close(&bid("a", 1), WatchCloseReason::BindingChanged, f.now());
     f.advance(MOD_REBIND_GRACE_MS as i64 + 1);
     assert!(!f.registry.seat_live(&seat("a")), "expired rebind grace");
+}
+
+#[test]
+fn rebind_grace_authorizes_acks_but_is_neither_seat_nor_binding_live() {
+    let f = fixture();
+    f.register("a", 1);
+    f.registry
+        .close(&bid("a", 1), WatchCloseReason::BindingChanged, f.now());
+    assert!(!f.registry.seat_live(&seat("a")));
+    assert!(!f.registry.binding_live(&seat("a"), &bid("a", 1)));
+    assert!(
+        f.registry.is_live(&seat("a"), &bid("a", 1)),
+        "acks stay authorized"
+    );
+    f.advance(MOD_REBIND_GRACE_MS as i64 - 1);
+    assert!(f.registry.is_live(&seat("a"), &bid("a", 1)));
+    f.advance(2);
+    assert!(!f.registry.is_live(&seat("a"), &bid("a", 1)), "expired");
 }
 
 #[test]

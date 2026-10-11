@@ -14,9 +14,11 @@
 //!   [`MOD_RECONNECT_GRACE_MS`] the entry still counts as live (so wake
 //!   pokes do not fire while the mod restarts its watch). Expiry removes the
 //!   entry and kicks the wake lane.
-//! - `RebindGrace`: after `Close{binding_changed}`, the binding's entry still counts as live
-//!   for [`MOD_REBIND_GRACE_MS`]. A registration for the binding ends it; expiry removes the
-//!   entry and kicks.
+//! - `RebindGrace`: after `Close{binding_changed}`, the binding's entry keeps authorizing that
+//!   binding's late mod acks ([`ModChannels::is_live`]) for [`MOD_REBIND_GRACE_MS`]; it no
+//!   longer suppresses wakes or the SessionStart digest (`seat_live` and `binding_live` skip
+//!   it: the superseding binding is a new binding that must be woken for its own unread
+//!   mail). A registration for the binding ends it; expiry removes the entry and kicks.
 //!
 //! `retired`, `unresolved`, `stalled`, `disabled` and `stopping` closes remove
 //! the entry at once and kick the wake lane; `stalled` also starts the
@@ -88,6 +90,12 @@ impl Entry {
     /// The entry counts as handled: its grace (if any) has not expired.
     fn unexpired(&self, now: UtcMillis) -> bool {
         self.grace_until.is_none_or(|until| until > now)
+    }
+
+    /// The entry means the mod is handling its binding: unexpired and not in `RebindGrace`
+    /// (a closed binding is disconnected and no wake target; its grace only authorizes acks).
+    fn handling(&self, now: UtcMillis) -> bool {
+        self.unexpired(now) && self.state != ModChannelState::RebindGrace
     }
 }
 
@@ -608,7 +616,11 @@ impl ModChannels for ModChannelRegistry {
     }
 
     fn is_live(&self, seat: &SeatId, binding: &BindingId) -> bool {
-        self.binding_live(seat, binding)
+        let now = self.clock.utc_now();
+        self.lock()
+            .entries
+            .get(binding)
+            .is_some_and(|entry| &entry.seat == seat && entry.unexpired(now))
     }
 
     fn binding_live(&self, seat: &SeatId, binding: &BindingId) -> bool {
@@ -616,7 +628,7 @@ impl ModChannels for ModChannelRegistry {
         self.lock()
             .entries
             .get(binding)
-            .is_some_and(|entry| &entry.seat == seat && entry.unexpired(now))
+            .is_some_and(|entry| &entry.seat == seat && entry.handling(now))
     }
 
     fn notify(&self, seat: &SeatId, attention_version: u64) {
@@ -633,7 +645,7 @@ impl ModChannels for ModChannelRegistry {
         state.by_seat.get(seat).is_some_and(|bindings| {
             bindings
                 .iter()
-                .any(|binding| state.entries.get(binding).is_some_and(|e| e.unexpired(now)))
+                .any(|binding| state.entries.get(binding).is_some_and(|e| e.handling(now)))
         })
     }
 

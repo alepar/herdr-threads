@@ -2788,6 +2788,18 @@ pub trait StorePort: ModStoreReads + Send + Sync {
         read: &ReadContext,
         budget: &CallBudget,
     ) -> Result<CommandResult, ApiError>;
+    /// An `AttentionDigest` / `AttentionDigestDelivery` query together with the open binding the
+    /// digest was read for (`None` for a seat-level read or a claim whose session has no binding
+    /// yet), read in one snapshot. Daemon-internal: the binding is never put on the wire (A2).
+    fn attention_digest_read(
+        &self,
+        command: &Command,
+        read: &ReadContext,
+        budget: &CallBudget,
+    ) -> Result<(CommandResult, Option<BindingId>), ApiError> {
+        self.query(command, read, budget)
+            .map(|result| (result, None))
+    }
     fn mutate(
         &self,
         command: PermitMutation,
@@ -3568,26 +3580,32 @@ pub trait ModChannels: Send + Sync {
     }
     /// Authorization of `AckModDelivered` only (spec D6, TRUST-POLICY A5): true from
     /// registration until the stream ends **and through reconnect grace**, for the channel's own
-    /// binding; during that binding's rebind grace too. It is not "is the mod handling this
+    /// binding; during that binding's rebind grace too (late acks stay authorized). It is not "is the mod handling this
     /// seat": that is [`Self::seat_live`].
     fn is_live(&self, _seat: &SeatId, _binding: &BindingId) -> bool {
         false
     }
     /// Binding-keyed liveness of the mod channel (spec §3): `binding` holds an entry of `seat`
-    /// whose grace has not expired (Live, ReconnectGrace and RebindGrace alike). The default
+    /// whose grace has not expired (Live and ReconnectGrace; a RebindGrace entry does not count:
+    /// that binding was closed as superseded). The default
     /// answers from the seat.
     fn binding_live(&self, seat: &SeatId, binding: &BindingId) -> bool {
         let _ = binding;
         self.seat_live(seat)
     }
     /// "Is the mod handling this seat" (spec D7): any registry entry for the
-    /// seat whose grace has not expired, Live, ReconnectGrace and RebindGrace
-    /// alike, whichever binding holds it. Consumers: the seat-level wake candidate
+    /// seat whose grace has not expired, Live or ReconnectGrace, whichever binding holds it.
+    /// A RebindGrace entry (a binding closed as superseded) does not count: the new binding is
+    /// woken and digested for its own unread mail (spec §1.3, §3 Wake). Consumers: the seat-level wake candidate
     /// path and pokes (scheduler `mod_suppressed`) and the Claude hook digest
     /// flag (`mod_channel_live`). The default answers from `status()`.
     fn seat_live(&self, seat: &SeatId) -> bool {
-        self.status()
-            .is_some_and(|status| status.channels.iter().any(|entry| &entry.seat == seat))
+        self.status().is_some_and(|status| {
+            status.channels.iter().any(|entry| {
+                &entry.seat == seat
+                    && entry.state != crate::protocol::watch::ModChannelState::RebindGrace
+            })
+        })
     }
     /// Push `Attention{version}` to every Live channel of the seat.
     fn notify(&self, _seat: &SeatId, _attention_version: u64) {}

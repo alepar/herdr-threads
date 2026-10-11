@@ -857,17 +857,26 @@ impl LocalService for DomainService {
             | Command::Diagnostics(_)
             | Command::RetirementJobs(_) => self.store.query(&command, &read, budget),
             Command::AttentionDigest(_) | Command::AttentionDigestDelivery(_) => {
-                let seat = match &command {
-                    Command::AttentionDigest(q) | Command::AttentionDigestDelivery(q) => {
-                        q.seat.clone()
-                    }
+                let query = match &command {
+                    Command::AttentionDigest(q) | Command::AttentionDigestDelivery(q) => q,
                     _ => unreachable!("matched above"),
                 };
-                let mut result = self.store.query(&command, &read, budget)?;
-                // Spec D7: any live or grace entry for the seat, which also
-                // covers the rebind grace of the SessionStart check-in that
-                // rotated the generation.
-                let live = self.seat_has_mod_channel(&seat);
+                let seat = query.seat.clone();
+                let claim = query
+                    .claim
+                    .as_ref()
+                    .filter(|claim| claim.harness != crate::protocol::authority::Harness::Human);
+                let (mut result, binding) =
+                    self.store.attention_digest_read(&command, &read, budget)?;
+                // Spec §2 Hook notifications / §3 Wake: the digest flag follows the binding the
+                // digest was read for, so one binding's channel never hides mail from another.
+                // A non-human claim with no binding yet has no channel; no claim (or a human
+                // claim) is the seat-level digest.
+                let live = match (&binding, claim) {
+                    (Some(binding), _) => self.mod_channels.binding_live(&seat, binding),
+                    (None, Some(_)) => false,
+                    (None, None) => self.seat_has_mod_channel(&seat),
+                };
                 match &mut result {
                     CommandResult::AttentionDigest(digest)
                     | CommandResult::AttentionDigestDelivery { digest, .. } => {
