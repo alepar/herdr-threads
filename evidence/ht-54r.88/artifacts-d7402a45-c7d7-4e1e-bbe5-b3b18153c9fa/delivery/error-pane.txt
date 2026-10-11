@@ -1,0 +1,40 @@
+> herdr-threads: wake up
+
+● Ran (herdr-threads accept tZxBeLWxb) (ctrl+o to expand)
+
+  DELIV-WAKE-OK
+
+────────────────────────────────────────────────────────────
+> STOP-BUSY start
+
+  STOP-BUSY-DONE
+
+────────────────────────────────────────────────────────────
+> STOP-GO now
+
+  STOP-INV0-DONE
+
+────────────────────────────────────────────────────────────
+> CANCEL-BUSY start
+
+  CANCEL-BUSY-DONE
+
+────────────────────────────────────────────────────────────
+> CANCEL-GO now
+
+────────────────────────────────────────────────────────────
+> ERROR-BUSY start
+
+  ERROR-BUSY-DONE
+
+────────────────────────────────────────────────────────────
+> ERROR-GO now
+
+⚠ agent executor error: generating and executing: Error 400, Message: gate scripted error, Status: INVALID_ARGUMENT,
+Details: []
+Error ID: 4e69deee-ccd4-4f67-86d3-ae7cab51c12d-21
+
+ How's the CLI experience so far? Help us improve:
+ [1] Good  [2] Fine  [3] Bad  [0] Skip
+
+? for shortcuts                                                                                     Gemini 3.1 Pro · low

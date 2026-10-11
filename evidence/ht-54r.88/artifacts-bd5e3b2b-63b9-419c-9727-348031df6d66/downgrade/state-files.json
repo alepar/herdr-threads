@@ -1,0 +1,4 @@
+{
+  "conversations/5ca1a54ea2fc41c3316d5e7b30a3424b.json": "{\"v\":1,\"seen_attention_version\":15514654014810531494,\"injected\":[],\"turn\":11,\"injected_this_turn\":false,\"generation\":1}",
+  "downgrade.json": "{\"v\":1,\"identity\":{\"path\":\"/private/tmp/ih.keNCjQ/agybin/2/agy\",\"inode\":151025545,\"size\":180718224,\"mtime_ns\":1791740472910663954},\"misses\":[],\"downgraded_at\":1791741539836,\"reason\":\"abort\",\"probation\":false,\"probation_at\":null}"
+}

@@ -24,6 +24,14 @@ def load(name):
     return scenario.load(str(HERE / "scenarios" / (name + ".json")))
 
 
+def load_helper():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("l6h", str(HERE / "flows" / "_l6.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def frame(kind, mid, body, thread='tT1 "gate"', sender="sS1"):
     return "[herdr-threads] %s %s in %s from %s [human]:\n  %s" % (kind, mid, thread, sender, body)
 
@@ -111,6 +119,45 @@ class L6ScenarioTests(unittest.TestCase):
             cursor = scenario.Cursor(load(name))
             self.assertEqual(cursor.select(warm)["label"], "warm")
             self.assertEqual(cursor.select(warm + "\nherdr-threads: wake up")["label"], "wake-join")
+
+    def test_the_join_wake_runs_accept_through_run_command_as_the_agy_session(self):
+        """ht-54r.88: the agy seat accepts from inside agy (env claim + agy ancestor), not from the gate."""
+        for name, warm, extra in (("delivery-stop", "DELIV-WARM hello", ""), ("downgrade", "DOWN-WARM hello", ""),
+                                  ("wake", "WAKE-WARM hello", "")):
+            data = load(name)
+            labels = [s["label"] for s in data["steps"]]
+            self.assertEqual(labels[labels.index("wake-join") + 1], "wake-join-done", name)
+            call = next(s for s in data["steps"] if s["label"] == "wake-join")["reply"]
+            self.assertEqual(call["call"], "run_command", name)
+            self.assertEqual(call["args"]["CommandLine"], "herdr-threads accept {var.thread}", name)
+            self.assertTrue(TOOL_PROPERTIES <= set(call["args"]), name)
+            cursor = scenario.Cursor(data)
+            self.assertEqual(cursor.select(warm)["label"], "warm")
+            wake = warm + "\nherdr-threads: wake up"
+            self.assertEqual(cursor.select(wake)["label"], "wake-join")
+            self.assertEqual(cursor.select(wake + "\nexited with code 0")["label"], "wake-join-done")
+
+    def test_accept_verdict_names_the_attribution_refusal(self):
+        l6 = load_helper()
+        ok, _ = l6.accept_verdict("herdr-threads: joined\nCommand exited with code 0", "joined")
+        self.assertTrue(ok)
+        refused = "herdr-threads: seat s1 has no lifecycle check-in context yet (invalid_request)\nexited with code 1"
+        ok, detail = l6.accept_verdict(refused, "invited")
+        self.assertFalse(ok)
+        self.assertIn("invalid_request", detail)
+        ok, detail = l6.accept_verdict("exited with code 0", "invited")
+        self.assertFalse(ok, "exit 0 is not enough: the membership must be joined")
+        ok, _ = l6.accept_verdict("", "joined")
+        self.assertFalse(ok, "no accept output means the accept never ran")
+
+
+    def test_flows_never_act_as_the_agy_seat_from_the_gate_process(self):
+        """Agent seats have no pane-context journal: accept and wake-on run only inside agy (run_command)."""
+        for flow in ("delivery", "downgrade", "wake"):
+            text = (HERE / "flows" / (flow + ".py")).read_text()
+            for verb in ('["accept"', '["wake-on"'):
+                self.assertNotIn(verb, text, "%s runs %s from the gate" % (flow, verb))
+        self.assertNotIn('["accept"', (HERE / "flows" / "_l6.py").read_text())
 
     def test_no_scenario_routes_on_the_inbox_marker(self):
         for path in sorted((HERE / "scenarios").glob("*.json")):

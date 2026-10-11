@@ -149,6 +149,40 @@ def body_text(world, request):
         return ""
 
 
+def _strings(node):
+    if isinstance(node, str):
+        yield node
+    elif isinstance(node, dict):
+        for value in node.values():
+            yield from _strings(value)
+    elif isinstance(node, list):
+        for value in node:
+            yield from _strings(value)
+
+
+def _responses(node):
+    if isinstance(node, dict):
+        if isinstance(node.get("functionResponse"), dict):
+            yield node["functionResponse"]
+        for value in node.values():
+            yield from _responses(value)
+    elif isinstance(node, list):
+        for value in node:
+            yield from _responses(value)
+
+
+def last_functionresponse(world, request):
+    """The newest functionResponse of a saved request body, its string values joined by newlines.
+
+    Each follow-up request repeats the earlier responses; the last one is this step's command output.
+    """
+    try:
+        found = list(_responses(json.loads(body_text(world, request))))
+    except ValueError:
+        return ""
+    return "\n".join(_strings(found[-1].get("response"))) if found else ""
+
+
 def tool_declaration(world, request, name):
     """The ``functionDeclarations`` entry called ``name`` in a saved request body (None when absent)."""
     try:

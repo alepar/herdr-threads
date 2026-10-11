@@ -1,0 +1,4 @@
+{
+  "conversations/4a4f364abc443d77b5a4806599399c19.json": "{\"v\":1,\"seen_attention_version\":2090952480175098126,\"injected\":[{\"id\":\"mmYLC3h1S\",\"offset\":5626,\"turn\":4},{\"id\":\"m06W1xVow\",\"offset\":9862,\"turn\":10},{\"id\":\"mSqjPJws1\",\"offset\":10816,\"turn\":12}],\"turn\":12,\"injected_this_turn\":true,\"generation\":2}",
+  "downgrade.json": "{\"v\":1,\"identity\":{\"path\":\"/private/tmp/ih.ccR6Ke/agybin/2/agy\",\"inode\":150887446,\"size\":180718224,\"mtime_ns\":1791740472910663954},\"misses\":[],\"downgraded_at\":1791740741083,\"reason\":\"misses\",\"probation\":false,\"probation_at\":null}"
+}

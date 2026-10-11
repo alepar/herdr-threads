@@ -24,9 +24,15 @@ STARTUP_MARK = "Use inbox; follow its next: commands"
 CHILD_MARK = "Subagents may discover, read and summarize"
 SKILL_PATH = "skills/herdr-threads/SKILL.md"
 
-BINDING_SQL = ("SELECT seat_id, ordinal, generation, harness, native_session, observation_provenance "
-               "FROM occupant_bindings WHERE harness='agy' AND ended_at IS NULL "
-               "ORDER BY seat_id, ordinal DESC")
+# Session-keyed bindings (spec §1): a seat keeps one row per native session, so a binding is "live" when it
+# is the seat's connected top-level row. ``generation`` is the seat's mapping generation at enrollment, not a
+# per-binding counter, and a row left behind by an exited or cleared session stays open but ``disconnected``.
+_COLUMNS = ("binding_id, seat_id, ordinal, generation, harness, native_session, observation_provenance, "
+            "role, liveness, lineage_from, ended_at")
+BINDING_SQL = ("SELECT " + _COLUMNS + " FROM occupant_bindings WHERE harness='agy' AND ended_at IS NULL "
+               "AND role='top_level' AND liveness='connected' ORDER BY seat_id, ordinal DESC")
+ALL_BINDINGS_SQL = ("SELECT " + _COLUMNS + " FROM occupant_bindings WHERE harness='agy' "
+                    "ORDER BY seat_id, ordinal")
 
 
 def load_scenario(path):
@@ -48,13 +54,24 @@ def query(world, sql):
 
 
 def live_bindings(world):
-    """The live (not ended) agy binding of each seat: the highest ordinal per seat."""
+    """The live agy binding of each seat: its connected, open top-level row with the highest ordinal."""
     seen, out = set(), []
     for row in query(world, BINDING_SQL):
         if row["seat_id"] not in seen:
             seen.add(row["seat_id"])
             out.append(row)
     return out
+
+
+def all_bindings(world):
+    """Every agy binding row, any role, liveness or end state, oldest first (diagnostics and history checks)."""
+    return query(world, ALL_BINDINGS_SQL)
+
+
+def binding_for(world, native_session):
+    """The agy binding row keyed by ``native_session`` (None when there is none)."""
+    rows = [r for r in all_bindings(world) if r["native_session"] == native_session and r["role"] == "top_level"]
+    return rows[-1] if rows else None
 
 
 def live_binding(world):
