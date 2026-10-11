@@ -1,0 +1,64 @@
+{
+  "scope": "Typed serializer/storage measurements only. Current main1024body/128KiB public automatic validators deliberately bypassed while constructing extended body fixtures; Task13 owns public admission/semantic validation/loaders. Launch/retained-report validators pass; parent/child/report digests recomputed and frozen argv consistent. No accepted public future-shape claim.",
+  "storage_ceiling_bytes": {
+    "original": 524288,
+    "attachment": 524288,
+    "recovery_result": 2097152,
+    "creation_unchanged": 131072,
+    "report_unchanged": 2097152
+  },
+  "ordinary_metadata": {
+    "body_bytes": 65536,
+    "ordinary": {
+      "original": 67004,
+      "attachment": 67310,
+      "Complete_request": 135031,
+      "Recover_request": 134193,
+      "recovery_result": 202039,
+      "WireResponse": 202196,
+      "framed_response": 202200
+    },
+    "six_byte_escaped": {
+      "original": 394684,
+      "attachment": 394990,
+      "Complete_request": 790391,
+      "Recover_request": 789553,
+      "recovery_result": 1185079,
+      "WireResponse": 1185236,
+      "framed_response": 1185240
+    }
+  },
+  "max_argv_control": {
+    "raw_argv_bytes": 65536,
+    "per_arg_bytes": 4096,
+    "args": 16,
+    "escaped_reason_bytes": 4096,
+    "ordinary_body": {
+      "original": 460250,
+      "Complete_request": 1708024,
+      "Recover_request": 945252
+    },
+    "escaped_body": {
+      "original": 787930,
+      "Complete_request": 2363384,
+      "Recover_request": 1600612
+    }
+  },
+  "near_aggregate": {
+    "raw_argv_bytes": 21600,
+    "original": 524284,
+    "attachment": 524590,
+    "Complete_request": 1308800,
+    "Recover_request": 1073320,
+    "meaning": "SQL original fits but attachment and BOTH later requests exceed independent ceilings; initial PUBLIC preflight must reject before effects."
+  },
+  "superseded_evidence": "Prior1179200 nearComplete and1183637 maxargvComplete held stale child argv; underestimates, not accepted shape proof; final measurements correct all nested copies.",
+  "B_obligations": [
+    "Full supported future-envelope preflight before pair/journal/native effects",
+    "Preserve exact bytes/digests; reject oversized metadata truthfully",
+    "Keep general requests/default replies1MiB",
+    "Scoped exceptional AutomaticBootstrap response bound derived from all supported later shapes, not only1185240 ordinarymetadata example",
+    "Canonical max-body admission and retained loader/recovery/Complete durability tests",
+    "Existing retained reportJSON1MiB independent limit also requires initial future-shape accounting"
+  ]
+}
