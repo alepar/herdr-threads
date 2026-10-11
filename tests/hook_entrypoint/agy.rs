@@ -1479,6 +1479,14 @@ mod activation {
                 [elected.recipient.seat.as_str()], |row| row.get(0),
             ).unwrap();
             assert_eq!(receipts, 0);
+            let logical_receipts: i64 = db.query_row(
+                "SELECT count(*) FROM prepared_recipients pr JOIN send_manifests sm ON sm.preparation_id=pr.preparation_id LEFT JOIN receipt_state rs ON rs.message_id=sm.message_id AND rs.seat_id=pr.seat_id WHERE pr.seat_id=?1 AND COALESCE(rs.state,'pending')='pending' AND pr.ack_required=1",
+                [elected.recipient.seat.as_str()], |row| row.get(0),
+            ).unwrap();
+            assert_eq!(
+                logical_receipts, 0,
+                "Lazy presentation creates no published logical ACK obligation"
+            );
             let intervals: i64 = db
                 .query_row(
                     "SELECT count(*) FROM membership_intervals WHERE thread_id=?1 AND seat_id=?2",
