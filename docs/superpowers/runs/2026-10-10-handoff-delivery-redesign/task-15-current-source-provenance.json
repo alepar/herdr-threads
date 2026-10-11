@@ -1,0 +1,10 @@
+{
+  "workspace": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.8.4",
+  "branch": "task-ht-0lo.8.4",
+  "head": "ee1e598c3ee96566ddc9b397185cdc97c8bf6218",
+  "head_tree": "6ab6831b7972af18ce600b553647db7185c31ccc",
+  "dirty_diff_sha256": "b463b9d72fa1e07bf70be3ba274b35197339229295ace1624f4697277bec7a0f",
+  "status": " M integrations/claude/mod/hooks/register.js\n M integrations/claude/mod/tests/delivery.test.ts\n M src/cli/launch.rs\n M src/cli/watch.rs\n M src/delivery/assemble.rs\n M src/delivery/ledger.rs\n M src/delivery/page.rs\n M src/harness/agy/launch.rs\n M src/harness/agy/paths.rs\n M src/ports.rs\n M src/protocol/output_compact.rs\n M src/protocol/results.rs\n M src/protocol/watch.rs\n M src/scheduler/mod.rs\n M src/service/delivery_pull.rs\n M src/service/mod_channels.rs\n M src/store/attention.rs\n M src/store/queries.rs\n M src/store/seats.rs\n M tests/cli/launch.rs\n M tests/cli/lazy_display.rs\n M tests/cli/output.rs\n M tests/cli/watch.rs\n M tests/delivery/extraction.rs\n M tests/fixtures/agy/plugin/hooks.json\n M tests/harness/agy_launch.rs\n M tests/harness/agy_setup.rs\n M tests/hook_entrypoint/agy.rs\n M tests/integration/agy_sweep.rs\n M tests/protocol/lazy_inbox_v2.rs\n M tests/service/delivery_pull.rs\n M tests/service/mod_channels.rs\n M tests/store/queries.rs\n",
+  "purpose": "current frozen D source/test preparation, not hash of prior compiled dirty snapshots",
+  "target": "none: B owns exact warm .3.2 target"
+}

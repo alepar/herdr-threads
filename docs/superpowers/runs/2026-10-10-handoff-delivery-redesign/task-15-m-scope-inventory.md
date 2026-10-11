@@ -82,3 +82,7 @@ Existing dirty test hosts reused/amended: `tests/service/delivery_pull.rs` (real
 8. Historical V1 request/reply/Accepted omitted exactbytes, old nested-extra Watch decoder, capability probe BEFORE any V2 progress/output/request. Origin open warnings remain canonical/native actionable after full offer/sameversionUnchanged; final passive clear/no warning-only wake.
 
 After corresponding GREEN: scoped leaks, fmt, harness-neutral, all-target/all-feature clippy and required default-feature implications under authorized lease; no routine full-suite or profile tuning. Review exact new schema, source/consumer interface and complete test-change diff before commit.
+
+## Reachable update-hook classification seam admission
+
+After the sixth-lease protocol2PASS/canonical replay1FAIL (actual owned multi-file build2m24, runtime.21), admit `src/service/kicks.rs` and its actual existing `tests/service/kicks_contract.rs` host. Earlier message naming nonexistent tests/service/kicks.rs is superseded. Consumer/item/outbox presentation bookkeeping must be explicitly passive: no deadline/native wake or unconditional maintenance reschedule from its own writes. Canonical invitation_context_latest producer changes are audited separately for bounded ModRefresh discovery/continuation, preserving topic/requirement producer semantics and no Lazy idle wake. This is necessary selected-M wiring, not a new generic scheduling lane or policy. Fresh D review covers exact classification and producer reachability.

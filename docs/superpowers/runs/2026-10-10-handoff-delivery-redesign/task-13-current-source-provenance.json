@@ -1,0 +1,27 @@
+{
+  "recorded_at": "2026-10-11T08:40:01.477179+00:00",
+  "workspace": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2",
+  "head": "4cb157ba1ad5eedfff1632e7986d2878a5af7da8",
+  "head_tree": "d2a70082d89179380ac0b747f7febb8a070346db",
+  "dirty_diff_sha256": "732854e53cedde4906da474e881fc7fb450b20975dfcbe0fdde8bb2460fcb229",
+  "status": " M README.md\n M TRUST-POLICY.md\n M integrations/skill/SKILL.md\n M src/cli/handoff.rs\n M src/cli/handoff_delivery.rs\n M src/cli/topology_handoff.rs\n M src/cli/topology_handoff/automatic.rs\n M src/client/local.rs\n M src/daemon/transport.rs\n M src/protocol/handoff/automatic_bootstrap.rs\n M src/protocol/wire.rs\n M src/store/topology_handoff/automatic.rs\n M tests/cli/direct_send.rs\n M tests/cli/topology_handoff.rs\n M tests/daemon/transport.rs\n",
+  "target": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target",
+  "source_rebuild_evidence": "src/lib.rs content-preserving touch; real B compilation session12548 trait-error (non-RED), corrected session28321 real compilation 2m13s, 9 unique modern_automatic tests 5passed/4expected RED runtime3.26s; actual B source identity anchored. Metadata-alone stale D binary 0selected excluded.",
+  "prior_reconstructable_leases": [
+    {
+      "lease": "initialB",
+      "actual_compile": "2m11s; maxbody numeric duration typo non-RED; later actualB maxbody compile11.50s meaningful RED/GREEN1m58s",
+      "source_hash": "not recorded at original freeze; cannot reconstruct exact dirty bytes retrospectively"
+    },
+    {
+      "lease": "first restoredB",
+      "actual_compile": "diagnostic GREEN real B compilation2m24s and unique modern_automatic_large_diagnostics name, runtime1.17s",
+      "source_hash": "not recorded at original freeze; cannot reconstruct exact dirty bytes retrospectively"
+    },
+    {
+      "lease": "next public B group before second restore",
+      "actual_compile": "real B compilation1m57s, unique modern_automatic 5/5 runtime.89s",
+      "source_hash": "not recorded at original freeze; cannot reconstruct exact dirty bytes retrospectively"
+    }
+  ]
+}

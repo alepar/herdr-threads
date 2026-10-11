@@ -1,0 +1,39 @@
+{
+  "head": "cdbf3c37e873a2cb571c098450602a53f81a6185",
+  "tree": "099a07fa165aab751eaea8ce246d755421368439",
+  "worktree": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2",
+  "target": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target",
+  "source_content_sha256": "da2cbb3f87a266939eacba036fd14e9f649ba71840e11b2264fa397dc9839bdd",
+  "source_preserving_invalidations": 487,
+  "targets": [
+    {
+      "name": "herdr_threads",
+      "src_path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/src/lib.rs"
+    },
+    {
+      "name": "herdr-threads",
+      "src_path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/src/main.rs"
+    },
+    {
+      "name": "combined",
+      "src_path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/tests/combined.rs"
+    },
+    {
+      "name": "hook_entrypoint",
+      "src_path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/tests/hook_entrypoint.rs"
+    },
+    {
+      "name": "integration",
+      "src_path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/tests/integration.rs"
+    },
+    {
+      "name": "package",
+      "src_path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/tests/package.rs"
+    },
+    {
+      "name": "service",
+      "src_path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/tests/service.rs"
+    }
+  ],
+  "purpose": "seventh quiescent transfer: exact rebased B combined gate"
+}
