@@ -2567,6 +2567,12 @@ pub(super) fn pull(
         .filter(|id| !owner_progress.emitted.contains_key(*id))
         .cloned()
         .collect::<Vec<_>>();
+    // Pruning can exhaust active recovery before source selection. Querying a
+    // normal/due source is not a logical allocation: a passive-only result
+    // must still preserve the current native outlook for this recovery call.
+    if recovery_active && !owner_mode && consumed.is_empty() {
+        owner_progress.source = crate::ports::OrdinaryPresentationSource::RecoveryControlOnly;
+    }
     let owner_more = input.owner_replay.as_ref().is_some_and(|replay| {
         replay
             .remaining
