@@ -1,6 +1,6 @@
 # Task15 corrected bounded relevance helper checkpoint
 
-Frozen corrected source `012943e800b0fe8349dd99d32d394610ff11176b` on `helper-ht-0lo.8.4-relevance`; complete baseline `308564b887e1d0f4af866c69a5ed40275c860b69` to HEAD diff `task-15-relevance-helper.diff`: **150328 bytes**, SHA256 `55db27e82661a41758f4fa8db58f095858200521bba310e669eab772cf91bf5f`. Exactly three owned paths, all historical SQL1..39 untouched. Checkpoint JSON records final file hashes. The original25ac report/diff are preserved as `task-15-relevance-helper-report-25ac.md` / `task-15-relevance-helper-25ac.diff`; the original25ac and test-only09d65 commits remain ancestors. Historical report statements about global positive-fence gating, absent sweep coverage, batch scheduling and zero-range condition witnesses are superseded by this report/final70 proposal.
+Frozen corrected source `367da744905c1df11dbdf72d811c133e6bdf9e21` on `helper-ht-0lo.8.4-relevance`; complete baseline `308564b887e1d0f4af866c69a5ed40275c860b69` to HEAD diff `task-15-relevance-helper.diff`: **154432 bytes**, SHA256 `2f76269cef0ca8b9945f9e82c4efc00a149bed65346f65f90b5d92a4f113c6ea`. Exactly three owned paths, all historical SQL1..39 untouched. Checkpoint JSON records final file hashes. The original25ac report/diff are preserved as `task-15-relevance-helper-report-25ac.md` / `task-15-relevance-helper-25ac.diff`; the original25ac and test-only09d65 commits remain ancestors. Historical report statements about global positive-fence gating, absent sweep coverage, batch scheduling and zero-range condition witnesses are superseded by this report/final70 proposal.
 
 **Source-only correction, uncompiled/unrun and not approved for application.** rustfmt parsed/formatted both owned Rust files; full baseline-to-HEAD git diff --check succeeded; branch clean. No Cargo/Node/runner/network/model/Herdr/tracker/real-config action or D-owned source mutation. Full independent cumulative helper/schema review, new quiescent application ACK and D's actual composed execution remain mandatory. No corrected GREEN/SQL-plan/counter/speed claim is made.
 
@@ -78,7 +78,7 @@ Producer/lifecycle inventory: direct events append_event_once_at_seq/record_over
 
 ## Executable fixtures and honest limitations
 
-11 private helper tests now live in existing tests/store/attention.rs; no registration/new target/public accessor. All corrected/new versions UNRUN, possible compile/setup/assertion concerns must be resolved by D without treating setup as RED:
+13 private helper tests now live in existing tests/store/attention.rs; no registration/new target/public accessor. All corrected/new versions UNRUN, possible compile/setup/assertion concerns must be resolved by D without treating setup as RED:
 
 1. required_lazy_overlay: fixed managed thread owner relation and mandatory revision++ on accepted/released transitions; retained original overlay/digest/accepted-effective assertions, no policy weakened.
 2. quiet_proof: private proof no self-fence and MAX writer rollback.
@@ -100,9 +100,9 @@ No new routine model-visible framing, prompts, payloads or events. Six new excep
 
 ## Exact hashes
 
-- `src/store/presentation_relevance.rs` SHA256 `42b6ca99978c3358a47c685805281222d7ef1827cbe649c8eb3a0e8f2eca4c5c`
+- `src/store/presentation_relevance.rs` SHA256 `0a3826265cdae73f956200badaecbea11f78444ae6c2b93e127508b7e1ddc2b2`
 - `migrations/0041_presentation_relevance.sql` SHA256 `ca529c1cce99529f92b64c4bdeb98d860905d368fe6ac610641d5873d7a2bccf`
-- `tests/store/attention.rs` SHA256 `bd1036db18e675a84913ad0bb75414770178234ddf13876f7eb903ceda9a940d`
+- `tests/store/attention.rs` SHA256 `3053bbe770b57588cc6857f8c019524e8943145cad40ac9d0ba83ec102d719e4`
 
 ## Complete additive41 object names
 
@@ -207,3 +207,16 @@ No new routine model-visible framing, prompts, payloads or events. Six new excep
 - trigger `presentation_fence_warning_close_sweeps_insert`
 - trigger `presentation_fence_warning_close_sweeps_update`
 - trigger `presentation_fence_warning_close_sweeps_delete`
+
+## Sole I1 finding disposition and narrow follow-up
+
+Formal full corrected0129 review `task-15-relevance-helper-corrected-review.md` was read in full with receiving-code-review. Its sole Spec/Quality IMPORTANT I1 is ADDRESSED in this source checkpoint, pending fresh full cumulative review and actual D execution. Parent expressly authorized only this narrow correction: Membership previously discarded currently evaluated high-water and used its captured high-water, allowing a retained/operator-repair decrease to produce a first Open that immediate exact-witness validation would reject. The actual normal warning_jobs producer inventory shows inserts capturing this high and status/progress-only updates; no normal-producer decrease or newly observed runtime failure is claimed.
+
+The membership microstep now obtains `(current cutoff,current high)` from the existing same-transaction evaluator and scans only through `min(captured high,current high)`. A cursor already greater than this effective bound finishes negative through the existing authority-union transition, charging already performed keyed points and making no membership range visit. Equality uses the existing single empty LIMIT1 range probe. Below-bound progress still uses exactly one indexed LIMIT1, charges its actual physical row to the same100 and its seek to the same26, and stores the original captured high on continuation. Current cutoff remains unchanged; no frontier expansion, new authority, verification model, projection, schema, fence input, hook, public API, counter allowance, reservation or new model-visible string. Protected full-cost scheduling can over-reserve this cheaper early-negative branch without consuming a seek; ordinary rotation/lending and source/fallback fairness remain unchanged.
+
+New source-only tests (all prior11 fixtures/assertions preserved):
+
+12. `presentation_relevance_suspended_membership_respects_repaired_current_high`: use the existing301-interval direct legacy fixture, observe persisted slot8 suspended membership cursor before its only qualifying interval, then explicitly repair warning_jobs.interval_high_water to cursor-1, cursor, cursor+1 in independent databases. Every subsequent bounded pull must avoid Open and reach finite Absent. This covers beyond/equal/below effective bound; the qualifying ordinal and cursor are read from actual source/proof rows. The fixture does not pretend a canonical producer decreases high-water.
+13. `presentation_relevance_suspended_membership_unchanged_high_still_opens`: suspend the identical source without repair, require finite Open, assert persisted witness is the exact qualifying interval, then require subsequent witness recheck Open. Both new tests use the existing relevance_pull assertions for cumulative100/26/keyed limits. They are UNRUN; no fabricated new runtime RED or GREEN.
+
+Before updating current package, exact0129 report/diff/checkpoint/review were byte-preserved as `task-15-relevance-helper-report-0129.md`, `task-15-relevance-helper-0129.diff`, `task-15-relevance-helper-checkpoint-0129.json`, `task-15-relevance-helper-corrected-review-0129.md`. Original corrected-review and25ac/09d evidence remain untouched. Exact0129→newHEAD fix diff is `task-15-relevance-helper-I1-fix.diff`; the checkpoint JSON records its hash/size plus cumulative BASE308→newHEAD and all three final file hashes. This commit changes only helper and existing attention host; migration41 is byte-identical to0129 and remains additive. The full cumulative writer/callee/SQL/index/field/source/87-hook inventory above remains authoritative except the explicitly corrected membership bound. Fresh cumulative source/schema rereview, new quiescent ACK, application and D-owned actual execution are still required before promotion.

@@ -1,11 +1,15 @@
 {
   "baseline": "308564b887e1d0f4af866c69a5ed40275c860b69",
-  "head": "012943e800b0fe8349dd99d32d394610ff11176b",
-  "diff_sha256": "55db27e82661a41758f4fa8db58f095858200521bba310e669eab772cf91bf5f",
-  "diff_bytes": 150328,
+  "head": "367da744905c1df11dbdf72d811c133e6bdf9e21",
+  "diff_sha256": "2f76269cef0ca8b9945f9e82c4efc00a149bed65346f65f90b5d92a4f113c6ea",
+  "diff_bytes": 154432,
   "files": {
-    "src/store/presentation_relevance.rs": "42b6ca99978c3358a47c685805281222d7ef1827cbe649c8eb3a0e8f2eca4c5c",
+    "src/store/presentation_relevance.rs": "0a3826265cdae73f956200badaecbea11f78444ae6c2b93e127508b7e1ddc2b2",
     "migrations/0041_presentation_relevance.sql": "ca529c1cce99529f92b64c4bdeb98d860905d368fe6ac610641d5873d7a2bccf",
-    "tests/store/attention.rs": "bd1036db18e675a84913ad0bb75414770178234ddf13876f7eb903ceda9a940d"
-  }
+    "tests/store/attention.rs": "3053bbe770b57588cc6857f8c019524e8943145cad40ac9d0ba83ec102d719e4"
+  },
+  "prior_reviewed_head": "012943e800b0fe8349dd99d32d394610ff11176b",
+  "I1_fix_diff_sha256": "c7ef2266bf7748e5b5b6d09a1c65622f4585eb60d4ee5ca6e626f720d5e6ca73",
+  "I1_fix_diff_bytes": 6345,
+  "verification": "source-only; rustfmt and git diff --check; no Cargo/runtime execution"
 }

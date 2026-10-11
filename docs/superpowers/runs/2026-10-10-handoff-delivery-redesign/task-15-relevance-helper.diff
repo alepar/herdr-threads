@@ -893,10 +893,10 @@ index 00000000..ad640cee
 +END;
 diff --git a/src/store/presentation_relevance.rs b/src/store/presentation_relevance.rs
 new file mode 100644
-index 00000000..68f0caf0
+index 00000000..32f71c8b
 --- /dev/null
 +++ b/src/store/presentation_relevance.rs
-@@ -0,0 +1,1292 @@
+@@ -0,0 +1,1301 @@
 +//! Transaction-local exact relevance. This is not an attention/output epoch,
 +//! receipt, invitation acceptance, native-wake source, or presentation ledger.
 +//! Source ranges are bounded before judgment. Only a coherent exhausted sweep
@@ -1885,14 +1885,23 @@ index 00000000..68f0caf0
 +            high,
 +        } => {
 +            let evaluation = evaluate(&mut points, &state.claim, n, key, authority, None, work)?;
-+            let cutoff = match evaluation {
-+                Evaluation::Membership { cutoff, .. } => cutoff,
++            let (cutoff, current_high) = match evaluation {
++                Evaluation::Membership { cutoff, high } => (cutoff, high),
 +                other => {
 +                    accept_evaluation(state, n, key, authority, other);
 +                    charge_points(work, &points, false);
 +                    return Ok(());
 +                }
 +            };
++            // Keep the captured finite frontier, but current source authority
++            // can narrow it after retained/operator repair. Never first accept
++            // an interval that the exact saved-witness judge would reject.
++            let effective_high = high.min(current_high);
++            if after > effective_high {
++                finish_negative(&mut state.slots[n], n, authority);
++                charge_points(work, &points, false);
++                return Ok(());
++            }
 +            let warning = match authority.representation() {
 +                Some(ordinal) => prepared(&mut points, &warning_id, ordinal)?,
 +                None => direct(&mut points, &warning_id)?,
@@ -1901,7 +1910,7 @@ index 00000000..68f0caf0
 +            work.highwater_seeks += 1;
 +            let row:Option<(i64,i64,Option<i64>)>=db.query_row(
 +                "SELECT ordinal,joined_seq,left_seq FROM membership_intervals INDEXED BY presentation_membership_history WHERE thread_id=?1 AND seat_id=?2 AND ordinal>?3 AND ordinal<=?4 ORDER BY ordinal LIMIT 1",
-+                params![warning.thread,state.claim.seat.as_str(),after,high],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(store_error)?;
++                params![warning.thread,state.claim.seat.as_str(),after,effective_high],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(store_error)?;
 +            match row {
 +                None => finish_negative(&mut state.slots[n], n, authority),
 +                Some((ordinal, joined, left)) => {
@@ -2190,10 +2199,10 @@ index 00000000..68f0caf0
 +    Ok(result(Relevance::Unknown, work))
 +}
 diff --git a/tests/store/attention.rs b/tests/store/attention.rs
-index 8f903319..7216bb4e 100644
+index 8f903319..f33a5a58 100644
 --- a/tests/store/attention.rs
 +++ b/tests/store/attention.rs
-@@ -2135,3 +2135,925 @@ fn settle_pulled_notices_refuses_a_stale_generation_another_session_or_a_non_pre
+@@ -2135,3 +2135,1001 @@ fn settle_pulled_notices_refuses_a_stale_generation_another_session_or_a_non_pre
      );
      assert_eq!(frontier(), before);
  }
@@ -2468,6 +2477,82 @@ index 8f903319..7216bb4e 100644
 +        WITH RECURSIVE n(x) AS(SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<301)
 +        INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq,left_seq) SELECT 'relevance-thread','s',x,CASE WHEN x=301 THEN 1 ELSE 50 END,CASE WHEN x=301 THEN 30 ELSE 60 END FROM n;").unwrap();
 +    db
++}
++
++// Suspend before the only qualifying interval. The cursor and high-water
++// values below come from persisted proof/source rows, not fixture row counts.
++fn relevance_suspend_legacy_membership(db: &Connection) -> (i64, i64) {
++    use crate::store::presentation_relevance::Relevance;
++    let qualifying: i64 = db.query_row("SELECT ordinal FROM membership_intervals WHERE thread_id='relevance-thread' AND seat_id='s' AND episode=301", [], |r| r.get(0)).unwrap();
++    for _ in 0..32 {
++        let proof = relevance_pull(db);
++        assert_eq!(proof.relevance, Relevance::Unknown);
++        let raw: String = db.query_row("SELECT proof_json FROM presentation_warning_proofs WHERE seat_id='s' AND consumer='hook'", [], |r| r.get(0)).unwrap();
++        let state: serde_json::Value = serde_json::from_str(&raw).unwrap();
++        if let Some(after) = state["slots"][8]["judge"]["Membership"]["after"].as_i64()
++            && after > 1
++            && after + 1 < qualifying
++        {
++            assert_eq!(
++                state["slots"][8]["judge"]["Membership"]["high"].as_i64(),
++                Some(1_000_000)
++            );
++            return (after, qualifying);
++        }
++    }
++    panic!("fixture must suspend an unfinished direct membership walk");
++}
++
++#[test]
++fn presentation_relevance_suspended_membership_respects_repaired_current_high() {
++    use crate::store::presentation_relevance::Relevance;
++    // No normal producer decreases this high-water. These are explicit retained
++    // operator-repair states whose current inputs must still govern first Open.
++    for position in [-1, 0, 1] {
++        let db = relevance_legacy_membership_fixture();
++        let (after, qualifying) = relevance_suspend_legacy_membership(&db);
++        let repaired_high = after + position;
++        assert!(repaired_high < qualifying);
++        db.execute("UPDATE warning_jobs SET interval_high_water=?1 WHERE warning_id='relevance-churn-warning'", [repaired_high]).unwrap();
++        let mut absent = false;
++        for _ in 0..256 {
++            let proof = relevance_pull(&db);
++            assert_ne!(
++                proof.relevance,
++                Relevance::Open,
++                "a captured frontier cannot authorize an interval above current high (cursor offset {position})"
++            );
++            if proof.relevance == Relevance::Absent {
++                absent = true;
++                break;
++            }
++        }
++        assert!(absent, "repaired finite membership range must exhaust");
++    }
++}
++
++#[test]
++fn presentation_relevance_suspended_membership_unchanged_high_still_opens() {
++    use crate::store::presentation_relevance::Relevance;
++    let db = relevance_legacy_membership_fixture();
++    let (_, qualifying) = relevance_suspend_legacy_membership(&db);
++    let mut opened = false;
++    for _ in 0..256 {
++        let proof = relevance_pull(&db);
++        assert_ne!(proof.relevance, Relevance::Absent);
++        if proof.relevance == Relevance::Open {
++            opened = true;
++            break;
++        }
++    }
++    assert!(
++        opened,
++        "unchanged captured/current range still finds its recipient"
++    );
++    let raw: String = db.query_row("SELECT proof_json FROM presentation_warning_proofs WHERE seat_id='s' AND consumer='hook'", [], |r| r.get(0)).unwrap();
++    let state: serde_json::Value = serde_json::from_str(&raw).unwrap();
++    assert_eq!(state["witness"]["interval"].as_i64(), Some(qualifying));
++    assert_eq!(relevance_pull(&db).relevance, Relevance::Open);
 +}
 +
 +#[test]

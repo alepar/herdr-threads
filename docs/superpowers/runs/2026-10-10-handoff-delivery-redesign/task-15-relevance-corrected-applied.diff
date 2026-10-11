@@ -1,0 +1,1684 @@
+diff --git a/migrations/0041_presentation_relevance.sql b/migrations/0041_presentation_relevance.sql
+index 141e9877..ad640cee 100644
+--- a/migrations/0041_presentation_relevance.sql
++++ b/migrations/0041_presentation_relevance.sql
+@@ -858,3 +858,30 @@ BEGIN
+         THEN RAISE(ABORT,'presentation warning fence exhausted') END;
+     UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
+ END;
++
++CREATE TRIGGER presentation_fence_warning_close_sweeps_insert AFTER INSERT ON warning_close_sweeps
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_warning_close_sweeps_update AFTER UPDATE ON warning_close_sweeps
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
++
++CREATE TRIGGER presentation_fence_warning_close_sweeps_delete AFTER DELETE ON warning_close_sweeps
++BEGIN
++    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
++        THEN RAISE(ABORT,'presentation warning fence missing') END;
++    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
++        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
++    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
++END;
+diff --git a/src/store/presentation_relevance.rs b/src/store/presentation_relevance.rs
+index 37fc873d..32f71c8b 100644
+--- a/src/store/presentation_relevance.rs
++++ b/src/store/presentation_relevance.rs
+@@ -50,15 +50,29 @@ struct Key {
+     ordinal: i64,
+     row: i64,
+ }
++// Positive authority is an exact association, never representation absence.
++#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
++#[serde(deny_unknown_fields)]
++enum Authority {
++    DirectAssociation,
++    PreparedRepresentation(i64),
++}
++impl Authority {
++    fn representation(self) -> Option<i64> {
++        match self {
++            Self::DirectAssociation => None,
++            Self::PreparedRepresentation(ordinal) => Some(ordinal),
++        }
++    }
++}
+ #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+ #[serde(deny_unknown_fields)]
+ enum Judge {
+     Representations {
+         after: i64,
+-        published: bool,
+     },
+     Membership {
+-        representation: Option<i64>,
++        authority: Authority,
+         after: i64,
+         high: i64,
+     },
+@@ -77,7 +91,7 @@ struct Slot {
+ struct Witness {
+     slot: usize,
+     key: Key,
+-    representation: Option<i64>,
++    authority: Authority,
+     interval: Option<i64>,
+ }
+ #[derive(Debug, Serialize, Deserialize)]
+@@ -219,6 +233,7 @@ fn validate(state: &State) -> Result<(), ApiError> {
+         state.claim.native_session.as_str(),
+         state.claim.execution.as_str(),
+         state.claim.target.as_str(),
++        state.claim.harness.as_str(),
+     ]
+     .into_iter()
+     .all(id)
+@@ -230,7 +245,7 @@ fn validate(state: &State) -> Result<(), ApiError> {
+     {
+         return Err(corrupt("invalid relevance proof scope"));
+     }
+-    for slot in &state.slots {
++    for (n, slot) in state.slots.iter().enumerate() {
+         if slot.high < 0
+             || slot.after.ordinal < 0
+             || slot.after.ordinal > slot.high
+@@ -242,19 +257,32 @@ fn validate(state: &State) -> Result<(), ApiError> {
+         {
+             return Err(corrupt("invalid relevance cursor"));
+         }
++        if let Some(Judge::Membership { authority, .. }) = slot.judge {
++            if !authority_valid(
++                n,
++                slot.candidate.unwrap_or_default(),
++                authority,
++                state.slots[12].high,
++            ) {
++                return Err(corrupt("invalid relevance judgment authority"));
++            }
++        }
++        if matches!(slot.judge, Some(Judge::Representations { .. })) && !generic(n) {
++            return Err(corrupt("invalid relevance representation family"));
++        }
+         match slot.judge {
+-            Some(Judge::Representations { after, .. })
+-                if after < 0 || after > state.slots[12].high =>
+-            {
++            Some(Judge::Representations { after }) if after < 0 || after > state.slots[12].high => {
+                 return Err(corrupt("invalid representation cursor"));
+             }
+             Some(Judge::Membership {
+-                representation,
++                authority,
+                 after,
+                 high,
+             }) if after < 0
+                 || high < after
+-                || representation.is_some_and(|r| r <= 0 || r > state.slots[12].high) =>
++                || authority
++                    .representation()
++                    .is_some_and(|r| r <= 0 || r > state.slots[12].high) =>
+             {
+                 return Err(corrupt("invalid membership cursor"));
+             }
+@@ -272,10 +300,12 @@ fn validate(state: &State) -> Result<(), ApiError> {
+     }
+     if let Some(w) = &state.witness {
+         if w.slot >= SOURCES
++            || !authority_valid(w.slot, w.key, w.authority, state.slots[12].high)
+             || w.key.row <= 0
+             || w.key.ordinal <= 0
+             || w.key.ordinal > state.slots[w.slot].high
+-            || w.representation
++            || w.authority
++                .representation()
+                 .is_some_and(|n| n <= 0 || n > state.slots[12].high)
+             || w.interval.is_some_and(|n| n <= 0)
+         {
+@@ -420,6 +450,7 @@ impl Points<'_> {
+ #[derive(Debug)]
+ struct Warning {
+     id: String,
++    instance: String,
+     thread: String,
+     event_seq: i64,
+     source_message: Option<String>,
+@@ -454,14 +485,14 @@ fn source_id(
+     Ok(value)
+ }
+ fn direct(points: &mut Points<'_>, warning: &str) -> Result<Option<Warning>, ApiError> {
+-    points.row(2,"SELECT m.id,m.thread_id,m.decision_seq,m.source_message_id,j.affected_seat_id,j.interval_high_water,m.author_kind FROM messages m LEFT JOIN warning_jobs j ON j.warning_id=m.id WHERE m.id=?1 AND m.kind='warn'",[warning],|r|Ok(Warning{id:r.get(0)?,thread:r.get(1)?,event_seq:r.get(2)?,source_message:r.get(3)?,affected:r.get(4)?,interval_high:r.get(5)?,episode:None,programmatic:r.get::<_,Option<String>>(6)?.as_deref()==Some("programmatic")}))
++    points.row(2,"SELECT m.id,m.thread_id,m.decision_seq,m.source_message_id,j.affected_seat_id,j.interval_high_water,m.author_kind,m.instance_id FROM messages m LEFT JOIN warning_jobs j ON j.warning_id=m.id AND j.thread_id=m.thread_id AND j.event_seq=m.decision_seq WHERE m.id=?1 AND m.kind='warn'",[warning],|r|Ok(Warning{id:r.get(0)?,thread:r.get(1)?,event_seq:r.get(2)?,source_message:r.get(3)?,affected:r.get(4)?,interval_high:r.get(5)?,episode:None,programmatic:r.get::<_,Option<String>>(6)?.as_deref()==Some("programmatic"),instance:r.get(7)?}))
+ }
+ fn prepared(
+     points: &mut Points<'_>,
+     warning: &str,
+     ordinal: i64,
+ ) -> Result<Option<Warning>, ApiError> {
+-    points.row(2,"SELECT w.warning_id,sm.thread_id,sm.decision_seq,sm.message_id,w.affected_seat_id,sm.interval_high_water,w.unavailability_episode FROM prepared_unavailable_warnings w JOIN send_manifests sm ON sm.preparation_id=w.preparation_id WHERE w.ordinal=?1 AND w.warning_id=?2",params![ordinal,warning],|r|Ok(Warning{id:r.get(0)?,thread:r.get(1)?,event_seq:r.get(2)?,source_message:Some(r.get(3)?),affected:Some(r.get(4)?),interval_high:Some(r.get(5)?),episode:Some(r.get(6)?),programmatic:false}))
++    points.row(2,"SELECT w.warning_id,sm.thread_id,sm.decision_seq,sm.message_id,w.affected_seat_id,sm.interval_high_water,w.unavailability_episode,sm.instance_id FROM prepared_unavailable_warnings w JOIN send_manifests sm ON sm.preparation_id=w.preparation_id WHERE w.ordinal=?1 AND w.warning_id=?2",params![ordinal,warning],|r|Ok(Warning{id:r.get(0)?,thread:r.get(1)?,event_seq:r.get(2)?,source_message:Some(r.get(3)?),affected:Some(r.get(4)?),interval_high:Some(r.get(5)?),episode:Some(r.get(6)?),programmatic:false,instance:r.get(7)?}))
+ }
+ fn native_rejection(points: &mut Points<'_>, warning: &str) -> Result<bool, ApiError> {
+     points.yes(3,"SELECT EXISTS(SELECT 1 FROM messages m JOIN invitation_rejections r ON r.invitation_id=m.source_invitation_id JOIN invitations i ON i.id=r.invitation_id WHERE m.id=?1 AND m.kind='warn' AND m.author_kind='native' AND m.actor_seat_id=r.actor_seat_id AND m.author_service_id IS NULL AND m.thread_id=i.thread_id AND m.event_key='reject:'||r.invitation_id AND m.source_message_id IS NULL AND m.decision_at=r.rejected_at AND json_extract(m.event_json,'$.action')='reject' AND json_extract(m.event_json,'$.seat')=r.actor_seat_id AND json_extract(m.event_json,'$.invitation')=r.invitation_id AND json_extract(m.event_json,'$.reason')=r.reason)",[warning])
+@@ -572,18 +603,63 @@ fn eligible(
+     points: &mut Points<'_>,
+     claim: &CallerClaim,
+     warning: &Warning,
++    work: &mut RelevanceWork,
+ ) -> Result<Option<bool>, ApiError> {
+     if native_rejection(points, &warning.id)? {
+         return Ok(Some(false));
+     }
+-    let open:Option<(String,Option<String>,Option<String>)>=points.row(1,"SELECT affected_seat_id,clear_warning_id,invitation_originator_seat_id FROM warning_conditions WHERE open_warning_id=?1",[warning.id.as_str()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
+-    if let Some((affected, clear, origin)) = open {
+-        let receipt_origin=points.yes(1,"SELECT EXISTS(SELECT 1 FROM receipt_warning_origins INDEXED BY receipt_warning_origins_exact WHERE instance_id=?1 AND seat_id=?2 AND warning_id=?3)",params![claim.instance,claim.seat.as_str(),warning.id])?;
++    type Condition = (
++        i64,
++        String,
++        String,
++        Option<i64>,
++        Option<String>,
++        Option<String>,
++    );
++    let open: Option<Condition> = points.row(1,
++        "SELECT ordinal,condition_kind,affected_seat_id,episode,clear_warning_id,invitation_originator_seat_id FROM warning_conditions WHERE open_warning_id=?1",
++        [warning.id.as_str()], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?)))?;
++    if let Some((ordinal, kind, affected, episode, clear, origin)) = open {
++        if ordinal <= 0
++            || !id(&affected)
++            || !matches!(kind.as_str(), "invitation" | "receipt" | "unavailable")
++            || ((kind == "unavailable") != episode.is_some())
++            || episode.is_some_and(|n| n < 0)
++        {
++            return Err(corrupt("invalid relevance condition scope"));
++        }
++        if clear.is_some() {
++            return Ok(Some(false));
++        }
++        if kind != "invitation" {
++            // The sole canonical producer appends retained adjacent scope ranges
++            // after=prior MAX through. One indexed successor is complete for
++            // that chain. LIMIT precedes the after check; no filtered EXISTS.
++            if !room(work, 1, 1) {
++                return Err(corrupt("unreserved relevance coverage"));
++            }
++            work.highwater_seeks += 1;
++            let sweep: Option<(i64,i64)> = points.db.query_row(
++                "SELECT after_ordinal,through_ordinal FROM warning_close_sweeps INDEXED BY warning_close_sweeps_cover WHERE condition_kind=?1 AND affected_seat_id=?2 AND episode IS ?3 AND through_ordinal>=?4 ORDER BY through_ordinal,after_ordinal LIMIT 1",
++                params![kind,affected,episode,ordinal], |r| Ok((r.get(0)?,r.get(1)?)))
++                .optional().map_err(store_error)?;
++            if let Some((after, through)) = sweep {
++                work.fallback += 1;
++                if after < 0 || through <= after {
++                    return Err(corrupt("invalid relevance close sweep"));
++                }
++                if after < ordinal && ordinal <= through {
++                    return Ok(Some(false));
++                }
++            }
++        }
++        let receipt_origin = points.yes(1,
++            "SELECT EXISTS(SELECT 1 FROM receipt_warning_origins INDEXED BY receipt_warning_origins_exact WHERE instance_id=?1 AND seat_id=?2 AND warning_id=?3)",
++            params![claim.instance,claim.seat.as_str(),warning.id])?;
+         return Ok(Some(
+-            clear.is_none()
+-                && (affected == claim.seat.as_str()
+-                    || origin.as_deref() == Some(claim.seat.as_str())
+-                    || receipt_origin),
++            affected == claim.seat.as_str()
++                || origin.as_deref() == Some(claim.seat.as_str())
++                || receipt_origin,
+         ));
+     }
+     if points.yes(
+@@ -606,8 +682,9 @@ fn evaluate(
+     claim: &CallerClaim,
+     slot: usize,
+     key: Key,
+-    representation: Option<i64>,
++    authority: Authority,
+     interval: Option<i64>,
++    work: &mut RelevanceWork,
+ ) -> Result<Evaluation, ApiError> {
+     let Some(mut warning_id) = source_id(points, claim, slot, key)? else {
+         return Ok(Evaluation::Closed);
+@@ -654,14 +731,18 @@ fn evaluate(
+             return Ok(Evaluation::Closed);
+         }
+     }
+-    let warning = match representation {
++    let warning = match authority.representation() {
+         Some(ordinal) => prepared(points, &warning_id, ordinal)?,
+         None => direct(points, &warning_id)?,
+     };
+     let Some(warning) = warning else {
+         return Ok(Evaluation::Closed);
+     };
++    if warning.instance != claim.instance {
++        return Ok(Evaluation::Closed);
++    }
+     if !id(&warning.id)
++        || !id(&warning.instance)
+         || !id(&warning.thread)
+         || warning.event_seq <= 0
+         || warning.source_message.as_deref().is_some_and(|s| !id(s))
+@@ -670,7 +751,7 @@ fn evaluate(
+     {
+         return Err(corrupt("invalid relevance warning fields"));
+     }
+-    if let Some(relevant) = eligible(points, claim, &warning)? {
++    if let Some(relevant) = eligible(points, claim, &warning, work)? {
+         return Ok(if relevant {
+             Evaluation::Open
+         } else {
+@@ -684,6 +765,14 @@ fn evaluate(
+     if (slot == 10 || slot == 11) && !warning.programmatic {
+         return Ok(Evaluation::Closed);
+     }
++    if matches!(authority, Authority::DirectAssociation) && !warning.programmatic {
++        let associated = points.yes(3,
++            "SELECT EXISTS(SELECT 1 FROM warning_jobs j JOIN messages m ON m.id=j.warning_id LEFT JOIN invitations i ON i.id=j.condition_id WHERE j.warning_id=?1 AND j.thread_id=m.thread_id AND j.event_seq=m.decision_seq AND ((j.condition_kind='invitation' AND i.thread_id=m.thread_id AND i.seat_id=j.affected_seat_id AND (m.source_invitation_id IS NULL OR m.source_invitation_id=i.id)) OR (j.condition_kind='receipt' AND m.source_message_id IS NOT NULL)))",
++            [warning.id.as_str()])?;
++        if !associated {
++            return Ok(Evaluation::Closed);
++        }
++    }
+     if !actionable(points, &warning)? {
+         return Ok(Evaluation::Closed);
+     }
+@@ -711,6 +800,26 @@ fn charge_points(work: &mut RelevanceWork, points: &Points<'_>, witness: bool) {
+         work.point_probes += points.count;
+     }
+ }
++fn generic(n: usize) -> bool {
++    matches!(n, 3 | 5 | 8 | 9)
++}
++fn authority_valid(n: usize, key: Key, authority: Authority, high: i64) -> bool {
++    match authority {
++        Authority::DirectAssociation => !matches!(n, 4 | 6 | 12),
++        Authority::PreparedRepresentation(ordinal) => {
++            ordinal > 0
++                && ordinal <= high
++                && (generic(n) || (matches!(n, 4 | 6 | 12) && ordinal == key.ordinal))
++        }
++    }
++}
++fn initial_authority(n: usize, key: Key) -> Authority {
++    if matches!(n, 4 | 6 | 12) {
++        Authority::PreparedRepresentation(key.ordinal)
++    } else {
++        Authority::DirectAssociation
++    }
++}
+ fn first_judgment(
+     db: &Connection,
+     claim: &CallerClaim,
+@@ -718,37 +827,25 @@ fn first_judgment(
+     key: Key,
+     work: &mut RelevanceWork,
+ ) -> Result<(Option<Judge>, Option<Witness>), ApiError> {
+-    if matches!(n, 3 | 5 | 8 | 9) {
+-        return Ok((
+-            Some(Judge::Representations {
+-                after: 0,
+-                published: false,
+-            }),
+-            None,
+-        ));
+-    }
+-    let representation = if matches!(n, 4 | 6 | 12) {
+-        Some(key.ordinal)
+-    } else {
+-        None
+-    };
++    let authority = initial_authority(n, key);
+     let mut points = Points { db, count: 0 };
+-    let result = evaluate(&mut points, claim, n, key, representation, None)?;
++    let result = evaluate(&mut points, claim, n, key, authority, None, work)?;
+     charge_points(work, &points, false);
+     Ok(match result {
++        Evaluation::Closed if generic(n) => (Some(Judge::Representations { after: 0 }), None),
+         Evaluation::Closed => (None, None),
+         Evaluation::Open => (
+             None,
+             Some(Witness {
+                 slot: n,
+                 key,
+-                representation,
++                authority,
+                 interval: None,
+             }),
+         ),
+         Evaluation::Membership { high, .. } => (
+             Some(Judge::Membership {
+-                representation,
++                authority,
+                 after: 0,
+                 high,
+             }),
+@@ -756,37 +853,32 @@ fn first_judgment(
+         ),
+     })
+ }
+-fn source_batch(
++fn room(work: &RelevanceWork, seeks: u16, rows: u16) -> bool {
++    work.highwater_seeks + seeks <= SEEK_LIMIT && work.sources + work.fallback + rows <= ROW_LIMIT
++}
++// Only called after reserving the complete <=2 seeks/2 physical rows step.
++fn source_step(
+     db: &Connection,
+     state: &mut State,
+     n: usize,
+-    limit: u16,
+     work: &mut RelevanceWork,
+ ) -> Result<(), ApiError> {
+-    if limit == 0
+-        || work.highwater_seeks >= SEEK_LIMIT
+-        || state.slots[n].exhausted
+-        || state.slots[n].candidate.is_some()
+-    {
+-        return Ok(());
+-    }
+     let s = SOURCE[n];
+     let slot = &state.slots[n];
+     let sql = format!(
+-        "SELECT {},rowid FROM {} INDEXED BY {} WHERE {} AND ({},rowid)>(?3,?4) AND {}<=?5 AND (?1 IS NOT NULL AND ?2 IS NOT NULL) ORDER BY {},rowid LIMIT ?6",
++        "SELECT {},rowid FROM {} INDEXED BY {} WHERE {} AND ({},rowid)>(?3,?4) AND {}<=?5 AND (?1 IS NOT NULL AND ?2 IS NOT NULL) ORDER BY {},rowid LIMIT 1",
+         s.ordinal, s.table, s.index, s.predicate, s.ordinal, s.ordinal, s.ordinal
+     );
+     work.highwater_seeks += 1;
+-    let mut stmt = db.prepare_cached(&sql).map_err(store_error)?;
+-    let keys = stmt
+-        .query_map(
++    let key: Option<Key> = db
++        .query_row(
++            &sql,
+             params![
+                 state.claim.seat.as_str(),
+                 state.claim.instance,
+                 slot.after.ordinal,
+                 slot.after.row,
+-                slot.high,
+-                limit
++                slot.high
+             ],
+             |r| {
+                 Ok(Key {
+@@ -795,59 +887,71 @@ fn source_batch(
+                 })
+             },
+         )
+-        .map_err(store_error)?
+-        .collect::<rusqlite::Result<Vec<_>>>()
++        .optional()
+         .map_err(store_error)?;
+-    work.sources += keys.len() as u16;
+-    if keys.is_empty() {
++    let Some(key) = key else {
+         state.slots[n].exhausted = true;
+         return Ok(());
+-    }
+-    let short = keys.len() < usize::from(limit);
+-    for key in keys {
+-        let (judge, witness) = first_judgment(db, &state.claim, n, key, work)?;
+-        state.slots[n].after = key;
+-        if let Some(witness) = witness {
+-            state.witness = Some(witness);
+-        }
+-        if let Some(judge) = judge {
+-            state.slots[n].candidate = Some(key);
+-            state.slots[n].judge = Some(judge);
+-            return Ok(());
+-        }
+-    }
+-    if short {
+-        state.slots[n].exhausted = true;
++    };
++    work.sources += 1;
++    let (judge, witness) = first_judgment(db, &state.claim, n, key, work)?;
++    state.slots[n].after = key;
++    state.slots[n].candidate = judge.map(|_| key);
++    state.slots[n].judge = judge;
++    if witness.is_some() {
++        state.witness = witness;
+     }
+     Ok(())
+ }
+-fn finish_negative(slot: &mut Slot, n: usize, representation: Option<i64>) {
+-    if matches!(n, 3 | 5 | 8 | 9) {
+-        if let Some(after) = representation {
+-            slot.judge = Some(Judge::Representations {
+-                after,
+-                published: true,
++fn finish_negative(slot: &mut Slot, n: usize, authority: Authority) {
++    if generic(n) {
++        slot.judge = Some(Judge::Representations {
++            after: authority.representation().unwrap_or(0),
++        });
++    } else {
++        slot.candidate = None;
++        slot.judge = None;
++    }
++}
++fn accept_evaluation(
++    state: &mut State,
++    n: usize,
++    key: Key,
++    authority: Authority,
++    result: Evaluation,
++) {
++    match result {
++        Evaluation::Open => {
++            state.witness = Some(Witness {
++                slot: n,
++                key,
++                authority,
++                interval: None,
++            });
++            state.slots[n].candidate = None;
++            state.slots[n].judge = None;
++        }
++        Evaluation::Closed => finish_negative(&mut state.slots[n], n, authority),
++        Evaluation::Membership { high, .. } => {
++            state.slots[n].judge = Some(Judge::Membership {
++                authority,
++                after: 0,
++                high,
+             });
+-            return;
+         }
+     }
+-    slot.candidate = None;
+-    slot.judge = None;
+ }
+-fn resume(
++// Only called after reserving the complete <=3 seeks/3 physical rows step.
++// At most one physical representation/interval is examined, before judgment.
++fn fallback_step(
+     db: &Connection,
+     state: &mut State,
+     n: usize,
+-    limit: u16,
+-    stable: bool,
+     work: &mut RelevanceWork,
+ ) -> Result<(), ApiError> {
+-    if limit == 0 || work.highwater_seeks >= SEEK_LIMIT {
+-        return Ok(());
+-    }
+-    let Some(key) = state.slots[n].candidate else {
+-        return Ok(());
+-    };
++    let key = state.slots[n]
++        .candidate
++        .ok_or_else(|| corrupt("missing relevance candidate"))?;
+     let judge = state.slots[n]
+         .judge
+         .ok_or_else(|| corrupt("missing suspended judgment"))?;
+@@ -858,227 +962,99 @@ fn resume(
+         state.slots[n].judge = None;
+         return Ok(());
+     };
+-    // One preflight keyed probe belongs to this suspended candidate. Further
+-    // per-row judgments get their own <=64-probe allowance. An empty fallback
+-    // seek still charges the preflight and one range seek, never a fake row.
+-    charge_points(work, &points, false);
+     match judge {
+-        Judge::Representations {
+-            after,
+-            mut published,
+-        } => {
+-            let high = state.slots[12].high;
++        Judge::Representations { after } => {
+             work.highwater_seeks += 1;
+-            let mut stmt=db.prepare_cached("SELECT ordinal FROM prepared_unavailable_warnings INDEXED BY presentation_prepared_warning WHERE warning_id=?1 AND ordinal>?2 AND ordinal<=?3 ORDER BY ordinal LIMIT ?4").map_err(store_error)?;
+-            let ordinals = stmt
+-                .query_map(params![warning_id, after, high, limit], |r| {
+-                    r.get::<_, i64>(0)
+-                })
+-                .map_err(store_error)?
+-                .collect::<rusqlite::Result<Vec<_>>>()
+-                .map_err(store_error)?;
+-            work.fallback += ordinals.len() as u16;
+-            let short = ordinals.len() < usize::from(limit);
+-            let mut next = after;
+-            for ordinal in ordinals {
+-                next = ordinal;
+-                let mut points = Points { db, count: 0 };
+-                let current_published = prepared(&mut points, &warning_id, ordinal)?.is_some();
+-                published |= current_published;
+-                let evaluation = if current_published {
+-                    Some(evaluate(
+-                        &mut points,
+-                        &state.claim,
+-                        n,
+-                        key,
+-                        Some(ordinal),
+-                        None,
+-                    )?)
+-                } else {
+-                    None
+-                };
+-                charge_points(work, &points, false);
+-                if let Some(evaluation) = evaluation {
+-                    match evaluation {
+-                        Evaluation::Open => {
+-                            state.witness = Some(Witness {
+-                                slot: n,
+-                                key,
+-                                representation: Some(ordinal),
+-                                interval: None,
+-                            });
+-                            state.slots[n].candidate = None;
+-                            state.slots[n].judge = None;
+-                        }
+-                        Evaluation::Closed => continue,
+-                        Evaluation::Membership { high, .. } => {
+-                            state.slots[n].judge = Some(Judge::Membership {
+-                                representation: Some(ordinal),
+-                                after: 0,
+-                                high,
+-                            });
+-                        }
+-                    }
+-                    return Ok(());
+-                }
+-            }
+-            if short || next >= high {
+-                let mut points = Points { db, count: 0 };
+-                let evaluation = if stable && !published {
+-                    evaluate(&mut points, &state.claim, n, key, None, None)?
+-                } else {
+-                    Evaluation::Closed
+-                };
+-                charge_points(work, &points, false);
+-                match evaluation {
+-                    Evaluation::Open => {
+-                        state.witness = Some(Witness {
+-                            slot: n,
+-                            key,
+-                            representation: None,
+-                            interval: None,
+-                        });
+-                        state.slots[n].candidate = None;
+-                        state.slots[n].judge = None;
+-                    }
+-                    Evaluation::Closed => {
+-                        state.slots[n].candidate = None;
+-                        state.slots[n].judge = None;
+-                    }
+-                    Evaluation::Membership { high, .. } => {
+-                        state.slots[n].judge = Some(Judge::Membership {
+-                            representation: None,
+-                            after: 0,
+-                            high,
+-                        });
+-                    }
+-                }
++            let ordinal:Option<i64> = db.query_row(
++                "SELECT ordinal FROM prepared_unavailable_warnings INDEXED BY presentation_prepared_warning WHERE warning_id=?1 AND ordinal>?2 AND ordinal<=?3 ORDER BY ordinal LIMIT 1",
++                params![warning_id,after,state.slots[12].high],|r|r.get(0)).optional().map_err(store_error)?;
++            if let Some(ordinal) = ordinal {
++                work.fallback += 1;
++                let authority = Authority::PreparedRepresentation(ordinal);
++                let current = evaluate(&mut points, &state.claim, n, key, authority, None, work)?;
++                accept_evaluation(state, n, key, authority, current);
+             } else {
+-                state.slots[n].judge = Some(Judge::Representations {
+-                    after: next,
+-                    published,
+-                });
++                // The independent direct association was already examined.
++                // Exhausted prepared alternatives never erase its positive truth.
++                state.slots[n].candidate = None;
++                state.slots[n].judge = None;
+             }
+         }
+         Judge::Membership {
+-            representation,
++            authority,
+             after,
+             high,
+         } => {
+-            if matches!(n, 3 | 5 | 8 | 9) && representation.is_none() && !stable {
+-                state.slots[n].candidate = None;
+-                state.slots[n].judge = None;
+-                return Ok(());
+-            }
+-            let mut points = Points { db, count: 0 };
+-            let evaluation = evaluate(&mut points, &state.claim, n, key, representation, None)?;
+-            // This is the bounded suspended-candidate preflight, not an
+-            // additional source/fallback row or a hidden full re-judgment.
+-            charge_points(work, &points, false);
+-            let cutoff = match evaluation {
+-                Evaluation::Closed => {
+-                    finish_negative(&mut state.slots[n], n, representation);
+-                    return Ok(());
+-                }
+-                Evaluation::Open => {
+-                    state.witness = Some(Witness {
+-                        slot: n,
+-                        key,
+-                        representation,
+-                        interval: None,
+-                    });
+-                    state.slots[n].candidate = None;
+-                    state.slots[n].judge = None;
++            let evaluation = evaluate(&mut points, &state.claim, n, key, authority, None, work)?;
++            let (cutoff, current_high) = match evaluation {
++                Evaluation::Membership { cutoff, high } => (cutoff, high),
++                other => {
++                    accept_evaluation(state, n, key, authority, other);
++                    charge_points(work, &points, false);
+                     return Ok(());
+                 }
+-                Evaluation::Membership { cutoff, .. } => cutoff,
+             };
+-            let mut points = Points { db, count: 0 };
+-            let warning = match representation {
+-                Some(r) => prepared(&mut points, &warning_id, r)?,
++            // Keep the captured finite frontier, but current source authority
++            // can narrow it after retained/operator repair. Never first accept
++            // an interval that the exact saved-witness judge would reject.
++            let effective_high = high.min(current_high);
++            if after > effective_high {
++                finish_negative(&mut state.slots[n], n, authority);
++                charge_points(work, &points, false);
++                return Ok(());
++            }
++            let warning = match authority.representation() {
++                Some(ordinal) => prepared(&mut points, &warning_id, ordinal)?,
+                 None => direct(&mut points, &warning_id)?,
+             }
+             .ok_or_else(|| corrupt("judged warning disappeared in transaction"))?;
+-            charge_points(work, &points, false);
+             work.highwater_seeks += 1;
+-            let mut stmt=db.prepare_cached("SELECT ordinal,joined_seq,left_seq FROM membership_intervals INDEXED BY presentation_membership_history WHERE thread_id=?1 AND seat_id=?2 AND ordinal>?3 AND ordinal<=?4 ORDER BY ordinal LIMIT ?5").map_err(store_error)?;
+-            let rows = stmt
+-                .query_map(
+-                    params![
+-                        warning.thread,
+-                        state.claim.seat.as_str(),
+-                        after,
+-                        high,
+-                        limit
+-                    ],
+-                    |r| {
+-                        Ok((
+-                            r.get::<_, i64>(0)?,
+-                            r.get::<_, i64>(1)?,
+-                            r.get::<_, Option<i64>>(2)?,
+-                        ))
+-                    },
+-                )
+-                .map_err(store_error)?
+-                .collect::<rusqlite::Result<Vec<_>>>()
+-                .map_err(store_error)?;
+-            work.fallback += rows.len() as u16;
+-            let short = rows.len() < usize::from(limit);
+-            let mut next = after;
+-            for (ordinal, joined, left) in rows {
+-                next = ordinal;
+-                if joined <= cutoff && left.is_none_or(|left| left > cutoff) {
+-                    let mut points = Points { db, count: 0 };
+-                    let current = evaluate(
+-                        &mut points,
+-                        &state.claim,
+-                        n,
+-                        key,
+-                        representation,
+-                        Some(ordinal),
+-                    )?;
+-                    charge_points(work, &points, false);
+-                    if matches!(current, Evaluation::Open) {
++            let row:Option<(i64,i64,Option<i64>)>=db.query_row(
++                "SELECT ordinal,joined_seq,left_seq FROM membership_intervals INDEXED BY presentation_membership_history WHERE thread_id=?1 AND seat_id=?2 AND ordinal>?3 AND ordinal<=?4 ORDER BY ordinal LIMIT 1",
++                params![warning.thread,state.claim.seat.as_str(),after,effective_high],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(store_error)?;
++            match row {
++                None => finish_negative(&mut state.slots[n], n, authority),
++                Some((ordinal, joined, left)) => {
++                    work.fallback += 1;
++                    // All source/condition inputs were checked in this same
++                    // transaction. The returned physical row itself proves
++                    // this interval; no second judge or coverage seek needed.
++                    if joined <= cutoff && left.is_none_or(|end| end > cutoff) {
+                         state.witness = Some(Witness {
+                             slot: n,
+                             key,
+-                            representation,
++                            authority,
+                             interval: Some(ordinal),
+                         });
+                         state.slots[n].candidate = None;
+                         state.slots[n].judge = None;
+-                        return Ok(());
++                    } else {
++                        state.slots[n].judge = Some(Judge::Membership {
++                            authority,
++                            after: ordinal,
++                            high,
++                        });
+                     }
+                 }
+             }
+-            if short || next >= high {
+-                finish_negative(&mut state.slots[n], n, representation);
+-            } else {
+-                state.slots[n].judge = Some(Judge::Membership {
+-                    representation,
+-                    after: next,
+-                    high,
+-                });
+-            }
+         }
+     }
++    charge_points(work, &points, false);
+     Ok(())
+ }
+ fn witness(
+     db: &Connection,
+     state: &State,
+     frontier: i64,
+-    current_fence: i64,
+     work: &mut RelevanceWork,
+ ) -> Result<bool, ApiError> {
+     let Some(w) = &state.witness else {
+         return Ok(false);
+     };
+-    if (w.slot == 7 && w.key.ordinal <= frontier)
+-        || (matches!(w.slot, 3 | 5 | 8 | 9)
+-            && w.representation.is_none()
+-            && state.fence != current_fence)
+-    {
++    if w.slot == 7 && w.key.ordinal <= frontier {
++        return Ok(false);
++    }
++    if !room(work, 1, 1) {
+         return Ok(false);
+     }
+     let mut points = Points { db, count: 0 };
+@@ -1087,12 +1063,111 @@ fn witness(
+         &state.claim,
+         w.slot,
+         w.key,
+-        w.representation,
++        w.authority,
+         w.interval,
++        work,
+     )?;
+     charge_points(work, &points, true);
+     Ok(matches!(current, Evaluation::Open))
+ }
++fn next_slot(state: &State, fallback: bool) -> Option<usize> {
++    let start = if fallback {
++        state.fallback_rotation
++    } else {
++        state.source_rotation
++    };
++    (0..SOURCES)
++        .map(|offset| (start + offset) % SOURCES)
++        .find(|&n| {
++            let slot = &state.slots[n];
++            if fallback {
++                slot.candidate.is_some()
++            } else {
++                !slot.exhausted && slot.candidate.is_none()
++            }
++        })
++}
++fn microstep(
++    db: &Connection,
++    state: &mut State,
++    fallback: bool,
++    n: usize,
++    work: &mut RelevanceWork,
++) -> Result<u16, ApiError> {
++    let before = work.sources + work.fallback;
++    if fallback {
++        fallback_step(db, state, n, work)?;
++        state.fallback_rotation = (n + 1) % SOURCES;
++    } else {
++        source_step(db, state, n, work)?;
++        state.source_rotation = (n + 1) % SOURCES;
++    }
++    Ok(work.sources + work.fallback - before)
++}
++// Full-cost reservations protect BOTH families before lending. Shares count
++// all physical rows of each action (including coverage), not just source rows.
++fn schedule(
++    db: &Connection,
++    state: &mut State,
++    work: &mut RelevanceWork,
++    budget: &CallBudget,
++) -> Result<(), ApiError> {
++    let mut lane_rows = [0u16; 2];
++    let source = next_slot(state, false);
++    let fallback = next_slot(state, true);
++    // Reserve fallback even if the source step may create the first candidate.
++    let reserve_fallback = fallback.is_some() || source.is_some();
++    let reserved_seeks =
++        if source.is_some() { 2 } else { 0 } + if reserve_fallback { 3 } else { 0 };
++    let reserved_rows = reserved_seeks;
++    if !room(work, reserved_seeks, reserved_rows) {
++        return Ok(());
++    }
++    if let Some(n) = source {
++        check(budget)?;
++        lane_rows[0] += microstep(db, state, false, n, work)?;
++        if state.witness.is_some() {
++            return Ok(());
++        }
++    }
++    if let Some(n) = fallback.or_else(|| next_slot(state, true)) {
++        check(budget)?;
++        lane_rows[1] += microstep(db, state, true, n, work)?;
++        if state.witness.is_some() {
++            return Ok(());
++        }
++    }
++    // Alternating reserved passes, then alternating lending. A zero-row empty
++    // seek still consumes a range; a keyed-only negative clears its candidate.
++    for lending in [false, true] {
++        loop {
++            let mut progressed = false;
++            for (family, lane) in lane_rows.iter_mut().enumerate() {
++                let fallback = family == 1;
++                let cost = if fallback { 3 } else { 2 };
++                if !lending && *lane + cost > 50 {
++                    continue;
++                }
++                let Some(n) = next_slot(state, fallback) else {
++                    continue;
++                };
++                if !room(work, cost, cost) {
++                    continue;
++                }
++                check(budget)?;
++                *lane += microstep(db, state, fallback, n, work)?;
++                progressed = true;
++                if state.witness.is_some() {
++                    return Ok(());
++                }
++            }
++            if !progressed {
++                break;
++            }
++        }
++    }
++    Ok(())
++}
+ fn result(relevance: Relevance, work: RelevanceWork) -> RelevanceProof {
+     RelevanceProof {
+         relevance,
+@@ -1101,7 +1176,8 @@ fn result(relevance: Relevance, work: RelevanceWork) -> RelevanceProof {
+     }
+ }
+ /// The caller holds its deciding transaction and owns complete A2 admission.
+-/// Every successful V2 pull path may call this, including replay/control-only.
++/// Every successful V2 pull calls this exactly once, including replay/control/no-output.
++/// The caller reuses the coherent proof/work for every same-transaction decision.
+ pub(super) fn advance(
+     db: &Connection,
+     claim: &CallerClaim,
+@@ -1129,7 +1205,7 @@ pub(super) fn advance(
+         Some(state) if state.claim == *claim => state,
+         _ => snapshot(db, claim, frontier, &mut work)?,
+     };
+-    if witness(db, &state, frontier, now, &mut work)? {
++    if witness(db, &state, frontier, &mut work)? {
+         return Ok(result(Relevance::Open, work));
+     }
+     state.witness = None;
+@@ -1155,53 +1231,7 @@ pub(super) fn advance(
+         state.slots[7].candidate = None;
+         state.slots[7].judge = None;
+     }
+-    let stable = state.fence == now;
+-    // Two independently persisted fair rotations. Reserve50 physical rows for
+-    // each family; unused shares are lent only after the reserved passes.
+-    for family in 0..4 {
+-        let fallback = family % 2 == 1;
+-        let reserved = family < 2;
+-        let used = work.sources + work.fallback;
+-        if used >= ROW_LIMIT || work.highwater_seeks >= SEEK_LIMIT {
+-            break;
+-        }
+-        let mut share = if reserved {
+-            50.min(ROW_LIMIT - used)
+-        } else {
+-            ROW_LIMIT - used
+-        };
+-        let start = if fallback {
+-            state.fallback_rotation
+-        } else {
+-            state.source_rotation
+-        };
+-        for offset in 0..SOURCES {
+-            check(budget)?;
+-            if share == 0 || work.highwater_seeks >= SEEK_LIMIT {
+-                break;
+-            }
+-            let n = (start + offset) % SOURCES;
+-            let quota = share.div_ceil((SOURCES - offset) as u16);
+-            let before = work.sources + work.fallback;
+-            if fallback {
+-                resume(db, &mut state, n, quota, stable, &mut work)?;
+-            } else {
+-                source_batch(db, &mut state, n, quota, &mut work)?;
+-            }
+-            share -= work.sources + work.fallback - before;
+-            if fallback {
+-                state.fallback_rotation = (n + 1) % SOURCES;
+-            } else {
+-                state.source_rotation = (n + 1) % SOURCES;
+-            }
+-            if state.witness.is_some() {
+-                break;
+-            }
+-        }
+-        if state.witness.is_some() {
+-            break;
+-        }
+-    }
++    schedule(db, &mut state, &mut work, budget)?;
+     let relevance = if state.witness.is_some() {
+         Relevance::Open
+     } else if state
+@@ -1233,8 +1263,9 @@ pub(super) fn advance(
+     save(db, consumer, &state)?;
+     Ok(result(relevance, work))
+ }
+-/// Confirmation does not sweep or invoke a nonunique fallback. It may use
+-/// only current invitation truth, stable exact absence, or an exact witness.
++/// Diagnostic witness/cache inspection, never an ExplicitConfirm authority.
++/// At most one indexed coverage successor; no source discovery or fallback walk.
++/// V2Pull uses only its single advance. ExplicitConfirm never calls this.
+ pub(super) fn revalidate(
+     db: &Connection,
+     claim: &CallerClaim,
+@@ -1260,7 +1291,7 @@ pub(super) fn revalidate(
+     if state.claim != *claim {
+         return Ok(result(Relevance::Unknown, work));
+     }
+-    if witness(db, &state, frontier, now, &mut work)? {
++    if witness(db, &state, frontier, &mut work)? {
+         return Ok(result(Relevance::Open, work));
+     }
+     if state.absent && state.fence == now && state.frontier == frontier {
+diff --git a/tests/store/attention.rs b/tests/store/attention.rs
+index d3868020..f33a5a58 100644
+--- a/tests/store/attention.rs
++++ b/tests/store/attention.rs
+@@ -2189,6 +2189,7 @@ fn relevance_pull(db: &Connection) -> crate::store::presentation_relevance::Rele
+ fn presentation_relevance_required_lazy_overlay_tracks_digest_and_requirement() {
+     let db = relevance_db();
+     db.execute_batch("INSERT INTO service_authors(id,instance_id,created_at) VALUES ('relevance-service','i',0);
++        UPDATE threads SET managed_owner_author_id='relevance-service' WHERE id='relevance-thread';
+         INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms,confirmation,inviter_seat_id) VALUES ('relevance-invite','relevance-thread','s',1,'pending',0,2,100,100,'lazy','o');").unwrap();
+     let count = || {
+         db.query_row(
+@@ -2208,13 +2209,13 @@ fn presentation_relevance_required_lazy_overlay_tracks_digest_and_requirement()
+     db.execute_batch("DELETE FROM digest_pending_invitations WHERE seat_id='s' AND invitation_id='relevance-invite';").unwrap();
+     assert_eq!(count(), 0);
+     db.execute_batch("INSERT INTO digest_pending_invitations(seat_id,invitation_id,thread_id,created_decision_seq,ordinal) SELECT seat_id,id,thread_id,created_decision_seq,ordinal FROM invitations WHERE id='relevance-invite';
+-        UPDATE requirement_episodes SET state='accepted',accepted_by_seat_id='s',accepted_generation=1,accepted_observation='cooperative',accepted_at=1 WHERE id='relevance-requirement';").unwrap();
++        UPDATE requirement_episodes SET revision=revision+1,state='accepted',accepted_by_seat_id='s',accepted_generation=1,accepted_observation='cooperative',accepted_at=1 WHERE id='relevance-requirement';").unwrap();
+     assert_eq!(
+         count(),
+         1,
+         "accepted requirement remains effective while invitation remains pending"
+     );
+-    db.execute_batch("UPDATE requirement_episodes SET state='released',released_at=2 WHERE id='relevance-requirement';").unwrap();
++    db.execute_batch("UPDATE requirement_episodes SET revision=revision+1,state='released',released_at=2 WHERE id='relevance-requirement';").unwrap();
+     assert_eq!(count(), 0);
+ }
+ 
+@@ -2393,10 +2394,8 @@ fn relevance_publish_unrelated_lazy(db: &mut Connection, n: u32) {
+     tx.commit().unwrap();
+ }
+ 
+-#[test]
+-fn presentation_relevance_direct_legacy_survives_canonical_lazy_churn() {
+-    use crate::store::presentation_relevance::Relevance;
+-    let mut db = relevance_db();
++fn relevance_legacy_membership_fixture() -> Connection {
++    let db = relevance_db();
+     db.execute_batch("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('relevance-third','i','resolved','native','pane-third',1,1,0);
+         INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('relevance-unrelated','i','unrelated','unrelated',0,0);
+         INSERT INTO memberships(thread_id,seat_id,state) VALUES ('relevance-unrelated','o','joined'),('relevance-unrelated','relevance-third','joined');
+@@ -2406,6 +2405,89 @@ fn presentation_relevance_direct_legacy_survives_canonical_lazy_churn() {
+         INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id) VALUES ('relevance-churn-warning',20,'relevance-thread',1000000,'o','invitation','relevance-churn-invite');
+         WITH RECURSIVE n(x) AS(SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<301)
+         INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq,left_seq) SELECT 'relevance-thread','s',x,CASE WHEN x=301 THEN 1 ELSE 50 END,CASE WHEN x=301 THEN 30 ELSE 60 END FROM n;").unwrap();
++    db
++}
++
++// Suspend before the only qualifying interval. The cursor and high-water
++// values below come from persisted proof/source rows, not fixture row counts.
++fn relevance_suspend_legacy_membership(db: &Connection) -> (i64, i64) {
++    use crate::store::presentation_relevance::Relevance;
++    let qualifying: i64 = db.query_row("SELECT ordinal FROM membership_intervals WHERE thread_id='relevance-thread' AND seat_id='s' AND episode=301", [], |r| r.get(0)).unwrap();
++    for _ in 0..32 {
++        let proof = relevance_pull(db);
++        assert_eq!(proof.relevance, Relevance::Unknown);
++        let raw: String = db.query_row("SELECT proof_json FROM presentation_warning_proofs WHERE seat_id='s' AND consumer='hook'", [], |r| r.get(0)).unwrap();
++        let state: serde_json::Value = serde_json::from_str(&raw).unwrap();
++        if let Some(after) = state["slots"][8]["judge"]["Membership"]["after"].as_i64()
++            && after > 1
++            && after + 1 < qualifying
++        {
++            assert_eq!(
++                state["slots"][8]["judge"]["Membership"]["high"].as_i64(),
++                Some(1_000_000)
++            );
++            return (after, qualifying);
++        }
++    }
++    panic!("fixture must suspend an unfinished direct membership walk");
++}
++
++#[test]
++fn presentation_relevance_suspended_membership_respects_repaired_current_high() {
++    use crate::store::presentation_relevance::Relevance;
++    // No normal producer decreases this high-water. These are explicit retained
++    // operator-repair states whose current inputs must still govern first Open.
++    for position in [-1, 0, 1] {
++        let db = relevance_legacy_membership_fixture();
++        let (after, qualifying) = relevance_suspend_legacy_membership(&db);
++        let repaired_high = after + position;
++        assert!(repaired_high < qualifying);
++        db.execute("UPDATE warning_jobs SET interval_high_water=?1 WHERE warning_id='relevance-churn-warning'", [repaired_high]).unwrap();
++        let mut absent = false;
++        for _ in 0..256 {
++            let proof = relevance_pull(&db);
++            assert_ne!(
++                proof.relevance,
++                Relevance::Open,
++                "a captured frontier cannot authorize an interval above current high (cursor offset {position})"
++            );
++            if proof.relevance == Relevance::Absent {
++                absent = true;
++                break;
++            }
++        }
++        assert!(absent, "repaired finite membership range must exhaust");
++    }
++}
++
++#[test]
++fn presentation_relevance_suspended_membership_unchanged_high_still_opens() {
++    use crate::store::presentation_relevance::Relevance;
++    let db = relevance_legacy_membership_fixture();
++    let (_, qualifying) = relevance_suspend_legacy_membership(&db);
++    let mut opened = false;
++    for _ in 0..256 {
++        let proof = relevance_pull(&db);
++        assert_ne!(proof.relevance, Relevance::Absent);
++        if proof.relevance == Relevance::Open {
++            opened = true;
++            break;
++        }
++    }
++    assert!(
++        opened,
++        "unchanged captured/current range still finds its recipient"
++    );
++    let raw: String = db.query_row("SELECT proof_json FROM presentation_warning_proofs WHERE seat_id='s' AND consumer='hook'", [], |r| r.get(0)).unwrap();
++    let state: serde_json::Value = serde_json::from_str(&raw).unwrap();
++    assert_eq!(state["witness"]["interval"].as_i64(), Some(qualifying));
++    assert_eq!(relevance_pull(&db).relevance, Relevance::Open);
++}
++
++#[test]
++fn presentation_relevance_direct_legacy_survives_canonical_lazy_churn() {
++    use crate::store::presentation_relevance::Relevance;
++    let mut db = relevance_legacy_membership_fixture();
+     let shape: (i64, i64, i64) = db.query_row("SELECT (SELECT count(*) FROM warning_conditions),(SELECT count(*) FROM invitations WHERE seat_id='s'),(SELECT count(*) FROM warning_recipients WHERE warning_id='relevance-churn-warning' AND seat_id='s')",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
+     assert_eq!(shape, (0, 0, 0), "retained pre-ledger membership authority");
+     let mut opened = false;
+@@ -2485,11 +2567,32 @@ fn presentation_relevance_canonical_receipt_sweep_closes_before_clear_publicatio
+         tx.commit().unwrap();
+         warning
+     };
++    let initial = relevance_pull(&db);
+     assert_eq!(
+-        relevance_pull(&db).relevance,
++        initial.relevance,
+         Relevance::Open,
+         "the real producer's condition is initially actionable"
+     );
++    assert_eq!(
++        initial.work.sources, 1,
++        "positive early exit examines one actual source"
++    );
++    assert_eq!(
++        initial.work.highwater_seeks, 15,
++        "thirteen captures plus source and empty coverage seek share one meter"
++    );
++    let witness = relevance_pull(&db);
++    assert_eq!(witness.relevance, Relevance::Open);
++    assert_eq!(
++        witness.work.sources + witness.work.fallback,
++        0,
++        "empty coverage seek is not a fictitious physical row"
++    );
++    assert_eq!(
++        witness.work.highwater_seeks, 1,
++        "condition witness honestly charges its indexed range seek"
++    );
++    assert!(witness.work.witness_probes > 0 && witness.work.witness_probes <= 64);
+     {
+         let tx = db.transaction().unwrap();
+         let cutoff = schema::next_decision_seq(&tx, "i").unwrap();
+@@ -2533,3 +2636,500 @@ fn presentation_relevance_canonical_receipt_sweep_closes_before_clear_publicatio
+         "the helper must not materialize the clear itself"
+     );
+ }
++
++// Kills a prepared same-ID representation shadowing a currently actionable
++// independent direct source. Boolean relevance preserves both associations.
++#[test]
++fn presentation_relevance_direct_association_survives_prepared_same_id() {
++    use crate::store::presentation_relevance::Relevance;
++    let db = relevance_db();
++    db.execute_batch("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES ('relevance-union-invite','relevance-thread','o',1,'pending',0,2,100,100);
++        INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_at,decision_seq,event_offset,source_invitation_id) VALUES ('relevance-union-warning','i','relevance-thread',1,'warn','{}',0,20,1,'relevance-union-invite');
++        INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id) VALUES ('relevance-union-warning',20,'relevance-thread',0,'o','invitation','relevance-union-invite');
++        INSERT INTO warning_recipients(warning_id,seat_id,generation) VALUES ('relevance-union-warning','s',20);
++        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('relevance-union-other','i','other','other',0,0);
++        INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES ('prep-relevance-union','i','seat:o','union',zeroblob(32),'relevance-union-other',0,0,0,0,0,0,0,'sealed');
++        INSERT INTO prepared_unavailable_warnings(preparation_id,warning_key,warning_id,affected_seat_id,unavailability_episode,warning_offset,event_json) VALUES ('prep-relevance-union','union-key','relevance-union-warning','o',1,1,'{}');
++        INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('msg-relevance-union','i','relevance-union-other',1,'ordinary','other',0,21);
++        INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('prep-relevance-union','msg-relevance-union','i','relevance-union-other',21,0,1,0,0,1);").unwrap();
++    // This is an explicit retained coexistence fixture, not a claim that the
++    // post-ledger publication producer admits conflicting warning job IDs.
++    assert_eq!(
++        db.query_row(
++            "SELECT unavailability_open FROM seats WHERE id='o'",
++            [],
++            |r| r.get::<_, i64>(0)
++        )
++        .unwrap(),
++        0
++    );
++    let mut open = false;
++    for _ in 0..64 {
++        if relevance_pull(&db).relevance == Relevance::Open {
++            open = true;
++            break;
++        }
++    }
++    assert!(
++        open,
++        "nonactionable prepared association cannot erase actionable direct invitation source"
++    );
++    db.execute(
++        "UPDATE warning_jobs SET event_seq=21 WHERE warning_id='relevance-union-warning'",
++        [],
++    )
++    .unwrap();
++    let mut absent = false;
++    for _ in 0..64 {
++        let proof = relevance_pull(&db);
++        assert_ne!(
++            proof.relevance,
++            Relevance::Open,
++            "a job no longer matching its immutable direct event cannot remain positive authority"
++        );
++        if proof.relevance == Relevance::Absent {
++            absent = true;
++            break;
++        }
++    }
++    assert!(
++        absent,
++        "neither retained association remains actionable after exact direct source mismatch"
++    );
++}
++
++// One real receipt condition on a fresh thread, deliberately left physically
++// open. A current waiver closes its canonical scope without draining workers.
++fn relevance_append_covered_receipt(db: &mut Connection, n: u32) {
++    use crate::protocol::time::UtcMillis;
++    use crate::{ports::TimeBasis, protocol::authority::ObligationRef};
++    let tx = db.transaction().unwrap();
++    let thread = format!("relevance-covered-thread-{n}");
++    let message = format!("relevance-covered-message-{n}");
++    tx.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES (?1,'i','covered','covered',0,0,2)",[&thread]).unwrap();
++    let seq = schema::next_decision_seq(&tx, "i").unwrap();
++    tx.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq,actor_seat_id) VALUES (?1,'i',?2,1,'ordinary','covered',0,?3,'o')",params![message,thread,seq as i64]).unwrap();
++    tx.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES (?1,?2,'s','pending',100,0,100)",params![message,thread]).unwrap();
++    assert!(
++        schema::record_overdue_if_pending(
++            &tx,
++            &ObligationRef::Receipt {
++                message: MessageId::new(&message),
++                seat: SeatId::new("s")
++            },
++            &TimeBasis::Decision,
++            UtcMillis(1000 + i64::from(n))
++        )
++        .unwrap()
++        .inserted
++    );
++    let cutoff = schema::next_decision_seq(&tx, "i").unwrap();
++    tx.execute("INSERT INTO human_receipt_waivers(seat_id,through_decision_seq,human_generation,decided_at) VALUES ('s',?1,1,?2) ON CONFLICT(seat_id) DO UPDATE SET through_decision_seq=excluded.through_decision_seq,decided_at=excluded.decided_at",params![cutoff as i64,1000+i64::from(n)]).unwrap();
++    assert_eq!(
++        schema::clear_waived_receipt_conditions_for_seat(&tx, "s", UtcMillis(1000 + i64::from(n)))
++            .unwrap(),
++        1
++    );
++    tx.commit().unwrap();
++}
++
++#[test]
++fn presentation_relevance_coverage_reserves_fallback_progress_under_source_load() {
++    use crate::store::presentation_relevance::Relevance;
++    let mut db = relevance_legacy_membership_fixture();
++    for n in 0..64 {
++        relevance_append_covered_receipt(&mut db, n);
++    }
++    let legacy_ordinal: i64 = db
++        .query_row(
++            "SELECT ordinal FROM warning_jobs WHERE warning_id='relevance-churn-warning'",
++            [],
++            |r| r.get(0),
++        )
++        .unwrap();
++    let mut prior_after = 0;
++    let mut suspended_progress = 0;
++    let mut source_rows = 0u64;
++    let mut fallback_rows = 0u64;
++    let mut open = false;
++    for n in 0..512 {
++        relevance_publish_unrelated_lazy(&mut db, n);
++        let proof = relevance_pull(&db);
++        source_rows += u64::from(proof.work.sources);
++        fallback_rows += u64::from(proof.work.fallback);
++        assert_ne!(
++            proof.relevance,
++            Relevance::Absent,
++            "covered receipts do not settle the independent invitation"
++        );
++        if proof.relevance == Relevance::Open {
++            open = true;
++            break;
++        }
++        let raw:String=db.query_row("SELECT proof_json FROM presentation_warning_proofs WHERE seat_id='s' AND consumer='hook'",[],|r|r.get(0)).unwrap();
++        let state: serde_json::Value = serde_json::from_str(&raw).unwrap();
++        let slot = &state["slots"][8];
++        if slot["candidate"]["ordinal"].as_i64() == Some(legacy_ordinal)
++            && let Some(after) = slot["judge"]["Membership"]["after"].as_i64()
++        {
++            assert!(
++                after >= prior_after,
++                "unrelated writes must not reset the independent membership cursor"
++            );
++            if after > prior_after {
++                suspended_progress += 1;
++            }
++            prior_after = after;
++        }
++    }
++    assert!(
++        open,
++        "coverage-heavy source traffic must lend and reserve enough fallback work for finite Open"
++    );
++    assert!(
++        source_rows >= 64 && fallback_rows >= 301 && suspended_progress > 1,
++        "exercise multiple charged source/fallback quanta"
++    );
++}
++
++#[test]
++fn presentation_relevance_all_thirteen_physical_sources_progress_through_stale_candidates() {
++    use crate::store::presentation_relevance::Relevance;
++    let db = relevance_db();
++    // Deliberately stale derived/source candidates: immutable ordinary message
++    // identities cannot be current warnings. This exercises physical source
++    // rotation, not a fabricated canonical swept invitation/programmatic warn.
++    db.execute_batch("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('relevance-stale-a','i','relevance-thread',1,'ordinary','stale',0,2),('relevance-stale-b','i','relevance-thread',2,'ordinary','stale',0,3);
++        INSERT INTO warning_conditions(condition_kind,thread_id,condition_id,affected_seat_id,open_warning_id,opened_seq,invitation_originator_instance_id,invitation_originator_seat_id) VALUES ('invitation','relevance-thread','stale-invitation','s','relevance-stale-a',2,'i','s');
++        INSERT INTO receipt_warning_origins(instance_id,seat_id,warning_id,source_message_id) VALUES ('i','s','relevance-stale-a','relevance-stale-b');
++        INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id,status) VALUES ('relevance-stale-a',2,'relevance-thread',0,'s','invitation','stale-invitation','pending'),('relevance-stale-b',3,'relevance-thread',0,'s','invitation','stale-invitation','failed');
++        INSERT OR IGNORE INTO digest_open_warnings(source,source_ordinal,warning_id,thread_id,affected_seat_id,condition_kind,condition_id) SELECT 'job',ordinal,warning_id,thread_id,'s',condition_kind,condition_id FROM warning_jobs;
++        INSERT OR IGNORE INTO digest_open_warning_recipients(seat_id,warning_id,thread_id,source,source_ordinal) SELECT 's',warning_id,thread_id,'job',ordinal FROM warning_jobs;
++        INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES ('prep-relevance-stale','i','seat:o','stale',zeroblob(32),'relevance-thread',0,0,0,0,0,0,0,'sealed');
++        INSERT INTO prepared_unavailable_warnings(preparation_id,warning_key,warning_id,affected_seat_id,unavailability_episode,warning_offset,event_json) VALUES ('prep-relevance-stale','stale-prepared','relevance-stale-prepared','s',1,1,'{}');
++        INSERT OR IGNORE INTO digest_open_warnings(source,source_ordinal,warning_id,thread_id,affected_seat_id,condition_kind,condition_id,episode) SELECT 'prepared',ordinal,warning_id,'relevance-thread','s','unavailable',warning_key,1 FROM prepared_unavailable_warnings;
++        INSERT OR IGNORE INTO digest_open_warning_recipients(seat_id,warning_id,thread_id,source,source_ordinal) SELECT 's',warning_id,'relevance-thread','prepared',ordinal FROM prepared_unavailable_warnings;
++        INSERT INTO digest_programmatic_warnings(seat_id,warning_id,thread_id,event_seq,event_offset) VALUES ('s','relevance-stale-a','relevance-thread',2,0);
++        INSERT INTO work_jobs(id,kind,subject_id,high_water,status) VALUES ('relevance-stale-work-a','send_attention','service-notify:relevance-stale-notify-a',0,'pending'),('relevance-stale-work-b','send_attention','service-notify:relevance-stale-notify-b',0,'failed');").unwrap();
++    let mut absent = false;
++    let mut rows = 0u64;
++    for _ in 0..13 {
++        let proof = relevance_pull(&db);
++        rows += u64::from(proof.work.sources);
++        assert_ne!(
++            proof.relevance,
++            Relevance::Open,
++            "stale candidates confer no warning authority"
++        );
++        if proof.relevance == Relevance::Absent {
++            absent = true;
++            break;
++        }
++    }
++    assert!(
++        absent && rows >= 13,
++        "all thirteen physical sources and suspended empty fallback must finish"
++    );
++    let raw:String=db.query_row("SELECT proof_json FROM presentation_warning_proofs WHERE seat_id='s' AND consumer='hook'",[],|r|r.get(0)).unwrap();
++    let state: serde_json::Value = serde_json::from_str(&raw).unwrap();
++    for slot in state["slots"].as_array().unwrap() {
++        assert!(
++            slot["high"].as_i64().unwrap() > 0,
++            "fixture must populate each fixed physical source"
++        );
++        assert_eq!(slot["exhausted"], true);
++        assert!(slot["after"]["ordinal"].as_i64().unwrap() > 0);
++    }
++}
++
++#[test]
++fn presentation_relevance_successor_plan_and_vm_stay_bounded_in_retained_canonical_sweeps() {
++    const SQL: &str = "SELECT after_ordinal,through_ordinal FROM warning_close_sweeps INDEXED BY warning_close_sweeps_cover WHERE condition_kind=?1 AND affected_seat_id=?2 AND episode IS ?3 AND through_ordinal>=?4 ORDER BY through_ordinal,after_ordinal LIMIT 1";
++    let mut measured = Vec::new();
++    for count in [32u32, 512] {
++        let mut db = relevance_db();
++        for n in 0..count {
++            relevance_append_covered_receipt(&mut db, n);
++        }
++        let target = i64::from(count / 2);
++        let plan: Vec<String> = db
++            .prepare(&format!("EXPLAIN QUERY PLAN {SQL}"))
++            .unwrap()
++            .query_map(params!["receipt", "s", None::<i64>, target], |r| r.get(3))
++            .unwrap()
++            .collect::<Result<_, _>>()
++            .unwrap();
++        assert!(
++            plan.iter()
++                .any(|line| line.contains("warning_close_sweeps_cover"))
++        );
++        assert!(
++            plan.iter().all(|line| !line.contains("TEMP B-TREE")),
++            "successor ordering must use covering index: {plan:?}"
++        );
++        let (row, units) = vm_units(&db, || {
++            db.query_row(SQL, params!["receipt", "s", None::<i64>, target], |r| {
++                Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
++            })
++            .unwrap()
++        });
++        assert_eq!(
++            row,
++            (target - 1, target),
++            "real producer retains adjacent exact scope ranges"
++        );
++        assert_eq!(
++            db.query_row(
++                SQL,
++                params!["receipt", "s", None::<i64>, i64::from(count)],
++                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
++            )
++            .unwrap(),
++            (i64::from(count) - 1, i64::from(count))
++        );
++        assert!(
++            db.query_row(
++                SQL,
++                params!["receipt", "s", None::<i64>, i64::from(count) + 1],
++                |r| r.get::<_, i64>(0)
++            )
++            .optional()
++            .unwrap()
++            .is_none()
++        );
++        assert!(
++            db.query_row(SQL, params!["receipt", "o", None::<i64>, target], |r| r
++                .get::<_, i64>(0))
++                .optional()
++                .unwrap()
++                .is_none()
++        );
++        assert!(
++            db.query_row(SQL, params!["unavailable", "s", Some(99i64), target], |r| r
++                .get::<_, i64>(0))
++                .optional()
++                .unwrap()
++                .is_none()
++        );
++        measured.push(units);
++        let mut absent = false;
++        for _ in 0..512 {
++            let proof = relevance_pull(&db);
++            assert_ne!(
++                proof.relevance,
++                crate::store::presentation_relevance::Relevance::Open,
++                "retained covered receipt conditions cannot revive"
++            );
++            if proof.relevance == crate::store::presentation_relevance::Relevance::Absent {
++                absent = true;
++                break;
++            }
++        }
++        assert!(
++            absent,
++            "finite coverage-heavy union must converge under shared caps"
++        );
++    }
++    assert!(
++        measured[1] <= measured[0] + 4,
++        "indexed successor VM work must not scan retained history: {measured:?}"
++    );
++}
++
++#[test]
++fn presentation_relevance_sweep_mutations_fence_and_overflow_roll_back_without_self_invalidation() {
++    let db = relevance_db();
++    let version = || {
++        db.query_row(
++            "SELECT version FROM presentation_warning_fence WHERE singleton=1",
++            [],
++            |r| r.get::<_, i64>(0),
++        )
++        .unwrap()
++    };
++    let hooks:i64=db.query_row("SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'presentation_fence_%'",[],|r|r.get(0)).unwrap();
++    assert_eq!(hooks, 87);
++    // Hook unit coverage uses a rolled-back scope row, not a new canonical
++    // sweep writer or permission to delete the retained producer's chain.
++    db.execute_batch("BEGIN IMMEDIATE").unwrap();
++    let before = version();
++    db.execute("INSERT INTO warning_close_sweeps(id,condition_kind,affected_seat_id,after_ordinal,through_ordinal,close_decision_seq,interval_high_water,decision_at) VALUES ('relevance-hook-sweep','receipt','s',0,1,1,0,1)",[]).unwrap();
++    assert_eq!(version(), before + 1);
++    db.execute(
++        "UPDATE warning_close_sweeps SET decision_at=2 WHERE id='relevance-hook-sweep'",
++        [],
++    )
++    .unwrap();
++    assert_eq!(version(), before + 2);
++    db.execute(
++        "DELETE FROM warning_close_sweeps WHERE id='relevance-hook-sweep'",
++        [],
++    )
++    .unwrap();
++    assert_eq!(version(), before + 3);
++    db.execute_batch("ROLLBACK").unwrap();
++    assert_eq!(version(), before);
++    assert_eq!(
++        relevance_pull(&db).relevance,
++        crate::store::presentation_relevance::Relevance::Absent
++    );
++    assert_eq!(
++        version(),
++        before,
++        "proof persistence is excluded from invalidation"
++    );
++    for value in [Some(i64::MAX), Some(-1), None] {
++        db.execute_batch("BEGIN IMMEDIATE").unwrap();
++        if value.is_none() {
++            db.execute(
++                "DELETE FROM presentation_warning_fence WHERE singleton=1",
++                [],
++            )
++            .unwrap();
++        } else {
++            db.pragma_update(None, "ignore_check_constraints", "ON")
++                .unwrap();
++            db.execute(
++                "UPDATE presentation_warning_fence SET version=?1 WHERE singleton=1",
++                [value.unwrap()],
++            )
++            .unwrap();
++            db.pragma_update(None, "ignore_check_constraints", "OFF")
++                .unwrap();
++        }
++        assert!(db.execute("INSERT INTO warning_close_sweeps(id,condition_kind,affected_seat_id,after_ordinal,through_ordinal,close_decision_seq,interval_high_water,decision_at) VALUES ('relevance-rejected-sweep','receipt','s',0,1,1,0,1)",[]).is_err());
++        assert_eq!(
++            db.query_row("SELECT count(*) FROM warning_close_sweeps", [], |r| r
++                .get::<_, i64>(0))
++                .unwrap(),
++            0
++        );
++        db.execute_batch("ROLLBACK").unwrap();
++        assert_eq!(version(), before);
++    }
++}
++
++#[test]
++fn presentation_relevance_unavailable_exact_episode_and_late_publication_are_swept() {
++    use crate::protocol::time::UtcMillis;
++    use crate::store::{
++        messages::{self, PublicationAuthor},
++        presentation_relevance::Relevance,
++    };
++    let mut db = relevance_db();
++    db.execute(
++        "UPDATE seats SET unavailability_open=1,unavailability_episode=1 WHERE id='s'",
++        [],
++    )
++    .unwrap();
++    // Stage two genuine unavailable-recipient snapshots in the same episode,
++    // then hold the second sealed preparation across the canonical close.
++    for n in 0..2 {
++        let tx = db.transaction().unwrap();
++        let thread = format!("relevance-episode-{n}");
++        let prep = format!("prep-relevance-episode-{n}");
++        tx.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES (?1,'i','episode','episode',0,0)",[&thread]).unwrap();
++        tx.execute("INSERT INTO memberships(thread_id,seat_id,state) VALUES (?1,'s','joined'),(?1,'o','joined')",[&thread]).unwrap();
++        tx.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES (?1,'s',1,1),(?1,'o',1,1)",[&thread]).unwrap();
++        tx.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES (?1,'i','seat:o',?2,zeroblob(32),?2,0,0,0,0,0,1000000,0,'building')",params![prep,thread]).unwrap();
++        let (mut recipients, mut warnings) = (0, 0);
++        messages::stage_recipient(
++            &tx,
++            &prep,
++            "i",
++            &ThreadId::new(&thread),
++            "s",
++            100,
++            &mut recipients,
++            &mut warnings,
++        )
++        .unwrap();
++        assert_eq!((recipients, warnings), (1, 1));
++        tx.execute("UPDATE send_preparations SET status='sealed',recipient_count=?2,warning_count=?3 WHERE id=?1",params![prep,recipients,warnings]).unwrap();
++        tx.commit().unwrap();
++    }
++    let publish = |db: &mut Connection, n: i64| {
++        let tx = db.transaction().unwrap();
++        let thread = format!("relevance-episode-{n}");
++        messages::insert_publication(
++            &tx,
++            200 + n,
++            "seat:o",
++            &thread,
++            &[0; 32],
++            &ThreadId::new(&thread),
++            "episode publication",
++            PublicationAuthor::Native {
++                seat: &SeatId::new("o"),
++                observation: "cooperative_top_level",
++                relays_user: false,
++                user_intent: None,
++            },
++        )
++        .unwrap();
++        tx.commit().unwrap();
++    };
++    publish(&mut db, 0);
++    let mut open = false;
++    for _ in 0..64 {
++        if relevance_pull(&db).relevance == Relevance::Open {
++            open = true;
++            break;
++        }
++    }
++    assert!(open, "published current episode is initially actionable");
++    {
++        let tx = db.transaction().unwrap();
++        assert_eq!(
++            schema::clear_warning_conditions_for_unavailable(&tx, "s", 2, UtcMillis(201)).unwrap(),
++            0
++        );
++        tx.commit().unwrap();
++    }
++    assert_eq!(
++        relevance_pull(&db).relevance,
++        Relevance::Open,
++        "wrong episode cannot cover exact prepared witness"
++    );
++    {
++        let tx = db.transaction().unwrap();
++        assert_eq!(
++            schema::clear_warning_conditions_for_unavailable(&tx, "s", 1, UtcMillis(202)).unwrap(),
++            1
++        );
++        tx.execute("UPDATE seats SET unavailability_open=0 WHERE id='s'", [])
++            .unwrap();
++        tx.commit().unwrap();
++    }
++    publish(&mut db, 1);
++    let ranges:Vec<(i64,i64)>=db.prepare("SELECT after_ordinal,through_ordinal FROM warning_close_sweeps WHERE condition_kind='unavailable' AND affected_seat_id='s' AND episode=1 ORDER BY through_ordinal").unwrap().query_map([],|r|Ok((r.get(0)?,r.get(1)?))).unwrap().collect::<Result<_,_>>().unwrap();
++    assert_eq!(
++        ranges,
++        [(0, 1), (1, 2)],
++        "late old-episode publication extends the retained canonical chain"
++    );
++    assert_eq!(
++        db.query_row(
++            "SELECT count(*) FROM warning_conditions WHERE clear_warning_id IS NULL",
++            [],
++            |r| r.get::<_, i64>(0)
++        )
++        .unwrap(),
++        2,
++        "both physical clears remain undrained"
++    );
++    let mut absent = false;
++    for _ in 0..128 {
++        let proof = relevance_pull(&db);
++        assert_ne!(
++            proof.relevance,
++            Relevance::Open,
++            "both old-episode conditions are logically covered"
++        );
++        if proof.relevance == Relevance::Absent {
++            absent = true;
++            break;
++        }
++    }
++    assert!(absent);
++}
