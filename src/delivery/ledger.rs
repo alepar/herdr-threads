@@ -40,6 +40,39 @@ impl Offer {
     }
 }
 
+/// Scope of a finite due-key traversal; no canonical receipt authority.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OrdinaryDueScope {
+    pub execution: crate::protocol::ids::ExecutionId,
+    pub ordinary_version: u64,
+    pub passive_generation: u64,
+    pub render_key: [u8; 32],
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct OrdinaryDueCache {
+    pub scope: Option<OrdinaryDueScope>,
+    pub deferred: BTreeMap<MessageId, Offer>,
+}
+
+/// A bounded hint snapshot/delta. The incarnation and full stamps fence merges
+/// against V1 recording, generation replacement and same-generation LRU recreation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OrdinaryDueSnapshot {
+    pub incarnation: [u8; 16],
+    pub generation: u64,
+    pub native_session: String,
+    pub stamps: BTreeMap<MessageId, Offer>,
+    pub cache: OrdinaryDueCache,
+}
+
+fn consumer_index(consumer: crate::protocol::delivery::PresentationConsumer) -> usize {
+    match consumer {
+        crate::protocol::delivery::PresentationConsumer::Hook => 0,
+        crate::protocol::delivery::PresentationConsumer::Watch => 1,
+    }
+}
+
 /// What one seat's current binding generation was offered.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SeatOffers {
@@ -64,10 +97,42 @@ pub struct SeatOffers {
     pub truncated_invitations: BTreeMap<InvitationId, (Option<u64>, Offer)>,
     /// Passive page continuation, ignored by native wake outlook.
     pub invitations_pending: bool,
+    presentation_incarnation: [u8; 16],
+    ordinary_due: [OrdinaryDueCache; 2],
     touched: u64,
 }
 
 impl SeatOffers {
+    fn prune_due(&mut self) {
+        for cache in &mut self.ordinary_due {
+            cache.deferred.retain(|id, stamp| self.offers.get(id) == Some(stamp));
+        }
+    }
+
+    pub fn due_snapshot(&mut self, consumer: crate::protocol::delivery::PresentationConsumer) -> OrdinaryDueSnapshot {
+        self.prune_due();
+        OrdinaryDueSnapshot {
+            incarnation: self.presentation_incarnation,
+            generation: self.generation,
+            native_session: self.native_session.clone(),
+            stamps: self.offers.clone(),
+            cache: self.ordinary_due[consumer_index(consumer)].clone(),
+        }
+    }
+
+    pub fn apply_due_update(&mut self, consumer: crate::protocol::delivery::PresentationConsumer, mut update: OrdinaryDueSnapshot) {
+        self.prune_due();
+        if update.incarnation != self.presentation_incarnation
+            || update.generation != self.generation
+            || update.native_session != self.native_session
+        {
+            return;
+        }
+        update.cache.deferred.retain(|id, stamp| self.offers.get(id) == Some(stamp)
+            && update.stamps.get(id) == Some(stamp));
+        self.ordinary_due[consumer_index(consumer)] = update.cache;
+    }
+
     /// True when some offered id is due to be shown again.
     pub fn any_due(&self, now: UtcMillis) -> bool {
         self.offers.values().any(|offer| offer.is_due(now))
@@ -109,6 +174,7 @@ impl SeatOffers {
         if self.is_full() && !self.offers.contains_key(id) {
             return false;
         }
+        for cache in &mut self.ordinary_due { cache.deferred.remove(id); }
         let offer = self.offers.entry(id.clone()).or_insert(Offer {
             first_at: now,
             last_at: now,
@@ -124,11 +190,13 @@ impl SeatOffers {
     /// Forget an id (settled, or already settled).
     pub fn remove(&mut self, id: &MessageId) {
         self.offers.remove(id);
+        for cache in &mut self.ordinary_due { cache.deferred.remove(id); }
     }
 
     /// Drop every offer whose id is not in `pending`.
     pub fn retain_pending(&mut self, pending: &BTreeSet<MessageId>) {
         self.offers.retain(|id, _| pending.contains(id));
+        self.prune_due();
     }
 }
 
@@ -194,6 +262,8 @@ impl OfferedLedger {
                     whole_invitations: BTreeMap::new(),
                     truncated_invitations: BTreeMap::new(),
                     invitations_pending: false,
+                    presentation_incarnation: *uuid::Uuid::new_v4().as_bytes(),
+                    ordinary_due: Default::default(),
                     touched,
                 },
             );
@@ -203,6 +273,9 @@ impl OfferedLedger {
             .get_mut(seat)
             .expect("the entry was inserted above");
         entry.touched = touched;
+        if entry.native_session != native_session {
+            entry.ordinary_due = Default::default();
+        }
         entry.native_session = native_session.to_owned();
         Some(entry)
     }

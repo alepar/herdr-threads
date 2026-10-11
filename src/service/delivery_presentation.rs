@@ -160,7 +160,7 @@ impl DomainService {
             None
         };
         let now = self.clock.utc_now();
-        let (known, blocked, slots) = {
+        let (known, blocked, slots, due_snapshot) = {
             let mut ledger = self.delivery_pull.lock();
             let Some(entry) = ledger.seat_mut(
                 &pull.claim.seat,
@@ -182,11 +182,13 @@ impl DomainService {
                     .map(|(id, _)| id.clone())
                     .collect(),
                 crate::delivery::ledger::MAX_OFFERS_PER_SEAT.saturating_sub(entry.offers.len()),
+                entry.due_snapshot(pull.consumer),
             )
         };
         let version = attention_version(&view.fingerprint, view.newest_pending_notice);
         let output = self.store.presentation_pull(
             PresentationInput {
+                ordinary_due_snapshot: Some(due_snapshot),
                 render_profile: profile,
                 frozen_render,
                 pull: pull.clone(),
@@ -232,6 +234,9 @@ impl DomainService {
                     // Only post-emission exact control confirmation may advance seen attention.
                     entry.more_pending =
                         page.more && (!page.offered.is_empty() || !page.truncated.is_empty());
+                }
+                if let Some(update) = output.ordinary_due_update {
+                    entry.apply_due_update(pull.consumer, update);
                 }
             }
         }

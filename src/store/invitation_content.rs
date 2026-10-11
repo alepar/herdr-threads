@@ -1741,6 +1741,91 @@ fn reclaim_terminal_offers(
     Ok(reclaimed)
 }
 
+fn validate_due_snapshot(input: &PresentationInput) -> Result<(), ApiError> {
+    use crate::delivery::ledger::MAX_OFFERS_PER_SEAT;
+    let Some(snapshot) = &input.ordinary_due_snapshot else { return Ok(()); };
+    let known = input.known_messages.iter().collect::<std::collections::BTreeSet<_>>();
+    let blocked = input.blocked_messages.iter().collect::<std::collections::BTreeSet<_>>();
+    if known.len() != input.known_messages.len()
+        || blocked.len() != input.blocked_messages.len()
+        || !blocked.is_subset(&known)
+        || snapshot.stamps.len() > MAX_OFFERS_PER_SEAT
+        || snapshot.stamps.keys().collect::<std::collections::BTreeSet<_>>() != known
+        || snapshot.generation != input.pull.claim.binding_generation
+        || snapshot.native_session != input.pull.claim.native_session.as_str()
+        || snapshot.cache.scope.as_ref().is_some_and(|scope| scope.passive_generation > i64::MAX as u64)
+        || snapshot.stamps.values().any(|stamp| stamp.count == 0 || stamp.count > crate::delivery::ledger::MAX_OFFERS_PER_GENERATION)
+        || snapshot.cache.deferred.len() > MAX_OFFERS_PER_SEAT
+        || snapshot.cache.deferred.iter().any(|(id, stamp)| snapshot.stamps.get(id) != Some(stamp))
+        || (snapshot.cache.scope.is_none() && !snapshot.cache.deferred.is_empty())
+    {
+        return Err(ApiError::invalid_request("invalid ordinary due snapshot"));
+    }
+    Ok(())
+}
+
+fn due_update(input: &PresentationInput, state: &State, render_key: &str) -> Result<Option<crate::delivery::ledger::OrdinaryDueSnapshot>, ApiError> {
+    let Some(mut update) = input.ordinary_due_snapshot.clone() else { return Ok(None); };
+    let mut key = [0; 32];
+    if render_key.len() != 64 || !render_key.is_ascii() { return Err(corrupt("invalid render key")); }
+    for (n, byte) in key.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&render_key[n*2..n*2+2], 16).map_err(|_| corrupt("invalid render key"))?;
+    }
+    let scope = crate::delivery::ledger::OrdinaryDueScope {
+        execution: input.pull.claim.execution.clone(),
+        ordinary_version: input.ordinary_version,
+        passive_generation: state.ordinary_passive_generation as u64,
+        render_key: key,
+    };
+    if update.cache.scope.as_ref() != Some(&scope) {
+        update.cache.deferred.clear();
+        update.cache.scope = Some(scope);
+    }
+    update.cache.deferred.retain(|id, stamp| input.known_messages.contains(id) && update.stamps.get(id) == Some(stamp));
+    Ok(Some(update))
+}
+
+fn due_keys(input: &PresentationInput, update: Option<&crate::delivery::ledger::OrdinaryDueSnapshot>, consumed: &[MessageId]) -> Vec<MessageId> {
+    if !input.retry_messages { return Vec::new(); }
+    let Some(update) = update else { return Vec::new(); };
+    input.known_messages.iter().filter(|id| !input.blocked_messages.contains(id)
+        && !update.cache.deferred.contains_key(id) && !consumed.contains(id)).cloned().collect()
+}
+
+fn ordinary_runnable(input: &PresentationInput, state: &State, slots: usize,
+    update: Option<&crate::delivery::ledger::OrdinaryDueSnapshot>, consumed: &[MessageId],
+) -> Result<bool, ApiError> {
+    if slots == 0 { return Ok(!due_keys(input, update, consumed).is_empty()); }
+    Ok(!ordinary_carry(&state.ordinary_pending)?.items.is_empty()
+        || state.ordinary_done == 0
+        || state.ordinary_scan_passive_generation != state.ordinary_passive_generation
+        || state.ordinary_version != input.ordinary_version.to_string())
+}
+
+fn assemble_message(assembler: &mut Assembler, value: crate::protocol::results::InboxBatchV2Item,
+    prefix: &[String],
+) -> Result<Option<PendingMessage>, ApiError> {
+    let marker_lazy = matches!(&value, crate::protocol::results::InboxBatchV2Item::LazyMessage { .. });
+    if let Assembled::Item(mut item) = assembler.push(value).map_err(|_| corrupt("invalid ordinary body chunks"))? {
+        if item.message.truncated {
+            item.message.body = remove_generated_marker(&item.message.body, prefix, &item.id, marker_lazy)?;
+        }
+        Ok(Some(PendingMessage { marker_lazy, content: PresentationMessage {
+            id: item.id, lazy: item.kind == DeliveryKind::Lazy, content: item.message,
+        }}))
+    } else { Ok(None) }
+}
+
+fn message_output(message: &PendingMessage, prefix: &[String]) -> crate::protocol::delivery::PresentationItemV2 {
+    let mut content = message.content.content.clone();
+    if content.truncated {
+        content.body.push_str(&crate::protocol::watch::truncation_marker_for(prefix, &message.content.id, message.marker_lazy));
+    }
+    crate::protocol::delivery::PresentationItemV2::Message {
+        id: message.content.id.clone(), lazy: message.content.lazy, content,
+    }
+}
+
 pub(super) fn pull(
     db: &Connection,
     context: &StoreContext,
@@ -1752,6 +1837,7 @@ pub(super) fn pull(
         protocol::delivery::{PresentationItemV2 as OutputItem, PresentationRenderSelection},
     };
     input.pull.validate().map_err(ApiError::invalid_request)?;
+    validate_due_snapshot(&input)?;
     if !input.render_profile.validate() {
         return Err(ApiError::invalid_request("invalid presentation profile"));
     }
@@ -1764,6 +1850,7 @@ pub(super) fn pull(
             },
             work: PresentationWork::default(),
             reclaimed_messages: Vec::new(),
+            ordinary_due_update: None,
         });
     }
     if render_selection(db, claim, consumer)?.as_ref()
@@ -1775,6 +1862,7 @@ pub(super) fn pull(
             },
             work: PresentationWork::default(),
             reclaimed_messages: Vec::new(),
+            ordinary_due_update: None,
         });
     }
     if let Some(frozen) = &input.frozen_render
@@ -1810,9 +1898,9 @@ pub(super) fn pull(
         super::presentation_relevance::Relevance::Unknown => {}
     }
     state.control_state = encode(&controls)?;
-    let ordinary_signal_pending = state.ordinary_scan_passive_generation
-        != state.ordinary_passive_generation
-        || state.ordinary_version != input.ordinary_version.to_string();
+    let render_key = input.render_profile.render_key(&input.pull.marker_prefix);
+    let mut ordinary_due_update = due_update(&input, &state, &render_key)?;
+    let replay_ordinary = ordinary_runnable(&input, &state, input.new_message_slots, ordinary_due_update.as_ref(), &[])?;
     if let Some(reply) = replay(
         db,
         &input,
@@ -1820,12 +1908,11 @@ pub(super) fn pull(
         &mut work,
         &mut sizer,
         proof.relevance,
-        proof.more || publications.more || ordinary_signal_pending,
+        proof.more || publications.more || replay_ordinary,
     )? {
         save(db, claim, consumer, &state)?;
-        return finish(reply, work, &mut sizer, reclaimed_messages);
+        return finish(reply, work, &mut sizer, reclaimed_messages, ordinary_due_update);
     }
-    let render_key = input.render_profile.render_key(&input.pull.marker_prefix);
     if state.render_key != render_key {
         state.render_key = render_key.clone();
         state.dirty_after = 0;
@@ -1934,7 +2021,8 @@ pub(super) fn pull(
     }
     // A walk freezes its native/passive tuple at START. A later publication
     // never resets an active body/carry or consumes its next capture signal.
-    if state.ordinary_done == 1
+    let normal_mode = input.new_message_slots > 0;
+    if normal_mode && !control_only && state.ordinary_done == 1
         && messages.is_empty()
         && (state.ordinary_version != input.ordinary_version.to_string()
             || state.ordinary_scan_passive_generation != state.ordinary_passive_generation
@@ -1945,7 +2033,7 @@ pub(super) fn pull(
         state.ordinary_partial = "{}".into();
         state.ordinary_skip_body = None;
     }
-    if !control_only && messages.is_empty() && state.ordinary_done == 0 {
+    if normal_mode && !control_only && messages.is_empty() && state.ordinary_done == 0 {
         if state.ordinary_cursor.is_none() {
             state.ordinary_version = input.ordinary_version.to_string();
             state.ordinary_scan_passive_generation = state.ordinary_passive_generation;
@@ -1989,30 +2077,8 @@ pub(super) fn pull(
         }
         carry.prefix = input.pull.marker_prefix.clone();
         for value in ordinary.items {
-            let marker_lazy = matches!(
-                &value,
-                crate::protocol::results::InboxBatchV2Item::LazyMessage { .. }
-            );
-            if let Assembled::Item(mut item) = assembler
-                .push(value)
-                .map_err(|_| corrupt("invalid ordinary body chunks"))?
-            {
-                if item.message.truncated {
-                    item.message.body = remove_generated_marker(
-                        &item.message.body,
-                        &carry.prefix,
-                        &item.id,
-                        marker_lazy,
-                    )?;
-                }
-                messages.push(PendingMessage {
-                    marker_lazy,
-                    content: PresentationMessage {
-                        id: item.id,
-                        lazy: item.kind == DeliveryKind::Lazy,
-                        content: item.message,
-                    },
-                });
+            if let Some(message) = assemble_message(&mut assembler, value, &carry.prefix)? {
+                messages.push(message);
             }
         }
         state.ordinary_partial = partial_json(&assembler.partial)?;
@@ -2066,7 +2132,40 @@ pub(super) fn pull(
     let mut message_slots = input.new_message_slots;
     for n in 0..if control_only { 0 } else { 5 } {
         let class = (state.rotation as usize + n) % 5;
-        if class == 0 {
+        if class == 0 && !normal_mode {
+            let candidates = due_keys(&input, ordinary_due_update.as_ref(), &[]);
+            if !candidates.is_empty() && outputs.len() < 32 {
+                let due_context = super::queries::ordinary_due_context(db, &claim.instance, &claim.seat, &mut work)?;
+                for id in candidates.into_iter().take(100) {
+                    if outputs.len() == 32 || work.ordinary_due_hydrated == 32 { break; }
+                    if budget.is_exhausted(context.clock()) {
+                        return Err(api_error(ErrorCode::ReadBudgetExhausted, "ordinary due budget exhausted"));
+                    }
+                    work.ordinary += 1;
+                    let value = super::queries::ordinary_presentation_message_by_id(db, &claim.instance,
+                        &claim.seat, &id, due_context, &mut work)?;
+                    let update = ordinary_due_update.as_mut().expect("due keys require snapshot");
+                    let Some(value) = value else {
+                        update.cache.deferred.insert(id.clone(), update.stamps[&id]);
+                        continue;
+                    };
+                    work.ordinary_due_hydrated += 1;
+                    let mut assembler = Assembler::new(None).with_command_prefix(input.pull.marker_prefix.clone());
+                    let message = assemble_message(&mut assembler, value, &input.pull.marker_prefix)?
+                        .ok_or_else(|| corrupt("incomplete exact ordinary body"))?;
+                    let output = message_output(&message, &input.pull.marker_prefix);
+                    let mut trial = outputs.clone();
+                    trial.push(output.clone());
+                    if sizer.measure(&input.render_profile, &trial).is_err() {
+                        if !outputs.is_empty() { break; }
+                        update.cache.deferred.insert(id.clone(), update.stamps[&id]);
+                        continue;
+                    }
+                    outputs.push(output);
+                    if message.content.content.truncated { truncated.push(id); } else { offered.push(id); }
+                }
+            }
+        } else if class == 0 {
             for message in &messages {
                 if input.blocked_messages.contains(&message.content.id)
                     || (!input.retry_messages && input.known_messages.contains(&message.content.id))
@@ -2080,21 +2179,7 @@ pub(super) fn pull(
                 if !input.known_messages.contains(&message.content.id) && message_slots == 0 {
                     break;
                 }
-                let mut content = message.content.content.clone();
-                if content.truncated {
-                    content
-                        .body
-                        .push_str(&crate::protocol::watch::truncation_marker_for(
-                            &carry.prefix,
-                            &message.content.id,
-                            message.marker_lazy,
-                        ));
-                }
-                let output = OutputItem::Message {
-                    id: message.content.id.clone(),
-                    lazy: message.content.lazy,
-                    content,
-                };
+                let output = message_output(message, &carry.prefix);
                 let mut trial = outputs.clone();
                 trial.push(output.clone());
                 if sizer.measure(&input.render_profile, &trial).is_err() {
@@ -2183,9 +2268,11 @@ pub(super) fn pull(
         }
     }
     state.control_state = encode(&controls)?;
-    messages.drain(..shown_message_count);
-    carry.items = messages.clone();
-    state.ordinary_pending = ordinary_carry_json(&carry)?;
+    if normal_mode && !control_only {
+        messages.drain(..shown_message_count);
+        carry.items = messages.clone();
+        state.ordinary_pending = ordinary_carry_json(&carry)?;
+    }
     if !carried_notices.is_empty() {
         work.notice_validations = carried_notices.len();
         super::attention::settle_carried_notices(
@@ -2244,9 +2331,7 @@ pub(super) fn pull(
         };
     }
     let eligible:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM invitation_presentation_items INDEXED BY invitation_presentation_revisit WHERE seat_id=?1 AND consumer=?2 AND generation=?3 AND required_render_bytes<=?4)",params![claim.seat.as_str(),consumer.as_str(),state.generation,standalone as i64],|r|r.get(0)).map_err(store_error)?;
-    let more = publications.more
-        || state.ordinary_scan_passive_generation != state.ordinary_passive_generation
-        || state.ordinary_version != input.ordinary_version.to_string()
+    let nonordinary_more = publications.more
         || proof.more
         || controls.pending().is_some()
         || eligible
@@ -2256,11 +2341,11 @@ pub(super) fn pull(
         || state.initial_after < state.initial_high
         || !state.context_thread.is_empty()
         || state.context_after_seq < state.context_high
-        || !messages.is_empty()
-        || state.ordinary_done == 0
         || work.notices > carried_notices.len()
         || invitation_rows.len() > descriptors.len();
-    state.outbox_more = i64::from(more);
+    state.outbox_more = i64::from(nonordinary_more);
+    let consumed = offered.iter().chain(&truncated).cloned().collect::<Vec<_>>();
+    let more = nonordinary_more || ordinary_runnable(&input, &state, message_slots, ordinary_due_update.as_ref(), &consumed)?;
     if fresh_output {
         state.rotation = (state.rotation + 1) % 5;
     }
@@ -2284,13 +2369,14 @@ pub(super) fn pull(
         )?
     };
     save(db, claim, consumer, &state)?;
-    finish(reply, work, &mut sizer, reclaimed_messages)
+    finish(reply, work, &mut sizer, reclaimed_messages, ordinary_due_update)
 }
 fn finish(
     reply: DeliveryPullReplyV2,
     mut work: PresentationWork,
     sizer: &mut crate::delivery::presentation::Sizer,
     reclaimed_messages: Vec<MessageId>,
+    ordinary_due_update: Option<crate::delivery::ledger::OrdinaryDueSnapshot>,
 ) -> Result<PresentationOutput, ApiError> {
     sizer
         .rpc(&crate::protocol::results::CommandResult::DeliveryPulledV2(
@@ -2305,6 +2391,7 @@ fn finish(
         reply,
         work,
         reclaimed_messages,
+        ordinary_due_update,
     })
 }
 

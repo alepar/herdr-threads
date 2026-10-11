@@ -2809,6 +2809,7 @@ fn presentation_refresh_preserves_live_presentation_header_and_outbox_across_reb
         f.store
             .presentation_pull(
                 PresentationInput {
+        ordinary_due_snapshot: None,
                     frozen_render: presentation_watch_frozen(&f, &claim),
                     render_profile:
                         crate::delivery::presentation::PresentationRenderProfile::WatchJsonLinesV1,
@@ -3097,6 +3098,7 @@ fn presentation_final_watch_codec_counts_escaped_canonical_invitation_batch() {
             .store
             .presentation_pull(
                 PresentationInput {
+        ordinary_due_snapshot: None,
                     frozen_render: presentation_watch_frozen(&f, &recipient),
                     render_profile:
                         crate::delivery::presentation::PresentationRenderProfile::WatchJsonLinesV1,
@@ -3226,6 +3228,7 @@ fn presentation_final_cleanup_preserves_passive_removal_observation() {
     f.store
         .presentation_pull(
             PresentationInput {
+        ordinary_due_snapshot: None,
                 frozen_render: presentation_watch_frozen(&f, &recipient),
                 render_profile:
                     crate::delivery::presentation::PresentationRenderProfile::WatchJsonLinesV1,
@@ -3878,6 +3881,7 @@ fn presentation_actual_candidate_sizing_and_rpc_wrapper_work_remain_bounded() {
             .store
             .presentation_pull(
                 PresentationInput {
+        ordinary_due_snapshot: None,
                     frozen_render,
                     render_profile: profile.clone(),
                     pull: DeliveryPullV2 {
@@ -6061,6 +6065,10 @@ fn assert_v2_offer_window_reclaimed(watch: bool, lazy: bool) {
                 .lock()
                 .unwrap()
                 .unwrap();
+            assert!(work.ordinary_due_key_probes <= 1303);
+    assert!(work.ordinary_due_seeks <= 100);
+    assert!(work.ordinary_due_hydrated <= 32);
+    assert!(work.output_passes <= 352);
             assert_eq!(work.offer_reconciliation_visits, 256);
             assert_eq!(
                 work.offer_reconciliation_probes,
@@ -6311,6 +6319,11 @@ fn full_pending_offer_window_with_fresh_carry() -> (OfferWindowFixture, Vec<Mess
     (window, sent)
 }
 
+fn capacity_normal_state(window: &OfferWindowFixture) -> String {
+    window.f.db.query_row("SELECT json_array(ordinary_version,ordinary_done,ordinary_cursor,ordinary_pending,ordinary_partial,ordinary_skip_body,ordinary_scan_passive_generation) FROM invitation_presentation_consumers WHERE seat_id=?1 AND consumer=?2",
+        rusqlite::params![window.recipient.seat.as_str(), if window.watch.is_some() { "watch" } else { "hook" }], |r| r.get(0)).unwrap()
+}
+
 fn assert_full_pending_offer_work(window: &OfferWindowFixture) {
     let work = window
         .f
@@ -6379,6 +6392,7 @@ fn presentation_full_pending_carry_serves_due_known_offers_without_admitting_fre
         assert_full_pending_offer_work(&window);
         assert_eq!(window.offers(), original);
     }
+    let parked = capacity_normal_state(&window);
     advance(&window.f, REOFFER_AFTER_MS);
     let due_at = window.f.clock.utc_now();
     let mut shown = std::collections::BTreeSet::new();
@@ -6401,6 +6415,7 @@ fn presentation_full_pending_carry_serves_due_known_offers_without_admitting_fre
             other => panic!("live due-offer owner refused: {other:?}"),
         }
         assert_full_pending_offer_work(&window);
+        assert_eq!(capacity_normal_state(&window), parked);
         let retained = window.offers();
         assert_eq!(retained.len(), 256);
         for (id, before) in &original {
@@ -6442,6 +6457,23 @@ fn presentation_full_pending_carry_serves_due_known_offers_without_admitting_fre
         assert_full_pending_offer_work(&window);
         assert_eq!(window.offers(), twice);
     }
+    advance(&window.f, REOFFER_AFTER_MS);
+    let mut third = std::collections::BTreeSet::new();
+    for _ in 0..16 {
+        if let DeliveryPullReplyV2::Page(page) = window.pull() {
+            third.extend(page.offered.into_iter().chain(page.truncated));
+        }
+        assert_eq!(capacity_normal_state(&window), parked);
+        if third.len() == 256 { break; }
+    }
+    assert_eq!(third, sent[..256].iter().cloned().collect());
+    assert!(window.offers().values().all(|stamp| stamp.count == 3));
+    advance(&window.f, REOFFER_AFTER_MS);
+    assert!(matches!(window.pull(), DeliveryPullReplyV2::Unchanged { .. }));
+    window.ack(std::slice::from_ref(&sent[1]), false, false, "capacity-resume");
+    let DeliveryPullReplyV2::Page(resumed) = window.pull() else { panic!("same-call reclaimed slot"); };
+    assert!(resumed.offered.contains(&sent[256]));
+
 }
 
 fn offer_reconciliation_input(
@@ -6453,6 +6485,7 @@ fn offer_reconciliation_input(
         DeliveryPullV2, PresentationConsumer, PresentationRenderRequest,
     };
     crate::ports::PresentationInput {
+        ordinary_due_snapshot: None,
         frozen_render: presentation_watch_frozen(f, claim),
         render_profile: crate::delivery::presentation::PresentationRenderProfile::WatchJsonLinesV1,
         pull: DeliveryPullV2 {
@@ -7366,6 +7399,7 @@ fn pull_private_invitation_id(
         });
     f.store.presentation_pull(
         PresentationInput {
+        ordinary_due_snapshot: None,
             frozen_render,
             render_profile: PresentationRenderProfile::Hook {
                 confirmable_selector: 0,
@@ -7786,5 +7820,46 @@ fn presentation_capacity_reclaimed_or_initially_free_with_missing_due_keys_quiet
         for (id, stamp) in retained {
             assert_eq!(original[&id], stamp);
         }
+    }
+}
+
+
+// Kills: final continuation using input slots instead of remaining capacity.
+#[test]
+fn presentation_capacity_last_slot_parks_unknown_carry_and_only_continues_for_due_keys() {
+    use crate::protocol::{commands::DeliveryMode, delivery::DeliveryPullReplyV2};
+    for missing_due in [false, true] {
+        let window = OfferWindowFixture::new(true);
+        for _ in 0..4 { window.pull(); }
+        {
+            let mut ledger = window.f.state.lock();
+            let entry = ledger.seat_mut(&window.recipient.seat, window.recipient.binding_generation, window.recipient.native_session.as_str()).unwrap();
+            for n in 0..255 {
+                let now = window.f.clock.utc_now();
+                entry.record(&MessageId::new(format!("missing-{n:03}")),
+                    if missing_due && n == 0 { UtcMillis(now.0 - REOFFER_AFTER_MS) } else { now }, false);
+            }
+        }
+        let first = window.send(0, DeliveryMode::Ordinary, "last slot");
+        let parked_id = window.send(1, DeliveryMode::Ordinary, "must wait");
+        let mut allocated = false;
+        for _ in 0..4 {
+            if let DeliveryPullReplyV2::Page(page) = window.pull() && page.offered.contains(&first) {
+                assert_eq!(page.more, missing_due, "only a distinct runnable due key justifies continuation");
+                allocated = true;
+                break;
+            }
+        }
+        assert!(allocated);
+        let parked = capacity_normal_state(&window);
+        assert!(matches!(window.pull(), DeliveryPullReplyV2::Unchanged { .. }));
+        assert_eq!(capacity_normal_state(&window), parked);
+        let work = window.f.service.presentation.last_work.lock().unwrap().unwrap();
+        assert_eq!(work.ordinary, usize::from(missing_due));
+        assert_eq!(window.offers().len(), 256);
+        assert!(!window.offers().contains_key(&parked_id));
+        window.ack(std::slice::from_ref(&first), false, false, "last-slot-ack");
+        let DeliveryPullReplyV2::Page(page) = window.pull() else { panic!("resume retained sibling"); };
+        assert!(page.offered.contains(&parked_id));
     }
 }

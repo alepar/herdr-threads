@@ -4914,6 +4914,7 @@ pub enum CreateTabOutcome {
 /// authority and never settle an invitation or message.
 #[derive(Debug, Clone)]
 pub struct PresentationInput {
+    pub ordinary_due_snapshot: Option<crate::delivery::ledger::OrdinaryDueSnapshot>,
     pub frozen_render: Option<crate::delivery::presentation::FrozenPresentationRender>,
     pub render_profile: crate::delivery::presentation::PresentationRenderProfile,
     pub pull: crate::protocol::delivery::DeliveryPullV2,
@@ -4927,6 +4928,10 @@ pub struct PresentationInput {
 }
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct PresentationWork {
+    /// Due-key work replaces the normal ordinary slice; these are additional keyed costs.
+    pub ordinary_due_key_probes: usize,
+    pub ordinary_due_seeks: usize,
+    pub ordinary_due_hydrated: usize,
     /// Snapshot identities checked for explicit canonical terminal evidence.
     pub offer_reconciliation_visits: usize,
     /// Fixed indexed relation probes, charged conservatively including misses.
@@ -4954,6 +4959,7 @@ pub struct PresentationWork {
 }
 #[derive(Debug, Clone)]
 pub struct PresentationOutput {
+    pub ordinary_due_update: Option<crate::delivery::ledger::OrdinaryDueSnapshot>,
     pub reply: crate::protocol::delivery::DeliveryPullReplyV2,
     pub work: PresentationWork,
     /// Exact terminal delta from this admitted transaction; never a pending-set snapshot.

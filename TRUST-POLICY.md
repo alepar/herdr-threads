@@ -1188,3 +1188,36 @@ Client hints never select authority or override the immutable canonical token,
 binding, render identity and boot admission. Frame sizing includes the actual
 registered native codec or Watch JSON-line bytes; the final RPC wrapper reserve
 is separate from the 64KiB presentation bound.
+
+
+Capable ordinary delivery parks its existing cursor, carry, partial body and
+captured scan signals byte-for-byte when the 256-offer ledger is full. Due known
+IDs then use exact canonical keys instead of the normal ordinary source: at most
+100 attempts and 32 hydrated candidates per call, charged separately as at most
+1303 keyed relation probes and 100 indexed single-row availability seeks. The
+existing reconciliation allowance (256 keys/1280 probes), physical discovery433,
+32 blocks/65536 encoded output bytes, sizing352, carry155731 and partial49415
+bounds do not grow. Canonical pending/addressed/publication checks still decide
+eligibility; a missing key cannot authorize settlement or an offer-history reset.
+
+Finite failed-key traversal uses two process-local negative caches (Hook and
+Watch) per retained ledger seat, each at most256 ID/full-offer-stamp pairs, scoped
+to execution, ordinary signal, passive publication generation and render key.
+They share the ledger's at-most4096-seat LRU lifetime. Payload per consumer is
+bounded by256*(128 ID bytes + two i64 timestamps + u8 count + bool truncated),
+plus a <=128-byte execution and fixed scope; bounded tree/allocator overhead is
+additional. Successful updates must match the ledger incarnation, generation,
+native session and exact current offer stamps. Cache hints never ACK, accept,
+complete lazy display or change offer history, and rollback/refusal installs no
+progress. Generation/session replacement, ledger recreation and changed scope
+invalidate the relevant hints. Ordinary continuation uses remaining capacity:
+a completed normal pass at positive capacity is quiet even with missing due
+hints; at zero capacity only unattempted due keys sustain ordinary continuation.
+Independent passive/control/outbox work retains its own continuation.
+
+Accepted render limit: a due ID whose inherited ordinary truncation still cannot
+fit a standalone output is deferred at its unchanged full offer stamp and current
+render/canonical scope, without a logical offer or delivery evidence. A declared
+scope change retries it. Topic-only shortening is not guaranteed to retry until
+such a scope change occurs. This adds no wake timer, delivery guarantee, larger
+output limit or receipt authority.

@@ -2898,6 +2898,7 @@ struct RelevanceStatementWork {
 }
 #[derive(Default)]
 struct RelevanceTraceState {
+    all_selects: bool,
     work: std::collections::BTreeMap<String, RelevanceStatementWork>,
     rows: u64,
     panicked: bool,
@@ -2959,7 +2960,7 @@ unsafe extern "C" fn relevance_statement_trace(
             return;
         }
         let sql = unsafe { std::ffi::CStr::from_ptr(raw) }.to_string_lossy();
-        if relevance_statement_kind(&sql).is_none() {
+        if relevance_statement_kind(&sql).is_none() && !(state.borrow().all_selects && sql.starts_with("SELECT ")) {
             return;
         }
         let mut state = state.borrow_mut();
@@ -3593,4 +3594,62 @@ fn presentation_relevance_private_proof_refuses_corruption_without_effects() {
         db.execute("UPDATE presentation_warning_proofs SET proof_json=NULL", [])
             .is_err()
     );
+}
+
+
+// Kills: exact-key helper hiding retained-relation scans or bypassing logical
+// authority. Observe the actual production statements on linked SQLite.
+#[test]
+fn presentation_capacity_due_exact_keys_have_bounded_actual_sql_plans_and_vm() {
+    use crate::{ports::PresentationWork, protocol::{ids::MessageId, results::InboxBatchV2Item}, store::queries};
+    let mut matrices = Vec::new();
+    for history in [32, 2048] {
+        let db = every_source();
+        db.execute_batch("INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at) VALUES ('s',1,1,'pane-s','host',1,'codex','due-session','due-execution','cooperative_top_level',0,0);
+            INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,acked_at,ack_actor_seat_id,ack_generation,ack_observation) VALUES ('m3','t3','s','acked',100,1,'s',1,'obs');").unwrap();
+        for n in 0..history {
+            db.execute("INSERT INTO seat_availability(seat_id,decision_seq,decision_at,binding_generation,observation_provenance) VALUES('s',?1,?1,1,'cooperative_top_level')", [100+n]).unwrap();
+            db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES (?1,'i','t2',?2,'ordinary','unrelated',0,31)", params![format!("history-{n}"),100+n]).unwrap();
+            db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES (?1,'t2','o','pending',100)", [format!("history-{n}")]).unwrap();
+        }
+        let trace = RelevanceTrace::install(&db);
+        trace.state.borrow_mut().all_selects = true;
+        let mut work = PresentationWork::default();
+        let seat = SeatId::new("s");
+        let context = queries::ordinary_due_context(&db, "i", &seat, &mut work).unwrap();
+        for id in ["m1", "m3"] {
+            let item = queries::ordinary_presentation_message_by_id(&db, "i", &seat, &MessageId::new(id), context, &mut work).unwrap().unwrap();
+            assert!(matches!(item, InboxBatchV2Item::Message { ack_candidate: Some(_), .. }));
+        }
+        for id in ["absent", "mo", "w-member"] {
+            assert!(queries::ordinary_presentation_message_by_id(&db,"i",&seat,&MessageId::new(id),context,&mut work).unwrap().is_none());
+        }
+        assert!(queries::ordinary_presentation_message_by_id(&db,"other-instance",&seat,&MessageId::new("m1"),context,&mut work).unwrap().is_none());
+        // Capture the waiver path too; it is a separate canonical lookup, never ACK evidence.
+        db.execute("INSERT INTO human_receipt_waivers(seat_id,through_decision_seq,human_generation,decided_at) VALUES ('s',40,1,0)", []).unwrap();
+        assert!(queries::ordinary_presentation_message_by_id(&db,"i",&seat,&MessageId::new("m3"),context,&mut work).unwrap().is_none());
+        let statements = trace.finish();
+        assert!(statements.iter().any(|entry| entry.sql.contains("FROM seat_availability")));
+        assert!(statements.iter().any(|entry| entry.sql.contains("FROM human_receipt_waivers")));
+        assert!(statements.iter().any(|entry| entry.sql.contains("FROM receipts r")));
+        assert!(work.ordinary_due_key_probes <= 3 + 7 * 13);
+        assert!(work.ordinary_due_seeks <= 7);
+        let mut matrix = Vec::new();
+        for statement in statements {
+            assert_eq!(statement.max_scan, 0, "full scan: {}", statement.sql);
+            assert_eq!(statement.max_sort, 0, "sort: {}", statement.sql);
+            assert!(statement.max_vm <= 300, "VM {}: {}", statement.max_vm, statement.sql);
+            assert!(statement.rows <= statement.executions, "at most one result per keyed statement");
+            for expanded in [&statement.first_expanded, &statement.last_expanded] {
+                let plan = db.prepare(&format!("EXPLAIN QUERY PLAN {expanded}")).unwrap()
+                    .query_map([], |r|r.get::<_,String>(3)).unwrap().collect::<Result<Vec<_>,_>>().unwrap();
+                assert!(plan.iter().all(|line| (!line.contains("SCAN ") || line.contains("SCAN CONSTANT ROW")) && !line.contains("TEMP B-TREE")), "{plan:?}");
+                assert!(plan.iter().any(|line| line.contains("SEARCH ")), "keyed production statement must seek: {plan:?}");
+                eprintln!("due retained={history} executions={} rows={} vm={} plan={plan:?}", statement.executions, statement.rows, statement.max_vm);
+            }
+            matrix.push((statement.sql, statement.max_vm));
+        }
+        matrices.push(matrix);
+    }
+    assert_eq!(matrices[0], matrices[1], "keyed work stays independent of unrelated history");
 }

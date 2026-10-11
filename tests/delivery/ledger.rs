@@ -323,3 +323,64 @@ fn next_pull_never_touches_the_lru_order() {
     );
     assert!(ledger.get(&seat(1)).is_some());
 }
+
+
+fn deferred_update(entry: &mut SeatOffers, consumer: crate::protocol::delivery::PresentationConsumer) -> OrdinaryDueSnapshot {
+    let mut update = entry.due_snapshot(consumer);
+    update.cache.scope = Some(OrdinaryDueScope {
+        execution: crate::protocol::ids::ExecutionId::new("execution"),
+        ordinary_version: 1, passive_generation: 1, render_key: [1; 32],
+    });
+    update.cache.deferred = update.stamps.clone();
+    update
+}
+
+// Kills: stale misses suppressing a newer V1 offer or crossing consumer/session boundaries.
+#[test]
+fn due_cache_filters_full_stamps_and_isolates_consumer_and_session() {
+    use crate::protocol::delivery::PresentationConsumer::{Hook, Watch};
+    let mut ledger = OfferedLedger::new();
+    let entry = ledger.seat_mut(&seat(1), 1, "n").unwrap();
+    entry.record(&id(1), at(0), false);
+    entry.record(&id(2), at(0), false);
+    let old = deferred_update(entry, Hook);
+    entry.record(&id(1), at(60_000), true);
+    entry.apply_due_update(Hook, old.clone());
+    assert_eq!(entry.due_snapshot(Hook).cache.deferred.keys().cloned().collect::<Vec<_>>(), vec![id(2)]);
+    assert!(entry.due_snapshot(Watch).cache.deferred.is_empty());
+    entry.remove(&id(2));
+    assert!(entry.due_snapshot(Hook).cache.deferred.is_empty());
+    entry.apply_due_update(Hook, old.clone());
+    assert!(entry.due_snapshot(Hook).cache.deferred.is_empty());
+    let current = deferred_update(entry, Watch);
+    entry.apply_due_update(Watch, current);
+    assert_eq!(entry.due_snapshot(Watch).cache.deferred.len(), 1);
+    let entry = ledger.seat_mut(&seat(1), 1, "other-session").unwrap();
+    entry.apply_due_update(Hook, old);
+    assert!(entry.due_snapshot(Hook).cache.deferred.is_empty());
+    assert!(entry.due_snapshot(Watch).cache.deferred.is_empty());
+}
+
+// Kills: generation and same-generation LRU ABA applying an obsolete cache delta.
+#[test]
+fn due_cache_recreation_and_retention_never_reuse_an_old_incarnation() {
+    use crate::protocol::delivery::PresentationConsumer::Hook;
+    let mut ledger = OfferedLedger::new();
+    let entry = ledger.seat_mut(&seat(0), 1, "n").unwrap();
+    entry.record(&id(1), at(0), false);
+    let old = deferred_update(entry, Hook);
+    entry.apply_due_update(Hook, old.clone());
+    entry.retain_pending(&BTreeSet::new());
+    assert!(entry.due_snapshot(Hook).cache.deferred.is_empty());
+    for n in 1..=MAX_LEDGER_SEATS { ledger.seat_mut(&seat(n), 1, "n").unwrap(); }
+    let entry = ledger.seat_mut(&seat(0), 1, "n").unwrap();
+    entry.record(&id(1), at(0), false);
+    entry.apply_due_update(Hook, old.clone());
+    assert!(entry.due_snapshot(Hook).cache.deferred.is_empty());
+    assert_ne!(entry.due_snapshot(Hook).incarnation, old.incarnation);
+    let current = deferred_update(entry, Hook);
+    let entry = ledger.seat_mut(&seat(0), 2, "n").unwrap();
+    entry.record(&id(1), at(0), false);
+    entry.apply_due_update(Hook, current);
+    assert!(entry.due_snapshot(Hook).cache.deferred.is_empty());
+}
