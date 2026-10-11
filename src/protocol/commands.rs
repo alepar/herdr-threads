@@ -615,6 +615,9 @@ pub struct ContinuityCheckIn {
     /// The execution id the successor binding carries; chosen by the client
     /// once per intent so every retry under the operation key repeats it.
     pub execution: ExecutionId,
+    /// The resumed session's liveness fingerprint (decision 9); the successor binding records it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub liveness: Option<crate::protocol::authority::LivenessFingerprint>,
 }
 impl ContinuityCheckIn {
     pub const RESUME_SOURCE: &'static str = "resume";

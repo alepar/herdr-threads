@@ -7989,6 +7989,10 @@ fn c1_command(
         source: "resume".into(),
         operation: OperationId::new(operation),
         execution: ExecutionId::new(format!("exec-{operation}")),
+        liveness: Some(crate::protocol::authority::LivenessFingerprint {
+            pid: 4242,
+            start: 7,
+        }),
     }
 }
 
@@ -8490,6 +8494,114 @@ fn continuity_replay_returns_recorded_seat_and_generation() {
         .unwrap(),
         None
     );
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn continuity_successor_records_the_resume_fingerprint() {
+    let (context, mut conn, path) = c1_fixture();
+    let command = c1_command("held-pane", "sess-1", "c1-fp");
+    c1_decide(&context, &mut conn, &command, "match").unwrap();
+    let row: (String, Option<i64>, Option<i64>) = conn
+        .query_row(
+            "SELECT liveness,liveness_pid,liveness_start FROM occupant_bindings WHERE seat_id='s1' AND ended_at IS NULL",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(row, ("connected".into(), Some(4242), Some(7)));
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn continuity_successor_survives_a_liveness_pass_before_its_first_touch() {
+    use crate::ports::{ProcessInfo, ProcessRecord};
+    struct Table(Option<(u32, u64)>);
+    impl ProcessInfo for Table {
+        fn process(&self, pid: u32) -> Option<ProcessRecord> {
+            self.0
+                .filter(|(p, _)| *p == pid)
+                .map(|(pid, start)| ProcessRecord {
+                    pid,
+                    parent: None,
+                    start,
+                    argv: Vec::new(),
+                })
+        }
+    }
+    let (context, mut conn, path) = c1_fixture();
+    let command = c1_command("held-pane", "sess-1", "c1-liveness");
+    c1_decide(&context, &mut conn, &command, "match").unwrap();
+    // No touch and no further check-in: the pass lands between the reattach and the first touch.
+    let candidates = crate::store::bindings::liveness_candidates(&conn, None).unwrap();
+    assert!(
+        candidates
+            .iter()
+            .any(|c| c.binding.fingerprint.is_some_and(|f| f.pid == 4242)),
+        "the successor is a candidate of the pass: {candidates:?}"
+    );
+    let state = |conn: &Connection| -> (String, Option<String>) {
+        conn.query_row(
+            "SELECT liveness,disconnect_reason FROM occupant_bindings WHERE seat_id='s1' AND ended_at IS NULL",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap()
+    };
+    let now = crate::protocol::time::UtcMillis(1_000);
+    let alive = Table(Some((4242, 7)));
+    let decisions = crate::service::liveness::classify(&candidates, &alive);
+    assert!(decisions.is_empty(), "{decisions:?}");
+    let tx = conn.transaction().unwrap();
+    crate::store::bindings::apply_liveness(&tx, &decisions, now).unwrap();
+    tx.commit().unwrap();
+    assert_eq!(state(&conn).0, "connected");
+    // The fingerprint is really judged: the same pass over an empty table disconnects it.
+    let decisions = crate::service::liveness::classify(&candidates, &Table(None));
+    assert_eq!(decisions.len(), 1, "{decisions:?}");
+    let tx = conn.transaction().unwrap();
+    crate::store::bindings::apply_liveness(&tx, &decisions, now).unwrap();
+    tx.commit().unwrap();
+    assert_eq!(
+        state(&conn),
+        ("disconnected".into(), Some("liveness_process_exit".into()))
+    );
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn continuity_without_fingerprint_is_refused_and_changes_nothing() {
+    let (context, mut conn, path) = c1_fixture();
+    let mut command = c1_command("held-pane", "sess-1", "c1-nofp");
+    command.liveness = None;
+    let error = c1_decide(&context, &mut conn, &command, "match").unwrap_err();
+    assert_eq!(
+        error.code,
+        crate::protocol::results::ErrorCode::LivenessFingerprintRequired
+    );
+    let state: String = conn
+        .query_row("SELECT state FROM seats WHERE id='s1'", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(state, "unresolved");
+    let bindings: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM occupant_bindings WHERE seat_id='s1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(bindings, 1, "no successor binding");
+    let decisions: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM allocation_decisions WHERE kind='cooperative_continuity'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(decisions, 0);
     drop(conn);
     let _ = std::fs::remove_file(path);
 }

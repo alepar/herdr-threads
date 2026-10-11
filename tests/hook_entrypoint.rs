@@ -5898,6 +5898,7 @@ mod continuity {
                     execution: herdr_threads::protocol::ids::ExecutionId::new(
                         Uuid::new_v4().to_string(),
                     ),
+                    liveness: Some(herdr_threads::protocol::authority::LivenessFingerprint::TEST),
                 },
                 1,
             )
@@ -6055,6 +6056,9 @@ mod continuity {
                         execution: herdr_threads::protocol::ids::ExecutionId::new(
                             Uuid::new_v4().to_string(),
                         ),
+                        liveness: Some(
+                            herdr_threads::protocol::authority::LivenessFingerprint::TEST,
+                        ),
                     },
                     1,
                 )
@@ -6160,6 +6164,9 @@ mod continuity {
                         event_id: Uuid::new_v4().to_string(),
                         execution: herdr_threads::protocol::ids::ExecutionId::new(
                             Uuid::new_v4().to_string(),
+                        ),
+                        liveness: Some(
+                            herdr_threads::protocol::authority::LivenessFingerprint::TEST,
                         ),
                     },
                     1,

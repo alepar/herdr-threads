@@ -146,6 +146,8 @@ pub enum SemanticMutation {
         source: String,
         event_id: String,
         execution: ExecutionId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        liveness: Option<crate::protocol::authority::LivenessFingerprint>,
     },
     CheckIn,
     CreateThread {
@@ -423,6 +425,7 @@ impl SemanticMutation {
                 source,
                 event_id,
                 execution,
+                liveness,
             } => {
                 if event_id.is_empty()
                     || event_id.len() > 1024
@@ -437,6 +440,7 @@ impl SemanticMutation {
                     source: source.clone(),
                     operation: OperationId::new("validation"),
                     execution: execution.clone(),
+                    liveness: *liveness,
                 }
                 .validate()
                 .map_err(invalid)
@@ -609,6 +613,7 @@ impl SemanticMutation {
                 native_session,
                 source,
                 execution,
+                liveness,
                 ..
             } => Command::ContinuityCheckIn(ContinuityCheckIn {
                 target: target.clone(),
@@ -617,6 +622,7 @@ impl SemanticMutation {
                 source: source.clone(),
                 operation,
                 execution: execution.clone(),
+                liveness: *liveness,
             }),
             Self::CheckIn => Command::CheckIn(CheckIn {
                 lineage_parent: None,
