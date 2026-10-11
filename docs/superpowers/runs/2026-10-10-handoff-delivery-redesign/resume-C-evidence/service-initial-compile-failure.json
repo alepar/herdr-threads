@@ -1,0 +1,23 @@
+{
+  "head": "8382e46ce7e919eb708cf7d6ae0ffb3e462f84f4",
+  "tree": "97301f7a28d7e735f159effc07d3bbfbdf630f03",
+  "run_id": "f6a678e1-b32f-4c2a-9290-4b41b3108a61",
+  "expected": [
+    "service::delivery_pull::tests::presentation_v2_service_requirement_attach_release_fresh_replacement_keeps_exact_commands"
+  ],
+  "commands": [],
+  "list": {
+    "exit": 101,
+    "seconds": 8.64544137509074
+  },
+  "leaks": {
+    "exit": 0,
+    "seconds": 0.18998020805884153,
+    "argv": [
+      "scripts/check-no-leaked-processes",
+      "--run-id",
+      "f6a678e1-b32f-4c2a-9290-4b41b3108a61"
+    ]
+  },
+  "leak_exit": 0
+}

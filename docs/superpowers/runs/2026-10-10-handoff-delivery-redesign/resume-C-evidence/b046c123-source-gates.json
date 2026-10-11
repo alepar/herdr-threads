@@ -1,0 +1,59 @@
+{
+  "staged_tree": "ecc9977a535a932b5514ab8820650d1c832691a5",
+  "index_sha256": "e9e60d7c6bebec5ce47a4da0e09503eb85f65d6b2a93759efe48c6c365a9476d",
+  "commands": [
+    {
+      "stage": "fmt",
+      "argv": [
+        "cargo",
+        "fmt",
+        "--",
+        "--check"
+      ],
+      "exit": 0,
+      "seconds": 4.992677917005494,
+      "log": "/private/tmp/ht-C-b046c123-source-gates/fmt.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "stage": "neutral",
+      "argv": [
+        "scripts/check-harness-neutral"
+      ],
+      "exit": 0,
+      "seconds": 1.6731663329992443,
+      "log": "/private/tmp/ht-C-b046c123-source-gates/neutral.log",
+      "sha256": "f13f23c38b0980397ffc5b0dbe1489247908115dad416d101f13c571fc204e85"
+    },
+    {
+      "stage": "clippy",
+      "argv": [
+        "nice",
+        "cargo",
+        "clippy",
+        "--locked",
+        "--all-targets",
+        "--all-features",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit": 0,
+      "seconds": 51.325179540901445,
+      "log": "/private/tmp/ht-C-b046c123-source-gates/clippy.log",
+      "sha256": "09f7f36689e9e9ec435d5e0b6f31e2728bc0ab48554cea7fa3524fe0a2203570"
+    },
+    {
+      "stage": "default",
+      "argv": [
+        "nice",
+        "scripts/check-default-features"
+      ],
+      "exit": 0,
+      "seconds": 0.17864820803515613,
+      "log": "/private/tmp/ht-C-b046c123-source-gates/default.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "exit": 0
+}
