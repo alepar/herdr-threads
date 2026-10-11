@@ -1,0 +1,3381 @@
+# Task7 exact rebased seam review package
+
+BASE 07305ed8634ffac0e7cb34bd354ac700284089b8
+HEAD ef048d163d6e2b014b8390c0384f5eaca963a202
+
+## Full stat
+ TRUST-POLICY.md                             |   11 +
+ migrations/0035_receipt_warning_origins.sql |  154 +++
+ src/ports.rs                                |   16 +-
+ src/scheduler/deadlines.rs                  |   14 +-
+ src/service/kicks.rs                        |    6 +
+ src/store/attention.rs                      |   61 +-
+ src/store/mod.rs                            |  132 +--
+ src/store/receipts.rs                       |  151 ++-
+ src/store/schema.rs                         |   82 +-
+ src/store/wake.rs                           |    2 +-
+ tests/contracts.rs                          |    6 +-
+ tests/integration/channel_activation.rs     |    4 +-
+ tests/scheduler/deadlines.rs                |    1 +
+ tests/scheduler/dispatch.rs                 |    1 +
+ tests/scheduler/poke_flow.rs                |  251 +++++
+ tests/service/lanes.rs                      |    3 +
+ tests/service/worker_health.rs              |    1 +
+ tests/store/catch_up.rs                     |   24 +-
+ tests/store/commit_kicks.rs                 |   16 +
+ tests/store/control.rs                      |   32 +-
+ tests/store/effective.rs                    |   78 +-
+ tests/store/handoff_fences.rs               |    4 +-
+ tests/store/invitation_due.rs               |    6 +-
+ tests/store/lazy26_prerequisite.rs          |    8 +-
+ tests/store/lazy_schema.rs                  |    2 +-
+ tests/store/receipts.rs                     | 1394 ++++++++++++++++++++++++++-
+ tests/store/schema.rs                       |   46 +-
+ tests/store/topology_handoff.rs             |    4 +-
+ tests/store/topology_handoff_schema.rs      |   18 +-
+ tests/store/wake_discovery_cost.rs          |    4 +-
+ 30 files changed, 2351 insertions(+), 181 deletions(-)
+
+## Test changes: mandatory stat
+ tests/contracts.rs                      |    6 +-
+ tests/integration/channel_activation.rs |    4 +-
+ tests/scheduler/deadlines.rs            |    1 +
+ tests/scheduler/dispatch.rs             |    1 +
+ tests/scheduler/poke_flow.rs            |  251 ++++++
+ tests/service/lanes.rs                  |    3 +
+ tests/service/worker_health.rs          |    1 +
+ tests/store/catch_up.rs                 |   24 +-
+ tests/store/commit_kicks.rs             |   16 +
+ tests/store/control.rs                  |   32 +-
+ tests/store/effective.rs                |   78 +-
+ tests/store/handoff_fences.rs           |    4 +-
+ tests/store/invitation_due.rs           |    6 +-
+ tests/store/lazy26_prerequisite.rs      |    8 +-
+ tests/store/lazy_schema.rs              |    2 +-
+ tests/store/receipts.rs                 | 1394 ++++++++++++++++++++++++++++++-
+ tests/store/schema.rs                   |   46 +-
+ tests/store/topology_handoff.rs         |    4 +-
+ tests/store/topology_handoff_schema.rs  |   18 +-
+ tests/store/wake_discovery_cost.rs      |    4 +-
+ 20 files changed, 1824 insertions(+), 79 deletions(-)
+5	1	tests/contracts.rs
+2	2	tests/integration/channel_activation.rs
+1	0	tests/scheduler/deadlines.rs
+1	0	tests/scheduler/dispatch.rs
+251	0	tests/scheduler/poke_flow.rs
+3	0	tests/service/lanes.rs
+1	0	tests/service/worker_health.rs
+16	8	tests/store/catch_up.rs
+16	0	tests/store/commit_kicks.rs
+30	2	tests/store/control.rs
+68	10	tests/store/effective.rs
+2	2	tests/store/handoff_fences.rs
+3	3	tests/store/invitation_due.rs
+4	4	tests/store/lazy26_prerequisite.rs
+1	1	tests/store/lazy_schema.rs
+1393	1	tests/store/receipts.rs
+14	32	tests/store/schema.rs
+2	2	tests/store/topology_handoff.rs
+9	9	tests/store/topology_handoff_schema.rs
+2	2	tests/store/wake_discovery_cost.rs
+
+## Test diff preview (first 400 lines)
+diff --git a/tests/contracts.rs b/tests/contracts.rs
+index 6b7ad3c8..208ea80a 100644
+--- a/tests/contracts.rs
++++ b/tests/contracts.rs
+@@ -400,7 +400,8 @@ fn due_receipt_cursor_retains_both_physical_and_sparse_positions() {
+         after_deadline: Some(UtcMillis(100)),
+         after_ordinal: 7,
+         receipt_sparse: Some(ReceiptSparseCursor {
+-            high_water_rowid: 80,
++            high_water_ordinal: 80,
++            after_ordinal: 8,
+             after_deadline: Some(UtcMillis(101)),
+             after_message: Some(MessageId::new("m")),
+             after_seat: Some(SeatId::new("s")),
+@@ -418,6 +419,8 @@ fn due_receipt_cursor_retains_both_physical_and_sparse_positions() {
+             invitations: None,
+             receipts: Some(cursor.clone()),
+             next_phase: DuePhase::Receipts,
++            invitations_complete: false,
++            receipts_complete: false,
+         },
+         max_candidates: 100,
+         run_invitations: false,
+@@ -882,6 +885,7 @@ fn due_scan_keeps_independent_phase_errors_and_explicit_continuation() {
+             ..state
+         },
+         examined_candidates: 0,
++        maintenance_sessions: 0,
+         warnings_added: 0,
+         invitations: DuePhaseProgress::Failed(
+             herdr_threads::protocol::results::ErrorCode::StoreBusy,
+diff --git a/tests/integration/channel_activation.rs b/tests/integration/channel_activation.rs
+index c4231e3c..e465966c 100644
+--- a/tests/integration/channel_activation.rs
++++ b/tests/integration/channel_activation.rs
+@@ -211,11 +211,11 @@ fn channel_activation_real_daemon_loads_fresh_21_and_22_and_owns_archival_lane()
+         // and the seat_archival insertion kicks the existing archival lane.
+         w.ok(None, &["seat", "resolve", "--pane", "w1:p1"]);
+         let db = w.db();
+-        // The initializer upgrades each historical input to the current schema34.
++        // The initializer upgrades each historical input to the current schema35.
+         assert_eq!(
+             db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                 .unwrap(),
+-            34
++            35
+         );
+         wait("archival worker initialization", || {
+             db.query_row(
+diff --git a/tests/scheduler/deadlines.rs b/tests/scheduler/deadlines.rs
+index 54b8af81..ac267eb9 100644
+--- a/tests/scheduler/deadlines.rs
++++ b/tests/scheduler/deadlines.rs
+@@ -19,6 +19,7 @@ fn due_progress(
+     DueScanProgress {
+         state,
+         examined_candidates: examined,
++        maintenance_sessions: 0,
+         warnings_added: warnings,
+         invitations: if more {
+             DuePhaseProgress::More
+diff --git a/tests/scheduler/dispatch.rs b/tests/scheduler/dispatch.rs
+index f3dc7377..7820c2dd 100644
+--- a/tests/scheduler/dispatch.rs
++++ b/tests/scheduler/dispatch.rs
+@@ -391,6 +391,7 @@ impl crate::scheduler::deadlines::DeadlinePort for FakeDeadlinePort {
+         Ok(DueScanProgress {
+             state: request.state,
+             examined_candidates: 0,
++            maintenance_sessions: 0,
+             warnings_added: 0,
+             invitations: DuePhaseProgress::Complete,
+             receipts: DuePhaseProgress::Complete,
+diff --git a/tests/scheduler/poke_flow.rs b/tests/scheduler/poke_flow.rs
+index 6dec1234..79d16e49 100644
+--- a/tests/scheduler/poke_flow.rs
++++ b/tests/scheduler/poke_flow.rs
+@@ -71,6 +71,7 @@ enum Call {
+ /// A recording host whose next observation and stash result the test scripts.
+ struct RecordingHost {
+     ui: Mutex<HostUiState>,
++    outage: Mutex<bool>,
+     focused: Mutex<bool>,
+     stash: Mutex<ComposerStash>,
+     log: Mutex<Vec<Call>>,
+@@ -84,6 +85,7 @@ impl RecordingHost {
+     fn new(ui: HostUiState, focused: bool) -> Self {
+         Self {
+             ui: Mutex::new(ui),
++            outage: Mutex::new(false),
+             focused: Mutex::new(focused),
+             stash: Mutex::new(ComposerStash::Unsupported),
+             log: Mutex::new(Vec::new()),
+@@ -135,6 +137,12 @@ impl HostPort for RecordingHost {
+         _: &HostCallContext,
+     ) -> Result<HostObservation, ApiError> {
+         self.log.lock().unwrap().push(Call::Observe);
++        if *self.outage.lock().unwrap() {
++            return Err(ApiError::new(
++                crate::protocol::results::ErrorCode::HostUnavailable,
++                "isolated recording host unavailable",
++            ));
++        }
+         Ok(HostObservation {
+             target: target.clone(),
+             host_boot: HostBootId::new("host"),
+@@ -963,3 +971,246 @@ fn frozen_wake_lane_neither_reads_nor_pokes_until_recovery() {
+     }
+     assert_eq!(host.prompts().len(), 1, "one poke after recovery");
+ }
++
++#[test]
++fn receipt_discovery_original_senders_use_actual_native_guard_and_recovery_path() {
++    for (ui, outage) in [
++        (HostUiState::HumanInput, false),
++        (HostUiState::ActiveTurn, false),
++        (HostUiState::Idle, true),
++    ] {
++        let fx = Fixture::new(&[]);
++        let db = fx.conn();
++        db.execute_batch("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s2','i','resolved','native','pane2',1,1,0),('recipient','i','unresolved','native',NULL,0,0,0);
++        INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','pane2','host',1,1,0,'fresh','term-pane','inc','native_current_target',1);
++        INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('s2',1,1,'pane2','host',0,'codex','session2','original-sender2','cooperative_top_level',0,0,'term-pane','inc');
++        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES ('t','i','topic','goal',0,0,3);
++        INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t','s','left'),('t','s2','left');").unwrap();
++        for (n, seat) in [(1, "s"), (2, "s2")] {
++            db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,author_kind,actor_seat_id,decision_seq,decision_at) VALUES (?1,'i','t',?2,'ordinary','handoff','native',?3,?2,0)",rusqlite::params![format!("source-{n}"),n,seat]).unwrap();
++            db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES (?1,'t','recipient','pending',?2,0,?2)",rusqlite::params![format!("source-{n}"),WINDOW]).unwrap();
++        }
++        db.execute("UPDATE host_instances SET decision_seq=2 WHERE id='i'", [])
++            .unwrap();
++        drop(db);
++        fx.clock.set(WINDOW);
++        let host = RecordingHost::new(ui, false);
++        *host.outage.lock().unwrap() = outage;
++        let dispatcher = NativeWakeDispatcher::new(&host, &fx.store, fx.clock.as_ref());
++        let flow = scheduler(&fx, &dispatcher, &NO_CAPS);
++        flow.drive_deadlines(&budget(&fx)).unwrap();
++        let db = fx.conn();
++        assert_eq!(db.query_row("SELECT count(*) FROM warning_conditions WHERE condition_kind='receipt' AND clear_warning_id IS NULL",[],|r|r.get::<_,i64>(0)).unwrap(),1);
++        assert_eq!(
++            db.query_row("SELECT count(*) FROM receipt_warning_origins", [], |r| r
++                .get::<_, i64>(0))
++                .unwrap(),
++            2
++        );
++        drop(db);
++        // This enters real candidate discovery/loading, dispatcher host guards,
++        // reservation and completion; no helper-built candidate is submitted.
++        let guarded = flow.drive_wakes(&budget(&fx));
++        if let Err(error) = guarded {
++            assert!(outage, "unexpected guarded wake error: {error:?}");
++            assert_eq!(
++                error.code,
++                crate::protocol::results::ErrorCode::HostUnavailable
++            );
++        }
++        assert!(
++            host.prompts().is_empty(),
++            "{ui:?}/outage={outage} must defer every native prompt"
++        );
++        assert!(
++            !host.log().is_empty(),
++            "guard must be reached through actual host observation"
++        );
++        assert_eq!(
++            fx.conn()
++                .query_row("SELECT count(*) FROM receipt_warning_origins", [], |r| r
++                    .get::<_, i64>(0))
++                .unwrap(),
++            2,
++            "guarded host does not clear durable original-sender attention"
++        );
++        host.set(HostUiState::Idle, false);
++        *host.outage.lock().unwrap() = false;
++        host.clear();
++        fx.clock.set(WINDOW + 1_000_000);
++        flow.clear_wake_refusals().unwrap();
++        for _ in 0..6 {
++            let result = flow.drive_wakes(&budget(&fx)).unwrap();
++            if !result.has_more {
++                break;
++            }
++        }
++        assert_eq!(
++            host.prompts().len(),
++            2,
++            "both departed original senders recover independently: {ui:?}/outage={outage}; log={:?}",
++            host.log()
++        );
++        for _ in 0..3 {
++            flow.drive_wakes(&budget(&fx)).unwrap();
++        }
++        assert_eq!(
++            host.prompts().len(),
++            2,
++            "same occupant/frontier submission dedup remains in force"
++        );
++        assert_eq!(
++            fx.conn()
++                .query_row(
++                    "SELECT count(*) FROM warning_conditions WHERE clear_warning_id IS NULL",
++                    [],
++                    |r| r.get::<_, i64>(0)
++                )
++                .unwrap(),
++            1,
++            "successful notification is not a receipt ACK"
++        );
++        // Settle through the real cooperative ACK decision with a canonical
++        // recipient binding; native notification is never synthesized as ACK.
++        let mut db = fx.conn();
++        db.execute_batch("UPDATE seats SET state='resolved',target_id='recipient-pane',generation=1,target_generation=1 WHERE id='recipient';
++            INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','recipient-pane','host',1,1,0,'fresh','recipient-terminal','inc','native_current_target',1);
++            INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('recipient',1,1,'recipient-pane','host',1,'codex','recipient-session','00000000-0000-4000-8000-0000000000cc','cooperative_top_level',0,0,'recipient-terminal','inc');").unwrap();
++        let request = crate::protocol::commands::Ack {
++            messages: vec![
++                crate::protocol::ids::MessageId::new("source-1"),
++                crate::protocol::ids::MessageId::new("source-2"),
++            ],
++            operation: crate::protocol::ids::OperationId::new("final-original-sender-ack"),
++            claim: crate::protocol::authority::CallerClaim {
++                instance: "i".into(),
++                seat: SeatId::new("recipient"),
++                binding_generation: 1,
++                role: crate::protocol::authority::CallerRole::TopLevel,
++                harness: Harness::Codex,
++                native_session: crate::protocol::ids::NativeSessionId::new("recipient-session"),
++                execution: ExecutionId::new("00000000-0000-4000-8000-0000000000cc"),
++                target: HostTargetId::new("recipient-pane"),
++            },
++        };
++        let mut permit = crate::protocol::authority::MutationPermit::cooperative(
++            request.claim.clone(),
++            request.operation.clone(),
++            crate::protocol::authority::ObligationRef::CheckIn(request.claim.seat.clone()),
++            crate::store::schema::canonical_digest(&crate::store::receipts::ack_payload(&request))
++                .unwrap(),
++            fx.clock.monotonic_now(),
++            (1, 0),
++            budget(&fx),
++        );
++        let context = StoreContext::new(fx.path.clone(), fx.clock.clone());
++        crate::store::receipts::ack(&context, &mut db, &budget(&fx), &request, &mut permit)
++            .unwrap();
++        assert_eq!(
++            db.query_row(
++                "SELECT count(*) FROM messages WHERE kind='warn' AND json_extract(event_json,'$.event')='warning_cleared'",
++                [],
++                |r| r.get::<_, i64>(0)
++            )
++            .unwrap(),
++            1
++        );
++        let high = db
++            .query_row("SELECT max(ordinal) FROM seats", [], |r| r.get::<_, i64>(0))
++            .unwrap() as u64;
++        let candidates =
++            crate::store::discover_wake_candidates(&db, "i", 0, high, 100, &|| Ok(())).unwrap();
++        for seat in ["s", "s2"] {
++            assert!(
++                !candidates
++                    .items
++                    .iter()
++                    .any(|c| c.seat.as_str() == seat && c.has_actionable_work())
++            );
++            let attention = crate::store::attention::wake_seat_attention(&db, seat).unwrap();
++            assert!(
++                !attention.attention.has_pending_invitation
++                    && !attention.attention.has_pending_receipt
++                    && attention.attention.latest_warning_seq.is_none(),
++                "final clear has no other waking source"
++            );
++            let loaded = crate::store::wake::load_candidate(
++                &db,
++                "i",
++                &SeatId::new(seat),
++                &attention.attention,
++                attention.decision_seq,
++            )
++            .unwrap();
++            assert!(!loaded.has_actionable_work());
++            assert_eq!(
++                crate::store::seats::mod_seat_view(&db, "i", &SeatId::new(seat))
++                    .unwrap()
++                    .unwrap()
++                    .fingerprint
++                    .other_pending,
++                0
++            );
++        }
++        assert_eq!(db.query_row("SELECT count(*) FROM wake_work WHERE seat_id IN ('s','s2') AND reservation_id IS NOT NULL",[],|r|r.get::<_,i64>(0)).unwrap(),0);
++        let settled = (1..=2)
++            .map(|n| {
++                crate::store::effective::effective_receipt(&db, &format!("source-{n}"), "recipient")
++                    .unwrap()
++                    .unwrap()
++            })
++            .collect::<Vec<_>>();
++        let canonical_history = |db: &Connection| {
++            let mut stmt = db
++                .prepare("SELECT * FROM messages ORDER BY ordinal")
++                .unwrap();
++            let columns = stmt.column_count();
++            stmt.query_map([], |r| {
++                (0..columns)
++                    .map(|c| r.get::<_, rusqlite::types::Value>(c))
++                    .collect::<rusqlite::Result<Vec<_>>>()
++            })
++            .unwrap()
++            .collect::<Result<Vec<_>, _>>()
++            .unwrap()
++        };
++        let before_reset = canonical_history(&db);
++        // Negative control: clear only the two scheduling dedup frontiers.
++        // Canonical history, receipt provenance and binding generations stay
++        // exact, so no-submit cannot pass because of old submitted frontiers.
++        db.execute("UPDATE wake_work SET last_warning_seq=NULL,last_warning_offset=NULL WHERE seat_id IN ('s','s2')",[]).unwrap();
++        assert_eq!(canonical_history(&db), before_reset);
++        assert_eq!(db.query_row("SELECT count(*) FROM occupant_bindings WHERE seat_id IN ('s','s2','recipient') AND generation=1 AND ended_at IS NULL",[],|r|r.get::<_,i64>(0)).unwrap(),3);
++        for (n, receipt) in settled.iter().enumerate() {
++            assert_eq!(
++                &crate::store::effective::effective_receipt(
++                    &db,
++                    &format!("source-{}", n + 1),
++                    "recipient"
++                )
++                .unwrap()
++                .unwrap(),
++                receipt
++            );
++        }
++        drop(db);
++        host.clear();
++        for _ in 0..3 {
++            flow.drive_wakes(&budget(&fx)).unwrap();
++        }
++        assert!(
++            host.prompts().is_empty(),
++            "final passive clear submits no native prompt even with scheduling dedup removed"
++        );
++        assert_eq!(
++            fx.conn()
++                .query_row(
++                    "SELECT count(*) FROM messages WHERE kind='warn' AND json_extract(event_json,'$.event')='warning_cleared'",
++                    [],
++                    |r| r.get::<_, i64>(0)
++                )
++                .unwrap(),
++            1
++        );
++    }
++}
+diff --git a/tests/service/lanes.rs b/tests/service/lanes.rs
+index c63be8c2..8e42d0b5 100644
+--- a/tests/service/lanes.rs
++++ b/tests/service/lanes.rs
+@@ -196,6 +196,7 @@ fn deadline_worker_keeps_a_failed_due_phase_visible_during_retry_cooldown() {
+         due_progress: Some(DueScanProgress {
+             state: DueScanState::default(),
+             examined_candidates: 0,
++            maintenance_sessions: 0,
+             warnings_added: 0,
+             invitations: DuePhaseProgress::Failed(
+                 ErrorCode::StoreBusy,
+@@ -224,6 +225,7 @@ fn deadline_health_recovers_only_the_successful_failed_phase() {
+         due_progress: Some(DueScanProgress {
+             state: DueScanState::default(),
+             examined_candidates: 0,
++            maintenance_sessions: 0,
+             warnings_added: 0,
+             invitations,
+             receipts,
+@@ -336,6 +338,7 @@ impl herdr_threads::scheduler::deadlines::DeadlinePort for HealthDeadlinePort {
+         Ok(DueScanProgress {
+             state: request.state,
+             examined_candidates: 0,
++            maintenance_sessions: 0,
+             warnings_added: 0,
+             invitations: if !request.run_invitations {
+                 DuePhaseProgress::Skipped
+diff --git a/tests/service/worker_health.rs b/tests/service/worker_health.rs
+index c41c6360..6141abeb 100644
+--- a/tests/service/worker_health.rs
++++ b/tests/service/worker_health.rs
+@@ -194,6 +194,7 @@ impl DeadlinePort for ScriptedDeadlines {
+         Ok(DueScanProgress {
+             state: request.state,
+             examined_candidates: 0,
++            maintenance_sessions: 0,
+             warnings_added: 0,
+             invitations: if request.run_invitations {
+                 invitations
+diff --git a/tests/store/catch_up.rs b/tests/store/catch_up.rs
+index da133b6d..0a4d1f1d 100644
+--- a/tests/store/catch_up.rs
++++ b/tests/store/catch_up.rs
+@@ -996,7 +996,14 @@ fn due_phase_runs_the_stall_scan() {
+     )
+     .unwrap();
+
+## Complete remaining test diff (after line 400)
+     assert!(matches!(progress.receipts, DuePhaseProgress::Complete));
+-    assert_eq!(progress.examined_candidates, 1, "the ended row is counted");
++    assert_eq!(
++        progress.examined_candidates, 0,
++        "session maintenance is not a receipt candidate"
++    );
++    assert_eq!(
++        progress.maintenance_sessions, 1,
++        "the bounded ended session is counted separately"
++    );
+     let stalled = row(&f.conn, "s");
+     assert_eq!(stalled.state, "ended");
+     assert_eq!(stalled.end_reason.as_deref(), Some("stalled"));
+@@ -1057,12 +1064,13 @@ fn due_phase_continuation_clears_with_many_ended_lapsed_rows() {
+         state = progress.state.clone();
+         assert!(matches!(progress.receipts, DuePhaseProgress::Complete));
+         assert!(!progress.has_more);
+-        let cursor = progress
+-            .state
+-            .receipts
+-            .as_ref()
+-            .expect("watermark retained");
+-        assert!(cursor.extension_through.is_some());
+-        assert!(cursor.extension_after.is_none());
++        assert!(
++            progress.state.receipts.is_none(),
++            "completed ordinary cycles need no redundant lapse watermark"
++        );
++        assert_eq!(
++            progress.maintenance_sessions, 0,
++            "already ended sessions are not revisited as active maintenance"
++        );
+     }
+ }
+diff --git a/tests/store/commit_kicks.rs b/tests/store/commit_kicks.rs
+index 11d14410..fb579ecd 100644
+--- a/tests/store/commit_kicks.rs
++++ b/tests/store/commit_kicks.rs
+@@ -206,6 +206,22 @@ const INSERTS: &[(&str, &str)] = &[
+         "receipt_state",
+         "INSERT INTO receipt_state(message_id,seat_id,state) VALUES ('m','s1','pending')",
+     ),
++    (
++        "receipt_warning_origins",
++        "INSERT INTO receipt_warning_origins(instance_id,seat_id,warning_id,source_message_id) VALUES ('i','s1','w','m')",
++    ),
++    (
++        "receipt_due_sparse",
++        "INSERT INTO receipt_due_sparse(message_id,seat_id,deadline_at) VALUES ('m','s1',1)",
++    ),
++    (
++        "receipt_deadline_backfill",
++        "INSERT OR REPLACE INTO receipt_deadline_backfill VALUES (1,0,0,0,0,0)",
++    ),
++    (
++        "receipt_discovery_backfill",
++        "INSERT OR REPLACE INTO receipt_discovery_backfill VALUES (1,0,0,0,0,0)",
++    ),
+     (
+         "catch_up",
+         "INSERT INTO catch_up(seat_id,thread_id,frontier_seq,binding_generation,execution_id,entered_at,state) VALUES ('s1','t',1,0,'e',0,'active')",
+diff --git a/tests/store/control.rs b/tests/store/control.rs
+index 9bbf608e..9ec13c27 100644
+--- a/tests/store/control.rs
++++ b/tests/store/control.rs
+@@ -5293,11 +5293,31 @@ fn mixed_retirement_preserves_committed_prefix_across_failed_quantum_and_reopen(
+         .unwrap(),
+         1
+     );
++    let actual_receipts:Vec<String>=conn.prepare("SELECT source_message_id FROM messages WHERE kind='warn' AND json_extract(event_json,'$.obligation')='receipt' ORDER BY source_message_id").unwrap().query_map([],|r|r.get(0)).unwrap().collect::<Result<_,_>>().unwrap();
++    let mut expected_receipts = (1..17)
++        .map(|n| format!("retire-message-{n}"))
++        .collect::<Vec<_>>();
++    expected_receipts.extend(
++        [
++            "retire-b-message",
++            "retire-logical-overdue",
++            "retire-logical-equality",
++            "retire-logical-unstarted",
++        ]
++        .map(str::to_owned),
++    );
++    expected_receipts.sort();
++    assert_eq!(
++        actual_receipts, expected_receipts,
++        "send-time90 expires even without recipient availability before cutover100"
++    );
++    let actual_invitations:Vec<String>=conn.prepare("SELECT source_invitation_id FROM messages WHERE kind='warn' AND json_extract(event_json,'$.obligation')='invitation'").unwrap().query_map([],|r|r.get(0)).unwrap().collect::<Result<_,_>>().unwrap();
++    assert_eq!(actual_invitations, vec!["retire-invite"]);
+     assert_eq!(
+         conn.query_row("SELECT count(*) FROM messages WHERE kind='warn'", [], |r| r
+             .get::<_, i64>(0))
+             .unwrap(),
+-        20
++        21
+     );
+     assert_eq!(
+         conn.query_row(
+@@ -5317,7 +5337,15 @@ fn mixed_retirement_preserves_committed_prefix_across_failed_quantum_and_reopen(
+         .unwrap(),
+         "s2"
+     );
+-    assert_eq!(conn.query_row("SELECT count(*) FROM messages WHERE source_message_id='retire-logical-predeadline' OR source_message_id='retire-logical-unstarted'",[],|r|r.get::<_,i64>(0)).unwrap(),0);
++    assert_eq!(
++        conn.query_row(
++            "SELECT count(*) FROM messages WHERE source_message_id='retire-logical-predeadline'",
++            [],
++            |r| r.get::<_, i64>(0)
++        )
++        .unwrap(),
++        0
++    );
+     assert_eq!(
+         conn.query_row(
+             "SELECT count(*) FROM retirement_audits WHERE job_id=?1",
+diff --git a/tests/store/effective.rs b/tests/store/effective.rs
+index 2057eecb..945d9ef1 100644
+--- a/tests/store/effective.rs
++++ b/tests/store/effective.rs
+@@ -1100,7 +1100,7 @@ fn dormant_upgrade_actual_v31_backfill32_reopens_and_rolls_back_without_recaptur
+             .map(|table| receipt_upgrade_snapshot(&db, table))
+             .collect();
+         let catalog = |db: &Connection| {
+-            db.prepare("SELECT type,name,tbl_name,rootpage,sql FROM sqlite_master WHERE name NOT IN ('receipt_deadline_backfill','invitations_confirmation_scan','invitations_confirmation_pending_seat','invitations_confirmation_pending_thread','warning_conditions_invitation_origin','warning_conditions_invitation_origin_immutable') ORDER BY type,name").unwrap()
++            db.prepare("SELECT type,name,tbl_name,rootpage,sql FROM sqlite_master WHERE name NOT IN ('receipt_deadline_backfill','invitations_confirmation_scan','invitations_confirmation_pending_seat','invitations_confirmation_pending_thread','warning_conditions_invitation_origin','warning_conditions_invitation_origin_immutable','receipt_discovery_backfill','receipt_due_sparse','receipt_due_sparse_delete','receipt_due_sparse_insert','receipt_due_sparse_update','receipt_warning_origin_attention','receipt_warning_origin_clear','receipt_warning_origin_condition','receipt_warning_origin_receipt_state_insert','receipt_warning_origin_receipt_state_update','receipt_warning_origin_receipts_insert','receipt_warning_origin_receipts_update','receipt_warning_origins','receipt_warning_origins_exact','receipt_warning_origins_seat','receipt_warning_origins_warning','receipts_required_due_ordinal','sqlite_autoindex_receipt_due_sparse_1','sqlite_autoindex_receipt_warning_origins_1') ORDER BY type,name").unwrap()
+                 .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)?, r.get::<_, Option<String>>(4)?)))
+                 .unwrap().map(Result::unwrap).collect::<Vec<_>>()
+         };
+@@ -1174,7 +1174,7 @@ fn dormant_upgrade_actual_v31_backfill32_reopens_and_rolls_back_without_recaptur
+         assert_eq!(
+             catalog(&db),
+             expected_catalog,
+-            "composed additive32..34 preserves old definitions/rootpages and adds exact origin columns"
++            "composed additive32..35 preserves old definitions/rootpages and adds exact origin columns"
+         );
+         for (table, retained) in tables.iter().zip(&before) {
+             assert_eq!(&receipt_upgrade_snapshot(&db, table), retained, "{table}");
+@@ -1291,8 +1291,18 @@ fn dormant_upgrade_bounded_batches_survive_restart_and_continuing_arrivals() {
+         path.clone(),
+         std::sync::Arc::new(UpgradeClock),
+     );
++    let repair_position = |db: &Connection| -> u64 {
++        db.query_row("SELECT a.physical_after+a.prepared_after+b.physical_after+b.sparse_after FROM receipt_deadline_backfill a CROSS JOIN receipt_discovery_backfill b",[],|r|r.get::<_,i64>(0)).unwrap().try_into().unwrap()
++    };
++    let mut previous_repair = repair_position(&db);
++    assert_eq!(previous_repair, 0);
++    let mut actual_d = 0u64;
+     let mut cursor = crate::store::receipts::ReceiptDueCursor::default();
+     let first = crate::store::receipts::scan_due(&context, &mut db, 100, &mut cursor).unwrap();
++    let first_repair = repair_position(&db);
++    assert!(first_repair - previous_repair <= 50);
++    actual_d += u64::from(first.inspected) - (first_repair - previous_repair);
++    previous_repair = first_repair;
+     assert_eq!(first.inspected, 100);
+     assert!(
+         first.more,
+@@ -1309,6 +1319,15 @@ fn dormant_upgrade_bounded_batches_survive_restart_and_continuing_arrivals() {
+     schema::initialize(&db, || UtcMillis(9000)).unwrap();
+     cursor = crate::store::receipts::ReceiptDueCursor::default();
+     let mut finished = false;
++    let initial_warned: i64 = db
++        .query_row(
++            "SELECT count(*) FROM receipts WHERE warning_message_id IS NOT NULL",
++            [],
++            |r| r.get(0),
++        )
++        .unwrap();
++    let mut captured_arrival_warned_before_repair = false;
++    let mut turns = 0;
+     for turn in 0..20 {
+         // New due work keeps arriving above the captured historical high-water.
+         let sequence: i64 = db
+@@ -1335,6 +1354,14 @@ fn dormant_upgrade_bounded_batches_survive_restart_and_continuing_arrivals() {
+         db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,deadline_at) VALUES(?1,'t','s','pending',300,1200)",[&message]).unwrap();
+         let page = crate::store::receipts::scan_due(&context, &mut db, 100, &mut cursor).unwrap();
+         assert!(page.inspected <= 100);
++        let next_repair = repair_position(&db);
++        let repair = next_repair - previous_repair;
++        assert!(
++            repair <= 50,
++            "all four producers share the repair half allowance"
++        );
++        actual_d += u64::from(page.inspected) - repair;
++        previous_repair = next_repair;
+         let warned: i64 = db.query_row("SELECT (SELECT count(*) FROM receipts WHERE message_id GLOB 'old*' AND warning_message_id IS NOT NULL)+(SELECT count(*) FROM receipt_state WHERE message_id GLOB 'old*' AND warning_message_id IS NOT NULL)",[],|r|r.get(0)).unwrap();
+         if turn == 0 {
+             assert!(
+@@ -1342,15 +1369,32 @@ fn dormant_upgrade_bounded_batches_survive_restart_and_continuing_arrivals() {
+                 "fixture must still have historical repair backlog"
+             );
+             assert!(
+-                db.query_row(
+-                    "SELECT warning_message_id IS NOT NULL FROM receipts WHERE message_id=?1",
+-                    [&message],
+-                    |r| r.get::<_, bool>(0)
+-                )
+-                .unwrap(),
+-                "repair must not starve a new due receipt"
++                warned > initial_warned,
++                "ordinary due work progresses while historical repair remains unfinished"
++            );
++            assert_eq!(
++                page.inspected, 100,
++                "the full shared repair/due allowance remains available"
+             );
+         }
++        turns += 1;
++        let combined: bool = db
++            .query_row(
++                "SELECT completed FROM receipt_discovery_backfill",
++                [],
++                |r| r.get(0),
++            )
++            .unwrap();
++        let captured_arrival: bool = db
++            .query_row(
++                "SELECT warning_message_id IS NOT NULL FROM receipts WHERE message_id='arrival0'",
++                [],
++                |r| r.get(0),
++            )
++            .unwrap();
++        if !combined && captured_arrival {
++            captured_arrival_warned_before_repair = true;
++        }
+         if warned == 500 {
+             finished = true;
+             break;
+@@ -1364,6 +1408,20 @@ fn dormant_upgrade_bounded_batches_survive_restart_and_continuing_arrivals() {
+         finished,
+         "finite historical backlog starved by arrivals or restart"
+     );
++    assert!(
++        captured_arrival_warned_before_repair,
++        "a finite arrival inside the restarted ordinal snapshot is discovered before combined repair exhaustion"
++    );
++    // H=1001: Task5 physical250/prepared251 plus35 physical250/sparse250.
++    // D counts actual ordinary candidate visits, including repeats across the
++    // restart and the single combined reset; it is never a distinct-row count.
++    assert!(previous_repair <= 1001);
++    let receipt_turn_bound = 1001u64.div_ceil(50) + 2 + actual_d.div_ceil(100) + 1;
++    assert!(
++        turns < receipt_turn_bound,
++        "actual receipt turns respect the upgrade envelope: H=1001, visitedH={previous_repair}, D={actual_d}, turns={}",
++        turns + 1
++    );
+     for index in 0..500 {
+         assert_upgrade_warning_link(
+             &db,
+@@ -1865,7 +1923,7 @@ fn receipt_send_time_upgrade_preserves_populated_v28_and_v29_graph_and_restarts_
+             .map(|name| receipt_upgrade_snapshot(&db, name))
+             .collect();
+         let objects = |db: &Connection| {
+-            let mut statement=db.prepare("SELECT sql FROM sqlite_master WHERE tbl_name IN ('receipts','receipt_state') AND type IN ('trigger','index') AND sql IS NOT NULL ORDER BY name").unwrap();
++            let mut statement=db.prepare("SELECT sql FROM sqlite_master WHERE tbl_name IN ('receipts','receipt_state') AND type IN ('trigger','index') AND name NOT IN ('receipt_due_sparse_delete','receipt_due_sparse_insert','receipt_due_sparse_update','receipt_warning_origin_receipt_state_insert','receipt_warning_origin_receipt_state_update','receipt_warning_origin_receipts_insert','receipt_warning_origin_receipts_update','receipts_required_due_ordinal') AND sql IS NOT NULL ORDER BY name").unwrap();
+             statement
+                 .query_map([], |r| r.get::<_, String>(0))
+                 .unwrap()
+diff --git a/tests/store/handoff_fences.rs b/tests/store/handoff_fences.rs
+index a32dd7df..626b14a8 100644
+--- a/tests/store/handoff_fences.rs
++++ b/tests/store/handoff_fences.rs
+@@ -408,11 +408,11 @@ fn handoff_actual22_upgrade_imports_already_committed_create_then_replays_withou
+         StoreSettings::default(),
+     )
+     .unwrap();
+-    // The initializer upgrades the historical22 fixture to current schema34.
++    // The initializer upgrades the historical22 fixture to current schema35.
+     assert_eq!(
+         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+             .unwrap(),
+-        34
++        35
+     );
+     let tx = db.transaction().unwrap();
+     let imported = handoff::import_hint(&tx, &id, None, "legacy22", UtcMillis(100)).unwrap();
+diff --git a/tests/store/invitation_due.rs b/tests/store/invitation_due.rs
+index 462c1d27..c06153fc 100644
+--- a/tests/store/invitation_due.rs
++++ b/tests/store/invitation_due.rs
+@@ -705,7 +705,7 @@ fn invitation_confirmation_prior_schema_upgrade_preserves_exact_open_origins() {
+     assert_eq!(
+         conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+             .unwrap(),
+-        34
++        35
+     );
+     for origin in ["origin", "legacy"] {
+         assert!(
+@@ -838,7 +838,7 @@ fn invitation_confirmation_actual32_upgrade_rolls_back_reopens_and_preserves_rec
+             assert_eq!(
+                 db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                     .unwrap(),
+-                34
++                35
+             );
+             assert_eq!(db.query_row("SELECT physical_after,physical_high_water,prepared_after,prepared_high_water,completed FROM receipt_deadline_backfill", [], |r| Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?,r.get::<_,i64>(4)?))).unwrap(),(2,7,3,9,0));
+             assert_eq!(db.query_row("SELECT historical_decision_seq FROM receipt_send_time_cutovers WHERE instance_id='host'", [], |r| r.get::<_,i64>(0)).unwrap(),12);
+@@ -850,7 +850,7 @@ fn invitation_confirmation_actual32_upgrade_rolls_back_reopens_and_preserves_rec
+         assert_eq!(
+             db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                 .unwrap(),
+-            34
++            35
+         );
+         drop(db);
+         std::fs::remove_file(path).unwrap();
+diff --git a/tests/store/lazy26_prerequisite.rs b/tests/store/lazy26_prerequisite.rs
+index 7b0a2241..b17c8aac 100644
+--- a/tests/store/lazy26_prerequisite.rs
++++ b/tests/store/lazy26_prerequisite.rs
+@@ -17,7 +17,7 @@ impl Database {
+     }
+ 
+     /// An independent store whose file is a byte copy of this closed one.
+-    /// Creating a Store replays every migration (schema 34), far more than
++    /// Creating a Store replays every migration (schema 35), far more than
+     /// one tamper case costs, so each test creates its fresh store once and
+     /// gives every case its own copy.
+     fn copy(&self) -> Self {
+@@ -107,7 +107,7 @@ fn fresh_store_installs26_and_reopens() {
+     let database = Database::new();
+     drop(database.store().unwrap());
+     let db = database.connection();
+-    assert_eq!(version(&db), 34);
++    assert_eq!(version(&db), 35);
+     for table in ["messages", "send_preparations"] {
+         let default: String = db
+             .query_row(
+@@ -133,7 +133,7 @@ fn historical25_store_upgrade_preserves_evidence_and_defaults_modes() {
+     drop(db);
+     drop(database.store().unwrap());
+     let db = database.connection();
+-    assert_eq!(version(&db), 34);
++    assert_eq!(version(&db), 35);
+     assert_eq!(evidence(&db), before);
+     for table in ["messages", "send_preparations"] {
+         let mode: String = db
+@@ -199,7 +199,7 @@ fn rejected_on_reopen(database: &Database, description: &str) {
+         herdr_threads::protocol::results::ErrorCode::IncompatibleSchema,
+         "{description}: {error:?}"
+     );
+-    assert_eq!(version(&database.connection()), 34);
++    assert_eq!(version(&database.connection()), 35);
+ }
+ 
+ // Omitting the v26 startup audit accepts a removed or weakened immutable guard.
+diff --git a/tests/store/lazy_schema.rs b/tests/store/lazy_schema.rs
+index eec87248..3d48e8d1 100644
+--- a/tests/store/lazy_schema.rs
++++ b/tests/store/lazy_schema.rs
+@@ -25,7 +25,7 @@ fn lazy_schema_upgrade25_defaults_existing_messages_to_ordinary() {
+     assert_eq!(
+         db.pragma_query_value::<i64, _>(None, "user_version", |r| r.get(0))
+             .unwrap(),
+-        34
++        35
+     );
+ }
+ 
+diff --git a/tests/store/receipts.rs b/tests/store/receipts.rs
+index 17ab3156..774b139c 100644
+--- a/tests/store/receipts.rs
++++ b/tests/store/receipts.rs
+@@ -29,6 +29,10 @@ fn setup() -> (StoreContext, Connection, Arc<TestClock>) {
+         std::env::temp_dir().join(format!("receipt-test-{}.db", uuid::Uuid::new_v4()));
+     let context = StoreContext::new(path, clock.clone());
+     let conn = context.open_writer().unwrap();
++    seed_discovery_database(&conn);
++    (context, conn, clock)
++}
++fn seed_discovery_database(conn: &Connection) {
+     conn.execute(
+         "INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'b',1,1)",
+         [],
+@@ -56,7 +60,6 @@ fn setup() -> (StoreContext, Connection, Arc<TestClock>) {
+             conn.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('t',?1,1,1)",[seat]).unwrap();
+         }
+     }
+-    (context, conn, clock)
+ }
+ fn send_request(explicit: Vec<&str>) -> SendMessage {
+     SendMessage {
+@@ -3619,3 +3622,1392 @@ fn adapter_display_ack_rechecks_exact_binding_and_cooperative_provenance() {
+         );
+     }
+ }
++
++fn discovery_receipt(db: &Connection, id: &str, sequence: i64, deadline: i64) {
++    db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,author_kind,actor_seat_id,body,decision_at,decision_seq) VALUES (?1,'i','t',?2,'ordinary','native','a','x',0,?2)",params![id,sequence]).unwrap();
++    db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES (?1,'t','b','pending',1,0,?2)",params![id,deadline]).unwrap();
++}
++
++#[test]
++fn receipt_discovery_snapshot_excludes_earlier_deadline_arrivals_before_limit() {
++    let (context, mut db, _) = setup();
++    for n in 0..250 {
++        discovery_receipt(&db, &format!("snapshot-{n}"), n + 1, 500);
++    }
++    db.execute("UPDATE threads SET next_sequence=10000 WHERE id='t'", [])
++        .unwrap();
++    db.execute(
++        "UPDATE host_instances SET decision_seq=10000 WHERE id='i'",
++        [],
++    )
++    .unwrap();
++    let mut cursor = receipts::ReceiptDueCursor::default();
++    let first = receipts::scan_due(&context, &mut db, 100, &mut cursor).unwrap();
++    assert_eq!(first.inspected, 100);
++    for n in 0..125 {
++        discovery_receipt(&db, &format!("arrival-{n}"), 20000 + n, 501);
++    }
++    let mut total_inspected = first.inspected;
++    for _ in 0..5 {
++        let page = receipts::scan_due(&context, &mut db, 100, &mut cursor).unwrap();
++        assert!(page.inspected <= 100);
++        total_inspected += page.inspected;
++        if !page.more {
++            break;
++        }
++    }
++    assert_eq!(
++        total_inspected, 250,
++        "arrivals outside the captured high water consume no inspection allowance"
++    );
++    assert_eq!(db.query_row("SELECT count(*) FROM receipts WHERE message_id LIKE 'snapshot-%' AND warning_message_id IS NOT NULL",[],|r|r.get::<_,i64>(0)).unwrap(),250);
++    assert_eq!(db.query_row("SELECT count(*) FROM receipts WHERE message_id LIKE 'arrival-%' AND warning_message_id IS NOT NULL",[],|r|r.get::<_,i64>(0)).unwrap(),0,"later ordinals must be excluded by SQL before LIMIT, even when they fit the deadline keyset");
++}
++
++#[test]
++fn receipt_discovery_lends_empty_sparse_half_to_physical_snapshot() {
++    let (context, mut db, _) = setup();
++    for n in 0..250 {
++        discovery_receipt(&db, &format!("physical-{n}"), n + 1, 500);
++    }
++    discovery_receipt(&db, "sparse-source", 500, 500);
++    db.execute("INSERT INTO receipt_state(message_id,seat_id,state,ack_required,deadline_at) VALUES ('sparse-source','c','pending',1,500)",[]).unwrap();
++    db.execute("UPDATE threads SET next_sequence=10000 WHERE id='t'", [])
++        .unwrap();
++    db.execute(
++        "UPDATE host_instances SET decision_seq=10000 WHERE id='i'",
++        [],
++    )
++    .unwrap();
++    let page = receipts::scan_due(
++        &context,
++        &mut db,
++        100,
++        &mut receipts::ReceiptDueCursor::default(),
++    )
++    .unwrap();
++    assert_eq!(
++        page.inspected, 100,
++        "one sparse row cannot strand 49 physical inspection slots"
++    );
++}
++
++#[test]
++fn receipt_discovery_coalesced_origins_survive_offers_departure_and_partial_ack() {
++    let (context, mut db, clock) = setup();
++    db.execute("UPDATE memberships SET state='left' WHERE seat_id!='b'", [])
++        .unwrap();
++    db.execute(
++        "UPDATE membership_intervals SET left_seq=2 WHERE seat_id!='b'",
++        [],
++    )
++    .unwrap();
++    for (n, author) in [(1, "a"), (2, "a"), (3, "b")] {
++        db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,author_kind,actor_seat_id,body,decision_at,decision_seq) VALUES (?1,'i','t',?2,'ordinary','native',?3,'x',0,?2)",params![format!("origin-{n}"),n,author]).unwrap();
++        if n < 3 {
++            db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES (?1,'t','c','pending',1,0,500)",[format!("origin-{n}")]).unwrap();
++        } else {
++            discovery_manifest(&db, "origin-3", "origin-preparation", "c", 1500, 3);
++        }
++    }
++    db.execute("UPDATE threads SET next_sequence=1000 WHERE id='t'", [])
++        .unwrap();
++    db.execute(
++        "UPDATE host_instances SET decision_seq=1000 WHERE id='i'",
++        [],
++    )
++    .unwrap();
++    receipts::scan_due(
++        &context,
++        &mut db,
++        100,
++        &mut receipts::ReceiptDueCursor::default(),
++    )
++    .unwrap();
++    let warning: String = db
++        .query_row(
++            "SELECT open_warning_id FROM warning_conditions WHERE condition_kind='receipt'",
++            [],
++            |r| r.get(0),
++        )
++        .unwrap();
++    assert_eq!(
++        db.query_row(
++            "SELECT count(*) FROM warning_conditions WHERE condition_kind='receipt'",
++            [],
++            |r| r.get::<_, i64>(0)
++        )
++        .unwrap(),
++        1
++    );
++    assert_eq!(
++        db.query_row(
++            "SELECT count(*) FROM receipts WHERE warning_message_id=?1",
++            [&warning],
++            |r| r.get::<_, i64>(0)
++        )
++        .unwrap(),
++        2
++    );
++    let budget = crate::protocol::time::CallBudget {
++        deadline: MonoInstant(u64::MAX),
++        cancellation: Default::default(),
++    };
++    while crate::store::materialization::advance_work(
++        &mut db,
++        &format!("work:{warning}"),
++        crate::ports::DurableWorkAdmission::new(16).unwrap(),
++        &budget,
++        context.clock(),
++    )
++    .unwrap()
++    .has_more
++    {}
++    for (seat, execution) in [
++        ("a", "00000000-0000-4000-8000-0000000000aa"),
++        ("b", "00000000-0000-4000-8000-0000000000bb"),
++    ] {
++        let carried: Vec<_> = attention::notice_offer_page(&db, seat, 100)
++            .unwrap()
++            .into_iter()
++            .map(|r| r.notice)
++            .collect();
++        let tx = db.transaction().unwrap();
++        attention::settle_carried_notices(&tx, seat, 1, execution, &carried).unwrap();
++        tx.execute("INSERT INTO warning_offer(seat_id,binding_generation,execution_id,offered_through_seq) SELECT ?1,1,?2,decision_seq FROM host_instances WHERE id='i'",params![seat,execution]).unwrap();
++        tx.commit().unwrap();
++    }
++    assert_eq!(
++        db.query_row(
++            "SELECT count(*) FROM receipt_warning_origins WHERE seat_id='b'",
++            [],
++            |r| r.get::<_, i64>(0)
++        )
++        .unwrap(),
++        0,
++        "B has only informational observer attention before its own source coalesces"
++    );
++    db.execute("UPDATE memberships SET state='left' WHERE seat_id='b'", [])
++        .unwrap();
++    db.execute(
++        "UPDATE membership_intervals SET left_seq=2 WHERE seat_id='b'",
++        [],
++    )
++    .unwrap();
++    clock.0.store(2000, Ordering::SeqCst);
++    receipts::scan_due(
++        &context,
++        &mut db,
++        100,
++        &mut receipts::ReceiptDueCursor::default(),
++    )
++    .unwrap();
++    assert_eq!(
++        db.query_row(
++            "SELECT count(*) FROM warning_conditions WHERE condition_kind='receipt'",
++            [],
++            |r| r.get::<_, i64>(0)
++        )
++        .unwrap(),
++        1,
++        "late B association reuses the previously offered shared condition"
++    );
++    assert_eq!(db.query_row("SELECT warning_message_id FROM receipt_state WHERE message_id='origin-3' AND seat_id='c'",[],|r|r.get::<_,String>(0)).unwrap(),warning);
++    let high = db
++        .query_row("SELECT max(ordinal) FROM seats", [], |r| r.get::<_, i64>(0))
++        .unwrap() as u64;
++    let found = crate::store::discover_wake_candidates(&db, "i", 0, high, 100, &|| Ok(())).unwrap();
++    for seat in ["a", "b"] {
++        let candidate = found
++            .items
++            .iter()
++            .find(|c| c.seat.as_str() == seat)
++            .unwrap_or_else(|| {
++                panic!("departed original sender {seat} missing from actual discovery")
++            });
++        assert!(candidate.has_actionable_work());
++        assert_eq!(
++            crate::store::seats::mod_seat_view(&db, "i", &SeatId::new(seat))
++                .unwrap()
++                .unwrap()
++                .fingerprint
++                .other_pending,
++            1
++        );
++        let refreshed =
++            crate::store::discover_wake_candidates(&db, "i", 0, high, 100, &|| Ok(())).unwrap();
++        let refreshed = refreshed
++            .items
++            .iter()
++            .find(|c| c.seat.as_str() == seat)
++            .unwrap();
++        let daemon_boot = uuid::Uuid::new_v4();
++        let reservation =
++            crate::store::wake::reserve(&context, &mut db, "i", refreshed, daemon_boot, 30000)
++                .unwrap();
++        assert!(
++            reservation.is_some(),
++            "each actual discovered original sender must reserve independently"
++        );
++        let reservation = reservation.unwrap();
++        // The bool reports refused-ladder restoration, not completion.
++        assert!(
++            !crate::store::wake::complete(
++                &context,
++                &mut db,
++                &reservation.attempt,
++                &daemon_boot,
++                crate::ports::WakeOutcome::Submitted,
++                None,
++                &budget
++            )
++            .unwrap()
++        );
++        assert_eq!(
++            db.query_row(
++                "SELECT reservation_id,last_outcome FROM wake_work WHERE seat_id=?1",
++                [seat],
++                |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, String>(1)?))
++            )
++            .unwrap(),
++            (None, "submitted".into())
++        );
++    }
++    // Preserve every column of the preexisting immutable source/warning rows.
++    let immutable_messages = |db: &Connection| {
++        let mut stmt=db.prepare("SELECT * FROM messages WHERE id IN ('origin-1','origin-2','origin-3',?1) ORDER BY id").unwrap();
++        let columns = stmt.column_count();
++        stmt.query_map([&warning], |r| {
++            (0..columns)
++                .map(|c| r.get::<_, rusqlite::types::Value>(c))
++                .collect::<rusqlite::Result<Vec<_>>>()
++        })
++        .unwrap()
++        .collect::<Result<Vec<_>, _>>()
++        .unwrap()
++    };
++    let messages_before = immutable_messages(&db);
++    let mut expected_receipts = (1..=3)
++        .map(|n| {
++            crate::store::effective::effective_receipt(&db, &format!("origin-{n}"), "c")
++                .unwrap()
++                .unwrap()
++        })
++        .collect::<Vec<_>>();
++    db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES ('c',1,'pc','b',1,1,'codex','nc','00000000-0000-4000-8000-0000000000cc','cooperative_top_level',0,'term-pc','inc')",[]).unwrap();
++    for (n, remaining) in [(1, 2), (2, 1), (3, 0)] {
++        let mut request = ack_request(vec![MessageId::new(format!("origin-{n}"))]);
++        request.operation = OperationId::new(format!("origin-ack-{n}"));
++        request.claim.seat = SeatId::new("c");
++        request.claim.native_session = NativeSessionId::new("nc");
++        request.claim.execution = ExecutionId::new("00000000-0000-4000-8000-0000000000cc");
++        request.claim.target = HostTargetId::new("pc");
++        receipts::ack(
++            &context,
++            &mut db,
++            &budget,
++            &request,
++            &mut ack_permit(&request),
++        )
++        .unwrap();
++        assert_eq!(db.query_row("SELECT (SELECT count(*) FROM receipts WHERE state='pending' AND warning_message_id=?1)+(SELECT count(*) FROM receipt_state WHERE state='pending' AND warning_message_id=?1)",[&warning],|r|r.get::<_,i64>(0)).unwrap(),remaining);
++        assert_eq!(
++            db.query_row(
++                "SELECT count(*) FROM warning_conditions WHERE clear_warning_id IS NOT NULL",
++                [],
++                |r| r.get::<_, i64>(0)
++            )
++            .unwrap(),
++            i64::from(remaining == 0),
++            "only final associated ACK clears the shared condition"
++        );
++        let effective =
++            crate::store::effective::effective_receipt(&db, &format!("origin-{n}"), "c")
++                .unwrap()
++                .unwrap();
++        let expected_observation=serde_json::json!({"harness":"codex","session":"nc","execution":"00000000-0000-4000-8000-0000000000cc","host_boot":"b","binding_generation":1,"target_generation":1,"provenance":"cooperative_top_level","observed_at":2000,"decided_at":2000}).to_string();
++        assert_eq!(effective.ack_actor_seat_id.as_deref(), Some("c"));
++        assert_eq!(effective.ack_generation, Some(1));
++        assert_eq!(
++            effective.ack_observation.as_deref(),
++            Some(expected_observation.as_str())
++        );
++        let expected = &mut expected_receipts[n as usize - 1];
++        expected.state = crate::store::effective::EffectiveReceiptState::Acknowledged;
++        expected.ack_actor_seat_id = Some("c".into());
++        expected.ack_generation = Some(1);
++        expected.ack_observation = Some(expected_observation);
++        expected.acked_at = Some(2000);
++        for (index, expected) in expected_receipts.iter().enumerate() {
++            assert_eq!(
++                &crate::store::effective::effective_receipt(
++                    &db,
++                    &format!("origin-{}", index + 1),
++                    "c"
++                )
++                .unwrap()
++                .unwrap(),
++                expected,
++                "all prior receipt clock/marker/provenance history survives ACK{n}"
++            );
++        }
++        assert_eq!(
++            immutable_messages(&db),
++            messages_before,
++            "ACK{n} preserves every preexisting message column"
++        );
++        let found =
++            crate::store::discover_wake_candidates(&db, "i", 0, high, 100, &|| Ok(())).unwrap();
++        for seat in ["a", "b"] {
++            let waking = attention::wake_seat_attention(&db, seat).unwrap();
++            assert!(
++                !waking.attention.has_pending_invitation && !waking.attention.has_pending_receipt,
++                "no unrelated waking source may mask warning lifetime"
++            );
++            assert_eq!(waking.attention.latest_warning_seq.is_some(), remaining > 0);
++            let loaded = crate::store::wake::load_candidate(
++                &db,
++                "i",
++                &SeatId::new(seat),
++                &waking.attention,
++                waking.decision_seq,
++            )
++            .unwrap();
++            assert_eq!(
++                loaded.has_actionable_work(),
++                remaining > 0,
++                "actual loader after ACK{n}: {seat}"
++            );
++            assert_eq!(
++                found
++                    .items
++                    .iter()
++                    .any(|candidate| candidate.seat.as_str() == seat
++                        && candidate.has_actionable_work()),
++                remaining > 0,
++                "actual upstream discovery after ACK{n}: {seat}"
++            );
++            let view = crate::store::seats::mod_seat_view(&db, "i", &SeatId::new(seat))
++                .unwrap()
++                .unwrap();
++            assert_eq!(
++                view.fingerprint.other_pending,
++                u64::from(remaining > 0),
++                "warning-only mod attention after ACK{n}: {seat}"
++            );
++        }
++        assert_eq!(db.query_row("SELECT count(*) FROM wake_work WHERE seat_id IN ('a','b') AND reservation_id IS NOT NULL",[],|r|r.get::<_,i64>(0)).unwrap(),0,"absence after final ACK cannot be masked by outstanding reservations");
++        assert_eq!(
++            db.query_row(
++                "SELECT count(*) FROM messages WHERE kind='warn' AND json_extract(event_json,'$.event')='warning_cleared'",
++                [],
++                |r| r.get::<_, i64>(0)
++            )
++            .unwrap(),
++            i64::from(remaining == 0),
++            "exactly one passive clear, only after B1"
++        );
++        assert_eq!(
++            db.query_row("SELECT count(*) FROM receipt_warning_origins", [], |r| r
++                .get::<_, i64>(0))
++                .unwrap(),
++            if remaining == 0 { 0 } else { 2 }
++        );
++    }
++}
++
++#[test]
++fn receipt_discovery_deadline_arrivals_do_not_inflate_sqlite_walk_work() {
++    use crate::test_support::isolation::{CostCounter, count_vm_units};
++    let (context, mut db, _) = setup();
++    for n in 0..250 {
++        discovery_receipt(&db, &format!("work-{n}"), n + 1, 500);
++    }
++    db.execute("UPDATE threads SET next_sequence=10000 WHERE id='t'", [])
++        .unwrap();
++    db.execute(
++        "UPDATE host_instances SET decision_seq=10000 WHERE id='i'",
++        [],
++    )
++    .unwrap();
++    let mut cursor = receipts::ReceiptDueCursor::default();
++    receipts::scan_due(&context, &mut db, 100, &mut cursor).unwrap();
++    receipts::scan_due(&context, &mut db, 100, &mut cursor).unwrap();
++    // Measure the real producer statement's empty end-probe under the same
++    // captured high water. Excluded later rows must cost only an index seek.
++    let probe = |counter: &CostCounter| {
++        count_vm_units(&db, counter, || {
++            let mut statement = db.prepare(receipts::PHYSICAL_DUE_SELECTION).unwrap();
++            statement
++                .query_map(
++                    params![
++                        500,
++                        cursor.high_water_ordinal,
++                        cursor.high_water_ordinal,
++                        100
++                    ],
++                    |r| r.get::<_, i64>(0),
++                )
++                .unwrap()
++                .collect::<Result<Vec<_>, _>>()
++                .unwrap()
++        })
++    };
++    let baseline_counter = CostCounter::default();
++    assert!(probe(&baseline_counter).is_empty());
++    let baseline = baseline_counter.units();
++    for n in 0..5000 {
++        discovery_receipt(&db, &format!("outside-{n}"), 20000 + n, 501);
++    }
++    let grown_counter = CostCounter::default();
++    assert!(probe(&grown_counter).is_empty());
++    assert!(
++        grown_counter.units() <= baseline + 100,
++        "excluded deadline arrivals inflated indexed work: baseline={baseline}, grown={}",
++        grown_counter.units()
++    );
++}
++
++struct ReceiptDiscoveryPort {
++    store: crate::store::SqliteStore,
++    clock: Arc<TestClock>,
++}
++impl crate::scheduler::deadlines::DeadlinePort for ReceiptDiscoveryPort {
++    crate::no_durable_work!();
++    fn clock(&self) -> &dyn Clock {
++        self.clock.as_ref()
++    }
++    fn due_obligations(
++        &self,
++        request: crate::ports::DueScanRequest,
++        budget: &crate::protocol::time::CallBudget,
++    ) -> Result<crate::ports::DueScanProgress, crate::protocol::results::ApiError> {
++        crate::ports::StorePort::due_obligations(&self.store, request, budget)
++    }
++    fn pending_retirement_jobs(
++        &self,
++        _: crate::protocol::pagination::PageRequest,
++        _: &crate::protocol::time::CallBudget,
++    ) -> Result<
++        crate::protocol::pagination::Page<crate::protocol::results::RetirementStatus>,
++        crate::protocol::results::ApiError,
++    > {
++        Ok(crate::protocol::pagination::Page {
++            items: vec![],
++            next_cursor: None,
++            next_argv: None,
++            high_water_ordinal: 0,
++            scope_revision: None,
++            has_more: false,
++            stop_reason: crate::protocol::pagination::StopReason::Complete,
++            consistency: crate::protocol::pagination::Consistency::BoundedLive,
++        })
++    }
++    fn advance_retirement(
++        &self,
++        _: RetirementJobId,
++        _: crate::ports::WorkAdmission,
++        _: &crate::protocol::time::CallBudget,
++    ) -> Result<crate::ports::RetirementProgress, crate::protocol::results::ApiError> {
++        unreachable!()
++    }
++}
++fn receipt_discovery_driver_fixture(
++    historical: bool,
++    receipt_count: i64,
++    invitation_count: i64,
++) -> (ReceiptDiscoveryPort, Connection) {
++    let (context, db, clock) = setup();
++    for n in 0..receipt_count {
++        discovery_receipt(
++            &db,
++            &format!("driver-{n}"),
++            n + 1,
++            if n % 5 == 0 { 5000 } else { 500 },
++        );
++    }
++    if historical {
++        db.execute("UPDATE receipts SET available_at=NULL,deadline_at=NULL,frozen_duration_ms=CASE WHEN message_id IN (SELECT id FROM messages WHERE sequence%5=1) THEN 5000 ELSE 500 END",[]).unwrap();
++        db.execute("UPDATE receipt_deadline_backfill SET physical_high_water=(SELECT COALESCE(MAX(ordinal),0) FROM receipts),completed=0",[]).unwrap();
++    }
++    for n in 0..invitation_count {
++        db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES (?1,'t','c',?2,'pending',0,1,?3,500)",params![format!("driver-inv-{n}"),n+1,if n%5==0{5000}else{500}]).unwrap();
++    }
++    db.execute("UPDATE threads SET next_sequence=10000 WHERE id='t'", [])
++        .unwrap();
++    db.execute(
++        "UPDATE host_instances SET decision_seq=10000 WHERE id='i'",
++        [],
++    )
++    .unwrap();
++    // Every native wake is blocked: the store does not claim availability.
++    db.execute("UPDATE observed_targets SET observed_at=-999999", [])
++        .unwrap();
++    let store =
++        crate::store::SqliteStore::new(context, "i", crate::store::StoreSettings::default())
++            .unwrap();
++    (ReceiptDiscoveryPort { store, clock }, db)
++}
++
++#[test]
++fn receipt_discovery_global_short_first_turn_continues_other_class_then_stops() {
++    let (port, _db) = receipt_discovery_driver_fixture(false, 3, 1);
++    let mut driver = crate::scheduler::deadlines::DeadlineDriver::new(&port);
++    let budget = crate::protocol::time::CallBudget {
++        deadline: MonoInstant(u64::MAX),
++        cancellation: Default::default(),
++    };
++    let first = driver.drive(&budget).unwrap();
++    assert_eq!(
++        first.due_examined_candidates, 1,
++        "one full class turn per quantum"
++    );
++    assert!(
++        first.due_continuation,
++        "short completed invitation phase must continue unfinished receipts immediately"
++    );
++    let second = driver.drive(&budget).unwrap();
++    assert!(second.ticked);
++    assert_eq!(second.due_examined_candidates, 3);
++    assert!(
++        !second.due_continuation,
++        "both completed snapshots stop immediately"
++    );
++    assert!(!driver.drive(&budget).unwrap().ticked);
++}
++
++#[test]
++fn receipt_discovery_global_extension_keeps_original_clock_and_restart_finds_lapse() {
++    use crate::ports::{DueScanRequest, DueScanState, StorePort};
++    let (port, db) = receipt_discovery_driver_fixture(false, 1, 0);
++    db.execute("UPDATE receipts SET deadline_at=500", [])
++        .unwrap();
++    db.execute("INSERT INTO catch_up(seat_id,thread_id,frontier_seq,binding_generation,execution_id,entered_at,extension_until,state) VALUES ('b','t',0,1,'00000000-0000-4000-8000-0000000000bb',0,5000,'active')",[]).unwrap();
++    let budget = crate::protocol::time::CallBudget {
++        deadline: MonoInstant(u64::MAX),
++        cancellation: Default::default(),
++    };
++    let original = StorePort::due_obligations(
++        &port.store,
++        DueScanRequest {
++            state: DueScanState::default(),
++            max_candidates: 100,
++            run_invitations: false,
++            run_receipts: true,
++        },
++        &budget,
++    )
++    .unwrap();
++    assert_eq!(
++        original.warnings_added, 0,
++        "effective extension defers warning despite overdue original deadline"
++    );
++    assert_eq!(
++        db.query_row("SELECT deadline_at FROM receipts", [], |r| r
++            .get::<_, i64>(0))
++            .unwrap(),
++        500
++    );
++    port.clock.0.store(6000, Ordering::SeqCst);
++    let mut restarted = crate::scheduler::deadlines::DeadlineDriver::new(&port);
++    for _ in 0..4 {
++        let out = restarted.drive(&budget).unwrap();
++        assert!(out.due_examined_candidates <= 100);
++        if !out.due_continuation {
++            break;
++        }
++    }
++    assert_eq!(
++        db.query_row(
++            "SELECT count(*) FROM receipts WHERE warning_message_id IS NOT NULL",
++            [],
++            |r| r.get::<_, i64>(0)
++        )
++        .unwrap(),
++        1
++    );
++    assert_eq!(
++        db.query_row("SELECT deadline_at FROM receipts", [], |r| r
++            .get::<_, i64>(0))
++            .unwrap(),
++        500,
++        "restart never rewrites original deadline"
++    );
++    assert_eq!(
++        db.query_row("SELECT end_reason FROM catch_up", [], |r| r
++            .get::<_, String>(0))
++            .unwrap(),
++        "stalled"
++    );
++}
++
++#[test]
++fn receipt_discovery_global_fair_snapshots_cover_upgrade_and_restart_with_blocked_wakes() {
++    for historical in [false, true] {
++        let (port, db) = receipt_discovery_driver_fixture(historical, 250, 250);
++        let budget = crate::protocol::time::CallBudget {
++            deadline: MonoInstant(u64::MAX),
++            cancellation: Default::default(),
++        };
++        let mut driver = crate::scheduler::deadlines::DeadlineDriver::new(&port);
++        let mut quanta = 0u64;
++        let mut receipt_turns = 0i64;
++        let mut invitation_turns = 0i64;
++        let mut last_receipt_turn = 0u64;
++        let mut last_invitation_turn = 0u64;
++        let mut saw_due_during_repair = false;
++        // Finite arrivals before the post-repair capture are included in D.
++        let arrivals = 24u64;
++        let h = if historical { 250u64 } else { 0 };
++        // Completion resets the historical ordinary snapshot once. D counts
++        // every possible repeat visit as well as finite arrivals.
++        let d = (250 + arrivals) * if historical { 2 } else { 1 };
++        let i = 250u64;
++        let bound_quanta = if h == 0 {
++            2 * d.div_ceil(100) + 2
++        } else {
++            2 * ((h.div_ceil(50) + 2 + d.div_ceil(100) + 1).max(i.div_ceil(100) + 1))
++        };
++        let mut inspected = 0u64;
++        for turn in 0..bound_quanta {
++            let out = driver.drive(&budget).unwrap();
++            assert!(
++                out.ticked,
++                "successful continuation cannot wait for safety tick at turn{turn}"
++            );
++            quanta += 1;
++            assert!(out.due_examined_candidates <= 100);
++            inspected += u64::from(out.due_examined_candidates);
++            let progress = out.due_progress.as_ref().unwrap();
++            if !matches!(progress.receipts, crate::ports::DuePhaseProgress::Skipped) {
++                receipt_turns += 1;
++            }
++            if !matches!(
++                progress.invitations,
++                crate::ports::DuePhaseProgress::Skipped
++            ) {
++                invitation_turns += 1;
++            }
++            if !matches!(progress.receipts, crate::ports::DuePhaseProgress::Skipped) {
++                last_receipt_turn = quanta;
++            }
++            if !matches!(
++                progress.invitations,
++                crate::ports::DuePhaseProgress::Skipped
++            ) {
++                last_invitation_turn = quanta;
++            }
++            if !progress.state.receipts_complete {
++                assert!(
++                    quanta - last_receipt_turn <= 1,
++                    "unfinished receipts wait at most one peer turn"
++                );
++            }
++            if !progress.state.invitations_complete {
++                assert!(
++                    quanta - last_invitation_turn <= 1,
++                    "unfinished invitations wait at most one peer turn"
++                );
++            }
++            if !progress.state.receipts_complete && !progress.state.invitations_complete {
++                assert!(
++                    (receipt_turns - invitation_turns).abs() <= 1,
++                    "both unfinished classes alternate full turns"
++                );
++                assert_eq!(
++                    out.due_examined_candidates, 100,
++                    "unfinished class receives the full candidate allowance"
++                );
++            }
++            let repair: i64 = db
++                .query_row("SELECT completed FROM receipt_deadline_backfill", [], |r| {
++                    r.get(0)
++                })
++                .unwrap();
++            let warned:i64=db.query_row("SELECT count(*) FROM receipts WHERE message_id LIKE 'driver-%' AND warning_message_id IS NOT NULL",[],|r|r.get(0)).unwrap();
++            if historical && repair == 0 && warned > 0 {
++                saw_due_during_repair = true;
++            }
++            if turn < 4 {
++                for n in 0..6 {
++                    discovery_receipt(
++                        &db,
++                        &format!("driver-arrival-{turn}-{n}"),
++                        20000 + turn as i64 * 6 + n,
++                        1,
++                    );
++                }
++            }
++            if !out.due_continuation {
++                break;
++            }
++        }
++        assert!(quanta <= bound_quanta);
++        assert!(inspected <= 100 * quanta);
++        assert!(
++            inspected <= h + d + i,
++            "all actual repeated repair/due/invitation visits fit declared H/D/I"
++        );
++        assert_eq!(db.query_row("SELECT count(*) FROM receipts WHERE message_id GLOB 'driver-[0-9]*' AND warning_message_id IS NOT NULL",[],|r|r.get::<_,i64>(0)).unwrap(),200);
++        assert_eq!(db.query_row("SELECT count(*) FROM invitations WHERE id LIKE 'driver-inv-%' AND warning_message_id IS NOT NULL",[],|r|r.get::<_,i64>(0)).unwrap(),200);
++        if historical {
++            assert!(
++                saw_due_during_repair,
++                "ordinary due discovery must run before repair exhaustion"
++            );
++        }
++        let mut restarted = crate::scheduler::deadlines::DeadlineDriver::new(&port);
++        for _ in 0..12 {
++            let out = restarted.drive(&budget).unwrap();
++            assert!(out.due_examined_candidates <= 100);
++            if !out.due_continuation {
++                break;
++            }
++        }
++        assert_eq!(db.query_row("SELECT count(*) FROM receipts WHERE message_id LIKE 'driver-arrival-%' AND warning_message_id IS NOT NULL",[],|r|r.get::<_,i64>(0)).unwrap(),24);
++        assert_eq!(db.query_row("SELECT count(*) FROM receipts WHERE message_id GLOB 'driver-[0-9]*' AND deadline_at>1000 AND warning_message_id IS NOT NULL",[],|r|r.get::<_,i64>(0)).unwrap(),0);
++    }
++}
++
++fn receipt_discovery_historical(version: usize) -> (StoreContext, Connection, Arc<TestClock>) {
++    let clock = Arc::new(TestClock(AtomicI64::new(1000)));
++    let path = std::env::temp_dir().join(format!("receipt-upgrade-{}.db", uuid::Uuid::new_v4()));
++    let db = Connection::open(&path).unwrap();
++    let context = StoreContext::new(path, clock.clone());
++    let mut paths =
++        std::fs::read_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations"))
++            .unwrap()
++            .map(|p| p.unwrap().path())
++            .collect::<Vec<_>>();
++    paths.sort();
++    for path in paths.into_iter().take(version) {
++        db.execute_batch(&std::fs::read_to_string(path).unwrap())
++            .unwrap();
++    }
++    db.pragma_update(None, "user_version", version as i64)
++        .unwrap();
++    seed_discovery_database(&db);
++    (context, db, clock)
++}
++
++#[test]
++fn receipt_discovery_sparse_episodes_survive_source_rowid_reuse_and_snapshot_restart() {
++    let (context, mut db, _) = setup();
++    db.execute("INSERT INTO receipt_state(message_id,seat_id,state,ack_required,deadline_at) VALUES ('old','c','pending',1,5000)",[]).unwrap();
++    let (rowid,ordinal):(i64,i64)=db.query_row("SELECT r.rowid,p.ordinal FROM receipt_state r JOIN receipt_due_sparse p USING(message_id,seat_id)",[],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();
++    let mut cursor = receipts::ReceiptDueCursor::default();
++    assert_eq!(
++        receipts::scan_due(&context, &mut db, 1, &mut cursor)
++            .unwrap()
++            .inspected,
++        1
++    );
++    db.execute(
++        "UPDATE receipt_state SET deadline_at=6000 WHERE message_id='old'",
++        [],
++    )
++    .unwrap();
++    assert_eq!(
++        db.query_row("SELECT ordinal FROM receipt_due_sparse", [], |r| r
++            .get::<_, i64>(0))
++            .unwrap(),
++        ordinal,
++        "same eligible episode retains identity"
++    );
++    db.execute(
++        "UPDATE receipt_state SET ack_required=0 WHERE message_id='old'",
++        [],
++    )
++    .unwrap();
++    assert_eq!(
++        db.query_row("SELECT count(*) FROM receipt_due_sparse", [], |r| r
++            .get::<_, i64>(0))
++            .unwrap(),
++        0
++    );
++    db.execute(
++        "UPDATE receipt_state SET ack_required=1 WHERE message_id='old'",
++        [],
++    )
++    .unwrap();
++    let reeligible: i64 = db
++        .query_row("SELECT ordinal FROM receipt_due_sparse", [], |r| r.get(0))
++        .unwrap();
++    assert!(reeligible > ordinal);
++    db.execute("DELETE FROM receipt_state", []).unwrap();
++    db.execute("INSERT INTO receipt_state(message_id,seat_id,state,ack_required,deadline_at) VALUES ('new','c','pending',1,5000)",[]).unwrap();
++    assert_eq!(
++        db.query_row("SELECT rowid FROM receipt_state", [], |r| r
++            .get::<_, i64>(0))
++            .unwrap(),
++        rowid,
++        "fixture actually reuses the raw source rowid"
++    );
++    assert!(
++        db.query_row("SELECT ordinal FROM receipt_due_sparse", [], |r| r
++            .get::<_, i64>(0))
++            .unwrap()
++            > reeligible
++    );
++    assert_eq!(
++        receipts::scan_due(&context, &mut db, 100, &mut cursor)
++            .unwrap()
++            .inspected,
++        0,
++        "old snapshot excludes new ordinal despite reused raw rowid"
++    );
++    drop(db);
++    let mut reopened = context.open_writer().unwrap();
++    assert_eq!(
++        receipts::scan_due(
++            &context,
++            &mut reopened,
++            100,
++            &mut receipts::ReceiptDueCursor::default()
++        )
++        .unwrap()
++        .inspected,
++        1,
++        "restart captures the new eligible episode"
++    );
++}
++
++#[test]
++fn receipt_discovery_populated34_upgrade_rolls_back_and_reopens_with_bounded_bootstrap() {
++    let (context, mut db, _) = receipt_discovery_historical(34);
++    for n in 0..125 {
++        db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,author_kind,actor_seat_id,body,decision_at,decision_seq) VALUES (?1,'i','t',?2,'ordinary','native',?3,'x',0,?2)",params![format!("historical-{n}"),n+1,if n==1{"b"}else{"a"}]).unwrap();
++        db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES (?1,'t','b','pending',1,0,5000)",[format!("historical-{n}")]).unwrap();
++        db.execute("INSERT INTO receipt_state(message_id,seat_id,state,ack_required,deadline_at) VALUES (?1,'c','pending',1,5000)",[format!("historical-{n}")]).unwrap();
++        if n == 1 {
++            // The second original sender is justified only by a published
++            // sparse episode, never by a physical warning association.
++            discovery_manifest(&db, "historical-1", "old-published", "b", 5000, 2);
++        }
++    }
++    // Both canonical authors are associated with the one already-open warning.
++    db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_key,event_json,decision_at,decision_seq,source_message_id) VALUES ('old-warning','i','t',126,'warn','old-warning','{}',0,126,'historical-0')",[]).unwrap();
++    db.execute("INSERT INTO warning_conditions(condition_kind,thread_id,condition_id,affected_seat_id,open_warning_id,opened_seq) VALUES ('receipt','t','b','b','old-warning',126)",[]).unwrap();
++    db.execute(
++        "UPDATE receipts SET warning_message_id='old-warning' WHERE message_id='historical-0'",
++        [],
++    )
++    .unwrap();
++    db.execute("UPDATE receipt_state SET warning_message_id='old-warning' WHERE message_id='historical-1' AND seat_id='b'",[]).unwrap();
++    db.execute("UPDATE threads SET next_sequence=1000 WHERE id='t'", [])
++        .unwrap();
++    db.execute(
++        "UPDATE host_instances SET decision_seq=1000 WHERE id='i'",
++        [],
++    )
++    .unwrap();
++    // Force failure after several new objects have been created: the actual
++    // migration transaction must restore the complete populated34 image.
++    db.execute("CREATE TABLE receipt_due_sparse(collision)", [])
++        .unwrap();
++    assert!(crate::store::schema::initialize(&db, || UtcMillis(1000)).is_err());
++    assert_eq!(
++        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
++            .unwrap(),
++        34
++    );
++    assert_eq!(
++        db.query_row(
++            "SELECT count(*) FROM sqlite_master WHERE name='receipt_warning_origins'",
++            [],
++            |r| r.get::<_, i64>(0)
++        )
++        .unwrap(),
++        0
++    );
++    db.execute("DROP TABLE receipt_due_sparse", []).unwrap();
++    crate::store::schema::initialize(&db, || UtcMillis(1000)).unwrap();
++    assert_eq!(
++        db.query_row("SELECT count(*) FROM receipt_due_sparse", [], |r| r
++            .get::<_, i64>(0))
++            .unwrap(),
++        0,
++        "upgrade captures bounds without scanning history"
++    );
++    assert_eq!(
++        db.query_row(
++            "SELECT physical_high_water,sparse_high_water FROM receipt_discovery_backfill",
++            [],
++            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
++        )
++        .unwrap(),
++        (125, 126)
++    );
++    let mut cursor = receipts::ReceiptDueCursor::default();
++    let mut inspected = 0;
++    for turn in 0..10 {
++        let page = receipts::scan_due(&context, &mut db, 100, &mut cursor).unwrap();
++        assert!(page.inspected <= 100);
++        inspected += u64::from(page.inspected);
++        if turn == 0 {
++            assert_eq!(
++                db.query_row(
++                    "SELECT physical_after FROM receipt_discovery_backfill",
++                    [],
++                    |r| r.get::<_, i64>(0)
++                )
++                .unwrap(),
++                50,
++                "repair gets exactly half the allowance"
++            );
++            // Reuse the highest raw source ROWID while sparse historical
++            // repair is still unfinished. Its new ordinal is trigger-created;
++            // later bounded repair must neither miss nor duplicate the episode.
++            let old_rowid:i64=db.query_row("SELECT rowid FROM receipt_state WHERE message_id='historical-124' AND seat_id='c'",[],|r|r.get(0)).unwrap();
++            assert_eq!(old_rowid, 126);
++            db.execute(
++                "DELETE FROM receipt_state WHERE message_id='historical-124' AND seat_id='c'",
++                [],
++            )
++            .unwrap();
++            db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,author_kind,actor_seat_id,body,decision_at,decision_seq) VALUES ('bootstrap-reused','i','t',2000,'ordinary','native','b','x',0,2000)",[]).unwrap();
++            discovery_manifest(
++                &db,
++                "bootstrap-reused",
++                "bootstrap-new-published",
++                "c",
++                500,
++                2000,
++            );
++            assert_eq!(db.query_row("SELECT rowid FROM receipt_state WHERE message_id='bootstrap-reused' AND seat_id='c'",[],|r|r.get::<_,i64>(0)).unwrap(),old_rowid);
++            assert_eq!(
++                db.query_row(
++                    "SELECT completed FROM receipt_discovery_backfill",
++                    [],
++                    |r| r.get::<_, i64>(0)
++                )
++                .unwrap(),
++                0
++            );
++            db.execute("UPDATE threads SET next_sequence=2001 WHERE id='t'", [])
++                .unwrap();
++            db.execute(
++                "UPDATE host_instances SET decision_seq=2000 WHERE id='i'",
++                [],
++            )
++            .unwrap();
++            drop(db);
++            db = context.open_writer().unwrap();
++        }
++        if !page.more {
++            break;
++        }
++        assert!(turn < 9, "finite bootstrap and snapshot must terminate");
++    }
++    assert!(
++        inspected >= 251,
++        "both physical and sparse bootstrap visits are charged, in addition to ordinary candidates"
++    );
++    assert_eq!(
++        db.query_row(
++            "SELECT completed FROM receipt_discovery_backfill",
++            [],
++            |r| r.get::<_, i64>(0)
++        )
++        .unwrap(),
++        1
++    );
++    assert_eq!(
++        db.query_row("SELECT count(*) FROM receipt_due_sparse", [], |r| r
++            .get::<_, i64>(0))
++            .unwrap(),
++        124
++    );
++    let origins:Vec<String>=db.prepare("SELECT seat_id FROM receipt_warning_origins WHERE warning_id='old-warning' ORDER BY seat_id").unwrap().query_map([],|r|r.get(0)).unwrap().collect::<Result<_,_>>().unwrap();
++    assert_eq!(origins, vec!["a", "b"]);
++    assert_eq!(
++        db.query_row("SELECT count(*) FROM warning_conditions", [], |r| r
++            .get::<_, i64>(0))
++            .unwrap(),
++        2
++    );
++    assert!(db.query_row("SELECT warning_message_id IS NOT NULL FROM receipt_state WHERE message_id='bootstrap-reused' AND seat_id='c'",[],|r|r.get::<_,bool>(0)).unwrap());
++    assert_eq!(
++        db.query_row(
++            "SELECT count(*) FROM receipt_state WHERE warning_message_id='old-warning'",
++            [],
++            |r| r.get::<_, i64>(0)
++        )
++        .unwrap(),
++        1
++    );
++    assert_eq!(
++        db.query_row(
++            "SELECT count(*) FROM receipts WHERE warning_message_id='old-warning'",
++            [],
++            |r| r.get::<_, i64>(0)
++        )
++        .unwrap(),
++        1
++    );
++    drop(db);
++    let reopened = context.open_writer().unwrap();
++    assert_eq!(
++        reopened
++            .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
++            .unwrap(),
++        35
++    );
++}
++
++fn discovery_manifest(
++    db: &Connection,
++    message: &str,
++    preparation: &str,
++    seat: &str,
++    duration: i64,
++    sequence: i64,
++) {
++    db.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES (?1,'i','actor',?1,zeroblob(32),'t',0,0,0,0,0,0,1,'sealed')",[preparation]).unwrap();
++    db.execute("INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES (?1,'t',?2,1,?3,0)",params![preparation,seat,duration]).unwrap();
++    db.execute("INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES (?1,?2,'i','t',?3,0,?3,0,1,0)",params![preparation,message,sequence]).unwrap();
++    db.execute("INSERT INTO receipt_state(message_id,seat_id,state,deadline_at,ack_required) VALUES (?1,?2,'pending',?3,1)",params![message,seat,duration]).unwrap();
++}
++
++#[test]
++fn receipt_discovery_four_historical_streams_charge_every_visit_and_reset_once() {
++    let (context, db, clock) = receipt_discovery_historical(31);
++    for n in 0..50 {
++        discovery_receipt(&db, &format!("four-{n}"), n + 1, 5000);
++        discovery_manifest(
++            &db,
++            &format!("four-{n}"),
++            &format!("four-p-{n}"),
++            "c",
++            5000,
++            n + 1,
++        );
++    }
++    // Populate31 before the actual32 capture, then reach genuine34 through
++    // immutable migration DDL. No relabeled current image or synthetic bounds.
++    let mut migrations =
++        std::fs::read_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations"))
++            .unwrap()
++            .map(|p| p.unwrap().path())
++            .collect::<Vec<_>>();
++    migrations.sort();
++    for (n, path) in migrations.into_iter().enumerate().skip(31).take(3) {
++        db.execute_batch(&std::fs::read_to_string(path).unwrap())
++            .unwrap();
++        db.pragma_update(None, "user_version", (n + 1) as i64)
++            .unwrap();
++    }
++    crate::store::schema::initialize(&db, || UtcMillis(1000)).unwrap();
++    for n in 0..250 {
++        db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES (?1,'t','d',?2,'pending',0,1,500,500)",params![format!("four-inv-{n}"),n+1]).unwrap();
++    }
++    db.execute("UPDATE threads SET next_sequence=10000 WHERE id='t'", [])
++        .unwrap();
++    db.execute(
++        "UPDATE host_instances SET decision_seq=10000 WHERE id='i'",
++        [],
++    )
++    .unwrap();
++    let positions = |db: &Connection| -> (i64, i64, i64, i64, bool) {
++        db.query_row("SELECT a.physical_after,a.prepared_after,b.physical_after,b.sparse_after,b.completed FROM receipt_deadline_backfill a CROSS JOIN receipt_discovery_backfill b",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).unwrap()
++    };
++    let mut prior = positions(&db);
++    assert_eq!(prior, (0, 0, 0, 0, false));
++    let port = ReceiptDiscoveryPort {
++        store: crate::store::SqliteStore::new(context, "i", crate::store::StoreSettings::default())
++            .unwrap(),
++        clock,
++    };
++    let budget = crate::protocol::time::CallBudget {
++        deadline: MonoInstant(u64::MAX),
++        cancellation: Default::default(),
++    };
++    let mut driver = crate::scheduler::deadlines::DeadlineDriver::new(&port);
++    let (h, d, i) = (200u64, 200u64, 250u64); // repeated ordinary snapshot visits count again
++    let bound = 2 * ((h.div_ceil(50) + 2 + d.div_ceil(100) + 1).max(i.div_ceil(100) + 1));
++    let mut actual_h = 0u64;
++    let mut actual_due = 0u64;
++    let mut completions = 0;
++    let mut last_receipt = 0;
++    let mut last_invitation = 0;
++    for quantum in 1..=bound {
++        let out = driver.drive(&budget).unwrap();
++        assert!(out.ticked);
++        assert!(out.due_examined_candidates <= 100);
++        let progress = out.due_progress.unwrap();
++        let next = positions(&db);
++        let repair =
++            (next.0 - prior.0) + (next.1 - prior.1) + (next.2 - prior.2) + (next.3 - prior.3);
++        assert!(
++            (0..=50).contains(&repair),
++            "all four repair producers share one half allowance"
++        );
++        actual_h += repair as u64;
++        actual_due += u64::from(out.due_examined_candidates) - repair as u64;
++        if !prior.4 && next.4 {
++            completions += 1;
++            assert_eq!(
++                (next.0, next.1, next.2, next.3),
++                (50, 50, 50, 50),
++                "combined reset waits for all four producers"
++            );
++        }
++        if !matches!(progress.receipts, crate::ports::DuePhaseProgress::Skipped) {
++            last_receipt = quantum;
++        }
++        if !matches!(
++            progress.invitations,
++            crate::ports::DuePhaseProgress::Skipped
++        ) {
++            last_invitation = quantum;
++        }
++        if !progress.state.receipts_complete {
++            assert!(quantum - last_receipt <= 1);
++        }
++        if !progress.state.invitations_complete {
++            assert!(quantum - last_invitation <= 1);
++        }
++        prior = next;
++        if !out.due_continuation {
++            break;
++        }
++        assert!(
++            quantum < bound,
++            "actual four-stream workload must terminate inside normative bound"
++        );
++    }
++    assert_eq!(
++        actual_h, h,
++        "physical/prepared plus physical/sparse bootstrap visits are all charged"
++    );
++    assert!(
++        actual_due <= d + i,
++        "future/ordinary duplicate visits and all invitations are counted"
++    );
++    assert_eq!(completions, 1);
++    assert_eq!(
++        db.query_row(
++            "SELECT count(*) FROM invitations WHERE warning_message_id IS NOT NULL",
++            [],
++            |r| r.get::<_, i64>(0)
++        )
++        .unwrap(),
++        250
++    );
++    assert_eq!(
++        db.query_row(
++            "SELECT count(*) FROM receipts WHERE warning_message_id IS NOT NULL",
++            [],
++            |r| r.get::<_, i64>(0)
++        )
++        .unwrap(),
++        0,
++        "future candidates consume work without premature warnings"
++    );
++}
++
++#[test]
++fn receipt_discovery_upgrade_combined_reset_warning_and_cursors_roll_back_together() {
++    let (context, mut db, _) = receipt_discovery_historical(34);
++    discovery_receipt(&db, "rollback-source", 1, 500);
++    db.execute("INSERT INTO receipt_state(message_id,seat_id,state,ack_required,deadline_at) VALUES ('rollback-source','c','pending',1,5000)",[]).unwrap();
++    db.execute("UPDATE threads SET next_sequence=2 WHERE id='t'", [])
++        .unwrap();
++    crate::store::schema::initialize(&db, || UtcMillis(1000)).unwrap();
++    db.execute_batch("CREATE TRIGGER abort_discovery_warning BEFORE INSERT ON messages WHEN NEW.kind='warn' BEGIN SELECT RAISE(ABORT,'injected warning rollback');END;").unwrap();
++    let mut cursor = receipts::ReceiptDueCursor::default();
++    assert!(receipts::scan_due(&context, &mut db, 100, &mut cursor).is_err());
++    assert_eq!(cursor.high_water_ordinal, 0);
++    assert_eq!(cursor.sparse_high_water_ordinal, 0);
++    assert_eq!(
++        db.query_row(
++            "SELECT physical_after,sparse_after,completed FROM receipt_discovery_backfill",
++            [],
++            |r| Ok((
++                r.get::<_, i64>(0)?,
++                r.get::<_, i64>(1)?,
++                r.get::<_, i64>(2)?
++            ))
++        )
++        .unwrap(),
++        (0, 0, 0)
++    );
++    assert_eq!(
++        db.query_row("SELECT completed FROM receipt_deadline_backfill", [], |r| r
++            .get::<_, i64>(0))
++            .unwrap(),
++        0,
++        "producer-local completion also rolls back"
++    );
++    for table in [
++        "receipt_due_sparse",
++        "receipt_warning_origins",
++        "warning_conditions",
++    ] {
++        assert_eq!(
++            db.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r
++                .get::<_, i64>(0))
++                .unwrap(),
++            0,
++            "derived work in {table} rolls back with warning and combined reset"
++        );
++    }
++    assert_eq!(
++        db.query_row("SELECT warning_message_id FROM receipts", [], |r| r
++            .get::<_, Option<String>>(0))
++            .unwrap(),
++        None
++    );
++    db.execute("DROP TRIGGER abort_discovery_warning", [])
++        .unwrap();
++    let page = receipts::scan_due(&context, &mut db, 100, &mut cursor).unwrap();
++    assert_eq!(page.warnings, 1);
++    assert_eq!(
++        db.query_row(
++            "SELECT completed FROM receipt_discovery_backfill",
++            [],
++            |r| r.get::<_, i64>(0)
++        )
++        .unwrap(),
++        1
++    );
++    assert_eq!(
++        db.query_row("SELECT count(*) FROM receipt_warning_origins", [], |r| r
++            .get::<_, i64>(0))
++            .unwrap(),
++        1
++    );
++    drop(db);
++    let reopened = context.open_writer().unwrap();
++    assert_eq!(
++        reopened
++            .query_row("SELECT count(*) FROM warning_conditions", [], |r| r
++                .get::<_, i64>(0))
++            .unwrap(),
++        1,
++        "reopen retains one committed condition and reset"
++    );
++}
++
++#[test]
++fn receipt_discovery_terminal_upgrade_counts_rows_and_catalog_rejects_missing_projection() {
++    let (context, mut db, _) = receipt_discovery_historical(34);
++    for n in 0..125 {
++        discovery_receipt(&db, &format!("terminal-{n}"), n + 1, 500);
++        db.execute("INSERT INTO receipt_state(message_id,seat_id,state,ack_required,deadline_at) VALUES (?1,'c','acked',0,500)",[format!("terminal-{n}")]).unwrap();
++    }
++    db.execute("UPDATE receipts SET state='acked',ack_required=0", [])
++        .unwrap();
++    crate::store::schema::initialize(&db, || UtcMillis(1000)).unwrap();
++    let mut cursor = receipts::ReceiptDueCursor::default();
++    let mut inspected = 0;
++    for turn in 0..7 {
++        let page = receipts::scan_due(&context, &mut db, 100, &mut cursor).unwrap();
++        assert!(
++            page.inspected <= 50,
++            "all-terminal data consumes only the bounded repair allowance"
++        );
++        inspected += page.inspected;
++        assert_eq!(page.warnings, 0);
++        if !page.more {
++            break;
++        }
++        assert!(
++            turn < 6,
++            "empty end probes do not consume extra row allowance or stall completion"
++        );
++    }
++    assert_eq!(
++        inspected, 250,
++        "every terminal physical/sparse history row is charged once"
++    );
++    assert_eq!(
++        db.query_row("SELECT count(*) FROM receipt_due_sparse", [], |r| r
++            .get::<_, i64>(0))
++            .unwrap(),
++        0
++    );
++    db.execute("DROP INDEX receipts_required_due_ordinal", [])
++        .unwrap();
++    assert_eq!(
++        crate::store::schema::initialize(&db, || UtcMillis(1000))
++            .unwrap_err()
++            .code,
++        crate::protocol::results::ErrorCode::IncompatibleSchema
++    );
++}
++
++#[test]
++fn receipt_discovery_orphan_wrong_audience_and_service_markers_cannot_invent_origins() {
++    let (context, mut db, _) = setup();
++    db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,author_kind,actor_seat_id,body,decision_at,decision_seq) VALUES ('valid-source','i','t',1,'ordinary','native','a','x',0,1)",[]).unwrap();
++    db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES ('valid-source','t','c','pending',1,0,500)",[]).unwrap();
++    db.execute("UPDATE threads SET next_sequence=100 WHERE id='t'", [])
++        .unwrap();
++    db.execute(
++        "UPDATE host_instances SET decision_seq=100 WHERE id='i'",
++        [],
++    )
++    .unwrap();
++    receipts::scan_due(
++        &context,
++        &mut db,
++        100,
++        &mut receipts::ReceiptDueCursor::default(),
++    )
++    .unwrap();
++    let warning: String = db
++        .query_row(
++            "SELECT open_warning_id FROM warning_conditions WHERE condition_kind='receipt'",
++            [],
++            |r| r.get(0),
++        )
++        .unwrap();
++    for (n, id) in [(2, "orphan"), (3, "wrong-audience")] {
++        db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,author_kind,actor_seat_id,body,decision_at,decision_seq) VALUES (?1,'i','t',?2,'ordinary','native','b','x',0,?2)",params![id,n]).unwrap();
++        if id == "wrong-audience" {
++            discovery_manifest(&db, id, "wrong-audience-preparation", "d", 500, 3);
++        }
++        db.execute("INSERT INTO receipt_state(message_id,seat_id,state,deadline_at,ack_required,warning_message_id) VALUES (?1,'c','pending',500,1,?2)",params![id,warning]).unwrap();
++        assert!(
++            crate::store::effective::effective_receipt(&db, id, "c")
++                .unwrap()
++                .is_none(),
++            "fixture has no canonical published audience for c"
++        );
++    }
++    db.execute(
++        "INSERT INTO service_authors(id,instance_id,created_at) VALUES ('service','i',0)",
++        [],
++    )
++    .unwrap();
++    for (n, kind, actor, service) in [
++        (4, None, Some("b"), None),
++        (5, Some("programmatic"), None, Some("service")),
++    ] {
++        let id = format!("unknown-service-{n}");
++        db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,author_kind,actor_seat_id,author_service_id,actor_label,body,decision_at,decision_seq) VALUES (?1,'i','t',?2,'ordinary',?3,?4,?5,'b','x',0,?2)",params![id,n,kind,actor,service]).unwrap();
++        db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,deadline_at,warning_message_id) VALUES (?1,'t','c','pending',500,500,?2)",params![id,warning]).unwrap();
++    }
++    let high = db
++        .query_row("SELECT max(ordinal) FROM seats", [], |r| r.get::<_, i64>(0))
++        .unwrap() as u64;
++    let found = crate::store::discover_wake_candidates(&db, "i", 0, high, 100, &|| Ok(())).unwrap();
++    assert!(
++        !found
++            .items
++            .iter()
++            .any(|c| c.seat.as_str() == "b" && c.has_actionable_work()),
++        "invalid source must be excluded by the actual upstream discovery path"
++    );
++    assert_eq!(
++        db.query_row(
++            "SELECT count(*) FROM receipt_warning_origins WHERE seat_id='b'",
++            [],
++            |r| r.get::<_, i64>(0)
++        )
++        .unwrap(),
++        0,
++        "raw overlay markers, wrong manifest audience, nullable kind and service label cannot establish canonical native origin"
++    );
++}
+diff --git a/tests/store/schema.rs b/tests/store/schema.rs
+index 31b87b21..30dfd55d 100644
+--- a/tests/store/schema.rs
++++ b/tests/store/schema.rs
+@@ -5696,7 +5696,7 @@ fn user_intent_schema22_fresh_and_v21_upgrade() {
+             "SELECT json_array(id,fetched_at,created_at) FROM summary_jobs ORDER BY id",
+         ].into_iter().flat_map(|sql| db.prepare(sql).unwrap().query_map([], |r| r.get::<_,String>(0)).unwrap().map(Result::unwrap).collect::<Vec<_>>()).collect();
+         let roots = db
+-            .prepare("SELECT name,rootpage FROM sqlite_master WHERE type='table' AND name NOT IN ('archival_instances','channel_archival','seat_archival','channel_handoff_fences','harness_contract_diagnostics','lazy_recipients','bootstrap_handoffs','bootstrap_child_keys','bootstrap_attempts','bootstrap_recovery_decisions','bootstrap_attachments','bootstrap_reports','receipt_send_time_cutovers','receipt_deadline_backfill') ORDER BY name")
++            .prepare("SELECT name,rootpage FROM sqlite_master WHERE type='table' AND name NOT IN ('archival_instances','channel_archival','seat_archival','channel_handoff_fences','harness_contract_diagnostics','lazy_recipients','bootstrap_handoffs','bootstrap_child_keys','bootstrap_attempts','bootstrap_recovery_decisions','bootstrap_attachments','bootstrap_reports','receipt_send_time_cutovers','receipt_deadline_backfill','receipt_discovery_backfill','receipt_due_sparse','receipt_warning_origins') ORDER BY name")
+             .unwrap()
+             .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+             .unwrap()
+@@ -6263,15 +6263,15 @@ fn absorption_main24_and25_to26_preserves_diagnostics_and_matches_fresh_catalog(
+         assert_eq!(catalog(&db), catalog(&fresh));
+         assert_eq!(
+             catalog(&fresh).iter().filter(|r| r.0 == "table").count(),
+-            76
++            79
+         );
+         assert_eq!(
+             catalog(&fresh).iter().filter(|r| r.0 == "index").count(),
+-            144
++            148
+         );
+         assert_eq!(
+             catalog(&fresh).iter().filter(|r| r.0 == "trigger").count(),
+-            184
++            194
+         );
+     }
+ }
+@@ -6338,36 +6338,18 @@ fn absorption_main25_missing_warning_guard_refuses_before_adapter_rebuild() {
+ // neither a rewritten version stamp nor adapter tables are used as the precursor.
+ #[test]
+ fn absorption_main24_backfills_warning_delivery_before_adapter26() {
+-    let mut db = adapter_historical_database(24);
++    let db = adapter_historical_database(24);
+     user_intent_seed(&db);
+     db.execute_batch("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES ('upgrade-warning','t','s',1,'pending',0,1,50,50)").unwrap();
+-    let tx = db.transaction().unwrap();
+-    let warning = schema::record_overdue_if_pending(
+-        &tx,
+-        &crate::protocol::authority::ObligationRef::Invitation(
+-            crate::protocol::ids::InvitationId::new("upgrade-warning"),
+-        ),
+-        &crate::ports::TimeBasis::Decision,
+-        UtcMillis(100),
+-    )
+-    .unwrap()
+-    .warning
+-    .unwrap();
+-    tx.commit().unwrap();
+-    let budget = CallBudget {
+-        deadline: MonoInstant(1000),
+-        cancellation: Default::default(),
+-    };
+-    while crate::store::materialization::advance_work(
+-        &mut db,
+-        &format!("work:{}", warning.as_str()),
+-        crate::ports::DurableWorkAdmission { max_units: 16 },
+-        &budget,
+-        &FixedClock,
+-    )
+-    .unwrap()
+-    .has_more
+-    {}
++    // Seed the completed immutable24 event, condition and exact recipient
++    // using its historical schema. Current post33 judges require confirmation
++    // columns and cannot be used as historical fixture writers.
++    let warning = crate::protocol::ids::MessageId::new("upgrade-warning-event");
++    db.execute_batch("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_key,event_json,decision_at,decision_seq,source_invitation_id,author_kind) VALUES ('upgrade-warning-event','i','t',1,'warn','overdue:invitation:upgrade-warning','{\"obligation\":\"invitation\",\"seat\":\"s\",\"deadline_at\":50,\"classified_at\":100,\"materialized_at\":100,\"current_status\":\"pending\",\"physical_status\":\"pending\"}',100,2,'upgrade-warning','built_in');
++        UPDATE invitations SET warning_message_id='upgrade-warning-event' WHERE id='upgrade-warning';
++        INSERT INTO warning_conditions(condition_kind,thread_id,condition_id,affected_seat_id,open_warning_id,opened_seq) VALUES ('invitation','t','upgrade-warning','s','upgrade-warning-event',2);
++        INSERT INTO warning_recipients(warning_id,seat_id,generation) VALUES ('upgrade-warning-event','s',2);
++        UPDATE threads SET next_sequence=2 WHERE id='t'; UPDATE host_instances SET decision_seq=2 WHERE id='i';").unwrap();
+     assert_eq!(
+         db.query_row(
+             "SELECT count(*) FROM warning_recipients WHERE warning_id=?1",
+diff --git a/tests/store/topology_handoff.rs b/tests/store/topology_handoff.rs
+index bf4a6700..1a6c198a 100644
+--- a/tests/store/topology_handoff.rs
++++ b/tests/store/topology_handoff.rs
+@@ -67,7 +67,7 @@ fn setup(db: &Connection) {
+     assert_eq!(
+         db.pragma_query_value::<i64, _>(None, "user_version", |r| r.get(0))
+             .unwrap(),
+-        34
++        35
+     );
+     db.execute_batch("INSERT INTO host_instances(id,created_at) VALUES('i',0)")
+         .unwrap();
+@@ -1331,7 +1331,7 @@ fn current_main_fresh_and_canonical26_upgrade_to_topology28() {
+         assert_eq!(
+             db.pragma_query_value::<i64, _>(None, "user_version", |r| r.get(0))
+                 .unwrap(),
+-            34
++            35
+         );
+         assert!(
+             db.query_row(
+diff --git a/tests/store/topology_handoff_schema.rs b/tests/store/topology_handoff_schema.rs
+index 71f4e285..0dfdcf04 100644
+--- a/tests/store/topology_handoff_schema.rs
++++ b/tests/store/topology_handoff_schema.rs
+@@ -23,7 +23,7 @@ fn historical(version: usize) -> Connection {
+         paths.sort();
+         let mut images = Vec::new();
+         for (applied, path) in std::iter::once(None)
+-            .chain(paths.into_iter().take(34).map(Some))
++            .chain(paths.into_iter().take(35).map(Some))
+             .enumerate()
+         {
+             if let Some(path) = path {
+@@ -83,13 +83,13 @@ fn objects(db: &Connection) -> Vec<(String, String, String)> {
+ }
+ #[test]
+ fn registered28_fresh_and_genuine_historical_chains_reopen() {
+-    for previous in [0, 1, 15, 22, 25, 26, 27, 28, 29, 30, 31, 32, 33] {
++    for previous in [0, 1, 15, 22, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34] {
+         let db = historical(previous);
+         schema::initialize(&db, || UtcMillis(0)).unwrap();
+-        assert_eq!(version(&db), 34, "actual {previous}->34");
+-        assert_eq!(objects(&db), objects(&historical(34)));
++        assert_eq!(version(&db), 35, "actual {previous}->35");
++        assert_eq!(objects(&db), objects(&historical(35)));
+         schema::initialize(&db, || UtcMillis(1)).unwrap();
+-        assert_eq!(version(&db), 34);
++        assert_eq!(version(&db), 35);
+     }
+ }
+ #[test]
+@@ -203,7 +203,7 @@ fn registered28_preserves25_and26_history_and_rolls_back_late_ddl_failure() {
+                 .unwrap();
+         }
+         schema::initialize(&db, || UtcMillis(0)).unwrap();
+-        assert_eq!(version(&db), 34);
++        assert_eq!(version(&db), 35);
+         assert_eq!(evidence(&db), before);
+         let ordinary: String = db
+             .query_row(
+@@ -369,7 +369,7 @@ fn handoff_body_bounds_upgrade_preserves_existing_identity_bytes_and_keys() {
+             })
+             .unwrap();
+         schema::initialize(&db, || UtcMillis(1)).unwrap();
+-        assert_eq!(version(&db), 34);
++        assert_eq!(version(&db), 35);
+         let retained: Vec<u8> = db
+             .query_row("SELECT identity_json FROM bootstrap_handoffs", [], |r| {
+                 r.get(0)
+@@ -568,7 +568,7 @@ fn handoff_bounds_upgrade_preserves_populated_completed_and_recovery_history() {
+             None
+         };
+         schema::initialize(&db, || UtcMillis(2)).unwrap();
+-        assert_eq!(version(&db), 34);
++        assert_eq!(version(&db), 35);
+         let new_roots = roots(&db);
+         for root in old_roots {
+             assert!(new_roots.contains(&root), "retained root {root:?}");
+@@ -625,7 +625,7 @@ fn handoff_bounds_upgrade_failure_restores_fk_and_retries_without_recapturing_re
+             let cutover: Vec<(String, i64)> = db.prepare("SELECT instance_id,historical_decision_seq FROM receipt_send_time_cutovers ORDER BY instance_id").unwrap().query_map([], |r| Ok((r.get(0)?,r.get(1)?))).unwrap().map(Result::unwrap).collect();
+             db.execute_batch("DROP TABLE temp.ht29_handoffs; UPDATE host_instances SET decision_seq=99 WHERE id='i'").unwrap();
+             schema::initialize(&db, || UtcMillis(1)).unwrap();
+-            assert_eq!(version(&db), 34);
++            assert_eq!(version(&db), 35);
+             schema::initialize(&db, || UtcMillis(2)).unwrap();
+             let retained: Vec<(String, i64)> = db.prepare("SELECT instance_id,historical_decision_seq FROM receipt_send_time_cutovers ORDER BY instance_id").unwrap().query_map([], |r| Ok((r.get(0)?,r.get(1)?))).unwrap().map(Result::unwrap).collect();
+             assert_eq!(
+diff --git a/tests/store/wake_discovery_cost.rs b/tests/store/wake_discovery_cost.rs
+index 5e947781..304f6cee 100644
+--- a/tests/store/wake_discovery_cost.rs
++++ b/tests/store/wake_discovery_cost.rs
+@@ -225,8 +225,8 @@ fn every_access_path_prepares_indexed_by() {
+     paths.push(("occupant_bindings_current", WAKE_SEAT_WALK));
+     assert_eq!(
+         paths.len(),
+-        9,
+-        "seven pending probes, the live seat walk and the human exclusion"
++        10,
++        "eight pending probes (including canonical receipt origins), the live seat walk and the human exclusion"
+     );
+     for (index, sql) in paths {
+         assert!(
+
+## Complete production/documentation/migration diff
+diff --git a/TRUST-POLICY.md b/TRUST-POLICY.md
+index b432ede5..ecb6492d 100644
+--- a/TRUST-POLICY.md
++++ b/TRUST-POLICY.md
+@@ -448,6 +448,17 @@ canonical closure; the informational offer remains settled and creates no repeat
+ The open episode freezes its instance and original inviter address; historical
+ rows use only their exact canonical invitation-creation event's recorded inviter, never a current member
+ or later duplicate caller. Unknown historical/service/operator origins do not manufacture a native seat.
++A still-open receipt deadline condition also wakes every canonical native seat author of its exactly
++associated physical or published-manifest receipts, including authors who left the thread. The shared
++thread/recipient condition retains one open event: later associations add derived origin addresses,
++not new warning events or receipt provenance. Informational offers cannot settle this independent
++open-origin attention. The indexed origin projection persists for all associated authors while any
++required, pending, unwaived receipt remains; settling a subset cannot withdraw another author's
++warning. Final settlement clears it once, passively. Canonical closure alone removes these waking
++addresses. Unknown and programmatic authors create no native seat address. Historical projection
++bootstrap and deadline repair run in bounded transactional turns; durable warning discovery remains
++independent of native wake admission, so composer drafts, active turns and host outages may defer
++key submission indefinitely.
+ A clear remains passive, as do transitions about another seat for other observers; they wait for the
+ recipient's next check-in offer. Accepted limit: an idle
+ member learns of another seat's overdue or cleared obligation only when its pane next checks in. When
+diff --git a/migrations/0035_receipt_warning_origins.sql b/migrations/0035_receipt_warning_origins.sql
+new file mode 100644
+index 00000000..bfefaa44
+--- /dev/null
++++ b/migrations/0035_receipt_warning_origins.sql
+@@ -0,0 +1,154 @@
++-- Canonical derived addresses of all native authors associated with an open
++-- shared receipt condition. No membership, current binding or offered notice
++-- can establish an origin. Historical rows are bootstrapped in bounded turns.
++CREATE TABLE receipt_warning_origins (
++    ordinal INTEGER PRIMARY KEY AUTOINCREMENT,
++    instance_id TEXT NOT NULL REFERENCES host_instances(id),
++    seat_id TEXT NOT NULL REFERENCES seats(id),
++    warning_id TEXT NOT NULL REFERENCES messages(id),
++    source_message_id TEXT NOT NULL REFERENCES messages(id),
++    UNIQUE(warning_id,seat_id)
++) STRICT;
++CREATE INDEX receipt_warning_origins_seat ON receipt_warning_origins(instance_id,seat_id,ordinal);
++CREATE INDEX receipt_warning_origins_exact ON receipt_warning_origins(instance_id,seat_id,warning_id);
++CREATE INDEX receipt_warning_origins_warning ON receipt_warning_origins(warning_id,ordinal);
++
++-- receipt_state has a reusable implicit rowid. This maintained candidate
++-- projection gives every newly eligible episode a monotonic identity instead.
++CREATE TABLE receipt_due_sparse (
++    ordinal INTEGER PRIMARY KEY AUTOINCREMENT,
++    message_id TEXT NOT NULL,
++    seat_id TEXT NOT NULL REFERENCES seats(id),
++    deadline_at INTEGER NOT NULL,
++    UNIQUE(message_id,seat_id)
++) STRICT;
++CREATE INDEX receipts_required_due_ordinal ON receipts(ordinal)
++ WHERE state='pending' AND ack_required=1 AND deadline_at IS NOT NULL AND warning_message_id IS NULL;
++
++CREATE TABLE receipt_discovery_backfill (
++    singleton INTEGER PRIMARY KEY CHECK(singleton=1),
++    physical_after INTEGER NOT NULL CHECK(physical_after>=0),
++    physical_high_water INTEGER NOT NULL CHECK(physical_high_water>=physical_after),
++    sparse_after INTEGER NOT NULL CHECK(sparse_after>=0),
++    sparse_high_water INTEGER NOT NULL CHECK(sparse_high_water>=sparse_after),
++    completed INTEGER NOT NULL CHECK(completed IN (0,1)),
++    CHECK(completed=0 OR (physical_after=physical_high_water AND sparse_after=sparse_high_water))
++) STRICT;
++-- Both extrema use their integer rowid/primary-key tree. No history is visited.
++INSERT INTO receipt_discovery_backfill
++ VALUES(1,0,COALESCE((SELECT MAX(ordinal) FROM receipts),0),
++          0,COALESCE((SELECT MAX(rowid) FROM receipt_state),0),0);
++
++CREATE TRIGGER receipt_warning_origin_attention AFTER INSERT ON receipt_warning_origins
++ BEGIN
++ INSERT INTO warning_recipients(warning_id,seat_id,generation)
++ SELECT NEW.warning_id,s.id,m.decision_seq FROM seats s JOIN messages m ON m.id=NEW.warning_id
++ WHERE s.id=NEW.seat_id AND s.instance_id=NEW.instance_id AND s.state!='retired' ON CONFLICT(warning_id,seat_id) DO NOTHING;
++ INSERT INTO wake_work(seat_id,reason_bits,attention_version)
++ SELECT id,4,1 FROM seats WHERE id=NEW.seat_id AND instance_id=NEW.instance_id AND state!='retired'
++ ON CONFLICT(seat_id) DO UPDATE SET reason_bits=reason_bits|4,attention_version=attention_version+1;
++ END;
++CREATE TRIGGER receipt_warning_origin_receipts_insert AFTER INSERT ON receipts
++ WHEN NEW.warning_message_id IS NOT NULL
++ BEGIN
++ INSERT INTO receipt_warning_origins(instance_id,seat_id,warning_id,source_message_id)
++ SELECT m.instance_id,m.actor_seat_id,c.open_warning_id,m.id FROM receipts r
++ JOIN messages m ON m.id=r.message_id AND m.author_kind='native'
++ JOIN seats s ON s.id=m.actor_seat_id AND s.instance_id=m.instance_id
++ JOIN warning_conditions c ON c.open_warning_id=r.warning_message_id
++    AND c.condition_kind='receipt' AND c.clear_warning_id IS NULL
++    AND c.thread_id=m.thread_id AND c.affected_seat_id=r.seat_id
++ WHERE r.message_id=NEW.message_id AND r.seat_id=NEW.seat_id ON CONFLICT(warning_id,seat_id) DO NOTHING;
++ END;
++CREATE TRIGGER receipt_warning_origin_receipts_update AFTER UPDATE OF warning_message_id ON receipts
++ WHEN NEW.warning_message_id IS NOT NULL
++ BEGIN
++ INSERT INTO receipt_warning_origins(instance_id,seat_id,warning_id,source_message_id)
++ SELECT m.instance_id,m.actor_seat_id,c.open_warning_id,m.id FROM receipts r
++ JOIN messages m ON m.id=r.message_id AND m.author_kind='native'
++ JOIN seats s ON s.id=m.actor_seat_id AND s.instance_id=m.instance_id
++ JOIN warning_conditions c ON c.open_warning_id=r.warning_message_id
++    AND c.condition_kind='receipt' AND c.clear_warning_id IS NULL
++    AND c.thread_id=m.thread_id AND c.affected_seat_id=r.seat_id
++ WHERE r.message_id=NEW.message_id AND r.seat_id=NEW.seat_id ON CONFLICT(warning_id,seat_id) DO NOTHING;
++ END;
++CREATE TRIGGER receipt_warning_origin_receipt_state_insert AFTER INSERT ON receipt_state
++ WHEN NEW.warning_message_id IS NOT NULL
++ BEGIN
++ INSERT INTO receipt_warning_origins(instance_id,seat_id,warning_id,source_message_id)
++ SELECT m.instance_id,m.actor_seat_id,c.open_warning_id,m.id FROM receipt_state r
++ JOIN messages m ON m.id=r.message_id AND m.author_kind='native'
++ JOIN send_manifests sm ON sm.message_id=r.message_id AND sm.instance_id=m.instance_id AND sm.thread_id=m.thread_id
++ JOIN prepared_recipients pr ON pr.preparation_id=sm.preparation_id AND pr.seat_id=r.seat_id AND pr.thread_id=m.thread_id
++ JOIN seats s ON s.id=m.actor_seat_id AND s.instance_id=m.instance_id
++ JOIN warning_conditions c ON c.open_warning_id=r.warning_message_id
++    AND c.condition_kind='receipt' AND c.clear_warning_id IS NULL
++    AND c.thread_id=m.thread_id AND c.affected_seat_id=r.seat_id
++ WHERE r.message_id=NEW.message_id AND r.seat_id=NEW.seat_id ON CONFLICT(warning_id,seat_id) DO NOTHING;
++ END;
++CREATE TRIGGER receipt_warning_origin_receipt_state_update AFTER UPDATE OF warning_message_id ON receipt_state
++ WHEN NEW.warning_message_id IS NOT NULL
++ BEGIN
++ INSERT INTO receipt_warning_origins(instance_id,seat_id,warning_id,source_message_id)
++ SELECT m.instance_id,m.actor_seat_id,c.open_warning_id,m.id FROM receipt_state r
++ JOIN messages m ON m.id=r.message_id AND m.author_kind='native'
++ JOIN send_manifests sm ON sm.message_id=r.message_id AND sm.instance_id=m.instance_id AND sm.thread_id=m.thread_id
++ JOIN prepared_recipients pr ON pr.preparation_id=sm.preparation_id AND pr.seat_id=r.seat_id AND pr.thread_id=m.thread_id
++ JOIN seats s ON s.id=m.actor_seat_id AND s.instance_id=m.instance_id
++ JOIN warning_conditions c ON c.open_warning_id=r.warning_message_id
++    AND c.condition_kind='receipt' AND c.clear_warning_id IS NULL
++    AND c.thread_id=m.thread_id AND c.affected_seat_id=r.seat_id
++ WHERE r.message_id=NEW.message_id AND r.seat_id=NEW.seat_id ON CONFLICT(warning_id,seat_id) DO NOTHING;
++ END;
++-- Only the exact first source is needed at condition creation. Later
++-- coalesced sources are inserted by their exact receipt marker triggers.
++CREATE TRIGGER receipt_warning_origin_condition AFTER INSERT ON warning_conditions
++ WHEN NEW.condition_kind='receipt' AND NEW.clear_warning_id IS NULL
++ BEGIN
++INSERT INTO receipt_warning_origins(instance_id,seat_id,warning_id,source_message_id)
++SELECT m.instance_id,m.actor_seat_id,c.open_warning_id,m.id FROM receipts r
++ JOIN messages m ON m.id=r.message_id AND m.author_kind='native'
++ JOIN seats s ON s.id=m.actor_seat_id AND s.instance_id=m.instance_id
++ JOIN warning_conditions c ON c.open_warning_id=r.warning_message_id
++    AND c.condition_kind='receipt' AND c.clear_warning_id IS NULL
++    AND c.thread_id=m.thread_id AND c.affected_seat_id=r.seat_id
++ WHERE r.message_id=(SELECT source_message_id FROM messages WHERE id=NEW.open_warning_id) AND r.seat_id=NEW.affected_seat_id ON CONFLICT(warning_id,seat_id) DO NOTHING;
++INSERT INTO receipt_warning_origins(instance_id,seat_id,warning_id,source_message_id)
++SELECT m.instance_id,m.actor_seat_id,c.open_warning_id,m.id FROM receipt_state r
++ JOIN messages m ON m.id=r.message_id AND m.author_kind='native'
++ JOIN send_manifests sm ON sm.message_id=r.message_id AND sm.instance_id=m.instance_id AND sm.thread_id=m.thread_id
++ JOIN prepared_recipients pr ON pr.preparation_id=sm.preparation_id AND pr.seat_id=r.seat_id AND pr.thread_id=m.thread_id
++ JOIN seats s ON s.id=m.actor_seat_id AND s.instance_id=m.instance_id
++ JOIN warning_conditions c ON c.open_warning_id=r.warning_message_id
++    AND c.condition_kind='receipt' AND c.clear_warning_id IS NULL
++    AND c.thread_id=m.thread_id AND c.affected_seat_id=r.seat_id
++ WHERE r.message_id=(SELECT source_message_id FROM messages WHERE id=NEW.open_warning_id) AND r.seat_id=NEW.affected_seat_id ON CONFLICT(warning_id,seat_id) DO NOTHING;
++END;
++CREATE TRIGGER receipt_warning_origin_clear AFTER UPDATE OF clear_warning_id ON warning_conditions
++ WHEN NEW.condition_kind='receipt' AND NEW.clear_warning_id IS NOT NULL
++ BEGIN
++ INSERT INTO warning_recipients(warning_id,seat_id,generation)
++ SELECT NEW.clear_warning_id,o.seat_id,NEW.cleared_seq FROM receipt_warning_origins o
++ JOIN seats s ON s.id=o.seat_id AND s.state!='retired' WHERE o.warning_id=NEW.open_warning_id ON CONFLICT(warning_id,seat_id) DO NOTHING;
++ DELETE FROM receipt_warning_origins WHERE warning_id=NEW.open_warning_id;
++ END;
++CREATE TRIGGER receipt_due_sparse_insert AFTER INSERT ON receipt_state
++ BEGIN
++ DELETE FROM receipt_due_sparse WHERE message_id=NEW.message_id AND seat_id=NEW.seat_id
++  AND NOT (NEW.state='pending' AND NEW.ack_required=1 AND NEW.deadline_at IS NOT NULL AND NEW.warning_message_id IS NULL);
++ INSERT INTO receipt_due_sparse(message_id,seat_id,deadline_at)
++ SELECT NEW.message_id,NEW.seat_id,NEW.deadline_at
++ WHERE NEW.state='pending' AND NEW.ack_required=1 AND NEW.deadline_at IS NOT NULL AND NEW.warning_message_id IS NULL
++ ON CONFLICT(message_id,seat_id) DO UPDATE SET deadline_at=excluded.deadline_at;
++ END;
++CREATE TRIGGER receipt_due_sparse_update AFTER UPDATE OF state,ack_required,deadline_at,warning_message_id ON receipt_state
++ BEGIN
++ DELETE FROM receipt_due_sparse WHERE message_id=NEW.message_id AND seat_id=NEW.seat_id
++  AND NOT (NEW.state='pending' AND NEW.ack_required=1 AND NEW.deadline_at IS NOT NULL AND NEW.warning_message_id IS NULL);
++ INSERT INTO receipt_due_sparse(message_id,seat_id,deadline_at)
++ SELECT NEW.message_id,NEW.seat_id,NEW.deadline_at
++ WHERE NEW.state='pending' AND NEW.ack_required=1 AND NEW.deadline_at IS NOT NULL AND NEW.warning_message_id IS NULL
++ ON CONFLICT(message_id,seat_id) DO UPDATE SET deadline_at=excluded.deadline_at;
++ END;
++CREATE TRIGGER receipt_due_sparse_delete AFTER DELETE ON receipt_state
++ BEGIN DELETE FROM receipt_due_sparse WHERE message_id=OLD.message_id AND seat_id=OLD.seat_id; END;
+diff --git a/src/ports.rs b/src/ports.rs
+index 9dcd82aa..72ddca35 100644
+--- a/src/ports.rs
++++ b/src/ports.rs
+@@ -384,7 +384,9 @@ pub struct ExtensionLapseKey {
+ }
+ #[derive(Debug, Clone, PartialEq, Eq)]
+ pub struct ReceiptSparseCursor {
+-    pub high_water_rowid: u64,
++    /// Monotonic ordinal of the maintained sparse candidate projection.
++    pub high_water_ordinal: u64,
++    pub after_ordinal: u64,
+     pub after_deadline: Option<UtcMillis>,
+     pub after_message: Option<MessageId>,
+     pub after_seat: Option<SeatId>,
+@@ -392,7 +394,9 @@ pub struct ReceiptSparseCursor {
+ }
+ impl ReceiptSparseCursor {
+     pub fn validate(&self) -> Result<(), &'static str> {
+-        if self.after_message.is_some() != self.after_seat.is_some() {
++        if self.after_ordinal > self.high_water_ordinal {
++            Err("sparse cursor exceeds captured high water")
++        } else if self.after_message.is_some() != self.after_seat.is_some() {
+             Err("incomplete sparse receipt cursor key")
+         } else if self.after_message.is_some() != self.after_deadline.is_some() {
+             Err("incomplete sparse receipt deadline key")
+@@ -406,6 +410,9 @@ pub struct DueScanState {
+     pub invitations: Option<DuePhaseCursor>,
+     pub receipts: Option<DuePhaseCursor>,
+     pub next_phase: DuePhase,
++    /// Completion is retained until both finite class snapshots finish.
++    pub invitations_complete: bool,
++    pub receipts_complete: bool,
+ }
+ impl Default for DueScanState {
+     fn default() -> Self {
+@@ -413,6 +420,8 @@ impl Default for DueScanState {
+             invitations: None,
+             receipts: None,
+             next_phase: DuePhase::Invitations,
++            invitations_complete: false,
++            receipts_complete: false,
+         }
+     }
+ }
+@@ -462,6 +471,9 @@ pub enum DuePhaseProgress {
+ pub struct DueScanProgress {
+     pub state: DueScanState,
+     pub examined_candidates: u16,
++    /// Separately bounded catch-up session maintenance; never receipt or
++    /// invitation candidate inspection and never a child receipt walk.
++    pub maintenance_sessions: u16,
+     pub warnings_added: u16,
+     pub invitations: DuePhaseProgress,
+     pub receipts: DuePhaseProgress,
+diff --git a/src/scheduler/deadlines.rs b/src/scheduler/deadlines.rs
+index 5447473b..ddf3d6ba 100644
+--- a/src/scheduler/deadlines.rs
++++ b/src/scheduler/deadlines.rs
+@@ -225,8 +225,18 @@ impl<'a, P: DeadlinePort + ?Sized> DeadlineDriver<'a, P> {
+             outcome.due_examined_candidates = progress.examined_candidates;
+             outcome.due_warnings_added = progress.warnings_added;
+             self.due_continuation = progress.has_more
+-                && (matches!(progress.invitations, DuePhaseProgress::More)
+-                    || matches!(progress.receipts, DuePhaseProgress::More));
++                && ((run_invitations
++                    && !progress.state.invitations_complete
++                    && !matches!(
++                        progress.invitations,
++                        DuePhaseProgress::Failed(..) | DuePhaseProgress::Complete
++                    ))
++                    || (run_receipts
++                        && !progress.state.receipts_complete
++                        && !matches!(
++                            progress.receipts,
++                            DuePhaseProgress::Failed(..) | DuePhaseProgress::Complete
++                        )));
+             outcome.due_continuation = self.due_continuation;
+             outcome.due_progress = Some(progress);
+         } else {
+diff --git a/src/service/kicks.rs b/src/service/kicks.rs
+index b57d92c3..f282ce90 100644
+--- a/src/service/kicks.rs
++++ b/src/service/kicks.rs
+@@ -105,6 +105,7 @@ const WAKE_TABLES: &[&str] = &[
+     "seat_availability",
+     "warning_recipients",
+     "warning_offer",
++    "receipt_warning_origins",
+ ];
+ /// Tables whose commits wake the deadline lane (spec D1).
+ const DEADLINE_TABLES: &[&str] = &[
+@@ -116,6 +117,9 @@ const DEADLINE_TABLES: &[&str] = &[
+     "invitation_rejections",
+     "receipts",
+     "receipt_state",
++    "receipt_deadline_backfill",
++    "receipt_discovery_backfill",
++    "receipt_due_sparse",
+     // Catch-up rows move effective receipt deadlines (TRUST-POLICY A6).
+     "catch_up",
+ ];
+@@ -142,6 +146,8 @@ pub const KNOWN_UNMAPPED: &[&str] = &[
+     "human_receipt_reconciliation_bounds",
+     "digest_programmatic_warnings",
+     "filter_revisions",
++    // Immutable send-time cutovers are captured only at schema startup.
++    "receipt_send_time_cutovers",
+     // Advisory diagnostics do not alter canonical state or schedule work.
+     "harness_contract_diagnostics",
+     "harness_contract_evidence_v2",
+diff --git a/src/store/attention.rs b/src/store/attention.rs
+index d42e2187..76b04909 100644
+--- a/src/store/attention.rs
++++ b/src/store/attention.rs
+@@ -1046,10 +1046,10 @@ pub struct WakeProbe {
+     pub sql: &'static str,
+ }
+ 
+-/// The seven pending access paths wake discovery probes per live non-human
++/// The eight pending access paths wake discovery probes per live non-human
+ /// seat (spec D2), in probe order. Each is an `INDEXED BY` seat-leading
+ /// existence lookup. `wake_work` is deliberately not probed.
+-pub const WAKE_PROBES: [WakeProbe; 7] = [
++pub const WAKE_PROBES: [WakeProbe; 8] = [
+     WakeProbe {
+         index: "digest_pending_invitations_seat",
+         sql: "SELECT EXISTS(SELECT 1 FROM digest_pending_invitations INDEXED BY digest_pending_invitations_seat WHERE seat_id=?1)",
+@@ -1074,13 +1074,17 @@ pub const WAKE_PROBES: [WakeProbe; 7] = [
+         index: "digest_programmatic_warnings_seat",
+         sql: "SELECT EXISTS(SELECT 1 FROM digest_programmatic_warnings INDEXED BY digest_programmatic_warnings_seat WHERE seat_id=?1 AND ordinal>?2)",
+     },
++    WakeProbe {
++        index: "receipt_warning_origins_seat",
++        sql: "SELECT EXISTS(SELECT 1 FROM receipt_warning_origins INDEXED BY receipt_warning_origins_seat WHERE instance_id=(SELECT instance_id FROM seats WHERE id=?1) AND seat_id=?1)",
++    },
+     WakeProbe {
+         index: "warning_conditions_invitation_origin",
+         sql: "SELECT EXISTS(SELECT 1 FROM warning_conditions INDEXED BY warning_conditions_invitation_origin WHERE invitation_originator_instance_id=(SELECT instance_id FROM seats WHERE id=?1) AND invitation_originator_seat_id=?1 AND condition_kind='invitation' AND clear_warning_id IS NULL AND invitation_originator_seat_id IS NOT NULL)",
+     },
+ ];
+ 
+-/// Does any pending access path hold a row for the seat? At most seven O(1)
++/// Does any pending access path hold a row for the seat? At most eight O(1)
+ /// probes, stopping at the first hit. A hit is only a reason to examine the
+ /// seat: the canonical judges still decide whether the work is actionable.
+ pub fn seat_has_pending_rows(db: &Connection, seat_id: &str) -> Result<bool, ApiError> {
+@@ -1117,8 +1121,8 @@ pub struct WakeSeatAttention {
+ 
+ /// May this pending warning wake `seat_id`? A canonical condition transition
+ /// is an informational notice for every member (TRUST-POLICY A7): it wakes
+-/// the affected seat of a still-open condition and the original inviter of an
+-/// overdue invitation. Other members, and every clear, receive
++/// the affected seat of a still-open condition, each canonical original sender
++/// of associated receipts, and the original inviter of an overdue invitation. Other members, and every clear, receive
+ /// it on their next check-in offer instead of a prompt whose inbox has
+ /// nothing for them. Other warnings keep their judged actionability. Unique
+ /// index probes only.
+@@ -1130,6 +1134,10 @@ pub fn warning_wakes_seat(
+     if effective::is_invitation_rejection_notice(db, warning_id)? {
+         return Ok(false);
+     }
++    let receipt_origin:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM receipt_warning_origins INDEXED BY receipt_warning_origins_exact WHERE instance_id=(SELECT instance_id FROM seats WHERE id=?1) AND seat_id=?1 AND warning_id=?2)",params![seat_id,warning_id],|r|r.get(0)).map_err(store_error)?;
++    if receipt_origin {
++        return Ok(true);
++    }
+     let origin: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM warning_conditions WHERE open_warning_id=?1 AND condition_kind='invitation' AND clear_warning_id IS NULL AND invitation_originator_seat_id=?2)",params![warning_id,seat_id],|r|r.get(0)).map_err(store_error)?;
+     if origin {
+         return Ok(true);
+@@ -1180,6 +1188,47 @@ pub fn open_invitation_origin_warnings(
+     Ok(gather.finish())
+ }
+ 
++/// All canonical native authors associated with each still-open shared
++/// receipt condition. This bounded seat-leading source is independent of
++/// informational notice delivery and current thread membership.
++pub fn open_receipt_origin_warnings(
++    db: &Connection,
++    seat_id: &str,
++) -> Result<PendingSet, ApiError> {
++    let window: Vec<PendingItem> = rows(
++        db,
++        "SELECT o.warning_id,m.thread_id,m.decision_seq,m.event_offset FROM (SELECT warning_id FROM receipt_warning_origins INDEXED BY receipt_warning_origins_seat WHERE instance_id=(SELECT instance_id FROM seats WHERE id=?1 AND state!='retired') AND seat_id=?1 AND ordinal<=(SELECT COALESCE(MAX(ordinal),0) FROM receipt_warning_origins INDEXED BY receipt_warning_origins_seat WHERE instance_id=(SELECT instance_id FROM seats WHERE id=?1) AND seat_id=?1) ORDER BY ordinal DESC LIMIT ?2) o JOIN messages m ON m.id=o.warning_id",
++        params![seat_id, WINDOW_SQL],
++        |r| {
++            Ok(PendingItem {
++                id: r.get(0)?,
++                thread_id: r.get(1)?,
++                key: (r.get(2)?, r.get(3)?),
++            })
++        },
++    )?;
++    let mut gather = Gather::default();
++    gather.window(window.len());
++    for item in window {
++        gather.add(item);
++    }
++    Ok(gather.finish())
++}
++
++/// Independent open-origin attention shared by native candidate loading and
++/// the mod fingerprint. Each source has its own finite indexed window.
++pub fn open_origin_warnings(db: &Connection, seat_id: &str) -> Result<PendingSet, ApiError> {
++    let invitations = open_invitation_origin_warnings(db, seat_id)?;
++    let receipts = open_receipt_origin_warnings(db, seat_id)?;
++    let mut gather = Gather {
++        steps: invitations.work_steps + receipts.work_steps,
++        ..Gather::default()
++    };
++    gather.merge(&invitations);
++    gather.merge(&receipts);
++    Ok(gather.finish())
++}
++
+ /// Narrow a seat's pending-warning set to the warnings that wake it
+ /// (`warning_wakes_seat`). A saturated walk can hide an older waking notice (a
+ /// service notice behind a full window of other seats' transitions).
+@@ -1201,7 +1250,7 @@ pub fn wake_warnings(
+     if !(wakes.is_empty() && warnings.saturated) {
+         warnings.items = wakes;
+     }
+-    let origins = open_invitation_origin_warnings(db, seat_id)?;
++    let origins = open_origin_warnings(db, seat_id)?;
+     let mut gather = Gather {
+         steps: warnings.work_steps + origins.work_steps,
+         ..Gather::default()
+diff --git a/src/store/mod.rs b/src/store/mod.rs
+index 7477041a..d7c5c1a1 100644
+--- a/src/store/mod.rs
++++ b/src/store/mod.rs
+@@ -35,16 +35,16 @@ use crate::service::kicks::{Lane, LaneSet};
+ use crate::{
+     ports::{
+         ClosureEvidence, DuePhase, DuePhaseCursor, DuePhaseProgress, DueScanProgress,
+-        DueScanRequest, DurableWorkAdmission, GuardedInvalidationTransition, GuardedSeatTransition,
+-        HostInvalidationFence, HostInvalidationReason, HostObservation, HostObservationAdmission,
+-        InvalidationSeatPage, OperationReadScope, OperatorRequest, PokeDue, PokeReceipt,
+-        PokeReservation, PriorLadder, PruneProgress, PublishedSnapshot, ReadContext,
+-        ReceiptSparseCursor, ReconciliationOutcome, RegisterAvailableRequest, RetirementJob,
+-        RetirementProgress, RetirementSummary, SendPreparationProgress, SnapshotCleanupProgress,
+-        SnapshotGenerationId, SnapshotHeader, SnapshotSeatPage, SnapshotStage,
+-        SnapshotStageProgress, StorePort, WakeCandidate, WakeOutcome, WakeRecoveryCandidate,
+-        WakeRecoveryOutcome, WakeRecoveryRequest, WakeReservation, WorkAdmission, WorkCandidate,
+-        WorkKind, WorkProgress,
++        DueScanRequest, DueScanState, DurableWorkAdmission, GuardedInvalidationTransition,
++        GuardedSeatTransition, HostInvalidationFence, HostInvalidationReason, HostObservation,
++        HostObservationAdmission, InvalidationSeatPage, OperationReadScope, OperatorRequest,
++        PokeDue, PokeReceipt, PokeReservation, PriorLadder, PruneProgress, PublishedSnapshot,
++        ReadContext, ReceiptSparseCursor, ReconciliationOutcome, RegisterAvailableRequest,
++        RetirementJob, RetirementProgress, RetirementSummary, SendPreparationProgress,
++        SnapshotCleanupProgress, SnapshotGenerationId, SnapshotHeader, SnapshotSeatPage,
++        SnapshotStage, SnapshotStageProgress, StorePort, WakeCandidate, WakeOutcome,
++        WakeRecoveryCandidate, WakeRecoveryOutcome, WakeRecoveryRequest, WakeReservation,
++        WorkAdmission, WorkCandidate, WorkKind, WorkProgress,
+     },
+     protocol::{
+         authority::{MutationPermit, OperatorActor},
+@@ -432,15 +432,19 @@ fn receipt_cursor(value: &DuePhaseCursor) -> Result<receipts::ReceiptDueCursor,
+             "invalid receipt due cursor",
+         ));
+     }
+-    let sparse_high_water_rowid = sparse
+-        .map(|c| due_i64(c.high_water_rowid))
++    let sparse_high_water_ordinal = sparse
++        .map(|c| due_i64(c.high_water_ordinal))
+         .transpose()?
+         .unwrap_or(0);
+     Ok(receipts::ReceiptDueCursor {
+         high_water_ordinal: due_i64(value.high_water_ordinal)?,
+         after_deadline: value.after_deadline.map(|at| at.0),
+         after_ordinal: due_i64(value.after_ordinal)?,
+-        sparse_high_water_rowid,
++        sparse_high_water_ordinal,
++        sparse_after_ordinal: sparse
++            .map(|c| due_i64(c.after_ordinal))
++            .transpose()?
++            .unwrap_or(0),
+         sparse_after_deadline: sparse.and_then(|c| c.after_deadline.map(|at| at.0)),
+         sparse_after_message: sparse
+             .and_then(|c| c.after_message.as_ref().map(|id| id.as_str().to_owned())),
+@@ -467,7 +471,9 @@ fn exported_receipt_cursor(value: &receipts::ReceiptDueCursor) -> Result<DuePhas
+         after_ordinal: u64::try_from(value.after_ordinal)
+             .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative receipt ordinal"))?,
+         receipt_sparse: Some(ReceiptSparseCursor {
+-            high_water_rowid: u64::try_from(value.sparse_high_water_rowid)
++            after_ordinal: u64::try_from(value.sparse_after_ordinal)
++                .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative sparse ordinal"))?,
++            high_water_ordinal: u64::try_from(value.sparse_high_water_ordinal)
+                 .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative sparse high water"))?,
+             after_deadline: value.sparse_after_deadline.map(UtcMillis),
+             after_message: value
+@@ -2279,34 +2285,45 @@ impl StorePort for SqliteStore {
+         }
+         let mut writer = self.writer(budget)?;
+         let mut state = request.state.clone();
+-        let first = if request.run_invitations && request.run_receipts {
+-            state.next_phase
+-        } else if request.run_invitations {
+-            DuePhase::Invitations
+-        } else {
+-            DuePhase::Receipts
++        // Completion belongs to a paired finite cycle, independent of the
++        // native wake lane. A finished class cannot restart while its peer is
++        // still walking the captured snapshot.
++        if (!request.run_invitations || state.invitations_complete)
++            && (!request.run_receipts || state.receipts_complete)
++        {
++            if request.run_invitations {
++                state.invitations_complete = false;
++            }
++            if request.run_receipts {
++                state.receipts_complete = false;
++            }
++        }
++        let eligible = |phase: DuePhase, state: &DueScanState| match phase {
++            DuePhase::Invitations => request.run_invitations && !state.invitations_complete,
++            DuePhase::Receipts => request.run_receipts && !state.receipts_complete,
+         };
+-        state.next_phase = match first {
++        let other = |phase| match phase {
+             DuePhase::Invitations => DuePhase::Receipts,
+             DuePhase::Receipts => DuePhase::Invitations,
+         };
+-        let (first_cap, second_cap) = if request.run_invitations && request.run_receipts {
+-            (
+-                request.max_candidates.div_ceil(2),
+-                request.max_candidates / 2,
+-            )
++        let first = if eligible(state.next_phase, &state) {
++            state.next_phase
+         } else {
+-            (request.max_candidates, 0)
++            other(state.next_phase)
+         };
+         let mut examined = 0u16;
++        let mut maintenance_sessions = 0u16;
+         let mut warnings = 0u16;
+         let mut invitation_phase = DuePhaseProgress::Skipped;
+         let mut receipt_phase = DuePhaseProgress::Skipped;
+-        for (index, phase) in [first, state.next_phase].into_iter().enumerate() {
+-            let cap = if index == 0 { first_cap } else { second_cap };
+-            if cap == 0 {
++        for phase in [first, other(first)] {
++            // A nonempty turn consumes this quantum. An empty completed/error
++            // probe may lend its whole allowance to the unfinished peer.
++            if examined > 0 || !eligible(phase, &state) {
+                 continue;
+             }
++            let cap = request.max_candidates;
++            state.next_phase = other(phase);
+             match phase {
+                 DuePhase::Invitations if request.run_invitations => {
+                     let cursor = state
+@@ -2331,10 +2348,11 @@ impl StorePort for SqliteStore {
+                                 extension_through: None,
+                                 extension_after: None,
+                             });
+-                            invitation_phase = if state.invitations.is_some() {
+-                                DuePhaseProgress::More
+-                            } else {
++                            state.invitations_complete = state.invitations.is_none();
++                            invitation_phase = if state.invitations_complete {
+                                 DuePhaseProgress::Complete
++                            } else {
++                                DuePhaseProgress::More
+                             };
+                         }
+                         Err(error) => {
+@@ -2362,22 +2380,21 @@ impl StorePort for SqliteStore {
+                     );
+                     let scanned = match stalled {
+                         Ok(ended) => {
+-                            examined += ended;
+-                            receipts::scan_due(&self.context, &mut writer, cap, &mut cursor)
+-                                .and_then(|mut due| {
+-                                    // Extension lapses (spec §8): scan_due skips
+-                                    // candidates whose effective deadline is
+-                                    // future; the lapse itself is found here.
+-                                    let lapses = receipts::scan_extension_lapses(
+-                                        &self.context,
+-                                        &mut writer,
+-                                        &mut cursor,
+-                                    )?;
+-                                    due.warnings = due.warnings.saturating_add(lapses.warnings);
+-                                    due.inspected = due.inspected.saturating_add(lapses.inspected);
+-                                    due.more |= lapses.more;
+-                                    Ok(due)
+-                                })
++                            // These are session records, not due obligations.
++                            // end_row performs fixed writes and never walks
++                            // receipts. Maintenance is bounded separately and
++                            // included in the caller's budget and quantum Q.
++                            maintenance_sessions = ended;
++                            if budget.is_exhausted(self.context.clock()) {
++                                Err(ApiError::deadline_exceeded(
++                                    "due scan budget exhausted after maintenance",
++                                ))
++                            } else {
++                                // A fresh finite ordinary cycle rechecks every
++                                // original deadline against its current A6
++                                // extension. No unbounded lapse child scan.
++                                receipts::scan_due(&self.context, &mut writer, cap, &mut cursor)
++                            }
+                         }
+                         Err(error) => Err(error),
+                     };
+@@ -2390,10 +2407,11 @@ impl StorePort for SqliteStore {
+                             } else {
+                                 None
+                             };
+-                            receipt_phase = if result.more {
+-                                DuePhaseProgress::More
+-                            } else {
++                            state.receipts_complete = !result.more;
++                            receipt_phase = if state.receipts_complete {
+                                 DuePhaseProgress::Complete
++                            } else {
++                                DuePhaseProgress::More
+                             };
+                         }
+                         Err(error) => {
+@@ -2407,16 +2425,12 @@ impl StorePort for SqliteStore {
+                 _ => {}
+             }
+         }
+-        let has_more = matches!(
+-            invitation_phase,
+-            DuePhaseProgress::More | DuePhaseProgress::Failed(..)
+-        ) || matches!(
+-            receipt_phase,
+-            DuePhaseProgress::More | DuePhaseProgress::Failed(..)
+-        ) || (request.run_invitations && request.run_receipts && second_cap == 0);
++        let has_more = (request.run_invitations && !state.invitations_complete)
++            || (request.run_receipts && !state.receipts_complete);
+         Ok(DueScanProgress {
+             state,
+             examined_candidates: examined,
++            maintenance_sessions,
+             warnings_added: warnings,
+             invitations: invitation_phase,
+             receipts: receipt_phase,
+diff --git a/src/store/receipts.rs b/src/store/receipts.rs
+index bf5ec917..cdbcd66f 100644
+--- a/src/store/receipts.rs
++++ b/src/store/receipts.rs
+@@ -521,7 +521,8 @@ pub struct ReceiptDueCursor {
+     pub high_water_ordinal: i64,
+     pub after_deadline: Option<i64>,
+     pub after_ordinal: i64,
+-    pub sparse_high_water_rowid: i64,
++    pub sparse_high_water_ordinal: i64,
++    pub sparse_after_ordinal: i64,
+     pub sparse_after_deadline: Option<i64>,
+     pub sparse_after_message: Option<String>,
+     pub sparse_after_seat: Option<String>,
+@@ -547,6 +548,92 @@ pub struct DueScanResult {
+     pub next_ordinal: i64,
+ }
+ 
++pub(crate) const PHYSICAL_DUE_SELECTION: &str = "SELECT ordinal,message_id,seat_id,deadline_at FROM receipts INDEXED BY receipts_required_due_ordinal WHERE state='pending' AND ack_required=1 AND warning_message_id IS NULL AND deadline_at IS NOT NULL AND ordinal>?2 AND ordinal<=?3 ORDER BY ordinal LIMIT ?4";
++
++fn project_receipt_origin(
++    tx: &Connection,
++    table: &str,
++    message: &str,
++    seat: &str,
++) -> Result<(), ApiError> {
++    debug_assert!(matches!(table, "receipts" | "receipt_state"));
++    let publication = if table == "receipt_state" {
++        "JOIN send_manifests sm ON sm.message_id=r.message_id AND sm.instance_id=m.instance_id AND sm.thread_id=m.thread_id JOIN prepared_recipients pr ON pr.preparation_id=sm.preparation_id AND pr.seat_id=r.seat_id AND pr.thread_id=m.thread_id"
++    } else {
++        ""
++    };
++    tx.execute(&format!("INSERT OR IGNORE INTO receipt_warning_origins(instance_id,seat_id,warning_id,source_message_id) SELECT m.instance_id,m.actor_seat_id,c.open_warning_id,m.id FROM {table} r JOIN messages m ON m.id=r.message_id AND m.author_kind='native' {publication} JOIN seats s ON s.id=m.actor_seat_id AND s.instance_id=m.instance_id JOIN warning_conditions c ON c.open_warning_id=r.warning_message_id AND c.condition_kind='receipt' AND c.clear_warning_id IS NULL AND c.thread_id=m.thread_id AND c.affected_seat_id=r.seat_id WHERE r.message_id=?1 AND r.seat_id=?2"),params![message,seat]).map_err(store_error)?;
++    Ok(())
++}
++
++/// All upgrade producers share one allowance. Producer-local Task5 completion
++/// remains intact; only this durable combined marker emits the global reset.
++fn repair_receipt_discovery(
++    tx: &Connection,
++    limit: u16,
++) -> Result<super::materialization::ReceiptBackfillResult, ApiError> {
++    let deadlines = super::materialization::backfill_receipt_deadlines_in(tx, limit)?;
++    let (mut physical,physical_high,mut sparse,sparse_high,completed):(i64,i64,i64,i64,bool)=tx.query_row("SELECT physical_after,physical_high_water,sparse_after,sparse_high_water,completed FROM receipt_discovery_backfill WHERE singleton=1",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).map_err(store_error)?;
++    let mut inspected = deadlines.inspected;
++    if !completed {
++        for (table, after, high) in [
++            ("receipts", &mut physical, physical_high),
++            ("receipt_state", &mut sparse, sparse_high),
++        ] {
++            if inspected == limit || *after == high {
++                continue;
++            }
++            let ordinal = if table == "receipts" {
++                "ordinal"
++            } else {
++                "rowid"
++            };
++            let rows: Vec<(i64, String, String)> = {
++                let mut statement=tx.prepare(&format!("SELECT {ordinal},message_id,seat_id FROM {table} WHERE {ordinal}>?1 AND {ordinal}<=?2 ORDER BY {ordinal} LIMIT ?3")).map_err(store_error)?;
++                statement
++                    .query_map(params![*after, high, limit - inspected], |r| {
++                        Ok((r.get(0)?, r.get(1)?, r.get(2)?))
++                    })
++                    .map_err(store_error)?
++                    .collect::<Result<Vec<_>, _>>()
++                    .map_err(store_error)?
++            };
++            let count = u16::try_from(rows.len()).map_err(|_| {
++                api_error(
++                    ErrorCode::StoreCorrupt,
++                    "receipt discovery repair batch too large",
++                )
++            })?;
++            let short = count < limit - inspected;
++            inspected += count;
++            for (at, message, seat) in rows {
++                project_receipt_origin(tx, table, &message, &seat)?;
++                if table == "receipt_state" {
++                    tx.execute("INSERT INTO receipt_due_sparse(message_id,seat_id,deadline_at) SELECT message_id,seat_id,deadline_at FROM receipt_state WHERE message_id=?1 AND seat_id=?2 AND state='pending' AND ack_required=1 AND deadline_at IS NOT NULL AND warning_message_id IS NULL ON CONFLICT(message_id,seat_id) DO UPDATE SET deadline_at=excluded.deadline_at",params![message,seat]).map_err(store_error)?;
++                }
++                *after = at;
++            }
++            if short {
++                *after = high;
++            }
++        }
++    }
++    let deadline_complete: bool = tx
++        .query_row(
++            "SELECT completed FROM receipt_deadline_backfill WHERE singleton=1",
++            [],
++            |r| r.get(0),
++        )
++        .map_err(store_error)?;
++    let now_complete = deadline_complete && physical == physical_high && sparse == sparse_high;
++    tx.execute("UPDATE receipt_discovery_backfill SET physical_after=?1,sparse_after=?2,completed=?3 WHERE singleton=1",params![physical,sparse,now_complete]).map_err(store_error)?;
++    Ok(super::materialization::ReceiptBackfillResult {
++        inspected,
++        more: !now_complete,
++        completed: !completed && now_complete,
++    })
++}
++
+ /// Scans pending, unmarked deadline rows through the partial due index.
+ /// Historical repair and due discovery share the total row allowance and
+ /// transaction. Repair cannot monopolize ordinary due work at the normal100 cap.
+@@ -565,41 +652,46 @@ pub fn scan_due(
+     let current = cursor.clone();
+     let (result, next) = context.execute_decision(conn,
+         |tx| {
+-            let repair = super::materialization::backfill_receipt_deadlines_in(tx,limit.div_ceil(2))?;
++            let repair = repair_receipt_discovery(tx,limit.div_ceil(2))?;
+             let current = if repair.completed {
+                 ReceiptDueCursor { extension:current.extension.clone(),..ReceiptDueCursor::default() }
+             } else { current };
+             let due_limit = limit-repair.inspected;
+-            let physical_high = if current.high_water_ordinal == 0 {
++            let fresh = current.high_water_ordinal == 0 && current.sparse_high_water_ordinal == 0;
++            let physical_high = if fresh {
+                 tx.query_row("SELECT COALESCE(MAX(ordinal),0) FROM receipts", [], |r| r.get::<_,i64>(0)).map_err(store_error)?
+             } else { current.high_water_ordinal };
+-            let sparse_high = if current.sparse_high_water_rowid == 0 {
+-                tx.query_row("SELECT COALESCE(MAX(rowid),0) FROM receipt_state", [], |r| r.get::<_,i64>(0)).map_err(store_error)?
+-            } else { current.sparse_high_water_rowid };
+-            let has_sparse:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM receipt_state INDEXED BY receipt_state_required_due WHERE state='pending' AND ack_required=1 AND deadline_at IS NOT NULL AND warning_message_id IS NULL)",[],|r|r.get(0)).map_err(store_error)?;
+-            let physical_cap = if has_sparse { if current.next_sparse {due_limit/2} else {due_limit.div_ceil(2)} } else {due_limit};
+-            let mut physical=Vec::new();
+-            if physical_cap>0 {
+-                let mut stmt=tx.prepare("SELECT ordinal,message_id,seat_id,deadline_at FROM receipts INDEXED BY receipts_required_due WHERE state='pending' AND ack_required=1 AND warning_message_id IS NULL AND deadline_at IS NOT NULL AND (?1 IS NULL OR deadline_at>?1 OR (deadline_at=?1 AND ordinal>?2)) ORDER BY deadline_at,ordinal LIMIT ?3").map_err(store_error)?;
+-                physical=stmt.query_map(params![current.after_deadline,current.after_ordinal,i64::from(physical_cap)],|r|Ok((r.get::<_,i64>(0)?,MessageId::new(r.get::<_,String>(1)?),SeatId::new(r.get::<_,String>(2)?),r.get::<_,i64>(3)?))).map_err(store_error)?.collect::<Result<Vec<_>,_>>().map_err(store_error)?;
+-            }
++            let sparse_high = if fresh {
++                tx.query_row("SELECT COALESCE(MAX(ordinal),0) FROM receipt_due_sparse", [], |r| r.get::<_,i64>(0)).map_err(store_error)?
++            } else { current.sparse_high_water_ordinal };
++            let physical_page = |after_deadline: Option<i64>, after_ordinal:i64, cap:u16| -> Result<Vec<(i64,MessageId,SeatId,i64)>,ApiError> {
++                let mut stmt=tx.prepare(PHYSICAL_DUE_SELECTION).map_err(store_error)?;
++                stmt.query_map(params![after_deadline,after_ordinal,physical_high,i64::from(cap)],|r|Ok((r.get::<_,i64>(0)?,MessageId::new(r.get::<_,String>(1)?),SeatId::new(r.get::<_,String>(2)?),r.get::<_,i64>(3)?))).map_err(store_error)?.collect::<Result<Vec<_>,_>>().map_err(store_error)
++            };
++            let physical_cap=due_limit.div_ceil(2);
++            let mut physical=physical_page(current.after_deadline,current.after_ordinal,physical_cap)?;
+             let sparse_cap=due_limit-u16::try_from(physical.len()).map_err(|_|api_error(ErrorCode::StoreCorrupt,"physical due batch too large"))?;
+-            let mut sparse=Vec::new();
+-            if sparse_cap>0 {
+-                let mut stmt=tx.prepare("SELECT rowid,message_id,seat_id,deadline_at FROM receipt_state INDEXED BY receipt_state_required_due WHERE state='pending' AND ack_required=1 AND warning_message_id IS NULL AND deadline_at IS NOT NULL AND (?1 IS NULL OR deadline_at>?1 OR (deadline_at=?1 AND (message_id>?2 OR (message_id=?2 AND seat_id>?3)))) ORDER BY deadline_at,message_id,seat_id LIMIT ?4").map_err(store_error)?;
+-                sparse=stmt.query_map(params![current.sparse_after_deadline,current.sparse_after_message,current.sparse_after_seat,i64::from(sparse_cap)],|r|Ok((r.get::<_,i64>(0)?,MessageId::new(r.get::<_,String>(1)?),SeatId::new(r.get::<_,String>(2)?),r.get::<_,i64>(3)?))).map_err(store_error)?.collect::<Result<Vec<_>,_>>().map_err(store_error)?;
+-            }
+-            Ok((repair,current,due_limit,physical_high,sparse_high,physical_cap,sparse_cap,physical,sparse))
++            let mut stmt=tx.prepare("SELECT ordinal,message_id,seat_id,deadline_at FROM receipt_due_sparse WHERE ordinal>?1 AND ordinal<=?2 ORDER BY ordinal LIMIT ?3").map_err(store_error)?;
++            let sparse=stmt.query_map(params![current.sparse_after_ordinal,sparse_high,i64::from(sparse_cap)],|r|Ok((r.get::<_,i64>(0)?,MessageId::new(r.get::<_,String>(1)?),SeatId::new(r.get::<_,String>(2)?),r.get::<_,i64>(3)?))).map_err(store_error)?.collect::<Result<Vec<_>,_>>().map_err(store_error)?;
++            // A short sparse page lends its unused allowance back to physical
++            // discovery. Every query uses the captured high water before LIMIT.
++            let remaining=due_limit-u16::try_from(physical.len()+sparse.len()).map_err(|_|api_error(ErrorCode::StoreCorrupt,"due batch too large"))?;
++            let physical_full=physical_cap>0 && physical.len()==usize::from(physical_cap);
++            let physical_more=if remaining>0 && physical_full {
++                let last=physical.last().unwrap();
++                let extra=physical_page(Some(last.3),last.0,remaining)?;
++                let full=extra.len()==usize::from(remaining);
++                physical.extend(extra);
++                full
++            } else {physical_full};
++            let sparse_more=sparse_cap>0 && sparse.len()==usize::from(sparse_cap);
++            Ok((repair,current,due_limit,physical_high,sparse_high,physical_more,sparse_more,physical,sparse))
+         },
+-        |tx, decision, (repair,current,due_limit,physical_high,sparse_high,physical_cap,sparse_cap,physical,sparse)| {
++        |tx, decision, (repair,current,due_limit,physical_high,sparse_high,physical_more,sparse_more,physical,sparse)| {
+             let mut inserted=0u16;
+             let inspected=repair.inspected+u16::try_from(physical.len()+sparse.len()).map_err(|_|api_error(ErrorCode::StoreCorrupt,"due batch too large"))?;
+             let physical_after=physical.last().map(|v|(v.3,v.0));
+-            let sparse_after=sparse.last().map(|v|(v.3,v.1.as_str().to_owned(),v.2.as_str().to_owned()));
+-            let physical_future=physical.iter().any(|v|v.3>decision.utc.0);
+-            let sparse_future=sparse.iter().any(|v|v.3>decision.utc.0);
+-            let physical_more=physical_cap>0 && physical.len()==usize::from(physical_cap) && !physical_future;
+-            let sparse_more=sparse_cap>0 && sparse.len()==usize::from(sparse_cap) && !sparse_future;
++            let sparse_after=sparse.last().map(|v|(v.0,v.3,v.1.as_str().to_owned(),v.2.as_str().to_owned()));
+             for (source_high,candidates) in [(physical_high,physical),(sparse_high,sparse)] {
+                 for (ordinal,message,seat,deadline) in candidates {
+                     let receipt=effective::effective_receipt(tx,message.as_str(),seat.as_str())?;
+@@ -619,10 +711,11 @@ pub fn scan_due(
+                 high_water_ordinal:physical_high,
+                 after_deadline:physical_after.map(|v|v.0).or(current.after_deadline),
+                 after_ordinal:physical_after.map(|v|v.1).unwrap_or(current.after_ordinal),
+-                sparse_high_water_rowid:sparse_high,
+-                sparse_after_deadline:sparse_after.as_ref().map(|v|v.0).or(current.sparse_after_deadline),
+-                sparse_after_message:sparse_after.as_ref().map(|v|v.1.clone()).or(current.sparse_after_message.clone()),
+-                sparse_after_seat:sparse_after.map(|v|v.2).or(current.sparse_after_seat.clone()),
++                sparse_high_water_ordinal:sparse_high,
++                sparse_after_ordinal:sparse_after.as_ref().map(|v|v.0).unwrap_or(current.sparse_after_ordinal),
++                sparse_after_deadline:sparse_after.as_ref().map(|v|v.1).or(current.sparse_after_deadline),
++                sparse_after_message:sparse_after.as_ref().map(|v|v.2.clone()).or(current.sparse_after_message.clone()),
++                sparse_after_seat:sparse_after.map(|v|v.3).or(current.sparse_after_seat.clone()),
+                 next_sparse:!current.next_sparse,
+                 extension:current.extension.clone(),
+             }} else {ReceiptDueCursor{extension:current.extension.clone(),..ReceiptDueCursor::default()}};
+diff --git a/src/store/schema.rs b/src/store/schema.rs
+index 19385d59..4818fe71 100644
+--- a/src/store/schema.rs
++++ b/src/store/schema.rs
+@@ -71,7 +71,8 @@ const V31: &str = include_str!("../../migrations/0031_handoff_body_bounds.sql");
+ const V32: &str = include_str!("../../migrations/0032_receipt_deadline_backfill.sql");
+ const V33: &str = include_str!("../../migrations/0033_invitation_lifecycle.sql");
+ const V34: &str = include_str!("../../migrations/0034_invitation_warning_origin.sql");
+-pub(crate) const LATEST_VERSION: i64 = 34;
++const V35: &str = include_str!("../../migrations/0035_receipt_warning_origins.sql");
++pub(crate) const LATEST_VERSION: i64 = 35;
+ 
+ /// Decode only persisted results, after the caller's digest has matched. Live
+ /// protocol responses still require disposition. Missing original context
+@@ -414,7 +415,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
+             verify_existing(conn)
+         }
+         17 => verify_existing(conn),
+-        18..=34 => verify_existing(conn),
++        18..=35 => verify_existing(conn),
+         _ => Err(api_error(
+             ErrorCode::IncompatibleSchema,
+             format!("unsupported schema version {version}"),
+@@ -665,7 +666,82 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
+             }
+         }
+     }
+-    verify_invitation_warning_origin_schema(conn)
++    verify_invitation_warning_origin_schema(conn)?;
++    if version <= 34 {
++        conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
++        let result = conn
++            .execute_batch(V35)
++            .map_err(store_error)
++            .and_then(|_| verify_receipt_warning_origins_schema(conn))
++            .and_then(|_| {
++                conn.pragma_update(None, "user_version", 35)
++                    .map_err(store_error)
++            });
++        match result {
++            Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
++            Err(error) => {
++                let _ = conn.execute_batch("ROLLBACK");
++                return Err(error);
++            }
++        }
++    }
++    verify_receipt_warning_origins_schema(conn)
++}
++
++fn verify_receipt_warning_origins_schema(conn: &Connection) -> Result<(), ApiError> {
++    // SQLite itself parses the immutable DDL, including compound trigger
++    // bodies. Compare every created object, rather than splitting on semicolons.
++    let expected = Connection::open_in_memory().map_err(store_error)?;
++    // A schema-only reference needs parent names for trigger creation; no data
++    // is copied and foreign keys remain off in this isolated parser connection.
++    expected.execute_batch("CREATE TABLE receipts(ordinal INTEGER PRIMARY KEY,message_id,seat_id,warning_message_id,state,ack_required,deadline_at); CREATE TABLE receipt_state(message_id,seat_id,warning_message_id); CREATE TABLE warning_conditions(condition_kind,clear_warning_id,open_warning_id,cleared_seq);").map_err(store_error)?;
++    // Population statements require the canonical parent schema. Parse only
++    // CREATE objects, retaining whole trigger bodies.
++    let mut sql = String::new();
++    for line in V35.lines() {
++        if sql.is_empty() && !line.trim_start().starts_with("CREATE ") {
++            continue;
++        }
++        sql.push_str(line);
++        sql.push('\n');
++        let complete = if sql.starts_with("CREATE TRIGGER ") {
++            line.trim_end().ends_with("END;")
++        } else {
++            line.trim_end().ends_with(';')
++        };
++        if complete {
++            expected.execute_batch(&sql).map_err(store_error)?;
++            sql.clear();
++        }
++    }
++    let mut stmt=expected.prepare("SELECT type,name,sql FROM sqlite_master WHERE name NOT IN ('receipts','receipt_state','warning_conditions') AND name NOT LIKE 'sqlite_%' ORDER BY name").map_err(store_error)?;
++    let objects = stmt
++        .query_map([], |r| {
++            Ok((
++                r.get::<_, String>(0)?,
++                r.get::<_, String>(1)?,
++                r.get::<_, String>(2)?,
++            ))
++        })
++        .map_err(store_error)?;
++    for object in objects {
++        let (kind, name, sql) = object.map_err(store_error)?;
++        let actual: Option<String> = conn
++            .query_row(
++                "SELECT sql FROM sqlite_master WHERE type=?1 AND name=?2",
++                params![kind, name],
++                |r| r.get(0),
++            )
++            .optional()
++            .map_err(store_error)?;
++        if actual.as_deref() != Some(sql.as_str()) {
++            return Err(api_error(
++                ErrorCode::IncompatibleSchema,
++                format!("missing or altered receipt warning origin {name}"),
++            ));
++        }
++    }
++    Ok(())
+ }
+ 
+ fn verify_invitation_warning_origin_schema(conn: &Connection) -> Result<(), ApiError> {
+diff --git a/src/store/wake.rs b/src/store/wake.rs
+index a1a14158..37881111 100644
+--- a/src/store/wake.rs
++++ b/src/store/wake.rs
+@@ -193,7 +193,7 @@ pub fn load_candidate(
+         }
+         // An open origin-addressed condition remains waking after its
+         // informational delivery was carried. Delivery settlement is separate.
+-        let open_origin = !super::attention::open_invitation_origin_warnings(db, seat.as_str())?
++        let open_origin = !super::attention::open_origin_warnings(db, seat.as_str())?
+             .items
+             .is_empty();
+         if unoffered || open_origin {

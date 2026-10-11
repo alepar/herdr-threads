@@ -1,9 +1,9 @@
 # Task 7 implementation report
 
 Task: ht-0lo.1.2, due discovery and originating-seat warning lifecycle.
-BASE: `a95623dc`. Branch: `task-ht-0lo.1.2`. HEAD: `4e92adc611d427d9457abc4595a8f4dde56b4c60`.
+BASE: `a95623dc`. Branch: `task-ht-0lo.1.2`. HEAD: `c7ccb29c6b23cc1420e345a13d892f65db13ad09` (implementation4e92adc6 plus I1 coverage completion).
 Worktree: `.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.1.2`.
-Status: implementation and focused verification complete; own branch clean and ready for fresh task review. No merge, push, stash, real configuration changes, shared Herdr changes, or threads commands.
+Status: implementation and I1 coverage completion verified; own branch clean and ready for fresh scoped rereview. No merge, push, stash, real configuration changes, shared Herdr changes, or threads commands.
 
 ## Implementation and ownership
 
@@ -77,3 +77,34 @@ HT_LEAK_RUN_ID=7d13fcc5-774b-44c7-b775-6d17abcc8292 nice cargo nextest run --loc
 Final mandatory gate: first clippy session25432 exited101 for a single test-only `int_plus_one` lint. The assertion `turns+1<=bound` was replaced by algebraically equivalent `turns<bound`, retaining printed total `turns+1`; no production change or weakened test, and no redundant test rerun. Retry session75462 exited0, all-target/all-feature clippy36.44s (`/tmp/task7-clippy-retry.log`). `cargo fmt --all --check` and `git diff --check` passed; final format recheck after commit passed (`/tmp/task7-fmt-final.log`). Scoped process leak check exited0, no leaked test processes (`/tmp/task7-leaks-final.log`, run7d13fcc5-774b-44c7-b775-6d17abcc8292). Final focused library regressions own no daemon/Herdr children. All Cargo sessions drained; lane released. Own commit4e92adc611d427d9457abc4595a8f4dde56b4c60 contains30 approved files,2093 insertions/181 deletions. `git status --short` empty after commit. No migrations1..34 changes or unapproved paths.
 
 Self-review traced all producer paths, exact canonical publication/association, independent offers, partial/final lifecycle, actual upstream/native guards, ordinal SQL/index plans, four-stream accounting/end probes/combined reset/rollback, catch-up maintenance separation, schema verifier, narrow historical/catalog/latest guards, kicks and port literals. No known remaining task implementation defect; fresh external review still required before integration. No full suite/default-feature/merge gate run by leaf; controller owns premerge default-feature and final integration proof. No bounded native delivery claim; guards/outage may defer keys indefinitely. Bound assumes successful runnable daemon quanta and includes admitted storage/scheduling/maintenance in Q. Final diff is limited to approved paths and additive35; no wire change or history rewrite.
+
+## Fresh review I1 — fix round1 (coverage completion)
+
+Review `task-7-review.md` established one Important missing acceptance proof, not an independent production defect. Changes are limited to `tests/store/receipts.rs` and `tests/scheduler/poke_flow.rs`, based on reviewed HEAD4e92adc6; no rebase or production change.
+
+The coalesced A1/A2/B1 fixture now completes its initial actual reservations through the real completion API and verifies cleared reservation/submitted outcome. After EACH real ACK it reruns actual upstream discovery, explicit candidate loading and real mod state for BOTH departed original senders. It asserts no pending invitation or addressed receipt can mask warning-only attention. After A1 both remain actionable; after A2 the first event author's last physical receipt is settled and B's genuinely published sparse source is the only pending association, yet both originals retain the shared warning. After B1 actual actionable candidate/loading and warning-only mod attention vanish, with zero outstanding reservations and exactly one clear event. Exact ACK generation1, actor c and the entire expected canonical observation JSON are asserted. Every full EffectiveReceipt snapshot is compared after each transition, including prior exact ACKs, original clock/source/marker/ordinal data and retained provenance; every column of all three preexisting source messages and the original warning remains byte/value identical.
+
+The native fixture retains its three actual dispatcher guard/outage/recovery cases, then uses a real cooperative recipient binding/claim/permit and real ACK decision to settle both associated physical sources. It verifies actual raw discovery/loading has no original-sender actionable work, no unrelated invitation/receipt/warning attention and zero warning-only mod attention. It verifies zero outstanding reservations. As a negative control, direct fixture SQL clears ONLY `last_warning_seq,last_warning_offset` in the two original senders' `wake_work` rows; this scheduling-only state has no release API. Every canonical message column, complete settled EffectiveReceipt snapshots and all three live generation1 bindings remain unchanged. With that old dedup frontier removed, actual Scheduler.drive_wakes/NativeWakeDispatcher submits no new prompt, and exactly one passive clear remains. No native notification is treated as an ACK.
+
+First focused run session10855: two selected tests; native extended final-settlement proof PASS; store test stopped BEFORE its new ACK assertions on an invalid test assumption that `wake::complete(Submitted)` returns true. Source inspection establishes its bool means refused-ladder restoration; ordinary Submitted completion returns false. This fixture error is NOT production RED, and no artificial failing-source claim is made. The correction asserts false plus exact `(reservation_id=None,last_outcome=submitted)` from actual completion. Build1m14 exceeded the incremental budget; runtime2.598s. This overrun is retained honestly, with no replacement budget or repeated timing run. Full log `/tmp/task7-i1-focused.log`, leak UUID459b76df-5075-4892-aee2-331c5d26e4c8. Only the blocked store test is retried; the native PASS is counted once.
+
+I1 completed on commit `c7ccb29c6b23cc1420e345a13d892f65db13ad09`, parent `4e92adc611d427d9457abc4595a8f4dde56b4c60`. Exactly two admitted test files changed,270 insertions/12 deletions. Existing production passes the newly required proof; no production defect/RED/source fix is claimed. Prior own self-review's completion assessment was superseded by fresh review I1 and this explicit coverage completion.
+
+- Native guard/recovery/final-settlement proof PASS from session10855 (counted once).
+- Blocked store-only retry session54288 exit0: build40.80s/runtime0.191s,1 selected/1pass/3663excluded/noignored. `/tmp/task7-i1-store-retry.log`.
+- Mandatory clippy session27436 exit0:17.48s, no warnings; `/tmp/task7-i1-clippy.log`.
+- `cargo fmt --all --check` and `git diff --check` exit0; `/tmp/task7-i1-fmt.log`.
+- Scoped leak check exit0/no leaked test processes; UUID459b76df-5075-4892-aee2-331c5d26e4c8, `/tmp/task7-i1-leaks.log`.
+- All Cargo sessions drained; exclusive lane released. `git status --short` empty after own commit. No rebase/integration edits, new processes, production changes, unrelated reruns or shared run/ledger mutation.
+
+Exact focused commands (same absolute existing own target, jobs4 and nice):
+
+```text
+HT_LEAK_RUN_ID=459b76df-5075-4892-aee2-331c5d26e4c8 nice cargo nextest run --locked --all-features --lib -E 'test(/receipt_discovery_coalesced_origins_survive_offers_departure_and_partial_ack/) | test(/receipt_discovery_original_senders_use_actual_native_guard_and_recovery_path/)'
+HT_LEAK_RUN_ID=459b76df-5075-4892-aee2-331c5d26e4c8 nice cargo nextest run --locked --all-features --lib -E 'test(/receipt_discovery_coalesced_origins_survive_offers_departure_and_partial_ack/)'
+nice cargo clippy --locked --all-targets --all-features -- -D warnings
+cargo fmt --all --check
+scripts/check-no-leaked-processes --run-id 459b76df-5075-4892-aee2-331c5d26e4c8
+```
+
+Self-review checked I1 against every new transition assertion, exact whole observation/generation/history comparisons, real reservation completion semantics, absence of unrelated waking sources, passive clear event encoding and negative-control dedup fields. Fresh scoped rereview remains required before rebase/integration.
