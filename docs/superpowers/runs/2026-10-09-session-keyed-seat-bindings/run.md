@@ -30,15 +30,15 @@ scopeFilter-round-1: [FYI] src/store/schema.rs:592; src/store/schema.rs:423; doc
 scopeFilter-round-1: [Nit] TRUST-POLICY.md:312 punch-list — This is stale doc wording in the policy summary bullets, which A4 already governs.
 scope-filter: 6 in-scope · 5 punch-listed
 codeBuckets:
-  completed: ht-54r.1 ht-54r.2 ht-54r.3 ht-54r.4 ht-54r.5 ht-54r.6 ht-54r.7 ht-54r.8 ht-54r.9 ht-54r.10 ht-54r.11 ht-54r.12 ht-54r.13 ht-54r.14 ht-54r.15 ht-54r.16 ht-54r.17 ht-54r.18 ht-54r.20 ht-54r.21 ht-54r.22 ht-54r.23 ht-54r.24 ht-54r.39
-  escalated: ht-54r.19
-  pendingRetry: ht-54r.25
-  parked: ht-54r.5 ht-54r.12
+  completed: ht-54r.1 ht-54r.2 ht-54r.3 ht-54r.4 ht-54r.5 ht-54r.6 ht-54r.7 ht-54r.8 ht-54r.9 ht-54r.10 ht-54r.11 ht-54r.12 ht-54r.13 ht-54r.14 ht-54r.15 ht-54r.16 ht-54r.17 ht-54r.18 ht-54r.19 ht-54r.20 ht-54r.21 ht-54r.22 ht-54r.23 ht-54r.24 ht-54r.25 ht-54r.39 ht-54r.52 ht-54r.53 ht-54r.54 ht-54r.55 ht-54r.56 ht-54r.57 ht-54r.58 ht-54r.59 ht-54r.60
+  escalated: 
+  pendingRetry: 
+  parked: ht-54r.5 ht-54r.12 ht-54r.19
   stalled: false
-  review: not ready (F1 lazy inbox per-seat not per-binding; F2 subagent display/advance broken (ht-6v2); F3 display-ACK refused for cooperative_env_session bindings; 12 deterministic test failures; ht-54r.19 smoke + ht-54r.25 sweep not landed; ht-ozo /clear wake model undecided)
+  review: not ready (S1 main absorption: migration collision 29-31, agy harness unknown to caller_env, seat_wake_on overlap; S2 plain_call_enrolled_agent_display_acks fails (NULL-fingerprint shortcut vs .56); S3 continuity_candidates newest-row only; S4 Hermes child pre-subagent_start supersedes parent; S5 mod channel/ACK still provenance-gated + provenance overwrite; full suite + Linux unverified)
   sweep: SWEEP DEFERRED (caller-owned)
   slowness: round 1 hook.rs hot-file cap raised to 4; merge queue peaked at 3
-  worktreesKept: .worktrees/super-auto-session-keyed-seat-bindings--task-ht-54r.19 — task-ht-54r.19 not merged (BLOCKED on ht-6v2)
+  worktreesKept: 
   processSweep: stopped 0 · survived 0
 
 approvals:
@@ -57,3 +57,4 @@ parked:
 - codeBuckets.review · escalation · "ht-ozo /clear wake model decided autonomously per spec §1.3/§1.5/§3 Wake: no rebind-grace suppression; /clear = new binding at seat-max cursors (nothing pre-existing to digest), composer wake only for mail unread by that binding; /resume keeps the binding (no binding_changed close). mod_delivery tests rewritten to this model, not restored."
 - base drift · escalation · "main moved to v0.7.0 (478ec4a9, schema 30: 29 direct_threads, 30 automatic_handoff); agy (super-auto/agy-harness-adapter, claims 0031 seat_wake_on) may land first. At base absorption renumber this branch's V29 session_bindings/V30 archival scope/V31 binding delivery state above main's actual max (32+ if agy landed, else 31+), re-verify the V28→Vmax upgrade tests."
 - base drift · escalation · "update: agy merged to main (ab2291c5, v0.8.0 pending release; migration 31=seat_wake_on). Absorb main at its actual tip after the fix loop; this branch's session_bindings/archival-scope/binding-delivery migrations become 32/33/34 unless the handoff redesign (s2wUWZ7n3, provisional 31..37+) lands first, then above its max."
+- base drift · decision · "absorb main BEFORE roast-code round 2 (deviation from §Base drift after-loop timing): main is +335 commits/+101k lines with colliding migrations 29-31 and a new agy harness; landing needs behaviour changes (agy in caller_env, migration renumber, seat_wake_on reconciliation) that round 2 must review. Round 2 roasts the combined tree."
