@@ -6,7 +6,7 @@ use herdr_threads::{
     protocol::{authority::CallerClaim, ids::MessageId},
     test_support::spawn,
 };
-use std::{path::PathBuf, process::Output, sync::atomic::Ordering};
+use std::{path::PathBuf, process::Output, sync::atomic::Ordering, time::Duration};
 
 /// The claim the seat's occupant makes: its open binding's identity (an agent saves no context).
 fn claim(w: &World, who: usize) -> CallerClaim {
