@@ -301,6 +301,18 @@ class FetchTests(unittest.TestCase):
         self.assertIn(b"agy-test 9.9.9", agy.read_bytes())
         self.assertEqual(json.loads((agy.parent / "manifest.json").read_text())["version"], "9.9.9")
 
+    def test_install_without_xattr_binary_succeeds(self):
+        # Linux CI runners have no `xattr`; quarantine stripping is macOS-only.
+        empty = Path(self.tmp) / "empty-path"
+        empty.mkdir()
+        old = os.environ.get("PATH")
+        os.environ["PATH"] = str(empty)
+        try:
+            self.assertEqual(self.run_fetch("--manifest", str(self.MANIFEST), "--version", "9.9.9"), 0)
+        finally:
+            os.environ["PATH"] = old
+        self.assertTrue((Path(self.tmp) / "out" / "9.9.9" / "agy").is_file())
+
     def test_sha512_mismatch_refused_and_nothing_installed(self):
         bad = json.loads(self.MANIFEST.read_text())
         bad["sha512"] = "0" * 128

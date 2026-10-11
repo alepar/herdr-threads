@@ -16,6 +16,7 @@ import io
 import json
 import os
 import platform
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -122,8 +123,10 @@ def install(dest, version, manifest, archive_bytes):
     target = out_dir / "agy"
     target.write_bytes(extract_member(archive_bytes))
     os.chmod(str(target), 0o755)
-    subprocess.run(["xattr", "-d", "com.apple.quarantine", str(target)], stdout=subprocess.DEVNULL,
-                   stderr=subprocess.DEVNULL)  # absent attribute is fine
+    xattr = shutil.which("xattr")
+    if xattr:  # macOS only; Linux has no xattr binary and no quarantine attribute
+        subprocess.run([xattr, "-d", "com.apple.quarantine", str(target)], stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL)  # absent attribute is fine
     (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True))
     return target
 
