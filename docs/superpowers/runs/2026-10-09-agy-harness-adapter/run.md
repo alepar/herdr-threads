@@ -6,7 +6,7 @@ resumeChange: 2026-10-10 · "I think this is way too much text… marks everythi
 resumeChange: 2026-10-10 · "the nudge should probably say something minimal, like 'wake up' and then let hook inject the actual message" · added leaf for adapter-declared minimal wake text (R18): agy and Claude mod wake with 'wake up', bodies injected at turn start
 resumeChange: 2026-10-10 · "also let's add to AGENTS.md that when designing comms, we strive to design the protocols to be token efficient as much as possible" · folded into ht-poh.13: AGENTS.md 'Token-efficient communication' rule (no dedicated token-efficiency research found in ~/Documents)
 resumeChange: 2026-10-10 · main merge review mZG2gj0pM (owner Main, user-delegated merge authority): fix S1 (agy informational notices between lifecycle check-ins) and dispose flaky ht-01s + unclassified failures without weakening budgets · reopened epic; fix beads filed; re-enter super-code, scoped post-cap audit, re-sweep
-phase: finish
+phase: fix-loop
 codeMechanism: Workflow
 
 spec: 2026-10-09-agy-harness-adapter-design.md
