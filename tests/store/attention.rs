@@ -2960,7 +2960,9 @@ unsafe extern "C" fn relevance_statement_trace(
             return;
         }
         let sql = unsafe { std::ffi::CStr::from_ptr(raw) }.to_string_lossy();
-        if relevance_statement_kind(&sql).is_none() && !(state.borrow().all_selects && sql.starts_with("SELECT ")) {
+        if relevance_statement_kind(&sql).is_none()
+            && !(state.borrow().all_selects && sql.starts_with("SELECT "))
+        {
             return;
         }
         let mut state = state.borrow_mut();
@@ -3596,12 +3598,15 @@ fn presentation_relevance_private_proof_refuses_corruption_without_effects() {
     );
 }
 
-
 // Kills: exact-key helper hiding retained-relation scans or bypassing logical
 // authority. Observe the actual production statements on linked SQLite.
 #[test]
 fn presentation_capacity_due_exact_keys_have_bounded_actual_sql_plans_and_vm() {
-    use crate::{ports::PresentationWork, protocol::{ids::MessageId, results::InboxBatchV2Item}, store::queries};
+    use crate::{
+        ports::PresentationWork,
+        protocol::{ids::MessageId, results::InboxBatchV2Item},
+        store::queries,
+    };
     let mut matrices = Vec::new();
     for history in [32, 2048] {
         let db = every_source();
@@ -3618,38 +3623,125 @@ fn presentation_capacity_due_exact_keys_have_bounded_actual_sql_plans_and_vm() {
         let seat = SeatId::new("s");
         let context = queries::ordinary_due_context(&db, "i", &seat, &mut work).unwrap();
         for id in ["m1", "m3"] {
-            let item = queries::ordinary_presentation_message_by_id(&db, "i", &seat, &MessageId::new(id), context, &mut work).unwrap().unwrap();
-            assert!(matches!(item, InboxBatchV2Item::Message { ack_candidate: Some(_), .. }));
+            let item = queries::ordinary_presentation_message_by_id(
+                &db,
+                "i",
+                &seat,
+                &MessageId::new(id),
+                context,
+                &mut work,
+            )
+            .unwrap()
+            .unwrap();
+            assert!(matches!(
+                item,
+                InboxBatchV2Item::Message {
+                    ack_candidate: Some(_),
+                    ..
+                }
+            ));
         }
         for id in ["absent", "mo", "w-member"] {
-            assert!(queries::ordinary_presentation_message_by_id(&db,"i",&seat,&MessageId::new(id),context,&mut work).unwrap().is_none());
+            assert!(
+                queries::ordinary_presentation_message_by_id(
+                    &db,
+                    "i",
+                    &seat,
+                    &MessageId::new(id),
+                    context,
+                    &mut work
+                )
+                .unwrap()
+                .is_none()
+            );
         }
-        assert!(queries::ordinary_presentation_message_by_id(&db,"other-instance",&seat,&MessageId::new("m1"),context,&mut work).unwrap().is_none());
+        assert!(
+            queries::ordinary_presentation_message_by_id(
+                &db,
+                "other-instance",
+                &seat,
+                &MessageId::new("m1"),
+                context,
+                &mut work
+            )
+            .unwrap()
+            .is_none()
+        );
         // Capture the waiver path too; it is a separate canonical lookup, never ACK evidence.
         db.execute("INSERT INTO human_receipt_waivers(seat_id,through_decision_seq,human_generation,decided_at) VALUES ('s',40,1,0)", []).unwrap();
-        assert!(queries::ordinary_presentation_message_by_id(&db,"i",&seat,&MessageId::new("m3"),context,&mut work).unwrap().is_none());
+        assert!(
+            queries::ordinary_presentation_message_by_id(
+                &db,
+                "i",
+                &seat,
+                &MessageId::new("m3"),
+                context,
+                &mut work
+            )
+            .unwrap()
+            .is_none()
+        );
         let statements = trace.finish();
-        assert!(statements.iter().any(|entry| entry.sql.contains("FROM seat_availability")));
-        assert!(statements.iter().any(|entry| entry.sql.contains("FROM human_receipt_waivers")));
-        assert!(statements.iter().any(|entry| entry.sql.contains("FROM receipts r")));
+        assert!(
+            statements
+                .iter()
+                .any(|entry| entry.sql.contains("FROM seat_availability"))
+        );
+        assert!(
+            statements
+                .iter()
+                .any(|entry| entry.sql.contains("FROM human_receipt_waivers"))
+        );
+        assert!(
+            statements
+                .iter()
+                .any(|entry| entry.sql.contains("FROM receipts r"))
+        );
         assert!(work.ordinary_due_key_probes <= 3 + 7 * 13);
         assert!(work.ordinary_due_seeks <= 7);
         let mut matrix = Vec::new();
         for statement in statements {
             assert_eq!(statement.max_scan, 0, "full scan: {}", statement.sql);
             assert_eq!(statement.max_sort, 0, "sort: {}", statement.sql);
-            assert!(statement.max_vm <= 300, "VM {}: {}", statement.max_vm, statement.sql);
-            assert!(statement.rows <= statement.executions, "at most one result per keyed statement");
+            assert!(
+                statement.max_vm <= 300,
+                "VM {}: {}",
+                statement.max_vm,
+                statement.sql
+            );
+            assert!(
+                statement.rows <= statement.executions,
+                "at most one result per keyed statement"
+            );
             for expanded in [&statement.first_expanded, &statement.last_expanded] {
-                let plan = db.prepare(&format!("EXPLAIN QUERY PLAN {expanded}")).unwrap()
-                    .query_map([], |r|r.get::<_,String>(3)).unwrap().collect::<Result<Vec<_>,_>>().unwrap();
-                assert!(plan.iter().all(|line| (!line.contains("SCAN ") || line.contains("SCAN CONSTANT ROW")) && !line.contains("TEMP B-TREE")), "{plan:?}");
-                assert!(plan.iter().any(|line| line.contains("SEARCH ")), "keyed production statement must seek: {plan:?}");
-                eprintln!("due retained={history} executions={} rows={} vm={} plan={plan:?}", statement.executions, statement.rows, statement.max_vm);
+                let plan = db
+                    .prepare(&format!("EXPLAIN QUERY PLAN {expanded}"))
+                    .unwrap()
+                    .query_map([], |r| r.get::<_, String>(3))
+                    .unwrap()
+                    .collect::<Result<Vec<_>, _>>()
+                    .unwrap();
+                assert!(
+                    plan.iter().all(|line| (!line.contains("SCAN ")
+                        || line.contains("SCAN CONSTANT ROW"))
+                        && !line.contains("TEMP B-TREE")),
+                    "{plan:?}"
+                );
+                assert!(
+                    plan.iter().any(|line| line.contains("SEARCH ")),
+                    "keyed production statement must seek: {plan:?}"
+                );
+                eprintln!(
+                    "due retained={history} executions={} rows={} vm={} plan={plan:?}",
+                    statement.executions, statement.rows, statement.max_vm
+                );
             }
             matrix.push((statement.sql, statement.max_vm));
         }
         matrices.push(matrix);
     }
-    assert_eq!(matrices[0], matrices[1], "keyed work stays independent of unrelated history");
+    assert_eq!(
+        matrices[0], matrices[1],
+        "keyed work stays independent of unrelated history"
+    );
 }

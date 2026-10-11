@@ -6118,8 +6118,21 @@ mod inbox_v2 {
         .len()
             <= request.max_bytes as usize)
     }
-    fn message(db: &Connection, id: &str, lazy: bool, current_agent: bool, state: &State) -> Result<Option<Item>, ApiError> {
-        hydrate_message(db, id, lazy, current_agent, &state.seat, state.body.as_ref())
+    fn message(
+        db: &Connection,
+        id: &str,
+        lazy: bool,
+        current_agent: bool,
+        state: &State,
+    ) -> Result<Option<Item>, ApiError> {
+        hydrate_message(
+            db,
+            id,
+            lazy,
+            current_agent,
+            &state.seat,
+            state.body.as_ref(),
+        )
     }
     pub(super) fn hydrate_message(
         db: &Connection,
@@ -6145,8 +6158,7 @@ mod inbox_v2 {
         };
         let offset = position.map_or(0, |b| b.offset);
         let body_len = body.len() as u64;
-        if position
-            .is_some_and(|b| b.message.as_str() != id || b.body_len != body_len)
+        if position.is_some_and(|b| b.message.as_str() != id || b.body_len != body_len)
             || offset > body_len
             || !body.is_char_boundary(offset as usize)
         {
@@ -6167,8 +6179,7 @@ mod inbox_v2 {
             .transpose()?;
         let body = body[offset as usize..].to_owned();
         let wakes = lazy
-            && super::super::seats::wake_on(db, seat)?
-                == crate::protocol::commands::WakeOn::All;
+            && super::super::seats::wake_on(db, seat)? == crate::protocol::commands::WakeOn::All;
         Ok(Some(if lazy {
             Item::LazyMessage {
                 thread: thread_id,
@@ -6422,7 +6433,7 @@ mod inbox_v2 {
 
     pub(super) fn current_agent(db: &Connection, seat: &SeatId) -> Result<bool, ApiError> {
         let current_harness:Option<String>=db.query_row("SELECT b.harness FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id AND b.generation=s.generation WHERE s.id=?1 AND s.state='resolved' AND b.ended_at IS NULL AND b.registered_at IS NOT NULL AND b.observation_provenance='cooperative_top_level' AND b.target_id=s.target_id AND b.target_generation=s.target_generation AND b.native_session<>'' AND b.execution_id<>''",[seat.as_str()],|r|r.get(0)).optional().map_err(store_error)?;
-        Ok( current_harness
+        Ok(current_harness
             .as_deref()
             .is_some_and(|harness| crate::harness::registry::builtins().agent(harness).is_ok()))
     }
@@ -6657,17 +6668,31 @@ pub(super) fn ordinary_presentation_page(
 
 /// Fixed setup for the exact-key due source. Canonical presentation admission
 /// has already proved a live, nonretired addressed seat in this transaction.
-pub(super) fn ordinary_due_context(db: &Connection, instance: &str, seat: &SeatId,
-    work: &mut crate::ports::PresentationWork) -> Result<(i64, bool), ApiError> {
+pub(super) fn ordinary_due_context(
+    db: &Connection,
+    instance: &str,
+    seat: &SeatId,
+    work: &mut crate::ports::PresentationWork,
+) -> Result<(i64, bool), ApiError> {
     work.ordinary_due_key_probes += 3;
-    let head = db.query_row("SELECT decision_seq FROM host_instances WHERE id=?1", [instance], |r| r.get(0)).map_err(store_error)?;
+    let head = db
+        .query_row(
+            "SELECT decision_seq FROM host_instances WHERE id=?1",
+            [instance],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
     Ok((head, inbox_v2::current_agent(db, seat)?))
 }
 
 /// One exact canonical key, never a pending-table scan. Charge the conservative
 /// effective-receipt envelope even when its logical branch short-circuits.
-pub(super) fn ordinary_presentation_message_by_id(db: &Connection, instance: &str,
-    seat: &SeatId, id: &MessageId, due_context: (i64, bool),
+pub(super) fn ordinary_presentation_message_by_id(
+    db: &Connection,
+    instance: &str,
+    seat: &SeatId,
+    id: &MessageId,
+    due_context: (i64, bool),
     work: &mut crate::ports::PresentationWork,
 ) -> Result<Option<crate::protocol::results::InboxBatchV2Item>, ApiError> {
     use crate::protocol::results::InboxBatchV2Item;
@@ -6677,8 +6702,12 @@ pub(super) fn ordinary_presentation_message_by_id(db: &Connection, instance: &st
         "SELECT delivery_mode,thread_id,COALESCE(decision_seq,0) FROM messages WHERE id=?1 AND instance_id=?2 AND kind='ordinary'",
         params![id.as_str(), instance], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)),
     ).optional().map_err(store_error)?;
-    let Some((mode, thread, published)) = row else { return Ok(None); };
-    if published > head { return Ok(None); }
+    let Some((mode, thread, published)) = row else {
+        return Ok(None);
+    };
+    if published > head {
+        return Ok(None);
+    }
     let lazy = match mode.as_str() {
         "lazy" => {
             work.ordinary_due_key_probes += 2;
@@ -6686,15 +6715,20 @@ pub(super) fn ordinary_presentation_message_by_id(db: &Connection, instance: &st
                 "SELECT EXISTS(SELECT 1 FROM lazy_recipients r JOIN send_manifests sm ON sm.preparation_id=r.preparation_id AND sm.message_id=r.message_id AND sm.thread_id=r.thread_id WHERE r.message_id=?1 AND r.seat_id=?2 AND r.state='pending' AND r.thread_id=?3 AND sm.instance_id=?4 AND sm.decision_seq<=?5)",
                 params![id.as_str(),seat.as_str(),thread,instance,head], |r|r.get(0),
             ).map_err(store_error)?;
-            if !addressed { return Ok(None); }
+            if !addressed {
+                return Ok(None);
+            }
             true
         }
         "ordinary" => {
             work.ordinary_due_key_probes += 10;
             work.ordinary_due_seeks += 1;
             let receipt = super::effective::effective_receipt(db, id.as_str(), seat.as_str())?;
-            if !receipt.is_some_and(|r| r.state == super::effective::EffectiveReceiptState::Pending
-                && r.decision_seq.unwrap_or(0) <= head && r.thread_id == thread) {
+            if !receipt.is_some_and(|r| {
+                r.state == super::effective::EffectiveReceiptState::Pending
+                    && r.decision_seq.unwrap_or(0) <= head
+                    && r.thread_id == thread
+            }) {
                 return Ok(None);
             }
             false

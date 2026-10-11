@@ -105,11 +105,16 @@ pub struct SeatOffers {
 impl SeatOffers {
     fn prune_due(&mut self) {
         for cache in &mut self.ordinary_due {
-            cache.deferred.retain(|id, stamp| self.offers.get(id) == Some(stamp));
+            cache
+                .deferred
+                .retain(|id, stamp| self.offers.get(id) == Some(stamp));
         }
     }
 
-    pub fn due_snapshot(&mut self, consumer: crate::protocol::delivery::PresentationConsumer) -> OrdinaryDueSnapshot {
+    pub fn due_snapshot(
+        &mut self,
+        consumer: crate::protocol::delivery::PresentationConsumer,
+    ) -> OrdinaryDueSnapshot {
         self.prune_due();
         OrdinaryDueSnapshot {
             incarnation: self.presentation_incarnation,
@@ -120,7 +125,11 @@ impl SeatOffers {
         }
     }
 
-    pub fn apply_due_update(&mut self, consumer: crate::protocol::delivery::PresentationConsumer, mut update: OrdinaryDueSnapshot) {
+    pub fn apply_due_update(
+        &mut self,
+        consumer: crate::protocol::delivery::PresentationConsumer,
+        mut update: OrdinaryDueSnapshot,
+    ) {
         self.prune_due();
         if update.incarnation != self.presentation_incarnation
             || update.generation != self.generation
@@ -128,8 +137,9 @@ impl SeatOffers {
         {
             return;
         }
-        update.cache.deferred.retain(|id, stamp| self.offers.get(id) == Some(stamp)
-            && update.stamps.get(id) == Some(stamp));
+        update.cache.deferred.retain(|id, stamp| {
+            self.offers.get(id) == Some(stamp) && update.stamps.get(id) == Some(stamp)
+        });
         self.ordinary_due[consumer_index(consumer)] = update.cache;
     }
 
@@ -174,7 +184,9 @@ impl SeatOffers {
         if self.is_full() && !self.offers.contains_key(id) {
             return false;
         }
-        for cache in &mut self.ordinary_due { cache.deferred.remove(id); }
+        for cache in &mut self.ordinary_due {
+            cache.deferred.remove(id);
+        }
         let offer = self.offers.entry(id.clone()).or_insert(Offer {
             first_at: now,
             last_at: now,
@@ -190,7 +202,9 @@ impl SeatOffers {
     /// Forget an id (settled, or already settled).
     pub fn remove(&mut self, id: &MessageId) {
         self.offers.remove(id);
-        for cache in &mut self.ordinary_due { cache.deferred.remove(id); }
+        for cache in &mut self.ordinary_due {
+            cache.deferred.remove(id);
+        }
     }
 
     /// Drop every offer whose id is not in `pending`.
