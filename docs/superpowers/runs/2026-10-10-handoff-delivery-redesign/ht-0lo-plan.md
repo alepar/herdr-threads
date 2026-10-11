@@ -2256,7 +2256,7 @@ bead: ht-0lo.8.3
 
 Dependencies: ht-0lo.8.2, ht-0lo.8.4
 
-### Proposed full bead body (coordinator persistence required)
+### Recorded bead body (preparation refinement)
 
 ```json
 {
@@ -2269,7 +2269,7 @@ Dependencies: ht-0lo.8.2, ht-0lo.8.4
     "ht-0lo.8.4"
   ],
   "parent": "ht-0lo.8",
-  "status": "proposed; coordinator creates bead"
+  "status": "open; awaits reviewed B and D"
 }
 ```
 
