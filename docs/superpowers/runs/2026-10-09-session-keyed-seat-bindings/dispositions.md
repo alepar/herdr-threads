@@ -80,3 +80,7 @@ under epic ht-54r; commits are on `super-auto/session-keyed-seat-bindings`.
 | Misleading error on a fail-closed rewrite refusal; forward-only migrations note | punch list | UX / existing practice |
 | Real-harness payload shapes (Codex SubagentStop/SessionEnd, Hermes subagent_*/resume/compression), sandboxes hiding ancestor PID, sibling PreToolUse hook dropping `--agent-id`, Linux /proc paths | untested scope | need live credentials / Linux CI; parked escalations from the design roast |
 | `Outside-adapter:` commit trailer (AGENTS.md rule merged from main mid-run) | gap, main's call | 9 of 156 branch commits since 43cc19cd carry it (all new commits do); retrofitting the rest needs a history rewrite |
+| Placeholder + plain-call session of one process both stay connected → no composer wake until the session's first lifecycle check-in (independent review of 99bc9a63, Minor) | accepted (fail-safe) | no wrong-target wake; window ends when `launch_placeholder_replace` runs at the first lifecycle check-in; TRUST-POLICY A4 allows a group with no lifecycle claimer to stay as is |
+| operations.md omitted "replacement" from non-reconnecting reasons (independent review, Minor) | fixed | docs/operations.md:224 |
+
+Independent review of the audit-2 fixes (99bc9a63, 25893108, 0160c11e, 14b4a4df): all four resolved, no Critical/Important, security angle: no bypass (no plain call or hook pull revives a superseded, ended, retired or replaced binding; subagent claims refused before the store; mod-ACK gate pinned by test).

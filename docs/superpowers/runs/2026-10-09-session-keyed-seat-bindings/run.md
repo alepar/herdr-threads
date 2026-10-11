@@ -15,7 +15,7 @@ stepBackDesign-round-1: patch — four clusters (supersede rule, V29 row classes
 roast-design: 2026-10-10-session-keyed-seat-bindings-roast-design-1.md, 2026-10-10-session-keyed-seat-bindings-roast-design-2.md
 
 roastCodeRound: 2
-roast-code: 2026-10-10-session-keyed-seat-bindings-roast-pr-1.md, 2026-10-10-session-keyed-seat-bindings-roast-pr-2.md, 2026-10-10-session-keyed-seat-bindings-roast-pr-post-cap-audit.md
+roast-code: 2026-10-10-session-keyed-seat-bindings-roast-pr-1.md, 2026-10-10-session-keyed-seat-bindings-roast-pr-2.md, 2026-10-10-session-keyed-seat-bindings-roast-pr-post-cap-audit.md, 2026-10-11-session-keyed-seat-bindings-2-roast-pr-post-cap-audit.md
 roastCodeExit: converged
 regressionPass-round-2: [Should-fix] src/service/liveness.rs:72 → ht-54r.70 (also repairs plain_call_enrolled_agent_display_acks, S2)
 stepBackCode-round-1: patch — no recurrence yet (round 1); three clusters (lazy-unread-per-binding, role-from-resolved-binding, authority-by-role-and-liveness) where the per-seat→per-binding migration was applied unevenly; sweep each rule
@@ -32,13 +32,13 @@ scopeFilter-round-1: [FYI] src/store/schema.rs:592; src/store/schema.rs:423; doc
 scopeFilter-round-1: [Nit] TRUST-POLICY.md:312 punch-list — This is stale doc wording in the policy summary bullets, which A4 already governs.
 scope-filter: 6 in-scope · 5 punch-listed
 codeBuckets:
-  completed: ht-54r.1 ht-54r.2 ht-54r.3 ht-54r.4 ht-54r.5 ht-54r.6 ht-54r.7 ht-54r.8 ht-54r.9 ht-54r.10 ht-54r.11 ht-54r.12 ht-54r.13 ht-54r.14 ht-54r.15 ht-54r.16 ht-54r.17 ht-54r.18 ht-54r.19 ht-54r.20 ht-54r.21 ht-54r.22 ht-54r.23 ht-54r.24 ht-54r.25 ht-54r.39 ht-54r.52 ht-54r.53 ht-54r.54 ht-54r.55 ht-54r.56 ht-54r.57 ht-54r.58 ht-54r.59 ht-54r.60 ht-54r.70 ht-54r.71 ht-54r.72 ht-54r.73 ht-54r.74 ht-54r.75
+  completed: ht-54r.1 ht-54r.2 ht-54r.3 ht-54r.4 ht-54r.5 ht-54r.6 ht-54r.7 ht-54r.8 ht-54r.9 ht-54r.10 ht-54r.11 ht-54r.12 ht-54r.13 ht-54r.14 ht-54r.15 ht-54r.16 ht-54r.17 ht-54r.18 ht-54r.19 ht-54r.20 ht-54r.21 ht-54r.22 ht-54r.23 ht-54r.24 ht-54r.25 ht-54r.39 ht-54r.52 ht-54r.53 ht-54r.54 ht-54r.55 ht-54r.56 ht-54r.57 ht-54r.58 ht-54r.59 ht-54r.60 ht-54r.70 ht-54r.71 ht-54r.72 ht-54r.73 ht-54r.74 ht-54r.75 ht-54r.76 ht-54r.77 ht-54r.78 ht-54r.79 ht-54r.80 ht-54r.81 ht-54r.82 ht-54r.83 ht-54r.84 ht-54r.87 ht-54r.88 ht-54r.89 ht-54r.90 ht-54r.91
   escalated: 
   pendingRetry: 
   parked: ht-54r.5 ht-54r.12 ht-54r.19
   stalled: false
-  review: not ready (final review 4 @ 212dbd0c: continuity reattach inserts binding without cursors → history unread after Herdr restart; cursor stuck after mod/hook-pull ACK of ordinary msg; agy hook delivery lost after upgrade (SessionMismatch on disconnected); S3 continuity_candidates newest-row; S4 Hermes child pre-subagent_start supersedes parent; S5 provenance-gated mod channel + overwrite; single-target composer wake ignores foreground PID; stale TRUST-POLICY/SKILL/CHILD_RESTRICTION text)
-  sweep: 6abfd4f9 — 5522 passed, 0 failed, 0 errors, 44 skipped; failing: none; command: nice cargo nextest run --locked --all-targets --all-features --no-fail-fast (+ scripts/check-harness-neutral exit 0, check-no-leaked-processes clean, wall 224s) @ 6abfd4f9
+  review: ready (final review 6 @ b35cad5d found no open product defect; its remaining items — doc drift, config9 race, v0.8.1 absorption, spec-settled /clear decision, sweep — resolved: 0a2a220c, 2ef00231/eb28b769, 6abfd4f9; audit-2 post-cap roast converged 0 Blocking, its 4 findings fixed 99bc9a63/25893108/0160c11e/14b4a4df and independently reviewed (2 Minor: 1 accepted fail-safe, 1 fixed); sweep green @ 6529b034)
+  sweep: 6529b034 — 5526 passed, 0 failed, 0 errors, 44 skipped; failing: none; command: nice cargo nextest run --locked --all-targets --all-features --no-fail-fast (+ scripts/check-harness-neutral exit 0, check-no-leaked-processes clean, wall 267s) @ 6529b034
   slowness: round 1 hook.rs hot-file cap raised to 4; merge queue peaked at 3
   worktreesKept: 
   processSweep: stopped 0 · survived 0
