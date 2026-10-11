@@ -34,6 +34,8 @@ The topology leaf owns --new-tab omission: preserve bootstrap topology fences/un
 
 ## Post-Implementation Notes
 
+**Changes vs. original design — 2026-10-10:** Implemented additive automatic V2 child/bootstrap plans and all four producers. Automatic plans omit Invite and require exact published ordinary Send and completed-child proof before parent completion. Public historical reconciliation now absorbs a canonically completed child after sender binding change while retaining live full-claim admission and at-most-one native submission. Imported complete snapshot-staging fixture loops preserve existing assertions; modeled producer/real canonical and UUID-wrapper source-tracing limits remain explicit.
+
 *As this design is implemented and iterated on — bug fixes, adjustments, anything that diverged from the assumptions above — append a dated note here, whether or not a formal debugging skill was used.*
 
 - 2026-10-10 — The automatic V2 handoff representation freezes one original caller, namespace, recipient, body, keys and selected canonical child. Additive 0030 companion tables register that full original and its exact parent/child linkage; legacy Create/Invite children are refused for automatic plans, while explicit/V1 plans retain their old bytes, keys and report grammar. Ensure creates the initial ordinary invitation, then ordinary Send publishes against current pair lifecycle; exact frozen published Send proof precedes Complete and guarded startup. Active parents protect unknown or selected threads from archival; terminal completion releases only their own protection.

@@ -34,6 +34,8 @@ Tests use real store transactions and barriers for reverse concurrent ensure, sa
 
 ## Post-Implementation Notes
 
+**Changes vs. original design — 2026-10-10:** Implemented migration0029 and the atomic accountable resolver, with immutable pair-only enrollment and ordinary Send audience/publication guards. Automatic invitation reservation does not accept the peer or undo leave/reject/archive. Imported main rejection/discovery behavior remains separate from canonical pair identity; schema30 current-version fixtures preserve historical inputs.
+
 *As this design is implemented and iterated on — bug fixes, adjustments, anything that diverged from the assumptions above — append a dated note here, whether or not a formal debugging skill was used.*
 
 - 2026-10-10 — Migration 0029 retains one indexed sorted seat pair per instance and a unique thread reference. Accountable Ensure atomically creates the joined caller, ordinary pending invitation and registry row or reuses the exact pair; it never adopts a name/topic match or reenrolls a rejected/left seat. The direct_recipient marker feeds the ordinary Send audience independently of ACK-only invitation fields. Canonical pair and publication guards bar third-seat/service enrollment and corrupted audiences; resolved unbound and Human targets preserve ordinary semantics. The passive direct_threads table is registered in the SQLite update-hook classifier.

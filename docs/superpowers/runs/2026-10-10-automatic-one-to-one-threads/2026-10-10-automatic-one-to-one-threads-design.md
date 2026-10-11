@@ -74,6 +74,8 @@ The caller owns the requested `join dev-herdr-threads` and integration-ready --n
 
 ## Post-Implementation Notes
 
+**Changes vs. original design — 2026-10-10:** Implemented indexed immutable pair routing, durable target-seat send and all four automatic handoff destinations with additive migrations0029/0030. Review removed automatic Invite, required exact published-Send proof and repaired child-completed/outer-incomplete historical reconciliation after a sender binding change. Main945107f6 is incorporated; current-schema and partial snapshot fixtures were corrected without changing historical compatibility or budgets. Both roast low-coverage qualifiers and the out-of-scope archival Nit remain recorded in report.md.
+
 *As this design is implemented and iterated on — bug fixes, adjustments, anything that diverged from the assumptions above — append a dated note here, whether or not a formal debugging skill was used.*
 
 - 2026-10-10 — Design roast1 confirmed Ensure→Invite reinvitation race. Automatic-only plans now omit Invite entirely; Ensure creates initial invitation, canonical automatic fence forbids Invite, and fresh Send rechecks target lifecycle at preparation/publication. Explicit/V1 handoff remains unchanged.
