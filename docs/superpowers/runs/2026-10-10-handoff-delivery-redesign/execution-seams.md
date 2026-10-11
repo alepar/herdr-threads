@@ -20,4 +20,6 @@ Task1 exposes SEND_TIME_RECEIPTS_V1 and cli::require_send_time_receipts_capabili
 
 ## Schema merge
 
-Task2 andTask4 each provisionally implement migration29 onbase28; serialintegration renumbers second to30, preserves0028 bytes, and runs freshschema seam review+realpopulatedoldschema upgradefixtures. Task1 cutpoint is additive transactional initialization marker, not conflictingnumberedmigration.
+Task1, Task2 and Task4 each provisionally implement migration29 on base28. Serial integration assigns versions29/30/31 in completion order, preserves every historical migration byte, and requires a fresh shared-schema seam review plus populated-old-schema upgrade fixtures. Task1 receipt-table CHECK rebuild and once-only cutover capture must commit atomically before capability advertisement. Task4 bootstrap parent/recovery rebuild uses foreign_keys OFF outside its transaction, restoring the prior setting on every exit. Integration must compose these wrappers without nesting transactions or dropping either audit/cutover.
+
+Task4 envelope seam: preserve existing bootstrap derived origin = 2*identity+4096 and terminal = completed+2*origin+4096 formulas. Identity increase to512KiB implies origin1,052,672 and terminal4,206,592 bytes; exact supported-body serializer fixtures justify the identity change and test nested retention. Delivery origin/terminal changes are separately justified. Metadata-only creation/attachment and global wire bounds stay unchanged. Fresh review verifies derived bounded formulas and actual fixtures.
