@@ -10787,7 +10787,7 @@ fn invitation_confirmation_duplicate_caller_cannot_change_origin_policy_deadline
     let _ = std::fs::remove_file(path);
 }
 
-fn invitation_origin_wake_after_notice_offer(mod_path: bool) {
+fn invitation_origin_wake_after_notice_offer(mod_path: bool, discovery_path: bool) {
     use crate::protocol::commands::InvitationConfirmation;
     use crate::store::attention;
     let (context, mut conn, path, clock, thread, invitation) =
@@ -10823,6 +10823,36 @@ fn invitation_origin_wake_after_notice_offer(mod_path: bool) {
             .warnings_added,
         1
     );
+    if discovery_path {
+        let warning: String = conn
+            .query_row(
+                "SELECT warning_message_id FROM invitations WHERE id=?1",
+                [invitation.as_str()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        while crate::store::materialization::advance_work(
+            &mut conn,
+            &format!("work:{warning}"),
+            crate::ports::DurableWorkAdmission::new(16).unwrap(),
+            &budget,
+            clock.as_ref(),
+        )
+        .unwrap()
+        .has_more
+        {}
+        let status: String = conn
+            .query_row(
+                "SELECT status FROM warning_jobs WHERE warning_id=?1",
+                [&warning],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            status, "complete",
+            "discovery must not depend on attribution backlog"
+        );
+    }
     let carried: Vec<_> = attention::notice_offer_page(&conn, "s1", 10)
         .unwrap()
         .into_iter()
@@ -10854,6 +10884,23 @@ fn invitation_origin_wake_after_notice_offer(mod_path: bool) {
         "open waking condition must not revive informational delivery"
     );
     let origin = SeatId::new("s1");
+    let discovery_high = u64::try_from(
+        conn.query_row("SELECT MAX(ordinal) FROM seats", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+    )
+    .unwrap();
+    if discovery_path {
+        let discovery =
+            crate::store::discover_wake_candidates(&conn, "i", 0, discovery_high, 100, &|| Ok(()))
+                .unwrap();
+        assert!(
+            discovery
+                .items
+                .iter()
+                .any(|candidate| candidate.seat == origin && candidate.has_actionable_work()),
+            "actual native discovery must retain the otherwise-idle left inviter after committed notice offer and completed attribution"
+        );
+    }
     if mod_path {
         let view = crate::store::seats::mod_seat_view(&conn, "i", &origin)
             .unwrap()
@@ -10935,6 +10982,18 @@ fn invitation_origin_wake_after_notice_offer(mod_path: bool) {
         0,
         "clear is passive for mod attention"
     );
+    if discovery_path {
+        let discovery =
+            crate::store::discover_wake_candidates(&conn, "i", 0, discovery_high, 100, &|| Ok(()))
+                .unwrap();
+        assert!(
+            !discovery
+                .items
+                .iter()
+                .any(|candidate| candidate.seat == origin),
+            "passive clear cannot keep the original inviter in native discovery"
+        );
+    }
     let clears = attention::notice_offer_page(&conn, "s1", 10).unwrap();
     assert_eq!(
         clears.len(),
@@ -10949,10 +11008,15 @@ fn invitation_origin_wake_after_notice_offer(mod_path: bool) {
 
 #[test]
 fn invitation_confirmation_native_open_condition_survives_committed_notice_offer() {
-    invitation_origin_wake_after_notice_offer(false);
+    invitation_origin_wake_after_notice_offer(false, false);
 }
 
 #[test]
 fn invitation_confirmation_mod_open_condition_survives_committed_notice_offer() {
-    invitation_origin_wake_after_notice_offer(true);
+    invitation_origin_wake_after_notice_offer(true, false);
+}
+
+#[test]
+fn invitation_confirmation_discovery_survives_committed_notice_offer_and_completed_attribution() {
+    invitation_origin_wake_after_notice_offer(false, true);
 }

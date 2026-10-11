@@ -1046,10 +1046,10 @@ pub struct WakeProbe {
     pub sql: &'static str,
 }
 
-/// The six pending access paths wake discovery probes per live non-human
+/// The seven pending access paths wake discovery probes per live non-human
 /// seat (spec D2), in probe order. Each is an `INDEXED BY` seat-leading
 /// existence lookup. `wake_work` is deliberately not probed.
-pub const WAKE_PROBES: [WakeProbe; 6] = [
+pub const WAKE_PROBES: [WakeProbe; 7] = [
     WakeProbe {
         index: "digest_pending_invitations_seat",
         sql: "SELECT EXISTS(SELECT 1 FROM digest_pending_invitations INDEXED BY digest_pending_invitations_seat WHERE seat_id=?1)",
@@ -1074,9 +1074,13 @@ pub const WAKE_PROBES: [WakeProbe; 6] = [
         index: "digest_programmatic_warnings_seat",
         sql: "SELECT EXISTS(SELECT 1 FROM digest_programmatic_warnings INDEXED BY digest_programmatic_warnings_seat WHERE seat_id=?1 AND ordinal>?2)",
     },
+    WakeProbe {
+        index: "warning_conditions_invitation_origin",
+        sql: "SELECT EXISTS(SELECT 1 FROM warning_conditions INDEXED BY warning_conditions_invitation_origin WHERE invitation_originator_instance_id=(SELECT instance_id FROM seats WHERE id=?1) AND invitation_originator_seat_id=?1 AND condition_kind='invitation' AND clear_warning_id IS NULL AND invitation_originator_seat_id IS NOT NULL)",
+    },
 ];
 
-/// Does any pending access path hold a row for the seat? At most six O(1)
+/// Does any pending access path hold a row for the seat? At most seven O(1)
 /// probes, stopping at the first hit. A hit is only a reason to examine the
 /// seat: the canonical judges still decide whether the work is actionable.
 pub fn seat_has_pending_rows(db: &Connection, seat_id: &str) -> Result<bool, ApiError> {
