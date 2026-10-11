@@ -2078,9 +2078,9 @@ pub struct WakeTarget {
 pub enum ComposerChoice<'a> {
     /// The reservation names no targets: the legacy single-harness rule applies.
     Unspecified,
-    /// The one binding whose process is the pane's foreground process (or the only target).
+    /// The one target whose process is the pane's foreground process.
     Binding(&'a WakeTarget),
-    /// Several targets and no unique foreground match: no composer wake.
+    /// No unique foreground match (one target or several): no composer wake.
     NoMatch,
 }
 
@@ -2121,12 +2121,11 @@ impl ReservedWakeAuthority {
         }
     }
 
-    /// The composer-wake target. One target is that binding; several need a unique
-    /// `fingerprint_pid == foreground_pid` match, no heuristic fallback.
+    /// The composer-wake target: a unique `fingerprint_pid == foreground_pid` match among the
+    /// targets (one target or several), no heuristic fallback.
     pub fn composer_choice(&self, foreground_pid: Option<u32>) -> ComposerChoice<'_> {
         match self.targets() {
             [] => ComposerChoice::Unspecified,
-            [only] => ComposerChoice::Binding(only),
             many => {
                 let Some(pid) = foreground_pid else {
                     return ComposerChoice::NoMatch;
@@ -3535,7 +3534,7 @@ pub trait HostPort: Send + Sync {
         self.observe_current_target(target, context)
     }
     /// Pid of the one process Herdr reports in the pane's foreground (not its shell), for the
-    /// composer wake of a seat with several bindings (spec §3 Wake). `None` when Herdr reports
+    /// composer wake of a seat with wake targets (spec §3 Wake). `None` when Herdr reports
     /// none or several, or the adapter cannot ask: the composer wake then does not fire.
     fn foreground_pid(
         &self,

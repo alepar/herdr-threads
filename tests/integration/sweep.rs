@@ -99,6 +99,25 @@ pub(crate) fn host_reply(panes: &[Value], request: &Value) -> Value {
                 }
             }
         }
+        // Herdr's foreground process of the pane: the scripted `foreground_pid` (the composer
+        // wake matches it against the binding's fingerprint pid), none when unscripted.
+        "pane.process_info" => match panes
+            .iter()
+            .find(|pane| pane["pane_id"] == request["params"]["pane_id"])
+        {
+            Some(pane) => {
+                let foreground: Vec<Value> = pane["foreground_pid"]
+                    .as_u64()
+                    .map(|pid| json!({"pid":pid,"name":"agent","argv0":"agent"}))
+                    .into_iter()
+                    .collect();
+                json!({"id":id,"result":{"type":"pane_process_info","process_info":{
+                    "pane_id":pane["pane_id"],"shell_pid":1,"foreground_processes":foreground}}})
+            }
+            None => {
+                json!({"id":id,"error":{"code":"pane_not_found","message":"pane not found"}})
+            }
+        },
         "agent.read" => match panes
             .iter()
             .find(|pane| pane["pane_id"] == request["params"]["target"])

@@ -3476,6 +3476,11 @@ impl FakeHerdr {
                         continue;
                     }
                     "agent.get" => serde_json::json!({"type":"agent_info","agent":agent}),
+                    // The one foreground process is this test process: the composer wake
+                    // matches it against the binding's fingerprint pid (ht-54r.82).
+                    "pane.process_info" => serde_json::json!({"type":"pane_process_info",
+                        "process_info":{"pane_id":"w4:p1","shell_pid":1,
+                        "foreground_processes":[{"pid":std::process::id(),"name":"claude","argv0":"claude"}]}}),
                     "agent.read" => serde_json::json!({"type":"pane_read","read":{
                         "pane_id":"w4:p1","source":request["params"]["source"],
                         "text":"────────────────────\n❯\n────────────────────\n"}}),
@@ -3559,7 +3564,7 @@ fn cooperative_overdue_warning_wakes_idle_native_agent_exactly_once() {
             INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES ('m','t','seat','pending',500,0,500);\
         ").unwrap();
         db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','w4:p1',?1,1,1,0,'fresh','term_1',?2,'native_current_target',1)", rusqlite::params![observed.host_boot.as_str(), identity]).unwrap();
-        db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('seat',1,1,'w4:p1',?1,0,'claude','session','self-reported','cooperative_top_level',0,0,'term_1',?2)", rusqlite::params![observed.host_boot.as_str(), identity]).unwrap();
+        db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation,liveness_pid,liveness_start) VALUES ('seat',1,1,'w4:p1',?1,0,'claude','session','self-reported','cooperative_top_level',0,0,'term_1',?2,?3,1)", rusqlite::params![observed.host_boot.as_str(), identity, std::process::id()]).unwrap();
         drop(db);
         let store = Arc::new(
             SqliteStore::new(
@@ -3611,13 +3616,26 @@ fn cooperative_overdue_warning_wakes_idle_native_agent_exactly_once() {
             assert_eq!(prompts, [crate::notification::policy::MARKER], "{status}");
             assert_eq!(
                 methods,
-                ["pane.get", "agent.get", "agent.read", "agent.prompt"],
+                // The foreground read (`pane.process_info`) precedes the prompt: the
+                // composer wake needs the foreground-pid match even for one target.
+                [
+                    "pane.get",
+                    "pane.process_info",
+                    "agent.get",
+                    "agent.read",
+                    "agent.prompt"
+                ],
                 "{status}"
             );
             assert_eq!(outcome.as_deref(), Some("submitted"), "{status}");
         } else {
             assert!(prompts.is_empty(), "{status} must never be prompted");
-            assert_eq!(methods, ["pane.get", "agent.get"], "{status}");
+            // The foreground read still precedes the agent recheck that refuses.
+            assert_eq!(
+                methods,
+                ["pane.get", "pane.process_info", "agent.get"],
+                "{status}"
+            );
             assert_eq!(outcome.as_deref(), Some("unsafe"), "{status}");
         }
         assert_eq!(
@@ -5067,17 +5085,62 @@ fn composer_wake_requires_idle() {
     }
 }
 
-/// Kills: requiring a foreground match of a seat with one target, which would silence every
-/// single-session seat when Herdr reports no foreground process.
+/// Kills: typing into the composer of a seat whose only target is not the pane's foreground
+/// process (spec §3, ht-54r.82), e.g. a hermes one-shot's wake typed into Claude's composer.
 #[test]
-fn single_target_seat_keeps_the_single_harness_composer_rule() {
+fn single_target_composer_wake_requires_the_foreground_match() {
+    // The UI rule is unchanged for one target: `Unknown` still fires on a foreground match.
     let (outcome, prompted) = composer_wake(
         vec![binding_target("a", "claude", Some(10))],
         HostUiState::Unknown,
-        None,
+        Some(10),
     );
     assert_eq!(outcome, WakeOutcome::Submitted);
+    assert_eq!(prompted.len(), 1);
     assert_eq!(prompted[0].bound_harness.as_deref(), Some("claude"));
+    for (label, targets, foreground) in [
+        (
+            "hermes one-shot target, Claude in the foreground",
+            vec![binding_target("h", "hermes", Some(30))],
+            Some(10),
+        ),
+        (
+            "other process in the foreground",
+            vec![binding_target("a", "claude", Some(10))],
+            Some(20),
+        ),
+        (
+            "no foreground reported",
+            vec![binding_target("a", "claude", Some(10))],
+            None,
+        ),
+        (
+            "target without a fingerprint",
+            vec![binding_target("a", "claude", None)],
+            Some(10),
+        ),
+    ] {
+        let (outcome, prompted) = composer_wake(targets, HostUiState::Unknown, foreground);
+        assert_eq!(
+            outcome,
+            WakeOutcome::Refused(RefusalCause::Unsafe),
+            "{label}: a pre-send refusal, the ladder does not climb"
+        );
+        assert!(prompted.is_empty(), "{label}");
+    }
+}
+
+/// Kills: a launch placeholder (`managed_launch`, fingerprinted with the started process pid
+/// that `foreground_pid` reads) losing the lost-prompt recovery wake.
+#[test]
+fn a_launch_placeholder_target_matches_the_started_process() {
+    let (outcome, prompted) = composer_wake(
+        vec![binding_target("launch", "codex", Some(42))],
+        HostUiState::Unknown,
+        Some(42),
+    );
+    assert_eq!(outcome, WakeOutcome::Submitted);
+    assert_eq!(prompted[0].bound_harness.as_deref(), Some("codex"));
 }
 
 /// A cooperative host that answers the plain observation with an unclassified

@@ -319,8 +319,18 @@ fn pre_tool_use(session: &str) -> String {
     )
 }
 
+/// A pane running a Claude agent for `session`. Herdr's foreground process of the pane is that
+/// session's harness process, the fingerprint of its binding: the composer wake types only to
+/// the binding whose process is the pane's foreground process (spec §3 Wake).
 fn claude(id: &str, terminal: &str, session: &str) -> Value {
-    agent_pane(id, terminal, "claude", Some(session))
+    let mut pane = agent_pane(id, terminal, "claude", Some(session));
+    pane["foreground_pid"] = json!(foreground_of(session));
+    pane
+}
+
+/// The pid of the harness process of `session` (see `hook_in_process_of`).
+fn foreground_of(session: &str) -> u32 {
+    herdr_threads::test_support::isolation::stand_in_fingerprint("claude", session).pid
 }
 
 // ---------------------------------------------------------------------- rig
@@ -1062,10 +1072,10 @@ impl Rig {
 
     /// Herdr now reports `session` for B's pane (what `/clear` does).
     fn set_session_b(&self, session: &str) {
-        self.host.set_panes(vec![
-            pane(PANE_A, "term-a"),
-            claude(PANE_B, "term-b", session),
-        ]);
+        // A `/clear` starts a new session inside the same harness process.
+        let mut b = claude(PANE_B, "term-b", session);
+        b["foreground_pid"] = json!(foreground_of(SESSION_B));
+        self.host.set_panes(vec![pane(PANE_A, "term-a"), b]);
     }
 
     /// B's agent has run its turn after a native prompt: Herdr shows it idle

@@ -117,6 +117,15 @@ impl RecordingHost {
     }
 }
 impl HostPort for RecordingHost {
+    /// The pane's foreground process is the fixture binding's process (`liveness_pid`), the
+    /// composer-wake match a single-target seat needs (ht-54r.82).
+    fn foreground_pid(
+        &self,
+        _: &HostTargetId,
+        _: &HostCallContext,
+    ) -> Result<Option<u32>, ApiError> {
+        Ok(Some(4242))
+    }
     fn observe_current_target_for_archival(
         &self,
         _: &crate::protocol::ids::HostTargetId,
@@ -290,7 +299,7 @@ impl Fixture {
             INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'host',1,1);\
             INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s','i','resolved','native','pane',1,1,0);\
             INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','pane','host',1,1,0,'fresh','term-pane','inc','native_current_target',1);\
-            INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('s',1,1,'pane','host',0,'codex','session','self-reported','cooperative_top_level',0,0,'term-pane','inc');\
+            INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation,liveness_pid,liveness_start) VALUES ('s',1,1,'pane','host',0,'codex','session','self-reported','cooperative_top_level',0,0,'term-pane','inc',4242,1);\
         ").unwrap();
         for (n, thread) in threads.iter().enumerate() {
             let message = format!("m-{thread}");

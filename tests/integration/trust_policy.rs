@@ -241,6 +241,9 @@ struct World {
     /// The reconciliation marker recorded before the latest restart, so a
     /// wait cannot be satisfied by the previous daemon's stale marker.
     stale_marker: std::cell::RefCell<Option<(String, i64)>>,
+    /// Seats whose stand-in caller runs the session their hook registered, so the caller's
+    /// commands reconnect that binding instead of enrolling a second one.
+    sessions: std::cell::RefCell<std::collections::HashMap<String, String>>,
     _scratch: Scratch,
 }
 impl World {
@@ -284,6 +287,7 @@ impl World {
             claude_hooks,
             codex_hook,
             stale_marker: std::cell::RefCell::new(None),
+            sessions: std::cell::RefCell::new(Default::default()),
             _scratch: scratch,
         };
         if let Some(delay) = wake_batch_delay_ms {
@@ -356,7 +360,12 @@ impl World {
             herdr_threads::test_support::isolation::as_agent(
                 &mut command,
                 caller.harness,
-                &session_of(caller.pane, caller.seat),
+                &self
+                    .sessions
+                    .borrow()
+                    .get(caller.seat)
+                    .cloned()
+                    .unwrap_or_else(|| session_of(caller.pane, caller.seat)),
             );
         }
         command
@@ -1401,11 +1410,14 @@ fn codex_reattachment_without_herdr_hint_then_wake() {
             world.hook("codex", pane, &session_start("codex", session, "startup"));
         assert_eq!(code, 0, "{stderr}");
     }
-    world.restart_herdr(vec![
-        pane("w1:p1", "term-a2"),
-        pane("w1:p2", "term-b2"),
-        agent_pane("w1:p3", "term-c2", "codex", None),
-    ]);
+    world.restart_herdr(vec![pane("w1:p1", "term-a2"), pane("w1:p2", "term-b2"), {
+        // Herdr's foreground process of the pane is the session's own process: the
+        // composer wake types only to the binding with that fingerprint pid.
+        let mut agent = agent_pane("w1:p3", "term-c2", "codex", None);
+        agent["foreground_pid"] =
+            json!(herdr_threads::test_support::isolation::stand_in_fingerprint("codex", "SY").pid);
+        agent
+    }]);
     world.wait_reconciled();
     for seat in [&x, &y] {
         assert_eq!(world.seat_state(seat), "unresolved");
@@ -1429,6 +1441,14 @@ fn codex_reattachment_without_herdr_hint_then_wake() {
             repairs(&world, seat).last(),
             Some(&("cooperative_continuity".into(), None, Some("absent".into())))
         );
+    }
+    // The seats' commands run the sessions their hooks registered: one binding per seat, so the
+    // composer wake has the one target to match against Herdr's foreground process.
+    for (seat, session) in [(&x, "SX"), (&y, "SY")] {
+        world
+            .sessions
+            .borrow_mut()
+            .insert(seat.clone(), session.to_owned());
     }
     // Both unresolved seats are back: the hold is lifted and a new pane resolves.
     world.wait_for("the baseline hold to lift", |world| {

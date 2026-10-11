@@ -134,6 +134,15 @@ impl WakeHost {
     }
 }
 impl HostPort for WakeHost {
+    /// The pane's foreground process is the checked-in worker: its claim carries this test
+    /// process's fingerprint, and the composer wake types only to the binding with that pid.
+    fn foreground_pid(
+        &self,
+        _: &HostTargetId,
+        _: &HostCallContext,
+    ) -> Result<Option<u32>, ApiError> {
+        Ok(Some(std::process::id()))
+    }
     fn observe_current_target_for_archival(
         &self,
         _: &herdr_threads::protocol::ids::HostTargetId,
