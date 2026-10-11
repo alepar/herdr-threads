@@ -582,11 +582,12 @@ mod binding_presentation {
             let db = context.open_writer().unwrap();
             db.execute_batch("INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES('i',0,'boot',1,100);
                 INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES('s','i','resolved','native','p',1,0,0);
+                INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES('i','p','boot',1,0,0,'fresh','term','inc','coherent_enumeration',1);
                 INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES('t','i','topic','goal',0,0,1);
                 INSERT INTO memberships(thread_id,seat_id,state,voluntary_state) VALUES('t','s','joined','joined');
                 INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES('t','s',1,1);").unwrap();
             for name in ["a", "b"] {
-                db.execute("INSERT INTO occupant_bindings(binding_id,seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at) VALUES(?1,'s',1,0,'p','boot',1,'claude',?1,?1,'cooperative_env_session',0,0)", [name]).unwrap();
+                db.execute("INSERT INTO occupant_bindings(binding_id,seat_id,generation,target_generation,target_id,terminal_id,incarnation,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at) VALUES(?1,'s',1,0,'p','term','inc','boot',1,'claude',?1,?1,'cooperative_env_session',0,0)", [name]).unwrap();
                 db.execute(
                     "INSERT INTO binding_cursors(binding_id,thread_id,seq) VALUES(?1,'t',0)",
                     [name],
@@ -995,7 +996,6 @@ mod binding_presentation {
             [execution],
         )
         .unwrap();
-        f.db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES('i','p','boot',1,0,0,'fresh','term','inc','coherent_enumeration',1)", []).unwrap();
         let mut claim = f.claim("b");
         claim.execution = ExecutionId::new(execution);
         let input = || {
