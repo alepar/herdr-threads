@@ -1,6 +1,6 @@
 # super-auto run — 2026-10-10-handoff-delivery-redesign
 
-flags: planOneShot=true skipPlanRoast=false skipCodeRoast=false autonomous=true
+flags: planOneShot=true skipPlanRoast=true skipCodeRoast=false autonomous=true
 phase: code
 
 idea: ok back to the handoff redesign. let's $super-auto from here, fully autonomous, both roasts are on. once integration branch is ready for merge, lets $herdr-threads notify main tab that it is
@@ -32,3 +32,5 @@ codeBuckets:
   parked:
   stalled: false
   review: pending
+
+- resume2026-10-11 · user explicitly requested "$super-auto this, fully autonomous, design roast off, code roast on"; skipPlanRoast=true applies prospectively; retained completed designRound2 and low-coverage history, code phase/counters/epic unchanged.
