@@ -481,13 +481,15 @@ try:
     resolved = run([str(binary), "human", "seat", "resolve", "--pane", seat_pane, "--new-seat", "--operator"], env=cli_env)
     seat = field(resolved.stdout, "value")
     check("operator resolves a fresh seat", bool(seat and re.fullmatch(r"s[0-9A-Za-z]{8}", seat)), resolved.stdout)
-    cooperative = ["--cooperative-seat", seat, "--cooperative-target", seat_pane,
-                   "--cooperative-harness", "codex", "--cooperative-role", "top-level"]
-    run([str(binary), "check-in", "--lifecycle-event", f"package-validation-{uuid.uuid4()}", *cooperative],
-        env=dict(cli_env, HERDR_PANE_ID=seat_pane))
+    # The seat's writes are a person's, from the seat pane: an agent call must carry its harness
+    # session id and a live harness process to attribute to (session-keyed bindings), which this
+    # script has none of. `human me init` declares the pane human (operator_human provenance).
+    pane_env = dict(cli_env, HERDR_PANE_ID=seat_pane)
+    person = run([str(binary), "human", "me", "init", "--json"], env=pane_env)
+    context = json.loads(person.stdout)["result"]["data"]["context"]
+    check("seat pane is declared human", context["seat"] == seat and context["harness"] == "human", person.stdout)
     topic = f"package validation survives update {uuid.uuid4().hex[:8]}"
-    created = run([str(binary), "thread", "create", "--topic", topic, *cooperative],
-                  env=dict(cli_env, HERDR_PANE_ID=seat_pane))
+    created = run([str(binary), "human", "thread", "create", "--topic", topic], env=pane_env)
     thread = field(created.stdout, "value")
     check("seat creates a durable thread", bool(thread and re.fullmatch(r"t[0-9A-Za-z]{8}", thread)), created.stdout)
 
