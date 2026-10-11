@@ -2,7 +2,7 @@
 //! state root, a scrubbed environment for spawned binaries, a short socket
 //! base (P37) and a per-test SQLite cost counter.
 use std::{
-    ffi::OsStr,
+    ffi::{OsStr, OsString},
     path::{Path, PathBuf},
     process::Command,
     sync::atomic::{AtomicU64, Ordering},
@@ -110,9 +110,6 @@ impl TestIsolation {
 pub fn scrub_env(command: &mut Command) -> &mut Command {
     scrub_inherited(command, std::env::vars_os().map(|(key, _)| key));
     crate::test_support::spawn::tag(command);
-    // The harness above the test runner (the developer's own Claude Code, say) is not this
-    // child's caller: its ancestry, for `caller_env`, ends at the test process.
-    command.env("HT_TEST_ANCESTRY_FLOOR_PID", std::process::id().to_string());
     command
 }
 
@@ -178,6 +175,50 @@ fn stand_in_process(harness: &str, session: &str) -> u32 {
                 .expect("start a stand-in harness process")
         })
         .id()
+}
+
+/// The ambient agent-harness environment a test child must not inherit (ht-54r.95), derived
+/// from the registry: the exact names (every adapter's `agent_env_markers`, plus each caller
+/// shape's `session_var` and `pid_var`) and the prefixes (each `session_var` up to and including
+/// its first `_`), which cover role-witness inputs no declaration lists.
+pub fn ambient_harness_vars() -> (Vec<&'static str>, Vec<String>) {
+    let registry = crate::harness::registry::builtins();
+    let mut names: Vec<&'static str> = registry.env_markers().map(|marker| marker.name).collect();
+    let mut prefixes: Vec<String> = Vec::new();
+    for (_, shape) in registry.caller_shapes() {
+        names.push(shape.session_var);
+        names.extend(shape.pid_var);
+        if let Some(end) = shape.session_var.find('_') {
+            prefixes.push(shape.session_var[..=end].to_owned());
+        }
+    }
+    names.sort_unstable();
+    names.dedup();
+    prefixes.sort();
+    prefixes.dedup();
+    (names, prefixes)
+}
+
+/// `env_remove` every ambient harness variable of `inherited` that `command` does not already
+/// set or remove explicitly (an explicit choice wins).
+pub(super) fn remove_ambient_harness_env(
+    command: &mut Command,
+    inherited: impl IntoIterator<Item = OsString>,
+) {
+    let (names, prefixes) = ambient_harness_vars();
+    let explicit: std::collections::HashSet<OsString> =
+        command.get_envs().map(|(key, _)| key.to_owned()).collect();
+    for name in names {
+        if !explicit.contains(OsStr::new(name)) {
+            command.env_remove(name);
+        }
+    }
+    for key in inherited {
+        let lossy = key.to_string_lossy();
+        if !explicit.contains(&key) && prefixes.iter().any(|prefix| lossy.starts_with(prefix)) {
+            command.env_remove(&key);
+        }
+    }
 }
 
 /// The removal half of [`scrub_env`] over an explicit list of inherited
@@ -418,5 +459,87 @@ mod tests {
             assert!(a.join().unwrap().iter().all(|u| *u == solo_small));
             assert!(b.join().unwrap().iter().all(|u| *u == solo_large));
         });
+    }
+
+    #[test]
+    fn ambient_harness_vars_cover_every_declared_marker_session_and_pid_var() {
+        let (names, prefixes) = ambient_harness_vars();
+        let registry = crate::harness::registry::builtins();
+        assert!(registry.env_markers().count() > 0);
+        for marker in registry.env_markers() {
+            assert!(names.contains(&marker.name), "marker {}", marker.name);
+        }
+        let mut shapes = 0;
+        for (id, shape) in registry.caller_shapes() {
+            shapes += 1;
+            assert!(names.contains(&shape.session_var), "{id} session_var");
+            if let Some(pid_var) = shape.pid_var {
+                assert!(names.contains(&pid_var), "{id} pid_var");
+            }
+            let first = &shape.session_var[..=shape.session_var.find('_').unwrap()];
+            assert!(prefixes.iter().any(|p| p == first), "{id} prefix {first}");
+        }
+        assert!(shapes >= 3);
+        let mut sorted = names.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted, names, "sorted and deduplicated");
+    }
+
+    #[test]
+    fn tag_removes_ambient_harness_env_unless_set_explicitly() {
+        let mut cmd = Command::new("/usr/bin/env");
+        cmd.env("CLAUDE_CODE_SESSION_ID", "explicit");
+        remove_ambient_harness_env(
+            &mut cmd,
+            [
+                "CODEX_THREAD_ID",
+                "CODEX_HOME",
+                "HERMES_X",
+                "ANTIGRAVITY_AGENT",
+                "CLAUDECODE",
+                "PATH",
+                "HOME",
+            ]
+            .map(OsString::from),
+        );
+        let envs: std::collections::HashMap<_, _> = cmd
+            .get_envs()
+            .map(|(k, v)| (k.to_str().unwrap().to_owned(), v.map(|v| v.to_owned())))
+            .collect();
+        for removed in [
+            "CODEX_THREAD_ID",
+            "CODEX_HOME",
+            "HERMES_X",
+            "ANTIGRAVITY_AGENT",
+            "CLAUDECODE",
+            "CLAUDE_PID",
+            "CODEX_SESSION_ID",
+            "HERMES_SESSION_ID",
+            "ANTIGRAVITY_CONVERSATION_ID",
+        ] {
+            assert_eq!(envs.get(removed), Some(&None), "{removed} removed");
+        }
+        assert_eq!(
+            envs.get("CLAUDE_CODE_SESSION_ID"),
+            Some(&Some(OsString::from("explicit")))
+        );
+        assert!(!envs.contains_key("PATH") && !envs.contains_key("HOME"));
+    }
+
+    #[test]
+    fn tag_sets_the_ancestry_floor_unless_set_explicitly() {
+        let floor = |cmd: &Command| {
+            cmd.get_envs()
+                .find(|(k, _)| *k == "HT_TEST_ANCESTRY_FLOOR_PID")
+                .map(|(_, v)| v.map(|v| v.to_string_lossy().into_owned()))
+        };
+        let mut plain = Command::new("/usr/bin/true");
+        crate::test_support::spawn::tag(&mut plain);
+        assert_eq!(floor(&plain), Some(Some(std::process::id().to_string())));
+        let mut explicit = Command::new("/usr/bin/true");
+        explicit.env("HT_TEST_ANCESTRY_FLOOR_PID", "1");
+        crate::test_support::spawn::tag(&mut explicit);
+        assert_eq!(floor(&explicit), Some(Some("1".to_owned())));
     }
 }
