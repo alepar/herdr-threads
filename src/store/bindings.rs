@@ -1373,6 +1373,20 @@ fn plain_reconnect_allowed(
     Ok(!held)
 }
 
+/// Whether a plain call by `claim` would reconnect (or re-adopt) the open binding its key names:
+/// [`plain_reconnect_allowed`] for that row, the store's one copy of the plain-reconnect policy.
+/// False when the key names no open binding. Read-only, so a caller can ask before taking a
+/// writer turn (the hook pull's re-adoption).
+pub fn claim_reconnects_on_plain_call(
+    db: &Connection,
+    claim: &CallerClaim,
+) -> Result<bool, ApiError> {
+    let Some(row) = match_claim(db, &BindingKey::from_claim(claim))? else {
+        return Ok(false);
+    };
+    plain_reconnect_allowed(db, &row, claim)
+}
+
 /// A plain (non-lifecycle) call by an open binding: reconnect it when
 /// [`plain_reconnect_allowed`] says so, else touch it. A plain reconnect records the fingerprint
 /// and keeps the lifecycle claim time, placement, provenance and cursors; it runs no enroll hook,

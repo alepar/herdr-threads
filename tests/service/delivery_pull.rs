@@ -665,6 +665,26 @@ fn a_pull_without_a_fingerprint_does_not_re_adopt_and_is_refused_no_binding() {
 }
 
 #[test]
+fn a_pull_on_a_binding_the_store_never_reconnects_writes_nothing() {
+    let f = fixture(1);
+    let context = pull_seat(&f);
+    f.db.execute(
+        "UPDATE occupant_bindings SET liveness='disconnected', disconnected_at=1, disconnect_reason='liveness_end_event' WHERE seat_id='s' AND ended_at IS NULL",
+        [],
+    )
+    .unwrap();
+    let operations = |f: &Fixture| -> i64 {
+        f.db.query_row("SELECT count(*) FROM operations", [], |r| r.get(0))
+            .unwrap()
+    };
+    let before = operations(&f);
+    assert_eq!(refusal(pull(&f, &context, None)), Refusal::NoBinding);
+    let (_, liveness, ..) = open_binding_row(&f);
+    assert_eq!(liveness, "disconnected");
+    assert_eq!(operations(&f), before, "no synthetic operation is recorded");
+}
+
+#[test]
 fn a_pull_reconnects_a_disconnected_non_migrated_binding_and_delivers() {
     let f = fixture(1);
     let context = pull_seat(&f);

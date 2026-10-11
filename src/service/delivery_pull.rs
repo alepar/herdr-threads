@@ -15,17 +15,18 @@ use crate::{
     ports::{ModBindingView, ModFingerprint, ModSeatView, PulledNotice, ReadContext, StorePort},
     protocol::{
         authority::{CallerClaim, CallerRole, Harness, PeerIdentity},
-        commands::{AdvanceCursors, Command, InboxQuery, PermitMutation},
+        commands::{Command, InboxQuery, PermitMutation},
         delivery::{
             DeliveryConfirm, DeliveryConfirmItem, DeliveryConfirmOutcome, DeliveryConfirmReason,
             DeliveryConfirmReport, DeliveryPage, DeliveryPull, DeliveryPullReply,
             DeliveryRefusalReason,
         },
-        ids::{MessageId, OperationId},
+        ids::MessageId,
         pagination::{Page, PageRequest},
         results::{ApiError, CommandResult, ErrorCode, InboxBatchV2Item, MAX_NOTICE_PAGE_ITEMS},
         time::CallBudget,
     },
+    store::bindings::DisconnectReason,
 };
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Mutex;
@@ -226,32 +227,28 @@ impl DomainService {
             return Ok((view, binding));
         }
         // Superseded by a `/clear` in the same process: a stale conversation, like a rotated one.
-        if binding.disconnect_reason.as_deref() == Some("superseded") {
+        if binding.disconnect_reason.as_deref() == Some(DisconnectReason::Superseded.as_str()) {
             return Err(Refusal::SessionMismatch);
         }
         if binding.ended_at.is_some() || !binding.top_level || binding.connected {
             return Err(Refusal::NoBinding);
         }
-        // A same-session disconnected top-level binding: the same plain cooperative call a CLI
-        // `inbox` makes. The store reconnects the disconnected binding for a claim that carries a
-        // fingerprint (re-adopting a V32-migrated one with its placement and cursors); a claim
-        // without one was refused above.
-        if claim.liveness.is_none() {
-            return Err(Refusal::NoBinding);
+        // A same-session disconnected top-level binding: the store decides whether the plain
+        // call a CLI `inbox` makes would reconnect it (or re-adopt a V32-migrated one); asked
+        // read-only first, so a binding it never reconnects costs no writer turn.
+        match self.store.claim_reconnects_on_plain_call(claim, budget) {
+            Ok(true) => {}
+            Ok(false) => return Err(Refusal::NoBinding),
+            Err(_) => return Err(Refusal::Busy),
         }
-        let advance = AdvanceCursors {
-            claim: claim.clone(),
-            operation: OperationId::new(uuid::Uuid::new_v4().to_string()),
-            displayed: Vec::new(),
-        };
-        match self.advance_cursors(&advance, peer, budget) {
-            Ok(_) => {}
+        let view = match self.hook_plain_reconnect(claim, peer, budget) {
+            Ok(view) => view,
             Err(e) if e.code == ErrorCode::ServiceBusy || e.code == ErrorCode::DeadlineExceeded => {
                 return Err(Refusal::Busy);
             }
             Err(_) => return Err(Refusal::NoBinding),
-        }
-        let (view, binding) = self.hook_binding_read(claim, budget)?;
+        };
+        let (view, binding) = Self::hook_binding_decide(claim, view)?;
         if binding.native_session != claim.native_session.as_str() {
             return Err(Refusal::SessionMismatch);
         }
@@ -277,6 +274,16 @@ impl DomainService {
                 budget,
             )
             .map_err(|_| Refusal::Busy)?;
+        Self::hook_binding_decide(claim, view)
+    }
+
+    /// The refusal table's order up to the harness check, over one mod view of the claim's
+    /// binding.
+    fn hook_binding_decide(
+        claim: &CallerClaim,
+        view: Option<ModSeatView>,
+    ) -> Result<(ModSeatView, ModBindingView), DeliveryRefusalReason> {
+        use DeliveryRefusalReason as Refusal;
         let Some(view) = view else {
             return Err(Refusal::Unresolved);
         };

@@ -2967,6 +2967,25 @@ pub trait StorePort: ModStoreReads + Send + Sync {
         request: &crate::protocol::commands::AdvanceCursors,
         budget: &CallBudget,
     ) -> Result<CommandResult, ApiError>;
+    /// Whether a plain call by `claim` would reconnect (or re-adopt) the open binding its key
+    /// names (read-only; `store::bindings::claim_reconnects_on_plain_call`). The default never
+    /// reconnects.
+    fn claim_reconnects_on_plain_call(
+        &self,
+        _claim: &CallerClaim,
+        _budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        Ok(false)
+    }
+    /// The hook pull's plain touch-or-reconnect of the claim's binding and the resulting mod view,
+    /// in one write transaction (`store::seats::hook_plain_reconnect`). `None`: no such seat.
+    fn hook_plain_reconnect(
+        &self,
+        _claim: &CallerClaim,
+        _budget: &CallBudget,
+    ) -> Result<Option<ModSeatView>, ApiError> {
+        Ok(None)
+    }
     /// Apply a harness lifecycle event to the caller's bindings (spec §2, §3): a subagent start
     /// enrolls, a subagent stop or session end disconnects. Decided in one idempotent
     /// transaction against the canonical view (A2); allowed for subagent claims.

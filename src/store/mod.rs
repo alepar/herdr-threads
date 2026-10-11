@@ -1677,6 +1677,33 @@ impl StorePort for SqliteStore {
         let mut writer = self.writer(budget)?;
         control::advance_cursors(&self.context, &mut writer, budget, request)
     }
+    fn claim_reconnects_on_plain_call(
+        &self,
+        claim: &crate::protocol::authority::CallerClaim,
+        budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        if claim.instance != self.instance {
+            return Ok(false);
+        }
+        let db = self.context.open_query(budget.clone())?;
+        db.execute_batch("BEGIN DEFERRED")
+            .map_err(|e| db.map_error(e))?;
+        bindings::claim_reconnects_on_plain_call(&db, claim)
+    }
+    fn hook_plain_reconnect(
+        &self,
+        claim: &crate::protocol::authority::CallerClaim,
+        budget: &CallBudget,
+    ) -> Result<Option<crate::ports::ModSeatView>, ApiError> {
+        if claim.instance != self.instance {
+            return Err(api_error(
+                ErrorCode::CallerUnverified,
+                "hook reconnect instance mismatch",
+            ));
+        }
+        let mut writer = self.writer(budget)?;
+        seats::hook_plain_reconnect(&self.context, &mut writer, &self.instance, claim)
+    }
     fn binding_event(
         &self,
         request: &crate::protocol::commands::BindingEvent,

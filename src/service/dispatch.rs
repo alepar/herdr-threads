@@ -625,7 +625,7 @@ impl DomainService {
 
     /// A binding's own read position (spec §2): authorised like a cooperative call, but open to
     /// declared subagents, since it never touches seat state. Decided by the store.
-    pub(super) fn advance_cursors(
+    fn advance_cursors(
         &self,
         request: &crate::protocol::commands::AdvanceCursors,
         peer: PeerIdentity,
@@ -651,6 +651,37 @@ impl DomainService {
         }
         let _turn = writer.enter_foreground(budget, self.clock.as_ref())?;
         self.store.advance_cursors(request, budget)
+    }
+
+    /// The hook pull's plain touch-or-reconnect of the claim's binding (spec §3), authorised like
+    /// a cooperative call and decided by the store in one write transaction that also reads the
+    /// resulting mod view.
+    pub(super) fn hook_plain_reconnect(
+        &self,
+        claim: &CallerClaim,
+        peer: PeerIdentity,
+        budget: &CallBudget,
+    ) -> Result<Option<crate::ports::ModSeatView>, ApiError> {
+        let (owner_uid, writer) = self.cooperative_runtime.as_ref().ok_or_else(|| {
+            error(
+                ErrorCode::CallerUnverified,
+                "cooperative elected runtime unavailable",
+            )
+        })?;
+        if peer.effective_uid() != *owner_uid {
+            return Err(error(
+                ErrorCode::Unauthorized,
+                "caller peer does not match elected owner",
+            ));
+        }
+        if claim.instance != self.instance {
+            return Err(error(
+                ErrorCode::CallerUnverified,
+                "caller instance does not match service",
+            ));
+        }
+        let _turn = writer.enter_foreground(budget, self.clock.as_ref())?;
+        self.store.hook_plain_reconnect(claim, budget)
     }
 
     /// A harness lifecycle event about a binding (spec §2, §3): authorised like a cooperative

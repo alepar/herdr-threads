@@ -4851,6 +4851,31 @@ pub fn record_managed_launch(
     )
 }
 
+/// The hook pull's plain call (spec §3): resolves `claim` with the plain trigger (the same
+/// touch-or-reconnect a CLI `inbox` performs, re-adopting a V32-migrated row with its placement and
+/// cursors) and reads the seat's mod view of the claim's binding, in one write transaction.
+/// Records no operation: a plain touch-or-reconnect is idempotent on its own.
+pub fn hook_plain_reconnect(
+    context: &StoreContext,
+    conn: &mut Connection,
+    instance: &str,
+    claim: &crate::protocol::authority::CallerClaim,
+) -> Result<Option<crate::ports::ModSeatView>, ApiError> {
+    context.execute_decision(
+        conn,
+        |tx| cooperative_mapping(tx, claim, None),
+        |tx, at, mapping| {
+            resolve_cooperative(tx, at, claim, None, &mapping)?;
+            mod_binding_view(
+                tx,
+                instance,
+                &claim.seat,
+                crate::ports::ModBindingRef::Claim(claim),
+            )
+        },
+    )
+}
+
 /// Bound of the lazy pending count in a mod fingerprint (a change detector,
 /// not a count anyone presents).
 const MOD_LAZY_COUNT_CAP: i64 = 1000;
