@@ -7905,3 +7905,169 @@ fn presentation_capacity_last_slot_parks_unknown_carry_and_only_continues_for_du
         assert!(page.offered.contains(&parked_id));
     }
 }
+
+
+fn capacity_missing_input(f: &Fixture, recipient: &CallerClaim, count: usize) -> crate::ports::PresentationInput {
+    let mut ledger = crate::delivery::ledger::OfferedLedger::new();
+    let entry = ledger.seat_mut(&recipient.seat, recipient.binding_generation, recipient.native_session.as_str()).unwrap();
+    for n in 0..count { entry.record(&MessageId::new(format!("missing-{n:03}")), UtcMillis(0), false); }
+    let mut input = offer_reconciliation_input(f, recipient, entry.offers.keys().cloned().collect());
+    input.retry_messages = true;
+    input.blocked_messages.clear();
+    input.ordinary_due_snapshot = Some(entry.due_snapshot(crate::protocol::delivery::PresentationConsumer::Watch));
+    input
+}
+
+// Kills: replay spending a second source slice, storing ordinary debt in outbox_more,
+// or confirming passive context as acceptance/ACK. Tests both capacity predicates.
+#[test]
+fn presentation_capacity_replay_preserves_finite_due_progress_and_positive_slot_quiet() {
+    use crate::protocol::delivery::{DeliveryPullReplyV2, DeliveryPresentationConfirmV2, PresentationConsumer};
+    for count in [255, 256] {
+        let f = fixture(0);
+        let recipient = pull_seat(&f);
+        let inviter = check_in(&f, claim("x","px",fourth(),"capacity-replay-inviter",0), "capacity-replay-ci");
+        canonical_lazy_invitation_backlog(&f,&recipient,&inviter,1,"capacity-replay");
+        let mut input = capacity_missing_input(&f, &recipient, count);
+        let first = f.store.presentation_pull(input.clone(), &budget()).unwrap();
+        let DeliveryPullReplyV2::Page(page) = &first.reply else { panic!("passive context output"); };
+        assert!(page.offered.is_empty() && page.truncated.is_empty());
+        assert_eq!(page.more, count == 256);
+        let token = page.presentation_token.clone().unwrap();
+        input.ordinary_due_snapshot = first.ordinary_due_update;
+        input.frozen_render = presentation_watch_frozen(&f, &recipient);
+        let before = input.ordinary_due_snapshot.clone();
+        let replay = f.store.presentation_pull(input.clone(), &budget()).unwrap();
+        assert!(replay.work.replay > 0);
+        assert_eq!((replay.work.ordinary,replay.work.ordinary_due_key_probes,replay.work.ordinary_due_seeks), (0,0,0));
+        assert_eq!(replay.ordinary_due_update, before);
+        assert!(matches!(replay.reply, DeliveryPullReplyV2::Page(ref page) if page.more == (count == 256)));
+        assert_eq!(f.db.query_row("SELECT outbox_more FROM invitation_presentation_consumers WHERE seat_id='s' AND consumer='watch'",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+        f.store.presentation_confirm(&DeliveryPresentationConfirmV2 {
+            claim: recipient.clone(), consumer: PresentationConsumer::Watch, token,
+            presentation_lease: Some("0123456789abcdef0123456789abcdef".into()), emitted_controls: page.emitted_controls.clone(),
+        }, &budget()).unwrap();
+        input.frozen_render = presentation_watch_frozen(&f, &recipient);
+        let mut quiet = false;
+        for _ in 0..3 {
+            let output = f.store.presentation_pull(input.clone(), &budget()).unwrap();
+            quiet = match output.reply { DeliveryPullReplyV2::Unchanged {..} => true, DeliveryPullReplyV2::Page(page) => !page.more, other => panic!("{other:?}") };
+            input.ordinary_due_snapshot = output.ordinary_due_update;
+            if quiet { break; }
+        }
+        assert!(quiet);
+        assert_eq!(f.db.query_row("SELECT count(*) FROM invitations WHERE seat_id='s' AND state='pending'",[],|r|r.get::<_,i64>(0)).unwrap(),1);
+        assert_eq!(input.ordinary_due_snapshot.unwrap().stamps.len(),count);
+    }
+}
+
+// Kills: trusting malformed bounded hints, and persisting negative progress on
+// rollback/refusal. A changed render/canonical signal must retry the finite set.
+#[test]
+fn presentation_capacity_snapshot_validation_scope_and_failed_calls() {
+    use crate::protocol::delivery::DeliveryPullReplyV2;
+    let f = fixture(0);
+    let recipient = pull_seat(&f);
+    let input = capacity_missing_input(&f,&recipient,256);
+    for mutation in 0..6 {
+        let mut bad = input.clone();
+        match mutation {
+            0 => bad.known_messages[1] = bad.known_messages[0].clone(),
+            1 => bad.blocked_messages.push(MessageId::new("not-known")),
+            2 => { bad.ordinary_due_snapshot.as_mut().unwrap().stamps.pop_first(); },
+            3 => bad.ordinary_due_snapshot.as_mut().unwrap().generation += 1,
+            4 => bad.ordinary_due_snapshot.as_mut().unwrap().native_session = "other".into(),
+            _ => bad.ordinary_due_snapshot.as_mut().unwrap().cache.deferred = bad.ordinary_due_snapshot.as_ref().unwrap().stamps.clone(),
+        }
+        assert_eq!(f.store.presentation_pull(bad,&budget()).unwrap_err().code, crate::protocol::results::ErrorCode::InvalidRequest);
+    }
+    assert_eq!(f.db.query_row("SELECT count(*) FROM invitation_presentation_consumers",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+    let mut input = input;
+    for expected in [100,200,256] {
+        let output = f.store.presentation_pull(input.clone(),&budget()).unwrap();
+        assert_eq!(output.ordinary_due_update.as_ref().unwrap().cache.deferred.len(),expected);
+        input.ordinary_due_snapshot = output.ordinary_due_update;
+    }
+    let before = input.ordinary_due_snapshot.clone();
+    let mut refused = input.clone();
+    refused.pull.claim = fresh_execution(recipient.clone(),2);
+    let refused = f.store.presentation_pull(refused,&budget()).unwrap();
+    assert!(matches!(refused.reply,DeliveryPullReplyV2::Refused{..}));
+    assert!(refused.ordinary_due_update.is_none());
+    input.pull.marker_prefix = vec!["different-render".into()];
+    let cancelled = budget(); cancelled.cancellation.cancel();
+    assert!(f.store.presentation_pull(input.clone(),&cancelled).is_err());
+    assert_eq!(input.ordinary_due_snapshot,before);
+    let retried = f.store.presentation_pull(input.clone(),&budget()).unwrap();
+    assert_eq!(retried.work.ordinary,100);
+    assert_eq!(retried.ordinary_due_update.as_ref().unwrap().cache.deferred.len(),100);
+    input.ordinary_due_snapshot = retried.ordinary_due_update;
+    input.ordinary_version += 1;
+    let signal = f.store.presentation_pull(input,&budget()).unwrap();
+    assert_eq!(signal.work.ordinary,100);
+    assert_eq!(signal.ordinary_due_update.unwrap().cache.deferred.len(),100);
+}
+
+
+// Kills: due hydration losing lazy promotion or marker provenance, and a
+// standalone unrenderable key endlessly requesting continuation at one render.
+#[test]
+fn presentation_capacity_due_promoted_lazy_defers_oversize_render_then_retries() {
+    use crate::protocol::{commands::DeliveryMode, delivery::{DeliveryPullReplyV2, PresentationItemV2}};
+    let window = OfferWindowFixture::new(true);
+    window.f.db.execute("UPDATE seats SET wake_on='all' WHERE id='c'",[]).unwrap();
+    let body = format!("{}é", "\0".repeat(65534));
+    let id = window.send(0, DeliveryMode::Lazy, &body);
+    assert_eq!(window.drain(1), std::collections::BTreeSet::from([id.clone()]));
+    let original_offer = window.offers()[&id];
+    advance(&window.f, REOFFER_AFTER_MS);
+    let mut input = capacity_missing_input(&window.f,&window.recipient,256);
+    input.known_messages.pop();
+    input.known_messages.push(id.clone());
+    let snapshot = input.ordinary_due_snapshot.as_mut().unwrap();
+    snapshot.stamps.pop_last();
+    snapshot.stamps.insert(id.clone(),original_offer);
+    input.pull.marker_prefix = vec!["\0".repeat(512);8];
+    let mut deferred = false;
+    for _ in 0..4 {
+        let output = window.f.store.presentation_pull(input.clone(),&budget()).unwrap();
+        if let DeliveryPullReplyV2::Page(page) = &output.reply {
+            assert!(page.offered.is_empty() && page.truncated.is_empty());
+            window.confirm_nonmessage_presentation(&output.reply);
+        }
+        input.ordinary_due_snapshot = output.ordinary_due_update;
+        input.frozen_render = presentation_watch_frozen(&window.f,&window.recipient);
+        if input.ordinary_due_snapshot.as_ref().unwrap().cache.deferred.len() == 256 { deferred = true; break; }
+    }
+    assert!(deferred, "standalone rendered >64KiB key must be finitely deferred");
+    let quiet = window.f.store.presentation_pull(input.clone(),&budget()).unwrap();
+    assert!(matches!(quiet.reply,DeliveryPullReplyV2::Unchanged{..}));
+    assert_eq!(quiet.work.ordinary,0);
+    assert_eq!(window.offers()[&id],original_offer);
+    input.pull.marker_prefix.clear();
+    let mut shown = false;
+    for _ in 0..4 {
+        let output = window.f.store.presentation_pull(input.clone(),&budget()).unwrap();
+        if let DeliveryPullReplyV2::Page(page) = &output.reply {
+            for item in &page.items {
+                if let PresentationItemV2::Message { id: actual, lazy, content } = item {
+                    assert_eq!(actual,&id);
+                    assert!(!lazy,"wake-on-all promotion survives canonical due hydration");
+                    assert!(!content.ack_required,"promotion creates no receipt");
+                    assert!(content.truncated);
+                    assert_eq!(content.body_len,65536);
+                    assert_eq!(content.body.matches("herdr-threads body").count(),1,"one producer marker");
+                    assert!(!content.body.contains("herdr-threads ack"));
+                    shown = true;
+                }
+            }
+            window.confirm_nonmessage_presentation(&output.reply);
+        }
+        input.ordinary_due_snapshot = output.ordinary_due_update;
+        input.frozen_render = presentation_watch_frozen(&window.f,&window.recipient);
+        if shown { break; }
+    }
+    assert!(shown);
+    assert_eq!(window.f.db.query_row("SELECT state FROM lazy_recipients WHERE message_id=?1 AND seat_id='c'",[id.as_str()],|r|r.get::<_,String>(0)).unwrap(),"pending");
+    assert_eq!(window.offers()[&id],original_offer,"direct store output cannot claim service recording or lazy completion");
+}
