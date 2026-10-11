@@ -1787,6 +1787,11 @@ fn automatic_capacity_actual_serializer_maximum_body_records() {
         }
         replace_body(&mut child, &body);
         attachment.child = serde_json::from_value(child).unwrap();
+        attachment.child.digest = attachment
+            .child
+            .original
+            .digest(&attachment.child.claim)
+            .unwrap();
         let recovery = AutomaticBootstrapRecoveryResult {
             operation: OperationId::new("capacity-recovery"),
             attempt: BootstrapAttempt::first(),
@@ -1819,7 +1824,7 @@ fn automatic_capacity_actual_serializer_maximum_body_records() {
         let original = serde_json::to_vec(&id).unwrap();
         let attached = serde_json::to_vec(&attachment).unwrap();
         let recovered = serde_json::to_vec(&result).unwrap();
-        let retained = LinkedBootstrapReport {
+        let mut retained = LinkedBootstrapReport {
             thread: ThreadId::new("thread"),
             recipient: attachment.resolved_seat.clone(),
             pane: attachment.created.root_pane.clone(),
@@ -1830,6 +1835,11 @@ fn automatic_capacity_actual_serializer_maximum_body_records() {
             terminal: attachment.created.terminal.clone(),
             host_incarnation: attachment.created.host_incarnation.clone(),
         };
+        retained.report_digest = format!(
+            "{:x}",
+            sha2::Sha256::digest(serde_json::to_vec(&retained.report).unwrap())
+        );
+        retained.validate().unwrap();
         let request_bytes = |identity: AutomaticBootstrapIdentity, action| {
             serde_json::to_vec(&crate::protocol::wire::WireRequest {
                 version: crate::protocol::wire::PROTOCOL_VERSION,
@@ -1870,21 +1880,57 @@ fn automatic_capacity_actual_serializer_maximum_body_records() {
         let mut maximum_argv = id.clone();
         maximum_argv.plan.payload.launch.argv = vec!["\u{1}".repeat(4096); 16];
         maximum_argv.plan.payload.launch.validate().unwrap();
+        maximum_argv.digest = maximum_argv.semantic_digest().unwrap();
         let maximum_original = serde_json::to_vec(&maximum_argv).unwrap();
+        let mut maximum_attachment = attachment.clone();
+        let AutomaticOriginal::Handoff(child) = &mut maximum_attachment.child.original else {
+            panic!("handoff child")
+        };
+        child.launch.argv = maximum_argv.plan.payload.launch.argv.clone();
+        maximum_attachment.child.digest = maximum_attachment
+            .child
+            .original
+            .digest(&maximum_attachment.child.claim)
+            .unwrap();
+        let mut maximum_retained = retained.clone();
+        maximum_retained.launch = maximum_argv.plan.payload.launch.clone();
+        maximum_retained.report["argv"] =
+            serde_json::to_value(&maximum_argv.plan.payload.launch.argv).unwrap();
+        maximum_retained.report_digest = format!(
+            "{:x}",
+            sha2::Sha256::digest(serde_json::to_vec(&maximum_retained.report).unwrap())
+        );
+        maximum_retained.validate().unwrap();
+        let maximum_recover = request_bytes(
+            maximum_argv.clone(),
+            AutomaticBootstrapAction::Recover {
+                attempt: BootstrapAttempt::first(),
+                inspection: BootstrapRecoveryInspection {
+                    version: 1,
+                    digest: "b".repeat(64),
+                },
+                disposition: AutomaticBootstrapRecoveryDisposition::Cancelled {
+                    reason: "\u{1}".repeat(4096),
+                    quiescence: BootstrapQuiescenceAssertion::InspectedQuiescence,
+                    attached_child: Some(Box::new(maximum_attachment.child.clone())),
+                },
+            },
+        );
         let maximum_complete = request_bytes(
             maximum_argv,
             AutomaticBootstrapAction::Complete {
-                attachment: Box::new(attachment.clone()),
-                retained,
+                attachment: Box::new(maximum_attachment),
+                retained: maximum_retained,
             },
         );
         eprintln!(
-            "automatic requests escaped={} Complete={} Recover={} maxargv_original={} maxargv_Complete={}",
+            "automatic requests escaped={} Complete={} Recover={} maxargv_original={} maxargv_Complete={} maxargv_Recover={}",
             body.starts_with('\u{1}'),
             complete.len(),
             recover.len(),
             maximum_original.len(),
-            maximum_complete.len()
+            maximum_complete.len(),
+            maximum_recover.len()
         );
         if body.starts_with('\u{1}') {
             assert!(maximum_original.len() > 524288);
@@ -1925,6 +1971,18 @@ fn automatic_capacity_actual_serializer_maximum_body_records() {
                 .map(|v| String::from_utf8(v.to_vec()).unwrap())
                 .collect();
             near.plan.payload.launch.validate().unwrap();
+            near.digest = near.semantic_digest().unwrap();
+            let mut near_attachment = attachment.clone();
+            let AutomaticOriginal::Handoff(child) = &mut near_attachment.child.original else {
+                panic!("handoff child")
+            };
+            child.launch.argv = near.plan.payload.launch.argv.clone();
+            near_attachment.child.digest = near_attachment
+                .child
+                .original
+                .digest(&near_attachment.child.claim)
+                .unwrap();
+            let near_attachment_bytes = serde_json::to_vec(&near_attachment).unwrap();
             let near_original = serde_json::to_vec(&near).unwrap();
             let report = serde_json::json!({"outcome":"started","pane":attachment.created.root_pane,"seat":attachment.resolved_seat,"harness":near.plan.payload.launch.harness.as_str(),"argv":near.plan.payload.launch.argv});
             let near_retained = LinkedBootstrapReport {
@@ -1942,17 +2000,34 @@ fn automatic_capacity_actual_serializer_maximum_body_records() {
                 host_incarnation: attachment.created.host_incarnation.clone(),
             };
             near_retained.validate().unwrap();
+            let near_recover = request_bytes(
+                near.clone(),
+                AutomaticBootstrapAction::Recover {
+                    attempt: BootstrapAttempt::first(),
+                    inspection: BootstrapRecoveryInspection {
+                        version: 1,
+                        digest: "b".repeat(64),
+                    },
+                    disposition: AutomaticBootstrapRecoveryDisposition::Cancelled {
+                        reason: "\u{1}".repeat(4096),
+                        quiescence: BootstrapQuiescenceAssertion::InspectedQuiescence,
+                        attached_child: Some(Box::new(near_attachment.child.clone())),
+                    },
+                },
+            );
             let near_complete = request_bytes(
                 near,
                 AutomaticBootstrapAction::Complete {
-                    attachment: Box::new(attachment.clone()),
+                    attachment: Box::new(near_attachment),
                     retained: near_retained,
                 },
             );
             eprintln!(
-                "automatic nearaggregate original={} Complete={} rawargv={}",
+                "automatic nearaggregate original={} attachment={} Complete={} Recover={} rawargv={}",
                 near_original.len(),
+                near_attachment_bytes.len(),
                 near_complete.len(),
+                near_recover.len(),
                 lo
             );
             assert!(near_original.len() <= 524288);
