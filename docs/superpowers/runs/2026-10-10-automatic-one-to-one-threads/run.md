@@ -1,7 +1,7 @@
 # super-auto run — 2026-10-10-automatic-one-to-one-threads
 
 flags: planOneShot=true skipPlanRoast=false skipCodeRoast=false autonomous=true
-phase: roast-code
+phase: fix-loop (skipped)
 
 idea: Use $super-auto, fully autonomous end to end with both roasts on, to implement this feature in this repo: automatic 1:1 threads. An agent can send a message to another agent by giving only a target seat ID, without specifying a thread. The plugin automatically creates (or reuses an existing) "1:1" thread with exactly two participants, the sender and the recipient, which otherwise behaves like a normal thread. The handoff command gets the same treatment: if no thread is specified, the handoff goes through the 1:1 thread. When the integration branch is ready for merge, run `herdr-threads join dev-herdr-threads` (thread taQXwBH7X) and send a --nudge message there stating that this feature is ready for integration into main.
 branch: super-auto/automatic-one-to-one-threads
@@ -18,6 +18,7 @@ roastDesignRound: 2
 roast-design: 2026-10-10-automatic-one-to-one-threads-roast-design-1.md, 2026-10-10-automatic-one-to-one-threads-roast-design-2.md
 
 parked:
+- 2026-10-10-automatic-one-to-one-threads-roast-pr-2.md · degraded-verdict · "clean (1 nits) [low coverage] — proceeded, not re-roasted; auto under fully-autonomous delegation. All12scouts valid/completed, zero raw triggers literal qualifier; prior Nit unchanged, no missing applicable judges/stage loss/escalations/caps. No convergence claim."
 - 2026-10-10-automatic-one-to-one-threads-roast-design-2.md · degraded-verdict · "clean (0 nits) [low coverage] — proceeded, not re-roasted; auto under explicit fully-autonomous delegation. All9scouts valid/completed; zero raw findings triggers reporter literal rule; no failed stages or missing applicable judges. Prior Blocking resolved, no new/carried/regressed; no escalations/beyond caps."
 
 Design hand-off: ht-e99 ready for caller-owned code phase; two design-roast rounds, one design-only repair ht-e99.6 closed at ce11790f. No implementation code delivered.
@@ -36,7 +37,7 @@ roastCodeRound: 2
 
 Whole-epic successor: `.superpowers/sdd/ht-e99-plan/whole-epic-review-2.md` is CLEAN at 75d6fb5f662d4f10ccdc540accd909fc935e6969 against main6107075f; original NEEDS_FIX review preserved. Task9 repair independently verified. Full suite remains unmeasured. PR roast round 1 begins at the checkpoint containing this state.
 
-roast-code: 2026-10-10-automatic-one-to-one-threads-roast-pr-1.md
+roast-code: 2026-10-10-automatic-one-to-one-threads-roast-pr-1.md, 2026-10-10-automatic-one-to-one-threads-roast-pr-2.md
 
 scopeFilter-round-1:
 - [Nit] src/store/archival.rs:222 · punch-list — Indexed pair selection and archival-fence semantics are required; optimizing retained-parent archival scans is an unstated improvement, with no measured stated-budget violation.
@@ -57,3 +58,9 @@ Whole-epic-review-3: CLEAN at0d21f5f9 against incorporatedmainbcb49485, no requi
 Topology fixture refresh merged: ht-e99.10 at8f661e1cafd047756a71141d75d3124a0a3a2e67, reviewed source10f81048, identical tree77619f64. Main945107f6 ancestry verified; imported fixture loops byte-identical to main, feature two direct_recipient None fields retained. Fresh task review CLEAN; serial29/29 focused and fmt/lint/default/diff/scopedleak passed. All source/helpers quiescent. Fresh whole-epic-review-4 PENDING at next checkpoint; phase code/reviewPENDING remain until persisted verdict.
 
 Whole-epic final successor: `.superpowers/sdd/ht-e99-plan/whole-epic-review-4.md` CLEAN atfa4c97b0 against main945107f6; all13 scoped leaves closed, remaining buckets empty/stalledfalse. Fresh reviewed baseline plus complete two-file import delta verified; original reviews and failed full gate preserved. Latestmetrics5:12 implementation merges versus13 leaves (design-only.6). PR roast round2 begins at this exact checkpoint; prior round1 report supplied, late-round stance/regression lane required. Fullsuite/five-minute proof remains outstanding after roast.
+
+scopeFilter-round-2:
+- [Nit] src/store/archival.rs:222 · punch-list — The goal requires indexed constant-size pair registry lookup and correct archival protection, but does not require optimizing retained-parent archival scans; no stated budget violation was measured.
+scope-filter: 0 in-scope · 1 punch-listed
+
+PR roast2 disposition: clean (1 nits) [low coverage], 0new/1carried/0resolved/0regressed,12/12scouts,0raw/deduped/panels/spots; no judge seats required, zero stage loss/retries/caps/escalations. Fresh scope filter routes carriedNit to punch list. Fix-loop skipped: no in-scope finding. Both design2 and PR2 degraded qualifiers are preserved; autonomous proceed, no pointless third round. Actual47packetfiles preserved in `.superpowers/sdd/ht-e99-plan/roast-pr-2/`. Final fullsuite gate starts only after this disposition.
