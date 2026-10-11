@@ -32,12 +32,12 @@ scopeFilter-round-1: [FYI] src/store/schema.rs:592; src/store/schema.rs:423; doc
 scopeFilter-round-1: [Nit] TRUST-POLICY.md:312 punch-list — This is stale doc wording in the policy summary bullets, which A4 already governs.
 scope-filter: 6 in-scope · 5 punch-listed
 codeBuckets:
-  completed: ht-54r.1 ht-54r.2 ht-54r.3 ht-54r.4 ht-54r.5 ht-54r.6 ht-54r.7 ht-54r.8 ht-54r.9 ht-54r.10 ht-54r.11 ht-54r.12 ht-54r.13 ht-54r.14 ht-54r.15 ht-54r.16 ht-54r.17 ht-54r.18 ht-54r.19 ht-54r.20 ht-54r.21 ht-54r.22 ht-54r.23 ht-54r.24 ht-54r.25 ht-54r.39 ht-54r.52 ht-54r.53 ht-54r.54 ht-54r.55 ht-54r.56 ht-54r.57 ht-54r.58 ht-54r.59 ht-54r.60
+  completed: ht-54r.1 ht-54r.2 ht-54r.3 ht-54r.4 ht-54r.5 ht-54r.6 ht-54r.7 ht-54r.8 ht-54r.9 ht-54r.10 ht-54r.11 ht-54r.12 ht-54r.13 ht-54r.14 ht-54r.15 ht-54r.16 ht-54r.17 ht-54r.18 ht-54r.19 ht-54r.20 ht-54r.21 ht-54r.22 ht-54r.23 ht-54r.24 ht-54r.25 ht-54r.39 ht-54r.52 ht-54r.53 ht-54r.54 ht-54r.55 ht-54r.56 ht-54r.57 ht-54r.58 ht-54r.59 ht-54r.60 ht-54r.70 ht-54r.71 ht-54r.72 ht-54r.73 ht-54r.74 ht-54r.75
   escalated: 
   pendingRetry: 
   parked: ht-54r.5 ht-54r.12 ht-54r.19
   stalled: false
-  review: not ready (S1 main absorption: migration collision 29-31, agy harness unknown to caller_env, seat_wake_on overlap; S2 plain_call_enrolled_agent_display_acks fails (NULL-fingerprint shortcut vs .56); S3 continuity_candidates newest-row only; S4 Hermes child pre-subagent_start supersedes parent; S5 mod channel/ACK still provenance-gated + provenance overwrite; full suite + Linux unverified)
+  review: not ready (final review 4 @ 212dbd0c: continuity reattach inserts binding without cursors → history unread after Herdr restart; cursor stuck after mod/hook-pull ACK of ordinary msg; agy hook delivery lost after upgrade (SessionMismatch on disconnected); S3 continuity_candidates newest-row; S4 Hermes child pre-subagent_start supersedes parent; S5 provenance-gated mod channel + overwrite; single-target composer wake ignores foreground PID; stale TRUST-POLICY/SKILL/CHILD_RESTRICTION text)
   sweep: abe1bf03 — 5471 passed, 0 failed, 0 errors, 44 skipped; failing: none; command: nice cargo nextest run --locked --all-targets --all-features --no-fail-fast (+ scripts/check-harness-neutral exit 0, check-no-leaked-processes clean, wall 258s) @ abe1bf03
   slowness: round 1 hook.rs hot-file cap raised to 4; merge queue peaked at 3
   worktreesKept: 
