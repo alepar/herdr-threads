@@ -9,10 +9,10 @@ use crate::{
     delivery::{
         self, Assembler, DeliveryItem, DeliveryKind, DrainEvent, FrameItem, MAX_DRAIN_PAGES,
         PAGE_MAX_BYTES, PAGE_MAX_ITEMS, PageError, PageSource, Stop, drain_pages, frame,
-        ledger::{Offer, OfferedLedger},
+        ledger::{MAX_OFFERS_PER_SEAT, Offer, OfferedLedger},
     },
     harness::adapter::DeliveryMechanism,
-    ports::{ModBindingView, ModFingerprint, ModSeatView, ReadContext, StorePort},
+    ports::{ModBindingView, ModFingerprint, ModSeatView, PulledNotice, ReadContext, StorePort},
     protocol::{
         authority::{
             COOPERATIVE_TOP_LEVEL_PROVENANCE, CallerClaim, CallerRole, Harness, PeerIdentity,
@@ -25,7 +25,7 @@ use crate::{
         },
         ids::MessageId,
         pagination::{Page, PageRequest},
-        results::{ApiError, CommandResult, ErrorCode, InboxBatchV2Item},
+        results::{ApiError, CommandResult, ErrorCode, InboxBatchV2Item, MAX_NOTICE_PAGE_ITEMS},
         time::CallBudget,
     },
 };
@@ -159,6 +159,25 @@ fn frame_item(item: &DeliveryItem) -> FrameItem {
     }
 }
 
+/// An informational notice block: the warning reference and its pinned read-only body command.
+fn notice_block(pulled: &PulledNotice, marker_prefix: &[String]) -> FrameItem {
+    FrameItem {
+        kind: "notice".to_owned(),
+        id: pulled.notice.warning.as_str().to_owned(),
+        thread: Some(pulled.notice.thread.as_str().to_owned()),
+        thread_name: delivery::assemble::label(&pulled.topic),
+        sender: pulled.author.as_ref().map(|a| a.as_str().to_owned()),
+        sender_name: Some(
+            pulled
+                .author
+                .as_ref()
+                .map_or_else(|| "service".to_owned(), |a| a.as_str().to_owned()),
+        ),
+        body: crate::protocol::watch::notice_marker_for(marker_prefix, &pulled.notice.warning),
+        ..FrameItem::default()
+    }
+}
+
 /// Bytes a block adds to a framed text (the block and its blank-line separator).
 fn block_bytes(item: &FrameItem) -> usize {
     frame(std::slice::from_ref(item)).len() - delivery::HEADER.len() - 2 + 2
@@ -230,7 +249,11 @@ impl DomainService {
         let seen_current = pull.seen_attention_version == Some(version);
         let known: HashMap<MessageId, Offer> = {
             let mut ledger = self.delivery_pull.lock();
-            let entry = ledger.seat_mut(seat, binding.generation, &binding.native_session);
+            // A newer generation's entry: this request read the binding before a rotation.
+            let Some(entry) = ledger.seat_mut(seat, binding.generation, &binding.native_session)
+            else {
+                return refused(DeliveryRefusalReason::Busy);
+            };
             if seen_current
                 && entry.read_attention.is_some()
                 && !entry.more_pending
@@ -262,6 +285,41 @@ impl DomainService {
         let mut pending: BTreeSet<MessageId> = BTreeSet::new();
         let mut text_bytes = delivery::HEADER.len();
         let mut more = false;
+        // Step 5: one attention block when the version moved and something that
+        // wakes the seat (an invitation or a waking warning) is pending.
+        let with_attention = !seen_current && view.fingerprint.other_pending > 0;
+        // Informational notices (never wake, shown once) ride every page, a message backlog included: the first
+        // notice page is read before the drain, which holds back one block slot (two with the attention block) and
+        // the first notice block's bytes. Carried after the message blocks, settled before the reply by the
+        // frontier rule.
+        let mut notice_page: Vec<PulledNotice> = if view.newest_pending_notice.is_some() {
+            match self
+                .store
+                .pull_notice_page(seat, MAX_NOTICE_PAGE_ITEMS + 1, budget)
+            {
+                Ok(page) => page,
+                Err(error) => {
+                    eprintln!(
+                        "herdr-threads: debug: delivery pull: notice page for seat {} unavailable ({:?}: {}); retried on the next pull",
+                        seat.as_str(),
+                        error.code,
+                        error.detail
+                    );
+                    Vec::new()
+                }
+            }
+        } else {
+            Vec::new()
+        };
+        let mut notice_blocks: Vec<FrameItem> = notice_page
+            .iter()
+            .map(|pulled| notice_block(pulled, &pull.marker_prefix))
+            .collect();
+        let (reserved_blocks, reserved_bytes) = notice_blocks.first().map_or((0, 0), |first| {
+            (1 + usize::from(with_attention), block_bytes(first))
+        });
+        let mut room_for_new = MAX_OFFERS_PER_SEAT.saturating_sub(known.len());
+        let mut withheld = false;
         let drained = drain_pages(
             &mut source,
             &mut assembler,
@@ -272,16 +330,27 @@ impl DomainService {
                     return Ok(Stop::Continue);
                 };
                 pending.insert(item.id.clone());
-                if known.get(&item.id).is_some_and(|offer| !offer.is_due(now)) {
+                let offered = known.get(&item.id);
+                if offered.is_some_and(|offer| !offer.is_due(now)) {
+                    return Ok(Stop::Continue);
+                }
+                // A full offer table takes no new id: it stays pending and unshown, parked for `inbox`
+                // (holds_parked).
+                if offered.is_none() && room_for_new == 0 {
+                    withheld = true;
                     return Ok(Stop::Continue);
                 }
                 let block = frame_item(&item);
                 let bytes = block_bytes(&block);
                 if !blocks.is_empty()
-                    && (blocks.len() >= PAGE_MAX_BLOCKS || text_bytes + bytes > PAGE_MAX_TEXT_BYTES)
+                    && (blocks.len() + reserved_blocks >= PAGE_MAX_BLOCKS
+                        || text_bytes + bytes + reserved_bytes > PAGE_MAX_TEXT_BYTES)
                 {
                     more = true;
                     return Ok(Stop::Halt);
+                }
+                if offered.is_none() {
+                    room_for_new -= 1;
                 }
                 text_bytes += bytes;
                 shown.push((item.id.clone(), item.message.truncated));
@@ -302,65 +371,30 @@ impl DomainService {
             }
             Err(delivery::DrainPagesError::Sink(never)) => match never {},
         }
-        // Step 5: one attention block when the version moved and something that
-        // wakes the seat (an invitation or a waking warning) is pending.
-        let with_attention = !seen_current && view.fingerprint.other_pending > 0;
-        // Informational notices (never wake, shown once): carried after the
-        // message blocks, settled before the reply by the frontier rule.
-        let mut notice_blocks: Vec<FrameItem> = Vec::new();
         let mut notices_settled = false;
         let mut notices_has_more = false;
         let room = PAGE_MAX_BLOCKS.saturating_sub(blocks.len() + usize::from(with_attention));
-        let limit = room.min(crate::protocol::results::MAX_NOTICE_PAGE_ITEMS);
-        if !more && limit > 0 && view.newest_pending_notice.is_some() {
-            let mut page = match self.store.pull_notice_page(seat, limit + 1, budget) {
-                Ok(page) => page,
-                Err(error) => {
-                    eprintln!(
-                        "herdr-threads: debug: delivery pull: notice page for seat {} unavailable ({:?}: {}); retried on the next pull",
-                        seat.as_str(),
-                        error.code,
-                        error.detail
-                    );
-                    Vec::new()
-                }
-            };
-            notices_has_more = page.len() > limit;
-            page.truncate(limit);
+        let limit = room.min(MAX_NOTICE_PAGE_ITEMS);
+        if limit > 0 && view.newest_pending_notice.is_some() {
+            notices_has_more = notice_page.len() > limit;
+            notice_page.truncate(limit);
+            notice_blocks.truncate(limit);
             let mut kept = 0;
             let mut bytes_used = text_bytes;
-            for pulled in &page {
-                let block = FrameItem {
-                    kind: "notice".to_owned(),
-                    id: pulled.notice.warning.as_str().to_owned(),
-                    thread: Some(pulled.notice.thread.as_str().to_owned()),
-                    thread_name: delivery::assemble::label(&pulled.topic),
-                    sender: pulled.author.as_ref().map(|a| a.as_str().to_owned()),
-                    sender_name: Some(
-                        pulled
-                            .author
-                            .as_ref()
-                            .map_or_else(|| "service".to_owned(), |a| a.as_str().to_owned()),
-                    ),
-                    body: crate::protocol::watch::notice_marker_for(
-                        &pull.marker_prefix,
-                        &pulled.notice.warning,
-                    ),
-                    ..FrameItem::default()
-                };
-                let bytes = block_bytes(&block);
+            for block in &notice_blocks {
+                let bytes = block_bytes(block);
                 if bytes_used + bytes > PAGE_MAX_TEXT_BYTES {
                     break;
                 }
                 bytes_used += bytes;
-                notice_blocks.push(block);
                 kept += 1;
             }
-            if kept < page.len() {
+            if kept < notice_page.len() {
                 notices_has_more = true;
             }
-            page.truncate(kept);
-            let carried: Vec<_> = page.iter().map(|p| p.notice.clone()).collect();
+            notice_page.truncate(kept);
+            notice_blocks.truncate(kept);
+            let carried: Vec<_> = notice_page.iter().map(|p| p.notice.clone()).collect();
             notices_settled = match self.store.settle_pulled_notices(
                 seat,
                 binding.generation,
@@ -403,15 +437,23 @@ impl DomainService {
         }
         {
             let mut ledger = self.delivery_pull.lock();
-            let entry = ledger.seat_mut(seat, binding.generation, &binding.native_session);
+            // Rotated meanwhile: the page belongs to a superseded generation; nothing is recorded or shown.
+            let Some(entry) = ledger.seat_mut(seat, binding.generation, &binding.native_session)
+            else {
+                return refused(DeliveryRefusalReason::Busy);
+            };
             for (id, truncated) in &shown {
+                // Never false here unless a concurrent pull of this generation filled the slots first; such an
+                // id is not shown again while the table is full.
                 entry.record(id, now, *truncated);
             }
             if !more {
                 // The whole pending set was read: what is no longer in it left.
                 entry.retain_pending(&pending);
             }
-            entry.more_pending = more;
+            // An id withheld at capacity while this whole read freed slots is shown by the next pull instead of
+            // hiding behind `Unchanged`.
+            entry.more_pending = more || (withheld && !entry.is_full());
             entry.notices_pending = notices_left;
             entry.read_attention = (!more).then_some(view.fingerprint.attention_version);
         }
@@ -486,7 +528,13 @@ impl DomainService {
         let claim_is_older = confirm.claim.binding_generation < binding.generation;
         let forwarded: Vec<MessageId> = {
             let mut ledger = self.delivery_pull.lock();
-            let entry = ledger.seat_mut(seat, binding.generation, &binding.native_session);
+            let Some(entry) = ledger.seat_mut(seat, binding.generation, &binding.native_session)
+            else {
+                return report(
+                    DeliveryConfirmOutcome::Retryable,
+                    Some(DeliveryConfirmReason::Busy),
+                );
+            };
             confirm
                 .ids
                 .iter()
@@ -531,13 +579,16 @@ impl DomainService {
                 ));
             };
             let mut ledger = self.delivery_pull.lock();
-            let entry = ledger.seat_mut(seat, binding.generation, &binding.native_session);
+            let mut entry = ledger.seat_mut(seat, binding.generation, &binding.native_session);
             for item in stored.results {
                 if matches!(
                     item.result,
                     DeliveryConfirmOutcome::Settled | DeliveryConfirmOutcome::AlreadySettled
                 ) {
-                    entry.remove(&item.id);
+                    // A newer generation's entry is not this request's; its next whole read drops settled ids.
+                    if let Some(entry) = entry.as_deref_mut() {
+                        entry.remove(&item.id);
+                    }
                 }
                 settled_by_store.insert(item.id.clone(), item);
             }

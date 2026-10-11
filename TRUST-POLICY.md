@@ -716,7 +716,9 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   stay pending, and the next pull offers them again (at-least-once): a pull is never answered unchanged before the
   daemon process has read the seat's whole pending set, whatever version the hook last saw.
 - **Re-offers are bounded.** An unconfirmed id is shown at most 3 times per binding generation, 60 s apart; after
-  that it waits for `inbox`. While a seat holds such an id, its idle wake names `inbox`.
+  that it waits for `inbox`. While a seat holds such an id, its idle wake names `inbox`. A seat's offered ledger
+  holds at most 256 ids and never evicts one: while it is full, new ids are not shown by the hook (they stay
+  pending) and the seat's idle wake names `inbox`, as for parked ids.
 - **An unreadable transcript leaves items pending.** A hook-pull hook confirms only ids whose frame header it
   found at the start of a line in a hook-injected step of a transcript it could read (text in tool output, model
   output or user input never confirms; malformed records are skipped): a missing, unreadable or unparseable transcript, or one that grew

@@ -1175,17 +1175,29 @@ fn notices_beyond_one_page_continue_on_the_next_pull() {
     ));
 }
 
+// Kills: notices waiting behind a message backlog (main review Important 2 knock-on).
 #[test]
-fn notices_wait_while_the_message_page_is_full() {
+fn notices_ride_a_full_message_page() {
     let f = fixture(40);
     let context = pull_seat(&f);
     service_notice(&f, "w-wait");
     let first = page(pull(&f, &context, None));
     assert!(first.more);
-    assert!(!first.text.contains("notice w-wait"), "{}", first.text);
-    assert_eq!(notice_frontier(&f), 0);
+    assert_eq!(
+        first.offered.len(),
+        PAGE_MAX_BLOCKS - 1,
+        "one block slot is held for the notice"
+    );
+    assert!(first.text.contains("notice w-wait"), "{}", first.text);
+    assert!(notice_frontier(&f) > 0, "settled by the frontier rule");
     let second = page(pull(&f, &context, Some(first.attention_version)));
-    assert!(second.text.contains("notice w-wait"), "{}", second.text);
+    assert!(
+        !second.text.contains("notice w-wait"),
+        "shown once: {}",
+        second.text
+    );
+    assert_eq!(second.offered.len(), 40 - (PAGE_MAX_BLOCKS - 1));
+    assert!(!second.more);
 }
 
 #[test]
@@ -1214,5 +1226,183 @@ fn confirm_of_a_notice_id_is_not_offered() {
     assert_eq!(
         confirm(&f, &context, &["w-1"], "op-n"),
         vec![("w-1".to_owned(), Outcome::NotOffered, None)]
+    );
+}
+
+// ---- a backlog over the offer table (ht-poh.59, main review Important 2) ----
+
+/// One pull as a hook makes it: it sends the last version it saw and keeps the reply's. Records when each id was
+/// shown and returns the page text (None for `Unchanged`).
+fn hook_pull_once(
+    f: &Fixture,
+    context: &CallerClaim,
+    seen: &mut Option<u64>,
+    shown: &mut std::collections::BTreeMap<MessageId, Vec<i64>>,
+) -> Option<String> {
+    match pull(f, context, *seen) {
+        DeliveryPullReply::Page(page) => {
+            *seen = Some(page.attention_version);
+            let at = f.clock.0.load(Ordering::SeqCst);
+            for id in page.offered.iter().chain(&page.truncated) {
+                shown.entry(id.clone()).or_default().push(at);
+            }
+            Some(page.text)
+        }
+        DeliveryPullReply::Unchanged { attention_version } => {
+            *seen = Some(attention_version);
+            None
+        }
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+// Kills: a full offer table evicting still-pending ids (re-offered afresh: shown again < 60 s later, more than
+// three times, ~64 KiB per hook), a full table answering Delivers forever, and notices starving behind the
+// endless `more` backlog (main review Important 2; repro /private/tmp/agy-ledger-review.rs).
+#[test]
+fn a_truncated_backlog_over_the_offer_table_keeps_the_reoffer_bounds_and_parks_for_inbox() {
+    use crate::delivery::ledger::MAX_OFFERS_PER_SEAT;
+    let backlog = MAX_OFFERS_PER_SEAT + 33;
+    let f = fixture(0);
+    let big = "x".repeat(WATCH_BODY_LIMIT_BYTES + 100);
+    for n in 0..backlog {
+        ordinary_message(&f, &format!("b{n:03}"), &big);
+    }
+    let context = pull_seat(&f);
+    // After the check-in, which would carry a notice already pending.
+    service_notice(&f, "w-1");
+    let seat = SeatId::new("s");
+    let generation = context.binding_generation;
+    let now = |f: &Fixture| UtcMillis(f.clock.0.load(Ordering::SeqCst));
+    let outlook = |f: &Fixture| {
+        f.state
+            .next_pull(&seat, generation, wake_attention(f), now(f))
+    };
+    let mut shown = std::collections::BTreeMap::new();
+    let mut seen = None;
+    let bounded = |shown: &std::collections::BTreeMap<MessageId, Vec<i64>>| {
+        for (id, times) in shown {
+            assert!(
+                times.len() <= usize::from(MAX_OFFERS_PER_GENERATION),
+                "{id:?} shown {} times: {times:?}",
+                times.len()
+            );
+            assert!(
+                times
+                    .windows(2)
+                    .all(|pair| pair[1] - pair[0] >= REOFFER_AFTER_MS),
+                "{id:?} shown again under 60 s: {times:?}"
+            );
+        }
+    };
+
+    // A hook pull every 100 ms for 12 s.
+    let mut texts = Vec::new();
+    for _ in 0..120 {
+        texts.push(hook_pull_once(&f, &context, &mut seen, &mut shown));
+        advance(&f, 100);
+    }
+    bounded(&shown);
+    let first = texts[0].as_deref().expect("the first pull shows a page");
+    assert!(
+        first.contains("notice w-1"),
+        "the notice rides the backlog page: {first}"
+    );
+    assert!(notice_frontier(&f) > 0, "the carried notice settled");
+    assert_eq!(
+        texts
+            .iter()
+            .flatten()
+            .filter(|text| text.contains("notice w-1"))
+            .count(),
+        1,
+        "the notice is shown once"
+    );
+    assert_eq!(
+        shown.len(),
+        MAX_OFFERS_PER_SEAT,
+        "the table filled, then took no new id"
+    );
+    for n in MAX_OFFERS_PER_SEAT..backlog {
+        let id = format!("b{n:03}");
+        assert!(
+            !shown.contains_key(&MessageId::new(&id)),
+            "{id} waits for inbox"
+        );
+        assert_eq!(receipt_state(&f, &id), "pending");
+    }
+    let first_shown = shown.values().map(|times| times[0]).min().unwrap();
+    assert_eq!(
+        outlook(&f),
+        NextPull::ReofferAt(UtcMillis(first_shown + REOFFER_AFTER_MS)),
+        "a full table is not Delivers-forever"
+    );
+    assert!(
+        f.state.holds_parked(&seat, generation),
+        "a full table parks new ids for inbox"
+    );
+
+    // Past 60 s, 120 s and 180 s: 6 s of pulls every 100 ms each time.
+    for round in 1..=3 {
+        f.clock
+            .0
+            .store(first_shown + round * REOFFER_AFTER_MS, Ordering::SeqCst);
+        for _ in 0..60 {
+            hook_pull_once(&f, &context, &mut seen, &mut shown);
+            advance(&f, 100);
+        }
+        bounded(&shown);
+    }
+    assert_eq!(shown.len(), MAX_OFFERS_PER_SEAT);
+    assert!(
+        shown
+            .values()
+            .all(|times| times.len() == usize::from(MAX_OFFERS_PER_GENERATION)),
+        "every offered id was re-offered up to the bound, then parked"
+    );
+    assert_eq!(outlook(&f), NextPull::Nothing);
+    assert!(f.state.holds_parked(&seat, generation));
+    // New attention still wakes; the parked table makes that wake name `inbox`.
+    bump_wake_attention(&f);
+    assert_eq!(outlook(&f), NextPull::Delivers);
+}
+
+// Kills: an id withheld at capacity stuck behind `Unchanged` after the same whole read freed a slot.
+#[test]
+fn an_id_withheld_at_capacity_is_shown_once_a_whole_read_frees_a_slot() {
+    use crate::delivery::ledger::MAX_OFFERS_PER_SEAT;
+    let f = fixture(MAX_OFFERS_PER_SEAT + 1);
+    let context = pull_seat(&f);
+    let mut seen = None;
+    for _ in 0..MAX_OFFERS_PER_SEAT / PAGE_MAX_BLOCKS {
+        seen = Some(page(pull(&f, &context, seen)).attention_version);
+    }
+    let last = format!("m{}", MAX_OFFERS_PER_SEAT + 1);
+    assert!(
+        matches!(
+            pull(&f, &context, seen),
+            DeliveryPullReply::Unchanged { .. }
+        ),
+        "the table is full: {last} waits"
+    );
+    assert!(
+        f.state
+            .holds_parked(&SeatId::new("s"), context.binding_generation)
+    );
+    // `inbox` settles m1 outside the hook: the version moves and the whole read drops m1 from the table.
+    f.db.execute(
+        "UPDATE receipts SET state='acked' WHERE message_id='m1' AND seat_id='s'",
+        [],
+    )
+    .unwrap();
+    let version = match pull(&f, &context, seen) {
+        DeliveryPullReply::Unchanged { attention_version } => attention_version,
+        other => panic!("nothing fits before the whole read frees the slot: {other:?}"),
+    };
+    let freed = page(pull(&f, &context, Some(version)));
+    assert_eq!(
+        freed.offered,
+        ids(&[last.as_str()]),
+        "no time passed: the freed slot shows it"
     );
 }

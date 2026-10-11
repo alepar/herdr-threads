@@ -231,7 +231,7 @@ pub enum DeliveryConfirmReason { Unknown, NotAddressed, Truncated, NoHookPull, B
 **Chosen: process-local.**
 - `delivery/ledger.rs` holds a pure data structure, `OfferedLedger { seats: HashMap<SeatId, SeatOffers> }`:
   - `SeatOffers { generation, native_session, more_pending: bool, offers: BTreeMap<MessageId, Offer { first_at, last_at, count: u8, truncated: bool }> }`.
-  - Bounds: `MAX_LEDGER_SEATS = 4096`, evicting the least recently touched seat; `MAX_OFFERS_PER_SEAT = 256`, evicting the oldest offer.
+  - Bounds: `MAX_LEDGER_SEATS = 4096`, evicting the least recently touched seat; `MAX_OFFERS_PER_SEAT = 256`; a full table records no new id and evicts none (new ids wait for `inbox`; ht-poh.59).
 - `src/service/delivery_pull.rs` owns it behind a `Mutex`. The lock is never held across a store read.
 
 **Pull** (in the daemon, using the DP2 `Assembler` with a store-backed `PageSource` over `InboxBatchV2`):
