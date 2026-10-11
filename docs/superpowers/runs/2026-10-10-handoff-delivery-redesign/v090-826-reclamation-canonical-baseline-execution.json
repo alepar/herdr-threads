@@ -1,0 +1,96 @@
+{
+  "head": "8263ecf62efff0edc66bda287680c449cf41f43c",
+  "tree": "b24ce987fea641be3fb6e10e5cac079a6ad82f08",
+  "run_id": "44c568a2-b408-4d11-bf33-ee7bf68f8886",
+  "expected": [
+    "service::delivery_pull::tests::presentation_watch_settled_receipts_reclaim_live_offer_capacity",
+    "service::delivery_pull::tests::presentation_hook_manual_ack_reclaims_live_offer_capacity",
+    "service::delivery_pull::tests::presentation_watch_completed_lazy_rows_reclaim_live_offer_capacity",
+    "service::delivery_pull::tests::presentation_reclamation_legacy_terminal_delta_has_exact_bounded_work_on_unchanged",
+    "service::delivery_pull::tests::presentation_reclamation_preserves_logical_precedence_and_explicit_waiver_flags",
+    "service::delivery_pull::tests::presentation_reclamation_requires_published_addressed_lazy_completion",
+    "service::delivery_pull::tests::presentation_reclamation_keeps_pending_missing_and_deduplicates_snapshot_work",
+    "service::delivery_pull::tests::presentation_reclamation_replay_returns_delta_and_refusals_do_no_reconciliation",
+    "service::delivery_pull::tests::presentation_reclamation_preserves_pending_truncated_and_reoffer_history",
+    "service::delivery_pull::tests::presentation_full_pending_carry_serves_due_known_offers_without_admitting_fresh_id"
+  ],
+  "commands": [],
+  "list": {
+    "exit": 0,
+    "seconds": 108.5282299160026
+  },
+  "selected": [
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::presentation_full_pending_carry_serves_due_known_offers_without_admitting_fresh_id"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::presentation_hook_manual_ack_reclaims_live_offer_capacity"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::presentation_reclamation_keeps_pending_missing_and_deduplicates_snapshot_work"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::presentation_reclamation_legacy_terminal_delta_has_exact_bounded_work_on_unchanged"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::presentation_reclamation_preserves_logical_precedence_and_explicit_waiver_flags"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::presentation_reclamation_preserves_pending_truncated_and_reoffer_history"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::presentation_reclamation_replay_returns_delta_and_refusals_do_no_reconciliation"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::presentation_reclamation_requires_published_addressed_lazy_completion"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::presentation_watch_completed_lazy_rows_reclaim_live_offer_capacity"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::presentation_watch_settled_receipts_reclaim_live_offer_capacity"
+    ]
+  ],
+  "binaries": [
+    {
+      "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target/debug/deps/herdr_threads-bc80e388954f6954",
+      "sha256": "3047f1647e1ca9228d4f5d2e93dcd613ef977ee1e9788199ce2e6c2a71888737"
+    }
+  ],
+  "run": {
+    "exit": 100,
+    "seconds": 3.368704333086498,
+    "argv": [
+      "nice",
+      "cargo",
+      "nextest",
+      "run",
+      "--locked",
+      "--all-features",
+      "--lib",
+      "--no-fail-fast",
+      "-E",
+      "test(=service::delivery_pull::tests::presentation_watch_settled_receipts_reclaim_live_offer_capacity) | test(=service::delivery_pull::tests::presentation_hook_manual_ack_reclaims_live_offer_capacity) | test(=service::delivery_pull::tests::presentation_watch_completed_lazy_rows_reclaim_live_offer_capacity) | test(=service::delivery_pull::tests::presentation_reclamation_legacy_terminal_delta_has_exact_bounded_work_on_unchanged) | test(=service::delivery_pull::tests::presentation_reclamation_preserves_logical_precedence_and_explicit_waiver_flags) | test(=service::delivery_pull::tests::presentation_reclamation_requires_published_addressed_lazy_completion) | test(=service::delivery_pull::tests::presentation_reclamation_keeps_pending_missing_and_deduplicates_snapshot_work) | test(=service::delivery_pull::tests::presentation_reclamation_replay_returns_delta_and_refusals_do_no_reconciliation) | test(=service::delivery_pull::tests::presentation_reclamation_preserves_pending_truncated_and_reoffer_history) | test(=service::delivery_pull::tests::presentation_full_pending_carry_serves_due_known_offers_without_admitting_fresh_id)"
+    ]
+  },
+  "leaks": {
+    "exit": 0,
+    "seconds": 0.4530401249649003,
+    "argv": [
+      "scripts/check-no-leaked-processes",
+      "--run-id",
+      "44c568a2-b408-4d11-bf33-ee7bf68f8886"
+    ]
+  },
+  "leak_exit": 0
+}

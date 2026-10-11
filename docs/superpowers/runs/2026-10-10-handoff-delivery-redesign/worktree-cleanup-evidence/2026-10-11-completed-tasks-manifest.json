@@ -1,0 +1,242 @@
+{
+  "timestamp_utc": "2026-10-11T23:01:43.727599+00:00",
+  "authorization": "Parent expanded explicit user low-disk cleanup to these four completed original task checkouts; branches/commits retained; no force",
+  "root_protected": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign",
+  "volume_available_bytes_before": 102759628800,
+  "process_scan": {
+    "tool": "ps -axo pid=,ppid=,command=",
+    "timestamp_utc": "2026-10-11T23:00:46.281Z",
+    "exit_code": 0,
+    "output_lines": 886,
+    "matching_allowed_helper_paths": []
+  },
+  "worktrees": [
+    {
+      "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/completed--task-ht-0lo.3.2",
+      "name": "completed--task-ht-0lo.3.2",
+      "task": "ht-0lo.3.2",
+      "head": "673a27ad3515f689ada4337ae106ae6b2cb507d9",
+      "git_tree": "15c65ced8ee39cb67b4628e813aa5cdafbd74fa3",
+      "branch_retained": "refs/heads/task-ht-0lo.3.2",
+      "tracked_index_clean": true,
+      "untracked": [],
+      "ignored_target_files": 23432,
+      "ignored_outside_target": [],
+      "target_classification": "disposable Cargo debug buildcache; standard layout only; tmp empty; canonical directory, not symlink",
+      "authored_untracked_or_ignored_evidence": [],
+      "artifact_copy_required": false,
+      "allocated_bytes_before": 24064253952,
+      "target_allocated_bytes_before": 23996862464,
+      "source_reachable_from": [
+        "f330bdab",
+        "6c919229335fa1ed9dc95043c8ca8c8b65556123"
+      ],
+      "completion_evidence": {
+        "run_completed_line": "  completed: ht-0lo.6, ht-0lo.7, ht-0lo.2.1, ht-0lo.1.1, ht-0lo.3.1, ht-0lo.4.1, ht-0lo.1.3, ht-0lo.2.2, ht-0lo.4.2, ht-0lo.2.3, ht-0lo.1.2, ht-0lo.3.2, ht-0lo.5, ht-0lo.1, ht-0lo.2, ht-0lo.3, ht-0lo.4, ht-0lo.8.1, ht-0lo.8.2, ht-0lo.8.4",
+        "run_sha256": "15d3b0ecbd8c020495b18bcbc991d53dd3b5b0f1fc86477e001ac2f7928fc2fd",
+        "progress_path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/progress.md",
+        "progress_line": 236,
+        "progress_text": "Task 10 (ht-0lo.3.2): complete (commits0ac65f96..673a27ad, review clean); mergedd1a53d4, bdclosed. Fresh whole-task and independent canonicalNULL origin/schema reviews Spec CLEAN/Quality CLEAN, nofindings; no source overlap, all39preimages/blobs/runtime deltas exact. Exact-tip clippy16.98s/fmt3.78s PASS/no warnings, no ownedprocesses. Earlier speedoverruns preserved.",
+        "progress_sha256": "ebb0e72b8c4965e3f3c25b65d10756fd5324360940a43dbea8176af00e703de1"
+      },
+      "removed": true,
+      "removal_command_exit_code": 0,
+      "path_absent_verified": true,
+      "worktree_registration_absent_verified": true,
+      "retained_branch_head_verified": true,
+      "retained_commit_tree_verified": true,
+      "allocated_bytes_after": 0
+    },
+    {
+      "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.1.2",
+      "name": "super-auto-handoff-delivery-redesign--task-ht-0lo.1.2",
+      "task": "ht-0lo.1.2",
+      "head": "ef048d163d6e2b014b8390c0384f5eaca963a202",
+      "git_tree": "80cde051d3fce9f98c6762003b5f8e26e55144d3",
+      "branch_retained": "refs/heads/task-ht-0lo.1.2",
+      "tracked_index_clean": true,
+      "untracked": [],
+      "ignored_target_files": 19076,
+      "ignored_outside_target": [],
+      "target_classification": "disposable Cargo debug buildcache; standard layout only; tmp empty; canonical directory, not symlink",
+      "authored_untracked_or_ignored_evidence": [],
+      "artifact_copy_required": false,
+      "allocated_bytes_before": 20245176320,
+      "target_allocated_bytes_before": 20178370560,
+      "source_reachable_from": [
+        "f330bdab",
+        "6c919229335fa1ed9dc95043c8ca8c8b65556123"
+      ],
+      "completion_evidence": {
+        "run_completed_line": "  completed: ht-0lo.6, ht-0lo.7, ht-0lo.2.1, ht-0lo.1.1, ht-0lo.3.1, ht-0lo.4.1, ht-0lo.1.3, ht-0lo.2.2, ht-0lo.4.2, ht-0lo.2.3, ht-0lo.1.2, ht-0lo.3.2, ht-0lo.5, ht-0lo.1, ht-0lo.2, ht-0lo.3, ht-0lo.4, ht-0lo.8.1, ht-0lo.8.2, ht-0lo.8.4",
+        "run_sha256": "15d3b0ecbd8c020495b18bcbc991d53dd3b5b0f1fc86477e001ac2f7928fc2fd",
+        "progress_path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/progress.md",
+        "progress_line": 198,
+        "progress_text": "Task 7 (ht-0lo.1.2): complete (commits07305ed8..ef048d16, review clean); mergeaa9533d3, bdclosed. All30approvedsourceblobs and exact original\u2192rebased runtime deltas preserved, immutable1..34/mainfixes intact. Fresh17-path conservative seamreview Spec CLEAN/Quality CLEAN, no findings. Exact clippy56.47s/no diagnostics and fmtcheck pass (observed toolwait11.946s, not claimed full wallclock). All sessions drained/no ownedprocesses.",
+        "progress_sha256": "ebb0e72b8c4965e3f3c25b65d10756fd5324360940a43dbea8176af00e703de1"
+      },
+      "removed": true,
+      "removal_command_exit_code": 0,
+      "path_absent_verified": true,
+      "worktree_registration_absent_verified": true,
+      "retained_branch_head_verified": true,
+      "retained_commit_tree_verified": true,
+      "allocated_bytes_after": 0
+    },
+    {
+      "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.2.3",
+      "name": "super-auto-handoff-delivery-redesign--task-ht-0lo.2.3",
+      "task": "ht-0lo.2.3",
+      "head": "4bae64390b86491c737bb3c00b21a217a8df3f5d",
+      "git_tree": "469a6573dd56177c1e57535608265ca5cbb58af8",
+      "branch_retained": "refs/heads/task-ht-0lo.2.3",
+      "tracked_index_clean": true,
+      "untracked": [],
+      "ignored_target_files": 13768,
+      "ignored_outside_target": [],
+      "target_classification": "disposable Cargo debug buildcache; standard layout only; tmp empty; canonical directory, not symlink",
+      "authored_untracked_or_ignored_evidence": [],
+      "artifact_copy_required": false,
+      "allocated_bytes_before": 17566572544,
+      "target_allocated_bytes_before": 17500172288,
+      "source_reachable_from": [
+        "f330bdab",
+        "6c919229335fa1ed9dc95043c8ca8c8b65556123"
+      ],
+      "completion_evidence": {
+        "run_completed_line": "  completed: ht-0lo.6, ht-0lo.7, ht-0lo.2.1, ht-0lo.1.1, ht-0lo.3.1, ht-0lo.4.1, ht-0lo.1.3, ht-0lo.2.2, ht-0lo.4.2, ht-0lo.2.3, ht-0lo.1.2, ht-0lo.3.2, ht-0lo.5, ht-0lo.1, ht-0lo.2, ht-0lo.3, ht-0lo.4, ht-0lo.8.1, ht-0lo.8.2, ht-0lo.8.4",
+        "run_sha256": "15d3b0ecbd8c020495b18bcbc991d53dd3b5b0f1fc86477e001ac2f7928fc2fd",
+        "progress_path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/progress.md",
+        "progress_line": 187,
+        "progress_text": "Task 8 (ht-0lo.2.3): complete (commits5fa83a38..4bae6439, review clean); mergec92d5d3a, bdclosed. All10 source files exactapprovedoriginal, fresh five-path conservative seam review Spec CLEAN/Quality CLEAN, no findings. Exact-tip clippy24.47s/fmt3.778s pass with no diagnostics. All owned sessions drained/no task processes; no redundant focused rerun.",
+        "progress_sha256": "ebb0e72b8c4965e3f3c25b65d10756fd5324360940a43dbea8176af00e703de1"
+      },
+      "removed": true,
+      "removal_command_exit_code": 0,
+      "path_absent_verified": true,
+      "worktree_registration_absent_verified": true,
+      "retained_branch_head_verified": true,
+      "retained_commit_tree_verified": true,
+      "allocated_bytes_after": 0
+    },
+    {
+      "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.4.2",
+      "name": "super-auto-handoff-delivery-redesign--task-ht-0lo.4.2",
+      "task": "ht-0lo.4.2",
+      "head": "4d86974cf39fd52c71ef91511c0f30fb37c7b396",
+      "git_tree": "762a4aef66e63ddbcd25d5dec8d619baea154404",
+      "branch_retained": "refs/heads/task-ht-0lo.4.2",
+      "tracked_index_clean": true,
+      "untracked": [],
+      "ignored_target_files": 11581,
+      "ignored_outside_target": [
+        {
+          "path": "scripts/__pycache__/validate-native-demo.cpython-314.pyc",
+          "bytes": 448518,
+          "sha256": "fb069ffec4fb5c3283541d2b8fd747abaa9bcc7e37a0ae32b34280fbb327e616",
+          "classification": "disposable generated CPython bytecode"
+        },
+        {
+          "path": "scripts/canary/__pycache__/manifest.cpython-314.pyc",
+          "bytes": 77017,
+          "sha256": "ee2cdab1286d5e971547bdf6946c7588c9663cc00489d6c4915297c4d393115e",
+          "classification": "disposable generated CPython bytecode"
+        },
+        {
+          "path": "scripts/canary/__pycache__/run.cpython-314.pyc",
+          "bytes": 69198,
+          "sha256": "9c460a747f8a6f0dffb2ac343b739bc5baf931d0b1856c88bc2cf0ec65ca0d2e",
+          "classification": "disposable generated CPython bytecode"
+        },
+        {
+          "path": "scripts/canary/__pycache__/test_capture_hook.cpython-314.pyc",
+          "bytes": 31885,
+          "sha256": "c09345225876b20370662f0560a4dd947faffc9fe134dececb657d0299958793",
+          "classification": "disposable generated CPython bytecode"
+        },
+        {
+          "path": "scripts/canary/__pycache__/test_seam_integration.cpython-314.pyc",
+          "bytes": 29252,
+          "sha256": "a354573f21223930dfe66f0d0b20e27e0fe1d50fa6bc7743a0bc09167075709d",
+          "classification": "disposable generated CPython bytecode"
+        },
+        {
+          "path": "scripts/canary/__pycache__/test_strategy.cpython-314.pyc",
+          "bytes": 120735,
+          "sha256": "9490e20dd81a9095e381c7ffde1f868b90ac8b7b49e2fe27dd4697985eb21444",
+          "classification": "disposable generated CPython bytecode"
+        },
+        {
+          "path": "scripts/canary/__pycache__/test_tier0_checks.cpython-314.pyc",
+          "bytes": 26177,
+          "sha256": "6f5df2b23ef50b82a77d96652ffe34a061e6a7e4d751ea0fd0e4b58b087185c8",
+          "classification": "disposable generated CPython bytecode"
+        },
+        {
+          "path": "scripts/canary/__pycache__/versions.cpython-314.pyc",
+          "bytes": 11088,
+          "sha256": "7de232bdaf84ac736ac164902b5418b2996ac202b7875c5d54ed30e30400d7cc",
+          "classification": "disposable generated CPython bytecode"
+        },
+        {
+          "path": "tests/native/demo/__pycache__/test_demo_verify.cpython-314.pyc",
+          "bytes": 344511,
+          "sha256": "e8d39e1c3743e8f51835681d4ba76b49fcb9e66ef040a2887992ecfff8375220",
+          "classification": "disposable generated CPython bytecode"
+        },
+        {
+          "path": "tests/native/support/__pycache__/evidence.cpython-314.pyc",
+          "bytes": 11466,
+          "sha256": "2e8e0e2284e20242d83bf2b22a7fe49d7fd061313f6ef20f844c1b996da0b42e",
+          "classification": "disposable generated CPython bytecode"
+        },
+        {
+          "path": "tests/native/support/__pycache__/fixture.cpython-314.pyc",
+          "bytes": 12955,
+          "sha256": "6f6ee8fd8186078ab96e7313b7a32ffbe81478f37674600fb4b233e2f42d9ccd",
+          "classification": "disposable generated CPython bytecode"
+        }
+      ],
+      "target_classification": "disposable Cargo debug buildcache; standard layout only; tmp empty; canonical directory, not symlink",
+      "authored_untracked_or_ignored_evidence": [],
+      "artifact_copy_required": false,
+      "allocated_bytes_before": 11707822080,
+      "target_allocated_bytes_before": 11640819712,
+      "source_reachable_from": [
+        "f330bdab",
+        "6c919229335fa1ed9dc95043c8ca8c8b65556123"
+      ],
+      "completion_evidence": {
+        "run_completed_line": "  completed: ht-0lo.6, ht-0lo.7, ht-0lo.2.1, ht-0lo.1.1, ht-0lo.3.1, ht-0lo.4.1, ht-0lo.1.3, ht-0lo.2.2, ht-0lo.4.2, ht-0lo.2.3, ht-0lo.1.2, ht-0lo.3.2, ht-0lo.5, ht-0lo.1, ht-0lo.2, ht-0lo.3, ht-0lo.4, ht-0lo.8.1, ht-0lo.8.2, ht-0lo.8.4",
+        "run_sha256": "15d3b0ecbd8c020495b18bcbc991d53dd3b5b0f1fc86477e001ac2f7928fc2fd",
+        "progress_path": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/progress.md",
+        "progress_line": 174,
+        "progress_text": "Task 9 (ht-0lo.4.2): complete (commits6394d3f8..4d86974c, review clean); mergea7a69702, bdclosed. Conservative setup.rs overlap freshreviewCLEAN, all15 tasksourceblobs exactapprovedoriginal and mainmodlog preserved. Exact-tip clippy44.34s/fmt3.898s passed no diagnostics; no redundantfocusedrerun of byteidenticalsource. Source/privatechildren clean.",
+        "progress_sha256": "ebb0e72b8c4965e3f3c25b65d10756fd5324360940a43dbea8176af00e703de1"
+      },
+      "removed": true,
+      "removal_command_exit_code": 0,
+      "path_absent_verified": true,
+      "worktree_registration_absent_verified": true,
+      "retained_branch_head_verified": true,
+      "retained_commit_tree_verified": true,
+      "allocated_bytes_after": 0
+    }
+  ],
+  "allocated_bytes_total_before": 73583824896,
+  "preserved_artifacts": [],
+  "blocked": [],
+  "protected_names": [
+    "upstream-composition-v090",
+    "super-auto-handoff-delivery-redesign--task-ht-0lo.3.2",
+    "upstream-composition-478ec4a9",
+    "finish-composed-automatic-validation",
+    "automatic-double-guard-mutant",
+    "parked--task-ht-0lo.8.2"
+  ],
+  "no_processes_started_or_stopped": true,
+  "verification_timestamp_utc": "2026-10-11T23:02:36.772306+00:00",
+  "volume_available_bytes_after": 120797184000,
+  "allocated_bytes_reclaimed": 73583824896,
+  "protected_worktrees_verified_present": true
+}

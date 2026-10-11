@@ -1,0 +1,213 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+────────────
+ Nextest run ID b30e16a4-c96d-49a8-8f75-d8f5f4c70cbc with nextest profile: default
+    Starting 10 tests across 1 binary (4830 tests skipped)
+        FAIL [   0.489s] ( 1/10) herdr-threads service::delivery_pull::tests::presentation_reclamation_replay_returns_delta_and_refusals_do_no_reconciliation
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_reclamation_replay_returns_delta_and_refusals_do_no_reconciliation ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_reclamation_replay_returns_delta_and_refusals_do_no_reconciliation
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4839 filtered out; finished in 0.48s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_reclamation_replay_returns_delta_and_refusals_do_no_reconciliation' (55251352) panicked at src/service/../../tests/service/delivery_pull.rs:235:56:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: Conflict, detail: "cooperative binding generation changed", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.521s] ( 2/10) herdr-threads service::delivery_pull::tests::presentation_full_pending_carry_serves_due_known_offers_without_admitting_fresh_id
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_full_pending_carry_serves_due_known_offers_without_admitting_fresh_id ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_full_pending_carry_serves_due_known_offers_without_admitting_fresh_id
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4839 filtered out; finished in 0.51s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_full_pending_carry_serves_due_known_offers_without_admitting_fresh_id' (55251355) panicked at src/service/../../tests/service/delivery_pull.rs:235:56:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: Conflict, detail: "cooperative binding generation changed", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.524s] ( 3/10) herdr-threads service::delivery_pull::tests::presentation_hook_manual_ack_reclaims_live_offer_capacity
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_hook_manual_ack_reclaims_live_offer_capacity ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_hook_manual_ack_reclaims_live_offer_capacity
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4839 filtered out; finished in 0.51s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_hook_manual_ack_reclaims_live_offer_capacity' (55251354) panicked at src/service/../../tests/service/delivery_pull.rs:235:56:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: Conflict, detail: "cooperative binding generation changed", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.538s] ( 4/10) herdr-threads service::delivery_pull::tests::presentation_reclamation_preserves_pending_truncated_and_reoffer_history
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_reclamation_preserves_pending_truncated_and_reoffer_history ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_reclamation_preserves_pending_truncated_and_reoffer_history
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4839 filtered out; finished in 0.52s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_reclamation_preserves_pending_truncated_and_reoffer_history' (55251360) panicked at src/service/../../tests/service/delivery_pull.rs:235:56:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: Conflict, detail: "cooperative binding generation changed", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.558s] ( 5/10) herdr-threads service::delivery_pull::tests::presentation_watch_settled_receipts_reclaim_live_offer_capacity
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_watch_settled_receipts_reclaim_live_offer_capacity ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_watch_settled_receipts_reclaim_live_offer_capacity
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4839 filtered out; finished in 0.54s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_watch_settled_receipts_reclaim_live_offer_capacity' (55251361) panicked at src/service/../../tests/service/delivery_pull.rs:235:56:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: Conflict, detail: "cooperative binding generation changed", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.558s] ( 6/10) herdr-threads service::delivery_pull::tests::presentation_watch_completed_lazy_rows_reclaim_live_offer_capacity
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_watch_completed_lazy_rows_reclaim_live_offer_capacity ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_watch_completed_lazy_rows_reclaim_live_offer_capacity
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4839 filtered out; finished in 0.55s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_watch_completed_lazy_rows_reclaim_live_offer_capacity' (55251356) panicked at src/service/../../tests/service/delivery_pull.rs:235:56:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: Conflict, detail: "cooperative binding generation changed", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.559s] ( 7/10) herdr-threads service::delivery_pull::tests::presentation_reclamation_preserves_logical_precedence_and_explicit_waiver_flags
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_reclamation_preserves_logical_precedence_and_explicit_waiver_flags ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_reclamation_preserves_logical_precedence_and_explicit_waiver_flags
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4839 filtered out; finished in 0.55s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_reclamation_preserves_logical_precedence_and_explicit_waiver_flags' (55251358) panicked at src/service/../../tests/service/delivery_pull.rs:235:56:
+    called `Result::unwrap()` on an `Err` value: ApiError { code: Conflict, detail: "cooperative binding generation changed", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.568s] ( 8/10) herdr-threads service::delivery_pull::tests::presentation_reclamation_requires_published_addressed_lazy_completion
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_reclamation_requires_published_addressed_lazy_completion ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_reclamation_requires_published_addressed_lazy_completion
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4839 filtered out; finished in 0.56s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_reclamation_requires_published_addressed_lazy_completion' (55251353) panicked at src/service/../../tests/service/delivery_pull.rs:8180:5:
+    assertion `left == right` failed
+      left: []
+     right: [MessageId("msg-old-displayed")]
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.569s] ( 9/10) herdr-threads service::delivery_pull::tests::presentation_reclamation_keeps_pending_missing_and_deduplicates_snapshot_work
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_reclamation_keeps_pending_missing_and_deduplicates_snapshot_work ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_reclamation_keeps_pending_missing_and_deduplicates_snapshot_work
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4839 filtered out; finished in 0.56s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_reclamation_keeps_pending_missing_and_deduplicates_snapshot_work' (55251357) panicked at src/service/../../tests/service/delivery_pull.rs:8082:5:
+    assertion `left == right` failed
+      left: 16
+     right: 11
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.722s] (10/10) herdr-threads service::delivery_pull::tests::presentation_reclamation_legacy_terminal_delta_has_exact_bounded_work_on_unchanged
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_reclamation_legacy_terminal_delta_has_exact_bounded_work_on_unchanged ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_reclamation_legacy_terminal_delta_has_exact_bounded_work_on_unchanged
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4839 filtered out; finished in 0.71s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_reclamation_legacy_terminal_delta_has_exact_bounded_work_on_unchanged' (55251359) panicked at src/service/../../tests/service/delivery_pull.rs:8058:5:
+    assertion `left == right` failed
+      left: 2560
+     right: 1280
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.736s] 10 tests run: 0 passed, 10 failed, 4830 skipped
+        FAIL [   0.489s] ( 1/10) herdr-threads service::delivery_pull::tests::presentation_reclamation_replay_returns_delta_and_refusals_do_no_reconciliation
+        FAIL [   0.521s] ( 2/10) herdr-threads service::delivery_pull::tests::presentation_full_pending_carry_serves_due_known_offers_without_admitting_fresh_id
+        FAIL [   0.524s] ( 3/10) herdr-threads service::delivery_pull::tests::presentation_hook_manual_ack_reclaims_live_offer_capacity
+        FAIL [   0.538s] ( 4/10) herdr-threads service::delivery_pull::tests::presentation_reclamation_preserves_pending_truncated_and_reoffer_history
+        FAIL [   0.558s] ( 5/10) herdr-threads service::delivery_pull::tests::presentation_watch_settled_receipts_reclaim_live_offer_capacity
+        FAIL [   0.558s] ( 6/10) herdr-threads service::delivery_pull::tests::presentation_watch_completed_lazy_rows_reclaim_live_offer_capacity
+        FAIL [   0.559s] ( 7/10) herdr-threads service::delivery_pull::tests::presentation_reclamation_preserves_logical_precedence_and_explicit_waiver_flags
+        FAIL [   0.568s] ( 8/10) herdr-threads service::delivery_pull::tests::presentation_reclamation_requires_published_addressed_lazy_completion
+        FAIL [   0.569s] ( 9/10) herdr-threads service::delivery_pull::tests::presentation_reclamation_keeps_pending_missing_and_deduplicates_snapshot_work
+        FAIL [   0.722s] (10/10) herdr-threads service::delivery_pull::tests::presentation_reclamation_legacy_terminal_delta_has_exact_bounded_work_on_unchanged
+error: test run failed

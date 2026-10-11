@@ -1,0 +1,160 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.10s
+────────────
+ Nextest run ID 73d0ec6c-534f-427c-9b4f-a4614acd4e0c with nextest profile: default
+    Starting 10 tests across 1 binary (4830 tests skipped)
+        PASS [   0.506s] ( 1/10) herdr-threads service::delivery_pull::tests::presentation_reclamation_keeps_pending_missing_and_deduplicates_snapshot_work
+        FAIL [   0.534s] ( 2/10) herdr-threads service::delivery_pull::tests::presentation_reclamation_replay_returns_delta_and_refusals_do_no_reconciliation
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_reclamation_replay_returns_delta_and_refusals_do_no_reconciliation ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_reclamation_replay_returns_delta_and_refusals_do_no_reconciliation
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4839 filtered out; finished in 0.51s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_reclamation_replay_returns_delta_and_refusals_do_no_reconciliation' (55311162) panicked at src/service/../../tests/service/delivery_pull.rs:8295:5:
+    assertion `left == right` failed
+      left: 10
+     right: 5
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.534s] ( 3/10) herdr-threads service::delivery_pull::tests::presentation_reclamation_requires_published_addressed_lazy_completion
+        PASS [   0.903s] ( 4/10) herdr-threads service::delivery_pull::tests::presentation_reclamation_legacy_terminal_delta_has_exact_bounded_work_on_unchanged
+        FAIL [   0.922s] ( 5/10) herdr-threads service::delivery_pull::tests::presentation_reclamation_preserves_logical_precedence_and_explicit_waiver_flags
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_reclamation_preserves_logical_precedence_and_explicit_waiver_flags ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_reclamation_preserves_logical_precedence_and_explicit_waiver_flags
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4839 filtered out; finished in 0.90s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_reclamation_preserves_logical_precedence_and_explicit_waiver_flags' (55311161) panicked at src/service/../../tests/service/delivery_pull.rs:8118:9:
+    assertion `left == right` failed: state=Some("acked") waiver= legacy_required=1
+      left: []
+     right: [MessageId("mnCfNVPMr")]
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   1.548s] ( 6/10) herdr-threads service::delivery_pull::tests::presentation_watch_completed_lazy_rows_reclaim_live_offer_capacity
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_watch_completed_lazy_rows_reclaim_live_offer_capacity ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_watch_completed_lazy_rows_reclaim_live_offer_capacity
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4839 filtered out; finished in 1.53s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_watch_completed_lazy_rows_reclaim_live_offer_capacity' (55311153) panicked at src/service/../../tests/service/delivery_pull.rs:7508:13:
+    assertion `left == right` failed
+      left: 2048
+     right: 768
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   1.827s] ( 7/10) herdr-threads service::delivery_pull::tests::presentation_watch_settled_receipts_reclaim_live_offer_capacity
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_watch_settled_receipts_reclaim_live_offer_capacity ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_watch_settled_receipts_reclaim_live_offer_capacity
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4839 filtered out; finished in 1.79s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_watch_settled_receipts_reclaim_live_offer_capacity' (55311167) panicked at src/service/../../tests/service/delivery_pull.rs:7508:13:
+    assertion `left == right` failed
+      left: 2304
+     right: 1024
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   1.884s] ( 8/10) herdr-threads service::delivery_pull::tests::presentation_hook_manual_ack_reclaims_live_offer_capacity
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_hook_manual_ack_reclaims_live_offer_capacity ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_hook_manual_ack_reclaims_live_offer_capacity
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4839 filtered out; finished in 1.86s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_hook_manual_ack_reclaims_live_offer_capacity' (55311164) panicked at src/service/../../tests/service/delivery_pull.rs:7508:13:
+    assertion `left == right` failed
+      left: 2304
+     right: 1024
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   2.158s] ( 9/10) herdr-threads service::delivery_pull::tests::presentation_full_pending_carry_serves_due_known_offers_without_admitting_fresh_id
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_full_pending_carry_serves_due_known_offers_without_admitting_fresh_id ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_full_pending_carry_serves_due_known_offers_without_admitting_fresh_id
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4839 filtered out; finished in 2.14s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_full_pending_carry_serves_due_known_offers_without_admitting_fresh_id' (55311158) panicked at src/service/../../tests/service/delivery_pull.rs:7958:5:
+    assertion failed: resumed.offered.contains(&sent[256])
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   2.552s] (10/10) herdr-threads service::delivery_pull::tests::presentation_reclamation_preserves_pending_truncated_and_reoffer_history
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_reclamation_preserves_pending_truncated_and_reoffer_history ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::presentation_reclamation_preserves_pending_truncated_and_reoffer_history
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4839 filtered out; finished in 2.54s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::presentation_reclamation_preserves_pending_truncated_and_reoffer_history' (55311154) panicked at src/service/../../tests/service/delivery_pull.rs:7649:5:
+    manual ACK of a truncated offer must reclaim its slot
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   2.577s] 10 tests run: 3 passed, 7 failed, 4830 skipped
+        FAIL [   0.534s] ( 2/10) herdr-threads service::delivery_pull::tests::presentation_reclamation_replay_returns_delta_and_refusals_do_no_reconciliation
+        FAIL [   0.922s] ( 5/10) herdr-threads service::delivery_pull::tests::presentation_reclamation_preserves_logical_precedence_and_explicit_waiver_flags
+        FAIL [   1.548s] ( 6/10) herdr-threads service::delivery_pull::tests::presentation_watch_completed_lazy_rows_reclaim_live_offer_capacity
+        FAIL [   1.827s] ( 7/10) herdr-threads service::delivery_pull::tests::presentation_watch_settled_receipts_reclaim_live_offer_capacity
+        FAIL [   1.884s] ( 8/10) herdr-threads service::delivery_pull::tests::presentation_hook_manual_ack_reclaims_live_offer_capacity
+        FAIL [   2.158s] ( 9/10) herdr-threads service::delivery_pull::tests::presentation_full_pending_carry_serves_due_known_offers_without_admitting_fresh_id
+        FAIL [   2.552s] (10/10) herdr-threads service::delivery_pull::tests::presentation_reclamation_preserves_pending_truncated_and_reoffer_history
+error: test run failed

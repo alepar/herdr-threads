@@ -1,0 +1,18 @@
+{
+  "verified_at_utc": "2026-10-11T23:05:58.940350+00:00",
+  "removed_count": 16,
+  "allocated_bytes_reclaimed": 129509318656,
+  "volume_available_bytes_before_first_removal": 102604357632,
+  "volume_available_bytes_after_final_removal": 143279779840,
+  "net_volume_available_increase": 40675422208,
+  "all_removed_branch_commit_integrity_verified": true,
+  "all_protected_paths_and_D_warm_target_present": true,
+  "authored_artifacts_required_copy": 0,
+  "blocked": [],
+  "further_removals": false,
+  "manifests": [
+    "2026-10-11-completed-helpers-manifest.json",
+    "2026-10-11-completed-tasks-manifest.json",
+    "2026-10-11-final-completed-tasks-manifest.json"
+  ]
+}

@@ -1,0 +1,236 @@
+{
+  "timestamp_utc": "2026-10-11T22:58:49.589894+00:00",
+  "authorization": "Explicit user cleanup request, parent six-name allowlist; no branch deletion or force permitted",
+  "root_protected": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign",
+  "volume_available_bytes_before": 102604357632,
+  "process_scan": {
+    "tool": "ps -axo pid=,ppid=,command=",
+    "timestamp_utc": "2026-10-11T22:57:37.141Z",
+    "exit_code": 0,
+    "output_lines": 877,
+    "matching_allowed_helper_paths": []
+  },
+  "worktrees": [
+    {
+      "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/finish-watch-owner-replay",
+      "name": "finish-watch-owner-replay",
+      "head": "ac58bbfb03f5580add6fc10977e0546e16de5d2b",
+      "branch_retained": "refs/heads/helper/handoff-resume-watch-owner-replay",
+      "tracked_index_clean": true,
+      "untracked": [],
+      "ignored": [],
+      "evidence_copy_required": false,
+      "source_blobs": [
+        {
+          "path": "tests/integration/mod_delivery.rs",
+          "source_git_blob": "c738568a2b16073f2af8ee3b5a01f22844c1103c",
+          "sha256": "bd1b6afb7bf8668bc73c4901f1a4911e36cc776a0bb90d1984cc94a900ffcbab",
+          "bytes": 196104
+        }
+      ],
+      "import_verification": {
+        "kind": "patch_id",
+        "import_commit": "95e7e3bf725c5bc771cbb55be7513e8e16fae563",
+        "retained_reachable_from": "f330bdab3abee8535213228e5465b085b65be750",
+        "source_patch_id": "725beacd09b163a74231de14bc06cfc14e5910b6",
+        "import_patch_id": "725beacd09b163a74231de14bc06cfc14e5910b6"
+      },
+      "allocated_bytes_before": 76451840,
+      "removed": true,
+      "removal_command_exit_code": 0,
+      "path_absent_verified": true,
+      "worktree_registration_absent_verified": true,
+      "retained_branch_unchanged_verified": true,
+      "retained_commit_and_source_blobs_verified": true,
+      "allocated_bytes_after": 0
+    },
+    {
+      "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/finish-composed-hook",
+      "name": "finish-composed-hook",
+      "head": "f8073334f2fb9227a1ada322c2f5927b2cebad37",
+      "branch_retained": "refs/heads/helper/handoff-composed-public-ensure",
+      "tracked_index_clean": true,
+      "untracked": [],
+      "ignored": [],
+      "evidence_copy_required": false,
+      "source_blobs": [
+        {
+          "path": "tests/hook_entrypoint/agy.rs",
+          "source_git_blob": "d97f882cb3c6086f71760e9b94a4fa4cf3cfdf1a",
+          "sha256": "ed404b59c821f22bb65665456821d6da65062d36d3ae33e3843c3113e06dedcd",
+          "bytes": 86512
+        }
+      ],
+      "import_verification": {
+        "kind": "patch_id",
+        "import_commit": "9ff4913a4bb5a10302c57c97fa6a526ee9f87ddd",
+        "retained_reachable_from": "f330bdab3abee8535213228e5465b085b65be750",
+        "source_patch_id": "bc0cb62db825966dce301914ca2c9cb1528a969c",
+        "import_patch_id": "bc0cb62db825966dce301914ca2c9cb1528a969c"
+      },
+      "allocated_bytes_before": 76660736,
+      "removed": true,
+      "removal_command_exit_code": 0,
+      "path_absent_verified": true,
+      "worktree_registration_absent_verified": true,
+      "retained_branch_unchanged_verified": true,
+      "retained_commit_and_source_blobs_verified": true,
+      "allocated_bytes_after": 0
+    },
+    {
+      "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/finish-composed-commands",
+      "name": "finish-composed-commands",
+      "head": "0d178d5a0bf9501051efb5a91f55571b4481b5eb",
+      "branch_retained": "refs/heads/helper/handoff-composed-requirement-command",
+      "tracked_index_clean": true,
+      "untracked": [],
+      "ignored": [],
+      "evidence_copy_required": false,
+      "source_blobs": [
+        {
+          "path": "tests/protocol/capabilities.rs",
+          "source_git_blob": "8e1fc8b3b80da9f2408b3ffeebc54074c222dc8d",
+          "sha256": "65f905780543624d9c8c9e09dca7d1f0a68f97c7a7a53c523f15eb2c3eeffcd8",
+          "bytes": 75191
+        },
+        {
+          "path": "tests/store/effective.rs",
+          "source_git_blob": "94f1b8290bed4385bd63e1b247d295c5ed08a367",
+          "sha256": "0a1fac9225eb70954e96563120a85bc11027ebbd919d83eccf8c788fc6edf2ca",
+          "bytes": 117000
+        }
+      ],
+      "import_verification": {
+        "kind": "patch_id",
+        "import_commit": "f970d6faabd0861521456e4422055bed35275ab6",
+        "retained_reachable_from": "f330bdab3abee8535213228e5465b085b65be750",
+        "source_patch_id": "fdd54b62f893b6c2ae6a360996d827b1aa9cd617",
+        "import_patch_id": "fdd54b62f893b6c2ae6a360996d827b1aa9cd617"
+      },
+      "allocated_bytes_before": 76652544,
+      "removed": true,
+      "removal_command_exit_code": 0,
+      "path_absent_verified": true,
+      "worktree_registration_absent_verified": true,
+      "retained_branch_unchanged_verified": true,
+      "retained_commit_and_source_blobs_verified": true,
+      "allocated_bytes_after": 0
+    },
+    {
+      "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/finish-composed-permit-diagnostic",
+      "name": "finish-composed-permit-diagnostic",
+      "head": "e762aecf5115aa5c7904bbba506a8d0c3838b08f",
+      "branch_retained": "refs/heads/helper/handoff-composed-permit-diagnostic",
+      "tracked_index_clean": true,
+      "untracked": [],
+      "ignored": [],
+      "evidence_copy_required": false,
+      "source_blobs": [
+        {
+          "path": "tests/cli/topology_handoff.rs",
+          "source_git_blob": "63729fb6c066cf2224877739729d44e7c3a700d1",
+          "sha256": "fb0d19b13e4fcd64421f4f078bb9f5f2b463ac707daf1a51b615b33a41178c3b",
+          "bytes": 407125
+        }
+      ],
+      "import_verification": {
+        "kind": "patch_id",
+        "import_commit": "f330bdab3abee8535213228e5465b085b65be750",
+        "retained_reachable_from": "f330bdab3abee8535213228e5465b085b65be750",
+        "source_patch_id": "2b53fd5b1bab4028299953a40ef1778cfbfbde6b",
+        "import_patch_id": "2b53fd5b1bab4028299953a40ef1778cfbfbde6b"
+      },
+      "allocated_bytes_before": 76677120,
+      "removed": true,
+      "removal_command_exit_code": 0,
+      "path_absent_verified": true,
+      "worktree_registration_absent_verified": true,
+      "retained_branch_unchanged_verified": true,
+      "retained_commit_and_source_blobs_verified": true,
+      "allocated_bytes_after": 0
+    },
+    {
+      "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/finish-mod-activation",
+      "name": "finish-mod-activation",
+      "head": "bda5331cd0eab7aa255b91d82e36764d37b71673",
+      "branch_retained": "refs/heads/helper/handoff-finish-mod-activation",
+      "tracked_index_clean": true,
+      "untracked": [],
+      "ignored": [],
+      "evidence_copy_required": false,
+      "source_blobs": [
+        {
+          "path": "integrations/claude/mod/tests/delivery.test.ts",
+          "source_git_blob": "3d7b36b0895f68161a3eb6f66b7affbcfa3e4af9",
+          "sha256": "52313dd8c76c8a91693ce730812bfd745394bc544d78e01b9f5af52a94b28b09",
+          "bytes": 90778
+        }
+      ],
+      "import_verification": {
+        "kind": "blob",
+        "import_commit": "7bdb3678f8b5ba10a5b51a7bdb6aed2fa163f7d3",
+        "retained_reachable_from": "f7aa1cc2a02de47ebb381191f1a2bb219048538c",
+        "path": "integrations/claude/mod/tests/delivery.test.ts",
+        "identical_blob_sha256": "52313dd8c76c8a91693ce730812bfd745394bc544d78e01b9f5af52a94b28b09"
+      },
+      "allocated_bytes_before": 76099584,
+      "removed": true,
+      "removal_command_exit_code": 0,
+      "path_absent_verified": true,
+      "worktree_registration_absent_verified": true,
+      "retained_branch_unchanged_verified": true,
+      "retained_commit_and_source_blobs_verified": true,
+      "allocated_bytes_after": 0
+    },
+    {
+      "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/finish-watch-activation",
+      "name": "finish-watch-activation",
+      "head": "7e315042b7b22e2c20d442f88c172926bc65e255",
+      "branch_retained": "refs/heads/helper/handoff-finish-watch-activation",
+      "tracked_index_clean": true,
+      "untracked": [],
+      "ignored": [],
+      "evidence_copy_required": false,
+      "source_blobs": [
+        {
+          "path": "tests/integration/mod_delivery.rs",
+          "source_git_blob": "d8299021a571a16893041e34d50a70ee9bae13fa",
+          "sha256": "814848704dc199626718e27627fbfaa2efbc3901c097c8d971720db73c5814a2",
+          "bytes": 181985
+        }
+      ],
+      "import_verification": {
+        "kind": "blob",
+        "import_commit": "9ca1a64de17e51f38abeed3ddcdae0ec5c5d62af",
+        "retained_reachable_from": "f7aa1cc2a02de47ebb381191f1a2bb219048538c",
+        "path": "tests/integration/mod_delivery.rs",
+        "identical_blob_sha256": "814848704dc199626718e27627fbfaa2efbc3901c097c8d971720db73c5814a2"
+      },
+      "allocated_bytes_before": 76206080,
+      "removed": true,
+      "removal_command_exit_code": 0,
+      "path_absent_verified": true,
+      "worktree_registration_absent_verified": true,
+      "retained_branch_unchanged_verified": true,
+      "retained_commit_and_source_blobs_verified": true,
+      "allocated_bytes_after": 0
+    }
+  ],
+  "allocated_bytes_total_before": 458747904,
+  "preserved_artifacts": [],
+  "blocked": [],
+  "protected_names": [
+    "upstream-composition-v090",
+    "super-auto-handoff-delivery-redesign--task-ht-0lo.3.2",
+    "upstream-composition-478ec4a9",
+    "finish-composed-automatic-validation",
+    "automatic-double-guard-mutant",
+    "parked--task-ht-0lo.8.2"
+  ],
+  "no_processes_started_or_stopped": true,
+  "verification_timestamp_utc": "2026-10-11T23:00:21.512333+00:00",
+  "volume_available_bytes_after": 103256530944,
+  "allocated_bytes_reclaimed": 458747904,
+  "retained_worktree_inventory": "docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/worktree-cleanup-evidence/2026-10-11-retained-worktree-inventory.json",
+  "protected_worktrees_verified_present": true
+}

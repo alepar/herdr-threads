@@ -1,0 +1,27 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.04s
+────────────
+ Nextest run ID 344b62d3-e055-46e1-8e46-0bd7a93d05e3 with nextest profile: default
+    Starting 1 test across 1 binary (719 tests skipped)
+        FAIL [   0.279s] (1/1) herdr-threads::combined invitation_content::binding_presentation::unread_partial_presentation_resumes_after_same_binding_full_body_read
+  stdout ───
+
+    running 1 test
+    test invitation_content::binding_presentation::unread_partial_presentation_resumes_after_same_binding_full_body_read ... FAILED
+
+    failures:
+
+    failures:
+        invitation_content::binding_presentation::unread_partial_presentation_resumes_after_same_binding_full_body_read
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 719 filtered out; finished in 0.27s
+
+  stderr ───
+
+    thread 'invitation_content::binding_presentation::unread_partial_presentation_resumes_after_same_binding_full_body_read' (55301775) panicked at tests/store/invitation_content.rs:1110:69:
+    a legitimate same-binding full read must not wedge private presentation continuation: ApiError { code: InvalidCursor, detail: "continued body is not captured addressed content", restart_argv: None, required_minimum_bytes: None, class_override: None }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+────────────
+     Summary [   0.282s] 1 test run: 0 passed, 1 failed, 719 skipped
+        FAIL [   0.279s] (1/1) herdr-threads::combined invitation_content::binding_presentation::unread_partial_presentation_resumes_after_same_binding_full_body_read
+error: test run failed

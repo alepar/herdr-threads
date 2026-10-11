@@ -79,10 +79,15 @@ Current file SHA256 values (working bytes, not a commit claim):
 | --- | --- |
 | src/delivery/assemble.rs | 6ae75481b5b23ad0d018d25de534e1a746125ade879aed0c7fe39228086e751d |
 | src/delivery/ledger.rs | 820269f009a37f23ae98ac14a3f674f5fe9293dbe495bc0679f688bcd4e40ff0 |
-| src/ports.rs | 5d4cb3d195f7171db609d54c1c1a98df5786dc2947bcd7400342aa29c11e7c51 |
+| src/ports.rs | 749ede7fdfbde48ff19d6bf84778ff8a2ff803c75ce6016d5f9e516e193835e3 |
 | src/service/delivery_pull.rs | 16174645c500eb4adedb0a72009a3a58637634c6b0952e298fdc6f4c35363bce |
 | src/service/dispatch.rs | b270b6fff247108bf145fc0e70b2484f3693c2718e37a6c41c070be2f0b3f530 |
 | src/service/mod_channels.rs | b15f8d75b50536a4dafc4cb182a4f4b4299deed3f5fdd6cebd55cd6647b33485 |
 | src/service/delivery_presentation.rs | 8c1c71615d7b87208f07517575be6fa60849c3700bb65760ec0d51f4e74ac2a2 |
 
 Source work QUIESCENT. No processes were started. Runtime and cross-binding causal evidence remain pending.
+
+
+## Approved carry accounting follow-up
+
+Parent separately approved binding-correctness envelopes: reconciliation2560=256x10 and retained ordinary carry579=3+32x18, at most32 carry seeks/hydrations and no ordinary page walk. Carry and due/replay remain mutually exclusive. On the physical-store author's request, this author added only three derived-default usize fields to PresentationWork: ordinary_carry_key_probes, ordinary_carry_seeks, ordinary_carry_hydrated. The physical-store author owns charging, guards and counter tests; this declaration alone is not evidence those checks pass. All previous timing, hydration and global capacity constraints remain unchanged. src/ports.rs updated SHA256 appears in the table. Explicit-file rustfmt(skip_children=true) and scoped diff-check passed; no Cargo or Git mutations. Source QUIESCENT again; parent compile/runtime pending.

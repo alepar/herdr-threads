@@ -1,0 +1,234 @@
+[
+  {
+    "name": "automatic-double-guard-mutant",
+    "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/automatic-double-guard-mutant",
+    "allocated_bytes": 76697600,
+    "target_allocated_bytes": null,
+    "protected": true,
+    "authorization": "inventory only; removal not authorized"
+  },
+  {
+    "name": "completed--task-ht-0lo.3.2",
+    "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/completed--task-ht-0lo.3.2",
+    "allocated_bytes": 24064253952,
+    "target_allocated_bytes": 23996862464,
+    "protected": false,
+    "authorization": "inventory only; removal not authorized"
+  },
+  {
+    "name": "emit-helper-15",
+    "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/emit-helper-15",
+    "allocated_bytes": 75325440,
+    "target_allocated_bytes": null,
+    "protected": false,
+    "authorization": "inventory only; removal not authorized"
+  },
+  {
+    "name": "finish-advertisement",
+    "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/finish-advertisement",
+    "allocated_bytes": 76292096,
+    "target_allocated_bytes": null,
+    "protected": false,
+    "authorization": "inventory only; removal not authorized"
+  },
+  {
+    "name": "finish-capacity-design",
+    "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/finish-capacity-design",
+    "allocated_bytes": 76099584,
+    "target_allocated_bytes": null,
+    "protected": false,
+    "authorization": "inventory only; removal not authorized"
+  },
+  {
+    "name": "finish-capacity-repair",
+    "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/finish-capacity-repair",
+    "allocated_bytes": 76238848,
+    "target_allocated_bytes": null,
+    "protected": false,
+    "authorization": "inventory only; removal not authorized"
+  },
+  {
+    "name": "finish-capacity-review",
+    "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/finish-capacity-review",
+    "allocated_bytes": 76210176,
+    "target_allocated_bytes": null,
+    "protected": false,
+    "authorization": "inventory only; removal not authorized"
+  },
+  {
+    "name": "finish-composed-automatic-validation",
+    "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/finish-composed-automatic-validation",
+    "allocated_bytes": 76697600,
+    "target_allocated_bytes": null,
+    "protected": true,
+    "authorization": "inventory only; removal not authorized"
+  },
+  {
+    "name": "finish-corrected-D-review",
+    "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/finish-corrected-D-review",
+    "allocated_bytes": 76292096,
+    "target_allocated_bytes": null,
+    "protected": false,
+    "authorization": "inventory only; removal not authorized"
+  },
+  {
+    "name": "finish-hook-activation",
+    "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/finish-hook-activation",
+    "allocated_bytes": 76083200,
+    "target_allocated_bytes": null,
+    "protected": false,
+    "authorization": "inventory only; removal not authorized"
+  },
+  {
+    "name": "finish-interface-tests",
+    "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/finish-interface-tests",
+    "allocated_bytes": 76017664,
+    "target_allocated_bytes": null,
+    "protected": false,
+    "authorization": "inventory only; removal not authorized"
+  },
+  {
+    "name": "finish-leak-scope",
+    "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/finish-leak-scope",
+    "allocated_bytes": 69337088,
+    "target_allocated_bytes": null,
+    "protected": false,
+    "authorization": "inventory only; removal not authorized"
+  },
+  {
+    "name": "finish-offer-reclamation",
+    "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/finish-offer-reclamation",
+    "allocated_bytes": 76054528,
+    "target_allocated_bytes": null,
+    "protected": false,
+    "authorization": "inventory only; removal not authorized"
+  },
+  {
+    "name": "finish-private-id",
+    "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/finish-private-id",
+    "allocated_bytes": 76034048,
+    "target_allocated_bytes": null,
+    "protected": false,
+    "authorization": "inventory only; removal not authorized"
+  },
+  {
+    "name": "finish-schema-proofs",
+    "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/finish-schema-proofs",
+    "allocated_bytes": 76034048,
+    "target_allocated_bytes": null,
+    "protected": false,
+    "authorization": "inventory only; removal not authorized"
+  },
+  {
+    "name": "js-epoch-helper-15",
+    "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/js-epoch-helper-15",
+    "allocated_bytes": 75268096,
+    "target_allocated_bytes": null,
+    "protected": false,
+    "authorization": "inventory only; removal not authorized"
+  },
+  {
+    "name": "parked--task-ht-0lo.8.2",
+    "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/parked--task-ht-0lo.8.2",
+    "allocated_bytes": 75526144,
+    "target_allocated_bytes": null,
+    "protected": true,
+    "authorization": "inventory only; removal not authorized"
+  },
+  {
+    "name": "super-auto-handoff-delivery-redesign--task-ht-0lo.1.1",
+    "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.1.1",
+    "allocated_bytes": 8911814656,
+    "target_allocated_bytes": 8836165632,
+    "protected": false,
+    "authorization": "inventory only; removal not authorized"
+  },
+  {
+    "name": "super-auto-handoff-delivery-redesign--task-ht-0lo.1.2",
+    "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.1.2",
+    "allocated_bytes": 20245176320,
+    "target_allocated_bytes": 20178370560,
+    "protected": false,
+    "authorization": "inventory only; removal not authorized"
+  },
+  {
+    "name": "super-auto-handoff-delivery-redesign--task-ht-0lo.1.3",
+    "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.1.3",
+    "allocated_bytes": 10378407936,
+    "target_allocated_bytes": 10313732096,
+    "protected": false,
+    "authorization": "inventory only; removal not authorized"
+  },
+  {
+    "name": "super-auto-handoff-delivery-redesign--task-ht-0lo.2.1",
+    "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.2.1",
+    "allocated_bytes": 7675166720,
+    "target_allocated_bytes": 7611633664,
+    "protected": false,
+    "authorization": "inventory only; removal not authorized"
+  },
+  {
+    "name": "super-auto-handoff-delivery-redesign--task-ht-0lo.2.2",
+    "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.2.2",
+    "allocated_bytes": 10450698240,
+    "target_allocated_bytes": 10385666048,
+    "protected": false,
+    "authorization": "inventory only; removal not authorized"
+  },
+  {
+    "name": "super-auto-handoff-delivery-redesign--task-ht-0lo.2.3",
+    "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.2.3",
+    "allocated_bytes": 17566572544,
+    "target_allocated_bytes": 17500172288,
+    "protected": false,
+    "authorization": "inventory only; removal not authorized"
+  },
+  {
+    "name": "super-auto-handoff-delivery-redesign--task-ht-0lo.3.1",
+    "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.1",
+    "allocated_bytes": 8947929088,
+    "target_allocated_bytes": 8883703808,
+    "protected": false,
+    "authorization": "inventory only; removal not authorized"
+  },
+  {
+    "name": "super-auto-handoff-delivery-redesign--task-ht-0lo.3.2",
+    "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2",
+    "allocated_bytes": 67033591808,
+    "target_allocated_bytes": 66958135296,
+    "protected": true,
+    "authorization": "inventory only; removal not authorized"
+  },
+  {
+    "name": "super-auto-handoff-delivery-redesign--task-ht-0lo.4.1",
+    "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.4.1",
+    "allocated_bytes": 9102729216,
+    "target_allocated_bytes": 9038106624,
+    "protected": false,
+    "authorization": "inventory only; removal not authorized"
+  },
+  {
+    "name": "super-auto-handoff-delivery-redesign--task-ht-0lo.4.2",
+    "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.4.2",
+    "allocated_bytes": 11707822080,
+    "target_allocated_bytes": 11640819712,
+    "protected": false,
+    "authorization": "inventory only; removal not authorized"
+  },
+  {
+    "name": "upstream-composition-478ec4a9",
+    "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/upstream-composition-478ec4a9",
+    "allocated_bytes": 76693504,
+    "target_allocated_bytes": null,
+    "protected": true,
+    "authorization": "inventory only; removal not authorized"
+  },
+  {
+    "name": "upstream-composition-v090",
+    "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/upstream-composition-v090",
+    "allocated_bytes": 90800128,
+    "target_allocated_bytes": null,
+    "protected": true,
+    "authorization": "inventory only; removal not authorized"
+  }
+]
