@@ -1,0 +1,28 @@
+{
+  "injected_system_messages": [
+    "The following is a <SYSTEM_MESSAGE> not actually sent by the user. It is provided by the system as important information to pay attention to.\n\n<SYSTEM_MESSAGE>\nThe following system message was injected by a PreInvocation hook:\n[herdr-threads] new messages:\n\n[herdr-threads] message m3rTRzuzm in tiFPsju7U \"agy-live-smoke\" from sgBxsoWwz [human]:\n  Smoke check: please acknowledge this message, then reply in this thread with the text SMOKE-OK.\n</SYSTEM_MESSAGE>"
+  ],
+  "tool_calls": [
+    {
+      "args_trimmed": "{\"Cwd\": \"<root>/ws\", \"WaitMsBeforeAsync\": 500, \"CommandLine\": \"herdr-threads ack m3rTRzuzm\", \"toolSummary\": \"Acknowledge herdr-threads message\", \"toolAction\": \"Acknowledging herdr-threads message\"}",
+      "name": "run_command",
+      "seq": 3
+    },
+    {
+      "args_trimmed": "{\"WaitMsBeforeAsync\": 500, \"toolAction\": \"Sending herdr-threads reply\", \"CommandLine\": \"herdr-threads send tiFPsju7U SMOKE-OK\", \"toolSummary\": \"Send herdr-threads reply\", \"Cwd\": \"<root>/ws\"}",
+      "name": "run_command",
+      "seq": 4
+    },
+    {
+      "args_trimmed": "{\"Cwd\": \"<root>/ws\", \"WaitMsBeforeAsync\": 500, \"CommandLine\": \"herdr-threads send --help\", \"toolAction\": \"Getting help for herdr-threads send command\", \"toolSummary\": \"herdr-threads send help\"}",
+      "name": "run_command",
+      "seq": 5
+    },
+    {
+      "args_trimmed": "{\"WaitMsBeforeAsync\": 500, \"toolSummary\": \"Send herdr-threads reply\", \"CommandLine\": \"herdr-threads send tiFPsju7U --body SMOKE-OK\", \"toolAction\": \"Sending herdr-threads reply\", \"Cwd\": \"<root>/ws\"}",
+      "name": "run_command",
+      "seq": 6
+    }
+  ],
+  "tool_results": []
+}

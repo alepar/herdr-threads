@@ -5696,7 +5696,7 @@ fn user_intent_schema22_fresh_and_v21_upgrade() {
             "SELECT json_array(id,fetched_at,created_at) FROM summary_jobs ORDER BY id",
         ].into_iter().flat_map(|sql| db.prepare(sql).unwrap().query_map([], |r| r.get::<_,String>(0)).unwrap().map(Result::unwrap).collect::<Vec<_>>()).collect();
         let roots = db
-            .prepare("SELECT name,rootpage FROM sqlite_master WHERE type='table' AND name NOT IN ('archival_instances','channel_archival','seat_archival','channel_handoff_fences','harness_contract_diagnostics','lazy_recipients','bootstrap_handoffs','bootstrap_child_keys','bootstrap_attempts','bootstrap_recovery_decisions','bootstrap_attachments','bootstrap_reports','receipt_send_time_cutovers','receipt_deadline_backfill','receipt_discovery_backfill','receipt_due_sparse','receipt_warning_origins') ORDER BY name")
+            .prepare("SELECT name,rootpage FROM sqlite_master WHERE type='table' AND name NOT IN ('archival_instances','channel_archival','seat_archival','channel_handoff_fences','harness_contract_diagnostics','lazy_recipients','bootstrap_handoffs','bootstrap_child_keys','bootstrap_attempts','bootstrap_recovery_decisions','bootstrap_attachments','bootstrap_reports','receipt_send_time_cutovers','receipt_deadline_backfill','receipt_discovery_backfill','receipt_due_sparse','receipt_warning_origins','direct_threads','automatic_handoff_companions','automatic_handoff_keys','automatic_bootstrap_parents','automatic_bootstrap_keys','automatic_bootstrap_attempts','automatic_bootstrap_attachments','automatic_bootstrap_reports','automatic_bootstrap_recoveries') ORDER BY name")
             .unwrap()
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
             .unwrap()
@@ -6263,15 +6263,15 @@ fn absorption_main24_and25_to26_preserves_diagnostics_and_matches_fresh_catalog(
         assert_eq!(catalog(&db), catalog(&fresh));
         assert_eq!(
             catalog(&fresh).iter().filter(|r| r.0 == "table").count(),
-            79
+            88
         );
         assert_eq!(
             catalog(&fresh).iter().filter(|r| r.0 == "index").count(),
-            148
+            149
         );
         assert_eq!(
             catalog(&fresh).iter().filter(|r| r.0 == "trigger").count(),
-            194
+            212
         );
     }
 }
@@ -6519,11 +6519,19 @@ fn direct_pair_migration_preserves_v28_and_enforces_identity() {
     };
     let before = [dump("seats"), dump("threads"), dump("messages")];
     schema::initialize(&db, || UtcMillis(0)).unwrap();
-    assert_eq!(before, [dump("seats"), dump("threads"), dump("messages")]);
+    // Later migrations (0031 wake_on) only append defaulted columns: the v28 prefix of
+    // every row is preserved byte for byte.
+    let mut after = [dump("seats"), dump("threads"), dump("messages")];
+    for (table, rows) in after.iter_mut().enumerate() {
+        for (row, old) in rows.iter_mut().zip(&before[table]) {
+            row.truncate(old.len());
+        }
+    }
+    assert_eq!(before, after);
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        30
+        39
     );
     assert_eq!(
         db.query_row("SELECT count(*) FROM direct_threads", [], |r| r
@@ -6563,8 +6571,8 @@ fn direct_pair_migration_preserves_v28_and_enforces_identity() {
 
 // Catches losing released direct/automatic rows or omitting the additive capacity upgrade.
 #[test]
-fn released_main30_populated_automatic_graph_physically_upgrades_and_reopens() {
-    let path = std::env::temp_dir().join(format!("main30-upgrade-{}.db", uuid::Uuid::new_v4()));
+fn released_main31_populated_automatic_graph_physically_upgrades_and_reopens() {
+    let path = std::env::temp_dir().join(format!("main31-upgrade-{}.db", uuid::Uuid::new_v4()));
     let db = Connection::open(&path).unwrap();
     db.pragma_update(None, "foreign_keys", true).unwrap();
     let mut migrations = std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations"))
@@ -6572,11 +6580,11 @@ fn released_main30_populated_automatic_graph_physically_upgrades_and_reopens() {
         .map(|p| p.unwrap().path())
         .collect::<Vec<_>>();
     migrations.sort();
-    for migration in migrations.into_iter().take(30) {
+    for migration in migrations.into_iter().take(31) {
         db.execute_batch(&std::fs::read_to_string(migration).unwrap())
             .unwrap();
     }
-    db.pragma_update(None, "user_version", 30).unwrap();
+    db.pragma_update(None, "user_version", 31).unwrap();
     db.execute_batch(r#"INSERT INTO host_instances(id,created_at) VALUES('i',0);
       INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES('a','i','resolved','native',1,0),('b','i','resolved','native',1,0);
       INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('t','i','topic','goal',0,0);
@@ -6637,18 +6645,20 @@ fn released_main30_populated_automatic_graph_physically_upgrades_and_reopens() {
         0
     );
     drop(db);
+    let failure_path = path.with_extension("rollback.db");
+    std::fs::copy(&path, &failure_path).unwrap();
     let db = Connection::open(&path).unwrap();
     db.pragma_update(None, "foreign_keys", true).unwrap();
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        30
+        31
     );
     schema::initialize(&db, || UtcMillis(99)).unwrap();
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        38
+        39
     );
     assert_eq!(snapshot(&db), before);
     assert_eq!(
@@ -6668,5 +6678,91 @@ fn released_main30_populated_automatic_graph_physically_upgrades_and_reopens() {
     schema::initialize(&db, || UtcMillis(100)).unwrap();
     assert_eq!(snapshot(&db), before);
     drop(db);
+    let db = Connection::open(&failure_path).unwrap();
+    db.pragma_update(None, "foreign_keys", false).unwrap();
+    let mut migrations = std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations"))
+        .unwrap()
+        .map(|p| p.unwrap().path())
+        .collect::<Vec<_>>();
+    migrations.sort();
+    for migration in migrations.into_iter().skip(31).take(7) {
+        db.execute_batch(&std::fs::read_to_string(migration).unwrap())
+            .unwrap();
+    }
+    db.pragma_update(None, "user_version", 38).unwrap();
+    db.execute(
+        "INSERT INTO automatic_bootstrap_keys VALUES('i','seat:a','orphan',999,'compound',0)",
+        [],
+    )
+    .unwrap();
+    db.pragma_update(None, "foreign_keys", true).unwrap();
+    let catalog = |db: &Connection| {
+        db.prepare("SELECT type,name,tbl_name,rootpage,sql FROM sqlite_schema ORDER BY type,name")
+            .unwrap()
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, i64>(3)?,
+                    r.get::<_, Option<String>>(4)?,
+                ))
+            })
+            .unwrap()
+            .map(Result::unwrap)
+            .collect::<Vec<_>>()
+    };
+    let failed_before = snapshot(&db);
+    let catalog_before = catalog(&db);
+    let error = schema::initialize(&db, || UtcMillis(101)).unwrap_err();
+    assert_eq!(error.code, ErrorCode::StoreCorrupt);
+    assert_eq!(
+        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        38
+    );
+    assert!(
+        db.pragma_query_value(None, "foreign_keys", |r| r.get::<_, bool>(0))
+            .unwrap()
+    );
+    assert_eq!(
+        catalog(&db),
+        catalog_before,
+        "failed rebuild rolls back every object and rootpage"
+    );
+    assert_eq!(
+        snapshot(&db),
+        failed_before,
+        "failed rebuild retains exact original bytes"
+    );
+    let trigger: String = db
+        .query_row(
+            "SELECT sql FROM sqlite_schema WHERE name='automatic_bootstrap_keys_retained'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    db.execute_batch("DROP TRIGGER automatic_bootstrap_keys_retained; DELETE FROM automatic_bootstrap_keys WHERE operation_key='orphan';").unwrap();
+    db.execute_batch(&trigger).unwrap();
+    drop(db);
+    let db = Connection::open(&failure_path).unwrap();
+    db.pragma_update(None, "foreign_keys", true).unwrap();
+    schema::initialize(&db, || UtcMillis(102)).unwrap();
+    assert_eq!(snapshot(&db), before);
+    assert_eq!(
+        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        39
+    );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+            .get::<_, i64>(
+            0
+        ))
+        .unwrap(),
+        0
+    );
+    drop(db);
+    std::fs::remove_file(failure_path).unwrap();
     std::fs::remove_file(path).unwrap();
 }

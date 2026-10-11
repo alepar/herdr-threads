@@ -438,6 +438,7 @@ impl CompletedRetryFixture {
         };
         let plan = HandoffPlan {
             startup_input: None,
+            bootstrap_input: None,
             request: HandoffRequest {
                 policy: None,
                 automatic: false,

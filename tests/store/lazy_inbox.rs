@@ -1237,3 +1237,97 @@ fn invitation_confirmation_inbox_metadata_distinguishes_lazy_timed_and_legacy() 
         );
     }
 }
+
+/// Delivery-policy DP8: the InboxBatchV2 query marks a lazy row `wakes` only
+/// when the reading seat's `wake_on` is `all`, and a push-channel ACK completes
+/// the promoted row as a lazy row.
+#[test]
+fn lazy_inbox_wakes_follows_wake_on_and_mod_ack_completes_it() {
+    let (iso, context, mut conn) = fixture("lazy-wakes");
+    let lazy = send(
+        &iso,
+        &context,
+        &mut conn,
+        "lazy",
+        "quiet",
+        DeliveryMode::Lazy,
+    );
+    let first_page = |context: &StoreContext| {
+        query(
+            context,
+            PageRequest {
+                limit: 5,
+                max_bytes: 65536,
+                ..Default::default()
+            },
+            &OutputSpec::default(),
+        )
+    };
+    let wakes_of =
+        |page: &herdr_threads::protocol::pagination::Page<InboxBatchV2Item>| match &page.items[0] {
+            InboxBatchV2Item::LazyMessage { message, wakes, .. } => {
+                assert_eq!(message, &lazy);
+                *wakes
+            }
+            other => panic!("expected lazy row, got {other:?}"),
+        };
+    assert!(
+        !wakes_of(&first_page(&context)),
+        "default seat does not wake"
+    );
+    conn.execute("UPDATE seats SET wake_on='all' WHERE id='b'", [])
+        .unwrap();
+    let page = first_page(&context);
+    assert!(wakes_of(&page), "wake_on=all seat wakes");
+    // Wire: the waking row carries the key, nothing else changed.
+    let wire = serde_json::to_value(&page.items[0]).unwrap();
+    assert_eq!(wire["wakes"], serde_json::json!(true));
+    conn.execute("UPDATE seats SET wake_on='nudge' WHERE id='b'", [])
+        .unwrap();
+    let wire = serde_json::to_value(&first_page(&context).items[0]).unwrap();
+    assert!(wire.as_object().unwrap().get("wakes").is_none());
+
+    // A push-channel ACK (`watch ack --via submit`) completes it as a lazy row.
+    conn.execute("UPDATE seats SET wake_on='all' WHERE id='b'", [])
+        .unwrap();
+    conn.execute(
+        "UPDATE occupant_bindings SET harness='claude' WHERE seat_id='b'",
+        [],
+    )
+    .unwrap();
+    let mut claim = claim();
+    claim.harness = Harness::Claude;
+    use herdr_threads::ports::StorePort;
+    let store = herdr_threads::store::SqliteStore::new(
+        StoreContext::new(iso.path("store.db"), Arc::new(FixedClock)),
+        "i",
+        Default::default(),
+    )
+    .unwrap();
+    let mutation =
+        PermitMutation::AckModDelivered(herdr_threads::protocol::commands::AckModDelivered {
+            via: herdr_threads::protocol::watch::ModDeliveryVia::Submit,
+            messages: vec![lazy.clone()],
+            operation: OperationId::new("promoted-ack"),
+            claim,
+        });
+    let permit = store
+        .issue_cooperative_permit(
+            herdr_threads::store::cooperative_permit_request(&mutation).unwrap(),
+            &budget(),
+        )
+        .unwrap();
+    let CommandResult::ModDeliveryAcked(report) =
+        store.mutate(mutation, permit, &budget()).unwrap()
+    else {
+        panic!("mod ack");
+    };
+    assert_eq!(
+        report.results[0].result,
+        herdr_threads::protocol::watch::ModAckOutcome::Settled
+    );
+    assert!(
+        first_page(&context).items.is_empty(),
+        "the completed lazy row leaves the inbox"
+    );
+}

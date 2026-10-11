@@ -688,6 +688,58 @@ fn inbox_batch_displays_pending_body_and_only_complete_agent_receipt_is_candidat
     assert!(!batch.has_more);
 }
 
+fn bind_query_agent_as(db: &rusqlite::Connection, harness: &str) {
+    db.execute(
+        "UPDATE seats SET target_id='w:p1',target_generation=1 WHERE id='s'",
+        [],
+    )
+    .unwrap();
+    db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('s',1,1,'w:p1','host',1,?1,'session','exec','cooperative_top_level',0,0,'term','inc')", [harness]).unwrap();
+}
+
+/// The v2 inbox's `current_agent` is registry-driven. Kills: a hard-coded
+/// `('claude','codex')` list (a current Hermes binding then offers no ack
+/// candidate) and a check that ignores the registry (an unregistered harness
+/// id then offers one).
+#[test]
+fn inbox_v2_current_agent_counts_registered_harnesses_only() {
+    for (harness, expected) in [
+        ("hermes", Some("m-full")),
+        ("claude", Some("m-full")),
+        ("unregistered_harness", None),
+    ] {
+        let (store, db) = fixture();
+        bind_query_agent_as(&db, harness);
+        db.execute_batch("INSERT INTO messages(instance_id,decision_seq,id,thread_id,sequence,kind,actor_seat_id,body,decision_at) VALUES ('i',1,'m-full','t',1,'ordinary','s','copyable body',0);
+            INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('m-full','t','s','pending',300);
+            UPDATE threads SET next_sequence=2 WHERE id='t';").unwrap();
+        let result = query(
+            &store,
+            "i",
+            &Command::InboxBatchV2(InboxQuery {
+                seat: Some(SeatId::new("s")),
+                page: page(None),
+            }),
+            &budget(),
+        )
+        .unwrap();
+        let CommandResult::InboxBatchV2(batch) = result else {
+            panic!("wrong result")
+        };
+        assert_eq!(batch.items.len(), 1, "{harness}");
+        let crate::protocol::results::InboxBatchV2Item::Message { ack_candidate, .. } =
+            &batch.items[0]
+        else {
+            panic!("wrong item for {harness}")
+        };
+        assert_eq!(
+            ack_candidate.as_ref().map(MessageId::as_str),
+            expected,
+            "{harness}"
+        );
+    }
+}
+
 #[test]
 fn inbox_batch_partial_body_has_cursor_and_no_candidate_until_final_chunk() {
     let (store, db) = fixture();

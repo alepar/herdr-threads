@@ -293,8 +293,8 @@ fn every_recipe_keeps_transport_and_receipt_unsupported_and_health_follows() {
 
 /// Kills: a capability declared for a version the spike did not test (a
 /// neighbouring Claude patch, any Codex version), an interval widening that
-/// inherits 2.1.287's declaration, a declaration that drops `poke_during_turn`
-/// or `composer_stash` for 2.1.287, and an unobserved or malformed version
+/// inherits 2.1.287's declaration, a declaration that drops
+/// `composer_stash` for 2.1.287, and an unobserved or malformed version
 /// reporting anything but NONE.
 #[test]
 fn poke_capabilities_follow_the_recipe() {
@@ -302,7 +302,6 @@ fn poke_capabilities_follow_the_recipe() {
     use crate::protocol::authority::Harness;
     let declared = PokeCapabilities {
         composer_stash: NativeSupport::Supported,
-        poke_during_turn: NativeSupport::Supported,
     };
     assert_eq!(
         poke_capabilities(Harness::Claude, Some("2.1.287")),
@@ -354,8 +353,7 @@ fn poke_capabilities_follow_the_recipe() {
 #[test]
 fn recipes_declare_poke_capabilities_only_with_spike_evidence() {
     for recipe in claude::RECIPES {
-        let declares = recipe.profile.composer_stash == NativeSupport::Supported
-            || recipe.profile.poke_during_turn == NativeSupport::Supported;
+        let declares = recipe.profile.composer_stash == NativeSupport::Supported;
         let cites = recipe
             .evidence
             .contains(&"docs/evidence/poke-spike/findings.md");
@@ -367,6 +365,5 @@ fn recipes_declare_poke_capabilities_only_with_spike_evidence() {
     }
     for recipe in codex::RECIPES {
         assert_eq!(recipe.profile.composer_stash, NativeSupport::Unsupported);
-        assert_eq!(recipe.profile.poke_during_turn, NativeSupport::Unsupported);
     }
 }

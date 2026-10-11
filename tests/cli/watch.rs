@@ -242,6 +242,7 @@ fn lazy(id: &str, body: &str) -> InboxBatchV2Item {
         body_start: 0,
         body_end: body.len() as u64,
         body_len: body.len() as u64,
+        wakes: false,
     }
 }
 
@@ -810,6 +811,25 @@ fn invitations_and_warnings_collapse_into_one_attention_line_per_version() {
     let (_, plain) = run_drain(&paged_client(vec![vec![whole("m9", "x")]]), 7, &mut fresh);
     assert_eq!(plain.len(), 1);
     assert_eq!(plain[0].id, "m9");
+}
+
+#[test]
+fn the_attention_line_follows_the_command_prefix() {
+    let mut state = EmitState::new(None).with_command_prefix(vec![
+        "/opt/ht".into(),
+        "--state-dir".into(),
+        "/s".into(),
+    ]);
+    let (_, got) = run_drain(&paged_client(vec![vec![invitation()]]), 5, &mut state);
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert_eq!(got[0].id, "attention:5");
+    assert_eq!(
+        got[0].item,
+        WatchItem::Attention(crate::protocol::watch::WatchAttention {
+            attention_version: 5,
+            text: "herdr-threads: attention pending; run /opt/ht --state-dir /s inbox".to_owned(),
+        })
+    );
 }
 
 #[test]
@@ -1719,6 +1739,17 @@ fn invitation_policy_lazy_is_bookkeeping_while_timed_and_legacy_raise_attention(
         if let InboxBatchV2Item::Invitation { confirmation, .. } = &mut item {
             *confirmation = mode;
         }
+        let classified = crate::delivery::assemble::Assembler::default()
+            .push(item.clone())
+            .unwrap();
+        assert_eq!(
+            classified,
+            if waking {
+                crate::delivery::assemble::Assembled::Attention
+            } else {
+                crate::delivery::assemble::Assembled::InformationalNotice
+            }
+        );
         let mut state = EmitState::default();
         let (_, lines) = run_drain(&paged_client(vec![vec![item]]), 5, &mut state);
         assert_eq!(lines.len(), usize::from(waking), "{mode:?}: {lines:?}");

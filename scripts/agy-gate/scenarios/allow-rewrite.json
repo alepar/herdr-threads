@@ -1,0 +1,9 @@
+{
+  "format": "agy-fake-gemini/1",
+  "name": "allow-rewrite",
+  "aux_text": "Gate allow-rewrite title",
+  "default": {
+    "text": "ALLOW-REWRITE-UNEXPECTED"
+  },
+  "steps": []
+}

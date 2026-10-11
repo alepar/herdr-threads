@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## v0.8.0
+
+- **Antigravity CLI (agy).** An owned plugin supports setup, discovery, managed launch and handoff. Turn-start hooks pull pending messages and passive notices; transcript evidence confirms eligible message receipts. Setup retains explicit permission consent and timestamped configuration backups.
+- **Bounded hook delivery.** Pending offer history is retained at the 256-ID cap, with inbox fallback, three-offer/60-second re-offer limits and notice delivery during a backlog. Informational notices remain passive; their documented settlement-before-injection loss limit is retained.
+- **Compact delivery and wakes.** Shared framing is shorter and idle wakes carry no message body. Claude mod delivery appends the bodies before its wake turn; active sessions receive in-turn delivery.
+- **Per-seat wake preference.** `wake-on all` opts into idle wakes for lazy messages; the default remains `nudge`. Upgrade CLI and daemon together for additive schema migration 31.
+
 ## v0.7.0
 
 - **Automatic one-to-one threads.** `send --seat SEAT` and handoffs with an omitted thread create or reuse the canonical thread for the two seats. Initial invitations still require explicit acceptance; leave, rejection and archival retain their explicit repair paths. Durable retries preserve the original message and launch decisions.

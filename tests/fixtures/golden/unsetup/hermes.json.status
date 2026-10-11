@@ -1,0 +1,3 @@
+exit: 2
+stderr:
+herdr-threads: --harness-binary is not used by unsetup: removal never depends on the harness version (invalid_request)

@@ -1,0 +1,945 @@
+# Outside-adapter report
+
+Range: `f3431b31..1eaf635b`
+
+## Summary
+
+| Bucket | Files | Added | Removed |
+|---|---|---|---|
+| adapter | 81 | 9823 | 0 |
+| outside | 631 | 49208 | 3956 |
+
+## By category
+
+| Category | Files | Added | Removed |
+|---|---|---|---|
+| trait-extension | 2 | 589 | 12 |
+| reworked | 84 | 5288 | 3130 |
+| callers | 20 | 1881 | 0 |
+| test-infra | 156 | 18318 | 0 |
+| tests | 271 | 14492 | 481 |
+| docs | 76 | 6304 | 69 |
+| other | 22 | 2336 | 264 |
+
+- `.github/workflows/ci.yml` (other) +9/-0
+- `.github/workflows/harness-canary.yml` (other) +5/-3
+- `AGENTS.md` (docs) +63/-2
+- `CHANGELOG.md` (other) +9/-0
+- `Cargo.lock` (other) +1/-1
+- `Cargo.toml` (other) +1/-1
+- `README.md` (docs) +2/-2
+- `TRUST-POLICY.md` (docs) +123/-35
+- `docs/agent-usage.md` (docs) +20/-4
+- `docs/compatibility/harnesses.md` (docs) +9/-9
+- `docs/dev/outside-adapter-report.md` (docs) +74/-0
+- `docs/evidence/README.md` (docs) +2/-0
+- `docs/evidence/agy-live-smoke/2026-10-10-4d2ec663dbfa/daemon-excerpt.json` (test-infra) +162/-0
+- `docs/evidence/agy-live-smoke/2026-10-10-4d2ec663dbfa/pane-final.txt` (test-infra) +105/-0
+- `docs/evidence/agy-live-smoke/2026-10-10-4d2ec663dbfa/relay.jsonl` (test-infra) +8/-0
+- `docs/evidence/agy-live-smoke/2026-10-10-4d2ec663dbfa/report.md` (test-infra) +38/-0
+- `docs/evidence/agy-live-smoke/2026-10-10-4d2ec663dbfa/requests-excerpt.json` (test-infra) +33/-0
+- `docs/evidence/agy-live-smoke/2026-10-10-4d2ec663dbfa/summary.json` (test-infra) +135/-0
+- `docs/evidence/agy-live-smoke/README.md` (test-infra) +74/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/README.md` (test-infra) +39/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/allow-rewrite/allow-rewrite-finding.json` (test-infra) +15/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/allow-rewrite/onboarding-pages.txt` (test-infra) +1/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/allow-rewrite/requests.json` (test-infra) +1/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/allow-rewrite/trust-prompt-screen.txt` (test-infra) +16/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/boot/onboarding-pages.txt` (test-infra) +1/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/boot/pane-final.txt` (test-infra) +18/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/boot/requests.json` (test-infra) +40/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/clear/onboarding-pages.txt` (test-infra) +1/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/clear/requests.json` (test-infra) +84/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/delivery/error-pane.txt` (test-infra) +40/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/delivery/onboarding-pages.txt` (test-infra) +1/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/delivery/receipts.json` (test-infra) +42/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/delivery/requests.json` (test-infra) +479/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/delivery/send-CANCEL_NOTE_.json` (test-infra) +4/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/delivery/send-ERROR_NOTE_o.json` (test-infra) +4/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/delivery/send-MAIN_A1_ack_.json` (test-infra) +4/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/delivery/send-MAIN_L1_lazy.json` (test-infra) +4/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/delivery/send-MAIN_O1_ordi.json` (test-infra) +4/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/delivery/send-MAIN_T1_TTTT.json` (test-infra) +4/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/delivery/send-STOP_NOTE_or.json` (test-infra) +4/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/delivery/state-files.json` (test-infra) +3/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/delivery/thread-create-gate-delivery.json` (test-infra) +4/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/downgrade/abort-fired.json` (test-infra) +9/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/downgrade/abort-pane.txt` (test-infra) +35/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/downgrade/doctor-delivery-abort.json` (test-infra) +9/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/downgrade/doctor-delivery-restaged.json` (test-infra) +13/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/downgrade/onboarding-pages.txt` (test-infra) +1/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/downgrade/requests.json` (test-infra) +510/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/downgrade/send-DOWN_M1_abor.json` (test-infra) +4/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/downgrade/send-DOWN_M2_user.json` (test-infra) +4/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/downgrade/send-DOWN_M3_syst.json` (test-infra) +4/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/downgrade/send-DOWN_M4_igno.json` (test-infra) +4/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/downgrade/send-DOWN_M5_igno.json` (test-infra) +4/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/downgrade/setup-status-mutated.json` (test-infra) +48/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/downgrade/setup-status-restored.json` (test-infra) +48/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/downgrade/state-files.json` (test-infra) +4/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/downgrade/thread-create-gate-downgrade.json` (test-infra) +4/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/enroll/onboarding-pages.txt` (test-infra) +1/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/enroll/requests.json` (test-infra) +43/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/handoff/handoff-response.txt` (test-infra) +1/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/handoff/onboarding-pages.txt` (test-infra) +1/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/handoff/requests.json` (test-infra) +159/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/launch/onboarding-pages.txt` (test-infra) +1/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/launch/requests.json` (test-infra) +43/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/permission/onboarding-pages.txt` (test-infra) +1/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/permission/permission-blocked-screen.txt` (test-infra) +34/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/permission/requests.json` (test-infra) +116/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/resume/onboarding-pages.txt` (test-infra) +1/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/resume/requests.json` (test-infra) +149/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/setup/requests.json` (test-infra) +1/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/subagent/invoke-subagent-declaration.json` (test-infra) +65/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/subagent/onboarding-pages.txt` (test-infra) +1/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/subagent/requests.json` (test-infra) +170/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/unsetup/requests.json` (test-infra) +1/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/wake/a-wake-user-requests.json` (test-infra) +5/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/wake/c-follow-up-body.json` (test-infra) +785/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/wake/c-receipts.json` (test-infra) +54/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/wake/c-transcript-n2.jsonl` (test-infra) +1/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/wake/d-detection.txt` (test-infra) +37/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/wake/e-wake-on.json` (test-infra) +8/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/wake/f-after.json` (test-infra) +7/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/wake/f-detection.txt` (test-infra) +40/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/wake/g-detection.txt` (test-infra) +40/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/wake/onboarding-pages.txt` (test-infra) +1/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/wake/requests.json` (test-infra) +1104/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/wake/send-WAKE_N1_ack_.json` (test-infra) +4/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/wake/send-WAKE_N2_mid_.json` (test-infra) +4/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/wake/send-WAKE_N3_whil.json` (test-infra) +4/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/wake/send-WAKE_N4_duri.json` (test-infra) +4/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/wake/send-WAKE_N5_duri.json` (test-infra) +4/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/wake/send-WAKE_Z1_lazy.json` (test-infra) +4/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/wake/send-WAKE_Z2_lazy.json` (test-infra) +4/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/wake/thread-create-gate-wake.json` (test-infra) +4/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/report.json` (test-infra) +1791/-0
+- `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/summary.txt` (test-infra) +18/-0
+- `docs/install.md` (docs) +24/-3
+- `docs/operations.md` (docs) +1/-1
+- `docs/superpowers/runs/2026-10-03-harness-adapters/2026-10-03-harness-adapters--health-tooling-design.md` (docs) +2/-2
+- `docs/superpowers/runs/2026-10-09-agy-harness-adapter/2026-10-09-agy-harness-adapter--agy-adapter-design.md` (docs) +512/-0
+- `docs/superpowers/runs/2026-10-09-agy-harness-adapter/2026-10-09-agy-harness-adapter--core-sweep-design.md` (docs) +460/-0
+- `docs/superpowers/runs/2026-10-09-agy-harness-adapter/2026-10-09-agy-harness-adapter--delivery-policy-design.md` (docs) +470/-0
+- `docs/superpowers/runs/2026-10-09-agy-harness-adapter/2026-10-09-agy-harness-adapter--test-infra-design.md` (docs) +578/-0
+- `docs/superpowers/runs/2026-10-09-agy-harness-adapter/2026-10-09-agy-harness-adapter-design.md` (docs) +365/-0
+- `docs/superpowers/runs/2026-10-09-agy-harness-adapter/2026-10-10-agy-harness-adapter-roast-design-1-step-back.md` (docs) +42/-0
+- `docs/superpowers/runs/2026-10-09-agy-harness-adapter/2026-10-10-agy-harness-adapter-roast-design-1.md` (docs) +112/-0
+- `docs/superpowers/runs/2026-10-09-agy-harness-adapter/2026-10-10-agy-harness-adapter-roast-design-2.md` (docs) +61/-0
+- `docs/superpowers/runs/2026-10-09-agy-harness-adapter/2026-10-10-agy-harness-adapter-roast-pr-1-punch-list.txt` (docs) +20/-0
+- `docs/superpowers/runs/2026-10-09-agy-harness-adapter/2026-10-10-agy-harness-adapter-roast-pr-1-scope-filter.json` (docs) +130/-0
+- `docs/superpowers/runs/2026-10-09-agy-harness-adapter/2026-10-10-agy-harness-adapter-roast-pr-1-scope-keys.txt` (docs) +24/-0
+- `docs/superpowers/runs/2026-10-09-agy-harness-adapter/2026-10-10-agy-harness-adapter-roast-pr-1-step-back-keys.txt` (docs) +31/-0
+- `docs/superpowers/runs/2026-10-09-agy-harness-adapter/2026-10-10-agy-harness-adapter-roast-pr-1-step-back.md` (docs) +9/-0
+- `docs/superpowers/runs/2026-10-09-agy-harness-adapter/2026-10-10-agy-harness-adapter-roast-pr-1.md` (docs) +213/-0
+- `docs/superpowers/runs/2026-10-09-agy-harness-adapter/2026-10-10-agy-harness-adapter-roast-pr-2-punch-list.txt` (docs) +22/-0
+- `docs/superpowers/runs/2026-10-09-agy-harness-adapter/2026-10-10-agy-harness-adapter-roast-pr-2.md` (docs) +48/-0
+- `docs/superpowers/runs/2026-10-09-agy-harness-adapter/code-final-review-6.md` (docs) +111/-0
+- `docs/superpowers/runs/2026-10-09-agy-harness-adapter/code-final-review-7.md` (docs) +95/-0
+- `docs/superpowers/runs/2026-10-09-agy-harness-adapter/coverage-findings-round-1.md` (docs) +14/-0
+- `docs/superpowers/runs/2026-10-09-agy-harness-adapter/coverage-findings-round-2.md` (docs) +26/-0
+- `docs/superpowers/runs/2026-10-09-agy-harness-adapter/coverage-inputs-round-1.md` (docs) +84/-0
+- `docs/superpowers/runs/2026-10-09-agy-harness-adapter/coverage-inputs-round-2.md` (docs) +152/-0
+- `docs/superpowers/runs/2026-10-09-agy-harness-adapter/coverage-ledger.md` (docs) +45/-0
+- `docs/superpowers/runs/2026-10-09-agy-harness-adapter/coverage-precheck-round-1.txt` (docs) +1/-0
+- `docs/superpowers/runs/2026-10-09-agy-harness-adapter/coverage-precheck-round-2.txt` (docs) +1/-0
+- `docs/superpowers/runs/2026-10-09-agy-harness-adapter/coverage-round-1-requirements.md` (docs) +16/-0
+- `docs/superpowers/runs/2026-10-09-agy-harness-adapter/coverage-round-1-review-1.md` (docs) +128/-0
+- `docs/superpowers/runs/2026-10-09-agy-harness-adapter/coverage-round-1-review-2.md` (docs) +112/-0
+- `docs/superpowers/runs/2026-10-09-agy-harness-adapter/coverage-round-2-requirements.md` (docs) +16/-0
+- `docs/superpowers/runs/2026-10-09-agy-harness-adapter/coverage-round-2-review-1.md` (docs) +120/-0
+- `docs/superpowers/runs/2026-10-09-agy-harness-adapter/coverage-round-2-review-2.md` (docs) +137/-0
+- `docs/superpowers/runs/2026-10-09-agy-harness-adapter/delivery-contract-audit.md` (docs) +195/-0
+- `docs/superpowers/runs/2026-10-09-agy-harness-adapter/design-decisions.md` (docs) +21/-0
+- `docs/superpowers/runs/2026-10-09-agy-harness-adapter/friction.md` (docs) +1/-0
+- `docs/superpowers/runs/2026-10-09-agy-harness-adapter/handoff-continuation.md` (docs) +14/-0
+- `docs/superpowers/runs/2026-10-09-agy-harness-adapter/integration-sweep.md` (docs) +157/-0
+- `docs/superpowers/runs/2026-10-09-agy-harness-adapter/roast-design-1-tree.json` (docs) +550/-0
+- `docs/superpowers/runs/2026-10-09-agy-harness-adapter/run.md` (docs) +91/-0
+- `docs/superpowers/runs/2026-10-10-invitation-rejection-policy/2026-10-10-invitation-rejection-policy-design.md` (docs) +37/-0
+- `docs/superpowers/runs/2026-10-10-invitation-rejection-policy/2026-10-10-invitation-rejection-policy-roast-design-1-coverage.json` (docs) +35/-0
+- `docs/superpowers/runs/2026-10-10-invitation-rejection-policy/2026-10-10-invitation-rejection-policy-roast-design-1.md` (docs) +29/-0
+- `docs/superpowers/runs/2026-10-10-invitation-rejection-policy/2026-10-10-invitation-rejection-policy-roast-pr-1-coverage.json` (docs) +29/-0
+- `docs/superpowers/runs/2026-10-10-invitation-rejection-policy/2026-10-10-invitation-rejection-policy-roast-pr-1.md` (docs) +29/-0
+- `docs/superpowers/runs/2026-10-10-invitation-rejection-policy/coverage-ledger.md` (docs) +14/-0
+- `docs/superpowers/runs/2026-10-10-invitation-rejection-policy/coverage-round-1.md` (docs) +44/-0
+- `docs/superpowers/runs/2026-10-10-invitation-rejection-policy/coverage-round-2.md` (docs) +23/-0
+- `docs/superpowers/runs/2026-10-10-invitation-rejection-policy/feedback-analysis.md` (docs) +3/-0
+- `docs/superpowers/runs/2026-10-10-invitation-rejection-policy/final-verification.md` (docs) +15/-0
+- `docs/superpowers/runs/2026-10-10-invitation-rejection-policy/friction.md` (docs) +10/-0
+- `docs/superpowers/runs/2026-10-10-invitation-rejection-policy/guidance-pressure.md` (docs) +12/-0
+- `docs/superpowers/runs/2026-10-10-invitation-rejection-policy/integration-review.md` (docs) +9/-0
+- `docs/superpowers/runs/2026-10-10-invitation-rejection-policy/progress.md` (docs) +37/-0
+- `docs/superpowers/runs/2026-10-10-invitation-rejection-policy/report.md` (docs) +24/-0
+- `docs/superpowers/runs/2026-10-10-invitation-rejection-policy/run.md` (docs) +36/-0
+- `docs/superpowers/runs/2026-10-10-invitation-rejection-policy/task-1-brief.md` (docs) +12/-0
+- `docs/superpowers/runs/2026-10-10-invitation-rejection-policy/task-1-report.md` (docs) +15/-0
+- `docs/superpowers/runs/2026-10-10-invitation-rejection-policy/task-1-review.md` (docs) +7/-0
+- `docs/superpowers/runs/2026-10-10-invitation-rejection-policy/task-2-brief.md` (docs) +14/-0
+- `docs/superpowers/runs/2026-10-10-invitation-rejection-policy/task-2-report.md` (docs) +32/-0
+- `docs/superpowers/runs/2026-10-10-invitation-rejection-policy/task-2-review.md` (docs) +7/-0
+- `docs/superpowers/runs/2026-10-10-invitation-rejection-policy/task-3-report.md` (docs) +11/-0
+- `docs/superpowers/runs/2026-10-10-invitation-rejection-policy/tree.json` (docs) +135/-0
+- `docs/superpowers/specs/INDEX.md` (docs) +7/-0
+- `docs/validation/agy-native.md` (test-infra) +110/-0
+- `herdr-plugin.toml` (other) +1/-1
+- `integrations/agy/README.md` (docs) +158/-0
+- `integrations/claude/README.md` (docs) +1/-1
+- `integrations/claude/mod/README.md` (docs) +15/-10
+- `integrations/claude/mod/hooks/register.js` (other) +89/-64
+- `integrations/claude/mod/tests/delivery.test.ts` (other) +239/-183
+- `integrations/claude/mod/tests/fixtures/frame-goldens.ts` (other) +217/-0
+- `integrations/claude/mod/tests/frame_golden.test.ts` (other) +29/-0
+- `integrations/claude/mod/tests/stress.test.ts` (other) +4/-0
+- `integrations/claude/mod/types/index.d.ts` (other) +7/-0
+- `integrations/skill/SKILL.md` (other) +6/-5
+- `migrations/0029_seat_wake_on.sql` (other) +5/-0
+- `scripts/agy-fake-gemini/scenario.py` (test-infra) +362/-0
+- `scripts/agy-fake-gemini/server.py` (test-infra) +352/-0
+- `scripts/agy-fake-gemini/test_fake_gemini.py` (test-infra) +825/-0
+- `scripts/agy-fake-gemini/testdata/agy-request-systemmessage.json` (test-infra) +34/-0
+- `scripts/agy-gate/flows/_l4.py` (test-infra) +188/-0
+- `scripts/agy-gate/flows/_l5.py` (test-infra) +137/-0
+- `scripts/agy-gate/flows/_l6.py` (test-infra) +246/-0
+- `scripts/agy-gate/flows/_l7.py` (test-infra) +133/-0
+- `scripts/agy-gate/flows/allow_rewrite.py` (test-infra) +73/-0
+- `scripts/agy-gate/flows/boot.py` (test-infra) +86/-0
+- `scripts/agy-gate/flows/clear.py` (test-infra) +58/-0
+- `scripts/agy-gate/flows/delivery.py` (test-infra) +197/-0
+- `scripts/agy-gate/flows/downgrade.py` (test-infra) +218/-0
+- `scripts/agy-gate/flows/enroll.py` (test-infra) +59/-0
+- `scripts/agy-gate/flows/handoff.py` (test-infra) +63/-0
+- `scripts/agy-gate/flows/launch.py` (test-infra) +73/-0
+- `scripts/agy-gate/flows/permission.py` (test-infra) +60/-0
+- `scripts/agy-gate/flows/resume.py` (test-infra) +84/-0
+- `scripts/agy-gate/flows/setup.py` (test-infra) +69/-0
+- `scripts/agy-gate/flows/subagent.py` (test-infra) +73/-0
+- `scripts/agy-gate/flows/unsetup.py` (test-infra) +68/-0
+- `scripts/agy-gate/flows/wake.py` (test-infra) +223/-0
+- `scripts/agy-gate/gate.py` (test-infra) +260/-0
+- `scripts/agy-gate/live_smoke.py` (test-infra) +650/-0
+- `scripts/agy-gate/observe.py` (test-infra) +65/-0
+- `scripts/agy-gate/relay_backend.py` (test-infra) +152/-0
+- `scripts/agy-gate/scenarios/allow-rewrite.json` (test-infra) +9/-0
+- `scripts/agy-gate/scenarios/boot.json` (test-infra) +9/-0
+- `scripts/agy-gate/scenarios/clear.json` (test-infra) +10/-0
+- `scripts/agy-gate/scenarios/delivery-cancel.json` (test-infra) +43/-0
+- `scripts/agy-gate/scenarios/delivery-error.json` (test-infra) +46/-0
+- `scripts/agy-gate/scenarios/delivery-stop.json` (test-infra) +68/-0
+- `scripts/agy-gate/scenarios/delivery.json` (test-infra) +64/-0
+- `scripts/agy-gate/scenarios/downgrade-ignore.json` (test-infra) +65/-0
+- `scripts/agy-gate/scenarios/downgrade.json` (test-infra) +102/-0
+- `scripts/agy-gate/scenarios/enroll.json` (test-infra) +9/-0
+- `scripts/agy-gate/scenarios/handoff.json` (test-infra) +42/-0
+- `scripts/agy-gate/scenarios/launch.json` (test-infra) +21/-0
+- `scripts/agy-gate/scenarios/permission.json` (test-infra) +71/-0
+- `scripts/agy-gate/scenarios/resume.json` (test-infra) +12/-0
+- `scripts/agy-gate/scenarios/setup.json` (test-infra) +9/-0
+- `scripts/agy-gate/scenarios/subagent.json` (test-infra) +26/-0
+- `scripts/agy-gate/scenarios/unsetup.json` (test-infra) +9/-0
+- `scripts/agy-gate/scenarios/wake-subagent.json` (test-infra) +34/-0
+- `scripts/agy-gate/scenarios/wake.json` (test-infra) +29/-0
+- `scripts/agy-gate/step_mutator.py` (test-infra) +155/-0
+- `scripts/agy-gate/test_gate.py` (test-infra) +293/-0
+- `scripts/agy-gate/test_live_smoke.py` (test-infra) +428/-0
+- `scripts/agy-gate/test_scenarios_l4.py` (test-infra) +195/-0
+- `scripts/agy-gate/test_scenarios_l5.py` (test-infra) +143/-0
+- `scripts/agy-gate/test_scenarios_l6.py` (test-infra) +133/-0
+- `scripts/agy-gate/test_scenarios_l7.py` (test-infra) +170/-0
+- `scripts/agy-gate/test_step_mutator.py` (test-infra) +128/-0
+- `scripts/agy-live-smoke` (test-infra) +4/-0
+- `scripts/agy-native-gate` (test-infra) +4/-0
+- `scripts/agy-relay/budget.py` (test-infra) +141/-0
+- `scripts/agy-relay/fake_upstream.py` (test-infra) +248/-0
+- `scripts/agy-relay/relay.py` (test-infra) +429/-0
+- `scripts/agy-relay/test_relay.py` (test-infra) +1007/-0
+- `scripts/agy-relay/test_translate.py` (test-infra) +425/-0
+- `scripts/agy-relay/testdata/agy-native-requests.json` (test-infra) +215/-0
+- `scripts/agy-relay/testdata/agy-tool-declarations.json` (test-infra) +68/-0
+- `scripts/agy-relay/testdata/openrouter-stream-text.sse` (test-infra) +10/-0
+- `scripts/agy-relay/testdata/openrouter-stream-toolcall.sse` (test-infra) +10/-0
+- `scripts/agy-relay/translate.py` (test-infra) +423/-0
+- `scripts/agy-sandbox/agy-versions.json` (test-infra) +11/-0
+- `scripts/agy-sandbox/agyenv.py` (test-infra) +732/-0
+- `scripts/agy-sandbox/fetch-agy` (test-infra) +165/-0
+- `scripts/agy-sandbox/loopback.sb.in` (test-infra) +9/-0
+- `scripts/agy-sandbox/test_agyenv.py` (test-infra) +391/-0
+- `scripts/agy-sandbox/testdata/agy-9.9.9.tar.gz` (test-infra) +0/-0
+- `scripts/agy-sandbox/testdata/manifest-9.9.9.json` (test-infra) +5/-0
+- `scripts/canary/run.py` (other) +13/-6
+- `scripts/canary/test_strategy.py` (other) +41/-0
+- `scripts/check-harness-neutral` (other) +415/-0
+- `scripts/gen-frame-goldens.mjs` (other) +91/-0
+- `scripts/harness-neutral-allowlist.txt` (other) +75/-0
+- `scripts/outside-adapter-report` (other) +392/-0
+- `scripts/tests/test_check_harness_neutral.py` (other) +416/-0
+- `scripts/tests/test_outside_adapter_report.py` (other) +271/-0
+- `src/app.rs` (reworked) +35/-24
+- `src/cli/commands.rs` (reworked) +76/-24
+- `src/cli/doctor.rs` (reworked) +172/-718
+- `src/cli/handoff.rs` (reworked) +130/-88
+- `src/cli/help.rs` (reworked) +294/-0
+- `src/cli/hook.rs` (reworked) +378/-179
+- `src/cli/hook_evidence.rs` (reworked) +23/-9
+- `src/cli/journal.rs` (reworked) +2/-1
+- `src/cli/launch.rs` (reworked) +58/-90
+- `src/cli/me.rs` (reworked) +0/-11
+- `src/cli/mod.rs` (reworked) +25/-17
+- `src/cli/output.rs` (reworked) +15/-23
+- `src/cli/setup.rs` (reworked) +111/-232
+- `src/cli/setup/foreground.rs` (reworked) +36/-67
+- `src/cli/skill.rs` (reworked) +0/-4
+- `src/cli/summary.rs` (reworked) +1/-1
+- `src/cli/topology_handoff.rs` (reworked) +67/-18
+- `src/cli/topology_recover.rs` (reworked) +1/-1
+- `src/cli/topology_runtime.rs` (reworked) +6/-4
+- `src/cli/wake_on.rs` (reworked) +148/-0
+- `src/cli/watch.rs` (reworked) +105/-316
+- `src/client/mod.rs` (reworked) +2/-2
+- `src/daemon/harness_evidence.rs` (reworked) +17/-3
+- `src/daemon/harness_states.rs` (reworked) +13/-5
+- `src/daemon/health.rs` (reworked) +56/-37
+- `src/delivery/assemble.rs` (callers) +304/-0
+- `src/delivery/frame.rs` (callers) +154/-0
+- `src/delivery/ledger.rs` (reworked) +217/-0
+- `src/delivery/mod.rs` (reworked) +29/-0
+- `src/delivery/page.rs` (callers) +128/-0
+- `src/delivery/routing.rs` (reworked) +45/-0
+- `src/delivery/settle.rs` (callers) +88/-0
+- `src/harness/adapter.rs` (trait-extension) +286/-8
+- `src/harness/attribution.rs` (reworked) +77/-56
+- `src/harness/bridge.rs` (reworked) +17/-4
+- `src/harness/cache.rs` (reworked) +2/-1
+- `src/harness/claude.rs` (reworked) +176/-18
+- `src/harness/claude/composer.rs` (reworked) +3/-2
+- `src/harness/claude/delivery.rs` (callers) +18/-0
+- `src/harness/claude/doctor.rs` (callers) +444/-0
+- `src/harness/claude/permission_rules.rs` (reworked) +7/-1
+- `src/harness/claude/permissions.rs` (reworked) +31/-10
+- `src/harness/claude/prompt_suggestion.rs` (reworked) +4/-4
+- `src/harness/claude/setup.rs` (reworked) +82/-56
+- `src/harness/codex.rs` (reworked) +198/-285
+- `src/harness/codex/composer.rs` (reworked) +0/-1
+- `src/harness/codex/doctor.rs` (callers) +268/-0
+- `src/harness/codex/permission_rules.rs` (reworked) +1/-1
+- `src/harness/codex/permissions.rs` (reworked) +11/-7
+- `src/harness/codex/setup.rs` (reworked) +341/-37
+- `src/harness/codex_evidence.rs` (reworked) +4/-25
+- `src/harness/codex_schema.rs` (reworked) +1/-38
+- `src/harness/composer.rs` (reworked) +2/-4
+- `src/harness/contract.rs` (reworked) +71/-28
+- `src/harness/evidence.rs` (callers) +30/-0
+- `src/harness/hermes.rs` (callers) +29/-0
+- `src/harness/hermes/launch.rs` (reworked) +3/-3
+- `src/harness/launch.rs` (reworked) +216/-5
+- `src/harness/manifest.rs` (reworked) +1/-1
+- `src/harness/mod.rs` (reworked) +11/-6
+- `src/harness/operational.rs` (reworked) +0/-28
+- `src/harness/permissions.rs` (reworked) +43/-22
+- `src/harness/process.rs` (callers) +144/-0
+- `src/harness/recipe.rs` (reworked) +8/-3
+- `src/harness/registry.rs` (trait-extension) +303/-4
+- `src/harness/runtime.rs` (callers) +42/-0
+- `src/harness/setup.rs` (reworked) +513/-465
+- `src/host/native.rs` (reworked) +11/-3
+- `src/lib.rs` (callers) +1/-0
+- `src/notification/dispatch.rs` (reworked) +39/-1
+- `src/notification/policy.rs` (reworked) +13/-5
+- `src/ports.rs` (reworked) +87/-1
+- `src/protocol/attention.rs` (reworked) +2/-2
+- `src/protocol/authority.rs` (reworked) +5/-0
+- `src/protocol/capabilities.rs` (reworked) +7/-0
+- `src/protocol/commands.rs` (reworked) +59/-0
+- `src/protocol/delivery.rs` (callers) +131/-0
+- `src/protocol/handoff.rs` (reworked) +30/-1
+- `src/protocol/mod.rs` (callers) +1/-0
+- `src/protocol/output.rs` (reworked) +1/-1
+- `src/protocol/output_compact.rs` (callers) +1/-0
+- `src/protocol/results.rs` (reworked) +19/-0
+- `src/protocol/watch.rs` (reworked) +42/-4
+- `src/scheduler/mod.rs` (reworked) +37/-5
+- `src/service/delivery_pull.rs` (reworked) +472/-0
+- `src/service/dispatch.rs` (reworked) +41/-14
+- `src/service/mod.rs` (reworked) +1/-0
+- `src/service/mod_channels.rs` (reworked) +16/-1
+- `src/service/workers.rs` (reworked) +5/-2
+- `src/store/attention.rs` (reworked) +23/-4
+- `src/store/control.rs` (reworked) +23/-2
+- `src/store/effective.rs` (callers) +15/-0
+- `src/store/lazy_delivery.rs` (callers) +72/-0
+- `src/store/materialization.rs` (callers) +9/-0
+- `src/store/messages.rs` (reworked) +6/-1
+- `src/store/mod.rs` (reworked) +27/-1
+- `src/store/queries.rs` (reworked) +25/-0
+- `src/store/receipts.rs` (reworked) +166/-64
+- `src/store/schema.rs` (reworked) +83/-3
+- `src/store/seats.rs` (reworked) +88/-14
+- `src/store/topology_handoff/attachment.rs` (reworked) +5/-5
+- `src/store/topology_handoff/attempts.rs` (reworked) +1/-1
+- `src/store/wake.rs` (reworked) +29/-7
+- `src/test_support/archival_composer_fixture.rs` (callers) +1/-0
+- `src/test_support/attention_oracle.rs` (callers) +1/-0
+- `src/test_support/mod.rs` (reworked) +40/-3
+- `tests/cli/commands.rs` (tests) +2/-2
+- `tests/cli/cooperative.rs` (tests) +1/-0
+- `tests/cli/doctor_json.rs` (tests) +217/-1
+- `tests/cli/doctor_labels.rs` (tests) +54/-16
+- `tests/cli/follow_retry.rs` (tests) +1/-0
+- `tests/cli/handoff.rs` (tests) +30/-2
+- `tests/cli/hook.rs` (tests) +36/-35
+- `tests/cli/hook_evidence.rs` (tests) +1/-1
+- `tests/cli/hook_inbox.rs` (tests) +1/-0
+- `tests/cli/hook_local_evidence.rs` (tests) +824/-0
+- `tests/cli/hook_neutral.rs` (tests) +151/-0
+- `tests/cli/hook_pull_lazy.rs` (tests) +393/-0
+- `tests/cli/installer.rs` (tests) +6/-2
+- `tests/cli/launch.rs` (tests) +118/-21
+- `tests/cli/lazy_display.rs` (tests) +1/-0
+- `tests/cli/lazy_settlement.rs` (tests) +1/-0
+- `tests/cli/output.rs` (tests) +7/-1
+- `tests/cli/skill.rs` (tests) +1/-0
+- `tests/cli/summary.rs` (tests) +1/-1
+- `tests/cli/topology_handoff.rs` (tests) +454/-3
+- `tests/cli/wake_on.rs` (tests) +378/-0
+- `tests/cli/watch.rs` (tests) +20/-0
+- `tests/combined.rs` (tests) +4/-0
+- `tests/daemon/control.rs` (tests) +110/-42
+- `tests/daemon/harness_evidence.rs` (tests) +2/-1
+- `tests/daemon/health_budget.rs` (tests) +10/-4
+- `tests/daemon/health_harness_state.rs` (tests) +54/-23
+- `tests/daemon/health_optimistic.rs` (tests) +20/-10
+- `tests/delivery/extraction.rs` (tests) +500/-0
+- `tests/delivery/frame.rs` (tests) +123/-0
+- `tests/delivery/ledger.rs` (tests) +251/-0
+- `tests/delivery/promotion.rs` (tests) +112/-0
+- `tests/delivery/push_channel.rs` (tests) +155/-0
+- `tests/delivery/routing.rs` (tests) +48/-0
+- `tests/delivery/settle.rs` (tests) +102/-0
+- `tests/fixtures/delivery/frame-attention.json` (tests) +21/-0
+- `tests/fixtures/delivery/frame-attention.txt` (tests) +11/-0
+- `tests/fixtures/delivery/frame-controls.json` (tests) +20/-0
+- `tests/fixtures/delivery/frame-controls.txt` (tests) +7/-0
+- `tests/fixtures/delivery/frame-empty.json` (tests) +1/-0
+- `tests/fixtures/delivery/frame-empty.txt` (tests) +2/-0
+- `tests/fixtures/delivery/frame-header.txt` (tests) +1/-0
+- `tests/fixtures/delivery/frame-markers.json` (tests) +87/-0
+- `tests/fixtures/delivery/frame-markers.txt` (tests) +25/-0
+- `tests/fixtures/delivery/frame-multiline.json` (tests) +29/-0
+- `tests/fixtures/delivery/frame-multiline.txt` (tests) +19/-0
+- `tests/fixtures/delivery/frame-name-equals-id.json` (tests) +38/-0
+- `tests/fixtures/delivery/frame-name-equals-id.txt` (tests) +13/-0
+- `tests/fixtures/golden/contract-id/json.json` (tests) +1/-0
+- `tests/fixtures/golden/contract-id/json.json.status` (tests) +2/-0
+- `tests/fixtures/golden/contract-id/text.txt` (tests) +2/-0
+- `tests/fixtures/golden/contract-id/text.txt.status` (tests) +2/-0
+- `tests/fixtures/golden/doctor/all.debug.text` (tests) +56/-0
+- `tests/fixtures/golden/doctor/all.debug.text.status` (tests) +2/-0
+- `tests/fixtures/golden/doctor/all.json` (tests) +1/-0
+- `tests/fixtures/golden/doctor/all.json.status` (tests) +2/-0
+- `tests/fixtures/golden/doctor/all.text` (tests) +22/-0
+- `tests/fixtures/golden/doctor/all.text.status` (tests) +2/-0
+- `tests/fixtures/golden/doctor/hermes.json` (tests) +1/-0
+- `tests/fixtures/golden/doctor/hermes.json.status` (tests) +2/-0
+- `tests/fixtures/golden/doctor/hermes.text` (tests) +6/-0
+- `tests/fixtures/golden/doctor/hermes.text.status` (tests) +2/-0
+- `tests/fixtures/golden/env-markers/detection.json` (tests) +97/-0
+- `tests/fixtures/golden/handoff/claude.new-tab.bootstrap-argv.json` (tests) +16/-0
+- `tests/fixtures/golden/handoff/claude.new-tab.json` (tests) +1/-0
+- `tests/fixtures/golden/handoff/claude.new-tab.json.status` (tests) +2/-0
+- `tests/fixtures/golden/handoff/claude.new-tab.text` (tests) +24/-0
+- `tests/fixtures/golden/handoff/claude.new-tab.text.status` (tests) +2/-0
+- `tests/fixtures/golden/handoff/claude.pane.bootstrap-argv.json` (tests) +16/-0
+- `tests/fixtures/golden/handoff/claude.pane.json` (tests) +1/-0
+- `tests/fixtures/golden/handoff/claude.pane.json.status` (tests) +2/-0
+- `tests/fixtures/golden/handoff/claude.pane.text` (tests) +31/-0
+- `tests/fixtures/golden/handoff/claude.pane.text.status` (tests) +2/-0
+- `tests/fixtures/golden/handoff/codex.new-tab.bootstrap-argv.json` (tests) +16/-0
+- `tests/fixtures/golden/handoff/codex.new-tab.json` (tests) +1/-0
+- `tests/fixtures/golden/handoff/codex.new-tab.json.status` (tests) +2/-0
+- `tests/fixtures/golden/handoff/codex.new-tab.text` (tests) +24/-0
+- `tests/fixtures/golden/handoff/codex.new-tab.text.status` (tests) +2/-0
+- `tests/fixtures/golden/handoff/codex.pane.bootstrap-argv.json` (tests) +16/-0
+- `tests/fixtures/golden/handoff/codex.pane.json` (tests) +1/-0
+- `tests/fixtures/golden/handoff/codex.pane.json.status` (tests) +2/-0
+- `tests/fixtures/golden/handoff/codex.pane.text` (tests) +31/-0
+- `tests/fixtures/golden/handoff/codex.pane.text.status` (tests) +2/-0
+- `tests/fixtures/golden/handoff/hermes.json` (tests) +0/-0
+- `tests/fixtures/golden/handoff/hermes.json.status` (tests) +3/-0
+- `tests/fixtures/golden/handoff/hermes.text` (tests) +0/-0
+- `tests/fixtures/golden/handoff/hermes.text.status` (tests) +3/-0
+- `tests/fixtures/golden/health/observed.json` (tests) +30/-0
+- `tests/fixtures/golden/health/unobserved.json` (tests) +29/-0
+- `tests/fixtures/golden/help/handoff.txt` (tests) +126/-0
+- `tests/fixtures/golden/help/handoff.txt.status` (tests) +2/-0
+- `tests/fixtures/golden/help/launch.txt` (tests) +107/-0
+- `tests/fixtures/golden/help/launch.txt.status` (tests) +2/-0
+- `tests/fixtures/golden/help/me-init.txt` (tests) +29/-0
+- `tests/fixtures/golden/help/me-init.txt.status` (tests) +2/-0
+- `tests/fixtures/golden/help/setup.txt` (tests) +137/-0
+- `tests/fixtures/golden/help/setup.txt.status` (tests) +2/-0
+- `tests/fixtures/golden/hook-healthy/claude.SessionStart.stdout` (tests) +1/-0
+- `tests/fixtures/golden/hook-healthy/claude.SessionStart.stdout.status` (tests) +2/-0
+- `tests/fixtures/golden/hook-healthy/codex.SessionStart.stdout` (tests) +1/-0
+- `tests/fixtures/golden/hook-healthy/codex.SessionStart.stdout.status` (tests) +2/-0
+- `tests/fixtures/golden/hook/claude.PostToolUse.stdout` (tests) +0/-0
+- `tests/fixtures/golden/hook/claude.PostToolUse.stdout.status` (tests) +3/-0
+- `tests/fixtures/golden/hook/claude.PreToolUse.stdout` (tests) +0/-0
+- `tests/fixtures/golden/hook/claude.PreToolUse.stdout.status` (tests) +3/-0
+- `tests/fixtures/golden/hook/claude.SessionStart.stdout` (tests) +1/-0
+- `tests/fixtures/golden/hook/claude.SessionStart.stdout.status` (tests) +3/-0
+- `tests/fixtures/golden/hook/claude.Stop.stdout` (tests) +0/-0
+- `tests/fixtures/golden/hook/claude.Stop.stdout.status` (tests) +3/-0
+- `tests/fixtures/golden/hook/claude.UserPromptSubmit.stdout` (tests) +0/-0
+- `tests/fixtures/golden/hook/claude.UserPromptSubmit.stdout.status` (tests) +3/-0
+- `tests/fixtures/golden/hook/codex.PostToolUse.stdout` (tests) +0/-0
+- `tests/fixtures/golden/hook/codex.PostToolUse.stdout.status` (tests) +3/-0
+- `tests/fixtures/golden/hook/codex.PreToolUse.stdout` (tests) +0/-0
+- `tests/fixtures/golden/hook/codex.PreToolUse.stdout.status` (tests) +3/-0
+- `tests/fixtures/golden/hook/codex.SessionStart.stdout` (tests) +1/-0
+- `tests/fixtures/golden/hook/codex.SessionStart.stdout.status` (tests) +3/-0
+- `tests/fixtures/golden/hook/codex.Stop.stdout` (tests) +0/-0
+- `tests/fixtures/golden/hook/codex.Stop.stdout.status` (tests) +3/-0
+- `tests/fixtures/golden/hook/codex.UserPromptSubmit.stdout` (tests) +0/-0
+- `tests/fixtures/golden/hook/codex.UserPromptSubmit.stdout.status` (tests) +3/-0
+- `tests/fixtures/golden/hook/hermes.PostToolUse.stdout` (tests) +0/-0
+- `tests/fixtures/golden/hook/hermes.PostToolUse.stdout.status` (tests) +3/-0
+- `tests/fixtures/golden/hook/hermes.PreToolUse.stdout` (tests) +0/-0
+- `tests/fixtures/golden/hook/hermes.PreToolUse.stdout.status` (tests) +3/-0
+- `tests/fixtures/golden/hook/hermes.SessionStart.stdout` (tests) +0/-0
+- `tests/fixtures/golden/hook/hermes.SessionStart.stdout.status` (tests) +3/-0
+- `tests/fixtures/golden/hook/hermes.Stop.stdout` (tests) +0/-0
+- `tests/fixtures/golden/hook/hermes.Stop.stdout.status` (tests) +3/-0
+- `tests/fixtures/golden/hook/hermes.UserPromptSubmit.stdout` (tests) +0/-0
+- `tests/fixtures/golden/hook/hermes.UserPromptSubmit.stdout.status` (tests) +3/-0
+- `tests/fixtures/golden/launch/claude.json` (tests) +1/-0
+- `tests/fixtures/golden/launch/claude.json.status` (tests) +2/-0
+- `tests/fixtures/golden/launch/claude.start-request.json` (tests) +6/-0
+- `tests/fixtures/golden/launch/claude.text` (tests) +24/-0
+- `tests/fixtures/golden/launch/claude.text.status` (tests) +2/-0
+- `tests/fixtures/golden/launch/codex.json` (tests) +1/-0
+- `tests/fixtures/golden/launch/codex.json.status` (tests) +2/-0
+- `tests/fixtures/golden/launch/codex.start-request.json` (tests) +6/-0
+- `tests/fixtures/golden/launch/codex.text` (tests) +30/-0
+- `tests/fixtures/golden/launch/codex.text.status` (tests) +2/-0
+- `tests/fixtures/golden/launch/hermes.json` (tests) +0/-0
+- `tests/fixtures/golden/launch/hermes.json.status` (tests) +3/-0
+- `tests/fixtures/golden/launch/hermes.text` (tests) +0/-0
+- `tests/fixtures/golden/launch/hermes.text.status` (tests) +3/-0
+- `tests/fixtures/golden/setup-status/all.json` (tests) +1/-0
+- `tests/fixtures/golden/setup-status/all.json.status` (tests) +3/-0
+- `tests/fixtures/golden/setup-status/all.text` (tests) +12/-0
+- `tests/fixtures/golden/setup-status/all.text.status` (tests) +3/-0
+- `tests/fixtures/golden/setup-status/claude.absent.json` (tests) +1/-0
+- `tests/fixtures/golden/setup-status/claude.absent.json.status` (tests) +2/-0
+- `tests/fixtures/golden/setup-status/claude.absent.text` (tests) +51/-0
+- `tests/fixtures/golden/setup-status/claude.absent.text.status` (tests) +2/-0
+- `tests/fixtures/golden/setup-status/claude.json` (tests) +1/-0
+- `tests/fixtures/golden/setup-status/claude.json.status` (tests) +2/-0
+- `tests/fixtures/golden/setup-status/claude.text` (tests) +55/-0
+- `tests/fixtures/golden/setup-status/claude.text.status` (tests) +2/-0
+- `tests/fixtures/golden/setup-status/codex.absent.json` (tests) +1/-0
+- `tests/fixtures/golden/setup-status/codex.absent.json.status` (tests) +2/-0
+- `tests/fixtures/golden/setup-status/codex.absent.text` (tests) +40/-0
+- `tests/fixtures/golden/setup-status/codex.absent.text.status` (tests) +2/-0
+- `tests/fixtures/golden/setup-status/codex.json` (tests) +1/-0
+- `tests/fixtures/golden/setup-status/codex.json.status` (tests) +2/-0
+- `tests/fixtures/golden/setup-status/codex.text` (tests) +43/-0
+- `tests/fixtures/golden/setup-status/codex.text.status` (tests) +2/-0
+- `tests/fixtures/golden/setup-status/hermes.absent.json` (tests) +1/-0
+- `tests/fixtures/golden/setup-status/hermes.absent.json.status` (tests) +2/-0
+- `tests/fixtures/golden/setup-status/hermes.absent.text` (tests) +5/-0
+- `tests/fixtures/golden/setup-status/hermes.absent.text.status` (tests) +2/-0
+- `tests/fixtures/golden/setup-status/hermes.json` (tests) +1/-0
+- `tests/fixtures/golden/setup-status/hermes.json.status` (tests) +2/-0
+- `tests/fixtures/golden/setup-status/hermes.text` (tests) +5/-0
+- `tests/fixtures/golden/setup-status/hermes.text.status` (tests) +2/-0
+- `tests/fixtures/golden/setup/all.json` (tests) +1/-0
+- `tests/fixtures/golden/setup/all.json.status` (tests) +2/-0
+- `tests/fixtures/golden/setup/all.text` (tests) +13/-0
+- `tests/fixtures/golden/setup/all.text.status` (tests) +2/-0
+- `tests/fixtures/golden/setup/claude.json` (tests) +1/-0
+- `tests/fixtures/golden/setup/claude.json.status` (tests) +2/-0
+- `tests/fixtures/golden/setup/claude.text` (tests) +50/-0
+- `tests/fixtures/golden/setup/claude.text.status` (tests) +2/-0
+- `tests/fixtures/golden/setup/codex.json` (tests) +1/-0
+- `tests/fixtures/golden/setup/codex.json.status` (tests) +2/-0
+- `tests/fixtures/golden/setup/codex.text` (tests) +46/-0
+- `tests/fixtures/golden/setup/codex.text.status` (tests) +2/-0
+- `tests/fixtures/golden/setup/hermes.json` (tests) +1/-0
+- `tests/fixtures/golden/setup/hermes.json.status` (tests) +2/-0
+- `tests/fixtures/golden/setup/hermes.text` (tests) +5/-0
+- `tests/fixtures/golden/setup/hermes.text.status` (tests) +2/-0
+- `tests/fixtures/golden/unsetup/claude.absent.json` (tests) +1/-0
+- `tests/fixtures/golden/unsetup/claude.absent.json.status` (tests) +2/-0
+- `tests/fixtures/golden/unsetup/claude.absent.text` (tests) +13/-0
+- `tests/fixtures/golden/unsetup/claude.absent.text.status` (tests) +2/-0
+- `tests/fixtures/golden/unsetup/claude.json` (tests) +1/-0
+- `tests/fixtures/golden/unsetup/claude.json.status` (tests) +2/-0
+- `tests/fixtures/golden/unsetup/claude.text` (tests) +14/-0
+- `tests/fixtures/golden/unsetup/claude.text.status` (tests) +2/-0
+- `tests/fixtures/golden/unsetup/codex.absent.json` (tests) +1/-0
+- `tests/fixtures/golden/unsetup/codex.absent.json.status` (tests) +2/-0
+- `tests/fixtures/golden/unsetup/codex.absent.text` (tests) +10/-0
+- `tests/fixtures/golden/unsetup/codex.absent.text.status` (tests) +2/-0
+- `tests/fixtures/golden/unsetup/codex.json` (tests) +1/-0
+- `tests/fixtures/golden/unsetup/codex.json.status` (tests) +2/-0
+- `tests/fixtures/golden/unsetup/codex.text` (tests) +13/-0
+- `tests/fixtures/golden/unsetup/codex.text.status` (tests) +2/-0
+- `tests/fixtures/golden/unsetup/hermes.json` (tests) +0/-0
+- `tests/fixtures/golden/unsetup/hermes.json.status` (tests) +3/-0
+- `tests/fixtures/golden/unsetup/hermes.text` (tests) +0/-0
+- `tests/fixtures/golden/unsetup/hermes.text.status` (tests) +3/-0
+- `tests/golden_surfaces.rs` (tests) +1459/-0
+- `tests/handoff_agy.rs` (tests) +82/-0
+- `tests/handoff_topology_cli.rs` (tests) +27/-26
+- `tests/harness/adapter_seam.rs` (tests) +1119/-0
+- `tests/harness/adapter_smoke.rs` (tests) +5/-5
+- `tests/harness/admission_ladder.rs` (tests) +0/-1
+- `tests/harness/attribution.rs` (tests) +75/-6
+- `tests/harness/canary_payloads.rs` (tests) +5/-3
+- `tests/harness/claude.rs` (tests) +11/-24
+- `tests/harness/claude_mod.rs` (tests) +23/-0
+- `tests/harness/claude_permissions.rs` (tests) +84/-11
+- `tests/harness/codex.rs` (tests) +11/-7
+- `tests/harness/codex_permissions.rs` (tests) +50/-0
+- `tests/harness/codex_schema.rs` (tests) +5/-5
+- `tests/harness/contract.rs` (tests) +176/-1
+- `tests/harness/cooperative.rs` (tests) +4/-11
+- `tests/harness/launch.rs` (tests) +5/-3
+- `tests/harness/recipe.rs` (tests) +3/-6
+- `tests/harness/role_witness.rs` (tests) +238/-0
+- `tests/harness/setup.rs` (tests) +522/-30
+- `tests/harness/versions_json_guard.rs` (tests) +0/-1
+- `tests/hook_entrypoint.rs` (tests) +16/-18
+- `tests/hook_entrypoint/agy.rs` (tests) +554/-0
+- `tests/host/wake_submission.rs` (tests) +21/-0
+- `tests/integration/agy_sweep.rs` (tests) +454/-0
+- `tests/integration/channel_activation.rs` (tests) +2/-1
+- `tests/integration/harness_adapter_wiring.rs` (tests) +1/-1
+- `tests/integration/mod_delivery.rs` (tests) +11/-2
+- `tests/integration/summary_flow.rs` (tests) +2/-2
+- `tests/integration/sweep.rs` (tests) +3/-0
+- `tests/integration/topology_activation.rs` (tests) +2/-0
+- `tests/integration/trust_policy.rs` (tests) +1/-1
+- `tests/lifecycle_ux.rs` (tests) +3/-2
+- `tests/protocol/capabilities.rs` (tests) +42/-6
+- `tests/protocol/delivery.rs` (tests) +275/-0
+- `tests/protocol/watch.rs` (tests) +24/-0
+- `tests/scheduler/dispatch.rs` (tests) +71/-80
+- `tests/scheduler/hook_pull_routing.rs` (tests) +141/-0
+- `tests/scheduler/poke_flow.rs` (tests) +4/-8
+- `tests/scheduler/policy.rs` (tests) +50/-32
+- `tests/scheduler/wake_text.rs` (tests) +363/-0
+- `tests/service/crash_matrix.rs` (tests) +8/-2
+- `tests/service/delivery_pull.rs` (tests) +881/-0
+- `tests/service/lanes.rs` (tests) +2/-0
+- `tests/service/lazy_hook_pull.rs` (tests) +292/-0
+- `tests/service/loop_inventory.rs` (tests) +4/-4
+- `tests/service/mod_channels.rs` (tests) +2/-0
+- `tests/service/resolution.rs` (tests) +3/-4
+- `tests/setup_cli.rs` (tests) +8/-2
+- `tests/store/archival_legacy.rs` (tests) +1/-0
+- `tests/store/control.rs` (tests) +572/-0
+- `tests/store/handoff_fences.rs` (tests) +2/-2
+- `tests/store/lazy26_prerequisite.rs` (tests) +3/-3
+- `tests/store/lazy_inbox.rs` (tests) +94/-0
+- `tests/store/lazy_publication.rs` (tests) +28/-0
+- `tests/store/lazy_schema.rs` (tests) +1/-1
+- `tests/store/queries.rs` (tests) +52/-0
+- `tests/store/topology_handoff.rs` (tests) +4/-2
+- `tests/store/topology_handoff_schema.rs` (tests) +3/-3
+- `tests/store/wake.rs` (tests) +1/-0
+- `tests/store/wake_on.rs` (tests) +311/-0
+- `tests/store/wake_on_wake.rs` (tests) +354/-0
+
+## By subepic
+
+### ht-poh.13
+
+- commits: 1; outside lines +1/-0; outside paths: `docs/superpowers/runs/2026-10-09-agy-harness-adapter/run.md`
+- trailer: none
+
+### ht-poh.14
+
+- commits: 1; outside lines +730/-254; outside paths: `TRUST-POLICY.md`, `integrations/agy/README.md`, `integrations/claude/mod/README.md`, `integrations/claude/mod/hooks/register.js`, `integrations/claude/mod/tests/delivery.test.ts`, `integrations/claude/mod/tests/stress.test.ts`, `integrations/claude/mod/types/index.d.ts`, `src/harness/adapter.rs`, `src/harness/registry.rs`, `src/host/native.rs`, `src/notification/dispatch.rs`, `src/notification/policy.rs`, `src/scheduler/mod.rs`, `tests/harness/claude_mod.rs`, `tests/host/wake_submission.rs`, `tests/scheduler/wake_text.rs`
+- trailer: (missing)
+
+### ht-poh.2
+
+- commits: 2; outside lines +1635/-723; outside paths: `docs/superpowers/runs/2026-10-09-agy-harness-adapter/2026-10-09-agy-harness-adapter--core-sweep-design.md`, `docs/superpowers/specs/INDEX.md`, `scripts/harness-neutral-allowlist.txt`, `src/cli/doctor.rs`, `src/cli/launch.rs`, `src/cli/setup.rs`, `src/cli/setup/foreground.rs`, `src/harness/claude.rs`, `src/harness/claude/prompt_suggestion.rs`, `src/harness/claude/setup.rs`, `src/harness/codex.rs`, `src/harness/codex/setup.rs`, `src/harness/mod.rs`, `src/harness/setup.rs`, `tests/cli/hook.rs`, `tests/cli/installer.rs`, `tests/cli/launch.rs`, `tests/harness/adapter_seam.rs`, `tests/harness/canary_payloads.rs`, `tests/harness/codex.rs`, `tests/harness/codex_schema.rs`, `tests/harness/setup.rs`, `tests/hook_entrypoint.rs`, `tests/integration/mod_delivery.rs`, `tests/integration/summary_flow.rs`, `tests/integration/trust_policy.rs`, `tests/service/resolution.rs`
+- trailer: (missing)
+- trailer: (missing)
+
+### ht-poh.28
+
+- commits: 1; outside lines +304/-63; outside paths: `docs/validation/agy-native.md`, `scripts/agy-gate/flows/_l4.py`, `scripts/agy-gate/flows/_l6.py`, `scripts/agy-gate/flows/handoff.py`, `scripts/agy-gate/flows/launch.py`, `scripts/agy-gate/flows/permission.py`, `scripts/agy-gate/flows/subagent.py`, `scripts/agy-gate/scenarios/handoff.json`, `scripts/agy-gate/scenarios/permission.json`, `scripts/agy-gate/scenarios/subagent.json`, `scripts/agy-gate/test_scenarios_l4.py`, `scripts/agy-gate/test_scenarios_l5.py`, `scripts/agy-sandbox/agyenv.py`, `scripts/agy-sandbox/test_agyenv.py`
+- trailer: (missing)
+
+### ht-poh.3
+
+- commits: 5; outside lines +3295/-105; outside paths: `docs/superpowers/runs/2026-10-09-agy-harness-adapter/2026-10-09-agy-harness-adapter--delivery-policy-design.md`, `docs/superpowers/specs/INDEX.md`, `TRUST-POLICY.md`, `migrations/0029_seat_wake_on.sql`, `src/cli/commands.rs`, `src/cli/mod.rs`, `src/cli/wake_on.rs`, `src/protocol/capabilities.rs`, `src/protocol/commands.rs`, `src/protocol/results.rs`, `src/service/dispatch.rs`, `src/store/mod.rs`, `src/store/queries.rs`, `src/store/schema.rs`, `src/store/seats.rs`, `tests/cli/wake_on.rs`, `tests/integration/channel_activation.rs`, `tests/protocol/capabilities.rs`, `tests/store/handoff_fences.rs`, `tests/store/lazy26_prerequisite.rs`, `tests/store/lazy_schema.rs`, `tests/store/topology_handoff.rs`, `tests/store/topology_handoff_schema.rs`, `tests/store/wake_on.rs`, `src/cli/hook.rs`, `src/delivery/ledger.rs`, `src/delivery/mod.rs`, `src/delivery/routing.rs`, `src/harness/bridge.rs`, `src/harness/registry.rs`, `src/protocol/authority.rs`, `src/service/delivery_pull.rs`, `src/service/mod.rs`, `src/store/receipts.rs`, `src/test_support/mod.rs`, `tests/delivery/ledger.rs`, `tests/delivery/routing.rs`, `tests/protocol/delivery.rs`, `tests/service/delivery_pull.rs`
+- trailer: (missing)
+- trailer: (missing)
+- trailer: (missing)
+- trailer: (missing)
+- trailer: (missing)
+
+### ht-poh.4
+
+- commits: 3; outside lines +826/-38; outside paths: `docs/superpowers/runs/2026-10-09-agy-harness-adapter/2026-10-09-agy-harness-adapter--agy-adapter-design.md`, `docs/superpowers/runs/2026-10-09-agy-harness-adapter/2026-10-09-agy-harness-adapter-design.md`, `docs/superpowers/specs/INDEX.md`, `src/harness/launch.rs`, `tests/cli/launch.rs`, `tests/fixtures/golden/handoff/claude.pane.json`, `tests/fixtures/golden/handoff/claude.pane.text`, `tests/fixtures/golden/handoff/codex.pane.json`, `tests/fixtures/golden/handoff/codex.pane.text`, `tests/fixtures/golden/help/handoff.txt`, `tests/fixtures/golden/help/launch.txt`, `README.md`, `docs/agent-usage.md`, `docs/install.md`, `integrations/agy/README.md`, `tests/combined.rs`, `tests/handoff_agy.rs`, `tests/handoff_topology_cli.rs`
+- trailer: (missing)
+- trailer: (missing)
+- trailer: (missing)
+
+### ht-poh.41
+
+- commits: 1; outside lines +1/-1; outside paths: `docs/superpowers/runs/2026-10-09-agy-harness-adapter/run.md`
+- trailer: none
+
+### ht-poh.42
+
+- commits: 1; outside lines +152/-187; outside paths: `TRUST-POLICY.md`, `docs/compatibility/harnesses.md`, `docs/superpowers/runs/2026-10-09-agy-harness-adapter/delivery-contract-audit.md`, `src/app.rs`, `src/harness/claude.rs`, `src/harness/claude/composer.rs`, `src/harness/codex.rs`, `src/harness/codex/composer.rs`, `src/harness/recipe.rs`, `src/notification/policy.rs`, `tests/harness/admission_ladder.rs`, `tests/harness/claude.rs`, `tests/harness/codex.rs`, `tests/harness/recipe.rs`, `tests/harness/versions_json_guard.rs`, `tests/scheduler/dispatch.rs`, `tests/scheduler/poke_flow.rs`, `tests/scheduler/policy.rs`
+- trailer: (missing)
+
+### ht-poh.43
+
+- commits: 1; outside lines +8/-4; outside paths: `docs/install.md`, `docs/superpowers/runs/2026-10-09-agy-harness-adapter/2026-10-09-agy-harness-adapter-design.md`, `integrations/agy/README.md`
+- trailer: (missing)
+
+### ht-poh.46
+
+- commits: 2; outside lines +15/-9; outside paths: `scripts/agy-gate/flows/downgrade.py`, `tests/handoff_topology_cli.rs`
+- trailer: see diff
+- trailer: tests/handoff_topology_cli.rs, scripts/agy-gate/flows/downgrade.py
+
+### ht-poh.5
+
+- commits: 1; outside lines +10/-3; outside paths: `TRUST-POLICY.md`, `src/harness/registry.rs`
+- trailer: (missing)
+
+### ht-poh.52
+
+- commits: 1; outside lines +21/-16; outside paths: `AGENTS.md`, `TRUST-POLICY.md`, `docs/agent-usage.md`, `docs/operations.md`, `docs/superpowers/runs/2026-10-09-agy-harness-adapter/integration-sweep.md`, `src/harness/claude/permissions.rs`, `src/protocol/commands.rs`, `src/protocol/delivery.rs`
+- trailer: src/protocol/{delivery,commands}.rs, src/harness/claude/permissions.rs, docs/agent-usage.md, docs/operations.md, TRUST-POLICY.md, AGENTS.md, docs/superpowers/runs/2026-10-09-agy-harness-adapter/integration-sweep.md
+
+### ht-poh.6
+
+- commits: 7; outside lines +9296/-1; outside paths: `docs/superpowers/runs/2026-10-09-agy-harness-adapter/2026-10-09-agy-harness-adapter--test-infra-design.md`, `docs/superpowers/specs/INDEX.md`, `scripts/agy-relay/budget.py`, `scripts/agy-relay/fake_upstream.py`, `scripts/agy-relay/relay.py`, `scripts/agy-relay/test_relay.py`, `scripts/agy-relay/test_translate.py`, `scripts/agy-relay/testdata/agy-native-requests.json`, `scripts/agy-relay/testdata/agy-tool-declarations.json`, `scripts/agy-relay/testdata/openrouter-stream-text.sse`, `scripts/agy-relay/testdata/openrouter-stream-toolcall.sse`, `scripts/agy-relay/translate.py`, `docs/validation/agy-native.md`, `scripts/agy-gate/flows/boot.py`, `scripts/agy-gate/gate.py`, `scripts/agy-gate/observe.py`, `scripts/agy-gate/scenarios/boot.json`, `scripts/agy-gate/test_gate.py`, `scripts/agy-native-gate`, `scripts/agy-sandbox/agy-versions.json`, `scripts/agy-sandbox/agyenv.py`, `scripts/agy-sandbox/fetch-agy`, `scripts/agy-sandbox/loopback.sb.in`, `scripts/agy-sandbox/test_agyenv.py`, `scripts/agy-sandbox/testdata/agy-9.9.9.tar.gz`, `scripts/agy-sandbox/testdata/manifest-9.9.9.json`, `scripts/agy-gate/flows/_l5.py`, `scripts/agy-gate/flows/clear.py`, `scripts/agy-gate/flows/enroll.py`, `scripts/agy-gate/flows/resume.py`, `scripts/agy-gate/flows/subagent.py`, `scripts/agy-gate/scenarios/clear.json`, `scripts/agy-gate/scenarios/enroll.json`, `scripts/agy-gate/scenarios/resume.json`, `scripts/agy-gate/scenarios/subagent.json`, `scripts/agy-gate/test_scenarios_l5.py`, `docs/evidence/README.md`, `docs/evidence/agy-live-smoke/README.md`, `scripts/agy-gate/live_smoke.py`, `scripts/agy-gate/relay_backend.py`, `scripts/agy-gate/test_live_smoke.py`, `scripts/agy-live-smoke`, `scripts/agy-fake-gemini/scenario.py`, `scripts/agy-fake-gemini/test_fake_gemini.py`, `scripts/agy-gate/flows/_l6.py`, `scripts/agy-gate/flows/delivery.py`, `scripts/agy-gate/flows/downgrade.py`, `scripts/agy-gate/scenarios/delivery-cancel.json`, `scripts/agy-gate/scenarios/delivery-error.json`, `scripts/agy-gate/scenarios/delivery-stop.json`, `scripts/agy-gate/scenarios/delivery.json`, `scripts/agy-gate/scenarios/downgrade-ignore.json`, `scripts/agy-gate/scenarios/downgrade.json`, `scripts/agy-gate/step_mutator.py`, `scripts/agy-gate/test_scenarios_l6.py`, `scripts/agy-gate/test_step_mutator.py`, `scripts/agy-gate/flows/_l7.py`, `scripts/agy-gate/flows/wake.py`, `scripts/agy-gate/scenarios/wake-subagent.json`, `scripts/agy-gate/scenarios/wake.json`, `scripts/agy-gate/test_scenarios_l7.py`
+- trailer: (missing)
+- trailer: (missing)
+- trailer: (missing)
+- trailer: (missing)
+- trailer: (missing)
+- trailer: (missing)
+- trailer: (missing)
+
+### ht-poh.8
+
+- commits: 1; outside lines +430/-32; outside paths: `src/cli/handoff.rs`, `src/cli/help.rs`, `src/cli/journal.rs`, `src/cli/topology_handoff.rs`, `src/cli/topology_recover.rs`, `src/cli/topology_runtime.rs`, `src/harness/launch.rs`, `src/protocol/handoff.rs`, `src/service/dispatch.rs`, `src/store/topology_handoff/attachment.rs`, `src/store/topology_handoff/attempts.rs`, `src/test_support/mod.rs`, `tests/cli/launch.rs`, `tests/cli/topology_handoff.rs`, `tests/fixtures/golden/help/handoff.txt`, `tests/integration/topology_activation.rs`, `tests/store/topology_handoff.rs`
+- trailer: (missing)
+
+### ht-poh.9
+
+- commits: 1; outside lines +737/-0; outside paths: `docs/dev/outside-adapter-report.md`, `scripts/outside-adapter-report`, `scripts/tests/test_outside_adapter_report.py`
+- trailer: (missing)
+
+### unattributed
+
+- commits: 90; outside lines +32514/-3387; outside paths: `docs/superpowers/runs/2026-10-09-agy-harness-adapter/friction.md`, `docs/superpowers/runs/2026-10-09-agy-harness-adapter/run.md`, `docs/superpowers/runs/2026-10-09-agy-harness-adapter/design-decisions.md`, `docs/superpowers/runs/2026-10-09-agy-harness-adapter/2026-10-09-agy-harness-adapter-design.md`, `docs/superpowers/specs/INDEX.md`, `docs/superpowers/runs/2026-10-09-agy-harness-adapter/coverage-findings-round-1.md`, `docs/superpowers/runs/2026-10-09-agy-harness-adapter/coverage-inputs-round-1.md`, `docs/superpowers/runs/2026-10-09-agy-harness-adapter/coverage-ledger.md`, `docs/superpowers/runs/2026-10-09-agy-harness-adapter/coverage-precheck-round-1.txt`, `docs/superpowers/runs/2026-10-09-agy-harness-adapter/coverage-round-1-requirements.md`, `docs/superpowers/runs/2026-10-09-agy-harness-adapter/coverage-round-1-review-1.md`, `docs/superpowers/runs/2026-10-09-agy-harness-adapter/coverage-round-1-review-2.md`, `docs/superpowers/runs/2026-10-09-agy-harness-adapter/coverage-findings-round-2.md`, `docs/superpowers/runs/2026-10-09-agy-harness-adapter/coverage-inputs-round-2.md`, `docs/superpowers/runs/2026-10-09-agy-harness-adapter/coverage-precheck-round-2.txt`, `docs/superpowers/runs/2026-10-09-agy-harness-adapter/coverage-round-2-requirements.md`, `docs/superpowers/runs/2026-10-09-agy-harness-adapter/coverage-round-2-review-1.md`, `docs/superpowers/runs/2026-10-09-agy-harness-adapter/coverage-round-2-review-2.md`, `docs/superpowers/runs/2026-10-09-agy-harness-adapter/2026-10-10-agy-harness-adapter-roast-design-1.md`, `docs/superpowers/runs/2026-10-09-agy-harness-adapter/roast-design-1-tree.json`, `docs/superpowers/runs/2026-10-09-agy-harness-adapter/2026-10-09-agy-harness-adapter--agy-adapter-design.md`, `docs/superpowers/runs/2026-10-09-agy-harness-adapter/2026-10-09-agy-harness-adapter--delivery-policy-design.md`, `docs/superpowers/runs/2026-10-09-agy-harness-adapter/2026-10-10-agy-harness-adapter-roast-design-1-step-back.md`, `docs/superpowers/runs/2026-10-09-agy-harness-adapter/2026-10-10-agy-harness-adapter-roast-design-2.md`, `AGENTS.md`, `docs/superpowers/runs/2026-10-09-agy-harness-adapter/delivery-contract-audit.md`, `.github/workflows/ci.yml`, `scripts/check-harness-neutral`, `scripts/harness-neutral-allowlist.txt`, `scripts/tests/test_check_harness_neutral.py`, `scripts/agy-fake-gemini/scenario.py`, `scripts/agy-fake-gemini/server.py`, `scripts/agy-fake-gemini/test_fake_gemini.py`, `scripts/agy-fake-gemini/testdata/agy-request-systemmessage.json`, `src/harness/adapter.rs`, `src/harness/registry.rs`, `src/protocol/capabilities.rs`, `src/protocol/commands.rs`, `src/protocol/delivery.rs`, `src/protocol/mod.rs`, `src/protocol/results.rs`, `src/service/dispatch.rs`, `src/store/mod.rs`, `tests/protocol/delivery.rs`, `tests/combined.rs`, `tests/fixtures/golden/contract-id/json.json`, `tests/fixtures/golden/contract-id/json.json.status`, `tests/fixtures/golden/contract-id/text.txt`, `tests/fixtures/golden/contract-id/text.txt.status`, `tests/fixtures/golden/doctor/all.debug.text`, `tests/fixtures/golden/doctor/all.debug.text.status`, `tests/fixtures/golden/doctor/all.json`, `tests/fixtures/golden/doctor/all.json.status`, `tests/fixtures/golden/doctor/all.text`, `tests/fixtures/golden/doctor/all.text.status`, `tests/fixtures/golden/doctor/hermes.json`, `tests/fixtures/golden/doctor/hermes.json.status`, `tests/fixtures/golden/doctor/hermes.text`, `tests/fixtures/golden/doctor/hermes.text.status`, `tests/fixtures/golden/env-markers/detection.json`, `tests/fixtures/golden/handoff/claude.new-tab.bootstrap-argv.json`, `tests/fixtures/golden/handoff/claude.new-tab.json`, `tests/fixtures/golden/handoff/claude.new-tab.json.status`, `tests/fixtures/golden/handoff/claude.new-tab.text`, `tests/fixtures/golden/handoff/claude.new-tab.text.status`, `tests/fixtures/golden/handoff/claude.pane.bootstrap-argv.json`, `tests/fixtures/golden/handoff/claude.pane.json`, `tests/fixtures/golden/handoff/claude.pane.json.status`, `tests/fixtures/golden/handoff/claude.pane.text`, `tests/fixtures/golden/handoff/claude.pane.text.status`, `tests/fixtures/golden/handoff/codex.new-tab.bootstrap-argv.json`, `tests/fixtures/golden/handoff/codex.new-tab.json`, `tests/fixtures/golden/handoff/codex.new-tab.json.status`, `tests/fixtures/golden/handoff/codex.new-tab.text`, `tests/fixtures/golden/handoff/codex.new-tab.text.status`, `tests/fixtures/golden/handoff/codex.pane.bootstrap-argv.json`, `tests/fixtures/golden/handoff/codex.pane.json`, `tests/fixtures/golden/handoff/codex.pane.json.status`, `tests/fixtures/golden/handoff/codex.pane.text`, `tests/fixtures/golden/handoff/codex.pane.text.status`, `tests/fixtures/golden/handoff/hermes.json`, `tests/fixtures/golden/handoff/hermes.json.status`, `tests/fixtures/golden/handoff/hermes.text`, `tests/fixtures/golden/handoff/hermes.text.status`, `tests/fixtures/golden/health/observed.json`, `tests/fixtures/golden/health/unobserved.json`, `tests/fixtures/golden/help/handoff.txt`, `tests/fixtures/golden/help/handoff.txt.status`, `tests/fixtures/golden/help/launch.txt`, `tests/fixtures/golden/help/launch.txt.status`, `tests/fixtures/golden/help/me-init.txt`, `tests/fixtures/golden/help/me-init.txt.status`, `tests/fixtures/golden/help/setup.txt`, `tests/fixtures/golden/help/setup.txt.status`, `tests/fixtures/golden/hook/claude.PostToolUse.stdout`, `tests/fixtures/golden/hook/claude.PostToolUse.stdout.status`, `tests/fixtures/golden/hook/claude.PreToolUse.stdout`, `tests/fixtures/golden/hook/claude.PreToolUse.stdout.status`, `tests/fixtures/golden/hook/claude.SessionStart.stdout`, `tests/fixtures/golden/hook/claude.SessionStart.stdout.status`, `tests/fixtures/golden/hook/claude.Stop.stdout`, `tests/fixtures/golden/hook/claude.Stop.stdout.status`, `tests/fixtures/golden/hook/claude.UserPromptSubmit.stdout`, `tests/fixtures/golden/hook/claude.UserPromptSubmit.stdout.status`, `tests/fixtures/golden/hook/codex.PostToolUse.stdout`, `tests/fixtures/golden/hook/codex.PostToolUse.stdout.status`, `tests/fixtures/golden/hook/codex.PreToolUse.stdout`, `tests/fixtures/golden/hook/codex.PreToolUse.stdout.status`, `tests/fixtures/golden/hook/codex.SessionStart.stdout`, `tests/fixtures/golden/hook/codex.SessionStart.stdout.status`, `tests/fixtures/golden/hook/codex.Stop.stdout`, `tests/fixtures/golden/hook/codex.Stop.stdout.status`, `tests/fixtures/golden/hook/codex.UserPromptSubmit.stdout`, `tests/fixtures/golden/hook/codex.UserPromptSubmit.stdout.status`, `tests/fixtures/golden/hook/hermes.PostToolUse.stdout`, `tests/fixtures/golden/hook/hermes.PostToolUse.stdout.status`, `tests/fixtures/golden/hook/hermes.PreToolUse.stdout`, `tests/fixtures/golden/hook/hermes.PreToolUse.stdout.status`, `tests/fixtures/golden/hook/hermes.SessionStart.stdout`, `tests/fixtures/golden/hook/hermes.SessionStart.stdout.status`, `tests/fixtures/golden/hook/hermes.Stop.stdout`, `tests/fixtures/golden/hook/hermes.Stop.stdout.status`, `tests/fixtures/golden/hook/hermes.UserPromptSubmit.stdout`, `tests/fixtures/golden/hook/hermes.UserPromptSubmit.stdout.status`, `tests/fixtures/golden/launch/claude.json`, `tests/fixtures/golden/launch/claude.json.status`, `tests/fixtures/golden/launch/claude.start-request.json`, `tests/fixtures/golden/launch/claude.text`, `tests/fixtures/golden/launch/claude.text.status`, `tests/fixtures/golden/launch/codex.json`, `tests/fixtures/golden/launch/codex.json.status`, `tests/fixtures/golden/launch/codex.start-request.json`, `tests/fixtures/golden/launch/codex.text`, `tests/fixtures/golden/launch/codex.text.status`, `tests/fixtures/golden/launch/hermes.json`, `tests/fixtures/golden/launch/hermes.json.status`, `tests/fixtures/golden/launch/hermes.text`, `tests/fixtures/golden/launch/hermes.text.status`, `tests/fixtures/golden/setup-status/all.json`, `tests/fixtures/golden/setup-status/all.json.status`, `tests/fixtures/golden/setup-status/all.text`, `tests/fixtures/golden/setup-status/all.text.status`, `tests/fixtures/golden/setup-status/claude.absent.json`, `tests/fixtures/golden/setup-status/claude.absent.json.status`, `tests/fixtures/golden/setup-status/claude.absent.text`, `tests/fixtures/golden/setup-status/claude.absent.text.status`, `tests/fixtures/golden/setup-status/claude.json`, `tests/fixtures/golden/setup-status/claude.json.status`, `tests/fixtures/golden/setup-status/claude.text`, `tests/fixtures/golden/setup-status/claude.text.status`, `tests/fixtures/golden/setup-status/codex.absent.json`, `tests/fixtures/golden/setup-status/codex.absent.json.status`, `tests/fixtures/golden/setup-status/codex.absent.text`, `tests/fixtures/golden/setup-status/codex.absent.text.status`, `tests/fixtures/golden/setup-status/codex.json`, `tests/fixtures/golden/setup-status/codex.json.status`, `tests/fixtures/golden/setup-status/codex.text`, `tests/fixtures/golden/setup-status/codex.text.status`, `tests/fixtures/golden/setup-status/hermes.absent.json`, `tests/fixtures/golden/setup-status/hermes.absent.json.status`, `tests/fixtures/golden/setup-status/hermes.absent.text`, `tests/fixtures/golden/setup-status/hermes.absent.text.status`, `tests/fixtures/golden/setup-status/hermes.json`, `tests/fixtures/golden/setup-status/hermes.json.status`, `tests/fixtures/golden/setup-status/hermes.text`, `tests/fixtures/golden/setup-status/hermes.text.status`, `tests/fixtures/golden/setup/all.json`, `tests/fixtures/golden/setup/all.json.status`, `tests/fixtures/golden/setup/all.text`, `tests/fixtures/golden/setup/all.text.status`, `tests/fixtures/golden/setup/claude.json`, `tests/fixtures/golden/setup/claude.json.status`, `tests/fixtures/golden/setup/claude.text`, `tests/fixtures/golden/setup/claude.text.status`, `tests/fixtures/golden/setup/codex.json`, `tests/fixtures/golden/setup/codex.json.status`, `tests/fixtures/golden/setup/codex.text`, `tests/fixtures/golden/setup/codex.text.status`, `tests/fixtures/golden/setup/hermes.json`, `tests/fixtures/golden/setup/hermes.json.status`, `tests/fixtures/golden/setup/hermes.text`, `tests/fixtures/golden/setup/hermes.text.status`, `tests/fixtures/golden/unsetup/claude.absent.json`, `tests/fixtures/golden/unsetup/claude.absent.json.status`, `tests/fixtures/golden/unsetup/claude.absent.text`, `tests/fixtures/golden/unsetup/claude.absent.text.status`, `tests/fixtures/golden/unsetup/claude.json`, `tests/fixtures/golden/unsetup/claude.json.status`, `tests/fixtures/golden/unsetup/claude.text`, `tests/fixtures/golden/unsetup/claude.text.status`, `tests/fixtures/golden/unsetup/codex.absent.json`, `tests/fixtures/golden/unsetup/codex.absent.json.status`, `tests/fixtures/golden/unsetup/codex.absent.text`, `tests/fixtures/golden/unsetup/codex.absent.text.status`, `tests/fixtures/golden/unsetup/codex.json`, `tests/fixtures/golden/unsetup/codex.json.status`, `tests/fixtures/golden/unsetup/codex.text`, `tests/fixtures/golden/unsetup/codex.text.status`, `tests/fixtures/golden/unsetup/hermes.json`, `tests/fixtures/golden/unsetup/hermes.json.status`, `tests/fixtures/golden/unsetup/hermes.text`, `tests/fixtures/golden/unsetup/hermes.text.status`, `tests/golden_surfaces.rs`, `tests/fixtures/golden/hook-healthy/claude.SessionStart.stdout`, `tests/fixtures/golden/hook-healthy/claude.SessionStart.stdout.status`, `tests/fixtures/golden/hook-healthy/codex.SessionStart.stdout`, `tests/fixtures/golden/hook-healthy/codex.SessionStart.stdout.status`, `integrations/claude/mod/tests/fixtures/frame-goldens.ts`, `integrations/claude/mod/tests/frame_golden.test.ts`, `scripts/gen-frame-goldens.mjs`, `src/cli/watch.rs`, `src/delivery/assemble.rs`, `src/delivery/frame.rs`, `src/delivery/mod.rs`, `src/delivery/page.rs`, `src/lib.rs`, `tests/delivery/extraction.rs`, `tests/delivery/frame.rs`, `tests/fixtures/delivery/frame-attention.json`, `tests/fixtures/delivery/frame-attention.txt`, `tests/fixtures/delivery/frame-controls.json`, `tests/fixtures/delivery/frame-controls.txt`, `tests/fixtures/delivery/frame-empty.json`, `tests/fixtures/delivery/frame-empty.txt`, `tests/fixtures/delivery/frame-header.txt`, `tests/fixtures/delivery/frame-markers.json`, `tests/fixtures/delivery/frame-markers.txt`, `tests/fixtures/delivery/frame-multiline.json`, `tests/fixtures/delivery/frame-multiline.txt`, `tests/fixtures/delivery/frame-name-equals-id.json`, `tests/fixtures/delivery/frame-name-equals-id.txt`, `src/app.rs`, `src/cli/doctor.rs`, `src/cli/hook.rs`, `src/cli/launch.rs`, `src/cli/mod.rs`, `src/cli/setup.rs`, `src/cli/setup/foreground.rs`, `src/cli/skill.rs`, `src/harness/claude.rs`, `src/harness/claude/doctor.rs`, `src/harness/claude/setup.rs`, `src/harness/codex.rs`, `src/harness/codex/doctor.rs`, `src/harness/codex/setup.rs`, `src/harness/codex_evidence.rs`, `src/harness/codex_schema.rs`, `src/harness/hermes.rs`, `src/harness/hermes/launch.rs`, `src/harness/launch.rs`, `src/harness/manifest.rs`, `src/harness/mod.rs`, `src/harness/operational.rs`, `src/harness/process.rs`, `src/harness/recipe.rs`, `src/harness/runtime.rs`, `src/harness/setup.rs`, `src/host/native.rs`, `src/test_support/archival_composer_fixture.rs`, `src/test_support/mod.rs`, `tests/cli/commands.rs`, `tests/cli/doctor_json.rs`, `tests/cli/hook.rs`, `tests/cli/installer.rs`, `tests/cli/launch.rs`, `tests/cli/skill.rs`, `tests/daemon/harness_evidence.rs`, `tests/daemon/health_optimistic.rs`, `tests/harness/adapter_seam.rs`, `tests/harness/adapter_smoke.rs`, `tests/harness/claude.rs`, `tests/harness/codex.rs`, `tests/harness/codex_schema.rs`, `tests/harness/contract.rs`, `tests/harness/launch.rs`, `tests/harness/setup.rs`, `tests/lifecycle_ux.rs`, `tests/service/resolution.rs`, `src/daemon/harness_states.rs`, `src/daemon/health.rs`, `src/harness/claude/composer.rs`, `src/harness/composer.rs`, `src/store/queries.rs`, `tests/daemon/control.rs`, `tests/daemon/health_budget.rs`, `tests/daemon/health_harness_state.rs`, `tests/scheduler/dispatch.rs`, `tests/service/crash_matrix.rs`, `tests/store/queries.rs`, `src/cli/hook_evidence.rs`, `src/daemon/harness_evidence.rs`, `src/harness/attribution.rs`, `src/harness/contract.rs`, `src/harness/evidence.rs`, `tests/cli/hook_evidence.rs`, `tests/cli/hook_neutral.rs`, `tests/harness/attribution.rs`, `TRUST-POLICY.md`, `src/cli/commands.rs`, `src/delivery/settle.rs`, `src/harness/claude/delivery.rs`, `src/ports.rs`, `src/protocol/attention.rs`, `src/protocol/watch.rs`, `src/scheduler/mod.rs`, `src/service/mod_channels.rs`, `src/store/receipts.rs`, `tests/delivery/push_channel.rs`, `tests/delivery/settle.rs`, `tests/protocol/watch.rs`, `tests/service/mod_channels.rs`, `src/protocol/output_compact.rs`, `tests/cli/cooperative.rs`, `tests/cli/lazy_display.rs`, `tests/cli/lazy_settlement.rs`, `tests/cli/watch.rs`, `tests/delivery/promotion.rs`, `tests/store/lazy_inbox.rs`, `src/cli/handoff.rs`, `src/cli/help.rs`, `src/cli/me.rs`, `src/cli/output.rs`, `src/cli/topology_handoff.rs`, `src/cli/topology_runtime.rs`, `src/client/mod.rs`, `tests/cli/handoff.rs`, `tests/cli/output.rs`, `tests/handoff_topology_cli.rs`, `tests/setup_cli.rs`, `integrations/skill/SKILL.md`, `src/notification/dispatch.rs`, `src/notification/policy.rs`, `src/store/attention.rs`, `src/store/lazy_delivery.rs`, `src/store/messages.rs`, `src/store/seats.rs`, `src/store/wake.rs`, `src/test_support/attention_oracle.rs`, `tests/store/lazy_publication.rs`, `tests/store/wake.rs`, `tests/store/wake_on_wake.rs`, `tests/cli/doctor_labels.rs`, `tests/cli/hook_local_evidence.rs`, `tests/harness/role_witness.rs`, `tests/integration/harness_adapter_wiring.rs`, `tests/protocol/capabilities.rs`, `tests/hook_entrypoint.rs`, `tests/hook_entrypoint/agy.rs`, `scripts/agy-gate/flows/_l4.py`, `scripts/agy-gate/flows/allow_rewrite.py`, `scripts/agy-gate/flows/handoff.py`, `scripts/agy-gate/flows/launch.py`, `scripts/agy-gate/flows/permission.py`, `scripts/agy-gate/flows/setup.py`, `scripts/agy-gate/flows/unsetup.py`, `scripts/agy-gate/scenarios/allow-rewrite.json`, `scripts/agy-gate/scenarios/handoff.json`, `scripts/agy-gate/scenarios/launch.json`, `scripts/agy-gate/scenarios/permission.json`, `scripts/agy-gate/scenarios/setup.json`, `scripts/agy-gate/scenarios/unsetup.json`, `scripts/agy-gate/test_scenarios_l4.py`, `src/harness/claude/permission_rules.rs`, `src/harness/claude/permissions.rs`, `src/harness/codex/permission_rules.rs`, `src/harness/codex/permissions.rs`, `src/harness/permissions.rs`, `tests/harness/claude_permissions.rs`, `tests/harness/codex_permissions.rs`, `src/delivery/routing.rs`, `src/service/delivery_pull.rs`, `src/store/control.rs`, `tests/cli/hook_pull_lazy.rs`, `tests/delivery/routing.rs`, `tests/service/lazy_hook_pull.rs`, `docs/install.md`, `integrations/agy/README.md`, `scripts/agy-sandbox/agyenv.py`, `src/protocol/handoff.rs`, `tests/cli/follow_retry.rs`, `tests/cli/topology_handoff.rs`, `tests/integration/channel_activation.rs`, `tests/integration/topology_activation.rs`, `tests/store/archival_legacy.rs`, `tests/store/topology_handoff.rs`, `src/delivery/ledger.rs`, `src/service/workers.rs`, `tests/delivery/ledger.rs`, `tests/scheduler/hook_pull_routing.rs`, `tests/scheduler/poke_flow.rs`, `tests/scheduler/wake_text.rs`, `tests/service/delivery_pull.rs`, `tests/service/lanes.rs`, `scripts/agy-gate/flows/resume.py`, `docs/validation/agy-native.md`, `scripts/agy-gate/flows/delivery.py`, `scripts/agy-gate/flows/downgrade.py`, `scripts/agy-gate/scenarios/delivery-stop.json`, `scripts/agy-gate/scenarios/downgrade.json`, `scripts/agy-gate/test_scenarios_l6.py`, `scripts/agy-sandbox/agy-versions.json`, `scripts/agy-sandbox/fetch-agy`, `scripts/agy-sandbox/test_agyenv.py`, `tests/integration/agy_sweep.rs`, `tests/integration/mod_delivery.rs`, `tests/integration/sweep.rs`, `docs/superpowers/runs/2026-10-09-agy-harness-adapter/integration-sweep.md`, `tests/service/loop_inventory.rs`, `docs/superpowers/runs/2026-10-09-agy-harness-adapter/code-final-review-6.md`, `docs/superpowers/runs/2026-10-09-agy-harness-adapter/2026-10-10-agy-harness-adapter-roast-pr-1-step-back-keys.txt`, `docs/superpowers/runs/2026-10-09-agy-harness-adapter/2026-10-10-agy-harness-adapter-roast-pr-1.md`, `docs/superpowers/runs/2026-10-09-agy-harness-adapter/2026-10-10-agy-harness-adapter-roast-pr-1-punch-list.txt`, `docs/superpowers/runs/2026-10-09-agy-harness-adapter/2026-10-10-agy-harness-adapter-roast-pr-1-scope-filter.json`, `docs/superpowers/runs/2026-10-09-agy-harness-adapter/2026-10-10-agy-harness-adapter-roast-pr-1-scope-keys.txt`, `docs/superpowers/runs/2026-10-09-agy-harness-adapter/2026-10-10-agy-harness-adapter-roast-pr-1-step-back.md`, `scripts/agy-relay/budget.py`, `scripts/agy-relay/test_relay.py`, `scripts/agy-gate/flows/wake.py`, `docs/superpowers/runs/2026-10-10-invitation-rejection-policy/2026-10-10-invitation-rejection-policy-design.md`, `docs/superpowers/runs/2026-10-10-invitation-rejection-policy/friction.md`, `docs/superpowers/runs/2026-10-10-invitation-rejection-policy/run.md`, `docs/superpowers/runs/2026-10-09-agy-harness-adapter/handoff-continuation.md`, `docs/superpowers/runs/2026-10-10-invitation-rejection-policy/2026-10-10-invitation-rejection-policy-roast-design-1-coverage.json`, `docs/superpowers/runs/2026-10-10-invitation-rejection-policy/2026-10-10-invitation-rejection-policy-roast-design-1.md`, `docs/superpowers/runs/2026-10-10-invitation-rejection-policy/coverage-ledger.md`, `docs/superpowers/runs/2026-10-10-invitation-rejection-policy/coverage-round-1.md`, `docs/superpowers/runs/2026-10-10-invitation-rejection-policy/coverage-round-2.md`, `docs/superpowers/runs/2026-10-10-invitation-rejection-policy/guidance-pressure.md`, `docs/superpowers/runs/2026-10-10-invitation-rejection-policy/progress.md`, `docs/superpowers/runs/2026-10-10-invitation-rejection-policy/task-1-brief.md`, `docs/superpowers/runs/2026-10-10-invitation-rejection-policy/task-2-brief.md`, `docs/superpowers/runs/2026-10-10-invitation-rejection-policy/tree.json`, `src/store/effective.rs`, `src/store/materialization.rs`, `src/store/schema.rs`, `tests/store/control.rs`, `docs/superpowers/runs/2026-10-10-invitation-rejection-policy/2026-10-10-invitation-rejection-policy-roast-pr-1-coverage.json`, `docs/superpowers/runs/2026-10-10-invitation-rejection-policy/2026-10-10-invitation-rejection-policy-roast-pr-1.md`, `docs/superpowers/runs/2026-10-10-invitation-rejection-policy/feedback-analysis.md`, `docs/superpowers/runs/2026-10-10-invitation-rejection-policy/final-verification.md`, `docs/superpowers/runs/2026-10-10-invitation-rejection-policy/integration-review.md`, `docs/superpowers/runs/2026-10-10-invitation-rejection-policy/report.md`, `docs/superpowers/runs/2026-10-10-invitation-rejection-policy/task-1-report.md`, `docs/superpowers/runs/2026-10-10-invitation-rejection-policy/task-1-review.md`, `docs/superpowers/runs/2026-10-10-invitation-rejection-policy/task-2-report.md`, `docs/superpowers/runs/2026-10-10-invitation-rejection-policy/task-2-review.md`, `docs/superpowers/runs/2026-10-10-invitation-rejection-policy/task-3-report.md`, `CHANGELOG.md`, `Cargo.lock`, `Cargo.toml`, `herdr-plugin.toml`, `.github/workflows/harness-canary.yml`, `docs/compatibility/harnesses.md`, `scripts/canary/run.py`, `scripts/canary/test_strategy.py`, `docs/agent-usage.md`, `integrations/claude/README.md`, `integrations/claude/mod/README.md`, `integrations/claude/mod/hooks/register.js`, `integrations/claude/mod/tests/delivery.test.ts`, `src/cli/summary.rs`, `src/harness/bridge.rs`, `src/harness/cache.rs`, `src/protocol/output.rs`, `tests/cli/summary.rs`, `tests/harness/cooperative.rs`, `tests/integration/summary_flow.rs`, `docs/superpowers/runs/2026-10-03-harness-adapters/2026-10-03-harness-adapters--health-tooling-design.md`, `docs/superpowers/runs/2026-10-09-agy-harness-adapter/code-final-review-7.md`, `docs/superpowers/runs/2026-10-09-agy-harness-adapter/2026-10-10-agy-harness-adapter-roast-pr-2-punch-list.txt`, `docs/superpowers/runs/2026-10-09-agy-harness-adapter/2026-10-10-agy-harness-adapter-roast-pr-2.md`, `scripts/agy-gate/live_smoke.py`, `scripts/agy-gate/test_live_smoke.py`, `docs/evidence/README.md`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/README.md`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/allow-rewrite/allow-rewrite-finding.json`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/allow-rewrite/onboarding-pages.txt`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/allow-rewrite/requests.json`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/allow-rewrite/trust-prompt-screen.txt`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/boot/onboarding-pages.txt`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/boot/pane-final.txt`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/boot/requests.json`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/clear/onboarding-pages.txt`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/clear/requests.json`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/delivery/error-pane.txt`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/delivery/onboarding-pages.txt`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/delivery/receipts.json`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/delivery/requests.json`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/delivery/send-CANCEL_NOTE_.json`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/delivery/send-ERROR_NOTE_o.json`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/delivery/send-MAIN_A1_ack_.json`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/delivery/send-MAIN_L1_lazy.json`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/delivery/send-MAIN_O1_ordi.json`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/delivery/send-MAIN_T1_TTTT.json`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/delivery/send-STOP_NOTE_or.json`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/delivery/state-files.json`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/delivery/thread-create-gate-delivery.json`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/downgrade/abort-fired.json`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/downgrade/abort-pane.txt`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/downgrade/doctor-delivery-abort.json`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/downgrade/doctor-delivery-restaged.json`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/downgrade/onboarding-pages.txt`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/downgrade/requests.json`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/downgrade/send-DOWN_M1_abor.json`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/downgrade/send-DOWN_M2_user.json`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/downgrade/send-DOWN_M3_syst.json`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/downgrade/send-DOWN_M4_igno.json`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/downgrade/send-DOWN_M5_igno.json`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/downgrade/setup-status-mutated.json`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/downgrade/setup-status-restored.json`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/downgrade/state-files.json`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/downgrade/thread-create-gate-downgrade.json`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/enroll/onboarding-pages.txt`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/enroll/requests.json`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/handoff/handoff-response.txt`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/handoff/onboarding-pages.txt`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/handoff/requests.json`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/launch/onboarding-pages.txt`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/launch/requests.json`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/permission/onboarding-pages.txt`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/permission/permission-blocked-screen.txt`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/permission/requests.json`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/resume/onboarding-pages.txt`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/resume/requests.json`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/setup/requests.json`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/subagent/invoke-subagent-declaration.json`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/subagent/onboarding-pages.txt`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/subagent/requests.json`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/unsetup/requests.json`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/wake/a-wake-user-requests.json`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/wake/c-follow-up-body.json`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/wake/c-receipts.json`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/wake/c-transcript-n2.jsonl`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/wake/d-detection.txt`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/wake/e-wake-on.json`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/wake/f-after.json`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/wake/f-detection.txt`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/wake/g-detection.txt`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/wake/onboarding-pages.txt`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/wake/requests.json`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/wake/send-WAKE_N1_ack_.json`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/wake/send-WAKE_N2_mid_.json`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/wake/send-WAKE_N3_whil.json`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/wake/send-WAKE_N4_duri.json`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/wake/send-WAKE_N5_duri.json`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/wake/send-WAKE_Z1_lazy.json`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/wake/send-WAKE_Z2_lazy.json`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/artifacts-1a90217a-4c41-4aa9-8471-9776f861eae9/wake/thread-create-gate-wake.json`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/report.json`, `docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/summary.txt`, `docs/evidence/agy-live-smoke/2026-10-10-4d2ec663dbfa/daemon-excerpt.json`, `docs/evidence/agy-live-smoke/2026-10-10-4d2ec663dbfa/pane-final.txt`, `docs/evidence/agy-live-smoke/2026-10-10-4d2ec663dbfa/relay.jsonl`, `docs/evidence/agy-live-smoke/2026-10-10-4d2ec663dbfa/report.md`, `docs/evidence/agy-live-smoke/2026-10-10-4d2ec663dbfa/requests-excerpt.json`, `docs/evidence/agy-live-smoke/2026-10-10-4d2ec663dbfa/summary.json`
+- trailer: (missing)
+- trailer: (missing)
+- trailer: (missing)
+- trailer: (missing)
+- trailer: (missing)
+- trailer: (missing)
+- trailer: (missing)
+- trailer: (missing)
+- trailer: (missing)
+- trailer: (missing)
+- trailer: (missing)
+- trailer: (missing)
+- trailer: (missing)
+- trailer: (missing)
+- trailer: (missing)
+- trailer: (missing)
+- trailer: (missing)
+- trailer: (missing)
+- trailer: (missing)
+- trailer: (missing)
+- trailer: (missing)
+- trailer: none
+- trailer: (missing)
+- trailer: (missing)
+- trailer: none
+- trailer: (missing)
+- trailer: (missing)
+- trailer: (missing)
+- trailer: (missing)
+- trailer: (missing)
+- trailer: (missing)
+- trailer: (missing)
+- trailer: TRUST-POLICY.md, integrations/skill/SKILL.md, src/notification/dispatch.rs, src/notification/policy.rs, src/ports.rs, src/store/attention.rs, src/store/lazy_delivery.rs, src/store/messages.rs, src/store/mod.rs, src/store/seats.rs, src/store/wake.rs, src/test_support/attention_oracle.rs, tests/store/lazy_publication.rs, tests/store/wake.rs, tests/store/wake_on_wake.rs
+- trailer: (missing)
+- trailer: (missing)
+- trailer: (missing)
+- trailer: scripts/check-harness-neutral, scripts/harness-neutral-allowlist.txt, scripts/tests/test_check_harness_neutral.py
+- trailer: (missing)
+- trailer: (missing)
+- trailer: (missing)
+- trailer: (missing)
+- trailer: (missing)
+- trailer: tests/harness/agy_doctor.rs, tests/harness/agy_witness.rs, tests/fixtures/agy/layouts/recent-without-lock.txt, tests/fixtures/agy/layouts/recent-listed.txt
+- trailer: (missing)
+- trailer: none
+- trailer: (missing)
+- trailer: (missing)
+- trailer: (missing)
+- trailer: (missing)
+- trailer: tests/harness/agy_composer.rs, tests/fixtures/agy/composer/*
+- trailer: (missing)
+- trailer: none
+- trailer: tests/harness/agy_witness.rs, tests/hook_entrypoint/agy.rs, TRUST-POLICY.md
+- trailer: (missing)
+- trailer: (missing)
+- trailer: none
+- trailer: TRUST-POLICY.md
+- trailer: (missing)
+- trailer: (missing)
+- trailer: tests/hook_entrypoint/agy.rs, tests/integration/agy_sweep.rs, tests/integration/mod_delivery.rs, tests/integration/sweep.rs, integrations/agy/README.md
+- trailer: docs/superpowers/runs/2026-10-09-agy-harness-adapter/integration-sweep.md, tests/service/loop_inventory.rs, tests/hook_entrypoint/agy.rs
+- trailer: none
+- trailer: none
+- trailer: none
+- trailer: (missing)
+- trailer: (missing)
+- trailer: (missing)
+- trailer: (missing)
+- trailer: (missing)
+- trailer: (missing)
+- trailer: src/protocol/watch.rs, src/service/delivery_pull.rs, src/cli/watch.rs, tests/protocol/watch.rs, tests/service/delivery_pull.rs, tests/cli/watch.rs, tests/integration/mod_delivery.rs
+- trailer: (missing)
+- trailer: none
+- trailer: (missing)
+- trailer: (missing)
+- trailer: (missing)
+- trailer: (missing)
+- trailer: (missing)
+- trailer: (missing)
+- trailer: (missing)
+- trailer: (missing)
+- trailer: integrations/claude/**, src/delivery/frame.rs, tests/fixtures/delivery/*, src/cli/hook.rs, src/cli/summary.rs, src/harness/{mod,bridge,claude,cache}.rs, src/protocol/{output,watch}.rs, src/store/seats.rs, integrations/skill/SKILL.md, tests/**, scripts/agy-gate/**, docs/agent-usage.md, docs/compatibility/harnesses.md, TRUST-POLICY.md, AGENTS.md
+- trailer: (missing)
+- trailer: (missing)
+- trailer: none
+- trailer: none
+- trailer: none
+- trailer: (missing)
+- trailer: (missing)
+- trailer: (missing)
+
+## Neutral check counts
+
+- base: not present at f3431b31
+- head (1eaf635b): `{"allowlisted": 85, "allowlisted_by_category": {"frozen-wire": 49, "history": 2, "registration": 34, "to-migrate": 0}, "entries": 51, "entries_by_category": {"frozen-wire": 26, "history": 1, "registration": 24, "to-migrate": 0}, "stale": 0, "status": "ok", "violations": 0}`
+
+## Allowlist delta
+
+- +26 frozen-wire
+- +1 history
+- +24 registration
+
+## Missing trailers
+
+- `09738276` super-auto: start agy-harness-adapter run
+- `6a359a53` super-auto: agy design decisions so far
+- `94fa36c5` super-auto: agy testing and delivery decisions
+- `31852377` super-auto: agy launch and composer scope
+- `1db512fe` super-auto: agy version handling decision
+- `9bc8a1c8` super-auto: autonomous from root design approval; final interactive decisions
+- `d0c63d56` docs: agy harness adapter root design
+- `df28dd80` super-auto: agy top split applied (auto)
+- `9398322f` docs: agy run delivery-policy subspec (ht-poh.3)
+- `5bee6f1a` docs: agy run core-sweep subspec (ht-poh.2)
+- `d04116df` docs: agy run agy-adapter subspec (ht-poh.4) and root refinements
+- `77d83be5` docs: agy run test-infra subspec (ht-poh.6)
+- `0ebf1e6a` super-auto: agy coverage round 1 dispositions
+- `7835ccd2` super-auto: agy coverage round 2, integration sweep, enter design roast
+- `de011b0e` super-auto: agy design roast round 1 report
+- `54cb63de` docs: agy design roast round 1 fixes (C1 Stop-time confirm, identity source, busy-agy wake guard)
+- `c403cfbb` super-auto: agy design roast round 2 start
+- `ac847400` docs: agy design roast round 2 report and punch-list fixes (converged)
+- `17039351` super-auto: keep run.md to defined fields
+- `3237e1b4` super-auto: agy parallelism pass (applied 2, parked 4)
+- `42593b0b` super-auto: agy run enters phase 3 (code)
+- `cb20ef1a` docs: harness-neutral core and delivery contract in AGENTS.md, with audit
+- `1cf3422a` Add check-harness-neutral seam check, allowlist and CI wiring
+- `8f7898d2` test-infra: fake Gemini server, scenario format agy-fake-gemini/1, CI line
+- `9a4e95a5` test-infra: Gemini-OpenAI relay with enforced budget and OpenAI fake upstream (ht-poh.6.3)
+- `15322e0b` ht-poh.9: add outside-adapter-report accounting tool
+- `bd049dad` test-infra: isolated agy world, native gate runner, boot flow, fetch-agy (ht-poh.6.2)
+- `bd838410` feat(delivery): DeliveryPolicy seam and inert DeliveryPull/DeliveryConfirm wire
+- `d5cae63b` test: golden snapshots of the per-harness surfaces
+- `ed0474ea` test: pin the healthy per-harness hook check-in output
+- `585bedfb` Add the wake_on preference: migration, store, wire and wake-on command (ht-poh.3.5)
+- `4cb08f1a` refactor: extract src/delivery from watch and port the D4 frame to Rust
+- `3319387a` feat(harness): adapter hook seam, allow-member-only settings engine, neutral moves
+- `5e56305d` refactor: make daemon health, store inbox query and composer reason harness-neutral
+- `85c12a9c` refactor(harness): neutral hook runner, contract, attribution and evidence gate (D9, D10)
+- `e4d97f02` refactor(delivery): Claude push-channel re-fit, every Claude check a policy lookup
+- `9552e068` refactor(setup): setup engine, setup CLI and foreground advice behind the adapter seam (ht-poh.2.3)
+- `c6ad4381` feat: promote wake_on:all lazy rows on the push channel
+- `8ca71e0f` refactor(cli): derive env markers, help and recovery argv from the adapter registry
+- `7a25ee1b` refactor(doctor): move Claude/Codex projections and text behind the adapter seam
+- `8a29a8d3` feat(harness): neutral hook seams local_evidence and hook_step
+- `b754b8d2` feat(handoff): bootstrap plan V2, the adapter's own composition for any launch-capable kind (ht-poh.8)
+- `cbde05a8` feat(delivery): hook-pull DeliveryPull/DeliveryConfirm handlers, offered ledger, pull-seat routing (ht-poh.3.4)
+- `cd7a2945` docs: place hook-pull delivery bullet after the mod channel's nested wake rules
+- `0333e090` feat(delivery): hook-pull DeliveryPull/DeliveryConfirm handlers, offered ledger, pull-seat routing (ht-poh.3.4)
+- `e3a92e6e` docs: place hook-pull delivery bullet after the mod channel's nested wake rules
+- `df5133c1` feat(agy): adapter skeleton, metadata, contract, decode/encode, hook argv
+- `74f2a9c0` feat(agy): owned plugin dir, skill and allow entry: setup, status, unsetup
+- `8af95abb` feat(delivery): hook-pull DeliveryPull/DeliveryConfirm handlers, offered ledger, pull-seat routing (ht-poh.3.4)
+- `feeadf59` docs: place hook-pull delivery bullet after the mod channel's nested wake rules
+- `040a8639` feat(agy): witness evidence, lifecycle reading and startup enrollment
+- `30ab302a` test-infra: gate flows enroll, subagent, clear, resume (ht-poh.6.5)
+- `0902d2e3` feat(agy): launch policy, handoff startup input and HERDR_THREADS_AGY_OPTS (ht-poh.4.6)
+- `95f3711f` docs(agy): README row, operator guide, install and usage notes, handoff check (ht-poh.4.8)
+- `308eb19d` test(agy-gate): setup, permission, allow-rewrite, unsetup, launch and handoff flows
+- `1ab0ce9b` refactor: move the permissions core behind HarnessAdapter
+- `c2489837` fix: deliver a hook-pull seat's lazy rows only through DeliveryPull
+- `a32dc4f3` agy: route the allow entry through consent and config backups
+- `85549582` handoff --new-tab: place the V2 bootstrap prompt via the adapter's startup input
+- `3fb72774` feat(agy): hook-pull delivery with transcript confirm and Stop downgrade (ht-poh.5)
+- `57af8f8e` test-infra: agy live smoke runner with dry-run and evidence README (ht-poh.6.8)
+- `93664a2f` test-infra: gate flows for delivery with transcript confirm and the forced downgrade (ht-poh.6.6)
+- `7f048d77` fix(agy): confirm scan decodes hook-injected steps instead of raw JSONL bytes
+- `9be243ee` feat: minimal wake prompt, the turn-start hook or channel injects the messages (ht-poh.14, R18)
+- `645cd8d4` test-infra: gate wake flow, idle wake into the composer (ht-poh.6.7)
+- `2eac6f51` fix: hook-pull at-least-once after restart, no content-free wake for undeliverable items
+- `eb26e731` test(agy-gate): drive genuine agy 1.3.2 through the L2/L4/L5 flows (ht-poh.28)
+- `170b59c9` test(agy-gate): resume flow counts only SessionStart-injected startup check-ins
+- `e3b0a447` agy delivery: drop stale tracked ids and prune old conversation state files
+- `7e678db9` gate: route wake-join on the wake-up text and pin agy 1.3.2 darwin_arm64
+- `3997fe34` docs: AGENTS.md harness and Herdr version stance
+- `4fdb1ede` test: pin the agy daemon-down lifecycle notice as one systemMessage step
+- `e9786a40` fix: key the lazy wake frontier on publication order
+- `bba3778b` docs+test: pin agy unsetup's v0.6 settings-backup retention (ht-poh.43)
+- `d48950b2` fix(agy-relay): reserve worst-case cost so concurrent requests cannot overrun the cap
+- `0058cbec` test: assert post-tool-call delivery settlement in the agy wake gate, with a genuine capture
+- `7a7a153d` Remove the ActiveTurn poke branch and poke_during_turn capability (ht-poh.42)
+- `e992b68b` docs: design explicit invitation rejection and warning delivery
+- `1693fc18` fix(agy): end the downgrade probation after one turn
+- `a40b8bd2` docs: record invitation rejection design review and task coverage
+- `51cf3c21` Clarify mandatory rejection of bad-fit invitations
+- `981d9960` Deliver native invitation refusals as passive warning notices
+- `f89f9366` docs: finalize reviewed invitation rejection delivery run
+- `89a040fc` docs: align rejection authority policy with warning events
+- `effa14a2` Prepare v0.6.1 invitation rejection release
+- `e5decac9` canary: read npm version listings past 64 KiB; schedule Claude and Codex only
+- `e376557e` canary: fold review nits (selector wording, empty-stderr reason)
+- `e7a83dc6` docs: reconcile canary workflow default with the harness-adapters design
+- `7c40c83c` Prepare v0.6.2 canary qualification release
+- `c2f51b51` agy-live-smoke: survive a World.__enter__ failure (leak check and evidence record still run)
+- `4d2ec663` evidence: agy native gate, all 14 flows, genuine agy 1.3.2
+- `1eaf635b` evidence: agy live smoke, google/gemini-2.5-flash via relay (7 requests, $0.022)

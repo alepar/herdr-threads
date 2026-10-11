@@ -1,0 +1,9 @@
+{
+  "child_path": "/private/tmp/ih.mRab36/agybin/1:/private/tmp/ih.mRab36/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+  "frame_ids": [
+    "miVElDUeO"
+  ],
+  "mode": "abort",
+  "original_stdout": "{\"injectSteps\":[{\"systemMessage\":{\"systemMessage\":\"[herdr-threads] new messages:\\n\\n[herdr-threads] message miVElDUeO in tnsJNukO1 \\\"gate-downgrade\\\" from sCDPCMmX5 [human]:\\n  DOWN-M1 abort me\"}}]}",
+  "parent_image": "/private/tmp/ih.mRab36/agybin/1/agy"
+}

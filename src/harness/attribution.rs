@@ -1,9 +1,11 @@
 //! Harness version attribution from the payload's transcript (ht-xoc.2).
 //!
-//! Claude writes runtime metadata in the payload transcript: newest `version`
-//! is optional current-runtime attribution. Codex `session_meta.cli_version`
-//! names only the rollout creator; the reader is an optional diagnostic API,
-//! never production current-runtime attribution, including fresh startup.
+//! Each adapter declares where its transcript names a version
+//! ([`TranscriptVersionSpec`]). A transcript that names the current runtime
+//! (`current_runtime`) is read by a bounded backward scan and is optional
+//! current-runtime attribution. One that names only its creator (read from the
+//! head line) is an optional diagnostic API, never production current-runtime
+//! attribution, including fresh startup.
 //! Reading it is in-process and bounded: no exec, no process walk, no
 //! inode/mtime comparison, and at most [`MAX_WINDOW`] bytes of the file (plus at
 //! most [`LINE_EXTENSION`] to finish one line straddling the window's start). Only a
@@ -11,14 +13,17 @@
 //! or a symlink is [`Unattributed::Unreadable`], never a hang). The result is the canonical
 //! [`normalize_version`] string, or a stable [`Unattributed`] reason.
 //!
-//! Evidence: `docs/compatibility/harness-transcript-version.md`. Claude reads
-//! the newest versioned entry by a bounded backward scan. Codex reads only the
-//! rollout's head `session_meta` (its first line): a resumed Codex rollout
-//! keeps its creator's single `session_meta` (spike note), so a Codex session
-//! known to be resumed is never attributed (the hook's gate marks it;
-//! [`Unattributed::CodexResumed`]). A Claude resume `SessionStart` is
-//! [`Unattributed::ResumeBeforeFirstEntry`] and is buffered by the daemon.
-use super::contract::normalize_version;
+//! Evidence: `docs/compatibility/harness-transcript-version.md`. A
+//! newest-entry spec reads the newest versioned entry by a bounded backward
+//! scan. A head-line spec reads only the transcript's first line: a resumed
+//! creator-only transcript keeps its creator's single metadata line (spike
+//! note), so a session known to be resumed is never attributed (the hook's
+//! gate marks it; [`Unattributed::ResumedCreator`]). A resume `SessionStart`
+//! of a current-runtime transcript is [`Unattributed::ResumeBeforeFirstEntry`]
+//! and is buffered by the daemon.
+use super::adapter::{TranscriptRead, TranscriptVersionSpec};
+use super::contract::normalize_version_in;
+use super::registry::{Registry, builtins};
 use serde_json::Value;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
@@ -41,8 +46,8 @@ pub enum Attribution {
 pub enum Unattributed {
     NoTranscriptPath,
     ResumeBeforeFirstEntry,
-    CodexResumed,
-    CodexCreatorOnly,
+    ResumedCreator,
+    CreatorOnly,
     Absent,
     Unreadable,
     NoVersionField,
@@ -55,10 +60,10 @@ impl Unattributed {
         match self {
             Self::NoTranscriptPath => "no transcript path in the payload",
             Self::ResumeBeforeFirstEntry => "resume before first entry",
-            Self::CodexCreatorOnly => {
+            Self::CreatorOnly => {
                 "codex rollout creator metadata does not identify the current runtime"
             }
-            Self::CodexResumed => "codex resume: rollout version is the creating CLI's",
+            Self::ResumedCreator => "codex resume: rollout version is the creating CLI's",
             Self::Absent => "transcript not found",
             Self::Unreadable => "transcript unreadable",
             Self::NoVersionField => "no version field in the transcript",
@@ -76,43 +81,58 @@ pub const MAX_WINDOW: u64 = 1024 * 1024;
 /// Most bytes read before the window's start to find where a straddling line
 /// begins; a longer line is [`Unattributed::WindowExceeded`].
 pub const LINE_EXTENSION: u64 = INITIAL_WINDOW;
-/// Chunk size when reading a Codex head line.
+/// Chunk size when reading a head line.
 const HEAD_CHUNK: usize = 4096;
 
 fn unattributable(reason: Unattributed) -> Attribution {
     Attribution::Unattributable { reason }
 }
 
-fn known_harness(harness: &str) -> Option<&'static str> {
-    match harness {
-        "claude" => Some("claude"),
-        "codex" => Some("codex"),
-        _ => None,
-    }
+/// The registered id and transcript version declaration of `harness`; `None`
+/// for an unknown harness or one whose transcript names no version.
+fn transcript_spec(
+    registry: &Registry,
+    harness: &str,
+) -> Option<(&'static str, &'static TranscriptVersionSpec)> {
+    let registration = registry.by_id(registry.agent(harness).ok()?).ok()?;
+    Some((
+        registration.metadata().id,
+        registration.transcript_version()?,
+    ))
 }
 
-/// Claude payloads may name runtime-written metadata in a nonempty absolute
-/// transcript path. Codex payloads always lack current-runtime attribution:
-/// the optional transcript reader names only the rollout creator.
+/// Payloads of a current-runtime transcript may name runtime-written metadata
+/// in a nonempty absolute transcript path. Payloads of a creator-only
+/// transcript always lack current-runtime attribution: the optional
+/// transcript reader names only the creator.
 pub fn attribute_payload(harness: &str, payload: &Value) -> Attribution {
-    if known_harness(harness).is_none() {
+    attribute_payload_in(builtins(), harness, payload)
+}
+
+/// [`attribute_payload`] against an explicit registry.
+pub(crate) fn attribute_payload_in(
+    registry: &Registry,
+    harness: &str,
+    payload: &Value,
+) -> Attribution {
+    let Some((_, spec)) = transcript_spec(registry, harness) else {
         return unattributable(Unattributed::UnrecognizedVersion);
-    }
+    };
     let str_field = |k: &str| payload.get(k).and_then(Value::as_str);
     if str_field("hook_event_name") == Some("SessionStart") && str_field("source") == Some("resume")
     {
-        return unattributable(if harness == "codex" {
-            Unattributed::CodexResumed
-        } else {
+        return unattributable(if spec.current_runtime {
             Unattributed::ResumeBeforeFirstEntry
+        } else {
+            Unattributed::ResumedCreator
         });
     }
-    if harness == "codex" {
-        return unattributable(Unattributed::CodexCreatorOnly);
+    if !spec.current_runtime {
+        return unattributable(Unattributed::CreatorOnly);
     }
     match str_field("transcript_path") {
         Some(p) if !p.is_empty() && Path::new(p).is_absolute() => {
-            attribute_transcript(harness, Path::new(p))
+            attribute_transcript_in(registry, harness, Path::new(p))
         }
         _ => unattributable(Unattributed::NoTranscriptPath),
     }
@@ -120,8 +140,12 @@ pub fn attribute_payload(harness: &str, payload: &Value) -> Attribution {
 
 /// Attribute the transcript file at `path`.
 pub fn attribute_transcript(harness: &str, path: &Path) -> Attribution {
+    attribute_transcript_in(builtins(), harness, path)
+}
+
+fn attribute_transcript_in(registry: &Registry, harness: &str, path: &Path) -> Attribution {
     use std::os::unix::fs::OpenOptionsExt;
-    if known_harness(harness).is_none() {
+    if transcript_spec(registry, harness).is_none() {
         return unattributable(Unattributed::UnrecognizedVersion);
     }
     // Never open what is not a regular file: a FIFO, socket or device would
@@ -148,21 +172,30 @@ pub fn attribute_transcript(harness: &str, path: &Path) -> Attribution {
         Ok(m) if m.is_file() => m.len(),
         _ => return unattributable(Unattributed::Unreadable),
     };
-    attribute_reader(harness, &mut file, len)
+    attribute_reader_in(registry, harness, &mut file, len)
 }
 
 /// Attribute a transcript of `len` bytes behind `r` (generic over the reader
 /// so tests can count the bytes read).
 pub fn attribute_reader<R: Read + Seek>(harness: &str, r: &mut R, len: u64) -> Attribution {
-    let Some(name) = known_harness(harness) else {
+    attribute_reader_in(builtins(), harness, r, len)
+}
+
+fn attribute_reader_in<R: Read + Seek>(
+    registry: &Registry,
+    harness: &str,
+    r: &mut R,
+    len: u64,
+) -> Attribution {
+    let Some((name, spec)) = transcript_spec(registry, harness) else {
         return unattributable(Unattributed::UnrecognizedVersion);
     };
-    let raw = if name == "codex" {
-        match read_head_line(r) {
+    let raw = match spec.read {
+        TranscriptRead::HeadLine => match read_head_line(r) {
             Ok(Head::Line(line)) => match serde_json::from_slice::<Value>(&line)
                 .ok()
                 .as_ref()
-                .and_then(codex_version)
+                .and_then(spec.extract)
             {
                 Some(raw) => raw.to_owned(),
                 None => return unattributable(Unattributed::NoVersionField),
@@ -170,9 +203,8 @@ pub fn attribute_reader<R: Read + Seek>(harness: &str, r: &mut R, len: u64) -> A
             Ok(Head::Incomplete) => return unattributable(Unattributed::NoVersionField),
             Ok(Head::TooLong) => return unattributable(Unattributed::WindowExceeded),
             Err(_) => return unattributable(Unattributed::Unreadable),
-        }
-    } else {
-        match scan_tail(r, len, claude_version) {
+        },
+        TranscriptRead::NewestEntry => match scan_tail(r, len, spec.extract) {
             Ok(Some(raw)) => raw,
             Ok(None) => {
                 return unattributable(if len > MAX_WINDOW {
@@ -182,26 +214,15 @@ pub fn attribute_reader<R: Read + Seek>(harness: &str, r: &mut R, len: u64) -> A
                 });
             }
             Err(_) => return unattributable(Unattributed::Unreadable),
-        }
+        },
     };
-    match normalize_version(name, &raw) {
+    match normalize_version_in(registry, name, &raw) {
         Some(version) => Attribution::Attributed {
             harness: name,
             version,
         },
         None => unattributable(Unattributed::UnrecognizedVersion),
     }
-}
-
-fn claude_version(entry: &Value) -> Option<&str> {
-    entry.get("version")?.as_str()
-}
-
-fn codex_version(entry: &Value) -> Option<&str> {
-    if entry.get("type")?.as_str()? != "session_meta" {
-        return None;
-    }
-    entry.get("payload")?.get("cli_version")?.as_str()
 }
 
 /// Newest complete line whose JSON `extract`s a string, reading the last

@@ -1,0 +1,135 @@
+Deliver durable work to a new tab, explicit launch pane, or existing peer
+
+Usage: herdr-threads handoff [OPTIONS] -- <BODY>
+
+Arguments:
+  <BODY>  Exactly one quoted durable message after --; never native argv
+
+Options:
+      --new-tab <NEW_TAB>
+          
+      --state-dir <STATE_DIR>
+          Select the local herdr-threads state directory. May repeat with an identical value; conflicting values are refused
+      --existing
+          
+      --host-endpoint <HOST_ENDPOINT>
+          Select the local Herdr host socket path. May repeat with an identical value; conflicting values are refused
+      --json
+          Emit a structured JSON result on stdout
+      --seat <SEAT>
+          
+      --cwd <CWD>
+          
+      --human
+          Human-readable tables and transcripts (the default on a terminal)
+      --machine
+          The stable `key: value` text form for scripts and models (the default when stdout is not a terminal)
+      --space <SPACE>
+          Exact workspace ID or label; omitted inherits the caller's live workspace, never focus
+      --cooperative-seat <COOPERATIVE_SEAT>
+          Explicit seat ID for a cooperative agent call; requires all four --cooperative-* options
+      --tab <TAB>
+          Exact tab ID or label in the selected workspace; a tab ID supplies its workspace
+      --cooperative-target <COOPERATIVE_TARGET>
+          Exact live pane ID or scoped name bound to the cooperative seat
+      --pane <PANE>
+          Exact pane ID, label or live agent name in the selected tab. Omitted parents inherit the live caller; outside Herdr supply parents or a pane ID. Qualify duplicate names with --space/--tab or use an ID; conflicts never pick a pane
+      --cooperative-harness <COOPERATIVE_HARNESS>
+          Agent harness making the cooperative call [possible values: claude, codex, hermes, agy, synthetic_fourth]
+      --new-thread
+          
+      --cooperative-role <COOPERATIVE_ROLE>
+          Agent role for the cooperative call [possible values: top-level, subagent]
+      --thread <THREAD>
+          
+      --thread-name <THREAD_NAME>
+          
+      --topic <TOPIC>
+          
+      --goal <GOAL>
+          
+      --kind <KIND>
+          [possible values: claude, codex, hermes, agy, synthetic_fourth]
+      --harness-binary <HARNESS_BINARY>
+          
+      --name <NAME>
+          Herdr agent name, distinct from --thread-name
+      --agent-arg <AGENT_ARGS>
+          Repeat for each native argument (use --agent-arg=-a for flags)
+  -h, --help
+          Print help
+
+Omit --new-thread and --thread for the canonical automatic two-seat channel.
+Optionally override it with --new-thread or --thread ID_OR_NAME.
+Choose one target mode:
+  --pane PANE --kind claude|codex|hermes|agy|synthetic_fourth launches in an existing explicit pane;
+  --new-tab LABEL --kind claude|codex|hermes|agy|synthetic_fourth creates a tab and launches there;
+  --existing with exactly one --seat SEAT or --pane PANE delivers durable work
+    to an existing canonical seat without launching or restarting its session.
+Handoff requires an original top-level Agent and the guarded daemon capability.
+--new-tab conflicts with --existing, --tab, --pane and --seat. --cwd is new-tab
+only: an absolute existing directory, defaulting to the invocation cwd, normalized
+before publication. --space selects one live workspace by exact ID or unique label;
+omission for creation uses the caller's live workspace, never UI focus. New-tab is
+intentional creation even if its label already exists; it does not focus the tab.
+For --existing, --space and --tab may qualify --pane, but conflict with --seat.
+Delivery forbids --kind, --harness-binary, --name and --agent-arg and ignores the
+launch-option environment. An unresolved, held, retired or foreign seat refuses.
+An unbound resolved seat may receive staged work; this does not establish a
+working or available session. Delivery reports staged work, not a launch result.
+
+Automatic routing ensures the immutable pair, then sends; launch modes then launch.
+Creation joins the caller and invites the peer, reserving two seats, not accepting
+for the peer. No third seat can enroll. New-tab resolves its seat before Ensure.
+Archive requires reopen THREAD; a caller who left uses join THREAD, an invited
+caller uses accept THREAD; a target who left/rejected needs invite THREAD --seat SEAT.
+No automatic reopen, join or reinvite occurs. Repair reuses the same pair.
+Explicit new threads join the sender; explicit existing threads require a joined sender.
+--thread-name, --topic and --goal require --new-thread. Automatic topic and goal
+are 1:1 SEAT_A SEAT_B with sorted IDs. Explicit new topic defaults to Handoff to DISPLAY:
+legacy launch uses the pane display, new-tab uses its label, delivery uses the
+canonical seat ID. Goal defaults to topic. --name names the native agent, not the channel.
+The one quoted body after -- is durable work (1..1024 UTF-8 bytes), never native argv.
+Native launch options use repeatable --agent-arg=OPTION; launch -- native arguments
+is unchanged. HERDR_THREADS_CLAUDE_OPTS / HERDR_THREADS_CODEX_OPTS / HERDR_THREADS_AGY_OPTS prepend optional
+arguments using shell-style quotes and escapes without variable or command
+expansion. Unset or empty adds nothing. Launch handoff freezes the combined options
+before preflight; retry uses saved arguments even if the environment changes.
+Explicit ordinary channels stage an invitation when needed; automatic channels
+use Ensure for initial invitation only. Handoff stages a message addressed to the exact
+recipient; launch modes then perform guarded launch. Startup gets fixed inbox
+instructions, not a second copy of the body. Handoff never accepts or ACKs for
+the recipient, nor declares task adoption or task completion.
+Native execution still needs the selected harness's approval/configuration.
+
+Committed work survives failure. pending-ops lists the compound reference; retry REF
+resumes exact keyed steps without duplicate messages or invitations. A confirmed
+pre-start refusal can retry after repair. Unknown creation cannot automatically
+create another tab: inspect the reported exact namespace and attempt. It is distinct
+from downstream possible start; possible start, unknown launch outcome or a crash
+across launch submission never automatically launches again. Inspect the exact
+downstream pane/seat before using any reported manual launch argv after confirming no
+agent started. Manual launch guidance does not prove tab noncreation.
+Completed retry presents the retained historical report and cleans its own local
+intent without repeating effects or proving current availability.
+
+Administrative bootstrap recovery uses human immediately after the executable:
+  herdr-threads human [GLOBALS] handoff recover REF --attempt N --created-pane EXACT_PANE
+  herdr-threads human [GLOBALS] handoff recover REF --attempt N --not-created
+  herdr-threads human [GLOBALS] handoff recover REF --attempt N --cancel --reason TEXT
+Keep the exact reported reference, positive attempt N, state directory and endpoint;
+routing/output globals follow immediate human. Root --human selects output only.
+Recovery needs the guarded daemon capability and records a separate local-account
+operator assertion, preserving the original agent identity. Created-pane asserts
+this exact result belongs to the inspected attempt and needs fresh coherent
+structural evidence and ordinary guards; labels are not ownership evidence.
+Not-created asserts inspected noncreation and quiescence. Cancellation asserts
+quiescence and administrative abandonment, not completion; reason is nonblank and
+at most 4096 UTF-8 bytes. A known in-flight invocation refuses conflicting recovery;
+snapshots or guessed PIDs do not prove quiescence. Recovery never launches downstream
+work. Bootstrap cancellation refuses while an exact legacy child fence or live hint
+remains; that child may stay protected indefinitely after pane loss or retirement.
+Recovery replay presents its exact recorded decision, never authorizes a newer
+attempt. Product cleanup never closes created topology.
+
+Administrative recovery: ht human [GLOBALS] handoff recover REF --attempt N with exactly one --created-pane EXACT_PANE, --not-created, or --cancel --reason TEXT. Noncreation asserts inspected noncreation and quiescence; cancellation asserts quiescence. Reason must be nonblank and at most 4096 UTF-8 bytes. Recovery never launches or delivers downstream work. Execution requires the guarded daemon capability. Created-pane inspection retains genuine native scope and witness; noncreation and cancellation remain explicit quiescence assertions.

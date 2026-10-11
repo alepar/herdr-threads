@@ -37,8 +37,14 @@ pub(super) fn ready_inputs() -> HealthInputs {
     inputs.coherent_enumeration = CapabilityState::Supported;
     inputs.safe_prompt = CapabilityState::Supported;
     inputs.current_execution = CapabilityState::Unsupported;
-    inputs.claude = HarnessStatus::Supported("claude 2.1.286: listed".into());
-    inputs.codex = HarnessStatus::Supported("codex 0.159.3: listed".into());
+    inputs.set_harness(
+        "claude",
+        HarnessStatus::Supported("claude 2.1.286: listed".into()),
+    );
+    inputs.set_harness(
+        "codex",
+        HarnessStatus::Supported("codex 0.159.3: listed".into()),
+    );
     inputs.unresolved = Some(UnresolvedSeatSummary::default());
     inputs.log_path = Some(PathBuf::from(LOG));
     inputs
@@ -57,8 +63,8 @@ pub(super) fn worst_case_inputs() -> HealthInputs {
     inputs.scheduler = ComponentStatus::Degraded(long.clone());
     inputs.current_execution = CapabilityState::Unsupported;
     inputs.safe_prompt = CapabilityState::Unsupported;
-    inputs.claude = HarnessStatus::Refused(long.clone());
-    inputs.codex = HarnessStatus::Refused(long.clone());
+    inputs.set_harness("claude", HarnessStatus::Refused(long.clone()));
+    inputs.set_harness("codex", HarnessStatus::Refused(long.clone()));
     inputs.retirement = RetirementHealth {
         pending: true,
         degraded: true,

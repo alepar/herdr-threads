@@ -1224,7 +1224,7 @@ fn automatic_child_mutate(
 
 #[test]
 fn automatic_linked_terminal_reconciles_completed_child_without_reopening_or_relaunch() {
-    use sha2::{Digest, Sha256};
+    use sha2::Digest;
     let (context, mut db, path, store, observation, budget, old, a) =
         attachment_fixture_inner(false, false);
     let id = automatic_parent(&old);
@@ -1376,7 +1376,10 @@ fn automatic_linked_terminal_reconciles_completed_child_without_reopening_or_rel
         pane: attachment.created.root_pane.clone(),
         kind: "launch".into(),
         launch: id.plan.payload.launch.clone(),
-        report_digest: format!("{:x}", Sha256::digest(serde_json::to_vec(&report).unwrap())),
+        report_digest: format!(
+            "{:x}",
+            sha2::Sha256::digest(serde_json::to_vec(&report).unwrap())
+        ),
         report,
         terminal: attachment.created.terminal.clone(),
         host_incarnation: attachment.created.host_incarnation.clone(),
@@ -1748,6 +1751,7 @@ fn automatic_linked_created_recovery_refuses_changed_witness_and_lifecycle_witho
 // Public semantic acceptance and canonical loaders are tested by the successor task.
 #[test]
 fn automatic_capacity_actual_serializer_maximum_body_records() {
+    use sha2::Digest;
     for body in ["x".repeat(65_536), "\u{1}".repeat(65_536)] {
         let (_context, db, path, store, _observation, _budget, old, a) =
             attachment_fixture_inner(false, false);
@@ -1815,6 +1819,148 @@ fn automatic_capacity_actual_serializer_maximum_body_records() {
         let original = serde_json::to_vec(&id).unwrap();
         let attached = serde_json::to_vec(&attachment).unwrap();
         let recovered = serde_json::to_vec(&result).unwrap();
+        let retained = LinkedBootstrapReport {
+            thread: ThreadId::new("thread"),
+            recipient: attachment.resolved_seat.clone(),
+            pane: attachment.created.root_pane.clone(),
+            kind: "launch".into(),
+            launch: id.plan.payload.launch.clone(),
+            report: serde_json::json!({"outcome":"started","pane":attachment.created.root_pane,"seat":attachment.resolved_seat,"harness":id.plan.payload.launch.harness.as_str(),"argv":["launch"]}),
+            report_digest: "c".repeat(64),
+            terminal: attachment.created.terminal.clone(),
+            host_incarnation: attachment.created.host_incarnation.clone(),
+        };
+        let request_bytes = |identity: AutomaticBootstrapIdentity, action| {
+            serde_json::to_vec(&crate::protocol::wire::WireRequest {
+                version: crate::protocol::wire::PROTOCOL_VERSION,
+                request_id: "capacity".into(),
+                expected_instance: "00000000-0000-4000-8000-000000000001".into(),
+                expected_boot: Some("00000000-0000-4000-8000-000000000002".into()),
+                output: None,
+                command: crate::protocol::commands::Command::AutomaticBootstrap(Box::new(
+                    AutomaticBootstrapMutation { identity, action },
+                )),
+            })
+            .unwrap()
+        };
+        let complete = request_bytes(
+            id.clone(),
+            AutomaticBootstrapAction::Complete {
+                attachment: Box::new(attachment.clone()),
+                retained: retained.clone(),
+            },
+        );
+        let recover = request_bytes(
+            id.clone(),
+            AutomaticBootstrapAction::Recover {
+                attempt: BootstrapAttempt::first(),
+                inspection: BootstrapRecoveryInspection {
+                    version: 1,
+                    digest: "b".repeat(64),
+                },
+                disposition: AutomaticBootstrapRecoveryDisposition::Cancelled {
+                    reason: "inspected".into(),
+                    quiescence: BootstrapQuiescenceAssertion::InspectedQuiescence,
+                    attached_child: Some(Box::new(attachment.child.clone())),
+                },
+            },
+        );
+        assert!(complete.len() <= crate::protocol::wire::MAX_WIRE_FRAME_BYTES);
+        assert!(recover.len() <= crate::protocol::wire::MAX_WIRE_FRAME_BYTES);
+        let mut maximum_argv = id.clone();
+        maximum_argv.plan.payload.launch.argv = vec!["\u{1}".repeat(4096); 16];
+        maximum_argv.plan.payload.launch.validate().unwrap();
+        let maximum_original = serde_json::to_vec(&maximum_argv).unwrap();
+        let maximum_complete = request_bytes(
+            maximum_argv,
+            AutomaticBootstrapAction::Complete {
+                attachment: Box::new(attachment.clone()),
+                retained,
+            },
+        );
+        eprintln!(
+            "automatic requests escaped={} Complete={} Recover={} maxargv_original={} maxargv_Complete={}",
+            body.starts_with('\u{1}'),
+            complete.len(),
+            recover.len(),
+            maximum_original.len(),
+            maximum_complete.len()
+        );
+        if body.starts_with('\u{1}') {
+            assert!(maximum_original.len() > 524288);
+            assert!(db.execute("INSERT INTO automatic_bootstrap_parents(id,instance_id,actor_scope,compound,state_dir,host_endpoint,original_json,state,current_attempt) VALUES(98,'i','seat:sender','too-large','/state','/host',?1,'created',1)",[&maximum_original]).is_err());
+            assert_eq!(
+                db.query_row(
+                    "SELECT count(*) FROM automatic_bootstrap_parents WHERE id=98",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+                0
+            );
+        }
+        if body.starts_with('\u{1}') {
+            let mut near = id.clone();
+            // Largest six-byte escaped argv addition below the aggregate SQL ceiling.
+            let mut lo = 0_usize;
+            let mut hi = 65536_usize;
+            while lo < hi {
+                let mid = (lo + hi).div_ceil(2);
+                near.plan.payload.launch.argv = "\u{1}"
+                    .repeat(mid)
+                    .as_bytes()
+                    .chunks(4096)
+                    .map(|v| String::from_utf8(v.to_vec()).unwrap())
+                    .collect();
+                if serde_json::to_vec(&near).unwrap().len() <= 524288 {
+                    lo = mid;
+                } else {
+                    hi = mid - 1;
+                }
+            }
+            near.plan.payload.launch.argv = "\u{1}"
+                .repeat(lo)
+                .as_bytes()
+                .chunks(4096)
+                .map(|v| String::from_utf8(v.to_vec()).unwrap())
+                .collect();
+            near.plan.payload.launch.validate().unwrap();
+            let near_original = serde_json::to_vec(&near).unwrap();
+            let report = serde_json::json!({"outcome":"started","pane":attachment.created.root_pane,"seat":attachment.resolved_seat,"harness":near.plan.payload.launch.harness.as_str(),"argv":near.plan.payload.launch.argv});
+            let near_retained = LinkedBootstrapReport {
+                thread: ThreadId::new("thread"),
+                recipient: attachment.resolved_seat.clone(),
+                pane: attachment.created.root_pane.clone(),
+                kind: "launch".into(),
+                launch: near.plan.payload.launch.clone(),
+                report_digest: format!(
+                    "{:x}",
+                    sha2::Sha256::digest(serde_json::to_vec(&report).unwrap())
+                ),
+                report,
+                terminal: attachment.created.terminal.clone(),
+                host_incarnation: attachment.created.host_incarnation.clone(),
+            };
+            near_retained.validate().unwrap();
+            let near_complete = request_bytes(
+                near,
+                AutomaticBootstrapAction::Complete {
+                    attachment: Box::new(attachment.clone()),
+                    retained: near_retained,
+                },
+            );
+            eprintln!(
+                "automatic nearaggregate original={} Complete={} rawargv={}",
+                near_original.len(),
+                near_complete.len(),
+                lo
+            );
+            assert!(near_original.len() <= 524288);
+            assert!(
+                near_complete.len() > crate::protocol::wire::MAX_WIRE_FRAME_BYTES,
+                "SQL capacity alone is not public preflight"
+            );
+        }
         let wire = serde_json::to_vec(&crate::protocol::wire::WireResponse {
             version: crate::protocol::wire::PROTOCOL_VERSION,
             request_id: "capacity".into(),

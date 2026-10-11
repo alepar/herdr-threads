@@ -1,0 +1,75 @@
+# Allowlist for scripts/check-harness-neutral (the harness-neutral core seam, root spec section 1).
+#
+# One entry per line, sorted (byte order) and unique:
+#     <path>:<pattern> — <category>: <text>
+# <path> is repo-relative. <pattern> is a fixed string (no regex): an entry allows a harness-naming
+# token T in file <path> when the pattern contains T and occurs on the same source line (comments
+# removed). A bare-token pattern (`claude`) allows that token anywhere in the file; a longer
+# pattern (`registry.agent("claude")`) allows it only on lines containing that text. The separator
+# is space, U+2014 EM DASH, space (the first one after the first `:`); <text> must be non-empty.
+# An entry that no longer covers any site is stale and fails the check, so a leaf that migrates a
+# site deletes its entry in the same commit. Keep the file sorted: leaves then edit disjoint hunks.
+#
+# Categories:
+#   to-migrate   not allowed. The category is still parsed, but any to-migrate entry fails the check
+#                (`to-migrate entries are forbidden: N`); move the site behind the adapter contract
+#                instead of listing it.
+#   frozen-wire  a frozen v1 wire shape (HarnessHealth / HarnessEvidence / HookParseFailure, legacy
+#                contract ids, the not_claude wire code). May stay permanently.
+#   history      a historical schema migration shape. May stay permanently.
+#   registration the builtins() rows, the CODEX / CLAUDE registry identities, the OccupantHarness /
+#                context::Harness consts and the harness/mod.rs `pub mod` lines. May stay permanently.
+#
+# Only frozen wire shapes, historical migrations and registration may be listed (root spec
+# section 1); everything else is migrated behind the adapter contract.
+src/cli/commands.rs:wire code not_claude — frozen-wire: not_claude wire code in the watch help text (frozen wire shape)
+src/cli/doctor.rs:"harness_claude": harness_state(health.harness.claude), — frozen-wire: v1 HarnessHealth daemon.harness_claude key (frozen wire shape)
+src/cli/doctor.rs:"harness_codex": harness_state(health.harness.codex), — frozen-wire: v1 HarnessHealth daemon.harness_codex key (frozen wire shape)
+src/cli/launch.rs:"codex": codex, — frozen-wire: launch report/record v1 key `codex` (null for other harnesses; frozen wire shape)
+src/cli/launch.rs:.get("codex") — frozen-wire: launch report/record v1 key `codex` (null for other harnesses; frozen wire shape)
+src/cli/launch.rs:let codex = preparation — frozen-wire: launch report/record v1 key `codex` (null for other harnesses; frozen wire shape)
+src/cli/setup.rs:codex hook trust: {} — frozen-wire: text fallback of the v1 trust_reminder scalar for reports without trust_reminders
+src/cli/setup.rs:if name == "codex" { — frozen-wire: v1 setup JSON scalar trust_reminder is always Codex's note
+src/daemon/health.rs:claude: state("claude"), — frozen-wire: v1 HarnessHealth projection, the single place naming the two frozen fields (frozen wire shape)
+src/daemon/health.rs:codex: state("codex"), — frozen-wire: v1 HarnessHealth projection, the single place naming the two frozen fields (frozen wire shape)
+src/harness/admission.rs:rows.extend(version_rows("codex", super::codex::RECIPES)) — frozen-wire: schema-2 versions.json generator, byte-locked by versions_json_guard (frozen artifact)
+src/harness/admission.rs:src/harness/claude.rs RECIPES, src/harness/codex.rs RECIPES — frozen-wire: schema-2 versions.json generator, byte-locked by versions_json_guard (frozen artifact)
+src/harness/admission.rs:version_rows("claude", super::claude::RECIPES) — frozen-wire: schema-2 versions.json generator, byte-locked by versions_json_guard (frozen artifact)
+src/harness/attribution.rs:"codex resume: rollout version is the creating CLI's" — frozen-wire: Unattributed::as_str text goes on the wire and into doctor (frozen wire shape)
+src/harness/attribution.rs:"codex rollout creator metadata does not identify the current runtime" — frozen-wire: Unattributed::as_str text goes on the wire and into doctor (frozen wire shape)
+src/harness/context.rs:pub const Claude: Self — registration: context::Harness const over the registry identity (permanent registration)
+src/harness/context.rs:pub const Codex: Self — registration: context::Harness const over the registry identity (permanent registration)
+src/harness/launch.rs:Claude — frozen-wire: V1 bootstrap grammar, a frozen compatibility record (permanent)
+src/harness/launch.rs:Codex — frozen-wire: V1 bootstrap grammar, a frozen compatibility record (permanent)
+src/harness/launch.rs:codex_guard — frozen-wire: V1 bootstrap grammar, a frozen compatibility record (permanent)
+src/harness/mod.rs:pub mod agy; — registration: adapter module declaration (permanent registration)
+src/harness/mod.rs:pub mod claude; — registration: adapter module declaration (permanent registration)
+src/harness/mod.rs:pub mod claude_mod; — registration: adapter module declaration (permanent registration)
+src/harness/mod.rs:pub mod codex; — registration: adapter module declaration (permanent registration)
+src/harness/mod.rs:pub mod codex_config; — registration: adapter module declaration (permanent registration)
+src/harness/mod.rs:pub mod codex_evidence; — registration: adapter module declaration (permanent registration)
+src/harness/mod.rs:pub mod codex_schema; — registration: adapter module declaration (permanent registration)
+src/harness/mod.rs:pub mod hermes; — registration: adapter module declaration (permanent registration)
+src/harness/registry.rs:CLAUDE — registration: builtins() row, registry identity or its assert (permanent registration)
+src/harness/registry.rs:CODEX — registration: builtins() row, registry identity or its assert (permanent registration)
+src/harness/registry.rs:Registration::new(&crate::harness::agy::AgyAdapter), — registration: builtins() row, registry identity or its assert (permanent registration)
+src/harness/registry.rs:Registration::new(&crate::harness::claude::ClaudeAdapter), — registration: builtins() row, registry identity or its assert (permanent registration)
+src/harness/registry.rs:Registration::new(&crate::harness::codex::CodexAdapter), — registration: builtins() row, registry identity or its assert (permanent registration)
+src/harness/registry.rs:Registration::new(&crate::harness::hermes::HermesAdapter), — registration: builtins() row, registry identity or its assert (permanent registration)
+src/harness/registry.rs:context_spelling: "Claude", — registration: builtins() row, registry identity or its assert (permanent registration)
+src/harness/registry.rs:context_spelling: "Codex", — registration: builtins() row, registry identity or its assert (permanent registration)
+src/harness/registry.rs:id: "claude", — registration: builtins() row, registry identity or its assert (permanent registration)
+src/harness/registry.rs:id: "codex", — registration: builtins() row, registry identity or its assert (permanent registration)
+src/harness/registry.rs:pub const Claude: Self = Self::Agent(CLAUDE); — registration: builtins() row, registry identity or its assert (permanent registration)
+src/harness/registry.rs:pub const Codex: Self = Self::Agent(CODEX); — registration: builtins() row, registry identity or its assert (permanent registration)
+src/harness/registry.rs:registry.agent("claude").expect("built-in Claude missing"), — registration: builtins() row, registry identity or its assert (permanent registration)
+src/harness/registry.rs:registry.agent("codex").expect("built-in Codex missing"), — registration: builtins() row, registry identity or its assert (permanent registration)
+src/protocol/commands.rs:if !matches!(report.harness.as_str(), "claude" | "codex") — frozen-wire: v1 HookParseFailure validation (frozen wire shape)
+src/protocol/commands.rs:if !matches!(self.harness.as_str(), "claude" | "codex") — frozen-wire: v1 HarnessEvidence::validate (frozen wire shape)
+src/protocol/results.rs:claude: HarnessState::Unknown, — frozen-wire: v1 HarnessHealth fields and constructor (frozen wire shape)
+src/protocol/results.rs:codex: HarnessState::Unknown, — frozen-wire: v1 HarnessHealth fields and constructor (frozen wire shape)
+src/protocol/results.rs:pub claude: HarnessState, — frozen-wire: v1 HarnessHealth fields and constructor (frozen wire shape)
+src/protocol/results.rs:pub codex: HarnessState, — frozen-wire: v1 HarnessHealth fields and constructor (frozen wire shape)
+src/protocol/watch.rs:NotClaude, — frozen-wire: not_claude wire code and its NotClaude variants (frozen wire shape)
+src/protocol/watch.rs:Self::NotClaude — frozen-wire: not_claude wire code and its NotClaude variants (frozen wire shape)
+src/store/schema.rs:check(harnessin('codex','claude','human')) — history: schema-history shape check of the harness CHECK constraint (historical migration)

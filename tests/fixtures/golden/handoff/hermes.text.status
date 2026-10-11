@@ -1,0 +1,3 @@
+exit: 4
+stderr:
+herdr-threads: selected native Hermes profile unavailable (unsupported_harness)

@@ -1,0 +1,15 @@
+{
+  "agy_dropped_allow_member": false,
+  "allow": [
+    "command(herdr-threads)"
+  ],
+  "allow_state": "owned",
+  "settings_keys": [
+    "altScreenMode",
+    "modelProvider",
+    "permissions",
+    "trustedWorkspaces"
+  ],
+  "trust_prompt_seen": true,
+  "ws2_trusted_after": true
+}

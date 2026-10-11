@@ -2775,7 +2775,7 @@ impl HostPort for LaunchHost {
 fn managed_launch_uses_daemon_seat_and_keeps_prelaunch_handoff_pending() {
     use herdr_threads::cli::{
         journal::Journal,
-        launch::{CodexShellProbe, DaemonSeatResolver, LaunchParts, LaunchRequest, execute},
+        launch::{DaemonSeatResolver, LaunchParts, LaunchRequest, PaneShellProbe, execute},
         setup::{self, SetupEnv, SetupRequest, SetupVerb},
     };
     use herdr_threads::harness::context::Harness as ContextHarness;
@@ -2821,8 +2821,7 @@ fn managed_launch_uses_daemon_seat_and_keeps_prelaunch_handoff_pending() {
         state_dir: Some(root.join("state")),
         cwd: root.clone(),
         path: Some(root.join("bin").into_os_string()),
-        codex_home: None,
-        claude_config_dir: Some(root.join("claude-config")),
+        config_roots: [("claude".into(), root.join("claude-config"))].into(),
         host_endpoint: Some(root.join("host.sock")),
         instance_source: serde_json::Value::Null,
     };
@@ -2850,7 +2849,7 @@ fn managed_launch_uses_daemon_seat_and_keeps_prelaunch_handoff_pending() {
     );
     // No configuration exports from this pane shell.
     struct NoShell;
-    impl CodexShellProbe for NoShell {}
+    impl PaneShellProbe for NoShell {}
     for unknown in [false, true] {
         let host = LaunchHost {
             sequence: AtomicU64::new(1),

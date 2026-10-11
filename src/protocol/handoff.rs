@@ -277,6 +277,14 @@ pub struct BootstrapLaunch {
     pub binary: Option<String>,
     pub name: Option<String>,
     pub argv: Vec<String>,
+    /// Bootstrap plan V2 only: the adapter's own composition of `argv`, frozen at plan time.
+    /// Absent (and not serialized) for a V1 plan, so V1 plans stay byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub composed_argv: Option<Vec<String>>,
+    /// Bootstrap plan V2 only: the adapter's startup-input placement for `argv`, frozen at plan time.
+    /// Absent (and not serialized) for a V1 plan, so V1 plans stay byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub startup_input: Option<crate::harness::adapter::StartupInputTemplate>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -681,6 +689,16 @@ impl BootstrapLaunch {
             || self.argv.len() > 256
             || self.argv.iter().any(|a| a.len() > 4096 || a.contains('\0'))
             || self.argv.iter().map(String::len).sum::<usize>() > 65536
+            || self.composed_argv.as_ref().is_some_and(|composed| {
+                composed.len() > 512
+                    || composed.iter().any(|a| a.len() > 4096 || a.contains('\0'))
+                    || composed.iter().map(String::len).sum::<usize>() > 65536
+            })
+            || self.composed_argv.is_some() != self.startup_input.is_some()
+            || self
+                .startup_input
+                .as_ref()
+                .is_some_and(|template| template.validate(self.argv.len()).is_err())
         {
             return Err("invalid frozen bootstrap launch arguments");
         }
@@ -688,6 +706,15 @@ impl BootstrapLaunch {
     }
 }
 impl BootstrapPayload {
+    /// The bootstrap plan version this payload belongs to: 2 when it froze the adapter's own
+    /// composition, else the frozen V1 grammar.
+    pub fn plan_version(&self) -> u32 {
+        if self.launch.composed_argv.is_some() {
+            2
+        } else {
+            1
+        }
+    }
     pub fn validate(&self) -> Result<(), &'static str> {
         self.handoff.validate()?;
         self.launch.validate()?;
@@ -731,7 +758,7 @@ impl BootstrapIdentity {
             claim: self.claim.clone(),
             mutation: Box::new(crate::cli::journal::SemanticMutation::HandoffBootstrap(
                 Box::new(crate::cli::journal::BootstrapPlan {
-                    version: 1,
+                    version: self.payload.plan_version(),
                     payload: self.payload.clone(),
                 }),
             )),
@@ -1013,6 +1040,8 @@ pub(crate) mod topology_contract_tests {
                 binary: Some("/bin/codex".into()),
                 name: Some("peer".into()),
                 argv: vec!["--model".into(), "fixed".into()],
+                composed_argv: None,
+                startup_input: None,
             },
             handoff_key: OperationId::new("child"),
             resolve_key: OperationId::new("resolve"),

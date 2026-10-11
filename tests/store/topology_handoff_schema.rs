@@ -23,7 +23,7 @@ fn historical(version: usize) -> Connection {
         paths.sort();
         let mut images = Vec::new();
         for (applied, path) in std::iter::once(None)
-            .chain(paths.into_iter().take(38).map(Some))
+            .chain(paths.into_iter().take(39).map(Some))
             .enumerate()
         {
             if let Some(path) = path {
@@ -84,14 +84,14 @@ fn objects(db: &Connection) -> Vec<(String, String, String)> {
 #[test]
 fn registered28_fresh_and_genuine_historical_chains_reopen() {
     for previous in [
-        0, 1, 15, 22, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37,
+        0, 1, 15, 22, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38,
     ] {
         let db = historical(previous);
         schema::initialize(&db, || UtcMillis(0)).unwrap();
-        assert_eq!(version(&db), 38, "actual {previous}->35");
-        assert_eq!(objects(&db), objects(&historical(38)));
+        assert_eq!(version(&db), 39, "actual {previous}->39");
+        assert_eq!(objects(&db), objects(&historical(39)));
         schema::initialize(&db, || UtcMillis(1)).unwrap();
-        assert_eq!(version(&db), 38);
+        assert_eq!(version(&db), 39);
     }
 }
 #[test]
@@ -205,7 +205,7 @@ fn registered28_preserves25_and26_history_and_rolls_back_late_ddl_failure() {
                 .unwrap();
         }
         schema::initialize(&db, || UtcMillis(0)).unwrap();
-        assert_eq!(version(&db), 38);
+        assert_eq!(version(&db), 39);
         assert_eq!(evidence(&db), before);
         let ordinary: String = db
             .query_row(
@@ -334,7 +334,7 @@ fn legacy_key_index_retains_foreign_namespaces_with_bounded_lookup_after_1000_at
 
 #[test]
 fn handoff_body_bounds_upgrade_preserves_existing_identity_bytes_and_keys() {
-    for previous in [28, 31, 32] {
+    for previous in [28, 32, 33] {
         let db = historical(previous);
         db.execute_batch(
             "PRAGMA foreign_keys=ON; INSERT INTO host_instances(id,created_at) VALUES('i',0)",
@@ -371,7 +371,7 @@ fn handoff_body_bounds_upgrade_preserves_existing_identity_bytes_and_keys() {
             })
             .unwrap();
         schema::initialize(&db, || UtcMillis(1)).unwrap();
-        assert_eq!(version(&db), 38);
+        assert_eq!(version(&db), 39);
         let retained: Vec<u8> = db
             .query_row("SELECT identity_json FROM bootstrap_handoffs", [], |r| {
                 r.get(0)
@@ -428,7 +428,7 @@ fn handoff_body_bounds_upgrade_preserves_existing_identity_bytes_and_keys() {
 fn handoff_bounds_upgrade_preserves_populated_completed_and_recovery_history() {
     use herdr_threads::protocol::{handoff::*, ids::*};
     use sha2::{Digest, Sha256};
-    for previous in [28, 31, 32] {
+    for previous in [28, 32, 33] {
         let db = historical(previous);
         db.execute_batch("PRAGMA foreign_keys=ON; INSERT INTO host_instances(id,created_at) VALUES('i',0); INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('t','i','topic','goal',0,0)").unwrap();
         super::joined_agent(&db);
@@ -543,7 +543,7 @@ fn handoff_bounds_upgrade_preserves_populated_completed_and_recovery_history() {
             .collect::<Vec<_>>()
         };
         let roots = |db: &Connection| {
-            db.prepare("SELECT name,rootpage FROM sqlite_schema WHERE rootpage>0 AND name NOT LIKE 'bootstrap_%' AND name NOT LIKE 'sqlite_%' AND name NOT IN ('receipts','receipt_state') AND name NOT LIKE 'receipts_%' AND name NOT LIKE 'receipt_state_%' ORDER BY name")
+            db.prepare("SELECT name,rootpage FROM sqlite_schema WHERE rootpage>0 AND name NOT LIKE 'bootstrap_%' AND name NOT LIKE 'sqlite_%' AND name NOT IN ('receipts','receipt_state') AND name NOT LIKE 'receipts_%' AND name NOT LIKE 'receipt_state_%' AND name NOT IN ('automatic_handoff_companions','automatic_bootstrap_parents','automatic_bootstrap_attachments','automatic_bootstrap_recoveries') ORDER BY name")
             .unwrap().query_map([], |r| Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?))).unwrap().map(Result::unwrap).collect::<Vec<_>>()
         };
         let original = dump(&db);
@@ -564,18 +564,18 @@ fn handoff_bounds_upgrade_preserves_populated_completed_and_recovery_history() {
         db.pragma_update(None, "foreign_keys", true).unwrap();
         assert_eq!(version(&db), previous as i64);
         let old_roots = roots(&db);
-        let old_cutover: Option<i64> = if previous == 32 {
+        let old_cutover: Option<i64> = if previous == 33 {
             db.query_row("SELECT historical_decision_seq FROM receipt_send_time_cutovers WHERE instance_id='i'", [], |r| r.get(0)).optional().unwrap()
         } else {
             None
         };
         schema::initialize(&db, || UtcMillis(2)).unwrap();
-        assert_eq!(version(&db), 38);
+        assert_eq!(version(&db), 39);
         let new_roots = roots(&db);
         for root in old_roots {
             assert!(new_roots.contains(&root), "retained root {root:?}");
         }
-        if previous == 32 {
+        if previous == 33 {
             assert_eq!(db.query_row("SELECT historical_decision_seq FROM receipt_send_time_cutovers WHERE instance_id='i'", [], |r| r.get::<_,i64>(0)).optional().unwrap(), old_cutover);
         }
         assert_eq!(dump(&db), original);
@@ -599,7 +599,7 @@ fn handoff_bounds_upgrade_preserves_populated_completed_and_recovery_history() {
 
 #[test]
 fn handoff_bounds_upgrade_failure_restores_fk_and_retries_without_recapturing_receipt_cutover() {
-    for previous in [28, 31, 32] {
+    for previous in [28, 32, 33] {
         for foreign_keys in [false, true] {
             let db = historical(previous);
             db.execute_batch(
@@ -613,7 +613,7 @@ fn handoff_bounds_upgrade_failure_restores_fk_and_retries_without_recapturing_re
             db.execute_batch("CREATE TEMP TABLE ht29_handoffs(obstruction TEXT)")
                 .unwrap();
             assert!(schema::initialize(&db, || UtcMillis(0)).is_err());
-            assert_eq!(version(&db), 32);
+            assert_eq!(version(&db), 33);
             assert_eq!(
                 db.pragma_query_value::<bool, _>(None, "foreign_keys", |r| r.get(0))
                     .unwrap(),
@@ -621,13 +621,13 @@ fn handoff_bounds_upgrade_failure_restores_fk_and_retries_without_recapturing_re
             );
             assert_eq!(
                 objects(&db),
-                objects(&historical(32)),
+                objects(&historical(33)),
                 "failed31 must retain old bootstrap DDL"
             );
             let cutover: Vec<(String, i64)> = db.prepare("SELECT instance_id,historical_decision_seq FROM receipt_send_time_cutovers ORDER BY instance_id").unwrap().query_map([], |r| Ok((r.get(0)?,r.get(1)?))).unwrap().map(Result::unwrap).collect();
             db.execute_batch("DROP TABLE temp.ht29_handoffs; UPDATE host_instances SET decision_seq=99 WHERE id='i'").unwrap();
             schema::initialize(&db, || UtcMillis(1)).unwrap();
-            assert_eq!(version(&db), 38);
+            assert_eq!(version(&db), 39);
             schema::initialize(&db, || UtcMillis(2)).unwrap();
             let retained: Vec<(String, i64)> = db.prepare("SELECT instance_id,historical_decision_seq FROM receipt_send_time_cutovers ORDER BY instance_id").unwrap().query_map([], |r| Ok((r.get(0)?,r.get(1)?))).unwrap().map(Result::unwrap).collect();
             assert_eq!(

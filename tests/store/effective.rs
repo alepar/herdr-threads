@@ -1054,17 +1054,18 @@ fn dormant_upgrade_actual_v31_backfill32_reopens_and_rolls_back_without_recaptur
                 30,
                 include_str!("../../migrations/0030_automatic_handoff.sql"),
             ),
-            (
-                31,
-                include_str!("../../migrations/0031_invitation_confirmation.sql"),
-            ),
+            (31, include_str!("../../migrations/0031_seat_wake_on.sql")),
             (
                 32,
-                include_str!("../../migrations/0032_receipt_send_time.sql"),
+                include_str!("../../migrations/0032_invitation_confirmation.sql"),
             ),
             (
                 33,
-                include_str!("../../migrations/0033_handoff_body_bounds.sql"),
+                include_str!("../../migrations/0033_receipt_send_time.sql"),
+            ),
+            (
+                34,
+                include_str!("../../migrations/0034_handoff_body_bounds.sql"),
             ),
         ] {
             db.execute_batch("BEGIN IMMEDIATE").unwrap();
@@ -1080,7 +1081,7 @@ fn dormant_upgrade_actual_v31_backfill32_reopens_and_rolls_back_without_recaptur
         assert_eq!(
             db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
                 .unwrap(),
-            31
+            34
         );
         assert_eq!(
             db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
@@ -1109,10 +1110,42 @@ fn dormant_upgrade_actual_v31_backfill32_reopens_and_rolls_back_without_recaptur
                 .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)?, r.get::<_, Option<String>>(4)?)))
                 .unwrap().map(Result::unwrap).collect::<Vec<_>>()
         };
+        // V39 rebuilds exactly these four body-bearing tables and their implicit indexes.
+        // Compare their exact transformed DDL while retaining rootpages for every other object.
+        let normalize_capacity = |rows: &mut Vec<(String, String, String, i64, Option<String>)>| {
+            for row in rows {
+                if [
+                    "automatic_handoff_companions",
+                    "automatic_bootstrap_parents",
+                    "automatic_bootstrap_attachments",
+                    "automatic_bootstrap_recoveries",
+                ]
+                .contains(&row.2.as_str())
+                {
+                    row.3 = 0;
+                    if let Some(sql) = &mut row.4 {
+                        *sql = sql
+                            .replace(
+                                "length(original_json)<=131072",
+                                "length(original_json)<=524288",
+                            )
+                            .replace(
+                                "length(attachment_json)<=131072",
+                                "length(attachment_json)<=524288",
+                            )
+                            .replace(
+                                "length(result_json)<=262144",
+                                "length(result_json)<=2097152",
+                            );
+                    }
+                }
+            }
+        };
         let old_catalog = catalog(&db);
         // Derive the exact additive warning table declaration from its actual
         // old DDL. Every old constraint/column and rootpage remains compared.
         let mut expected_catalog = old_catalog.clone();
+        normalize_capacity(&mut expected_catalog);
         let warning = expected_catalog
             .iter_mut()
             .find(|row| row.1 == "warning_conditions")
@@ -1121,7 +1154,7 @@ fn dormant_upgrade_actual_v31_backfill32_reopens_and_rolls_back_without_recaptur
         expected
             .execute_batch(warning.4.as_deref().unwrap())
             .unwrap();
-        let additions = include_str!("../../migrations/0036_invitation_warning_origin.sql")
+        let additions = include_str!("../../migrations/0037_invitation_warning_origin.sql")
             .split("WITH origins AS")
             .next()
             .unwrap();
@@ -1144,7 +1177,7 @@ fn dormant_upgrade_actual_v31_backfill32_reopens_and_rolls_back_without_recaptur
         assert_eq!(
             db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
                 .unwrap(),
-            31
+            34
         );
         assert_eq!(
             db.pragma_query_value(None, "foreign_keys", |r| r.get::<_, bool>(0))
@@ -1168,7 +1201,7 @@ fn dormant_upgrade_actual_v31_backfill32_reopens_and_rolls_back_without_recaptur
         assert_eq!(
             db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
                 .unwrap(),
-            31
+            34
         );
         schema::initialize(&db, || UtcMillis(1)).unwrap();
         assert_eq!(
@@ -1177,7 +1210,11 @@ fn dormant_upgrade_actual_v31_backfill32_reopens_and_rolls_back_without_recaptur
             schema::LATEST_VERSION
         );
         assert_eq!(
-            catalog(&db),
+            {
+                let mut rows = catalog(&db);
+                normalize_capacity(&mut rows);
+                rows
+            },
             expected_catalog,
             "composed additive32..35 preserves old definitions/rootpages and adds exact origin columns"
         );
@@ -1202,7 +1239,14 @@ fn dormant_upgrade_actual_v31_backfill32_reopens_and_rolls_back_without_recaptur
             receipt_upgrade_snapshot(&db, "receipt_send_time_cutovers"),
             before[7]
         );
-        assert_eq!(catalog(&db), expected_catalog);
+        assert_eq!(
+            {
+                let mut rows = catalog(&db);
+                normalize_capacity(&mut rows);
+                rows
+            },
+            expected_catalog
+        );
         assert_eq!(
             db.pragma_query_value(None, "foreign_keys", |r| r.get::<_, bool>(0))
                 .unwrap(),
@@ -1888,18 +1932,20 @@ fn dormant_upgrade_ack_before_repair_preserves_original_not_extended_deadline() 
 
 #[test]
 fn receipt_send_time_upgrade_preserves_populated_v28_and_v29_graph_and_restarts_once() {
-    for version in [28, 29] {
+    for version in [28, 32] {
         let db = v28_fixture();
-        if version == 29 {
+        if version == 32 {
             db.execute_batch(include_str!("../../migrations/0029_direct_threads.sql"))
                 .unwrap();
             db.execute_batch(include_str!("../../migrations/0030_automatic_handoff.sql"))
                 .unwrap();
+            db.execute_batch(include_str!("../../migrations/0031_seat_wake_on.sql"))
+                .unwrap();
             db.execute_batch(include_str!(
-                "../../migrations/0031_invitation_confirmation.sql"
+                "../../migrations/0032_invitation_confirmation.sql"
             ))
             .unwrap();
-            db.pragma_update(None, "user_version", 31).unwrap();
+            db.pragma_update(None, "user_version", 32).unwrap();
             db.execute_batch("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at,confirmation,inviter_seat_id) VALUES ('modern','t','s',1,'pending',1,100,50,150,'require_ack','s'),('quiet','t','s',2,'pending',2,100,50,150,'lazy','s');").unwrap();
         }
         for (index, (name, state, available, required)) in [
@@ -1987,7 +2033,7 @@ fn receipt_send_time_upgrade_preserves_populated_v28_and_v29_graph_and_restarts_
         .unwrap(),
         10
     );
-        if version == 29 {
+        if version == 32 {
             let invitations: Vec<(String, String, String, i64)> = db.prepare("SELECT id,confirmation,inviter_seat_id,deadline_at FROM invitations ORDER BY id").unwrap().query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap().collect::<Result<_, _>>().unwrap();
             assert_eq!(
                 invitations,
@@ -2018,19 +2064,21 @@ fn receipt_send_time_upgrade_preserves_populated_v28_and_v29_graph_and_restarts_
 
 #[test]
 fn receipt_send_time_upgrade_failure_rolls_back_constraint_and_cutover_then_retries() {
-    for version in [28, 29] {
+    for version in [28, 32] {
         for foreign_keys in [false, true] {
             let db = v28_fixture();
-            if version == 29 {
+            if version == 32 {
                 db.execute_batch(include_str!("../../migrations/0029_direct_threads.sql"))
                     .unwrap();
                 db.execute_batch(include_str!("../../migrations/0030_automatic_handoff.sql"))
                     .unwrap();
+                db.execute_batch(include_str!("../../migrations/0031_seat_wake_on.sql"))
+                    .unwrap();
                 db.execute_batch(include_str!(
-                    "../../migrations/0031_invitation_confirmation.sql"
+                    "../../migrations/0032_invitation_confirmation.sql"
                 ))
                 .unwrap();
-                db.pragma_update(None, "user_version", 31).unwrap();
+                db.pragma_update(None, "user_version", 32).unwrap();
             }
             db.execute_batch(
                 "CREATE TABLE receipt_upgrade_child(ordinal INTEGER REFERENCES receipts(ordinal));",
@@ -2051,7 +2099,7 @@ fn receipt_send_time_upgrade_failure_rolls_back_constraint_and_cutover_then_retr
             assert_eq!(
                 db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
                     .unwrap(),
-                29
+                32
             );
             assert_eq!(
                 db.query_row(

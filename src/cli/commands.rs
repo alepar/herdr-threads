@@ -95,7 +95,7 @@ pub enum CliAction {
     ContractId {
         harness: Option<crate::harness::context::Harness>,
     },
-    /// Hidden `watch --harness claude --session ID`: the mod delivery child.
+    /// Hidden `watch --harness ID --session ID`: the mod delivery child.
     Watch(super::watch::WatchRequest),
     /// Hidden `watch ack --session ID --via VIA IDS...`.
     WatchAck(super::watch::WatchAckRequest),
@@ -121,6 +121,10 @@ pub enum CliAction {
     /// `summary THREAD`, `summary job`, `summary submit`: act as the invoking
     /// seat (cooperative claim from its saved context), never journaled.
     Summary(super::summary::SummaryCli),
+    /// `wake-on [nudge|all]`: read or set the invoking seat's wake preference;
+    /// acts as the seat (cooperative claim from its saved context), never
+    /// journaled.
+    WakeOn(Option<crate::protocol::commands::WakeOn>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -271,7 +275,8 @@ pub fn dispatch<B: CliBackend>(
         | CliAction::InternalJsonField { .. }
         | CliAction::Picker(_)
         | CliAction::Follow(_)
-        | CliAction::Summary(_) => {
+        | CliAction::Summary(_)
+        | CliAction::WakeOn(_) => {
             return Err(ApiError::unsupported(
                 "setup, launch and skill are local compositions without a daemon backend",
             ));
@@ -717,17 +722,17 @@ enum Top {
     /// plugin state. Setup uses the declared hook contract; installed version
     /// metadata is optional and may be unknown. Configured hooks do not prove
     /// observed delivery or native harness support.
-    #[command(after_help = super::setup::SETUP_HELP)]
+    #[command(after_help = super::help::setup_help())]
     Setup(SetupArgs),
     /// Remove the owned herdr-threads hooks installed by `setup`, keeping
     /// every other setting; unchanged settings are restored byte for byte.
     /// Removal does not depend on installed harness metadata.
-    #[command(after_help = super::setup::SETUP_HELP)]
+    #[command(after_help = super::help::setup_help())]
     Unsetup(SetupArgs),
     /// Report whether the owned hooks are installed (separately from native
     /// observation), with optional installed version metadata. Installation
     /// does not prove native callback delivery or launch support.
-    #[command(after_help = super::setup::SETUP_HELP)]
+    #[command(after_help = super::help::setup_help())]
     SetupStatus(SetupArgs),
     /// List local mutations whose outcome is still unknown.
     PendingOps(PageArgs),
@@ -738,10 +743,10 @@ enum Top {
     /// Start Codex or Claude in one explicit existing empty shell pane with
     /// the owned hooks, after resolving the pane's seat. Launch never
     /// registers, accepts or ACKs: the handoff is read through the hooks.
-    #[command(after_help = super::launch::LAUNCH_HELP)]
+    #[command(after_help = super::help::launch_help())]
     Launch(LaunchArgs),
     /// Deliver durable work to a new tab, explicit launch pane, or existing peer.
-    #[command(after_help = format!("{}\n\n{}", super::handoff::HANDOFF_HELP, super::topology_recover::RECOVERY_HELP))]
+    #[command(after_help = format!("{}\n\n{}", super::help::handoff_help(), super::topology_recover::RECOVERY_HELP))]
     Handoff(Box<HandoffArgs>),
     #[command(name = "_topology-recover", hide = true)]
     TopologyRecover(RecoveryArgs),
@@ -759,6 +764,11 @@ enum Top {
     /// section of `herdr-threads skill`).
     #[command(args_conflicts_with_subcommands = true)]
     Summary(SummaryArgs),
+    /// Show or set whether pending lazy messages also wake this seat when it
+    /// is idle: `nudge` (default) keeps the ordinary wake policy, `all` wakes
+    /// for every pending message. A preference only: it never ACKs or
+    /// changes receipts.
+    WakeOn(WakeOnArgs),
     /// Mod delivery child: streams herdr-threads deliveries as JSON lines.
     #[command(
         hide = true,
@@ -766,10 +776,11 @@ enum Top {
         after_help = "Exit codes: 0 stream ended (restart with backoff), 1 other error \
 (restart with backoff), 2 refused (retry after backoff), 3 permanent (stop until \
 reload). Registration refusals no_binding, session_mismatch, held, unresolved, \
-cooldown, busy and stopping exit 2; not_claude and disabled exit 3. A Close of \
+cooldown, busy and stopping exit 2; no push channel (wire code not_claude) and \
+disabled exit 3. A Close of \
 disabled or replaced exits 3, any other Close exits 0. Local reasons no_pane, \
 env_disabled and unsupported exit 3; daemon_unavailable and error exit 1; \
-stream_ended exits 0. Spawned by the herdr-threads Claude mod."
+stream_ended exits 0. Spawned by a push-channel mod."
     )]
     Watch(WatchArgs),
     /// Discover built-in adapters and their declared tooling metadata. Local only.
@@ -799,9 +810,15 @@ stream_ended exits 0. Spawned by the herdr-threads Claude mod."
 
 #[derive(Args)]
 struct WatchArgs {
-    /// Only `claude` (the id is not `harness`, so the registry-wide harness
-    /// selector choices do not replace this narrower list).
-    #[arg(long = "harness", value_parser = ["claude"])]
+    /// A harness whose adapter declares a push delivery channel (the id is not
+    /// `harness`, so the registry-wide harness selector choices do not replace
+    /// this narrower list).
+    #[arg(
+        long = "harness",
+        value_parser = clap::builder::PossibleValuesParser::new(
+            crate::harness::registry::builtins().push_channel_ids()
+        )
+    )]
     mod_harness: Option<String>,
     #[arg(long)]
     session: Option<String>,
@@ -826,6 +843,13 @@ enum WatchSub {
 enum DoctorSub {
     /// Attempt safe, owned repairs and report remaining manual actions.
     Fix,
+}
+
+#[derive(Args)]
+struct WakeOnArgs {
+    /// The new preference; omit to print the current one.
+    #[arg(value_parser = ["nudge", "all"])]
+    value: Option<String>,
 }
 
 #[derive(Args)]
@@ -885,7 +909,7 @@ enum MeSub {
     /// Record this pane (HERDR_PANE_ID) as your own seat, with operator/human
     /// provenance, so `thread create`, `invite`, `send`, `read`, `ack` and
     /// `accept` run here with no caller flags. Re-run after a daemon restart.
-    #[command(after_help = super::me::ME_INIT_HELP)]
+    #[command(after_help = super::help::me_init_help())]
     Init {
         /// Override the agent guard as the local account: record yourself over
         /// an agent's binding or where agent markers are present.
@@ -1436,10 +1460,16 @@ fn setup_action(
         options.insert("disable-prompt-suggestions".into(), true);
     }
     if args.hooks_only
-        && (verb != super::setup::SetupVerb::Install || args.harness.as_deref() != Some("claude"))
+        && (verb != super::setup::SetupVerb::Install
+            || !registration.is_some_and(|registration| {
+                registration
+                    .setup_options()
+                    .iter()
+                    .any(|option| option.name == "hooks-only")
+            }))
     {
         return Err(invalid(
-            "--hooks-only applies to `setup claude` only (unsetup removes the mod with the hooks)",
+            "--hooks-only applies to `setup <harness>` only, for a harness that declares it (unsetup removes the mod with the hooks)",
         ));
     }
     if args.keep_prompt_suggestions {
@@ -1469,11 +1499,11 @@ fn setup_action(
         &Default::default(),
         &options,
     )
-    .map_err(|_| invalid("--disable-prompt-suggestions and --keep-prompt-suggestions apply to `setup` and `setup claude` only (unsetup reverts what setup set)"))?;
+    .map_err(|_| invalid("--disable-prompt-suggestions and --keep-prompt-suggestions apply to `setup` and `setup <harness>` only, for a harness that declares them (unsetup reverts what setup set)"))?;
     let Some(harness) = args.harness else {
         if args.harness_binary.is_some() {
             return Err(invalid(
-                "--harness-binary needs a harness: `setup claude|codex --harness-binary PATH`",
+                "--harness-binary needs a harness: `setup <harness> --harness-binary PATH`",
             ));
         }
         return Ok(CliAction::SetupAll(verb, prompt_suggestions, permissions));
@@ -1590,7 +1620,7 @@ pub fn exit_status_help() -> String {
   3  daemon or host unavailable; {}
      (version mismatch: {})
   4  unsupported capability in this build or environment (including transport_denied:
-     a sandbox refused the daemon socket; see `herdr-threads setup codex`)
+     a sandbox refused the daemon socket; see `herdr-threads setup <harness>`)
   5  outcome unknown; inspect `herdr-threads pending-ops` and `retry` the local reference",
         crate::daemon::remedy::remedy(
             Some(crate::protocol::results::ErrorClass::Unavailable),
@@ -1824,7 +1854,7 @@ where
 
 /// Apply the registry's agent namespace to every selector, including global
 /// cooperative selection. Human-specific commands have no harness selector.
-fn command_for_registry(registry: &crate::harness::registry::Registry) -> clap::Command {
+pub(crate) fn command_for_registry(registry: &crate::harness::registry::Registry) -> clap::Command {
     fn selectors(mut command: clap::Command, choices: &[&'static str]) -> clap::Command {
         // mut_args preserves declaration order, including positional HARNESS RAW.
         command = command.mut_args(|arg| {
@@ -1849,7 +1879,15 @@ fn command_for_registry(registry: &crate::harness::registry::Registry) -> clap::
         .iter()
         .map(|registration| registration.metadata().id)
         .collect();
-    selectors(Cli::command(), &choices)
+    let mut command = selectors(Cli::command(), &choices);
+    // `watch --harness` lists only the harnesses that declare a push channel.
+    let push = registry.push_channel_ids();
+    if let Some(watch) = command.find_subcommand_mut("watch") {
+        *watch = watch.clone().mut_arg("mod_harness", |arg| {
+            arg.value_parser(clap::builder::PossibleValuesParser::new(push))
+        });
+    }
+    command
 }
 
 /// P7 (native Claude demo 3): a global path flag may repeat only with one
@@ -2723,6 +2761,14 @@ fn parse_cli_in_registry(
         }
         Top::PendingOps(args) => CliAction::PendingOps(page(args)?),
         Top::Skill => CliAction::Skill,
+        Top::WakeOn(args) => CliAction::WakeOn(
+            args.value
+                .map(|value| {
+                    crate::protocol::commands::WakeOn::parse(&value)
+                        .ok_or_else(|| invalid("wake-on takes `nudge` or `all`"))
+                })
+                .transpose()?,
+        ),
         Top::Summary(args) => {
             use super::summary::SummaryCli;
             let job = |job: String, lease: String| -> Result<_, ApiError> {
@@ -2763,13 +2809,13 @@ fn parse_cli_in_registry(
                         .collect::<Result<_, _>>()?,
                 })
             }
-            (None, Some(_), Some(session)) => CliAction::Watch(super::watch::WatchRequest {
-                harness: crate::harness::context::Harness::Claude,
+            (None, Some(harness), Some(session)) => CliAction::Watch(super::watch::WatchRequest {
+                harness: harness_arg(&harness, registry)?,
                 session,
             }),
             _ => {
                 return Err(invalid(
-                    "watch needs --harness claude and --session ID, or the `ack` subcommand",
+                    "watch needs --harness ID and --session ID, or the `ack` subcommand",
                 ));
             }
         },

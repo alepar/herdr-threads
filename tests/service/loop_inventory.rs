@@ -77,19 +77,19 @@ const ALLOWLIST: &[(&str, &str, &str)] = &[
          Pacer's cancellation is built on",
     ),
     (
-        "src/harness/codex.rs",
+        "src/harness/process.rs",
         "sleep(Duration::from_millis(5))",
         "bounded `--version` child poll inside one observation call; the lane \
          that calls it is the admission observer on its Pacer",
     ),
     (
-        "src/harness/codex.rs",
+        "src/harness/launch.rs",
         "std::thread::sleep(Duration::from_millis(20))",
         "SystemShellProbe's bounded child poll (SHELL_PROBE_TIMEOUT) inside \
          one CLI launch/handoff call; runs in the CLI process, never the daemon",
     ),
     (
-        "src/harness/codex.rs",
+        "src/harness/launch.rs",
         ".recv_timeout(remaining.max(Duration::from_millis(100)))",
         "SystemShellProbe's bounded read of the exited shell's stdout inside \
          one CLI launch/handoff call; not periodic, not daemon code",
@@ -120,7 +120,7 @@ const ALLOWLIST: &[(&str, &str, &str)] = &[
          daemon code",
     ),
     (
-        "src/harness/codex.rs",
+        "src/harness/process.rs",
         "recv_timeout(remaining)",
         "bounded read of the `--version` child's stdout to the call deadline; \
          not periodic",

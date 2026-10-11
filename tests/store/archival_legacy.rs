@@ -156,6 +156,7 @@ fn legacy_compound_with_body(
     let id = super::handoff_fences::identity();
     let plan = HandoffPlan {
         startup_input: None,
+        bootstrap_input: None,
         request: HandoffRequest {
             policy: None,
             automatic: false,

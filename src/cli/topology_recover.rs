@@ -56,7 +56,7 @@ impl RecoveryPlan {
         let original = &self.request.identity;
         let semantic = SemanticMutation::freeze(
             SemanticMutation::HandoffBootstrap(Box::new(super::journal::BootstrapPlan {
-                version: 1,
+                version: original.payload.plan_version(),
                 payload: original.payload.clone(),
             })),
             original.claim.clone(),

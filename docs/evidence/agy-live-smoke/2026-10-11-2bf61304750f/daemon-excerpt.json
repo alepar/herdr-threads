@@ -1,0 +1,162 @@
+{
+  "bindings": [
+    {
+      "ended_at": null,
+      "execution_id": "a9278795-8eee-4076-a63b-3a8bec1efde2",
+      "generation": 2,
+      "harness": "agy",
+      "host_boot": "herdr-server:pid=23536:start=1791681485.533536:uid=501",
+      "host_epoch": 1,
+      "incarnation": "herdr-server:pid=23536:start=1791681485.533536:uid=501",
+      "native_session": "16da58f0-a5c9-4fd3-81a6-cf5d63b6bc51",
+      "observation_provenance": "cooperative_top_level",
+      "observed_at": 1791681502186,
+      "ordinal": 1,
+      "registered_at": 1791681502186,
+      "seat_id": "sbzz2nJn0",
+      "target_generation": 1,
+      "target_id": "w1:p2",
+      "terminal_id": "term_65d865aecac5b2"
+    }
+  ],
+  "invitations": [
+    {
+      "accepted_actor_seat_id": "sbzz2nJn0",
+      "accepted_at": 1791681505737,
+      "accepted_generation": 2,
+      "accepted_observation": "{\"binding_generation\":2,\"decided_at\":1791681505737,\"execution\":\"a9278795-8eee-4076-a63b-3a8bec1efde2\",\"harness\":\"agy\",\"host_boot\":\"herdr-server:pid=23536:start=1791681485.533536:uid=501\",\"observed_at\":1791681505737,\"provenance\":\"cooperative_top_level\",\"session\":\"16da58f0-a5c9-4fd3-81a6-cf5d63b6bc51\",\"target_generation\":1}",
+      "created_at": 1791681505608,
+      "created_decision_seq": 4,
+      "deadline_at": 1791681805608,
+      "episode": 1,
+      "frozen_duration_ms": 300000,
+      "id": "i9Fl2bgam",
+      "ordinal": 1,
+      "reject_recorded": 0,
+      "retired_at": null,
+      "seat_id": "sbzz2nJn0",
+      "state": "accepted",
+      "thread_id": "tOndlXeKe",
+      "warning_message_id": null
+    }
+  ],
+  "memberships": [
+    {
+      "episode": 1,
+      "joined_at": 1791681505517,
+      "left_at": null,
+      "ordinal": 1,
+      "retired_at": null,
+      "seat_id": "sXboojDoz",
+      "state": "joined",
+      "thread_id": "tOndlXeKe",
+      "voluntary_state": null
+    },
+    {
+      "episode": 1,
+      "joined_at": 1791681505737,
+      "left_at": null,
+      "ordinal": 2,
+      "retired_at": null,
+      "seat_id": "sbzz2nJn0",
+      "state": "joined",
+      "thread_id": "tOndlXeKe",
+      "voluntary_state": "joined"
+    }
+  ],
+  "messages": [
+    {
+      "actor_seat_id": null,
+      "body": "",
+      "event_json": "{\"action\":\"create_thread\",\"actor_seat\":\"sXboojDoz\",\"goal\":\"agy-live-smoke\"}",
+      "id": "eafBshJKQ",
+      "kind": "info",
+      "sequence": 1
+    },
+    {
+      "actor_seat_id": null,
+      "body": "",
+      "event_json": "{\"action\":\"invite\",\"actor_seat\":\"sXboojDoz\",\"deadline_at\":1791681805608,\"invitation\":\"i9Fl2bgam\",\"seat\":\"sbzz2nJn0\"}",
+      "id": "eHges61SA",
+      "kind": "info",
+      "sequence": 2
+    },
+    {
+      "actor_seat_id": null,
+      "body": "",
+      "event_json": "{\"action\":\"accept\",\"invitation\":\"i9Fl2bgam\",\"seat\":\"sbzz2nJn0\"}",
+      "id": "eZ7qevU0E",
+      "kind": "info",
+      "sequence": 3
+    },
+    {
+      "actor_seat_id": "sXboojDoz",
+      "body": "Smoke check: please acknowledge this message, then reply in this thread with the text SMOKE-OK.",
+      "event_json": null,
+      "id": "mrFqaQc8f",
+      "kind": "ordinary",
+      "sequence": 4
+    },
+    {
+      "actor_seat_id": null,
+      "body": "",
+      "event_json": "{\"decided_at\":1791681508761,\"event\":\"ack\",\"messages\":[\"mrFqaQc8f\"],\"seat\":\"sbzz2nJn0\"}",
+      "id": "ezGP0w3MU",
+      "kind": "info",
+      "sequence": 5
+    },
+    {
+      "actor_seat_id": "sbzz2nJn0",
+      "body": "SMOKE-OK",
+      "event_json": null,
+      "id": "mqPdh1PEC",
+      "kind": "ordinary",
+      "sequence": 6
+    }
+  ],
+  "receipts": [
+    {
+      "ack_actor_seat_id": "sbzz2nJn0",
+      "ack_generation": 2,
+      "ack_observation": "{\"binding_generation\":2,\"decided_at\":1791681508761,\"execution\":\"a9278795-8eee-4076-a63b-3a8bec1efde2\",\"harness\":\"agy\",\"host_boot\":\"herdr-server:pid=23536:start=1791681485.533536:uid=501\",\"observed_at\":1791681508761,\"provenance\":\"cooperative_top_level\",\"session\":\"16da58f0-a5c9-4fd3-81a6-cf5d63b6bc51\",\"target_generation\":1}",
+      "ack_required": 1,
+      "acked_at": 1791681508761,
+      "available_at": 1791681505846,
+      "deadline_at": 1791681805846,
+      "message_id": "mrFqaQc8f",
+      "retired_at": null,
+      "seat_id": "sbzz2nJn0",
+      "soft_poked_at": null,
+      "state": "acked",
+      "warning_message_id": null
+    }
+  ],
+  "seat": [
+    {
+      "created_at": 1791681502057,
+      "generation": 2,
+      "id": "sbzz2nJn0",
+      "instance_id": "59c1ee3a-ee53-4c0d-b92c-81d2f64417ab",
+      "ordinal": 1,
+      "retired_at": null,
+      "retired_seq": null,
+      "role": "native",
+      "state": "resolved",
+      "structural_connection_epoch": 1,
+      "structural_host_boot": "herdr-server:pid=23536:start=1791681485.533536:uid=501",
+      "structural_host_epoch": 1,
+      "structural_incarnation": "herdr-server:pid=23536:start=1791681485.533536:uid=501",
+      "structural_incarnation_kind": "native_current_target",
+      "structural_observation_sequence": 4,
+      "structural_terminal_id": "term_65d865aecac5b2",
+      "target_generation": 1,
+      "target_id": "w1:p2",
+      "unavailability_episode": 1,
+      "unavailability_open": 0,
+      "unresolved_from_generation_id": null,
+      "unresolved_prior_binding_generation": null,
+      "unresolved_reason": null,
+      "wake_on": "nudge"
+    }
+  ]
+}

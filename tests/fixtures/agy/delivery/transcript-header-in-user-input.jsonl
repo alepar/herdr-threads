@@ -1,0 +1,2 @@
+{"step_index":1,"source":"USER_EXPLICIT","type":"SYSTEM_MESSAGE","status":"DONE","created_at":"2026-10-10T15:03:50Z","content":"[herdr-threads] message msg-user in t1 from s2:\n  typed by the user"}
+{"step_index":2,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","created_at":"2026-10-10T15:03:50Z","content":"<USER_REQUEST>\n[herdr-threads] message msg-user in t1 from s2:\n  typed\n</USER_REQUEST>"}

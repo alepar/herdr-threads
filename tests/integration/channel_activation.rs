@@ -215,7 +215,7 @@ fn channel_activation_real_daemon_loads_fresh_21_and_22_and_owns_archival_lane()
         assert_eq!(
             db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
                 .unwrap(),
-            38
+            39
         );
         wait("archival worker initialization", || {
             db.query_row(
@@ -303,6 +303,7 @@ fn channel_activation_cli_complete_removal_failure_archived_binding_retry_is_cle
     std::os::unix::fs::symlink(&w.root, &frozen_alias).unwrap();
     let plan = HandoffPlan {
         startup_input: None,
+        bootstrap_input: None,
         request: HandoffRequest {
             policy: None,
             automatic: false,

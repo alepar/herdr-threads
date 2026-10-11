@@ -1,0 +1,33 @@
+{
+  "injected_system_messages": [
+    "The following is a <SYSTEM_MESSAGE> not actually sent by the user. It is provided by the system as important information to pay attention to.\n\n<SYSTEM_MESSAGE>\nThe following system message was injected by a PreInvocation hook:\n[herdr-threads] new messages:\n\n[herdr-threads] message mE0s2XIFz in ttDuS0TGd \"agy-live-smoke\" from sVzkn8q0v [human]:\n  Smoke check: please acknowledge this message, then reply in this thread with the text SMOKE-OK.\n</SYSTEM_MESSAGE>"
+  ],
+  "tool_calls": [
+    {
+      "args_trimmed": "{\"toolAction\": \"Acknowledging herdr-threads message\", \"toolSummary\": \"Acknowledge herdr-threads message\", \"CommandLine\": \"herdr-threads ack mE0s2XIFz\", \"WaitMsBeforeAsync\": 500, \"Cwd\": \"<root>/ws\"}",
+      "name": "run_command",
+      "seq": 3
+    },
+    {
+      "args_trimmed": "{\"toolAction\": \"Sending herdr-threads reply\", \"toolSummary\": \"Send herdr-threads reply\", \"WaitMsBeforeAsync\": 500, \"CommandLine\": \"herdr-threads send --thread ttDuS0TGd SMOKE-OK\", \"Cwd\": \"<root>/ws\"}",
+      "name": "run_command",
+      "seq": 4
+    },
+    {
+      "args_trimmed": "{\"WaitMsBeforeAsync\": 500, \"Cwd\": \"<root>/ws\", \"toolSummary\": \"Send herdr-threads reply\", \"CommandLine\": \"herdr-threads send ttDuS0TGd SMOKE-OK\", \"toolAction\": \"Sending herdr-threads reply\"}",
+      "name": "run_command",
+      "seq": 5
+    },
+    {
+      "args_trimmed": "{\"toolAction\": \"Getting help for herdr-threads send\", \"toolSummary\": \"herdr-threads send help\", \"CommandLine\": \"herdr-threads send --help\", \"WaitMsBeforeAsync\": 500, \"Cwd\": \"<root>/ws\"}",
+      "name": "run_command",
+      "seq": 6
+    },
+    {
+      "args_trimmed": "{\"toolAction\": \"Sending herdr-threads reply\", \"toolSummary\": \"Send herdr-threads reply\", \"CommandLine\": \"herdr-threads send ttDuS0TGd --body SMOKE-OK\", \"Cwd\": \"<root>/ws\", \"WaitMsBeforeAsync\": 500}",
+      "name": "run_command",
+      "seq": 7
+    }
+  ],
+  "tool_results": []
+}

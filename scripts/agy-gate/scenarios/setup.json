@@ -1,0 +1,9 @@
+{
+  "format": "agy-fake-gemini/1",
+  "name": "setup",
+  "aux_text": "Gate setup title",
+  "default": {
+    "text": "SETUP-UNEXPECTED"
+  },
+  "steps": []
+}

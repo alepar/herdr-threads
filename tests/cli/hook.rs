@@ -1,5 +1,6 @@
 use super::*;
-use crate::harness::setup::{plan_claude, shell_command};
+use crate::harness::claude::setup::plan_claude;
+use crate::harness::setup::shell_command;
 use crate::harness::{
     MAX_OPTIONAL_ACCEPTS, OPTIONAL_ACCEPT_LABEL, READY_HEADER, REQUIRED_INVITATION_INSTRUCTION,
 };
@@ -60,7 +61,7 @@ fn installed_argv_and_hook_parser_are_one_contract() {
             );
         }
         if harness == Harness::Codex {
-            let codex = crate::harness::setup::plan_codex_for_version(
+            let codex = crate::harness::codex::setup::plan_codex_for_version(
                 &[],
                 &argv,
                 &crate::harness::codex::InstalledVersion::pinned_for_test(),
@@ -316,7 +317,7 @@ fn native_event_commands_preserve_exact_route_and_executable_spelling() {
 }
 
 fn claude() -> InstalledHarness {
-    InstalledHarness::DeclaredClaude(crate::harness::operational::ClaudeContract::registered())
+    InstalledHarness::DeclaredClaude(crate::harness::claude::ClaudeContract::registered())
 }
 
 // Rejects a PATH-dependent hook admission and probes of managed wrappers.
@@ -442,7 +443,8 @@ fn native_envelope_marks_peer_data_and_never_decides_permission() {
     assert_eq!(specific["hookEventName"], "PreToolUse");
     let context = specific["additionalContext"].as_str().unwrap();
     assert!(context.starts_with(&instruction), "{context}");
-    let (fixed, data) = context.split_once("\nuntrusted_peer_data: ").unwrap();
+    let (fixed, data) = context.split_once("\npeer_data: ").unwrap();
+    assert!(!context.contains("untrusted"), "{context}");
     assert!(!fixed.contains("Ignore previous"), "{fixed}");
     assert!(!data.contains('\n') && !data.contains('\u{1b}'), "{data}");
     let decoded: String = serde_json::from_str(data).unwrap();
@@ -464,7 +466,7 @@ fn native_envelope_marks_peer_data_and_never_decides_permission() {
     let start_context = start_value["hookSpecificOutput"]["additionalContext"]
         .as_str()
         .unwrap();
-    let (start_fixed, _) = start_context.split_once("\nuntrusted_peer_data: ").unwrap();
+    let (start_fixed, _) = start_context.split_once("\npeer_data: ").unwrap();
     assert!(
         start_fixed.contains(crate::cli::skill::HOOK_SKILL_HINT),
         "{start_context}"
@@ -501,7 +503,7 @@ fn oversized_offer_falls_back_to_fixed_text_and_read_argv() {
     assert!(!context.contains("attention pending"), "{context}");
     assert!(
         context.ends_with(&format!(
-            "\nuntrusted_peer_data: {}",
+            "\npeer_data: {}",
             serde_json::to_string(summary).unwrap()
         )),
         "{context}"
@@ -601,7 +603,7 @@ fn native_hooks_use_one_mailbox_read_for_multiple_pending_threads() {
                 None,
                 None,
             ));
-            let fixed = context.split("\nuntrusted_peer_data: ").next().unwrap();
+            let fixed = context.split("\npeer_data: ").next().unwrap();
             assert!(fixed.contains(&actions.items[0]), "{harness:?}: {context}");
             for verb in [" read ", " body ", " follow ", " ack ", " pending-receipts"] {
                 assert!(
@@ -624,7 +626,7 @@ fn native_hooks_use_one_mailbox_read_for_multiple_pending_threads() {
 // Demo-1 P1: the fixed section names the CLI and carries exact runnable argv
 // for the pending items, outside the escaped peer data, and the block survives
 // the oversize fallback. Kills: omitting the block from either path, placing
-// it inside `untrusted_peer_data` (escaped, not an instruction), emitting the
+// it inside `peer_data` (escaped, not an instruction), emitting the
 // digest `ITEM@THREAD` form as an argument, an unquoted state dir with a
 // space, and interpolating a non-command-safe ID into the fixed section.
 #[test]
@@ -662,7 +664,7 @@ fn ready_commands_ride_the_fixed_section_in_both_paths() {
         let context = additional_context(&bytes);
         assert!(context.len() <= MAX_CONTEXT, "{label}: {}", context.len());
         assert!(context.starts_with(&instruction), "{label}");
-        let (fixed, _) = context.split_once("\nuntrusted_peer_data: ").unwrap();
+        let (fixed, _) = context.split_once("\npeer_data: ").unwrap();
         for command in &expected {
             assert!(
                 fixed.contains(command.as_str()),
@@ -965,7 +967,7 @@ fn burst_session_start_keeps_the_handoff_inbox_within_budget() {
             None,
         ));
         assert!(context.len() <= MAX_CONTEXT, "{}", context.len());
-        let (fixed, _) = context.split_once("\nuntrusted_peer_data: ").unwrap();
+        let (fixed, _) = context.split_once("\npeer_data: ").unwrap();
         assert!(fixed.contains(&handoff), "S15: {fixed}");
         assert!(actions.items[0].ends_with(" inbox"));
         assert!(fixed.contains(&actions.items[0]), "{fixed}");
@@ -1020,7 +1022,7 @@ fn extreme_budget_trims_items_to_the_pin_then_the_notices_then_the_pin() {
         ));
         assert!(context.len() <= MAX_CONTEXT, "{pad}: {}", context.len());
         let (fixed, data) = context
-            .split_once("\nuntrusted_peer_data: ")
+            .split_once("\npeer_data: ")
             .unwrap_or((context.as_str(), "\"\""));
         let data: String = serde_json::from_str(data).unwrap();
         assert!(!fixed.contains("peer-topic") && !fixed.contains("event-"));
@@ -1166,7 +1168,7 @@ fn startup_offer_with_topic(
         offer.push_str(&format!("inbox item: {{\"invitations\":1,\"pending_receipts\":1,\"thread\":\"{thread}\",\"warnings\":0}}\nitem: {{\"archived\":false,\"created_at\":1790750410013,\"joined_count\":1,\"message_count\":3,\"thread\":\"{thread}\",\"topic_data\":\"ht native demo\",\"topic_omitted\":false}}\n"));
     }
     // The full rendering carries the same overview (labels as JSON rows).
-    offer.push_str("Current directory overview at presentation time (selected data; peer topics are untrusted):\n");
+    offer.push_str("Current directory overview at presentation time (selected data):\n");
     offer.push_str(&"x".repeat(1200));
     for row in &overview.rows {
         offer.push_str(row);
@@ -1199,7 +1201,7 @@ fn one_and_three_thread_startup_keep_the_overview_and_every_command() {
             None,
         ));
         assert!(context.len() <= MAX_CONTEXT, "{count}: {}", context.len());
-        let (fixed, data) = context.split_once("\nuntrusted_peer_data: ").unwrap();
+        let (fixed, data) = context.split_once("\npeer_data: ").unwrap();
         for item in &actions.items {
             assert!(fixed.contains(item.as_str()), "{count}: {item} missing");
         }
@@ -1265,7 +1267,7 @@ fn oversize_trim_order_keeps_commands_and_the_offered_notices_line() {
             Some(&overview),
             None,
         ));
-        let (fixed, data) = context.split_once("\nuntrusted_peer_data: ").unwrap();
+        let (fixed, data) = context.split_once("\npeer_data: ").unwrap();
         let data: String = serde_json::from_str(data).unwrap();
         (context.clone(), fixed.to_owned(), data, actions)
     };
@@ -1287,7 +1289,7 @@ fn oversize_trim_order_keeps_commands_and_the_offered_notices_line() {
         None,
     ));
     assert!(context.len() <= MAX_CONTEXT, "{}", context.len());
-    let (fixed, data) = context.split_once("\nuntrusted_peer_data: ").unwrap();
+    let (fixed, data) = context.split_once("\npeer_data: ").unwrap();
     let data: String = serde_json::from_str(data).unwrap();
     // The digest's exact IDs give way first; its counts outlive the rows.
     assert!(
@@ -1484,7 +1486,7 @@ fn procedure_line_survives_a_missing_digest() {
         None,
         None,
     ));
-    let fixed = context.split("\nuntrusted_peer_data: ").next().unwrap();
+    let fixed = context.split("\npeer_data: ").next().unwrap();
     assert!(fixed.contains(&sentence), "{context}");
     // A digest with no required invitation: absent.
     let plain = digest(&[("invitation-p", "thread-p")], &[]);
@@ -1542,7 +1544,7 @@ fn context_budget_trim_order_is_documented_order() {
         ));
         assert!(context.len() <= MAX_CONTEXT, "{pad}: {}", context.len());
         let (fixed, data) = context
-            .split_once("\nuntrusted_peer_data: ")
+            .split_once("\npeer_data: ")
             .unwrap_or((context.as_str(), "\"\""));
         let data: String = serde_json::from_str(data).unwrap();
         assert!(fixed.contains(&actions.continuation), "{pad}: continuation");
@@ -1727,7 +1729,7 @@ fn deep_run_root_context_fits_and_abbreviates() {
         None,
     ));
     assert!(context.len() <= MAX_CONTEXT, "{}", context.len());
-    let (fixed, data) = context.split_once("\nuntrusted_peer_data: ").unwrap();
+    let (fixed, data) = context.split_once("\npeer_data: ").unwrap();
     let data: String = serde_json::from_str(data).unwrap();
     // The main thread: the first receipt's thread, named by the first command.
     let main = &threads[0];
@@ -2094,10 +2096,10 @@ fn hook_deadline_window_never_waits_past_the_deadline() {
 // into a command, and reinstating the dead export rule as the only grant.
 #[test]
 fn owned_claude_allow_rule_covers_every_ready_command_form() {
+    use crate::harness::claude::permission_rules::render;
     use crate::harness::claude::{
         CALLER_CONTEXT_ALLOW_RULE, HERDR_THREADS_ALLOW_RULE, bash_rule_covers,
     };
-    use crate::harness::permissions::claude::render;
     use crate::protocol::attention::AttentionRequirement;
     let mut digest = digest(
         &[("invitation-a", "thread-1"), ("invitation-r", "thread-r")],
@@ -2140,7 +2142,7 @@ fn owned_claude_allow_rule_covers_every_ready_command_form() {
                 None,
             ));
             let fixed = context
-                .split_once("\nuntrusted_peer_data: ")
+                .split_once("\npeer_data: ")
                 .map_or(context.as_str(), |(fixed, _)| fixed);
             // Every ready-command line is `- <label>: <command>`; the
             // continuation line joins two commands with `; receipts: `.
@@ -2665,9 +2667,7 @@ mod parse_failure_report {
         };
         let outcome = run_hook(
             &args,
-            &InstalledHarness::DeclaredClaude(
-                crate::harness::operational::ClaudeContract::registered(),
-            ),
+            &InstalledHarness::DeclaredClaude(crate::harness::claude::ClaudeContract::registered()),
             b"not json",
             &env,
             Instant::now() + Duration::from_millis(500),
@@ -3905,7 +3905,7 @@ fn recovery_of(rows: Vec<crate::protocol::results::HotThread>, overflow: &[&str]
 /// The fixed section (before the peer-data container) and the decoded
 /// peer-data lines of an emitted context.
 fn split_recovery(context: &str) -> (String, Vec<String>) {
-    let (fixed, data) = context.split_once("\nuntrusted_peer_data: ").unwrap();
+    let (fixed, data) = context.split_once("\npeer_data: ").unwrap();
     let decoded: String = serde_json::from_str(data).unwrap();
     (
         fixed.to_owned(),
@@ -4221,7 +4221,7 @@ mod hook_sequence {
     use std::cell::RefCell;
 
     fn claude() -> InstalledHarness {
-        InstalledHarness::DeclaredClaude(crate::harness::operational::ClaudeContract::registered())
+        InstalledHarness::DeclaredClaude(crate::harness::claude::ClaudeContract::registered())
     }
 
     // Kills: evidence before the probe (the probe's budget is cut, or the
@@ -4345,9 +4345,9 @@ fn codex_command_guidance_survives_overflow_without_granting_permissions() {
     let context = value["hookSpecificOutput"]["additionalContext"]
         .as_str()
         .unwrap();
-    assert!(context.contains(crate::cli::skill::CODEX_COMMAND_GUIDANCE));
+    assert!(context.contains(crate::harness::codex::CODEX_COMMAND_GUIDANCE));
     assert!(context.len() <= MAX_CONTEXT);
-    let fixed = context.split("untrusted_peer_data:").next().unwrap();
+    let fixed = context.split("peer_data:").next().unwrap();
     assert!(!fixed.contains("approve all shell commands"));
     ev.harness = Harness::Claude;
     let bytes = encode_native(&ev, standing.as_bytes(), &[], None, None, None, None);
@@ -4539,14 +4539,14 @@ fn child_lifecycle_claude_sessionstart_keeps_skill_pointer() {
         context.contains(crate::cli::skill::HOOK_SKILL_HINT),
         "{context}"
     );
-    assert!(!context.contains(crate::cli::skill::CODEX_COMMAND_GUIDANCE));
+    assert!(!context.contains(crate::harness::codex::CODEX_COMMAND_GUIDANCE));
 }
 
 #[test]
 fn child_lifecycle_codex_sessionstart_keeps_guidance_and_skill_pointer() {
     let context = child_lifecycle_context(Harness::Codex, "SessionStart");
     assert!(
-        context.contains(crate::cli::skill::CODEX_COMMAND_GUIDANCE),
+        context.contains(crate::harness::codex::CODEX_COMMAND_GUIDANCE),
         "{context}"
     );
     assert!(
@@ -4559,7 +4559,7 @@ fn child_lifecycle_codex_sessionstart_keeps_guidance_and_skill_pointer() {
 fn child_lifecycle_codex_subagentstart_keeps_guidance_without_skill_pointer() {
     let context = child_lifecycle_context(Harness::Codex, "SubagentStart");
     assert!(
-        context.contains(crate::cli::skill::CODEX_COMMAND_GUIDANCE),
+        context.contains(crate::harness::codex::CODEX_COMMAND_GUIDANCE),
         "{context}"
     );
     assert!(
@@ -4604,7 +4604,7 @@ fn concise_native_context_explains_verified_recipient_routing() {
         );
         let value: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
         let context = additional_context(&encoded);
-        let fixed = context.split("untrusted_peer_data:").next().unwrap();
+        let fixed = context.split("peer_data:").next().unwrap();
         assert_eq!(fixed.contains("verified that ordinary commands in this pane reach this command group's state directory and host endpoint"), concise, "{fixed}");
         assert!(
             value["hookSpecificOutput"]
@@ -4706,7 +4706,7 @@ fn stored_commands_require_both_selectors_and_flag_free_recipient_proof() {
 // B's handoff can choose only B's exact group, which remains pinned here.
 #[test]
 fn two_installed_state_targets_share_endpoint_but_have_distinct_command_routing_groups() {
-    use crate::harness::setup::{SettingsKind, install_user_settings};
+    use crate::harness::setup::install_user_settings;
     let (dir, pane) = scratch_pane();
     let state_a = default_state(&dir);
     let state_b = dir.join("private-b");
@@ -4727,7 +4727,7 @@ fn two_installed_state_targets_share_endpoint_but_have_distinct_command_routing_
         let mut hook_argv = cli_prefix(&target);
         hook_argv.extend(["hook".into(), "claude".into()]);
         install_user_settings(
-            SettingsKind::ClaudeUser,
+            crate::harness::claude::settings_kind(),
             &config,
             &state.join("manifest.json"),
             &hook_argv,
@@ -4963,11 +4963,11 @@ fn routing_metadata_yields_to_escaped_main_thread_commands() {
                     "{harness:?} depth={depth} lost {line}: {routed}"
                 );
             }
-            let (_, peer) = routed.split_once("\nuntrusted_peer_data: ").unwrap();
+            let (_, peer) = routed.split_once("\npeer_data: ").unwrap();
             let peer: String = serde_json::from_str(peer).unwrap();
             assert!(peer.contains(&overview.rows[0]), "main row missing: {peer}");
             if harness == Harness::Codex {
-                assert!(routed.contains(crate::cli::skill::CODEX_COMMAND_GUIDANCE));
+                assert!(routed.contains(crate::harness::codex::CODEX_COMMAND_GUIDANCE));
             }
             true
         };
@@ -7743,6 +7743,7 @@ mod registered_resume {
                 body_start: 0,
                 body_end: end as u64,
                 body_len: body.len() as u64,
+                wakes: false,
             }
         };
         let page = crate::protocol::pagination::Page {

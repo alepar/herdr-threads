@@ -214,7 +214,7 @@ impl LaunchPolicy for HermesLaunch {
     fn resolve_scope(
         &self,
         request: &LaunchRequest,
-        _: &dyn crate::harness::launch::CodexShellProbe,
+        _: &dyn crate::harness::launch::PaneShellProbe,
         budget: &CallBudget,
     ) -> Result<LaunchScope, ApiError> {
         let profile = parse(&request.argv)?.profile;
@@ -280,7 +280,7 @@ impl LaunchPolicy for HermesLaunch {
         _: &LaunchScope,
         _: &crate::harness::registry::AdmittedHandle,
         _: &LocalSetupStatus,
-        _: &dyn crate::harness::launch::CodexShellProbe,
+        _: &dyn crate::harness::launch::PaneShellProbe,
         _: &CallBudget,
     ) -> Result<LaunchPreparation, ApiError> {
         Err(error(
@@ -294,7 +294,7 @@ impl LaunchPolicy for HermesLaunch {
         scope: &LaunchScope,
         state: &(dyn Any + Send + Sync),
         status: &LocalSetupStatus,
-        _: &dyn crate::harness::launch::CodexShellProbe,
+        _: &dyn crate::harness::launch::PaneShellProbe,
         budget: &CallBudget,
     ) -> Result<LaunchPreparation, ApiError> {
         if budget.is_exhausted(request.environment.clock.as_ref()) {

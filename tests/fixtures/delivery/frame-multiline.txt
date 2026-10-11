@@ -1,0 +1,19 @@
+[herdr-threads] new messages:
+
+[herdr-threads] message m1 in T1 "plans" from S1 "alice":
+  first
+  second
+  third
+
+  fifth after an empty line
+  sixth
+  seventh
+  eighth
+  ninth
+  tenth
+
+[herdr-threads] lazy m2 in T1 "plans" from S1 "alice":
+
+
+[herdr-threads] message m3 in T1 "plans" from S1 "alice":
+  trailing break

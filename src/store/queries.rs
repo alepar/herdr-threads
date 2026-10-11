@@ -273,6 +273,27 @@ pub(super) fn query_with_output_for_caller(
             db.check_budget()?;
             Ok(CommandResult::MessageDeliveryModes(modes))
         }
+        Command::WakeOn(q) => db
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM seats WHERE id=?1 AND instance_id=?2)",
+                params![q.seat.as_str(), instance],
+                |r| r.get::<_, bool>(0),
+            )
+            .map_err(|e| db.map_error(e))
+            .and_then(|known| {
+                if known {
+                    super::seats::wake_on(&db, &q.seat)
+                } else {
+                    Err(api_error(ErrorCode::NotFound, "seat not found"))
+                }
+            })
+            .map(|wake_on| {
+                CommandResult::WakeOn(crate::protocol::results::WakeOnState {
+                    seat: q.seat.clone(),
+                    wake_on,
+                    changed: false,
+                })
+            }),
         Command::Search(q) => search(&db, store, instance, q, output, &active_budget),
         Command::Directory(q) => directory(&db, instance, q, output),
         Command::PickerDirectory(q) => {
@@ -6131,6 +6152,9 @@ mod inbox_v2 {
             })
             .transpose()?;
         let body = body[offset as usize..].to_owned();
+        let wakes = lazy
+            && super::super::seats::wake_on(db, &state.seat)?
+                == crate::protocol::commands::WakeOn::All;
         Ok(Some(if lazy {
             Item::LazyMessage {
                 thread: thread_id,
@@ -6146,6 +6170,7 @@ mod inbox_v2 {
                 body_start: offset,
                 body_end: body_len,
                 body_len,
+                wakes,
             }
         } else {
             Item::Message {

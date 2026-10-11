@@ -2246,6 +2246,8 @@ fn elected_generic_refuses_fresh_and_saved_recovery_before_publication_or_effect
             binary: Some("/usr/bin/true".into()),
             name: None,
             argv: vec![],
+            composed_argv: None,
+            startup_input: None,
         },
         handoff_key: OperationId::new("task21-child"),
         resolve_key: OperationId::new("task21-resolve"),

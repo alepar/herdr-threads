@@ -545,7 +545,7 @@ fn launch_tables_report_names_only_the_drift() {
 /// and the production setup plans, not from a hand-kept list. `-c` and `--config` are one option.
 #[test]
 fn every_emitted_launch_flag_has_a_tsv_row() {
-    use crate::harness::{codex::InstalledVersion, setup};
+    use crate::harness::codex::InstalledVersion;
     let tsv = std::fs::read_to_string(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/canary/launch-flags.tsv"),
     )
@@ -569,7 +569,7 @@ fn every_emitted_launch_flag_has_a_tsv_row() {
             .any(|(h, f)| *h == harness && wanted.contains(f))
     };
 
-    let codex_plan = setup::plan_codex_for_version(
+    let codex_plan = crate::harness::codex::setup::plan_codex_for_version(
         &[],
         &["/canary/herdr-threads".to_owned()],
         &InstalledVersion::pinned_for_test(),
@@ -593,7 +593,9 @@ fn every_emitted_launch_flag_has_a_tsv_row() {
                 .map(|a| ("codex", a)),
         );
     }
-    let claude_plan = setup::plan_claude(b"{}", &["/canary/herdr-threads".to_owned()]).unwrap();
+    let claude_plan =
+        crate::harness::claude::setup::plan_claude(b"{}", &["/canary/herdr-threads".to_owned()])
+            .unwrap();
     emitted.extend(
         claude_plan
             .launch_argv("/canary/settings.json")

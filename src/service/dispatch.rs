@@ -1,6 +1,7 @@
 //! Domain dispatch keeps read work separate from writer and host work.
 
 use crate::{
+    harness::adapter::DeliveryMechanism,
     identity::repair::OrdinaryIdentity,
     ports::{
         BootstrapObserver, BootstrapStorePort, DurableWorkAdmission, HostPort, LocalService,
@@ -30,15 +31,16 @@ struct BootstrapRuntime {
 }
 
 pub struct DomainService {
-    instance: String,
-    store: Arc<dyn StorePort>,
-    clock: Arc<dyn Clock>,
+    pub(super) instance: String,
+    pub(super) store: Arc<dyn StorePort>,
+    pub(super) clock: Arc<dyn Clock>,
     search: BoundedLane,
     current_target: Option<Arc<OrdinaryIdentity>>,
     operator_owner_uid: Option<u32>,
     cooperative_runtime: Option<(u32, Arc<FairWriter>)>,
     bootstrap: Option<BootstrapRuntime>,
     mod_channels: Arc<dyn crate::ports::ModChannels>,
+    pub(super) delivery_pull: Arc<super::delivery_pull::DeliveryPullState>,
 }
 
 impl DomainService {
@@ -53,7 +55,16 @@ impl DomainService {
             cooperative_runtime: None,
             bootstrap: None,
             mod_channels: Arc::new(crate::ports::NoModChannels),
+            delivery_pull: Default::default(),
         }
+    }
+    /// Share the offered ledger with the wake lane (the same instance the wake worker reads).
+    pub fn with_delivery_pull(
+        mut self,
+        state: Arc<super::delivery_pull::DeliveryPullState>,
+    ) -> Self {
+        self.delivery_pull = state;
+        self
     }
     /// The shared registry of live mod delivery channels (spec D2).
     pub fn with_mod_channels(mut self, channels: Arc<dyn crate::ports::ModChannels>) -> Self {
@@ -449,7 +460,7 @@ impl DomainService {
                     claim: identity.claim.clone(),
                     mutation: Box::new(crate::cli::journal::SemanticMutation::HandoffBootstrap(
                         Box::new(crate::cli::journal::BootstrapPlan {
-                            version: 1,
+                            version: identity.payload.plan_version(),
                             payload: identity.payload.clone(),
                         }),
                     )),
@@ -615,7 +626,7 @@ impl DomainService {
             .bootstrap_mutate(&runtime.canonical, mutation, permit, None, budget)
     }
 
-    fn cooperative_mutation(
+    pub(super) fn cooperative_mutation(
         &self,
         mutation: PermitMutation,
         peer: PeerIdentity,
@@ -756,9 +767,14 @@ impl DomainService {
         };
         let binding = self.store.mod_ack_binding(&self.instance, &seat, budget)?;
         let Some(binding) = binding.filter(|binding| {
-            binding.provenance == COOPERATIVE_TOP_LEVEL_PROVENANCE && binding.harness == "claude"
+            binding.provenance == COOPERATIVE_TOP_LEVEL_PROVENANCE
+                && crate::delivery::declares(&binding.harness, DeliveryMechanism::PushChannel)
         }) else {
             // The check-in that opens the binding may not have committed yet.
+            return report(ModAckOutcome::Retryable, Some(ModAckReason::NoLiveChannel));
+        };
+        let Ok(binding_harness) = crate::harness::registry::builtins().agent(&binding.harness)
+        else {
             return report(ModAckOutcome::Retryable, Some(ModAckReason::NoLiveChannel));
         };
         let same_session = request.claim.native_session == binding.native_session;
@@ -782,7 +798,7 @@ impl DomainService {
                     seat: seat.clone(),
                     binding_generation: binding.generation,
                     role: CallerRole::TopLevel,
-                    harness: Harness::Claude,
+                    harness: Harness::Agent(binding_harness),
                     native_session: binding.native_session.clone(),
                     execution: binding.execution.clone(),
                     target: binding.target.clone(),
@@ -857,10 +873,16 @@ impl LocalService for DomainService {
         sink: Arc<dyn crate::ports::ModChannelSink>,
         budget: &CallBudget,
     ) -> Result<(crate::ports::ModChannelId, u64), crate::protocol::watch::WatchRefusalReason> {
-        use crate::protocol::{authority::Harness, watch::WatchRefusalReason as Refusal};
+        use crate::protocol::watch::WatchRefusalReason as Refusal;
         let claim = &request.claim;
-        if claim.harness != Harness::Claude || claim.role != CallerRole::TopLevel {
-            return Err(Refusal::NotClaude);
+        let Some(policy) = crate::harness::registry::builtins()
+            .delivery_policy(claim.harness.as_str())
+            .filter(|policy| policy.mechanism() == DeliveryMechanism::PushChannel)
+        else {
+            return Err(Refusal::NO_PUSH_CHANNEL);
+        };
+        if claim.role != CallerRole::TopLevel {
+            return Err(Refusal::NO_PUSH_CHANNEL);
         }
         let view = self
             .store
@@ -878,8 +900,8 @@ impl LocalService for DomainService {
         let Some(binding) = view.binding.as_ref() else {
             return Err(Refusal::NoBinding);
         };
-        if binding.harness != Harness::Claude.as_str() {
-            return Err(Refusal::NotClaude);
+        if !crate::delivery::declares(&binding.harness, DeliveryMechanism::PushChannel) {
+            return Err(Refusal::NO_PUSH_CHANNEL);
         }
         if binding.provenance != crate::protocol::authority::COOPERATIVE_TOP_LEVEL_PROVENANCE {
             return Err(Refusal::NoBinding);
@@ -895,7 +917,8 @@ impl LocalService for DomainService {
                 seat: claim.seat.clone(),
                 binding_generation: binding.generation,
                 native_session: claim.native_session.clone(),
-                harness: Harness::Claude,
+                harness: claim.harness,
+                idle_wake: policy.idle_wake(),
                 registered_at: self.clock.utc_now(),
             },
             sink,
@@ -1002,6 +1025,7 @@ impl LocalService for DomainService {
             | Command::InboxBatch(_)
             | Command::InboxBatchV2(_)
             | Command::MessageDeliveryModes(_)
+            | Command::WakeOn(_)
             | Command::Warnings(_)
             | Command::ActiveWarnings(_)
             | Command::Thread(_)
@@ -1045,6 +1069,8 @@ impl LocalService for DomainService {
             Command::AckModDelivered(request) => {
                 self.ack_mod_delivered(request, peer, budget, read)
             }
+            Command::DeliveryPull(pull) => self.delivery_pull(pull, budget, &read),
+            Command::DeliveryConfirm(confirm) => self.delivery_confirm(confirm, peer, budget, read),
             command @ (Command::BeginHandoff(_)
             | Command::CompleteHandoff(_)
             | Command::CheckIn(_)
@@ -1059,6 +1085,7 @@ impl LocalService for DomainService {
             | Command::Ack(_)
             | Command::AckDisplayed(_)
             | Command::CompleteInboxDelivery(_)
+            | Command::SetWakeOn(_)
             | Command::Leave(_)
             | Command::SetTopic(_)
             | Command::SetThreadName(_)
@@ -1230,7 +1257,7 @@ impl LocalService for DomainService {
     }
 }
 
-fn error(code: ErrorCode, detail: &str) -> ApiError {
+pub(super) fn error(code: ErrorCode, detail: &str) -> ApiError {
     ApiError::new(code, detail)
 }
 

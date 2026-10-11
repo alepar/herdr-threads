@@ -1,0 +1,18 @@
+allow-rewrite PASS (45.26s)
+boot         PASS (14.53s)
+clear        PASS (15.44s)
+delivery     PASS (65.53s)
+downgrade    PASS (67.96s)
+enroll       PASS (14.51s)
+handoff      PASS (29.56s)
+launch       PASS (13.48s)
+permission   PASS (20.66s)
+resume       PASS (24.51s)
+setup        PASS (4.13s)
+subagent     PASS (14.47s)
+unsetup      PASS (3.55s)
+wake         PASS (215.54s)
+leak check: LEAKS
+LEAK rule=dead-owner pid=25162 ppid=1 cmd=/Users/alepar/.local/bin/herdr server
+
+report: docs/evidence/agy-native-gate/2026-10-10-c2f51b5121b7/report.json

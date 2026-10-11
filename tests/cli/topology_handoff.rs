@@ -111,7 +111,9 @@ fn prepared(
             namespace: &namespace,
             topology: &topology(),
             invocation_cwd: root,
-            options: Some("--config 'quoted $HOME' --config '$(literal)'".into()),
+            // Only the V1 harnesses take the configured native option words here.
+            options: matches!(r.kind.as_deref(), Some("claude" | "codex"))
+                .then(|| "--config 'quoted $HOME' --config '$(literal)'".into()),
             client: &ReadOnly,
             clock: &crate::app::SystemClock::new(),
         },
@@ -1008,6 +1010,23 @@ mod live {
             let mut identity = prepared(&request, temp.path()).unwrap();
             if let Some(argv) = argv {
                 identity.payload.launch.argv = argv;
+                // A V2 plan freezes the adapter's composition of these very arguments.
+                if identity.payload.launch.composed_argv.is_some() {
+                    identity.payload.launch.composed_argv = Some(
+                        crate::harness::launch::compose_bootstrap_v2_argv(
+                            identity.payload.launch.harness,
+                            identity.payload.launch.argv.clone(),
+                        )
+                        .unwrap(),
+                    );
+                    identity.payload.launch.startup_input = Some(
+                        crate::harness::launch::bootstrap_v2_startup_input(
+                            identity.payload.launch.harness,
+                            &identity.payload.launch.argv,
+                        )
+                        .unwrap(),
+                    );
+                }
             }
             identity.claim.execution = ExecutionId::new("00000000-0000-4000-8000-000000000001");
             identity.digest = identity.semantic_digest().unwrap();
@@ -1283,7 +1302,7 @@ mod live {
             gate: &mut dyn FnMut(bool) -> Result<(), ApiError>,
         ) -> Result<super::super::super::launch::LaunchReport, RunError> {
             let argv = crate::harness::launch::compose_native_argv(
-                crate::protocol::authority::Harness::Codex,
+                request.harness.into(),
                 request.argv.clone(),
                 vec![],
             )?;
@@ -1311,7 +1330,7 @@ mod live {
                 use std::os::unix::fs::PermissionsExt;
                 std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o500)).unwrap();
             }
-            let mut report = serde_json::json!({"outcome":if self.unknown {"outcome_unknown"} else {"started"},"pane":request.target,"seat":seat,"harness":"codex","argv":argv});
+            let mut report = serde_json::json!({"outcome":if self.unknown {"outcome_unknown"} else {"started"},"pane":request.target,"seat":seat,"harness":request.harness.as_str(),"argv":argv});
             if self.invalid_report {
                 report["seat"] = serde_json::json!("different-seat");
             }
@@ -5304,6 +5323,97 @@ mod live {
         );
         armed
     }
+    fn fourth_fixture(fault: Fault) -> Fixture {
+        Fixture::with_request(fault, super::fourth_request(), Some(vec![]))
+    }
+    /// A V2 plan for a launch-capable adapter V1 refuses runs end to end through the real
+    /// store: create, attach, launch with the adapter's own composition, complete.
+    #[test]
+    fn bootstrap_v2_synthetic_fourth_completes_end_to_end() {
+        let f = fourth_fixture(Fault::None);
+        assert_eq!(f.peer.identity.payload.plan_version(), 2);
+        let mut launcher = DownstreamLauncher::default();
+        let mut output = vec![];
+        let done = downstream(&f, &mut launcher, &mut output)
+            .unwrap_or_else(|e| panic!("V2 bootstrap must complete: {e:?}"));
+        assert_eq!(done.state, BootstrapState::Completed);
+        let report = done.completed.unwrap().retained.report;
+        assert_eq!(report["harness"], "synthetic_fourth");
+        let argv = report["argv"].as_array().unwrap();
+        assert_eq!(argv[0], "--synthetic-only");
+        assert_eq!(
+            argv.len(),
+            2,
+            "synthetic-only marker plus the generated prompt"
+        );
+        assert_eq!(launcher.starts, 1);
+        // Replay presents the same bytes without a second start.
+        let mut replay = vec![];
+        downstream(&f, &mut launcher, &mut replay).unwrap();
+        assert_eq!(replay, output);
+        assert_eq!(launcher.starts, 1);
+    }
+    /// agy runs the V2 bootstrap end to end: the retained report places the frozen prompt with
+    /// `--prompt-interactive` and completion validates it against the frozen template.
+    #[test]
+    fn bootstrap_v2_agy_completes_end_to_end_with_prompt_interactive() {
+        let f = Fixture::with_request(Fault::None, super::kind_request("agy", &[]), Some(vec![]));
+        assert_eq!(f.peer.identity.payload.plan_version(), 2);
+        let mut launcher = DownstreamLauncher::default();
+        let mut output = vec![];
+        let done = downstream(&f, &mut launcher, &mut output)
+            .unwrap_or_else(|e| panic!("agy V2 bootstrap must complete: {e:?}"));
+        assert_eq!(done.state, BootstrapState::Completed);
+        let report = done.completed.unwrap().retained.report;
+        assert_eq!(report["harness"], "agy");
+        let argv = report["argv"].as_array().unwrap();
+        let flag = argv
+            .iter()
+            .position(|arg| arg == "--prompt-interactive")
+            .unwrap_or_else(|| panic!("no --prompt-interactive in {argv:?}"));
+        assert_eq!(flag + 2, argv.len(), "the prompt is the flag's value, last");
+        assert!(
+            argv[flag + 1]
+                .as_str()
+                .unwrap()
+                .starts_with("Expected handoff command routing")
+        );
+        assert_eq!(launcher.starts, 1);
+    }
+    /// The V2 Root launch refuses before any native start when today's composer would launch
+    /// different arguments than the adapter composition the plan froze.
+    #[test]
+    fn bootstrap_v2_root_launch_refuses_before_start_when_current_composition_differs() {
+        let f = fourth_fixture(Fault::None);
+        let mut launcher = DownstreamLauncher::default();
+        let _drift = crate::harness::launch::current_drift::arm_output("--drifted");
+        let result = downstream(&f, &mut launcher, &mut vec![]);
+        assert!(
+            format!("{result:?}").contains("bootstrap plan V2"),
+            "{result:?}"
+        );
+        assert_eq!(launcher.starts, 0, "no native start");
+    }
+    /// A retained V2 report is validated against the frozen composition at completion: a
+    /// report whose argv the adapter would not have produced is refused.
+    #[test]
+    fn bootstrap_v2_completion_refuses_a_report_the_frozen_composition_did_not_produce() {
+        let f = fourth_fixture(Fault::CompleteBefore);
+        let mut setup = DownstreamLauncher::default();
+        assert!(downstream(&f, &mut setup, &mut vec![]).is_err());
+        let path = child_progress_path(&f.journal, &f.peer.reference);
+        let mut saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        saved["progress"]["launch"]["argv"][0] = "--changed".into();
+        std::fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
+        let mut launcher = DownstreamLauncher {
+            starts: setup.starts,
+            ..Default::default()
+        };
+        assert!(downstream(&f, &mut launcher, &mut vec![]).is_err());
+        assert_eq!(f.peer.status().state, BootstrapState::Attached);
+        assert_eq!(launcher.starts, 1, "no relaunch");
+    }
     #[test]
     fn historical_v1_saved_success_completes_after_current_composition_drift() {
         let f = Fixture::downstream(Fault::CompleteBefore);
@@ -5602,6 +5712,9 @@ mod live {
         }
         impl AutoPeer {
             fn new() -> Self {
+                Self::with_kind("codex")
+            }
+            fn with_kind(kind: &'static str) -> Self {
                 let base = Fixture::aligned(Fault::None, None);
                 base.journal.complete(&base.peer.reference).unwrap();
                 let parsed = super::super::super::super::commands::parse_argv([
@@ -5610,7 +5723,7 @@ mod live {
                     "--new-tab",
                     "new peer",
                     "--kind",
-                    "codex",
+                    kind,
                     "--",
                     "literal work",
                 ])
@@ -6500,6 +6613,170 @@ mod live {
                     .get::<_, i64>(0))
                     .unwrap(),
                 invitations_before + 1
+            );
+        }
+
+        fn ordinary_and_invitation_counts(peer: &AutoPeer) -> (i64, i64) {
+            let state = peer.base.peer.state.lock().unwrap();
+            (
+                state
+                    .db
+                    .query_row(
+                        "SELECT count(*) FROM messages WHERE kind='ordinary'",
+                        [],
+                        |r| r.get::<_, i64>(0),
+                    )
+                    .unwrap(),
+                state
+                    .db
+                    .query_row("SELECT count(*) FROM invitations", [], |r| {
+                        r.get::<_, i64>(0)
+                    })
+                    .unwrap(),
+            )
+        }
+
+        fn intent_count(journal: &super::super::super::super::journal::Journal) -> usize {
+            std::fs::read_dir(journal.root())
+                .unwrap()
+                .filter(|entry| {
+                    entry
+                        .as_ref()
+                        .unwrap()
+                        .path()
+                        .extension()
+                        .is_some_and(|extension| extension == "intent")
+                })
+                .count()
+        }
+
+        /// The automatic route refuses an adapter whose composition rewrites the applied caller
+        /// argv before the host preflight, journal publication, tab creation, launch or any
+        /// store write: such a launch could never complete against the automatic plan.
+        #[test]
+        fn parsed_new_tab_automatic_route_refuses_a_rewriting_kind_before_any_effect() {
+            let peer = AutoPeer::new();
+            let before = ordinary_and_invitation_counts(&peer);
+            let intents_before = intent_count(&peer.base.journal);
+            let parsed = super::super::super::super::commands::parse_argv([
+                "ht",
+                "handoff",
+                "--new-tab",
+                "new peer",
+                "--kind",
+                "hermes",
+                "--",
+                "literal work",
+            ])
+            .unwrap();
+            let super::super::super::super::commands::CliAction::TopologyHandoff(request) =
+                &parsed.action
+            else {
+                panic!("parsed route")
+            };
+            assert!(request.automatic && !request.existing);
+            let mut launcher = DownstreamLauncher::default();
+            let mut output = Vec::new();
+            let result =
+                super::super::super::super::topology_runtime::try_run_automatic_new_with_ports(
+                    &parsed,
+                    &peer.base.peer.identity.claim,
+                    &peer.base.journal,
+                    peer.ns(),
+                    &peer,
+                    &peer,
+                    &mut launcher,
+                    &peer.base.clock,
+                    peer.base._temp.path(),
+                    None,
+                    &mut || Ok(topology()),
+                    &mut |_| panic!("a refused kind must not preflight the host"),
+                    &crate::protocol::output::OutputSpec::default(),
+                    &mut output,
+                );
+            let Err(RunError::Api(error)) = &result else {
+                panic!("refused: {result:?}")
+            };
+            assert_eq!(
+                error.code,
+                crate::protocol::results::ErrorCode::Unsupported,
+                "{error:?}"
+            );
+            assert!(error.detail.contains("--new-thread"), "{error:?}");
+            assert_eq!(peer.base.peer.state.lock().unwrap().native_calls, 0);
+            assert_eq!(launcher.starts, 0);
+            assert_eq!(intent_count(&peer.base.journal), intents_before);
+            assert_eq!(ordinary_and_invitation_counts(&peer), before);
+            assert!(output.is_empty());
+        }
+
+        /// The automatic counterpart of the explicit-channel agy test: agy's composition leaves
+        /// the applied caller argv unchanged, so its automatic plan launches with
+        /// `--prompt-interactive` placing the frozen prompt and completes.
+        #[test]
+        fn automatic_new_tab_agy_completes_end_to_end_with_prompt_interactive() {
+            let peer = AutoPeer::with_kind("agy");
+            assert_eq!(peer.identity.plan.payload.launch.harness.as_str(), "agy");
+            assert!(peer.identity.plan.payload.startup_input.is_some());
+            let before = ordinary_and_invitation_counts(&peer);
+            let mut launcher = DownstreamLauncher::default();
+            let mut output = Vec::new();
+            let result = resume_automatic_to_writer(
+                &peer.base.journal,
+                &peer.reference,
+                super::super::super::super::actor_route::InvocationActor::Agent,
+                peer.ns(),
+                &peer,
+                &peer,
+                &mut launcher,
+                &peer.base.clock,
+                BootstrapSubmissionInputs {
+                    witness: &peer.base.witness,
+                    context: &peer.base.context,
+                },
+                &crate::protocol::output::OutputSpec {
+                    format: crate::protocol::output::OutputFormat::Json,
+                    ..Default::default()
+                },
+                &mut output,
+            )
+            .unwrap_or_else(|error| panic!("agy automatic bootstrap must complete: {error:?}"));
+            assert_eq!(result.state, BootstrapState::Completed);
+            assert_eq!(peer.base.peer.state.lock().unwrap().native_calls, 1);
+            assert_eq!(launcher.starts, 1);
+            assert_eq!(
+                ordinary_and_invitation_counts(&peer),
+                (before.0 + 1, before.1 + 1)
+            );
+            let selected = peer.status().thread.expect("exact selected pair thread");
+            assert_eq!(
+                peer.base
+                    .peer
+                    .state
+                    .lock()
+                    .unwrap()
+                    .db
+                    .query_row(
+                        "SELECT thread_id FROM direct_threads WHERE thread_id=?1",
+                        [selected.as_str()],
+                        |r| r.get::<_, String>(0)
+                    )
+                    .unwrap(),
+                selected.as_str()
+            );
+            let report = &result.completed.as_ref().expect("completed").report;
+            assert_eq!(report["harness"], "agy");
+            let argv = report["argv"].as_array().unwrap();
+            let flag = argv
+                .iter()
+                .position(|arg| arg == "--prompt-interactive")
+                .unwrap_or_else(|| panic!("no --prompt-interactive in {argv:?}"));
+            assert_eq!(flag + 2, argv.len(), "the prompt is the flag's value, last");
+            assert!(
+                argv[flag + 1]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("Expected handoff command routing")
             );
         }
 
@@ -7454,6 +7731,347 @@ fn current_main_topology_native_argv_preserves_empty_tokens() {
     );
 }
 
+fn fourth_request() -> Request {
+    Request {
+        kind: Some("synthetic_fourth".into()),
+        binary: None,
+        argv: vec![],
+        ..request()
+    }
+}
+/// V1 plans keep their exact bytes: no V2 field, plan version 1.
+#[test]
+fn v1_plan_payload_is_unchanged_by_bootstrap_v2() {
+    let temp = Temp::new();
+    let identity = prepared(&request(), temp.path()).unwrap();
+    assert_eq!(identity.payload.plan_version(), 1);
+    assert!(identity.payload.launch.composed_argv.is_none());
+    let launch = serde_json::to_value(&identity.payload.launch).unwrap();
+    assert!(launch.get("composed_argv").is_none(), "{launch}");
+    assert!(identity.payload.launch.startup_input.is_none());
+    assert!(launch.get("startup_input").is_none(), "{launch}");
+    let plan = downstream_plan(
+        &identity,
+        &created_tab(),
+        &crate::protocol::ids::SeatId::new("recipient"),
+    )
+    .unwrap();
+    assert!(plan.bootstrap_input.is_none());
+    let plan_json = serde_json::to_value(&plan).unwrap();
+    assert!(plan_json.get("bootstrap_input").is_none(), "{plan_json}");
+    // A pre-V2 stored payload (no such key) still reads back and validates.
+    let legacy: crate::protocol::handoff::BootstrapPayload =
+        serde_json::from_value(serde_json::to_value(&identity.payload).unwrap()).unwrap();
+    assert_eq!(legacy, identity.payload);
+    legacy.validate().unwrap();
+}
+/// A launch-capable adapter V1 refuses gets a V2 plan that freezes the adapter's composition,
+/// round-trips through the journal, and carries plan version 2.
+#[test]
+fn v2_plan_freezes_adapter_composition_and_round_trips() {
+    let temp = Temp::new();
+    let identity = prepared(&fourth_request(), temp.path()).unwrap();
+    assert_eq!(identity.payload.plan_version(), 2);
+    assert_eq!(identity.payload.launch.harness.as_str(), "synthetic_fourth");
+    let composed = identity.payload.launch.composed_argv.clone().unwrap();
+    assert_eq!(
+        composed,
+        crate::harness::launch::compose_bootstrap_v2_argv(
+            identity.payload.launch.harness,
+            identity.payload.launch.argv.clone()
+        )
+        .unwrap()
+    );
+    assert_eq!(composed[0], "--synthetic-only");
+    let journal = super::super::journal::Journal::open(temp.path().join("intents")).unwrap();
+    let reference = publish(&journal, &identity, 1).expect("V2 publication must succeed");
+    let loaded = journal.load(&reference).unwrap();
+    assert_eq!(loaded.header.semantic_digest, identity.digest);
+    let super::super::journal::SemanticMutation::Frozen { mutation, .. } = loaded.semantic else {
+        panic!("missing frozen semantic")
+    };
+    let super::super::journal::SemanticMutation::HandoffBootstrap(plan) = *mutation else {
+        panic!("missing bootstrap")
+    };
+    assert_eq!(plan.version, 2);
+    assert_eq!(plan.payload, identity.payload);
+    let again: super::super::journal::BootstrapPlan =
+        serde_json::from_slice(&serde_json::to_vec(&*plan).unwrap()).unwrap();
+    assert_eq!(again, *plan);
+    again.validate().unwrap();
+}
+/// The plan version and the payload must agree: V1 never carries a frozen composition and V2
+/// never lacks one.
+#[test]
+fn bootstrap_plan_version_must_match_its_payload() {
+    let temp = Temp::new();
+    let v1 = prepared(&request(), temp.path()).unwrap().payload;
+    let v2 = prepared(&fourth_request(), temp.path()).unwrap().payload;
+    let plan = |version, payload: &crate::protocol::handoff::BootstrapPayload| {
+        super::super::journal::BootstrapPlan {
+            version,
+            payload: payload.clone(),
+        }
+    };
+    plan(1, &v1).validate().unwrap();
+    plan(2, &v2).validate().unwrap();
+    assert!(plan(2, &v1).validate().is_err());
+    assert!(plan(1, &v2).validate().is_err());
+    assert!(plan(3, &v2).validate().is_err());
+}
+/// V2 retained-launch validation accepts the frozen composition, refuses a changed argv, and
+/// refuses a plan whose adapter composes the caller arguments differently from the freeze.
+#[test]
+fn v2_retained_argv_validation_accepts_frozen_and_refuses_changed() {
+    let temp = Temp::new();
+    let identity = prepared(&fourth_request(), temp.path()).unwrap();
+    let launch = &identity.payload.launch;
+    let ns = &identity.payload.handoff.namespace;
+    let context = crate::protocol::output::ContinuationContext {
+        state_dir: Some(ns.state_dir.to_string_lossy().into_owned()),
+        host: Some(ns.host_endpoint.to_string_lossy().into_owned()),
+    };
+    let instance = &identity.claim.instance;
+    let prompt = super::super::handoff::bootstrap_v1::prompt("t1", &context, instance);
+    let mut caller = launch.argv.clone();
+    caller.push(prompt);
+    let frozen = serde_json::json!(
+        crate::harness::launch::compose_bootstrap_v2_argv(launch.harness, caller.clone()).unwrap()
+    );
+    let check = |launch: &crate::protocol::handoff::BootstrapLaunch,
+                 retained: &serde_json::Value| {
+        super::super::handoff::retained_launch_argv_matches(
+            launch,
+            "t1",
+            &context,
+            instance,
+            Some(retained),
+        )
+    };
+    assert!(check(launch, &frozen).unwrap());
+    let mut changed = frozen.clone();
+    changed.as_array_mut().unwrap().push("--extra".into());
+    assert!(!check(launch, &changed).unwrap());
+    let mut other_prompt = frozen.clone();
+    *other_prompt.as_array_mut().unwrap().last_mut().unwrap() = "invented prompt".into();
+    assert!(!check(launch, &other_prompt).unwrap());
+    let mut drifted = launch.clone();
+    drifted.composed_argv.as_mut().unwrap().push("--old".into());
+    let refusal = check(&drifted, &frozen).unwrap_err();
+    assert!(
+        refusal.detail.contains("synthetic_fourth") && refusal.detail.contains("V2"),
+        "{refusal:?}"
+    );
+}
+fn created_tab() -> crate::ports::CreatedTab {
+    use crate::host::continuity::{LocalEndpointWitness, SocketIdentity};
+    use crate::protocol::ids::{HostBootId, HostCallId, TerminalId};
+    crate::ports::CreatedTab {
+        correlation: HostCallId::new("correlation"),
+        workspace: HostTargetId::new("w1"),
+        tab: HostTargetId::new("w1:t2"),
+        root_pane: HostTargetId::new("w1:p2"),
+        terminal: TerminalId::new("terminal"),
+        host_incarnation: HostBootId::new("herdr-server:pid=42:start=1.000002:uid=501"),
+        witness: LocalEndpointWitness {
+            schema: 1,
+            platform: "macos-proc-bsdinfo-v1".into(),
+            endpoint: "/host.sock".into(),
+            peer_uid: 501,
+            peer_pid: 42,
+            start_seconds: 1,
+            start_microseconds: 2,
+            socket: SocketIdentity {
+                device: 1,
+                inode: 2,
+                birth_seconds: 1,
+                birth_nanoseconds: 0,
+                change_seconds: 1,
+                change_nanoseconds: 0,
+            },
+        },
+    }
+}
+fn kind_request(kind: &str, argv: &[&str]) -> Request {
+    Request {
+        kind: Some(kind.into()),
+        binary: None,
+        argv: argv.iter().map(|a| (*a).to_owned()).collect(),
+        ..request()
+    }
+}
+fn identity_context(
+    identity: &crate::protocol::handoff::BootstrapIdentity,
+) -> crate::protocol::output::ContinuationContext {
+    let ns = &identity.payload.handoff.namespace;
+    crate::protocol::output::ContinuationContext {
+        state_dir: Some(ns.state_dir.to_string_lossy().into_owned()),
+        host: Some(ns.host_endpoint.to_string_lossy().into_owned()),
+    }
+}
+/// `handoff --new-tab --kind agy` places the frozen V1 prompt with `--prompt-interactive`
+/// instead of the bare positional agy's flag grammar refuses.
+#[test]
+fn v2_new_tab_agy_places_the_prompt_with_prompt_interactive() {
+    let temp = Temp::new();
+    let identity = prepared(&kind_request("agy", &["--effort", "high"]), temp.path())
+        .expect("agy new-tab preparation must succeed");
+    assert_eq!(identity.payload.plan_version(), 2);
+    let template = identity.payload.launch.startup_input.clone().unwrap();
+    assert_eq!(template.before, ["--prompt-interactive"]);
+    assert_eq!(template.insertion_index, 2);
+    let fresh = preflight_launch_request(&identity).unwrap();
+    let crate::protocol::handoff::HandoffChannel::Existing { thread } =
+        &identity.payload.handoff.channel
+    else {
+        panic!("fixture uses an existing thread")
+    };
+    let prompt = super::super::handoff::bootstrap_v1::prompt(
+        thread.as_str(),
+        &identity_context(&identity),
+        &identity.claim.instance,
+    );
+    assert_eq!(
+        fresh.argv,
+        ["--effort", "high", "--prompt-interactive", prompt.as_str()]
+    );
+    // The adapter accepts exactly this composition.
+    crate::harness::launch::compose_bootstrap_v2_argv(
+        identity.payload.launch.harness,
+        fresh.argv.clone(),
+    )
+    .unwrap();
+    // The downstream plan carries the frozen placement.
+    let plan = downstream_plan(
+        &identity,
+        &created_tab(),
+        &crate::protocol::ids::SeatId::new("recipient"),
+    )
+    .unwrap();
+    assert_eq!(plan.bootstrap_input, Some(template));
+    assert!(plan.startup_input.is_none());
+    plan.validate().unwrap();
+}
+/// Hermes places the same frozen text with `--query`.
+#[test]
+fn v2_new_tab_hermes_places_the_prompt_with_query() {
+    let temp = Temp::new();
+    let identity = prepared(&kind_request("hermes", &["--model", "m"]), temp.path())
+        .expect("hermes new-tab preparation must succeed");
+    assert_eq!(identity.payload.plan_version(), 2);
+    let template = identity.payload.launch.startup_input.clone().unwrap();
+    assert_eq!(template.before, ["--query"]);
+    let fresh = preflight_launch_request(&identity).unwrap();
+    assert_eq!(&fresh.argv[..3], ["--model", "m", "--query"]);
+    assert_eq!(fresh.argv.len(), 4);
+    assert!(fresh.argv[3].starts_with("Expected handoff command routing"));
+    let (expected, _) = template
+        .apply(&identity.payload.launch.argv, &fresh.argv[3])
+        .unwrap();
+    assert_eq!(fresh.argv, expected);
+    crate::harness::launch::compose_bootstrap_v2_argv(
+        identity.payload.launch.harness,
+        fresh.argv.clone(),
+    )
+    .unwrap();
+}
+/// Retained validation applies the template frozen in the plan; the V1 bare-positional form is
+/// not a V2 composition.
+#[test]
+fn v2_retained_argv_validation_uses_the_frozen_template() {
+    let temp = Temp::new();
+    let identity = prepared(&kind_request("agy", &["--effort", "high"]), temp.path()).unwrap();
+    let launch = &identity.payload.launch;
+    let context = identity_context(&identity);
+    let instance = &identity.claim.instance;
+    let prompt = super::super::handoff::bootstrap_v1::prompt("t1", &context, instance);
+    let placed = launch
+        .startup_input
+        .as_ref()
+        .unwrap()
+        .apply(&launch.argv, &prompt)
+        .unwrap()
+        .0;
+    let retained = serde_json::json!(
+        crate::harness::launch::compose_bootstrap_v2_argv(launch.harness, placed).unwrap()
+    );
+    let check = |launch: &crate::protocol::handoff::BootstrapLaunch,
+                 retained: &serde_json::Value| {
+        super::super::handoff::retained_launch_argv_matches(
+            launch,
+            "t1",
+            &context,
+            instance,
+            Some(retained),
+        )
+    };
+    assert!(check(launch, &retained).unwrap());
+    let mut bare = launch.argv.clone();
+    bare.push(prompt);
+    let bare = serde_json::json!(bare);
+    assert!(!matches!(check(launch, &bare), Ok(true)));
+    // A V2 launch without its frozen template is refused, never matched.
+    let mut stripped = launch.clone();
+    stripped.startup_input = None;
+    assert!(check(&stripped, &retained).is_err());
+}
+/// A V2 payload carries a template exactly when it carries a composition.
+#[test]
+fn v2_payload_requires_template_iff_composed_argv() {
+    let temp = Temp::new();
+    let v2 = prepared(&kind_request("agy", &[]), temp.path())
+        .unwrap()
+        .payload;
+    let v1 = prepared(&request(), temp.path()).unwrap().payload;
+    v2.validate().unwrap();
+    v1.validate().unwrap();
+    let mut missing = v2.clone();
+    missing.launch.startup_input = None;
+    assert!(missing.validate().is_err());
+    let mut extra = v1.clone();
+    extra.launch.startup_input = Some(crate::harness::adapter::StartupInputTemplate::positional(
+        v1.launch.argv.len(),
+    ));
+    assert!(extra.validate().is_err());
+    let plan = |version, payload: &crate::protocol::handoff::BootstrapPayload| {
+        super::super::journal::BootstrapPlan {
+            version,
+            payload: payload.clone(),
+        }
+    };
+    plan(2, &v2).validate().unwrap();
+    assert!(plan(2, &missing).validate().is_err());
+    assert!(plan(1, &extra).validate().is_err());
+    // A template that no longer fits the caller arguments is refused too.
+    let mut out_of_range = v2.clone();
+    out_of_range
+        .launch
+        .startup_input
+        .as_mut()
+        .unwrap()
+        .insertion_index = 9;
+    assert!(out_of_range.validate().is_err());
+}
+/// Fresh preparation refuses a plan whose frozen placement differs from today's adapter.
+#[test]
+fn v2_startup_input_drift_is_refused_at_preparation() {
+    let temp = Temp::new();
+    let mut identity = prepared(&kind_request("agy", &["--effort", "high"]), temp.path()).unwrap();
+    preflight_launch_argv(&identity).unwrap();
+    identity
+        .payload
+        .launch
+        .startup_input
+        .as_mut()
+        .unwrap()
+        .before
+        .push("--x".into());
+    let refusal = preflight_launch_argv(&identity).unwrap_err();
+    assert!(
+        format!("{refusal:?}").contains("current startup input differs from bootstrap plan V2"),
+        "{refusal:?}"
+    );
+}
 /// Fresh preparation keeps today's native admission: a present-day composer
 /// refusal stops it before publication even though frozen V1 would accept.
 /// The fresh Root generated input is the frozen V1 prompt.
@@ -7568,6 +8186,67 @@ fn automatic_bootstrap_preparation_freezes_v2_without_invite_or_create_child() {
     let json = serde_json::to_string(&identity).unwrap();
     assert!(!json.contains("invite_key"));
     assert!(!json.contains("create_key"));
+    assert!(!temp.path().join("intents").exists());
+}
+
+/// Completion compares the retained native argv with the applied caller argv, so the
+/// automatic plan admits only an adapter whose composition leaves those arguments unchanged;
+/// the others are refused before any effect and pointed at the explicit-channel route.
+#[test]
+fn automatic_bootstrap_preparation_refuses_a_kind_whose_composition_rewrites_the_caller_argv() {
+    let temp = Temp::new();
+    let namespace = crate::protocol::handoff::HandoffNamespace {
+        instance: "i".into(),
+        state_dir: temp.path().join("state dir"),
+        host_endpoint: temp.path().join("host.sock"),
+    };
+    let prepare = |kind: &str, argv: &[&str]| {
+        let mut request = kind_request(kind, argv);
+        request.automatic = true;
+        request.thread = None;
+        prepare_automatic(
+            &request,
+            Preparation {
+                claim: &claim(),
+                namespace: &namespace,
+                topology: &topology(),
+                invocation_cwd: temp.path(),
+                options: None,
+                client: &ReadOnly,
+                clock: &crate::app::SystemClock::new(),
+            },
+        )
+    };
+    for (kind, argv) in [
+        ("hermes", &[][..]),
+        ("hermes", &["--model", "m"][..]),
+        ("synthetic_fourth", &[][..]),
+    ] {
+        let refused = prepare(kind, argv).expect_err(kind);
+        let RunError::Api(error) = &refused else {
+            panic!("{kind}: {refused:?}")
+        };
+        assert_eq!(
+            error.code,
+            crate::protocol::results::ErrorCode::Unsupported,
+            "{kind}: {error:?}"
+        );
+        assert!(
+            error.detail.contains("--new-thread") && error.detail.contains("--thread "),
+            "{kind}: {error:?}"
+        );
+        assert!(
+            !error.detail.contains(kind),
+            "core error names no harness: {error:?}"
+        );
+    }
+    for (kind, argv) in [
+        ("claude", &[][..]),
+        ("codex", &["--model", "saved value"][..]),
+        ("agy", &[][..]),
+    ] {
+        prepare(kind, argv).unwrap_or_else(|e| panic!("{kind} stays accepted: {e:?}"));
+    }
     assert!(!temp.path().join("intents").exists());
 }
 

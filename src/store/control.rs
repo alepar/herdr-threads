@@ -2322,6 +2322,19 @@ pub fn complete_inbox_delivery(
             "invalid delivery completion batch or caller",
         ));
     }
+    // A hook-pull seat's lazy rows complete only through `DeliveryConfirm` or its own text inbox
+    // (TRUST-POLICY A8); the claim's harness is checked against the canonical binding below.
+    if request.via == Some(crate::protocol::commands::LazyCompletionVia::HookContext)
+        && crate::delivery::declares(
+            request.claim.harness.as_str(),
+            crate::harness::adapter::DeliveryMechanism::HookPull,
+        )
+    {
+        return Err(api_error(
+            ErrorCode::InvalidRequest,
+            "a hook-pull seat completes lazy rows through DeliveryConfirm",
+        ));
+    }
     let digest = cooperative_payload_hash("complete_inbox_delivery", request)?;
     let seat = &request.claim.seat;
     schema::execute_accountable_transaction(

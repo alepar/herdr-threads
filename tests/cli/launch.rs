@@ -239,7 +239,7 @@ impl HandoffReader for FakeHandoff {
 
 /// A pane shell with no configuration exports; never runs a real shell.
 struct FakeProbe;
-impl CodexShellProbe for FakeProbe {}
+impl PaneShellProbe for FakeProbe {}
 
 struct Scratch {
     root: std::path::PathBuf,
@@ -265,8 +265,11 @@ impl Scratch {
             state_dir: Some(root.join("state")),
             cwd: root.clone(),
             path: Some(root.join("bin").into_os_string()),
-            codex_home: Some(root.join("codex home")),
-            claude_config_dir: Some(root.join("claude config")),
+            config_roots: [
+                ("codex".into(), root.join("codex home")),
+                ("claude".into(), root.join("claude config")),
+            ]
+            .into(),
             host_endpoint: Some(root.join("herdr.sock")),
             instance_source: Value::Null,
         };
@@ -313,7 +316,7 @@ impl Scratch {
         seats: &FakeSeats,
         handoff: &FakeHandoff,
         request: LaunchRequest,
-        probe: &dyn CodexShellProbe,
+        probe: &dyn PaneShellProbe,
     ) -> Result<LaunchReport, RunError> {
         let clock = Clock0(AtomicU64::new(1));
         execute(
@@ -474,14 +477,16 @@ fn handoff_policy_readiness_is_advisory_for_missing_wrong_profile_and_uncovered_
         );
         if mode == "wrong_profile" {
             s.setup_claude();
-            s.env.claude_config_dir = Some(s.root.join("other config"));
+            s.env
+                .config_roots
+                .insert("claude".into(), s.root.join("other config"));
         }
         if ["disabled", "stale", "malformed"].contains(&mode) {
             s.setup_claude();
             let file = s
                 .env
-                .claude_config_dir
-                .as_ref()
+                .config_roots
+                .get("claude")
                 .unwrap()
                 .join("settings.json");
             if mode == "malformed" {
@@ -637,7 +642,7 @@ fn codex_launch_needs_the_user_installation_without_injected_daemon_flags() {
     assert_eq!(host.submitted()[0].argv, ["--no-daemon"]);
 
     // A socket policy edit does not prevent approved command execution.
-    let config = s.env.codex_home.clone().unwrap().join("config.toml");
+    let config = s.env.config_roots["codex"].clone().join("config.toml");
     let denied = "sandbox_workspace_write.network_access = false\n";
     fs::write(&config, denied).unwrap();
     let host = FakeHost::new();
@@ -800,7 +805,7 @@ fn future_codex_launch_uses_command_approvals_without_network_allowance() {
     s.harness("codex", "codex-cli 0.160.0", &committed_codex_schemas());
     let setup = s.setup(ContextHarness::Codex);
     assert_eq!(setup["sandbox"]["validation"], "unvalidated", "{setup}");
-    let config = s.env.codex_home.as_ref().unwrap().join("config.toml");
+    let config = &s.env.config_roots["codex"].join("config.toml");
     assert!(!config.exists());
     let (host, seats, handoff) = (FakeHost::new(), seats(), handoff());
     let caller = ["-a", "on-request", "You are Bob."];
@@ -1134,7 +1139,7 @@ struct PaneExports {
     codex_home: Option<String>,
     claude_config_dir: Option<String>,
 }
-impl CodexShellProbe for PaneExports {
+impl PaneShellProbe for PaneExports {
     fn pane_shell_env(&self, var: &str) -> Option<String> {
         match var {
             "CODEX_HOME" => self.codex_home.clone(),
@@ -1156,7 +1161,7 @@ fn launch_checks_the_config_dir_it_hands_the_pane() {
     let s = Scratch::new();
     s.harness("codex", "codex-cli 0.159.2", &committed_codex_schemas());
     s.setup(ContextHarness::Codex);
-    let a = s.env.codex_home.clone().unwrap();
+    let a = s.env.config_roots["codex"].clone();
     let b = s.root.join("pane codex home");
     let (host, seats, handoff) = (FakeHost::new(), seats(), handoff());
     let pane_b = PaneExports {
@@ -1245,7 +1250,7 @@ fn launch_reports_the_effective_codex_profile_and_config() {
     let s = Scratch::new();
     s.harness("codex", "codex-cli 0.159.2", &committed_codex_schemas());
     s.setup(ContextHarness::Codex);
-    let home = s.env.codex_home.clone().unwrap();
+    let home = s.env.config_roots["codex"].clone();
     let config = home.join("config.toml");
     let original = fs::read_to_string(&config).unwrap_or_default();
     fs::write(&config, format!("profile = \"work\"\n{original}")).unwrap();
@@ -1645,15 +1650,7 @@ fn adapter_launch_configuration_mutation_before_submit_refuses() {
         false,
         &mut |boundary| {
             if matches!(boundary, LaunchBoundary::BeforeSubmit(_)) {
-                fs::write(
-                    s.env
-                        .claude_config_dir
-                        .as_ref()
-                        .unwrap()
-                        .join("settings.json"),
-                    b"{}",
-                )
-                .unwrap();
+                fs::write(s.env.config_roots["claude"].join("settings.json"), b"{}").unwrap();
             }
             Ok(())
         },
@@ -1672,6 +1669,7 @@ pub(crate) mod fourth_adapter {
     use crate::harness::registry::{AdmittedHandle, Registration, Registry};
 
     const METADATA: AdapterMetadata = AdapterMetadata {
+        agent_env_markers: &[],
         id: "fourth",
         display_label: "Fourth fixture",
         context_spelling: "Fourth",
@@ -1699,6 +1697,7 @@ pub(crate) mod fourth_adapter {
         fn metadata(&self) -> &'static AdapterMetadata {
             if self.options_fixture {
                 static OPTIONS_METADATA: AdapterMetadata = AdapterMetadata {
+                    agent_env_markers: &[],
                     id: "synthetic_fourth",
                     context_spelling: "SyntheticFourth",
                     ..METADATA
@@ -1817,7 +1816,7 @@ pub(crate) mod fourth_adapter {
         fn resolve_scope(
             &self,
             request: &crate::harness::adapter::LaunchRequest,
-            _: &dyn CodexShellProbe,
+            _: &dyn PaneShellProbe,
             _: &CallBudget,
         ) -> Result<LaunchScope, ApiError> {
             Ok(LaunchScope {
@@ -1848,7 +1847,7 @@ pub(crate) mod fourth_adapter {
             scope: &LaunchScope,
             _: &AdmittedHandle,
             status: &LocalSetupStatus,
-            _: &dyn CodexShellProbe,
+            _: &dyn PaneShellProbe,
             _: &CallBudget,
         ) -> Result<LaunchPreparation, ApiError> {
             Ok(LaunchPreparation {
@@ -1922,6 +1921,7 @@ pub(crate) mod fourth_adapter {
         type Admission = ();
         fn metadata(&self) -> &'static AdapterMetadata {
             static THIRD: AdapterMetadata = AdapterMetadata {
+                agent_env_markers: &[],
                 id: "third",
                 display_label: "Third fixture",
                 context_spelling: "Third",
@@ -2495,12 +2495,109 @@ fn stage_a_options_declaration_is_optional_and_provider_owned() {
     for (name, expected) in [
         ("claude", Some("HERDR_THREADS_CLAUDE_OPTS")),
         ("codex", Some("HERDR_THREADS_CODEX_OPTS")),
+        ("agy", Some("HERDR_THREADS_AGY_OPTS")),
         ("hermes", None),
     ] {
         let registration = registry.by_id(registry.agent(name).unwrap()).unwrap();
         assert_eq!(
             registration.launch_policy().unwrap().native_options_env(),
             expected
+        );
+    }
+}
+
+/// Catches a launch help whose options list is fixed in core: a registered launch policy with a
+/// fourth key shows up in registry order, while the frozen V1 handoff help stays at its targets.
+#[test]
+fn stage_a_help_lists_registered_options_keys_in_registry_order() {
+    let builtin = crate::cli::help::launch_help();
+    assert!(
+        builtin.contains(
+            "HERDR_THREADS_CLAUDE_OPTS / HERDR_THREADS_CODEX_OPTS / HERDR_THREADS_AGY_OPTS are prepended"
+        ),
+        "{builtin}"
+    );
+    let (registry, _) = fourth_adapter::registry_with_options(
+        true,
+        false,
+        false,
+        Some("HERDR_THREADS_FOURTH_OPTS"),
+    );
+    let launch = crate::cli::help::launch_help_in(&registry);
+    assert!(
+        launch.contains(
+            "HERDR_THREADS_CLAUDE_OPTS / HERDR_THREADS_CODEX_OPTS / HERDR_THREADS_FOURTH_OPTS are prepended"
+        ),
+        "{launch}"
+    );
+    // Bootstrap V2 makes every launch-capable adapter a handoff kind, with its options key.
+    let handoff = crate::cli::help::handoff_help_in(&registry);
+    assert!(handoff.contains(
+        "HERDR_THREADS_CLAUDE_OPTS / HERDR_THREADS_CODEX_OPTS / HERDR_THREADS_FOURTH_OPTS prepend"
+    ));
+    assert!(handoff.contains("--pane PANE --kind claude|codex|synthetic_fourth launches"));
+    assert!(handoff.contains("--new-tab LABEL --kind claude|codex|synthetic_fourth creates"));
+    // The builtin handoff help names the V1 pair and every builtin launch-capable adapter,
+    // and the options keys of all of them, agy included, in registry order.
+    let builtin = crate::cli::help::handoff_help();
+    assert!(
+        builtin.contains("--kind claude|codex|hermes|agy"),
+        "{builtin}"
+    );
+    assert!(
+        builtin.contains(
+            "HERDR_THREADS_CLAUDE_OPTS / HERDR_THREADS_CODEX_OPTS / HERDR_THREADS_AGY_OPTS prepend"
+        ),
+        "{builtin}"
+    );
+}
+
+/// Catches a bootstrap `--kind` lookup that admits a registered kind the frozen V1 record refuses.
+#[test]
+fn stage_a_bootstrap_v1_target_admits_only_the_frozen_pair() {
+    let registry = crate::harness::registry::builtins();
+    for kind in ["claude", "codex"] {
+        assert_eq!(
+            crate::harness::launch::bootstrap_v1_target(registry, kind).map(|h| h.as_str()),
+            Some(kind)
+        );
+    }
+    for kind in ["hermes", "human", "Claude", "nope", ""] {
+        assert!(
+            crate::harness::launch::bootstrap_v1_target(registry, kind).is_none(),
+            "{kind}"
+        );
+    }
+}
+
+/// V2 selection: every launch-capable adapter V1 does not admit, never a V1 kind, no human or unknown.
+#[test]
+fn bootstrap_v2_target_is_every_launch_capable_adapter_v1_refuses() {
+    let registry = crate::harness::registry::builtins();
+    for kind in ["hermes", "synthetic_fourth"] {
+        assert_eq!(
+            crate::harness::launch::bootstrap_v2_target(registry, kind).map(|h| h.as_str()),
+            Some(kind),
+            "{kind}"
+        );
+        assert_eq!(
+            crate::harness::launch::bootstrap_target(registry, kind).map(|h| h.as_str()),
+            Some(kind),
+            "{kind}"
+        );
+        assert!(crate::harness::launch::bootstrap_v1_target(registry, kind).is_none());
+    }
+    for kind in ["claude", "codex"] {
+        assert!(
+            crate::harness::launch::bootstrap_v2_target(registry, kind).is_none(),
+            "a V1 kind never gets V2: {kind}"
+        );
+        assert!(crate::harness::launch::bootstrap_target(registry, kind).is_some());
+    }
+    for kind in ["human", "Claude", "nope", ""] {
+        assert!(
+            crate::harness::launch::bootstrap_target(registry, kind).is_none(),
+            "{kind}"
         );
     }
 }
@@ -2941,4 +3038,70 @@ fn handoff_policy_hermes_unused_readiness_change_allows_submit_but_native_profil
             assert!(submitted.is_empty());
         }
     }
+}
+
+/// Kills: launching without the owned installation (a missing hook must
+/// refuse with the setup command, before any start).
+#[test]
+fn claude_without_owned_hooks_refuses_with_setup_hint() {
+    let s = Scratch::new();
+    s.harness("claude", "2.1.285 (Claude Code)", b"");
+    let (host, seats, handoff) = (FakeHost::new(), seats(), handoff());
+    let result = s.launch(
+        &host,
+        &seats,
+        &handoff,
+        request(ContextHarness::Claude, &[]),
+    );
+    match result {
+        Err(RunError::Api(error)) => {
+            assert_eq!(error.code, ErrorCode::MissingHook);
+            assert!(error.detail.contains("herdr-threads setup claude"));
+            assert!(error.detail.contains("settings.json"));
+        }
+        other => panic!("expected missing hook, got {other:?}"),
+    }
+    assert!(host.submitted().is_empty());
+    assert!(s.records().is_empty());
+}
+
+/// Claude loads user hooks from the settings of its own CLAUDE_CONFIG_DIR.
+/// Kills: accepting an installation recorded for another config directory.
+#[test]
+fn claude_launch_inspects_the_resolved_config_dir_only() {
+    let mut s = Scratch::new();
+    s.harness("claude", "2.1.285 (Claude Code)", b"");
+    s.setup_claude();
+    s.env
+        .config_roots
+        .insert("claude".into(), s.root.join("other config"));
+    let (host, seats, handoff) = (FakeHost::new(), seats(), handoff());
+    assert_eq!(
+        code(s.launch(
+            &host,
+            &seats,
+            &handoff,
+            request(ContextHarness::Claude, &[])
+        )),
+        ErrorCode::MissingHook
+    );
+    assert!(host.submitted().is_empty());
+}
+
+/// Kills a residual version gate before hook inspection.
+#[test]
+fn uncovered_metadata_still_requires_owned_hooks() {
+    let s = Scratch::new();
+    s.harness("claude", "2.1.200 (Claude Code)", b"");
+    let (host, seats, handoff) = (FakeHost::new(), seats(), handoff());
+    assert_eq!(
+        code(s.launch(
+            &host,
+            &seats,
+            &handoff,
+            request(ContextHarness::Claude, &[])
+        )),
+        ErrorCode::MissingHook
+    );
+    assert!(host.submitted().is_empty());
 }

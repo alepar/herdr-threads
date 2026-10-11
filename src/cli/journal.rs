@@ -260,7 +260,8 @@ pub struct DeliveryPlan {
 }
 impl BootstrapPlan {
     pub fn validate(&self) -> io::Result<()> {
-        if self.version != 1 {
+        // V1 is the frozen Claude/Codex grammar; V2 freezes the adapter's own composition.
+        if !matches!(self.version, 1 | 2) || self.version != self.payload.plan_version() {
             return Err(invalid("unsupported bootstrap plan version"));
         }
         self.payload.validate().map_err(invalid)
@@ -930,12 +931,15 @@ impl Journal {
             body_len,
             flushed_through: flushed,
         };
+        // One buffer, one write (as save_progress_at, ffd09598): `to_writer` on the bare file
+        // issues a write(2) per JSON token, which stalled CLI exits under suite load (ht-poh.55).
+        let bytes = serde_json::to_vec(&progress)?;
         let temp = self
             .root
             .join(format!(".display-lazy-{}.tmp", Uuid::new_v4()));
         let result = (|| {
             let mut file = private_new(&temp)?;
-            serde_json::to_writer(&mut file, &progress)?;
+            file.write_all(&bytes)?;
             durable_sync(&file)?;
             fs::rename(&temp, &path)?;
             durable_sync(&File::open(&self.root)?)
@@ -1186,9 +1190,11 @@ impl Journal {
             body_len,
             flushed_through: flushed,
         };
+        // Single buffered write, as in record_lazy_displayed_chunk (ht-poh.55).
+        let bytes = serde_json::to_vec(&progress)?;
         let temp = self.root.join(format!(".display-{}.tmp", Uuid::new_v4()));
         let mut file = private_new(&temp)?;
-        serde_json::to_writer(&mut file, &progress)?;
+        file.write_all(&bytes)?;
         durable_sync(&file)?;
         fs::rename(&temp, &path)?;
         durable_sync(&File::open(&self.root)?)?;
@@ -1410,10 +1416,11 @@ impl Journal {
         self.reserve(ordinal)?;
         let path = self.root.join(format!(".intent-{}", Uuid::new_v4()));
         let mut file = private_new(&path)?;
-        file.write_all(&encoded_header)?;
-        file.write_all(b"\n")?;
-        file.write_all(&body)?;
-        file.write_all(b"\n")?;
+        let mut bytes = encoded_header;
+        bytes.push(b'\n');
+        bytes.extend_from_slice(&body);
+        bytes.push(b'\n');
+        file.write_all(&bytes)?;
         durable_sync(&file)?;
         fs::rename(path, self.path(&reference))?;
         // The entry is already visible. A failed durability barrier must not

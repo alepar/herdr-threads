@@ -1,0 +1,29 @@
+{
+  "database": {
+    "detail": null,
+    "state": "ready"
+  },
+  "harness": {
+    "claude": "unsupported",
+    "codex": "unsupported"
+  },
+  "notes": [
+    "harness claude not installed: no executable `claude` on the daemon's PATH",
+    "harness codex not installed: no executable `codex` on the daemon's PATH",
+    "harness hermes not installed: no executable `hermes` on the daemon's PATH",
+    "harness agy not installed: no executable `agy` on the daemon's PATH",
+    "harness synthetic_fourth not installed: synthetic fourth: no explicit fixture binary directory",
+    "wake cooperative: prompts only Herdr's detected idle/done claude, codex, hermes, agy or synthetic_fourth agent in the seat's terminal, rechecked immediately before submission; native execution and composer contents are unverified"
+  ],
+  "protocol_version": 6,
+  "schema": {
+    "detail": null,
+    "state": "ready"
+  },
+  "settings": {
+    "invitation_default_ms": 300000,
+    "minimum_wake_delay_ms": 30000,
+    "receipt_default_ms": 300000,
+    "wake_batch_delay_ms": 0
+  }
+}

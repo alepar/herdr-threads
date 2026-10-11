@@ -169,3 +169,53 @@ fn codex_rules_first_publish_never_replaces_a_file_created_meanwhile() {
     assert!(!scope.dir.join("permissions.json").exists());
     assert_eq!(component.status(), Ok(CodexPermissionState::Foreign));
 }
+
+// The on-disk shapes of released v0.6.0: the manifest `backend` spelling, the lock file name and
+// the lock marker bytes (the backend's old `Debug` output).
+#[test]
+fn codex_backend_wire_shapes_are_unchanged() {
+    assert_eq!(serde_json::to_string(&BACKEND).unwrap(), "\"Codex\"");
+    let manifest = br#"{"version":1,"backend":"Codex","config_root":"/tmp/x","resources":[{"file":"/tmp/x/rules/herdr-threads.rules","rule":null,"fingerprint":"sha256:ab","pre_existing":false}]}"#;
+    let parsed: PermissionComponentManifest = serde_json::from_slice(manifest).unwrap();
+    assert_eq!(parsed.backend, BACKEND);
+    assert_eq!(serde_json::to_vec(&parsed).unwrap(), manifest);
+    let scope = Scope::new();
+    let identity = VerifiedConfigIdentity::verify(&scope.dir, BACKEND).unwrap();
+    assert_eq!(
+        identity.lock_path(),
+        scope.dir.join(".herdr-threads-codex.lock")
+    );
+    assert_eq!(
+        identity.marker(),
+        format!(
+            "herdr-threads owned config lock v1\nCodex\n{}:{}\n{}\n",
+            std::os::unix::fs::MetadataExt::dev(&std::fs::metadata(&scope.dir).unwrap()),
+            std::os::unix::fs::MetadataExt::ino(&std::fs::metadata(&scope.dir).unwrap()),
+            scope.dir.display()
+        )
+        .into_bytes()
+    );
+}
+
+// An unknown backend tag fails to parse (invalid); a known tag of another harness parses and is a
+// conflict.
+#[test]
+fn unknown_backend_manifest_is_invalid_and_other_backend_conflicts() {
+    let scope = Scope::new();
+    let component = scope.component();
+    let write = |backend: &str| {
+        fs::write(
+            scope.dir.join("permissions.json"),
+            format!(
+                r#"{{"version":1,"backend":"{backend}","config_root":"/tmp/x","resources":[]}}"#
+            ),
+        )
+        .unwrap();
+    };
+    write("Bogus");
+    assert_eq!(component.read(), Err(SetupError::Invalid));
+    write("Claude");
+    assert_eq!(component.read(), Err(SetupError::Conflict));
+    write("Codex");
+    assert!(component.read().unwrap().is_some());
+}

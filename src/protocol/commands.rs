@@ -40,6 +40,8 @@ pub enum Command {
     /// Read-only v2 inbox contract; advertised only when its handler lands.
     InboxBatchV2(InboxQuery),
     MessageDeliveryModes(MessageDeliveryModesQuery),
+    /// Read a seat's `wake_on` preference; gated by `seat.wake_on_v1`.
+    WakeOn(WakeOnQuery),
     Warnings(WarningsQuery),
     /// Bounded read-only active warning conditions for one thread.
     ActiveWarnings(ActiveWarningsQuery),
@@ -99,8 +101,15 @@ pub enum Command {
     /// The bundled Claude mod reports items it delivered (spec D6); sent only to a
     /// daemon advertising `mod.watch_v1`. Decided per id against A2.
     AckModDelivered(AckModDelivered),
+    /// Hook-pull read (delivery-policy DP4); gated by `delivery.pull_v1`.
+    DeliveryPull(crate::protocol::delivery::DeliveryPull),
+    /// Hook-pull settlement (DP4); gated by `delivery.pull_v1`.
+    DeliveryConfirm(crate::protocol::delivery::DeliveryConfirm),
     /// Presentation bookkeeping only; never an ACK or adoption.
     CompleteInboxDelivery(CompleteInboxDelivery),
+    /// Set the caller seat's `wake_on` preference (TRUST-POLICY A5); gated by
+    /// `seat.wake_on_v1`.
+    SetWakeOn(SetWakeOn),
     Leave(Leave),
     SetTopic(SetTopic),
     SetThreadName(SetThreadName),
@@ -789,6 +798,45 @@ impl DeliveryMode {
     }
 }
 
+/// Which pending work wakes an idle seat: `nudge` keeps the ordinary wake
+/// policy, `all` also wakes for pending lazy messages (spec DP8).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WakeOn {
+    #[default]
+    Nudge,
+    All,
+}
+impl WakeOn {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Nudge => "nudge",
+            Self::All => "all",
+        }
+    }
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "nudge" => Some(Self::Nudge),
+            "all" => Some(Self::All),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetWakeOn {
+    pub value: WakeOn,
+    pub operation: OperationId,
+    pub claim: CallerClaim,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WakeOnQuery {
+    pub seat: SeatId,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MessageDeliveryModesQuery {
@@ -1066,7 +1114,10 @@ impl Command {
             Self::SendMessage(v) => Some(&v.claim),
             Self::Ack(v) | Self::AckDisplayed(v) => Some(&v.claim),
             Self::AckModDelivered(v) => Some(&v.claim),
+            Self::DeliveryPull(v) => Some(&v.claim),
+            Self::DeliveryConfirm(v) => Some(&v.claim),
             Self::CompleteInboxDelivery(v) => Some(&v.claim),
+            Self::SetWakeOn(v) => Some(&v.claim),
             Self::Leave(v) => Some(&v.claim),
             Self::SetTopic(v) => Some(&v.claim),
             Self::SetThreadName(v) => Some(&v.claim),
@@ -1212,6 +1263,8 @@ impl Command {
             {
                 Err("invalid mod delivery ack batch")
             }
+            Self::DeliveryPull(pull) => pull.validate(),
+            Self::DeliveryConfirm(confirm) => confirm.validate(),
             _ => Ok(()),
         }
     }
@@ -1290,8 +1343,12 @@ pub enum PermitMutation {
     AckDisplayed(Ack),
     /// Mod delivery ack (spec D6): settles per id under the daemon's decision.
     AckModDelivered(AckModDelivered),
+    /// Hook-pull settlement (delivery-policy DP4).
+    DeliveryConfirm(crate::protocol::delivery::DeliveryConfirm),
     /// Presentation bookkeeping only; never an ACK or adoption.
     CompleteInboxDelivery(CompleteInboxDelivery),
+    /// Wake preference of the caller's own seat; wake eligibility only.
+    SetWakeOn(SetWakeOn),
     Leave(Leave),
     SetTopic(SetTopic),
     SetThreadName(SetThreadName),
@@ -1326,7 +1383,9 @@ impl TryFrom<Command> for PermitMutation {
             Command::Ack(v) => Ok(Self::Ack(v)),
             Command::AckDisplayed(v) => Ok(Self::AckDisplayed(v)),
             Command::AckModDelivered(v) => Ok(Self::AckModDelivered(v)),
+            Command::DeliveryConfirm(v) => Ok(Self::DeliveryConfirm(v)),
             Command::CompleteInboxDelivery(v) => Ok(Self::CompleteInboxDelivery(v)),
+            Command::SetWakeOn(v) => Ok(Self::SetWakeOn(v)),
             Command::Leave(v) => Ok(Self::Leave(v)),
             Command::SetTopic(v) => Ok(Self::SetTopic(v)),
             Command::SetThreadName(v) => Ok(Self::SetThreadName(v)),

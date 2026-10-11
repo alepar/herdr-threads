@@ -34,6 +34,11 @@ pub const COOPERATIVE_MOD_CHANNEL_PROVENANCE: &str = "cooperative_mod_channel";
 /// TRUST-POLICY A3: receipt action observation (and lazy completion claim)
 /// for an item the mod reported delivered (spec D6). Not proof of reading.
 pub const COOPERATIVE_MOD_DELIVERY_PROVENANCE: &str = "cooperative_mod_delivery";
+/// TRUST-POLICY A3: receipt action observation (and lazy completion claim) for
+/// an item the daemon recorded as offered to the binding generation by a
+/// `DeliveryPull` and the hook reported found in the session's transcript
+/// (delivery-policy DP5/DP6). Not proof of reading.
+pub const COOPERATIVE_HOOK_DELIVERY_PROVENANCE: &str = "cooperative_hook_delivery";
 
 /// Whether Herdr actually reports a registered native host kind. Registry
 /// metadata alone is never evidence of native recognition or continuity.
