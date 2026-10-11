@@ -11044,50 +11044,69 @@ fn presentation_owner_replay_pruned_all_passive_page_preserves_current_outlook()
 #[test]
 fn presentation_owner_replay_pruned_all_allows_real_logical_allocation_bookkeeping() {
     use crate::protocol::{commands::DeliveryMode, delivery::DeliveryPullReplyV2};
-    let mut window = OfferWindowFixture::new(true);
-    let id = window.send(0, DeliveryMode::Ordinary, "captured old");
-    window.drain(1);
-    for _ in 0..4 {
-        window.pull();
+    let mut observed_outlook_change = false;
+    for before in [false, true] {
+        let mut window = OfferWindowFixture::new(true);
+        let id = window.send(0, DeliveryMode::Ordinary, "captured old");
+        window.drain(1);
+        for _ in 0..4 {
+            window.pull();
+        }
+        canonical_lazy_invitation_backlog(
+            &window.f,
+            &window.recipient,
+            &window.sender,
+            1,
+            "prune-logical-old",
+        );
+        assert!(matches!(
+            window.raw_watch_pull(),
+            DeliveryPullReplyV2::Page(_)
+        ));
+        window.replace_watch();
+        let replay = window.raw_watch_pull();
+        window.confirm_nonmessage_presentation(&replay);
+        {
+            let mut ledger = window.f.state.lock();
+            let entry = ledger
+                .seat_mut(
+                    &window.recipient.seat,
+                    window.recipient.binding_generation,
+                    window.recipient.native_session.as_str(),
+                )
+                .unwrap();
+            entry.record(&id, window.f.clock.utc_now(), false);
+            entry.more_pending = before;
+        }
+        let fresh = window.send(1, DeliveryMode::Ordinary, "independent logical allocation");
+        assert_eq!(
+            owner_outlook(&window).0,
+            before,
+            "logical allocation starts with the seeded outlook"
+        );
+        let old_stamp = window.offers()[&id];
+        let DeliveryPullReplyV2::Page(page) = window.raw_watch_pull() else {
+            panic!("logical output")
+        };
+        assert!(page.offered.contains(&fresh));
+        assert!(!page.offered.contains(&id));
+        assert_eq!(window.offers()[&fresh].count, 1);
+        assert_eq!(
+            window.offers()[&id],
+            old_stamp,
+            "blocked captured offer remains unchanged"
+        );
+        assert_eq!(old_stamp.count, 2);
+        assert_eq!(
+            owner_outlook(&window).0,
+            page.more,
+            "legitimate logical allocation retains normal bookkeeping"
+        );
+        observed_outlook_change |= before != page.more;
     }
-    canonical_lazy_invitation_backlog(
-        &window.f,
-        &window.recipient,
-        &window.sender,
-        1,
-        "prune-logical-old",
-    );
-    assert!(matches!(
-        window.raw_watch_pull(),
-        DeliveryPullReplyV2::Page(_)
-    ));
-    window.replace_watch();
-    let replay = window.raw_watch_pull();
-    window.confirm_nonmessage_presentation(&replay);
-    {
-        let mut ledger = window.f.state.lock();
-        let entry = ledger
-            .seat_mut(
-                &window.recipient.seat,
-                window.recipient.binding_generation,
-                window.recipient.native_session.as_str(),
-            )
-            .unwrap();
-        entry.record(&id, window.f.clock.utc_now(), false);
-        entry.more_pending = true;
-    }
-    let fresh = window.send(1, DeliveryMode::Ordinary, "independent logical allocation");
-    let DeliveryPullReplyV2::Page(page) = window.raw_watch_pull() else {
-        panic!("logical output")
-    };
-    assert!(page.offered.contains(&fresh));
-    assert!(!page.offered.contains(&id));
-    assert_eq!(window.offers()[&fresh].count, 1);
-    assert_eq!(window.offers()[&id].count, 2);
-    assert_eq!(
-        owner_outlook(&window).0,
-        page.more,
-        "legitimate logical allocation retains normal bookkeeping"
+    assert!(
+        observed_outlook_change,
+        "at least one actual logical allocation must change the prior outlook; unconditional preservation must fail"
     );
 }
 
