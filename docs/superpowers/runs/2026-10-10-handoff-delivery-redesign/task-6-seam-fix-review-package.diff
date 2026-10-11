@@ -1,0 +1,325 @@
+# Review package: 3f9167bd90cf19ddbd0b75f1282674628f607e43..HEAD
+
+## Commits
+f48857d7 Restore approved invitation warning runtime after schema composition
+
+## Files changed
+ src/store/schema.rs    |  32 +++++++---
+ tests/store/control.rs | 161 +++++++++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 185 insertions(+), 8 deletions(-)
+
+## Diff
+diff --git a/src/store/schema.rs b/src/store/schema.rs
+index d70ca0ee..19385d59 100644
+--- a/src/store/schema.rs
++++ b/src/store/schema.rs
+@@ -3627,23 +3627,23 @@ pub(crate) fn clear_warning_condition(
+ }
+ 
+ /// Optional recipient cutoff and global membership high water were captured
+ /// by a prior canonical close decision, before this event was materialized.
+ pub(crate) fn clear_warning_condition_at_snapshot(
+     tx: &Connection,
+     ordinal: i64,
+     decision_at: UtcMillis,
+     snapshot: Option<(i64, i64)>,
+ ) -> Result<(), ApiError> {
+-    let (kind,thread,affected,open): (String,String,String,String) = tx.query_row(
+-        "SELECT condition_kind,thread_id,affected_seat_id,open_warning_id FROM warning_conditions WHERE ordinal=?1 AND clear_warning_id IS NULL",
+-        [ordinal], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)),
++    let (kind,thread,affected,open,condition_id): (String,String,String,String,String) = tx.query_row(
++        "SELECT condition_kind,thread_id,affected_seat_id,open_warning_id,condition_id FROM warning_conditions WHERE ordinal=?1 AND clear_warning_id IS NULL",
++        [ordinal], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)),
+     ).map_err(store_error)?;
+     let thread_id = ThreadId::new(&thread);
+     let key = format!("warning-clear:{open}");
+     let payload = serde_json::json!({"event":"warning_cleared","condition":kind,"open_warning":open,"affected_seat":affected}).to_string();
+     let (clear, inserted) = append_event_once(
+         tx,
+         EventInput {
+             thread: &thread_id,
+             key: &key,
+             kind: "warn",
+@@ -3681,20 +3681,27 @@ pub(crate) fn clear_warning_condition_at_snapshot(
+     enqueue_transition_warning(
+         tx,
+         clear.as_str(),
+         seq,
+         &thread,
+         high_water,
+         &affected,
+         &kind,
+         snapshot.map(|(cutoff, _)| cutoff),
+     )?;
++    // The original inviter retains the informational clear even after leaving.
++    // Unlike an open condition this projection does not enqueue wake work.
++    if kind == "invitation"
++        && let Some(origin) = super::effective::invitation_originator(tx, &condition_id)?
++    {
++        tx.execute("INSERT OR IGNORE INTO warning_recipients(warning_id,seat_id,generation) SELECT ?1,id,?3 FROM seats WHERE id=?2 AND state!='retired'",params![clear.as_str(),origin,seq]).map_err(store_error)?;
++    }
+     Ok(())
+ }
+ 
+ /// Close only a condition opened by this schema, once every warned receipt
+ /// under its thread/recipient backlog has ceased to be required and pending.
+ pub fn clear_warning_conditions_for_receipts(
+     tx: &Transaction<'_>,
+     thread: &str,
+     seat: &str,
+     decision_at: UtcMillis,
+@@ -3808,31 +3815,31 @@ pub fn record_overdue_with_decision_seq(
+ fn record_overdue_inner(
+     tx: &Transaction<'_>,
+     obligation: &ObligationRef,
+     basis: &TimeBasis,
+     decision_at: UtcMillis,
+     decision_seq: Option<u64>,
+ ) -> Result<OverdueOutcome, ApiError> {
+     let (thread, seat, deadline, state, source_message, source_invitation, key, manifest_receipt) =
+         match obligation {
+             ObligationRef::Invitation(id) => {
+-                let row: (String, String, i64, String) = tx
++                let row: (String, String, Option<i64>, String) = tx
+                 .query_row(
+-                    "SELECT i.thread_id, i.seat_id, i.deadline_at, CASE WHEN EXISTS(SELECT 1 FROM invitation_rejections rejection WHERE rejection.invitation_id=i.id) THEN 'rejected' WHEN c.invitation_id IS NOT NULL THEN 'cancelled' ELSE i.state END FROM invitations i LEFT JOIN invitation_cancellations c ON c.invitation_id=i.id WHERE i.id=?1",
++                    "SELECT i.thread_id, i.seat_id, CASE WHEN i.confirmation='lazy' THEN NULL ELSE i.deadline_at END, CASE WHEN EXISTS(SELECT 1 FROM invitation_rejections rejection WHERE rejection.invitation_id=i.id) THEN 'rejected' WHEN c.invitation_id IS NOT NULL THEN 'cancelled' ELSE i.state END FROM invitations i LEFT JOIN invitation_cancellations c ON c.invitation_id=i.id WHERE i.id=?1",
+                     [id.as_str()],
+                     |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                 )
+                 .map_err(store_error)?;
+                 (
+                     ThreadId::new(row.0),
+                     SeatId::new(row.1),
+-                    Some(row.2),
++                    row.2,
+                     row.3,
+                     None,
+                     Some(id.clone()),
+                     format!("overdue:invitation:{}", id.as_str()),
+                     false,
+                 )
+             }
+             ObligationRef::Receipt { message, seat } => {
+                 let row = effective_receipt(tx, message.as_str(), seat.as_str())?
+                     .ok_or_else(|| api_error(ErrorCode::NotFound, "receipt obligation missing"))?;
+@@ -4053,32 +4060,41 @@ fn record_overdue_inner(
+                 |r| r.get(0),
+             )
+             .map_err(store_error)?;
+         let interval_high_water: i64 = tx
+             .query_row(
+                 "SELECT COALESCE(MAX(ordinal),0) FROM membership_intervals WHERE thread_id=?1",
+                 [thread.as_str()],
+                 |r| r.get(0),
+             )
+             .map_err(store_error)?;
+-        tx.execute("INSERT INTO warning_conditions(condition_kind,thread_id,condition_id,affected_seat_id,open_warning_id,opened_seq) VALUES (?1,?2,?3,?4,?5,?6)",
+-            params![condition.0,thread.as_str(),condition.1,seat.as_str(),warning.as_str(),event_seq]).map_err(store_error)?;
++        let origin = source_invitation
++            .as_ref()
++            .map(|id| super::effective::invitation_originator(tx, id.as_str()))
++            .transpose()?
++            .flatten();
++        tx.execute("INSERT INTO warning_conditions(condition_kind,thread_id,condition_id,affected_seat_id,open_warning_id,opened_seq,invitation_originator_instance_id,invitation_originator_seat_id) VALUES (?1,?2,?3,?4,?5,?6,CASE WHEN ?7 IS NOT NULL THEN (SELECT instance_id FROM threads WHERE id=?2) END,?7)",
++            params![condition.0,thread.as_str(),condition.1,seat.as_str(),warning.as_str(),event_seq,origin]).map_err(store_error)?;
+         enqueue_transition_warning(
+             tx,
+             warning.as_str(),
+             event_seq,
+             thread.as_str(),
+             interval_high_water,
+             seat.as_str(),
+             condition.0,
+             None,
+         )?;
++        if let Some(origin) = origin {
++            tx.execute("INSERT OR IGNORE INTO warning_recipients(warning_id,seat_id,generation) SELECT ?1,id,?3 FROM seats WHERE id=?2 AND state!='retired'",params![warning.as_str(),origin,event_seq]).map_err(store_error)?;
++            tx.execute("INSERT INTO wake_work(seat_id,reason_bits,attention_version) SELECT id,4,1 FROM seats WHERE id=?1 AND state!='retired' ON CONFLICT(seat_id) DO UPDATE SET reason_bits=reason_bits|4,attention_version=attention_version+1",[origin]).map_err(store_error)?;
++        }
+     }
+     Ok(OverdueOutcome {
+         warning: Some(warning),
+         inserted,
+     })
+ }
+ 
+ pub fn bump_filter_revision(
+     tx: &Transaction<'_>,
+     instance: &str,
+diff --git a/tests/store/control.rs b/tests/store/control.rs
+index af6cd304..9bbf608e 100644
+--- a/tests/store/control.rs
++++ b/tests/store/control.rs
+@@ -11013,10 +11013,171 @@ fn invitation_confirmation_native_open_condition_survives_committed_notice_offer
+ 
+ #[test]
+ fn invitation_confirmation_mod_open_condition_survives_committed_notice_offer() {
+     invitation_origin_wake_after_notice_offer(true, false);
+ }
+ 
+ #[test]
+ fn invitation_confirmation_discovery_survives_committed_notice_offer_and_completed_attribution() {
+     invitation_origin_wake_after_notice_offer(false, true);
+ }
++
++#[test]
++fn invitation_confirmation_late_lazy_accept_has_no_overdue_condition_or_wake() {
++    use crate::protocol::commands::InvitationConfirmation;
++    let (context, mut conn, path, clock, thread, invitation) =
++        rejection_offer_with_policy(Harness::Codex, Some(InvitationConfirmation::Lazy));
++    clock.0.store(400_000, Ordering::SeqCst);
++    let budget = crate::protocol::time::CallBudget {
++        deadline: MonoInstant(u64::MAX),
++        cancellation: Default::default(),
++    };
++    let command = Accept {
++        thread: thread.clone(),
++        claim: claim("s2"),
++        operation: OperationId::new("late-lazy-accept"),
++    };
++    let hash = cooperative_payload_hash("accept", &command).unwrap();
++    assert!(matches!(
++        accept(
++            &context,
++            &mut conn,
++            &budget,
++            &command,
++            permit(
++                "s2",
++                "late-lazy-accept",
++                ObligationRef::Invitation(invitation.clone()),
++                hash,
++                400_000
++            )
++        )
++        .unwrap(),
++        CommandResult::Accepted(_)
++    ));
++    let stored: (String, i64, String, i64) = conn.query_row(
++        "SELECT state,accepted_at,accepted_actor_seat_id,accepted_generation FROM invitations WHERE id=?1",
++        [invitation.as_str()], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).unwrap();
++    assert_eq!(stored, ("accepted".into(), 400_000, "s2".into(), 1));
++    assert_eq!(
++        conn.query_row(
++            "SELECT state FROM memberships WHERE thread_id=?1 AND seat_id='s2'",
++            [thread.as_str()],
++            |r| r.get::<_, String>(0)
++        )
++        .unwrap(),
++        "joined"
++    );
++    assert_no_lazy_overdue_effects(&conn, &invitation);
++    drop(conn);
++    drop(context);
++    let _ = std::fs::remove_file(path);
++}
++
++#[test]
++fn invitation_confirmation_late_lazy_retirement_has_no_overdue_condition_or_wake() {
++    use crate::{
++        ports::{ClosureEvidence, WorkAdmission},
++        protocol::commands::InvitationConfirmation,
++    };
++    let (context, mut conn, path, clock, _, invitation) =
++        rejection_offer_with_policy(Harness::Codex, Some(InvitationConfirmation::Lazy));
++    clock.0.store(400_000, Ordering::SeqCst);
++    let job = begin_retirement(
++        &context,
++        &mut conn,
++        SeatId::new("s2"),
++        ClosureEvidence {
++            host_boot: HostBootId::new("b"),
++            epoch: 1,
++            target: HostTargetId::new("s2"),
++            generation: 1,
++        },
++    )
++    .unwrap();
++    let budget = crate::protocol::time::CallBudget {
++        deadline: MonoInstant(u64::MAX),
++        cancellation: Default::default(),
++    };
++    let mut complete = false;
++    for _ in 0..20 {
++        let progress = advance_retirement(
++            &context,
++            &mut conn,
++            job.id.clone(),
++            WorkAdmission::Background,
++            &budget,
++        )
++        .unwrap();
++        assert!(progress.last_error.is_none());
++        if progress.complete {
++            complete = true;
++            break;
++        }
++    }
++    assert!(complete, "the real bounded retirement route must finish");
++    assert_eq!(
++        conn.query_row(
++            "SELECT state,retired_at FROM invitations WHERE id=?1",
++            [invitation.as_str()],
++            |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
++        )
++        .unwrap(),
++        ("recipient_retired".into(), 400_000)
++    );
++    assert_eq!(
++        conn.query_row("SELECT state FROM seats WHERE id='s2'", [], |r| r
++            .get::<_, String>(0))
++            .unwrap(),
++        "retired"
++    );
++    assert_eq!(
++        conn.query_row(
++            "SELECT count(*) FROM invitations WHERE id=?1 AND accepted_at IS NOT NULL",
++            [invitation.as_str()],
++            |r| r.get::<_, i64>(0)
++        )
++        .unwrap(),
++        0
++    );
++    assert_no_lazy_overdue_effects(&conn, &invitation);
++    drop(conn);
++    drop(context);
++    let _ = std::fs::remove_file(path);
++}
++
++fn assert_no_lazy_overdue_effects(conn: &Connection, invitation: &InvitationId) {
++    assert_eq!(conn.query_row("SELECT count(*) FROM warning_conditions WHERE condition_kind='invitation' AND condition_id=?1",[invitation.as_str()],|r|r.get::<_,i64>(0)).unwrap(),0);
++    assert_eq!(
++        conn.query_row(
++            "SELECT count(*) FROM messages WHERE kind='warn' AND source_invitation_id=?1",
++            [invitation.as_str()],
++            |r| r.get::<_, i64>(0)
++        )
++        .unwrap(),
++        0
++    );
++    assert_eq!(
++        conn.query_row(
++            "SELECT count(*) FROM wake_work WHERE seat_id='s1' AND reason_bits!=0",
++            [],
++            |r| r.get::<_, i64>(0)
++        )
++        .unwrap(),
++        0
++    );
++    assert!(
++        crate::store::attention::wake_seat_attention(conn, "s1")
++            .unwrap()
++            .attention
++            .latest_warning_seq
++            .is_none()
++    );
++    assert_eq!(
++        crate::store::seats::mod_seat_view(conn, "i", &SeatId::new("s1"))
++            .unwrap()
++            .unwrap()
++            .fingerprint
++            .other_pending,
++        0
++    );
++}

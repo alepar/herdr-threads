@@ -1,0 +1,291 @@
+# Review package: 50c397f4196002cca4e8ee65557da049f974fd02..19afa478b8b71141ea958d96278302a808ef9ed0
+
+## Commits
+19afa478 Discover open inviter conditions after notice settlement
+
+## Files changed
+ src/store/attention.rs             | 10 ++++--
+ tests/store/control.rs             | 70 ++++++++++++++++++++++++++++++++++++--
+ tests/store/wake_discovery_cost.rs |  6 ++--
+ 3 files changed, 77 insertions(+), 9 deletions(-)
+
+## Diff
+diff --git a/src/store/attention.rs b/src/store/attention.rs
+index c3ea7630..d42e2187 100644
+--- a/src/store/attention.rs
++++ b/src/store/attention.rs
+@@ -1039,24 +1039,24 @@ pub fn seat_pending_warnings(
+ }
+ 
+ /// One O(1) existence probe of a pending access path: the index it must use
+ /// and the statement. `?1` is the seat; the programmatic probe also takes
+ /// `?2`, the seat's offered notice frontier.
+ pub struct WakeProbe {
+     pub index: &'static str,
+     pub sql: &'static str,
+ }
+ 
+-/// The six pending access paths wake discovery probes per live non-human
++/// The seven pending access paths wake discovery probes per live non-human
+ /// seat (spec D2), in probe order. Each is an `INDEXED BY` seat-leading
+ /// existence lookup. `wake_work` is deliberately not probed.
+-pub const WAKE_PROBES: [WakeProbe; 6] = [
++pub const WAKE_PROBES: [WakeProbe; 7] = [
+     WakeProbe {
+         index: "digest_pending_invitations_seat",
+         sql: "SELECT EXISTS(SELECT 1 FROM digest_pending_invitations INDEXED BY digest_pending_invitations_seat WHERE seat_id=?1)",
+     },
+     WakeProbe {
+         index: "digest_pending_manifest_receipts_seat",
+         sql: "SELECT EXISTS(SELECT 1 FROM digest_pending_manifest_receipts INDEXED BY digest_pending_manifest_receipts_seat WHERE seat_id=?1)",
+     },
+     WakeProbe {
+         index: "receipts_required_seat_pending",
+@@ -1067,23 +1067,27 @@ pub const WAKE_PROBES: [WakeProbe; 6] = [
+         sql: "SELECT EXISTS(SELECT 1 FROM digest_open_warning_recipients INDEXED BY digest_open_warning_recipients_seat WHERE seat_id=?1)",
+     },
+     WakeProbe {
+         index: "digest_open_warnings_affected",
+         sql: "SELECT EXISTS(SELECT 1 FROM digest_open_warnings INDEXED BY digest_open_warnings_affected WHERE affected_seat_id=?1)",
+     },
+     WakeProbe {
+         index: "digest_programmatic_warnings_seat",
+         sql: "SELECT EXISTS(SELECT 1 FROM digest_programmatic_warnings INDEXED BY digest_programmatic_warnings_seat WHERE seat_id=?1 AND ordinal>?2)",
+     },
++    WakeProbe {
++        index: "warning_conditions_invitation_origin",
++        sql: "SELECT EXISTS(SELECT 1 FROM warning_conditions INDEXED BY warning_conditions_invitation_origin WHERE invitation_originator_instance_id=(SELECT instance_id FROM seats WHERE id=?1) AND invitation_originator_seat_id=?1 AND condition_kind='invitation' AND clear_warning_id IS NULL AND invitation_originator_seat_id IS NOT NULL)",
++    },
+ ];
+ 
+-/// Does any pending access path hold a row for the seat? At most six O(1)
++/// Does any pending access path hold a row for the seat? At most seven O(1)
+ /// probes, stopping at the first hit. A hit is only a reason to examine the
+ /// seat: the canonical judges still decide whether the work is actionable.
+ pub fn seat_has_pending_rows(db: &Connection, seat_id: &str) -> Result<bool, ApiError> {
+     for probe in &WAKE_PROBES {
+         let hit: bool = if probe.index == "digest_programmatic_warnings_seat" {
+             let frontier = notice_frontier(db, seat_id)?;
+             db.prepare_cached(probe.sql)
+                 .map_err(store_error)?
+                 .query_row(params![seat_id, frontier], |r| r.get(0))
+         } else {
+diff --git a/tests/store/control.rs b/tests/store/control.rs
+index cbd1fcdb..af6cd304 100644
+--- a/tests/store/control.rs
++++ b/tests/store/control.rs
+@@ -10780,21 +10780,21 @@ fn invitation_confirmation_duplicate_caller_cannot_change_origin_policy_deadline
+             |r| r.get::<_, i64>(0)
+         )
+         .unwrap(),
+         attention
+     );
+     drop(conn);
+     drop(context);
+     let _ = std::fs::remove_file(path);
+ }
+ 
+-fn invitation_origin_wake_after_notice_offer(mod_path: bool) {
++fn invitation_origin_wake_after_notice_offer(mod_path: bool, discovery_path: bool) {
+     use crate::protocol::commands::InvitationConfirmation;
+     use crate::store::attention;
+     let (context, mut conn, path, clock, thread, invitation) =
+         rejection_offer_with_policy(Harness::Codex, Some(InvitationConfirmation::RequireAck));
+     let budget = crate::protocol::time::CallBudget {
+         deadline: MonoInstant(u64::MAX),
+         cancellation: Default::default(),
+     };
+     let leave_command = Leave {
+         thread: thread.clone(),
+@@ -10816,20 +10816,50 @@ fn invitation_origin_wake_after_notice_offer(mod_path: bool) {
+         ),
+     )
+     .unwrap();
+     clock.0.store(110, Ordering::SeqCst);
+     assert_eq!(
+         crate::store::invitation_due::scan_invitation_due_batch(&context, &mut conn, None, 100)
+             .unwrap()
+             .warnings_added,
+         1
+     );
++    if discovery_path {
++        let warning: String = conn
++            .query_row(
++                "SELECT warning_message_id FROM invitations WHERE id=?1",
++                [invitation.as_str()],
++                |r| r.get(0),
++            )
++            .unwrap();
++        while crate::store::materialization::advance_work(
++            &mut conn,
++            &format!("work:{warning}"),
++            crate::ports::DurableWorkAdmission::new(16).unwrap(),
++            &budget,
++            clock.as_ref(),
++        )
++        .unwrap()
++        .has_more
++        {}
++        let status: String = conn
++            .query_row(
++                "SELECT status FROM warning_jobs WHERE warning_id=?1",
++                [&warning],
++                |r| r.get(0),
++            )
++            .unwrap();
++        assert_eq!(
++            status, "complete",
++            "discovery must not depend on attribution backlog"
++        );
++    }
+     let carried: Vec<_> = attention::notice_offer_page(&conn, "s1", 10)
+         .unwrap()
+         .into_iter()
+         .map(|row| row.notice)
+         .collect();
+     assert_eq!(carried.len(), 1);
+     let tx = conn.transaction().unwrap();
+     tx.execute("INSERT INTO warning_offer(seat_id,binding_generation,execution_id,offered_through_seq) SELECT 's1',1,'00000000-0000-4000-8000-000000000001',decision_seq FROM host_instances WHERE id='i'", []).unwrap();
+     attention::settle_carried_notices(
+         &tx,
+@@ -10847,20 +10877,37 @@ fn invitation_origin_wake_after_notice_offer(mod_path: bool) {
+         "committed informational offer must stay settled"
+     );
+     assert!(
+         attention::seat_pending_warnings(&conn, "s1", &|| Ok(()))
+             .unwrap()
+             .items
+             .is_empty(),
+         "open waking condition must not revive informational delivery"
+     );
+     let origin = SeatId::new("s1");
++    let discovery_high = u64::try_from(
++        conn.query_row("SELECT MAX(ordinal) FROM seats", [], |r| r.get::<_, i64>(0))
++            .unwrap(),
++    )
++    .unwrap();
++    if discovery_path {
++        let discovery =
++            crate::store::discover_wake_candidates(&conn, "i", 0, discovery_high, 100, &|| Ok(()))
++                .unwrap();
++        assert!(
++            discovery
++                .items
++                .iter()
++                .any(|candidate| candidate.seat == origin && candidate.has_actionable_work()),
++            "actual native discovery must retain the otherwise-idle left inviter after committed notice offer and completed attribution"
++        );
++    }
+     if mod_path {
+         let view = crate::store::seats::mod_seat_view(&conn, "i", &origin)
+             .unwrap()
+             .unwrap();
+         assert_eq!(
+             view.fingerprint.other_pending, 1,
+             "mod retains original inviter open condition after notice offer"
+         );
+     } else {
+         let scan = attention::wake_seat_attention(&conn, "s1").unwrap();
+@@ -10928,31 +10975,48 @@ fn invitation_origin_wake_after_notice_offer(mod_path: bool) {
+     );
+     assert_eq!(
+         crate::store::seats::mod_seat_view(&conn, "i", &origin)
+             .unwrap()
+             .unwrap()
+             .fingerprint
+             .other_pending,
+         0,
+         "clear is passive for mod attention"
+     );
++    if discovery_path {
++        let discovery =
++            crate::store::discover_wake_candidates(&conn, "i", 0, discovery_high, 100, &|| Ok(()))
++                .unwrap();
++        assert!(
++            !discovery
++                .items
++                .iter()
++                .any(|candidate| candidate.seat == origin),
++            "passive clear cannot keep the original inviter in native discovery"
++        );
++    }
+     let clears = attention::notice_offer_page(&conn, "s1", 10).unwrap();
+     assert_eq!(
+         clears.len(),
+         1,
+         "only the fresh passive clear notice remains deliverable"
+     );
+     assert_ne!(clears[0].notice.warning, carried[0].warning);
+     drop(conn);
+     drop(context);
+     let _ = std::fs::remove_file(path);
+ }
+ 
+ #[test]
+ fn invitation_confirmation_native_open_condition_survives_committed_notice_offer() {
+-    invitation_origin_wake_after_notice_offer(false);
++    invitation_origin_wake_after_notice_offer(false, false);
+ }
+ 
+ #[test]
+ fn invitation_confirmation_mod_open_condition_survives_committed_notice_offer() {
+-    invitation_origin_wake_after_notice_offer(true);
++    invitation_origin_wake_after_notice_offer(true, false);
++}
++
++#[test]
++fn invitation_confirmation_discovery_survives_committed_notice_offer_and_completed_attribution() {
++    invitation_origin_wake_after_notice_offer(false, true);
+ }
+diff --git a/tests/store/wake_discovery_cost.rs b/tests/store/wake_discovery_cost.rs
+index 39438155..5e947781 100644
+--- a/tests/store/wake_discovery_cost.rs
++++ b/tests/store/wake_discovery_cost.rs
+@@ -193,21 +193,21 @@ fn wake_discovery_scales_with_live_seats_only() {
+         bound(200)
+     );
+     let grown = units(100, BASE.grown("all"));
+     assert!(
+         grown <= bound(100),
+         "10x history at 100 live: {grown} exceeds {}",
+         bound(100)
+     );
+ }
+ 
+-// Kills: any of the seven access paths losing its INDEXED BY pin (a silent fall
++// Kills: any of the nine access paths losing its INDEXED BY pin (a silent fall
+ // back to a scan) or the pinned index no longer serving the query.
+ #[test]
+ fn every_access_path_prepares_indexed_by() {
+     let db = Connection::open_in_memory().unwrap();
+     schema::initialize(&db, || crate::protocol::time::UtcMillis(0)).unwrap();
+     let plan = |sql: &str| -> String {
+         let mut stmt = db.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+         let n = stmt.parameter_count();
+         let rows = stmt
+             .query_map(
+@@ -218,22 +218,22 @@ fn every_access_path_prepares_indexed_by() {
+         rows.collect::<Result<Vec<_>, _>>().unwrap().join("\n")
+     };
+     let mut paths: Vec<(&str, &str)> = attention::WAKE_PROBES
+         .iter()
+         .map(|p| (p.index, p.sql))
+         .collect();
+     paths.push(("seats_live_ordinal", WAKE_SEAT_WALK));
+     paths.push(("occupant_bindings_current", WAKE_SEAT_WALK));
+     assert_eq!(
+         paths.len(),
+-        8,
+-        "six pending probes, the live seat walk and the human exclusion"
++        9,
++        "seven pending probes, the live seat walk and the human exclusion"
+     );
+     for (index, sql) in paths {
+         assert!(
+             sql.contains(&format!("INDEXED BY {index}")),
+             "{index} is not pinned in: {sql}"
+         );
+         db.prepare(sql)
+             .unwrap_or_else(|e| panic!("{index} does not prepare: {e}"));
+         let detail = plan(sql);
+         assert!(detail.contains(index), "{index} unused by plan:\n{detail}");

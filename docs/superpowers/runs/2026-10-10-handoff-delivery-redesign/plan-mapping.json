@@ -156,7 +156,14 @@
       "tests/cli/lazy_display.rs",
       "migrations/0031_invitation_warning_origin.sql",
       "tests/store/schema.rs",
-      "tests/store/wake_discovery_cost.rs"
+      "tests/store/wake_discovery_cost.rs",
+      "tests/store/topology_handoff.rs",
+      "tests/store/topology_handoff_schema.rs",
+      "tests/store/lazy26_prerequisite.rs",
+      "tests/store/lazy_schema.rs",
+      "tests/store/handoff_fences.rs",
+      "tests/integration/channel_activation.rs",
+      "tests/store/effective.rs"
     ]
   },
   {
@@ -229,7 +236,8 @@
       "scripts/canary/test_seam_integration.py",
       "tests/harness/canary_payloads.rs",
       "src/cli/doctor.rs",
-      "scripts/validate-native-demo.py"
+      "scripts/validate-native-demo.py",
+      "tests/native/demo/test_demo_verify.py"
     ]
   },
   {
