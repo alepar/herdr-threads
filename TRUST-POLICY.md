@@ -276,7 +276,8 @@ model open work, and summary closure never changes receipt state or installs glo
   Subagents never supersede and are never superseded, and a supersede-induced disconnect never triggers
   fast-forward. A superseded binding never reconnects on a plain call.
   A lineage successor
-  supersedes its predecessor only after copying its cursors. A seat is active while any open binding is
+  supersedes its predecessor only after copying its cursors (except the plain-first late link, see
+  *Lineage*). A seat is active while any open binding is
   connected, or while its open human binding sits on a resolved seat.
 - *Liveness worker (ht-54r.23)*: the daemon re-checks the process fingerprint of every connected,
   open, non-human binding on a cadence (5 s) and, for the candidate's seat, before each wake decision.

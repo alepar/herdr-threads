@@ -784,3 +784,88 @@ fn binding_enrolled_after_leave_gets_no_old_lazy_history() {
             .unwrap()
     );
 }
+
+/// The warning refs of seat b's bound v2 page for `claim`.
+fn warning_refs(fx: &Fx, claim: &CallerClaim) -> Vec<String> {
+    let CommandResult::InboxBatchV2(page) = query_with_output(
+        &fx.context,
+        "i",
+        &Command::InboxBatchV2(InboxQuery {
+            claim: Some(claim.clone()),
+            seat: Some(SeatId::new("b")),
+            page: PageRequest {
+                limit: 50,
+                max_bytes: 60_000,
+                cursor: None,
+            },
+        }),
+        &OutputSpec::default(),
+        &budget(),
+    )
+    .unwrap() else {
+        panic!("v2 page")
+    };
+    page.items
+        .into_iter()
+        .filter_map(|item| match item {
+            InboxBatchV2Item::Warning { warning, .. } => Some(warning.as_str().to_owned()),
+            _ => None,
+        })
+        .collect()
+}
+
+// Main review F2 follow-up. Kills: a bound read whose warning cutoff is the seat's newest
+// top-level binding's `warning_offer` (nb2) instead of the reader's own (nb1 was already offered
+// the warning; nb2 was not), and a subagent cutoff that ignores its parent's non-zero frontier.
+#[test]
+fn bound_warning_cutoff_is_the_reading_bindings_own_offer_frontier() {
+    let fx = fx("bi-warning-cutoff");
+    let nb1 = binding_of(&fx, &claim_b1());
+    let nb2 = binding_of(&fx, &claim_b2());
+    insert_binding(&fx.conn, "b", "nb1", EXEC_B1, Some((nb1.as_str(), "ag1")));
+    insert_binding(&fx.conn, "b", "nb2", EXEC_B2, Some((nb2.as_str(), "ag2")));
+    let decision: i64 = fx
+        .conn
+        .query_row(
+            "SELECT decision_seq+1 FROM host_instances WHERE id='i'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    fx.conn.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,frozen_duration_ms,deadline_at) VALUES('inv','t','b',2,'pending',0,?1,300,300)", [decision]).unwrap();
+    let warned = decision + 1;
+    fx.conn.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,event_json,decision_seq,decision_at) VALUES('i','warning','t',100,'warn','{}',?1,0)", [warned]).unwrap();
+    fx.conn.execute("INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id) VALUES('warning',?1,'t',100,'b','invitation','inv')", [warned]).unwrap();
+    fx.conn
+        .execute(
+            "UPDATE host_instances SET decision_seq=?1 WHERE id='i'",
+            [warned],
+        )
+        .unwrap();
+    // nb1 was offered the warning; nb2 (the seat view: the newest top-level binding) was not.
+    for (binding, through) in [(&nb1, warned), (&nb2, warned - 1)] {
+        fx.conn
+            .execute(
+                "INSERT INTO warning_offer(binding_id,seat_id,offered_through_seq) VALUES (?1,'b',?2)",
+                rusqlite::params![binding.as_str(), through],
+            )
+            .unwrap();
+    }
+    assert_eq!(
+        warning_refs(&fx, &claim_b2()),
+        ["warning"],
+        "nb2 still owes it"
+    );
+    assert!(
+        warning_refs(&fx, &claim_b1()).is_empty(),
+        "nb1 was already offered it"
+    );
+    // A subagent without its own row reads its parent's frontier, not an empty one.
+    let sub1 = claim("b", "nb1", EXEC_B1, Some("ag1"));
+    let sub2 = claim("b", "nb2", EXEC_B2, Some("ag2"));
+    assert!(
+        warning_refs(&fx, &sub1).is_empty(),
+        "nb1's frontier covers it"
+    );
+    assert_eq!(warning_refs(&fx, &sub2), ["warning"]);
+}

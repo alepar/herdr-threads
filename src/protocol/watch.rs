@@ -20,15 +20,15 @@
 //! |---|---|---|
 //! | `message` | [`WatchMessage`] | the message id |
 //! | `lazy` | [`WatchMessage`] (`ack_required: false`) | the message id |
-//!
-//! A `message` line with `wakes: true` is a promoted `wake_on: all` lazy row; a `message` line
-//! with `ack_required: false` and no `wakes` is mail another binding already settled.
 //! | `attention` | `attention_version`, `text` | `attention:<version>` |
 //! | `attention_cleared` | `attention_version` | `attention_cleared:<version>` |
 //! | `status` | `state`, `reason`, `exit` | `status:<n>` (per-process counter from 0) |
 //!
 //! After an `attention` line, a drain that finds no invitation or warning
 //! prints `attention_cleared`.
+//!
+//! A `message` line with `wakes: true` is a promoted `wake_on: all` lazy row; a `message` line
+//! with `ack_required: false` and no `wakes` is mail another binding already settled.
 //!
 //! Every line carries `schema` (1, [`WATCH_LINE_SCHEMA`]), `id`, `kind`, and
 //! for message and lazy lines `truncated`. Consumers ignore unknown keys.

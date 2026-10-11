@@ -2383,6 +2383,15 @@ fn bound_reader_informational_notice_follows_its_own_frontier() {
         Some(true),
         "A was never offered n1"
     );
-    // A subagent of A reads its parent's frontier until it has its own.
+    // A subagent of A reads its parent's frontier until it has its own: once A is offered n1
+    // (a non-zero parent frontier), C no longer owes it, which an empty own frontier would.
     assert_eq!(pending(Some("bind-C")), Some(true));
+    display(&db, "bind-A", 0);
+    assert!(binding_notice_frontier(&db, "bind-A").unwrap() > 0);
+    assert_eq!(pending(Some("bind-A")), Some(false));
+    assert_eq!(
+        pending(Some("bind-C")),
+        Some(false),
+        "C follows A's frontier"
+    );
 }
