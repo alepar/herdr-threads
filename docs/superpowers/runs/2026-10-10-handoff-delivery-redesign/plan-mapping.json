@@ -115,7 +115,13 @@
       "tests/store/materialization.rs",
       "tests/store/receipts.rs",
       "migrations/0031_receipt_deadline_backfill.sql",
-      "src/store/receipts.rs"
+      "src/store/receipts.rs",
+      "tests/store/topology_handoff.rs",
+      "tests/store/topology_handoff_schema.rs",
+      "tests/store/lazy26_prerequisite.rs",
+      "tests/store/lazy_schema.rs",
+      "tests/store/handoff_fences.rs",
+      "tests/integration/channel_activation.rs"
     ]
   },
   {
@@ -149,7 +155,8 @@
       "tests/cli/watch.rs",
       "tests/cli/lazy_display.rs",
       "migrations/0031_invitation_warning_origin.sql",
-      "tests/store/schema.rs"
+      "tests/store/schema.rs",
+      "tests/store/wake_discovery_cost.rs"
     ]
   },
   {
@@ -170,7 +177,8 @@
       "tests/store/wake_discovery_cost.rs",
       "tests/scheduler/deadlines.rs",
       "tests/scheduler/poke_flow.rs",
-      "TRUST-POLICY.md"
+      "TRUST-POLICY.md",
+      "src/store/attention.rs"
     ]
   },
   {
@@ -189,7 +197,8 @@
       "tests/cli/skill.rs",
       "tests/cli/guidance.rs",
       "src/cli/watch.rs",
-      "src/cli/hook_inbox.rs"
+      "src/cli/hook_inbox.rs",
+      "tests/cli/watch.rs"
     ]
   },
   {
@@ -214,7 +223,13 @@
       "scripts/canary/test_manifest.py",
       "integrations/skill/SKILL.md",
       "integrations/claude/README.md",
-      "integrations/codex/README.md"
+      "integrations/codex/README.md",
+      "scripts/harness-canary.sh",
+      "scripts/canary/test_tier0_checks.py",
+      "scripts/canary/test_seam_integration.py",
+      "tests/harness/canary_payloads.rs",
+      "src/cli/doctor.rs",
+      "scripts/validate-native-demo.py"
     ]
   },
   {
