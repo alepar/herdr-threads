@@ -2086,24 +2086,56 @@ fn config9_foreground_and_background_agents_in_one_pane() {
     assert_ne!(b_bg.pid, Some(foreground_pid));
     assert_ne!(b_p.pid, Some(foreground_pid));
 
-    // The composer-wake predicate picks the foreground binding only (Herdr's foreground pid is
-    // available here, so the documented no-pid fallback is not the case under test).
+    // Kills: a composer wake that guesses. Asserted through the production predicate
+    // (`wake_targets` + `ReservedWakeAuthority::composer_choice`): the foreground binding only,
+    // and nothing for a pid no target holds. Herdr's foreground pid is available here.
     let wake_pid = u32::try_from(foreground_pid).unwrap();
-    let chosen = herdr_threads::store::wake::foreground_binding(
+    let targets = herdr_threads::store::wake::wake_targets(
         &smoke.db(),
         &herdr_threads::protocol::ids::SeatId::new(seat.as_str()),
-        wake_pid,
-    )
-    .unwrap()
-    .expect("a binding matches the foreground pid");
-    assert_eq!(chosen.binding_id.as_str(), b_fg.id);
-    let none = herdr_threads::store::wake::foreground_binding(
-        &smoke.db(),
-        &herdr_threads::protocol::ids::SeatId::new(seat.as_str()),
-        wake_pid.wrapping_add(7),
+        true,
     )
     .unwrap();
-    assert!(none.is_none(), "no match, no composer wake: {none:?}");
+    let mut target_ids: Vec<&str> = targets.iter().map(|t| t.binding.as_str()).collect();
+    target_ids.sort_unstable();
+    let mut expected_ids = vec![b_fg.id.as_str(), b_bg.id.as_str(), b_p.id.as_str()];
+    expected_ids.sort_unstable();
+    assert_eq!(
+        target_ids, expected_ids,
+        "the wake targets are the three bindings"
+    );
+    // One more than the largest target pid is, by construction, no target's pid.
+    let absent = targets
+        .iter()
+        .filter_map(|t| t.fingerprint_pid)
+        .max()
+        .unwrap()
+        + 1;
+    let authority = herdr_threads::ports::ReservedWakeAuthority::Cooperative {
+        terminal: herdr_threads::protocol::ids::TerminalId::new("t"),
+        incarnation: "i".into(),
+        binding_generation: None,
+        harness: None,
+        targets,
+    };
+    match authority.composer_choice(Some(wake_pid)) {
+        herdr_threads::ports::ComposerChoice::Binding(t) => assert_eq!(
+            t.binding.as_str(),
+            b_fg.id,
+            "the foreground binding is the composer target"
+        ),
+        other => panic!("the foreground binding is the composer target: {other:?}"),
+    }
+    assert_eq!(
+        authority.composer_choice(Some(absent)),
+        herdr_threads::ports::ComposerChoice::NoMatch,
+        "no match, no composer wake"
+    );
+    assert_eq!(
+        authority.composer_choice(None),
+        herdr_threads::ports::ComposerChoice::NoMatch,
+        "several targets, no foreground pid: no composer wake"
+    );
 
     // Each Claude session has its own mod channel; mail pushes to both.
     let mut fg_watch = smoke.watch(&fg);

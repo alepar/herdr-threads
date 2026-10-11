@@ -263,7 +263,7 @@ pub fn load_candidate(
 /// attention (invitations, receipts, warnings), which any binding can act on. Subagents,
 /// disconnected, ended and human bindings are never targets. One indexed query per seat; the
 /// per-binding unread probe only runs for a seat with no seat-level attention.
-pub(super) fn wake_targets(
+pub fn wake_targets(
     db: &Connection,
     seat: &SeatId,
     seat_attention: bool,
@@ -346,27 +346,6 @@ fn wake_target_rows(
         });
     }
     Ok(targets)
-}
-
-/// The composer-wake predicate (spec §3 Wake, roast r2): the connected top-level binding of
-/// `seat` whose fingerprint pid is Herdr's pane foreground process `foreground_pid`. Exactly one
-/// match or none; there is no fallback to the latest touch or claim.
-pub fn foreground_binding(
-    db: &Connection,
-    seat: &SeatId,
-    foreground_pid: u32,
-) -> Result<Option<super::bindings::BindingRow>, ApiError> {
-    let mut matching = super::bindings::list_connected(db, seat)?
-        .into_iter()
-        .filter(|row| {
-            row.role == super::bindings::BindingRole::TopLevel
-                && row.harness != "human"
-                && row.fingerprint.is_some_and(|f| f.pid == foreground_pid)
-        });
-    Ok(match (matching.next(), matching.next()) {
-        (Some(only), None) => Some(only),
-        _ => None,
-    })
 }
 
 /// SQL true when an open binding on `seat_expr` belongs to a person (`me init`):

@@ -2252,10 +2252,11 @@ fn human_seat_is_never_woken() {
     let _ = std::fs::remove_file(path);
 }
 
-/// Kills: a foreground predicate that guesses (latest touch, first row) instead of requiring
-/// exactly one connected top-level binding whose fingerprint pid is the foreground pid.
+/// Kills: a composer predicate that guesses (latest touch, first row) instead of requiring
+/// exactly one connected top-level binding whose fingerprint pid is the foreground pid. This is
+/// the production pair: `wake_targets` filters, `ReservedWakeAuthority::composer_choice` decides.
 #[test]
-fn foreground_binding_is_the_unique_fingerprint_pid_match() {
+fn composer_choice_over_wake_targets_is_the_unique_fingerprint_pid_match() {
     let (store, path) = multi_store(&[
         row("a", "claude", 10),
         row("b", "codex", 20),
@@ -2272,10 +2273,17 @@ fn foreground_binding_is_the_unique_fingerprint_pid_match() {
     ]);
     let db = store.context.open_writer().unwrap();
     let seat = SeatId::new("s");
-    let found = |pid| {
-        crate::store::wake::foreground_binding(&db, &seat, pid)
-            .unwrap()
-            .map(|row| row.binding_id.as_str().to_owned())
+    let targets = crate::store::wake::wake_targets(&db, &seat, true).unwrap();
+    let authority = crate::ports::ReservedWakeAuthority::Cooperative {
+        terminal: crate::protocol::ids::TerminalId::new("t"),
+        incarnation: "i".into(),
+        binding_generation: None,
+        harness: None,
+        targets,
+    };
+    let found = |pid| match authority.composer_choice(Some(pid)) {
+        crate::ports::ComposerChoice::Binding(t) => Some(t.binding.as_str().to_owned()),
+        _ => None,
     };
     assert_eq!(found(10).as_deref(), Some("a"));
     assert_eq!(found(20).as_deref(), Some("b"));
@@ -2287,6 +2295,11 @@ fn foreground_binding_is_the_unique_fingerprint_pid_match() {
         "a disconnected binding is never the foreground agent"
     );
     assert_eq!(found(99), None);
+    assert_eq!(
+        authority.composer_choice(None),
+        crate::ports::ComposerChoice::NoMatch,
+        "no foreground pid, no composer wake"
+    );
     drop(db);
     drop(store);
     let _ = std::fs::remove_file(path);
