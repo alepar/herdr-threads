@@ -848,3 +848,46 @@ fn send_attention_completion_stamps_completed_at() {
         ("complete".into(), Some(999_999))
     );
 }
+
+/// Every monotonic read is 10 ms after the previous one: a thread stalled
+/// (preempted, or a slow job load) for longer than the 5 ms work quantum
+/// between the quantum's start and its first unit.
+struct StallClock(AtomicU64);
+impl Clock for StallClock {
+    fn utc_now(&self) -> UtcMillis {
+        UtcMillis(999_999)
+    }
+    fn monotonic_now(&self) -> MonoInstant {
+        MonoInstant(self.0.fetch_add(10, Ordering::SeqCst))
+    }
+}
+
+/// A stall before the first unit does not turn a call with call budget left
+/// into a zero-unit `DeadlineExceeded` (a lane failure Health reports for the
+/// job's 5 s retry): the quantum admits one unit, then yields.
+/// Kills: a quantum check that runs before any unit has been done.
+#[test]
+fn stall_before_first_unit_still_does_one_unit_within_call_budget() {
+    let mut db = fixture();
+    db.execute_batch("\
+        INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES('t','s1',1,2),('t','s2',1,3);\
+        INSERT INTO messages(instance_id,id,thread_id,sequence,kind,event_key,event_json,decision_at,decision_seq) VALUES('i','w','t',1,'warn','w','{}',10,10);\
+        INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,condition_kind,condition_id) VALUES('w',10,'t',2,'invitation','missing');\
+        INSERT INTO work_jobs(id,kind,subject_id,high_water) VALUES('j','warning_attribution','w',2);\
+    ").unwrap();
+    let clock = StallClock(AtomicU64::new(0));
+    let p = advance_work(
+        &mut db,
+        "j",
+        WorkAdmission::new(16).unwrap(),
+        &budget(),
+        &clock,
+    )
+    .unwrap();
+    assert_eq!(p.processed_this_turn, 1);
+    assert_eq!(p.completed_units, 1);
+    assert_eq!(p.next_position, 1);
+    assert!(p.has_more);
+    assert_eq!(p.last_error, None);
+    assert_eq!(count(&db, "warning_recipients"), 1);
+}
