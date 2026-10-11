@@ -208,24 +208,31 @@ impl DomainService {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner()) = Some(output.work);
         }
-        if let DeliveryPullReplyV2::Page(page) = &output.reply {
+        {
             let mut ledger = self.delivery_pull.lock();
             if let Some(entry) = ledger.seat_mut(
                 &pull.claim.seat,
                 binding.generation,
                 &binding.native_session,
             ) {
-                for id in &page.offered {
-                    entry.record(id, now, false);
+                // Remove only the canonical terminal delta. Another route may
+                // have added offers since our snapshot; those must survive.
+                for id in &output.reclaimed_messages {
+                    entry.remove(id);
                 }
-                for id in &page.truncated {
-                    entry.record(id, now, true);
+                if let DeliveryPullReplyV2::Page(page) = &output.reply {
+                    for id in &page.offered {
+                        entry.record(id, now, false);
+                    }
+                    for id in &page.truncated {
+                        entry.record(id, now, true);
+                    }
+                    // Passive invitation progress must never consume an open
+                    // canonical warning's eligibility or create a native wake.
+                    // Only post-emission exact control confirmation may advance seen attention.
+                    entry.more_pending =
+                        page.more && (!page.offered.is_empty() || !page.truncated.is_empty());
                 }
-                // Passive invitation progress must never consume an open
-                // canonical warning's eligibility or create a native wake.
-                // Only post-emission exact control confirmation may advance seen attention.
-                entry.more_pending =
-                    page.more && (!page.offered.is_empty() || !page.truncated.is_empty());
             }
         }
         Ok(CommandResult::DeliveryPulledV2(output.reply))

@@ -1660,10 +1660,81 @@ fn replay(
         sizer,
     )?))
 }
+/// Reconcile only the bounded offer snapshot, never the full pending queue.
+/// Canonical terminal facts release capacity; missing/ambiguous facts retain it.
+fn reclaim_terminal_offers(
+    db: &Connection,
+    input: &mut PresentationInput,
+    work: &mut PresentationWork,
+) -> Result<Vec<MessageId>, ApiError> {
+    use crate::delivery::ledger::MAX_OFFERS_PER_SEAT;
+    if input.known_messages.len() > MAX_OFFERS_PER_SEAT
+        || input.blocked_messages.len() > MAX_OFFERS_PER_SEAT
+        || input.new_message_slots > MAX_OFFERS_PER_SEAT
+    {
+        return Err(ApiError::invalid_request("ordinary offer snapshot bound"));
+    }
+    let claim = &input.pull.claim;
+    let mut known = input.known_messages.iter().cloned().collect::<std::collections::BTreeSet<_>>();
+    let mut reclaimed = Vec::new();
+    for id in &known {
+        work.offer_reconciliation_visits += 1;
+        work.offer_reconciliation_probes += 1;
+        let mode: Option<String> = db.query_row(
+            "SELECT delivery_mode FROM messages WHERE id=?1 AND instance_id=?2 AND kind='ordinary'",
+            params![id.as_str(), claim.instance], |r| r.get(0),
+        ).optional().map_err(store_error)?;
+        let terminal = match mode.as_deref() {
+            Some("lazy") => {
+                // One unique recipient lookup and one manifest unique-key lookup.
+                work.offer_reconciliation_probes += 2;
+                let state: Option<String> = db.query_row(
+                    "SELECT r.state FROM lazy_recipients r JOIN send_manifests sm ON sm.preparation_id=r.preparation_id AND sm.message_id=r.message_id AND sm.thread_id=r.thread_id WHERE r.message_id=?1 AND r.seat_id=?2 AND sm.instance_id=?3",
+                    params![id.as_str(), claim.seat.as_str(), claim.instance], |r| r.get(0),
+                ).optional().map_err(store_error)?;
+                state.as_deref() == Some("displayed")
+            }
+            Some("ordinary") => {
+                // Logical addressed authority wins even when its sparse state
+                // is absent. Charge all three unique lookups including misses.
+                work.offer_reconciliation_probes += 3;
+                let logical: Option<(String, bool)> = db.query_row(
+                    "SELECT COALESCE(rs.state,'pending'),MIN(pr.ack_required,COALESCE(rs.ack_required,1))=0 FROM send_manifests sm JOIN prepared_recipients pr ON pr.preparation_id=sm.preparation_id AND pr.seat_id=?2 LEFT JOIN receipt_state rs ON rs.message_id=sm.message_id AND rs.seat_id=pr.seat_id WHERE sm.message_id=?1 AND sm.instance_id=?3",
+                    params![id.as_str(), claim.seat.as_str(), claim.instance], |r| Ok((r.get(0)?,r.get(1)?)),
+                ).optional().map_err(store_error)?;
+                let state = if logical.is_some() {
+                    logical
+                } else {
+                    work.offer_reconciliation_probes += 1;
+                    db.query_row(
+                        "SELECT state,ack_required=0 FROM receipts WHERE message_id=?1 AND seat_id=?2",
+                        params![id.as_str(), claim.seat.as_str()], |r| Ok((r.get(0)?,r.get(1)?)),
+                    ).optional().map_err(store_error)?
+                };
+                state.is_some_and(|(state, not_required)| {
+                    matches!(state.as_str(), "acked" | "recipient_retired")
+                        || (state == "pending" && not_required)
+                })
+            }
+            _ => false,
+        };
+        if terminal {
+            reclaimed.push(id.clone());
+        }
+    }
+    for id in &reclaimed { known.remove(id); }
+    // The delta follows the sorted snapshot; membership needs no quadratic walk.
+    input.blocked_messages.retain(|id| reclaimed.binary_search(id).is_err());
+    input.new_message_slots = input.new_message_slots.saturating_add(reclaimed.len())
+        .min(MAX_OFFERS_PER_SEAT - known.len());
+    input.known_messages = known.into_iter().collect();
+    Ok(reclaimed)
+}
+
 pub(super) fn pull(
     db: &Connection,
     context: &StoreContext,
-    input: PresentationInput,
+    mut input: PresentationInput,
     budget: &CallBudget,
 ) -> Result<PresentationOutput, ApiError> {
     use crate::{
@@ -1682,6 +1753,7 @@ pub(super) fn pull(
                 reason: crate::protocol::delivery::DeliveryRefusalReason::SessionMismatch,
             },
             work: PresentationWork::default(),
+            reclaimed_messages: Vec::new(),
         });
     }
     if render_selection(db, claim, consumer)?.as_ref()
@@ -1692,6 +1764,7 @@ pub(super) fn pull(
                 reason: crate::protocol::delivery::DeliveryRefusalReason::Busy,
             },
             work: PresentationWork::default(),
+            reclaimed_messages: Vec::new(),
         });
     }
     if let Some(frozen) = &input.frozen_render
@@ -1702,8 +1775,10 @@ pub(super) fn pull(
     {
         frozen_profile(&input)?;
     }
-    let mut state = load(db, claim, consumer)?;
     let mut work = PresentationWork::default();
+    let reclaimed_messages = reclaim_terminal_offers(db, &mut input, &mut work)?;
+    let claim = &input.pull.claim;
+    let mut state = load(db, claim, consumer)?;
     let mut sizer = presentation::Sizer::new();
     let publications = advance_ordinary_publications(db, claim, &mut state)?;
     work.ordinary_publication_visits = publications.visits;
@@ -1738,7 +1813,7 @@ pub(super) fn pull(
         proof.more || publications.more || ordinary_signal_pending,
     )? {
         save(db, claim, consumer, &state)?;
-        return finish(reply, work, &mut sizer);
+        return finish(reply, work, &mut sizer, reclaimed_messages);
     }
     let render_key = input.render_profile.render_key(&input.pull.marker_prefix);
     if state.render_key != render_key {
@@ -2199,12 +2274,13 @@ pub(super) fn pull(
         )?
     };
     save(db, claim, consumer, &state)?;
-    finish(reply, work, &mut sizer)
+    finish(reply, work, &mut sizer, reclaimed_messages)
 }
 fn finish(
     reply: DeliveryPullReplyV2,
     mut work: PresentationWork,
     sizer: &mut crate::delivery::presentation::Sizer,
+    reclaimed_messages: Vec<MessageId>,
 ) -> Result<PresentationOutput, ApiError> {
     sizer
         .rpc(&crate::protocol::results::CommandResult::DeliveryPulledV2(
@@ -2215,7 +2291,7 @@ fn finish(
     work.output_bytes = sizer.work.output_bytes;
     work.rpc_passes = sizer.work.rpc_passes;
     work.rpc_bytes = sizer.work.rpc_bytes;
-    Ok(PresentationOutput { reply, work })
+    Ok(PresentationOutput { reply, work, reclaimed_messages })
 }
 
 /// Canonical, independent passive maintenance. Each call inspects at most

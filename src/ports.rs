@@ -4927,6 +4927,10 @@ pub struct PresentationInput {
 }
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct PresentationWork {
+    /// Snapshot identities checked for explicit canonical terminal evidence.
+    pub offer_reconciliation_visits: usize,
+    /// Fixed indexed relation probes, charged conservatively including misses.
+    pub offer_reconciliation_probes: usize,
     pub ordinary_publication_visits: usize,
     pub ordinary_publication_probes: usize,
     pub ordinary_publication_seeks: usize,
@@ -4952,4 +4956,6 @@ pub struct PresentationWork {
 pub struct PresentationOutput {
     pub reply: crate::protocol::delivery::DeliveryPullReplyV2,
     pub work: PresentationWork,
+    /// Exact terminal delta from this admitted transaction; never a pending-set snapshot.
+    pub reclaimed_messages: Vec<MessageId>,
 }
