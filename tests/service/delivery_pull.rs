@@ -8188,3 +8188,34 @@ fn presentation_capacity_retained_concurrent_offer_count_does_not_refuse_passive
     assert!(delivered);
     assert_eq!(original[&known].count,4);
 }
+
+
+// Kills: tying a negative cache to durable consumer state or waiting for client
+// acknowledgement before remembering a successful miss traversal.
+#[test]
+fn presentation_capacity_cache_progress_survives_lost_reply_but_not_ledger_restart() {
+    use crate::protocol::{commands::DeliveryMode,delivery::DeliveryPullReplyV2};
+    let mut window=OfferWindowFixture::new(false);
+    for _ in 0..4 { window.pull(); }
+    {
+        let mut ledger=window.f.state.lock();
+        let entry=ledger.seat_mut(&window.recipient.seat,window.recipient.binding_generation,window.recipient.native_session.as_str()).unwrap();
+        for n in 0..256 { entry.record(&MessageId::new(format!("absent-{n:03}")),window.f.clock.utc_now(),false); }
+    }
+    let parked=window.send(0,DeliveryMode::Lazy,"survives process-local cache");
+    for _ in 0..4 { window.pull(); }
+    advance(&window.f,REOFFER_AFTER_MS);
+    // Model response loss after successful service completion: no client consumes
+    // the first returned page, yet the next call must pass its100 attempted IDs.
+    drop(window.pull());
+    assert_eq!(window.f.service.presentation.last_work.lock().unwrap().unwrap().ordinary,100);
+    drop(window.pull());
+    assert_eq!(window.f.service.presentation.last_work.lock().unwrap().unwrap().ordinary,100);
+    assert!(matches!(window.pull(),DeliveryPullReplyV2::Unchanged{..}));
+    assert_eq!(window.f.service.presentation.last_work.lock().unwrap().unwrap().ordinary,56);
+    restart(&mut window.f);
+    let DeliveryPullReplyV2::Page(page)=window.pull() else { panic!("new process has ordinary capacity"); };
+    assert!(page.offered.contains(&parked));
+    assert_eq!(window.offers().len(),1);
+    assert_eq!(window.f.db.query_row("SELECT state FROM lazy_recipients WHERE message_id=?1 AND seat_id='s'",[parked.as_str()],|r|r.get::<_,String>(0)).unwrap(),"pending");
+}
