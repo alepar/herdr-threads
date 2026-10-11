@@ -2348,8 +2348,10 @@ pub(super) fn refresh(
         .collect::<Result<Vec<_>, _>>()
         .map_err(private_read_error)?;
     for (id, ordinal, key, g, e) in &cleanup {
+        let id = InvitationId::parse(id)
+            .map_err(|_| corrupt("invalid private invitation identity"))?;
         state.mod_cleanup_after = *ordinal;
-        let pending:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM digest_pending_invitations WHERE seat_id=?1 AND invitation_id=?2)",params![seat.as_str(),id],|r|r.get(0)).map_err(store_error)?;
+        let pending:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM digest_pending_invitations WHERE seat_id=?1 AND invitation_id=?2)",params![seat.as_str(),id.as_str()],|r|r.get(0)).map_err(store_error)?;
         if !pending {
             if !key.is_empty() && *g == generation_i64 && e == claim.execution.as_str() {
                 state.mod_version = state.mod_version.checked_add(1).ok_or_else(|| {
@@ -2359,7 +2361,7 @@ pub(super) fn refresh(
                     )
                 })?;
             }
-            db.execute("DELETE FROM invitation_presentation_items WHERE seat_id=?1 AND consumer='watch' AND invitation_id=?2",params![seat.as_str(),id]).map_err(store_error)?;
+            db.execute("DELETE FROM invitation_presentation_items WHERE seat_id=?1 AND consumer='watch' AND invitation_id=?2",params![seat.as_str(),id.as_str()]).map_err(store_error)?;
         }
     }
     let cleanup_more = cleanup.len() == 10 && state.mod_cleanup_after < state.mod_cleanup_high;
