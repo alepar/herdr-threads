@@ -1,0 +1,8 @@
+{
+  "head": "e25eecff",
+  "target": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2",
+  "scope": "tests/harness/agy_delivery.rs",
+  "net_diff_sha256": "ef0127a11410965037cda492ba8edcc28a2c017b1d2fad598030b11b5ab55cb7",
+  "after_sha256": "495c2df9b564be0a2ee074abdfa150973876a352da0316e81f1b9e1d944b07b4",
+  "state": "test-only; actualREDnotyetobserved; productionheld"
+}

@@ -1,0 +1,65 @@
+diff --git a/tests/harness/agy_delivery.rs b/tests/harness/agy_delivery.rs
+index c1431121..dada0a41 100644
+--- a/tests/harness/agy_delivery.rs
++++ b/tests/harness/agy_delivery.rs
+@@ -497,6 +497,60 @@ fn nothing_is_printed_for_unchanged_refusals_and_daemon_errors() {
+ 
+ // --- the per-conversation state file ----------------------------------------------------------
+ 
++/// Returning hook bytes is only preparation: the CLI has not written or flushed them.
++/// Kills: eagerly committing a page's seen version or injected ids in HookStep::run,
++/// which makes a broken stdout pipe look like a successful delivery on the next turn.
++#[test]
++fn hook_step_does_not_commit_offered_page_before_stdout_emission() {
++    let rig = Rig::new();
++    let fake = offering();
++    let input = HookInput {
++        bytes: serde_json::to_vec(&json!({
++            "conversationId": CONV,
++            "transcriptPath": rig.transcript.to_str().unwrap(),
++            "invocationNum": 0,
++            "initialNumSteps": 1,
++        }))
++        .unwrap(),
++        registered_event: Some("PreInvocation".to_owned()),
++    };
++    let decoded = decode(
++        &AgyAdmission {
++            step: InjectionStep::SystemMessage,
++        },
++        &input,
++    )
++    .unwrap();
++    let output = AgyHookStep.run(&HookStepContext {
++        input: &input,
++        decoded: &decoded,
++        claim: Some(claim(0)),
++        daemon: Some(&fake),
++        state_dir: Some(rig.state.clone()),
++        command_prefix: vec!["herdr-threads".into()],
++        deadline: Instant::now() + Duration::from_secs(30),
++    });
++    let native: Value = serde_json::from_slice(&output).unwrap();
++    assert_eq!(
++        native["injectSteps"][0]["systemMessage"]["systemMessage"],
++        TEXT
++    );
++    // Nothing consumes or emits `output`. In particular, no stdout completion occurred.
++    let (state, _) = ConversationState::load(&rig.state_file());
++    assert_eq!(
++        state.seen_attention_version, None,
++        "an un-emitted page must remain eligible on the next pull"
++    );
++    assert!(
++        state.injected.is_empty(),
++        "un-emitted ids must not become transcript-confirm candidates"
++    );
++    assert!(
++        !state.injected_this_turn,
++        "preparing output cannot spend a successful injection turn"
++    );
++}
++
+ #[test]
+ fn the_state_file_is_created_after_a_pull_and_deleted_on_session_mismatch() {
+     let rig = Rig::new();

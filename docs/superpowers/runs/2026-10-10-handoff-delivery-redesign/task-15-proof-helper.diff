@@ -13,7 +13,7 @@ index a10c405a..951c070f 100644
  #[path = "protocol/lazy_delivery.rs"]
 diff --git a/tests/store/invitation_content.rs b/tests/store/invitation_content.rs
 new file mode 100644
-index 00000000..f6096caf
+index 00000000..3c990ef0
 --- /dev/null
 +++ b/tests/store/invitation_content.rs
 @@ -0,0 +1,139 @@
@@ -23,7 +23,7 @@ index 00000000..f6096caf
 +
 +use std::collections::HashMap;
 +
-+use herdr_threads::protocol::MessageId;
++use herdr_threads::protocol::ids::MessageId;
 +use rusqlite::{Connection, StatementStatus};
 +
 +#[test]

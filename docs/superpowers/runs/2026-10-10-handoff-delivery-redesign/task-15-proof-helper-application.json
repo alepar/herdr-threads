@@ -1,0 +1,10 @@
+{
+  "head": "c2553281a22bdcb293cd71df69f160868159ded8",
+  "target": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2",
+  "scope": [
+    "tests/store/invitation_content.rs",
+    "tests/combined.rs"
+  ],
+  "net_diff_sha256": "2e46713f1c230e47a4abcf5462f624e24c39efcae185cf8aba539382eab1d1d9",
+  "state": "freshsourceCLEAN applied; actualcompiled/executedproofpending"
+}

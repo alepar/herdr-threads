@@ -1,0 +1,13 @@
+diff --git a/tests/store/invitation_content.rs b/tests/store/invitation_content.rs
+index f6096caf..3c990ef0 100644
+--- a/tests/store/invitation_content.rs
++++ b/tests/store/invitation_content.rs
+@@ -4,7 +4,7 @@
+ 
+ use std::collections::HashMap;
+ 
+-use herdr_threads::protocol::MessageId;
++use herdr_threads::protocol::ids::MessageId;
+ use rusqlite::{Connection, StatementStatus};
+ 
+ #[test]
