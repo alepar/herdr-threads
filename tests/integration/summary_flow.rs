@@ -415,6 +415,7 @@ impl World {
                 user_intent: None,
                 thread: ThreadId::new(thread),
                 body: body.to_owned(),
+                direct_recipient: None,
                 invited_recipients: require_ack
                     .iter()
                     .map(|(seat, _)| SeatId::new(*seat))

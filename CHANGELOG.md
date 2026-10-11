@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v0.7.0
+
+- **Automatic one-to-one threads.** `send --seat SEAT` and handoffs with an omitted thread create or reuse the canonical thread for the two seats. Initial invitations still require explicit acceptance; leave, rejection and archival retain their explicit repair paths. Durable retries preserve the original message and launch decisions.
+- **Loaded-runner fixtures.** Handoff and operator test fixtures finish every snapshot staging turn before sealing, preserving the existing budgets.
+
 ## v0.6.4
 
 - **Claude mod log prefix.** Delivery notices no longer repeat the plugin name that Claude Code already adds to mod log lines.

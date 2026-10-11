@@ -64,8 +64,10 @@ const V25: &str = include_str!("../../migrations/0025_warning_notice_delivery.sq
 const V26: &str = include_str!("../../migrations/0026_lazy_message_delivery.sql");
 const V27: &str = include_str!("../../migrations/0027_harness_adapters.sql");
 const V28: &str = include_str!("../../migrations/0028_handoff_topology.sql");
-const V29: &str = include_str!("../../migrations/0029_seat_wake_on.sql");
-pub(crate) const LATEST_VERSION: i64 = 29;
+const V29: &str = include_str!("../../migrations/0029_direct_threads.sql");
+const V30: &str = include_str!("../../migrations/0030_automatic_handoff.sql");
+const V31: &str = include_str!("../../migrations/0031_seat_wake_on.sql");
+pub(crate) const LATEST_VERSION: i64 = 31;
 
 /// Decode only persisted results, after the caller's digest has matched. Live
 /// protocol responses still require disposition. Missing original context
@@ -168,6 +170,8 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
                 .and_then(|_| conn.execute_batch(V27))
                 .and_then(|_| conn.execute_batch(V28))
                 .and_then(|_| conn.execute_batch(V29))
+                .and_then(|_| conn.execute_batch(V30))
+                .and_then(|_| conn.execute_batch(V31))
                 .and_then(|_| conn.pragma_update(None, "user_version", LATEST_VERSION));
             match result {
                 Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
@@ -408,7 +412,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             verify_existing(conn)
         }
         17 => verify_existing(conn),
-        18..=29 => verify_existing(conn),
+        18..=31 => verify_existing(conn),
         _ => Err(api_error(
             ErrorCode::IncompatibleSchema,
             format!("unsupported schema version {version}"),
@@ -595,12 +599,73 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             }
         }
     }
-    verify_existing_v29(conn)
+    verify_existing_v29(conn)?;
+    if (1..=29).contains(&version) {
+        conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
+        let result = conn
+            .execute_batch(V30)
+            .map_err(store_error)
+            .and_then(|_| verify_existing_v30(conn))
+            .and_then(|_| {
+                conn.pragma_update(None, "user_version", 30)
+                    .map_err(store_error)
+            });
+        match result {
+            Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(error);
+            }
+        }
+    }
+    verify_existing_v30(conn)?;
+    if (1..=30).contains(&version) {
+        conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
+        let result = conn
+            .execute_batch(V31)
+            .map_err(store_error)
+            .and_then(|_| verify_existing_v31(conn))
+            .and_then(|_| {
+                conn.pragma_update(None, "user_version", 31)
+                    .map_err(store_error)
+            });
+        match result {
+            Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(error);
+            }
+        }
+    }
+    verify_existing_v31(conn)
+}
+
+fn verify_existing_v29(conn: &Connection) -> Result<(), ApiError> {
+    let expected = V29
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("--"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let actual: Option<String> = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='direct_threads'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(store_error)?;
+    if actual.as_deref().map(str::trim) != Some(expected.trim().trim_end_matches(';')) {
+        return Err(api_error(
+            ErrorCode::IncompatibleSchema,
+            "missing or altered direct pair registry",
+        ));
+    }
+    Ok(())
 }
 
 /// The two DP8 columns: type, nullability and default are part of the contract
 /// (a fresh seat reads `nudge`; the lazy frontier starts absent).
-fn verify_existing_v29(conn: &Connection) -> Result<(), ApiError> {
+fn verify_existing_v31(conn: &Connection) -> Result<(), ApiError> {
     for (table, column, kind, not_null, default) in [
         ("seats", "wake_on", "TEXT", true, Some("'nudge'")),
         ("wake_work", "last_lazy_ordinal", "INTEGER", false, None),
@@ -3967,7 +4032,13 @@ fn verify_existing_v24(conn: &Connection) -> Result<(), ApiError> {
 }
 
 fn verify_existing_v28(conn: &Connection) -> Result<(), ApiError> {
-    let ddl = V28
+    verify_ddl(conn, V28, "bootstrap topology")
+}
+fn verify_existing_v30(conn: &Connection) -> Result<(), ApiError> {
+    verify_ddl(conn, V30, "automatic handoff")
+}
+fn verify_ddl(conn: &Connection, source: &str, label: &str) -> Result<(), ApiError> {
+    let ddl = source
         .lines()
         .filter(|line| !line.trim_start().starts_with("--"))
         .collect::<Vec<_>>()
@@ -3996,7 +4067,7 @@ fn verify_existing_v28(conn: &Connection) -> Result<(), ApiError> {
         if installed.as_deref().map(normalize) != Some(normalize(&sql)) {
             return Err(api_error(
                 ErrorCode::IncompatibleSchema,
-                format!("missing or altered bootstrap topology {kind} {name}"),
+                format!("missing or altered {label} {kind} {name}"),
             ));
         }
     }

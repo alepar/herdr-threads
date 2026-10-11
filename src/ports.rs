@@ -2580,6 +2580,10 @@ pub struct PulledNotice {
 /// Required deciding bootstrap adapter, supplied only by an equipped runtime.
 /// Namespace is independently selected by election; guards remain transient.
 pub trait BootstrapStorePort: Send + Sync {
+    /// True only for an adapter implementing the complete canonical V2 mechanism.
+    fn automatic_available(&self) -> bool {
+        false
+    }
     fn bootstrap_begin_permit(
         &self,
         canonical: &crate::protocol::handoff::HandoffNamespace,
@@ -2593,6 +2597,96 @@ pub trait BootstrapStorePort: Send + Sync {
         admission: DurableWorkAdmission,
         budget: &CallBudget,
     ) -> Result<SendPreparationProgress, ApiError>;
+    fn automatic_bootstrap_check_start(
+        &self,
+        _canonical: &crate::protocol::handoff::HandoffNamespace,
+        _request: &crate::protocol::handoff::AutomaticBootstrapMutation,
+        _guard: BootstrapAttachmentGuard,
+        _budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        Err(ApiError::unsupported("automatic start guard unavailable"))
+    }
+    fn automatic_bootstrap_query(
+        &self,
+        _canonical: &crate::protocol::handoff::HandoffNamespace,
+        _request: &crate::protocol::handoff::AutomaticBootstrapMutation,
+        _budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        Err(ApiError::unsupported(
+            "automatic bootstrap runtime unavailable",
+        ))
+    }
+    fn automatic_bootstrap_recovery_replay(
+        &self,
+        _canonical: &crate::protocol::handoff::HandoffNamespace,
+        _request: &crate::protocol::handoff::AutomaticBootstrapMutation,
+        _actor: &crate::protocol::authority::OperatorActor,
+        _budget: &CallBudget,
+    ) -> Result<Option<CommandResult>, ApiError> {
+        Err(ApiError::unsupported("automatic recovery unavailable"))
+    }
+    fn automatic_bootstrap_recover(
+        &self,
+        _canonical: &crate::protocol::handoff::HandoffNamespace,
+        _request: &crate::protocol::handoff::AutomaticBootstrapMutation,
+        _actor: &crate::protocol::authority::OperatorActor,
+        _guard: Option<BootstrapAttachmentGuard>,
+        _budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        Err(ApiError::unsupported("automatic recovery unavailable"))
+    }
+    fn automatic_bootstrap_complete(
+        &self,
+        _canonical: &crate::protocol::handoff::HandoffNamespace,
+        _request: &crate::protocol::handoff::AutomaticBootstrapMutation,
+        _budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        Err(ApiError::unsupported("automatic completion unavailable"))
+    }
+    fn automatic_bootstrap_mutate(
+        &self,
+        _canonical: &crate::protocol::handoff::HandoffNamespace,
+        _request: &crate::protocol::handoff::AutomaticBootstrapMutation,
+        _permit: MutationPermit,
+        _guard: Option<BootstrapAttachmentGuard>,
+        _budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        Err(ApiError::unsupported(
+            "automatic bootstrap runtime unavailable",
+        ))
+    }
+    fn automatic_delivery_prepare_send_step(
+        &self,
+        _canonical: &crate::protocol::handoff::HandoffNamespace,
+        _request: &crate::protocol::handoff::AutomaticDeliveryMutation,
+        _admission: DurableWorkAdmission,
+        _budget: &CallBudget,
+    ) -> Result<SendPreparationProgress, ApiError> {
+        Err(ApiError::unsupported(
+            "automatic canonical runtime unavailable",
+        ))
+    }
+    fn automatic_delivery_query(
+        &self,
+        _canonical: &crate::protocol::handoff::HandoffNamespace,
+        _request: &crate::protocol::handoff::AutomaticDeliveryMutation,
+        _budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        Err(ApiError::unsupported(
+            "automatic canonical runtime unavailable",
+        ))
+    }
+    fn automatic_delivery_mutate(
+        &self,
+        _canonical: &crate::protocol::handoff::HandoffNamespace,
+        _request: &crate::protocol::handoff::AutomaticDeliveryMutation,
+        _permit: MutationPermit,
+        _budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        Err(ApiError::unsupported(
+            "automatic canonical runtime unavailable",
+        ))
+    }
     fn delivery_query(
         &self,
         canonical: &crate::protocol::handoff::HandoffNamespace,

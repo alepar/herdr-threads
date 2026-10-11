@@ -1,7 +1,9 @@
-//! Immutable new-tab preparation. Public execution remains fenced until activation.
+//! Frozen new-tab handoff preparation and linked automatic bootstrap execution.
 use super::{RunError, panes::PaneSelector};
+mod automatic;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Request {
+    pub automatic: bool,
     pub new_tab: Option<String>,
     pub existing: bool,
     pub selector: PaneSelector,
@@ -28,6 +30,191 @@ pub struct Preparation<'a, C: crate::ports::LocalClient + ?Sized> {
     pub client: &'a C,
     pub clock: &'a dyn crate::protocol::time::Clock,
 }
+
+pub fn prepare_automatic<C: crate::ports::LocalClient + ?Sized>(
+    request: &Request,
+    inputs: Preparation<'_, C>,
+) -> Result<crate::protocol::handoff::AutomaticBootstrapIdentity, RunError> {
+    use crate::protocol::{
+        handoff::*,
+        ids::{HostTargetId, OperationId},
+    };
+    let fail = super::invalid_request;
+    if !request.automatic
+        || request.new_tab.is_none()
+        || request.existing
+        || request.seat.is_some()
+        || request.selector.tab.is_some()
+        || request.selector.pane.is_some()
+        || request.thread.is_some()
+        || request.thread_name.is_some()
+        || request.topic.is_some()
+        || request.goal.is_some()
+    {
+        return Err(fail("invalid automatic bootstrap target or channel"));
+    }
+    let label = request.new_tab.as_ref().unwrap();
+    // Any launch-capable adapter: the automatic plan freezes the adapter's own startup input.
+    let harness = request
+        .kind
+        .as_deref()
+        .and_then(|kind| {
+            crate::harness::launch::bootstrap_target(crate::harness::registry::builtins(), kind)
+        })
+        .ok_or_else(|| fail("invalid bootstrap harness"))?;
+    let cwd = request.cwd.as_deref().unwrap_or(inputs.invocation_cwd);
+    if !cwd.is_absolute() || !cwd.is_dir() {
+        return Err(fail("--cwd must be an absolute existing directory"));
+    }
+    let cwd = cwd.canonicalize()?;
+    let runtime = crate::daemon::paths::RuntimeContext::explicit(
+        inputs.namespace.state_dir.clone(),
+        inputs.namespace.host_endpoint.clone(),
+        None,
+    )?;
+    let namespace = HandoffNamespace {
+        instance: inputs.namespace.instance.clone(),
+        state_dir: runtime.state_dir,
+        host_endpoint: runtime.host_endpoint,
+    };
+    let workspace = if let Some(value) = &request.selector.space {
+        if let Some(exact) = inputs
+            .topology
+            .spaces
+            .iter()
+            .find(|space| &space.id == value)
+        {
+            &exact.id
+        } else {
+            let mut found = inputs
+                .topology
+                .spaces
+                .iter()
+                .filter(|space| space.label.as_ref() == Some(value));
+            let selected = found
+                .next()
+                .ok_or_else(|| fail("workspace is absent from live topology"))?;
+            if found.next().is_some() {
+                return Err(fail("ambiguous workspace; use its exact ID"));
+            }
+            &selected.id
+        }
+    } else {
+        let caller = inputs
+            .topology
+            .panes
+            .iter()
+            .find(|pane| pane.target == inputs.claim.target)
+            .ok_or_else(|| fail("caller pane is absent from live topology"))?;
+        &inputs
+            .topology
+            .spaces
+            .iter()
+            .find(|space| space.id == caller.space)
+            .ok_or_else(|| fail("caller workspace is absent from live topology"))?
+            .id
+    };
+    let launch = super::launch::LaunchRequest {
+        target: inputs.claim.target.clone(),
+        harness,
+        harness_binary: request.binary.clone(),
+        name: request.name.clone(),
+        pane_label: None,
+        argv: request.argv.clone(),
+    }
+    .with_configured_options(inputs.options)?;
+    let registry = crate::harness::registry::builtins();
+    let registration = crate::harness::launch::launch_registration(registry, harness.occupant())?;
+    let startup_input = registration
+        .launch_policy()
+        .expect("checked provider")
+        .prepare_startup_input(
+            &launch.argv,
+            &crate::harness::adapter::StartupInputSpec {
+                max_text_bytes: crate::ports::NativeLaunchRequest::MAX_ARG_BYTES,
+            },
+        )?
+        .ok_or_else(|| super::unsupported("selected adapter has no handoff startup input"))?;
+    let compound = OperationId::new(uuid::Uuid::new_v4().to_string());
+    let handoff = AutomaticHandoffPayload::new(
+        namespace,
+        OperationId::new(uuid::Uuid::new_v4().to_string()),
+        request.body.clone(),
+    )
+    .map_err(fail)?;
+    let scope = super::journal::IntentScope::Cooperative {
+        instance: inputs.claim.instance.clone(),
+        seat: inputs.claim.seat.clone(),
+    };
+    let identity = AutomaticBootstrapIdentity::new(
+        scope,
+        inputs.claim.clone(),
+        AutomaticBootstrapPlan {
+            version: AUTOMATIC_PLAN_VERSION,
+            payload: AutomaticBootstrapPayload {
+                handoff,
+                keys: AutomaticBootstrapKeys::new(compound),
+                workspace: HostTargetId::parse(workspace).map_err(fail)?,
+                cwd,
+                label: label.clone(),
+                focus: false,
+                env: Default::default(),
+                launch: BootstrapLaunch {
+                    harness: harness.occupant(),
+                    binary: launch.harness_binary,
+                    name: launch
+                        .name
+                        .as_deref()
+                        .map(|name| {
+                            crate::ports::sanitize_agent_name(name)
+                                .ok_or_else(|| fail("invalid agent --name"))
+                        })
+                        .transpose()?,
+                    argv: launch.argv,
+                    // The automatic plan freezes its startup input on the payload, not the V2 launch.
+                    composed_argv: None,
+                    startup_input: None,
+                },
+                startup_input: Some(startup_input),
+            },
+        },
+    )
+    .map_err(fail)?;
+    preflight_automatic_launch_request(&identity)?;
+    Ok(identity)
+}
+
+pub(super) fn preflight_automatic_launch_request(
+    identity: &crate::protocol::handoff::AutomaticBootstrapIdentity,
+) -> Result<super::launch::LaunchRequest, RunError> {
+    use crate::protocol::ids::ThreadId;
+    let p = &identity.plan.payload;
+    let ns = &p.handoff.namespace;
+    let template = p
+        .startup_input
+        .as_ref()
+        .ok_or_else(|| super::invalid_request("automatic bootstrap lacks frozen startup input"))?;
+    let prompt = super::handoff::bootstrap_v1::prompt(
+        ThreadId::new("t".repeat(128)).as_str(),
+        &crate::protocol::output::ContinuationContext {
+            state_dir: ns.state_dir.to_str().map(str::to_owned),
+            host: ns.host_endpoint.to_str().map(str::to_owned),
+        },
+        &identity.claim.instance,
+    );
+    let (argv, _) = template.apply(&p.launch.argv, &prompt)?;
+    let native =
+        crate::harness::launch::compose_native_argv(p.launch.harness, argv.clone(), vec![])?;
+    crate::ports::NativeLaunchRequest::validate_argv(&native).map_err(super::invalid_request)?;
+    Ok(super::launch::LaunchRequest {
+        target: identity.claim.target.clone(),
+        harness: p.launch.harness.into(),
+        harness_binary: p.launch.binary.clone(),
+        name: p.launch.name.clone(),
+        pane_label: Some(p.label.clone()),
+        argv,
+    })
+}
 /// Resolve read-only selections once; return the full validated original identity.
 /// Namespace input must be the selected runtime namespace. Canonical execution
 /// additionally compares it with the daemon's own paths before any effect.
@@ -41,6 +228,11 @@ pub fn prepare<C: crate::ports::LocalClient + ?Sized>(
         ids::{HostTargetId, OperationId},
         results::CommandResult,
     };
+    if request.automatic {
+        return Err(super::unsupported(
+            "automatic bootstrap producer unavailable",
+        ));
+    }
     let fail = super::invalid_request;
     let label = request
         .new_tab
@@ -243,6 +435,11 @@ pub(super) fn preflight_launch_request(
     let longest = ThreadId::new("t".repeat(128));
     let thread = match &identity.payload.handoff.channel {
         HandoffChannel::Existing { thread } => thread,
+        HandoffChannel::Automatic => {
+            return Err(super::unsupported(
+                "automatic bootstrap producer unavailable",
+            ));
+        }
         HandoffChannel::New { .. } => &longest,
     };
     let prompt =
@@ -361,6 +558,62 @@ pub fn publish(
         ));
     }
     Ok(reference)
+}
+
+pub fn publish_automatic(
+    journal: &super::journal::Journal,
+    identity: &crate::protocol::handoff::AutomaticBootstrapIdentity,
+    created_at_millis: i64,
+) -> Result<super::journal::IntentRef, RunError> {
+    identity.validate().map_err(super::invalid_request)?;
+    if !identity.plan.payload.cwd.is_dir() {
+        return Err(super::invalid_request(
+            "bootstrap cwd disappeared before publication",
+        ));
+    }
+    let semantic = identity.semantic();
+    let reference = journal.record(identity.scope.clone(), semantic.clone(), created_at_millis)?;
+    let saved = journal.load(&reference)?;
+    if saved.header.scope != identity.scope
+        || saved.header.semantic_digest != identity.digest
+        || saved.semantic != semantic
+    {
+        return Err(super::invalid_request(
+            "published automatic bootstrap identity differs from prepared intent",
+        ));
+    }
+    Ok(reference)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn resume_automatic_to_writer<
+    C: crate::ports::LocalClient + ?Sized,
+    N: crate::ports::CreateTabPort + ?Sized,
+    W: std::io::Write,
+>(
+    journal: &super::journal::Journal,
+    reference: &super::journal::IntentRef,
+    actor: super::actor_route::InvocationActor,
+    namespace: &crate::protocol::handoff::HandoffNamespace,
+    client: &C,
+    native: &N,
+    launcher: &mut dyn super::handoff::HandoffLauncher,
+    clock: &dyn crate::protocol::time::Clock,
+    submission: BootstrapSubmissionInputs<'_>,
+    output: &crate::protocol::output::OutputSpec,
+    writer: &mut W,
+) -> Result<crate::protocol::handoff::AutomaticBootstrapResult, RunError> {
+    let result = automatic::resume_to_writer(
+        journal, reference, actor, namespace, client, native, launcher, clock, submission, output,
+        writer,
+    );
+    if let Err(error) = &result
+        && actor == super::actor_route::InvocationActor::Agent
+        && reportable_failure(error)
+    {
+        automatic::write_pending(journal, reference, namespace, client, clock, output, writer)?;
+    }
+    result
 }
 /// Expected native endpoint witness captured by the actual qualified transport.
 /// The caller must admit the original actor before invoking this internal seam.
@@ -632,6 +885,11 @@ fn downstream_plan(
     use crate::{harness::context::Harness, protocol::handoff::HandoffChannel};
     let payload = &identity.payload;
     let (thread, thread_name, topic, goal) = match &payload.handoff.channel {
+        HandoffChannel::Automatic => {
+            return Err(super::unsupported(
+                "automatic bootstrap producer unavailable",
+            ));
+        }
         HandoffChannel::Existing { thread } => (Some(thread.clone()), None, None, None),
         HandoffChannel::New { name, topic, goal } => {
             (None, name.clone(), Some(topic.clone()), Some(goal.clone()))
@@ -642,6 +900,7 @@ fn downstream_plan(
         startup_input: None,
         bootstrap_input: payload.launch.startup_input.clone(),
         request: super::handoff::HandoffRequest {
+            automatic: false,
             thread,
             thread_name,
             topic,
@@ -842,6 +1101,13 @@ pub(crate) fn saved_native_request(
         load_bootstrap_progress(journal, reference, identity)?
             .and_then(|progress| progress.request),
     )
+}
+pub(crate) fn saved_automatic_native_request(
+    journal: &super::journal::Journal,
+    reference: &super::journal::IntentRef,
+    identity: &crate::protocol::handoff::AutomaticBootstrapIdentity,
+) -> Result<Option<crate::ports::CreateTabRequest>, RunError> {
+    automatic::saved_native_request(journal, reference, identity)
 }
 /// Before publication, check the known eventual request-bearing envelope with
 /// the actual witnessed endpoint metadata and the actual serializer/cap.
@@ -1207,6 +1473,52 @@ pub(crate) fn bootstrap_identity(
     };
     identity.validate().map_err(super::invalid_request)?;
     Ok(identity)
+}
+pub(crate) fn automatic_bootstrap_identity(
+    pending: &super::journal::PendingIntent,
+) -> Result<crate::protocol::handoff::AutomaticBootstrapIdentity, RunError> {
+    let super::journal::SemanticMutation::Frozen { claim, mutation } = &pending.semantic else {
+        return Err(super::invalid_request(
+            "automatic bootstrap needs original frozen caller",
+        ));
+    };
+    let super::journal::SemanticMutation::AutomaticBootstrap(plan) = mutation.as_ref() else {
+        return Err(super::invalid_request("not an automatic bootstrap origin"));
+    };
+    let identity = crate::protocol::handoff::AutomaticBootstrapIdentity {
+        version: 2,
+        scope: pending.header.scope.clone(),
+        claim: claim.clone(),
+        digest: pending.header.semantic_digest.clone(),
+        plan: (**plan).clone(),
+    };
+    identity.validate().map_err(super::invalid_request)?;
+    Ok(identity)
+}
+
+pub(crate) fn load_automatic_original(
+    journal: &super::journal::Journal,
+    reference: &super::journal::IntentRef,
+) -> Result<super::journal::PendingIntent, RunError> {
+    automatic::load_original(journal, reference)
+}
+pub(crate) fn resolve_automatic_recovery_ref(
+    journal: &super::journal::Journal,
+    value: &str,
+) -> Result<super::journal::IntentRef, RunError> {
+    automatic::resolve_recovery_ref(journal, value)
+}
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn try_completed_automatic<C: crate::ports::LocalClient + ?Sized, W: std::io::Write>(
+    journal: &super::journal::Journal,
+    reference: &super::journal::IntentRef,
+    namespace: &crate::protocol::handoff::HandoffNamespace,
+    client: &C,
+    clock: &dyn crate::protocol::time::Clock,
+    output: &crate::protocol::output::OutputSpec,
+    writer: &mut W,
+) -> Result<bool, RunError> {
+    automatic::try_completed(journal, reference, namespace, client, clock, output, writer)
 }
 fn validate_completed(
     identity: &crate::protocol::handoff::BootstrapIdentity,

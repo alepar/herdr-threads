@@ -9984,6 +9984,8 @@ fn invitation_rejection_human_retains_declared_human_provenance() {
 #[path = "topology_attachment_guard.rs"]
 mod topology_attachment;
 
+#[path = "direct_threads.rs"]
+mod direct_threads;
 #[test]
 fn directory_name_mutations_stale_filtered_cursors_but_replay_and_noop_do_not() {
     use crate::{

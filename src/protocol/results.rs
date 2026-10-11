@@ -85,6 +85,8 @@ pub enum CommandResult {
     Rejected(InvitationRejection),
     RequiredAccepted(RequiredMembership),
     MessageSent(MessageId),
+    AutomaticBootstrap(Box<crate::protocol::handoff::AutomaticBootstrapResult>),
+    AutomaticBootstrapReserved(Box<crate::protocol::handoff::AutomaticBootstrapReserved>),
     Acknowledged(AckResult),
     ModDeliveryAcked(crate::protocol::watch::ModAckReport),
     DeliveryPulled(crate::protocol::delivery::DeliveryPullReply),
@@ -1501,6 +1503,7 @@ pub struct LocalIntent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IntentKind {
+    DirectSend,
     Handoff,
     ResolveSeat,
     CheckIn,

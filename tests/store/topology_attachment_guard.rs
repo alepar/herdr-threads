@@ -26,6 +26,9 @@ fn attachment_fixture() -> AttachmentFixture {
     attachment_fixture_with_recording(false)
 }
 fn attachment_fixture_with_recording(real_writer: bool) -> AttachmentFixture {
+    attachment_fixture_inner(real_writer, true)
+}
+fn attachment_fixture_inner(real_writer: bool, retain_legacy: bool) -> AttachmentFixture {
     let (context, mut db, path, clock) = fixture(100);
     db.execute_batch("DELETE FROM seat_archival; DELETE FROM seats;")
         .unwrap();
@@ -104,7 +107,7 @@ fn attachment_fixture_with_recording(real_writer: bool) -> AttachmentFixture {
             send_key: id.payload.handoff.keys.send.clone(),
         },
     };
-    {
+    if retain_legacy {
         let tx = db.transaction().unwrap();
         topology_handoff::begin_pending(&tx, &id.payload.handoff.namespace, &id, UtcMillis(100))
             .unwrap();
@@ -623,6 +626,7 @@ fn actual_main_linked_phase_preserves_ordinary_and_rejects_lazy_mode() {
         delivery_mode: DeliveryMode::Ordinary,
         thread,
         body: id.payload.handoff.body.clone(),
+        direct_recipient: None,
         invited_recipients: vec![child.recipient.clone()],
         deadline_millis: None,
         operation: id.payload.handoff.keys.send.clone(),
@@ -637,6 +641,19 @@ fn actual_main_linked_phase_preserves_ordinary_and_rejects_lazy_mode() {
         false,
     )
     .unwrap();
+    send.direct_recipient = Some(child.recipient.clone());
+    assert_eq!(
+        topology_handoff::validate_selected_child_phase(
+            &db,
+            &id.payload.handoff.namespace,
+            &PermitMutation::SendMessage(send.clone()),
+            false,
+        )
+        .unwrap_err()
+        .code,
+        crate::protocol::results::ErrorCode::OperationPayloadMismatch
+    );
+    send.direct_recipient = None;
     send.delivery_mode = DeliveryMode::Lazy;
     assert!(
         crate::protocol::commands::Command::SendMessage(send.clone())
@@ -668,4 +685,879 @@ fn actual_main_linked_phase_preserves_ordinary_and_rejects_lazy_mode() {
         direct_refusal,
         "linked frozen Ordinary phase must reject a changed Lazy mode"
     );
+}
+
+fn automatic_parent(id: &BootstrapIdentity) -> AutomaticBootstrapIdentity {
+    AutomaticBootstrapIdentity::new(
+        id.scope.clone(),
+        id.claim.clone(),
+        AutomaticBootstrapPlan {
+            version: 2,
+            payload: AutomaticBootstrapPayload {
+                handoff: AutomaticHandoffPayload::new(
+                    id.payload.handoff.namespace.clone(),
+                    OperationId::new("auto-child"),
+                    "automatic work".into(),
+                )
+                .unwrap(),
+                keys: AutomaticBootstrapKeys::new(OperationId::new("auto-parent")),
+                workspace: id.payload.workspace.clone(),
+                cwd: id.payload.cwd.clone(),
+                label: id.payload.label.clone(),
+                focus: false,
+                env: Default::default(),
+                launch: id.payload.launch.clone(),
+                startup_input: None,
+            },
+        },
+    )
+    .unwrap()
+}
+fn automatic_parent_mutate(
+    store: &crate::store::SqliteStore,
+    id: &AutomaticBootstrapIdentity,
+    action: AutomaticBootstrapAction,
+    guard: Option<BootstrapAttachmentGuard>,
+    budget: &CallBudget,
+) -> Result<CommandResult, ApiError> {
+    let request = AutomaticBootstrapMutation {
+        identity: id.clone(),
+        action,
+    };
+    let permit = store.issue_cooperative_permit(
+        crate::store::cooperative_permit_request(
+            &crate::protocol::commands::PermitMutation::AutomaticBootstrap(Box::new(
+                request.clone(),
+            )),
+        )?,
+        budget,
+    )?;
+    crate::ports::BootstrapStorePort::automatic_bootstrap_mutate(
+        store,
+        &id.plan.payload.handoff.namespace,
+        &request,
+        permit,
+        guard,
+        budget,
+    )
+}
+fn automatic_parent_created(
+    store: &crate::store::SqliteStore,
+    id: &AutomaticBootstrapIdentity,
+    budget: &CallBudget,
+) {
+    automatic_parent_mutate(store, id, AutomaticBootstrapAction::Begin, None, budget).unwrap();
+    automatic_parent_mutate(
+        store,
+        id,
+        AutomaticBootstrapAction::Reserve {
+            attempt: BootstrapAttempt::first(),
+        },
+        None,
+        budget,
+    )
+    .unwrap();
+    automatic_parent_mutate(
+        store,
+        id,
+        AutomaticBootstrapAction::RecordCreated {
+            attempt: BootstrapAttempt::first(),
+            evidence: crate::protocol::handoff::topology_contract_tests::created(),
+        },
+        None,
+        budget,
+    )
+    .unwrap();
+}
+#[test]
+fn automatic_linked_selected_resolve_attach_and_exact_pair_share_canonical_parent() {
+    let (_context, db, path, store, observation, budget, old, a) =
+        attachment_fixture_inner(false, false);
+    let id = automatic_parent(&old);
+    automatic_parent_created(&store, &id, &budget);
+    let guard = attachment_guard(
+        &store,
+        &observation,
+        &budget,
+        &id.plan.payload.keys.resolve,
+        5,
+    );
+    let resolved = automatic_parent_mutate(
+        &store,
+        &id,
+        AutomaticBootstrapAction::Resolve {
+            attempt: BootstrapAttempt::first(),
+        },
+        Some(guard),
+        &budget,
+    )
+    .unwrap();
+    assert_eq!(
+        resolved,
+        CommandResult::SeatResolved(a.resolved_seat.clone())
+    );
+    let child = id.child(&a.created, a.resolved_seat.clone()).unwrap();
+    let attachment = AutomaticBootstrapAttachment {
+        attempt: BootstrapAttempt::first(),
+        created: a.created,
+        resolve_operation: id.plan.payload.keys.resolve.clone(),
+        resolved_seat: a.resolved_seat,
+        child: child.clone(),
+    };
+    let mut wrong_original = child.original.clone();
+    let AutomaticOriginal::Handoff(ref mut wrong_plan) = wrong_original else {
+        panic!("derived child must retain the full handoff original")
+    };
+    wrong_plan.delivery.payload.body.push_str(" substituted");
+    let mut wrong_attachment = attachment.clone();
+    wrong_attachment.child =
+        AutomaticDeliveryMutation::new(child.scope.clone(), child.claim.clone(), wrong_original)
+            .unwrap();
+    wrong_attachment.child.validate().unwrap();
+    let wrong_guard = attachment_guard(
+        &store,
+        &observation,
+        &budget,
+        &id.plan.payload.keys.resolve,
+        6,
+    );
+    assert!(
+        automatic_parent_mutate(
+            &store,
+            &id,
+            AutomaticBootstrapAction::Attach(Box::new(wrong_attachment)),
+            Some(wrong_guard),
+            &budget,
+        )
+        .is_err(),
+        "a valid child with a recomputed digest is still not the derived child"
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM automatic_bootstrap_attachments",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    let guard = attachment_guard(
+        &store,
+        &observation,
+        &budget,
+        &id.plan.payload.keys.resolve,
+        7,
+    );
+    let attached = automatic_parent_mutate(
+        &store,
+        &id,
+        AutomaticBootstrapAction::Attach(Box::new(attachment)),
+        Some(guard),
+        &budget,
+    )
+    .unwrap();
+    assert!(
+        matches!(attached,CommandResult::AutomaticBootstrap(ref v) if v.state==BootstrapState::Attached)
+    );
+    let begin = child.begin();
+    let permit = store
+        .issue_cooperative_permit(
+            crate::store::cooperative_permit_request(&handoff::automatic::inner(&begin).unwrap())
+                .unwrap(),
+            &budget,
+        )
+        .unwrap();
+    crate::ports::BootstrapStorePort::automatic_delivery_mutate(
+        &*store,
+        &id.plan.payload.handoff.namespace,
+        &begin,
+        permit,
+        &budget,
+    )
+    .unwrap();
+    let ensure = child.ensure();
+    let permit = store
+        .issue_cooperative_permit(
+            crate::store::cooperative_permit_request(&handoff::automatic::inner(&ensure).unwrap())
+                .unwrap(),
+            &budget,
+        )
+        .unwrap();
+    let selected = crate::ports::BootstrapStorePort::automatic_delivery_mutate(
+        &*store,
+        &id.plan.payload.handoff.namespace,
+        &ensure,
+        permit,
+        &budget,
+    )
+    .unwrap();
+    let raw = handoff::automatic::inner(&ensure).unwrap();
+    let raw_permit = store
+        .issue_cooperative_permit(
+            crate::store::cooperative_permit_request(&raw).unwrap(),
+            &budget,
+        )
+        .unwrap();
+    assert!(
+        store.mutate(raw, raw_permit, &budget).is_err(),
+        "a reachable unscoped Ensure cannot replay a registered child operation"
+    );
+    let thread = automatic_selected_thread(&selected).unwrap();
+    assert_eq!(
+        db.query_row(
+            "SELECT thread_id FROM automatic_bootstrap_parents WHERE compound='auto-parent'",
+            [],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
+        thread.as_str()
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT thread_id FROM direct_threads WHERE thread_id=?1",
+            [thread.as_str()],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
+        thread.as_str()
+    );
+    let CommandResult::AutomaticBootstrap(status) =
+        crate::ports::BootstrapStorePort::automatic_bootstrap_query(
+            &*store,
+            &id.plan.payload.handoff.namespace,
+            &AutomaticBootstrapMutation {
+                identity: id.clone(),
+                action: AutomaticBootstrapAction::Status,
+            },
+            &budget,
+        )
+        .unwrap()
+    else {
+        panic!("parent status")
+    };
+    let cancel = AutomaticBootstrapMutation {
+        identity: id.clone(),
+        action: AutomaticBootstrapAction::Recover {
+            attempt: status.attempt,
+            inspection: status.recovery_inspection().unwrap(),
+            disposition: AutomaticBootstrapRecoveryDisposition::Cancelled {
+                reason: "inspected quiescence".into(),
+                quiescence: BootstrapQuiescenceAssertion::InspectedQuiescence,
+                attached_child: Some(Box::new(child.clone())),
+            },
+        },
+    };
+    let actor = OperatorActor::from_peer(
+        crate::protocol::authority::PeerIdentity::from_kernel(501),
+        501,
+    )
+    .unwrap();
+    assert!(
+        crate::ports::BootstrapStorePort::automatic_bootstrap_recover(
+            &*store,
+            &id.plan.payload.handoff.namespace,
+            &cancel,
+            &actor,
+            None,
+            &budget,
+        )
+        .is_err(),
+        "operator cancellation cannot release the live exact child"
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM automatic_bootstrap_recoveries",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    drop(db);
+    let _ = std::fs::remove_file(path);
+}
+#[test]
+fn automatic_linked_registered_child_cannot_fall_back_before_attachment() {
+    let (_context, db, path, store, _observation, budget, old, a) =
+        attachment_fixture_inner(false, false);
+    let id = automatic_parent(&old);
+    automatic_parent_created(&store, &id, &budget);
+    let child = id.child(&a.created, a.resolved_seat).unwrap().begin();
+    let permit = store
+        .issue_cooperative_permit(
+            crate::store::cooperative_permit_request(&handoff::automatic::inner(&child).unwrap())
+                .unwrap(),
+            &budget,
+        )
+        .unwrap();
+    assert!(
+        crate::ports::BootstrapStorePort::automatic_delivery_mutate(
+            &*store,
+            &id.plan.payload.handoff.namespace,
+            &child,
+            permit,
+            &budget
+        )
+        .is_err()
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM automatic_handoff_companions",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    let raw = handoff::automatic::inner(&child.ensure()).unwrap();
+    let raw_permit = store
+        .issue_cooperative_permit(
+            crate::store::cooperative_permit_request(&raw).unwrap(),
+            &budget,
+        )
+        .unwrap();
+    assert!(
+        store.mutate(raw, raw_permit, &budget).is_err(),
+        "a reachable unscoped Ensure cannot create a registered child before attachment"
+    );
+    drop(db);
+    let _ = std::fs::remove_file(path);
+}
+
+fn automatic_child_mutate(
+    store: &crate::store::SqliteStore,
+    request: &AutomaticDeliveryMutation,
+    budget: &CallBudget,
+) -> Result<CommandResult, ApiError> {
+    let permit = store.issue_cooperative_permit(
+        crate::store::cooperative_permit_request(&handoff::automatic::inner(request)?)?,
+        budget,
+    )?;
+    crate::ports::BootstrapStorePort::automatic_delivery_mutate(
+        store,
+        &request.plan().payload.namespace,
+        request,
+        permit,
+        budget,
+    )
+}
+#[test]
+fn automatic_linked_terminal_reconciles_completed_child_without_reopening_or_relaunch() {
+    use sha2::{Digest, Sha256};
+    let (context, mut db, path, store, observation, budget, old, a) =
+        attachment_fixture_inner(false, false);
+    let id = automatic_parent(&old);
+    automatic_parent_created(&store, &id, &budget);
+    let guard = attachment_guard(
+        &store,
+        &observation,
+        &budget,
+        &id.plan.payload.keys.resolve,
+        5,
+    );
+    automatic_parent_mutate(
+        &store,
+        &id,
+        AutomaticBootstrapAction::Resolve {
+            attempt: BootstrapAttempt::first(),
+        },
+        Some(guard),
+        &budget,
+    )
+    .unwrap();
+    let child = id.child(&a.created, a.resolved_seat.clone()).unwrap();
+    let attachment = AutomaticBootstrapAttachment {
+        attempt: BootstrapAttempt::first(),
+        created: a.created,
+        resolve_operation: id.plan.payload.keys.resolve.clone(),
+        resolved_seat: a.resolved_seat,
+        child: child.clone(),
+    };
+    let guard = attachment_guard(
+        &store,
+        &observation,
+        &budget,
+        &id.plan.payload.keys.resolve,
+        6,
+    );
+    automatic_parent_mutate(
+        &store,
+        &id,
+        AutomaticBootstrapAction::Attach(Box::new(attachment.clone())),
+        Some(guard),
+        &budget,
+    )
+    .unwrap();
+    automatic_child_mutate(&store, &child.begin(), &budget).unwrap();
+    let thread = automatic_selected_thread(
+        &automatic_child_mutate(&store, &child.ensure(), &budget).unwrap(),
+    )
+    .unwrap()
+    .clone();
+    let start = AutomaticBootstrapMutation {
+        identity: id.clone(),
+        action: AutomaticBootstrapAction::CheckStart,
+    };
+    assert!(
+        crate::ports::BootstrapStorePort::automatic_bootstrap_query(
+            &*store,
+            &id.plan.payload.handoff.namespace,
+            &start,
+            &budget
+        )
+        .is_err(),
+        "Ensure alone cannot authorize possible start"
+    );
+    let send = child.send(thread.clone());
+    loop {
+        if let crate::ports::SendPreparationProgress::Ready { .. } =
+            crate::ports::BootstrapStorePort::automatic_delivery_prepare_send_step(
+                &*store,
+                &id.plan.payload.handoff.namespace,
+                &send,
+                crate::ports::DurableWorkAdmission::new(16).unwrap(),
+                &budget,
+            )
+            .unwrap()
+        {
+            break;
+        }
+    }
+    automatic_child_mutate(&store, &send, &budget).unwrap();
+    let guard = attachment_guard(
+        &store,
+        &observation,
+        &budget,
+        &id.plan.payload.keys.resolve,
+        7,
+    );
+    crate::ports::BootstrapStorePort::automatic_bootstrap_check_start(
+        &*store,
+        &id.plan.payload.handoff.namespace,
+        &start,
+        guard,
+        &budget,
+    )
+    .unwrap();
+    let previous: String = db
+        .query_row(
+            "SELECT state FROM memberships WHERE thread_id=?1 AND seat_id=?2",
+            rusqlite::params![thread.as_str(), attachment.resolved_seat.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    db.execute(
+        "UPDATE memberships SET state='left',voluntary_state='left' WHERE thread_id=?1 AND seat_id=?2",
+        rusqlite::params![thread.as_str(), attachment.resolved_seat.as_str()],
+    )
+    .unwrap();
+    let guard = attachment_guard(
+        &store,
+        &observation,
+        &budget,
+        &id.plan.payload.keys.resolve,
+        8,
+    );
+    assert!(
+        crate::ports::BootstrapStorePort::automatic_bootstrap_check_start(
+            &*store,
+            &id.plan.payload.handoff.namespace,
+            &start,
+            guard,
+            &budget
+        )
+        .is_err(),
+        "published Send cannot grant possible start after recipient leave"
+    );
+    db.execute(
+        "UPDATE memberships SET state=?3,voluntary_state=?3 WHERE thread_id=?1 AND seat_id=?2",
+        rusqlite::params![thread.as_str(), attachment.resolved_seat.as_str(), previous],
+    )
+    .unwrap();
+    automatic_child_mutate(&store, &child.complete(), &budget).unwrap();
+    let AutomaticOriginal::Handoff(plan) = &child.original else {
+        panic!("outer")
+    };
+    let prompt = crate::cli::handoff::bootstrap_v1::retained_prompts(
+        thread.as_str(),
+        &plan.context,
+        &id.claim.instance,
+    )
+    .into_iter()
+    .next()
+    .unwrap();
+    let mut argv = id.plan.payload.launch.argv.clone();
+    argv.push(prompt);
+    let report = serde_json::json!({"outcome":"started","pane":attachment.created.root_pane,"seat":attachment.resolved_seat,"harness":id.plan.payload.launch.harness.as_str(),"argv":argv});
+    let retained = LinkedBootstrapReport {
+        thread: thread.clone(),
+        recipient: attachment.resolved_seat.clone(),
+        pane: attachment.created.root_pane.clone(),
+        kind: "launch".into(),
+        launch: id.plan.payload.launch.clone(),
+        report_digest: format!("{:x}", Sha256::digest(serde_json::to_vec(&report).unwrap())),
+        report,
+        terminal: attachment.created.terminal.clone(),
+        host_incarnation: attachment.created.host_incarnation.clone(),
+    };
+    let action = AutomaticBootstrapAction::Complete {
+        attachment: Box::new(attachment.clone()),
+        retained: retained.clone(),
+    };
+    db.execute(
+        "UPDATE memberships SET state='left',voluntary_state='left' WHERE thread_id=?1",
+        [thread.as_str()],
+    )
+    .unwrap();
+    db.execute("UPDATE occupant_bindings SET ended_at=1", [])
+        .unwrap();
+    for seat in [&id.claim.seat, &attachment.resolved_seat] {
+        crate::store::seats::mutate_operator(
+            &context,
+            &mut db,
+            "i",
+            crate::ports::OperatorRequest::Retire(crate::protocol::commands::OperatorRetire {
+                seat: seat.clone(),
+                operation: OperationId::new(format!("terminal-retire-{}", seat.as_str())),
+            }),
+            OperatorActor::from_peer(
+                crate::protocol::authority::PeerIdentity::from_kernel(501),
+                501,
+            )
+            .unwrap(),
+            None,
+        )
+        .unwrap();
+    }
+    let request = AutomaticBootstrapMutation {
+        identity: id.clone(),
+        action: action.clone(),
+    };
+    let done = crate::ports::BootstrapStorePort::automatic_bootstrap_complete(
+        &*store,
+        &id.plan.payload.handoff.namespace,
+        &request,
+        &budget,
+    )
+    .unwrap();
+    assert!(
+        matches!(done,CommandResult::AutomaticBootstrap(ref status) if status.state==BootstrapState::Completed && status.completed.as_ref()==Some(&retained))
+    );
+    db.execute(
+        "UPDATE memberships SET state='left',voluntary_state='left' WHERE thread_id=?1",
+        [thread.as_str()],
+    )
+    .unwrap();
+    db.execute("UPDATE occupant_bindings SET ended_at=1", [])
+        .unwrap();
+    assert_eq!(
+        automatic_parent_mutate(&store, &id, action, None, &budget).unwrap(),
+        done
+    );
+    assert!(
+        crate::ports::BootstrapStorePort::automatic_bootstrap_query(
+            &*store,
+            &id.plan.payload.handoff.namespace,
+            &start,
+            &budget
+        )
+        .is_err()
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM messages WHERE thread_id=?1 AND kind='ordinary'",
+            [thread.as_str()],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+    for at in [0, 60000, 120000, 180000] {
+        let rt = crate::store::archival::Runtime {
+            boot: "terminal-release".into(),
+            mono: at,
+            utc: UtcMillis(at),
+            after_ms: 60000,
+            host_generation: 0,
+            coherent: true,
+            valid_until_mono: None,
+            legacy_source: Some("covered".into()),
+        };
+        for _ in 0..30 {
+            if !crate::store::archival::advance(&db, "i", &rt)
+                .unwrap()
+                .has_more
+            {
+                break;
+            }
+        }
+    }
+    assert!(
+        db.query_row(
+            "SELECT archived FROM threads WHERE id=?1",
+            [thread.as_str()],
+            |r| r.get::<_, bool>(0)
+        )
+        .unwrap(),
+        "completed parent and child release archival after retired fixtures leave no protected work"
+    );
+    assert_eq!(
+        crate::ports::BootstrapStorePort::automatic_bootstrap_complete(
+            &*store,
+            &id.plan.payload.handoff.namespace,
+            &request,
+            &budget
+        )
+        .unwrap(),
+        done
+    );
+    assert_eq!(
+        db.query_row("SELECT state FROM automatic_bootstrap_parents", [], |r| {
+            r.get::<_, String>(0)
+        })
+        .unwrap(),
+        "completed"
+    );
+    drop(db);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn automatic_linked_wire_refuses_unknown_fields_inside_derived_launch() {
+    let (_context, db, path, _store, _observation, _budget, old, a) =
+        attachment_fixture_inner(false, false);
+    let id = automatic_parent(&old);
+    let child = id.child(&a.created, a.resolved_seat.clone()).unwrap();
+    let attachment = AutomaticBootstrapAttachment {
+        attempt: BootstrapAttempt::first(),
+        created: a.created,
+        resolve_operation: id.plan.payload.keys.resolve.clone(),
+        resolved_seat: a.resolved_seat,
+        child,
+    };
+    let command = crate::protocol::commands::Command::AutomaticBootstrap(Box::new(
+        AutomaticBootstrapMutation {
+            identity: id,
+            action: AutomaticBootstrapAction::Attach(Box::new(attachment)),
+        },
+    ));
+    let mut wire = serde_json::to_value(&command).unwrap();
+    wire["args"]["action"]["request"]["child"]["original"]["plan"]["launch"]["unexpected_authority"] =
+        serde_json::json!(true);
+    assert!(
+        serde_json::from_value::<crate::protocol::commands::Command>(wire).is_err(),
+        "V2 derived launch wire must reject lost fields"
+    );
+    drop(db);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn automatic_linked_created_recovery_uses_fresh_guard_and_replays_before_current_lifecycle() {
+    let (_context, db, path, store, observation, budget, old, a) =
+        attachment_fixture_inner(false, false);
+    let id = automatic_parent(&old);
+    automatic_parent_mutate(&store, &id, AutomaticBootstrapAction::Begin, None, &budget).unwrap();
+    let CommandResult::AutomaticBootstrapReserved(reserved) = automatic_parent_mutate(
+        &store,
+        &id,
+        AutomaticBootstrapAction::Reserve {
+            attempt: BootstrapAttempt::first(),
+        },
+        None,
+        &budget,
+    )
+    .unwrap() else {
+        panic!("reserve")
+    };
+    let request = AutomaticBootstrapMutation {
+        identity: id.clone(),
+        action: AutomaticBootstrapAction::Recover {
+            attempt: BootstrapAttempt::first(),
+            inspection: reserved.status.recovery_inspection().unwrap(),
+            disposition: AutomaticBootstrapRecoveryDisposition::CreatedPane {
+                evidence: Box::new(a.created.clone()),
+                structural_reference: HostCallId::new("operator-correlation"),
+            },
+        },
+    };
+    let actor = crate::protocol::authority::OperatorActor::from_peer(
+        crate::protocol::authority::PeerIdentity::from_kernel(501),
+        501,
+    )
+    .unwrap();
+    let before: i64 = db
+        .query_row("SELECT count(*) FROM seats", [], |r| r.get(0))
+        .unwrap();
+    let guard = attachment_guard(
+        &store,
+        &observation,
+        &budget,
+        &id.plan.payload.keys.resolve,
+        5,
+    );
+    let saved = crate::ports::BootstrapStorePort::automatic_bootstrap_recover(
+        &*store,
+        &id.plan.payload.handoff.namespace,
+        &request,
+        &actor,
+        Some(guard),
+        &budget,
+    )
+    .unwrap();
+    assert!(
+        matches!(saved,CommandResult::AutomaticBootstrap(ref status) if status.state==BootstrapState::Created && status.creation.as_ref()==Some(&a.created))
+    );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM seats", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        before
+    );
+    let CommandResult::AutomaticBootstrap(status) = &saved else {
+        panic!("status")
+    };
+    let cancel = AutomaticBootstrapMutation {
+        identity: id.clone(),
+        action: AutomaticBootstrapAction::Recover {
+            attempt: BootstrapAttempt::first(),
+            inspection: status.recovery_inspection().unwrap(),
+            disposition: AutomaticBootstrapRecoveryDisposition::Cancelled {
+                reason: "inspected quiescence".into(),
+                quiescence: BootstrapQuiescenceAssertion::InspectedQuiescence,
+                attached_child: None,
+            },
+        },
+    };
+    let cancelled = crate::ports::BootstrapStorePort::automatic_bootstrap_recover(
+        &*store,
+        &id.plan.payload.handoff.namespace,
+        &cancel,
+        &actor,
+        None,
+        &budget,
+    )
+    .unwrap();
+    assert!(
+        matches!(cancelled,CommandResult::AutomaticBootstrap(ref status) if status.state==BootstrapState::Cancelled && status.creation.as_ref()==Some(&a.created))
+    );
+    db.execute_batch("UPDATE occupant_bindings SET ended_at=1;UPDATE host_instances SET lifecycle_revision=lifecycle_revision+5;").unwrap();
+    assert_eq!(
+        crate::ports::BootstrapStorePort::automatic_bootstrap_recovery_replay(
+            &*store,
+            &id.plan.payload.handoff.namespace,
+            &request,
+            &actor,
+            &budget
+        )
+        .unwrap(),
+        Some(saved)
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM automatic_bootstrap_recoveries",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        2
+    );
+    assert!(
+        store
+            .resolve_seat(
+                ResolveSeat {
+                    target: a.created.root_pane,
+                    operation: id.plan.payload.keys.resolve.clone()
+                },
+                OrdinaryResolutionAttempt::ReplayOnly,
+                &budget
+            )
+            .is_err()
+    );
+    drop(db);
+    let _ = std::fs::remove_file(path);
+}
+#[test]
+fn automatic_linked_created_recovery_refuses_changed_witness_and_lifecycle_without_effects() {
+    for changed in ["witness", "lifecycle"] {
+        let (_context, db, path, store, observation, budget, old, a) =
+            attachment_fixture_inner(false, false);
+        let id = automatic_parent(&old);
+        automatic_parent_mutate(&store, &id, AutomaticBootstrapAction::Begin, None, &budget)
+            .unwrap();
+        let CommandResult::AutomaticBootstrapReserved(reserved) = automatic_parent_mutate(
+            &store,
+            &id,
+            AutomaticBootstrapAction::Reserve {
+                attempt: BootstrapAttempt::first(),
+            },
+            None,
+            &budget,
+        )
+        .unwrap() else {
+            panic!("reserve")
+        };
+        let mut evidence = a.created;
+        let guard = attachment_guard(
+            &store,
+            &observation,
+            &budget,
+            &id.plan.payload.keys.resolve,
+            5,
+        );
+        if changed == "witness" {
+            evidence.witness.socket.inode += 1;
+        } else {
+            db.execute(
+                "UPDATE host_instances SET lifecycle_revision=lifecycle_revision+1",
+                [],
+            )
+            .unwrap();
+        }
+        let request = AutomaticBootstrapMutation {
+            identity: id.clone(),
+            action: AutomaticBootstrapAction::Recover {
+                attempt: BootstrapAttempt::first(),
+                inspection: reserved.status.recovery_inspection().unwrap(),
+                disposition: AutomaticBootstrapRecoveryDisposition::CreatedPane {
+                    evidence: Box::new(evidence),
+                    structural_reference: HostCallId::new("operator-correlation"),
+                },
+            },
+        };
+        let actor = crate::protocol::authority::OperatorActor::from_peer(
+            crate::protocol::authority::PeerIdentity::from_kernel(501),
+            501,
+        )
+        .unwrap();
+        assert!(
+            crate::ports::BootstrapStorePort::automatic_bootstrap_recover(
+                &*store,
+                &id.plan.payload.handoff.namespace,
+                &request,
+                &actor,
+                Some(guard),
+                &budget
+            )
+            .is_err(),
+            "{changed}"
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT count(*) FROM automatic_bootstrap_recoveries",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            db.query_row("SELECT state FROM automatic_bootstrap_parents", [], |r| {
+                r.get::<_, String>(0)
+            })
+            .unwrap(),
+            "possible_creation"
+        );
+        drop(db);
+        let _ = std::fs::remove_file(path);
+    }
 }

@@ -88,6 +88,7 @@ pub enum Command {
     BeginHandoff(crate::protocol::handoff::HandoffMutation),
     CompleteHandoff(crate::protocol::handoff::HandoffMutation),
     CreateThread(CreateThread),
+    EnsureDirectThread(EnsureDirectThread),
     Invite(Invite),
     Join(Join),
     Accept(Accept),
@@ -120,6 +121,8 @@ pub enum Command {
     OperatorRetire(OperatorRetire),
     OperatorReplace(OperatorReplace),
     HandoffDelivery(Box<crate::protocol::handoff::DeliveryMutation>),
+    AutomaticHandoffDelivery(Box<crate::protocol::handoff::AutomaticDeliveryMutation>),
+    AutomaticBootstrap(Box<crate::protocol::handoff::AutomaticBootstrapMutation>),
     BeginBootstrap(Box<crate::protocol::handoff::BeginBootstrap>),
     ReserveBootstrapAttempt(Box<crate::protocol::handoff::ReserveBootstrapAttempt>),
     RecordBootstrapCreated(Box<crate::protocol::handoff::RecordBootstrapCreated>),
@@ -672,6 +675,15 @@ pub struct CreateThread {
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+/// Resolve the immutable canonical pair; returns the ordinary ThreadCreated ID.
+/// Resolves the immutable canonical pair through the guarded thread.direct_v1 runtime.
+pub struct EnsureDirectThread {
+    pub recipient: SeatId,
+    pub operation: OperationId,
+    pub claim: CallerClaim,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Invite {
     pub thread: ThreadId,
     pub seat: SeatId,
@@ -849,6 +861,9 @@ pub struct SendMessage {
     pub user_intent: Option<crate::protocol::summary::UserIntent>,
     pub thread: ThreadId,
     pub body: String,
+    /// Explicit direct audience intent; never an ACK request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub direct_recipient: Option<SeatId>,
     pub invited_recipients: Vec<SeatId>,
     pub deadline_millis: Option<u64>,
     pub operation: OperationId,
@@ -988,6 +1003,8 @@ impl Command {
     pub fn validate(&self) -> Result<(), &'static str> {
         match self {
             Self::HandoffDelivery(v) => return v.validate(),
+            Self::AutomaticHandoffDelivery(v) => return v.validate(),
+            Self::AutomaticBootstrap(v) => return v.validate(),
             Self::BeginBootstrap(v) => {
                 v.identity.validate()?;
                 if v.operation != v.identity.payload.handoff.keys.begin {
@@ -1077,6 +1094,7 @@ impl Command {
             Self::CheckIn(v) | Self::OperatorCheckIn(v) => Some(&v.claim),
             Self::BeginHandoff(v) | Self::CompleteHandoff(v) => Some(&v.identity.claim),
             Self::CreateThread(v) => Some(&v.claim),
+            Self::EnsureDirectThread(v) => Some(&v.claim),
             Self::Invite(v) => Some(&v.claim),
             Self::Join(v) => Some(&v.claim),
             Self::Accept(v) => Some(&v.claim),
@@ -1278,6 +1296,7 @@ impl TryFrom<Command> for OperatorCommand {
 /// cannot be passed to the permit-consuming store path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PermitMutation {
+    AutomaticBootstrap(Box<crate::protocol::handoff::AutomaticBootstrapMutation>),
     BeginBootstrap(Box<crate::protocol::handoff::BeginBootstrap>),
     ReserveBootstrapAttempt(Box<crate::protocol::handoff::ReserveBootstrapAttempt>),
     RecordBootstrapCreated(Box<crate::protocol::handoff::RecordBootstrapCreated>),
@@ -1290,6 +1309,7 @@ pub enum PermitMutation {
     BeginHandoff(crate::protocol::handoff::HandoffMutation),
     CompleteHandoff(crate::protocol::handoff::HandoffMutation),
     CreateThread(CreateThread),
+    EnsureDirectThread(EnsureDirectThread),
     Invite(Invite),
     Join(Join),
     Accept(Accept),
@@ -1316,6 +1336,7 @@ impl TryFrom<Command> for PermitMutation {
     type Error = Command;
     fn try_from(command: Command) -> Result<Self, Self::Error> {
         match command {
+            Command::AutomaticBootstrap(v) => Ok(Self::AutomaticBootstrap(v)),
             Command::BeginBootstrap(v) => Ok(Self::BeginBootstrap(v)),
             Command::ReserveBootstrapAttempt(v) => Ok(Self::ReserveBootstrapAttempt(v)),
             Command::RecordBootstrapCreated(v) => Ok(Self::RecordBootstrapCreated(v)),
@@ -1329,6 +1350,7 @@ impl TryFrom<Command> for PermitMutation {
             Command::BeginHandoff(v) => Ok(Self::BeginHandoff(v)),
             Command::CompleteHandoff(v) => Ok(Self::CompleteHandoff(v)),
             Command::CreateThread(v) => Ok(Self::CreateThread(v)),
+            Command::EnsureDirectThread(v) => Ok(Self::EnsureDirectThread(v)),
             Command::Invite(v) => Ok(Self::Invite(v)),
             Command::Join(v) => Ok(Self::Join(v)),
             Command::Accept(v) => Ok(Self::Accept(v)),

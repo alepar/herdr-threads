@@ -577,6 +577,7 @@ fn user_intent_service_send_stays_unclassified() {
         delivery_mode: herdr_threads::protocol::commands::DeliveryMode::Ordinary,
             thread: thread.clone(),
             body: "DONE".into(),
+            direct_recipient: None,
             invited_recipients: vec![],
             deadline_millis: None,
             operation: OperationId::new("worker-reply"),

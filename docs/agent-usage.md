@@ -52,7 +52,7 @@ herdr-threads invite THREAD --seat SEAT [--deadline SECONDS]
 herdr-threads accept THREAD
 herdr-threads accept-required THREAD --invitation INVITATION_ID --requirement REQUIREMENT_ID --revision N
 herdr-threads leave THREAD
-herdr-threads send THREAD (--body TEXT|--file PATH|--stdin) [--require-ack SEAT ...] [--deadline SECONDS] [--relays-user]
+herdr-threads send (THREAD|--seat SEAT) (--body TEXT|--file PATH|--stdin) [--require-ack SEAT ...] [--deadline SECONDS] [--relays-user]
 herdr-threads ack MESSAGE_ID...
 herdr-threads archive THREAD
 herdr-threads reopen THREAD
@@ -224,7 +224,41 @@ Type a fuzzy subsequence of a name or topic, use arrows or Ctrl-N/P, then Enter 
 
 Human transcripts name authors and event recipients relative to the live invoking pane: `alice` in the same tab, `tryout/alice` in another tab of the same workspace, and `project/tryout/alice` in another workspace. Scope omission compares parent IDs, even when labels collide. Missing labels use IDs, the pane component stays visible, hostile labels are escaped, and unavailable host labels do not prevent durable history reads. Cached snapshots refresh during follow; JSON, machine output and recovery references keep their canonical IDs.
 
+### Automatic direct channels
+
+Use an exact recipient seat when the work belongs in a continuing one-to-one conversation:
+
+```sh
+herdr-threads send --seat SEAT --body "Nonurgent work"
+herdr-threads send --seat SEAT --file assignment.txt
+herdr-threads send --seat SEAT --stdin
+herdr-threads send --seat SEAT --nudge --body "Please review"
+herdr-threads send --seat SEAT --require-ack SEAT --body "Please confirm receipt"
+herdr-threads human send --seat SEAT --body "A question"
+```
+
+`--seat` selects the recipient, never the caller. Choose either `send THREAD` (unchanged ordinary thread delivery) or `send --seat SEAT`; a thread and seat cannot be combined. Direct send reuses the instance's canonical channel for that exact pair of seats, independent of names or topics. It never adopts an unrelated manually created thread or follows a retired seat to a replacement. Missing, retired, foreign, unresolved, held or self targets refuse; a resolved unbound recipient is valid.
+
+Send remains lazy by default: it freezes the invited target in the audience without waking it or promising receipt, acceptance or task adoption. `--nudge` selects ordinary attention and wake behavior. Direct `--require-ack` may name only the target seat (duplicates deduplicate); sender/third-seat requests and `--require-ack-pane` refuse. Body, deadline and relay rules remain the ordinary send rules.
+
+Creation joins the caller and ordinarily invites the recipient. The immutable pair reserves two seats, including an invited seat; it does not mean both have joined. A pending recipient accepts explicitly with `accept THREAD` (or the reported exact `accept-required` command). No third seat can enroll, and services cannot adopt or own the channel. Names and topics are presentation; the default topic and goal are `1:1 SEAT_A SEAT_B` with sorted canonical seat IDs.
+
+Lifecycle decisions require explicit repair on the reported channel: `reopen THREAD` after archive, `join THREAD` after the caller leaves, `accept THREAD` for an invited caller, and `invite THREAD --seat SEAT` after the target leaves or rejects. Required invitations retain their ordinary acceptance rules. Direct routing never reopens, rejoins or reinvites automatically and never creates a replacement pair. Repair reuses the same channel and preserves existing messages and obligations.
+
+Direct send durably ensures the channel, then uses ordinary send. A later refusal or crash can leave an empty channel and invitation; use the reported `retry REF` or `pending-ops` rather than sending again. Retry keeps the original recipient, body and operation keys. A completed retry prints historical thread/message results without repeating effects.
+
 ### Durable handoff and recovery
+
+```sh
+herdr-threads handoff --existing --seat SEAT -- "Review this change"
+herdr-threads handoff --existing --pane PANE -- "Review this change"
+herdr-threads handoff --pane PANE --kind codex -- "Review this change"
+herdr-threads handoff --new-tab review --kind codex -- "Review this change"
+```
+
+Automatic routing freezes the exact recipient and ensures its canonical pair channel before ordinary addressed send; launch modes then perform guarded launch. New-tab resolves its guarded recipient before ensuring the pair. Ensure creates the initial invitation atomically; it never accepts or ACKs for the recipient. Explicit `--thread` and `--new-thread` retain ordinary channel behavior and their ordinary invitation step. Metadata flags require `--new-thread`. All handoff destinations require an original top-level Agent; immediate human send remains available. Negotiate automatic routing capability before effects; an older daemon refuses without a client fallback.
+
+Explicit ordinary-channel overrides:
 
 ```sh
 herdr-threads handoff --new-thread --thread-name review --topic "Review the change" \
@@ -239,10 +273,10 @@ herdr-threads handoff --existing --pane w9001:p102 --new-thread \
 ```
 
 The fixture IDs and paths above are illustrative. Handoff chooses one target mode
-and exactly one `--new-thread` or `--thread ID_OR_NAME`: an explicit pane launch
+and optionally overrides automatic pair routing with `--new-thread` or `--thread ID_OR_NAME`: an explicit pane launch
 (`--pane PANE --kind claude|codex|agy`), intentional new-tab creation
 (`--new-tab LABEL --kind claude|codex|agy`), or existing-seat delivery
-(`--existing --seat SEAT` or `--existing --pane PANE`). The guarded new modes
+(`--existing --seat SEAT` or `--existing --pane PANE`). All handoff modes
 require an original top-level Agent and the daemon capability. Native execution
 still requires the selected harness's approval and configuration; this reference
 does not establish installed permission.
@@ -263,8 +297,8 @@ and reports `outcome: staged` with participation `joined`, `invited_pending` or
 `staged_unbound`. An unbound resolved seat may receive work; the report does not
 establish a working or available session, accepted assignment or completed task.
 
-The new channel joins its sender; an existing channel requires the sender already
-joined. `--thread-name`, `--topic` and `--goal` apply only to new channels. Topic
+An explicitly new channel joins its sender; an explicitly existing channel requires the sender already
+joined. `--thread-name`, `--topic` and `--goal` require `--new-thread`. For explicit new channels, topic
 defaults to `Handoff to DISPLAY`: the relative escaped pane display for legacy
 launch, tab label for new-tab, or canonical recipient seat ID for delivery. Goal
 defaults to topic. `--name` names the native agent, not the channel. Thread names
@@ -276,8 +310,9 @@ bytes), never native argv. Repeat `--agent-arg=OPTION` for native launch options
 `HERDR_THREADS_CODEX_OPTS` / `HERDR_THREADS_CLAUDE_OPTS` prepend arguments using
 shell-style quotes and escapes without variable or command expansion; unset or
 empty adds nothing. Launch handoff freezes the combined argv before preflight,
-and retry uses those saved arguments even if the environment changes. Handoff
-stages an invitation when needed and an addressed message; launch modes then
+and retry uses those saved arguments even if the environment changes. Explicit ordinary
+channels invite when needed; automatic channels use Ensure for their initial
+invitation only. Handoff stages an addressed message; launch modes then
 perform guarded launch. Startup gets fixed scoped inbox instructions and the
 canonical thread ID, without duplicating the task body. Handoff never accepts
 or ACKs for the recipient, nor declares task adoption or task completion.

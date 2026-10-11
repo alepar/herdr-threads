@@ -23,6 +23,13 @@ pub const HARNESS_STATES: &str = "harness.states";
 pub const SEAT_MANAGED_LAUNCH: &str = "seat.managed_launch";
 pub const PARTICIPANT_LOCATIONS: &str = "participants.locations_v1";
 
+/// Canonical pair resolution and the independent SendMessage direct audience marker.
+/// Advertise only after transactional pair, enrollment and audience guards are installed.
+pub const DIRECT_THREADS_V1: &str = "thread.direct_v1";
+/// Automatic handoff channel selection and exact canonical Ensure child attachment.
+/// Advertise only with the complete automatic handoff deciding adapters.
+pub const AUTOMATIC_HANDOFF_V1: &str = "handoff.automatic_v1";
+
 pub const THREAD_JOIN: &str = "thread.join_v1";
 
 pub const INVITATION_REJECT: &str = "invitation.reject_v1";
@@ -67,6 +74,7 @@ pub const ADVERTISED: &[&str] = &[
     INBOX_BATCH,
     INVITATION_REJECT,
     THREAD_JOIN,
+    DIRECT_THREADS_V1,
     PARTICIPANT_LOCATIONS,
     PICKER_DIRECTORY_V1,
     ATTENTION_NOTICE_DELIVERY,

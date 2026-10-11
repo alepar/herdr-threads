@@ -1514,7 +1514,8 @@ impl StorePort for SqliteStore {
         }
         let mut writer = self.writer(budget)?;
         match command {
-            PermitMutation::BeginBootstrap(_)
+            PermitMutation::AutomaticBootstrap(_)
+            | PermitMutation::BeginBootstrap(_)
             | PermitMutation::ReserveBootstrapAttempt(_)
             | PermitMutation::RecordBootstrapCreated(_)
             | PermitMutation::RecordBootstrapNotSubmitted(_)
@@ -1541,6 +1542,14 @@ impl StorePort for SqliteStore {
             PermitMutation::CompleteHandoff(v) => {
                 handoff::mutate(&self.context, &mut writer, budget, &v, permit, true)
             }
+            PermitMutation::EnsureDirectThread(v) => control::ensure_direct_thread(
+                &self.context,
+                &mut writer,
+                budget,
+                &v,
+                permit,
+                self.settings.invitation_default_ms,
+            ),
             PermitMutation::CreateThread(v) => {
                 control::create_thread(&self.context, &mut writer, budget, &v, permit)
             }
@@ -2908,6 +2917,13 @@ pub fn cooperative_permit_request(
 ) -> Result<crate::ports::CooperativePermitRequest, ApiError> {
     use crate::protocol::authority::ObligationRef;
     let (claim, operation, obligation, payload_hash, check_in_mode) = match command {
+        PermitMutation::AutomaticBootstrap(v) => (
+            v.identity.claim.clone(),
+            v.operation().map_err(ApiError::invalid_request)?,
+            ObligationRef::CheckIn(v.identity.claim.seat.clone()),
+            control::cooperative_payload_hash("automatic_bootstrap_v2", &**v)?,
+            None,
+        ),
         PermitMutation::BeginBootstrap(v) => (
             v.identity.claim.clone(),
             v.operation.clone(),
@@ -2983,6 +2999,13 @@ pub fn cooperative_permit_request(
             v.operation.clone(),
             ObligationRef::CheckIn(v.identity.claim.seat.clone()),
             control::cooperative_payload_hash("complete_handoff", v)?,
+            None,
+        ),
+        PermitMutation::EnsureDirectThread(v) => (
+            v.claim.clone(),
+            v.operation.clone(),
+            ObligationRef::CheckIn(v.claim.seat.clone()),
+            control::cooperative_payload_hash("ensure_direct_thread", v)?,
             None,
         ),
         PermitMutation::CreateThread(v) => (

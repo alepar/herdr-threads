@@ -102,13 +102,14 @@ Harness choices come from the same-binary registry."#;
 const LAUNCH_TAIL: &str = r#"Exit status: 0 startup observed; 5 start may have happened but was not confirmed:
 inspect the pane (`herdr agent get` / `herdr agent read`) before launching again."#;
 
-const HANDOFF_TEMPLATE: &str = r#"Choose exactly one channel: --new-thread or --thread ID_OR_NAME.
+const HANDOFF_TEMPLATE: &str = r#"Omit --new-thread and --thread for the canonical automatic two-seat channel.
+Optionally override it with --new-thread or --thread ID_OR_NAME.
 Choose one target mode:
   --pane PANE --kind @KINDS@ launches in an existing explicit pane;
   --new-tab LABEL --kind @KINDS@ creates a tab and launches there;
   --existing with exactly one --seat SEAT or --pane PANE delivers durable work
     to an existing canonical seat without launching or restarting its session.
-New modes require an original top-level Agent and the guarded daemon capability.
+Handoff requires an original top-level Agent and the guarded daemon capability.
 --new-tab conflicts with --existing, --tab, --pane and --seat. --cwd is new-tab
 only: an absolute existing directory, defaulting to the invocation cwd, normalized
 before publication. --space selects one live workspace by exact ID or unique label;
@@ -120,8 +121,15 @@ launch-option environment. An unresolved, held, retired or foreign seat refuses.
 An unbound resolved seat may receive staged work; this does not establish a
 working or available session. Delivery reports staged work, not a launch result.
 
-New threads join the sender; existing threads require a joined sender. --thread-name,
---topic and --goal apply only to new threads. Topic defaults to Handoff to DISPLAY:
+Automatic routing ensures the immutable pair, then sends; launch modes then launch.
+Creation joins the caller and invites the peer, reserving two seats, not accepting
+for the peer. No third seat can enroll. New-tab resolves its seat before Ensure.
+Archive requires reopen THREAD; a caller who left uses join THREAD, an invited
+caller uses accept THREAD; a target who left/rejected needs invite THREAD --seat SEAT.
+No automatic reopen, join or reinvite occurs. Repair reuses the same pair.
+Explicit new threads join the sender; explicit existing threads require a joined sender.
+--thread-name, --topic and --goal require --new-thread. Automatic topic and goal
+are 1:1 SEAT_A SEAT_B with sorted IDs. Explicit new topic defaults to Handoff to DISPLAY:
 legacy launch uses the pane display, new-tab uses its label, delivery uses the
 canonical seat ID. Goal defaults to topic. --name names the native agent, not the channel.
 The one quoted body after -- is durable work (1..1024 UTF-8 bytes), never native argv.
@@ -130,7 +138,8 @@ is unchanged. @OPTS@ prepend optional
 arguments using shell-style quotes and escapes without variable or command
 expansion. Unset or empty adds nothing. Launch handoff freezes the combined options
 before preflight; retry uses saved arguments even if the environment changes.
-Handoff stages an invitation when needed and a message addressed to the exact
+Explicit ordinary channels stage an invitation when needed; automatic channels
+use Ensure for initial invitation only. Handoff stages a message addressed to the exact
 recipient; launch modes then perform guarded launch. Startup gets fixed inbox
 instructions, not a second copy of the body. Handoff never accepts or ACKs for
 the recipient, nor declares task adoption or task completion.

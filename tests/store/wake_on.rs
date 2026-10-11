@@ -234,7 +234,7 @@ fn lazy_ordinal_rejects_zero_and_accepts_null_or_positive() {
     assert_eq!(last_lazy(&conn), Some(5));
 }
 
-/// A database left at the previous schema version (28), then migrated. The
+/// A database left at the previous schema version (30), then migrated. The
 /// previous shape is the current one without the two added columns.
 #[test]
 fn migration_up_adds_the_columns_with_their_defaults() {
@@ -250,7 +250,7 @@ fn migration_up_adds_the_columns_with_their_defaults() {
         .unwrap();
     previous
         .execute_batch(
-            "ALTER TABLE seats DROP COLUMN wake_on; ALTER TABLE wake_work DROP COLUMN last_lazy_ordinal; PRAGMA user_version=28;",
+            "ALTER TABLE seats DROP COLUMN wake_on; ALTER TABLE wake_work DROP COLUMN last_lazy_ordinal; PRAGMA user_version=30;",
         )
         .unwrap();
     let has_column = |table: &str, column: &str| -> bool {
