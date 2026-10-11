@@ -1,0 +1,130 @@
+{
+ "findings": [
+  {
+   "key": "[Should-fix] src/store/lazy_delivery.rs:249",
+   "disposition": "in-scope",
+   "reason": "Missed wake for a wake_on: all seat is incorrect behavior in goal-named R5/R11 wake."
+  },
+  {
+   "key": "[Should-fix] src/service/delivery_pull.rs:294",
+   "disposition": "in-scope",
+   "reason": "Missing test for the attention block in the goal-named R4 hook-pull delivery path."
+  },
+  {
+   "key": "[Nit] src/delivery/ledger.rs:137",
+   "disposition": "punch-list",
+   "reason": "Rotation race only causes a duplicate offer under at-least-once delivery; extra hardening, not a correctness defect."
+  },
+  {
+   "key": "[Nit] src/delivery/ledger.rs:96",
+   "disposition": "punch-list",
+   "reason": "Needs more than 288 pending items plus failing confirms; cost-only hardening of the offer cap."
+  },
+  {
+   "key": "[Nit] src/harness/agy/delivery.rs:873; src/harness/agy/delivery.rs:880",
+   "disposition": "punch-list",
+   "reason": "Lock-free read-modify-write of a self-healing hint file; hardening or accepted limit."
+  },
+  {
+   "key": "[Nit] src/harness/agy/delivery.rs:647; src/harness/agy/delivery.rs:644",
+   "disposition": "punch-list",
+   "reason": "Prune is delayed, not lost, on A2 hint files; housekeeping quality."
+  },
+  {
+   "key": "[Nit] src/harness/agy/delivery.rs:830",
+   "disposition": "punch-list",
+   "reason": "Performance cost of an unneeded fsync; no behavioral incorrectness."
+  },
+  {
+   "key": "[Nit] src/cli/hook.rs:2960",
+   "disposition": "punch-list",
+   "reason": "Duplicate journal scan is a performance improvement; behavior is correct."
+  },
+  {
+   "key": "[Nit] scripts/agy-sandbox/fetch-agy:124",
+   "disposition": "punch-list",
+   "reason": "Manual-only script hardening against a path-component version; same-user, no new reach."
+  },
+  {
+   "key": "[Nit] src/cli/hook.rs:2878",
+   "disposition": "punch-list",
+   "reason": "Missing stderr diagnostics on fail-open paths is observability polish; delivery behavior is correct."
+  },
+  {
+   "key": "[Nit] src/cli/topology_handoff.rs:192",
+   "disposition": "punch-list",
+   "reason": "Only the error message on an older daemon is unclean; no working flow regresses."
+  },
+  {
+   "key": "[Nit] src/service/delivery_pull.rs:384",
+   "disposition": "punch-list",
+   "clusterOverride": "Doc wording for an accepted process-local ledger limit; not a correctness defect, unlike the cluster's Must-fix.",
+   "reason": "Doc-vs-behavior mismatch on replay, an accepted limit; wording fix only."
+  },
+  {
+   "key": "[Nit] src/harness/agy/delivery.rs:842",
+   "disposition": "in-scope",
+   "reason": "Probation that never clears keeps downgrading delivery, contradicting the design's one-turn rule in the goal-named R4 path, and no test covers it."
+  },
+  {
+   "key": "[Nit] src/harness/agy/decode.rs:98",
+   "disposition": "punch-list",
+   "reason": "About 140-byte overshoot of a bound that the outer hook cap already enforces; minor hardening."
+  },
+  {
+   "key": "[Nit] scripts/agy-relay/budget.py:71",
+   "disposition": "in-scope",
+   "reason": "The R12 live-smoke tier's hard budget can be overrun by concurrent requests, so it does not do what it claims."
+  },
+  {
+   "key": "[Nit] src/harness/agy/plugin.rs:60",
+   "disposition": "punch-list",
+   "clusterOverride": "A missing downgrade-note paragraph, not a stale or wrong statement of shipped behavior.",
+   "reason": "Documentation gap about rollback; not named by the goal."
+  },
+  {
+   "key": "[Nit] src/protocol/delivery.rs:1; src/protocol/delivery.rs:3",
+   "disposition": "punch-list",
+   "clusterOverride": "Stale comments only; they do not change behavior.",
+   "reason": "Doc comment cleanup of the shipped state."
+  },
+  {
+   "key": "[Nit] src/harness/agy/delivery.rs:325",
+   "disposition": "punch-list",
+   "reason": "Doctor not seeing state write failures is observability hardening beyond the listed doctor conditions."
+  },
+  {
+   "key": "[Nit] src/harness/agy/delivery.rs:909; tests/harness/agy_delivery.rs:794",
+   "disposition": "punch-list",
+   "reason": "Test-quality and reachability cleanup; the covered behavior is correct."
+  },
+  {
+   "key": "[Nit] TRUST-POLICY.md:211",
+   "disposition": "punch-list",
+   "clusterOverride": "Incomplete marker list in a doc; no behavior is wrong.",
+   "reason": "Doc list update, quality only."
+  },
+  {
+   "key": "[FYI] src/store/schema.rs:411; src/store/schema.rs:409",
+   "disposition": "punch-list",
+   "reason": "Forward-only migration is the established repo convention and pre-existing."
+  },
+  {
+   "key": "[FYI] src/harness/agy/setup.rs:379",
+   "disposition": "punch-list",
+   "clusterOverride": "Overstated comment on a pre-existing helper; no behavior is wrong.",
+   "reason": "Comment wording only."
+  },
+  {
+   "key": "[FYI] src/service/delivery_pull.rs:297",
+   "disposition": "punch-list",
+   "clusterOverride": "Pre-existing bare-marker convention copied from watch.rs and scoped by design to truncation markers only; not a correctness defect in the new behavior.",
+   "reason": "Pre-existing convention; improvement rather than a goal-named defect."
+  },
+  {
+   "key": "[FYI] src/service/delivery_pull.rs:176",
+   "disposition": "punch-list",
+   "reason": "Pre-existing Busy-mapping idiom; observability improvement."
+  }
+ ]
+}

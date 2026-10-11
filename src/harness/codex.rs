@@ -10,6 +10,9 @@
 //! setup declaration installs context hooks only: lifecycle, child start, and
 //! a Bash `PreToolUse` group whose output is `additionalContext` and never a
 //! permission decision or `updatedInput`.
+pub mod doctor;
+pub mod permission_rules;
+pub mod permissions;
 pub mod setup;
 
 mod composer;
@@ -23,8 +26,12 @@ use super::contract::{
     JsonType::{String as Str, StringOrNull as StrOrNull},
     field as f,
 };
+use super::process::{VERSION_OUTPUT_LIMIT, VERSION_TIMEOUT, version_output_by};
 pub use super::recipe::NativeSupport;
-use super::recipe::{self, Evidence, LookupError, Recipe, Version, VersionSet};
+use super::recipe::{
+    self, Evidence, LookupError, OPTIMISTIC_LABEL, Recipe, SCHEMA_MATCHED_LABEL, Version,
+    VersionSet,
+};
 use super::{Capability, LifecycleEvent, declared_role, field, input};
 use crate::protocol::results::CapabilityState;
 use crate::protocol::time::CallBudget;
@@ -32,11 +39,7 @@ use crate::protocol::time::{Cancellation, external_bound};
 use serde_json::{Value, json};
 use std::{
     fmt,
-    io::Read,
-    os::unix::process::CommandExt,
     path::Path,
-    process::{Command, Stdio},
-    sync::mpsc,
     time::{Duration, Instant},
 };
 
@@ -116,9 +119,8 @@ pub struct CodexProfile {
     pub invocation_transport: NativeSupport,
     pub model_receipt: NativeSupport,
     /// Poke capabilities (spec §10). The spike tested Codex 0.160.0 only, and
-    /// no recipe covers it, so every recipe leaves both unsupported.
+    /// no recipe covers it, so every recipe leaves it unsupported.
     pub composer_stash: NativeSupport,
-    pub poke_during_turn: NativeSupport,
 }
 
 pub type CodexRecipe = Recipe<CodexProfile>;
@@ -169,7 +171,6 @@ pub const RECIPES: &[CodexRecipe] = &[Recipe {
         invocation_transport: NativeSupport::Unsupported,
         model_receipt: NativeSupport::Unsupported,
         composer_stash: NativeSupport::Unsupported,
-        poke_during_turn: NativeSupport::Unsupported,
     },
 }];
 
@@ -289,6 +290,12 @@ pub enum VersionError {
     },
 }
 
+impl From<super::process::Unavailable> for VersionError {
+    fn from(_: super::process::Unavailable) -> Self {
+        Self::Unavailable
+    }
+}
+
 impl fmt::Display for VersionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -382,12 +389,21 @@ pub struct InstalledVersion {
     fingerprinted: Option<std::path::PathBuf>,
 }
 
-/// The fixed evidence label for a schema-matched admission.
-pub const SCHEMA_MATCHED_LABEL: &str = "schema-matched, live-unverified";
+/// Fixed first-party guidance: permission requests remain Codex's decision,
+/// never a grant from hook text or from untrusted peer messages.
+pub const CODEX_COMMAND_GUIDANCE: &str = "Codex: run herdr-threads (ht) commands outside the sandbox through an approved CLI-only command rule. Without a rule, request sandbox_permissions=\"require_escalated\" with a short justification and CLI-only prefix_rule, never a shell rule. With approval never (including exec), use ordinary shell calls with a preapproved CLI rule; explicit escalation is unavailable. Keep other commands sandboxed. If approval is refused or unavailable, report it; never bypass policy or enable networking.\n";
 
-/// The fixed state label for an optimistic admission. The operator-facing
-/// wording rendered from [`OptimisticAdmission`] is the doctor's.
-pub const OPTIMISTIC_LABEL: &str = "optimistic";
+/// Codex's registered HooksV1 input contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CodexContract {
+    _registered: (),
+}
+
+impl CodexContract {
+    pub const fn registered() -> Self {
+        Self { _registered: () }
+    }
+}
 
 /// Codex versions on which setup's sandbox allowance (default-deny of the
 /// network proxy) was measured: measurement data about versions, not an
@@ -395,9 +411,6 @@ pub const OPTIMISTIC_LABEL: &str = "optimistic";
 /// `cli::setup`. See `cli::setup::codex_unmeasured_allowance_warning` for why
 /// setup writes the allowance only for these.
 pub const SANDBOX_MEASURED_VERSIONS: &[&str] = &["0.159.2", "0.159.3"];
-
-pub const VERSION_TIMEOUT: Duration = Duration::from_secs(5);
-const VERSION_OUTPUT_LIMIT: u64 = 256;
 
 impl InstalledVersion {
     /// Run `<absolute binary> --version` and accept a version a recipe lists,
@@ -460,7 +473,7 @@ impl InstalledVersion {
         let ran = target
             .as_deref()
             .ok()
-            .and_then(codex_schema::BinaryIdentity::observe);
+            .and_then(super::BinaryIdentity::observe);
         let stdout = version_output_by(binary, deadline, cancel)?;
         let version = Self::reported(&stdout)?;
         let table = admission_table();
@@ -653,131 +666,6 @@ impl InstalledVersion {
     pub(crate) fn recipe_version_for_test(version: &str) -> Self {
         Self::from_output(format!("codex-cli {version}\n").as_bytes()).expect("recipe version")
     }
-}
-
-/// Run `<absolute binary> --version` under one deadline covering process exit
-/// and reading stdout to EOF; the process group is killed on expiry. Shared by
-/// every adapter that gates on an observed installed version.
-#[cfg(test)]
-pub(crate) fn version_output(binary: &Path, timeout: Duration) -> Result<Vec<u8>, VersionError> {
-    version_output_by(binary, Instant::now() + external_bound(timeout), None)
-}
-
-/// [`version_output`] that also kills the process group once `cancel` fires.
-pub(crate) fn version_output_cancellable(
-    binary: &Path,
-    timeout: Duration,
-    cancel: &Cancellation,
-) -> Result<Vec<u8>, VersionError> {
-    version_output_by(
-        binary,
-        Instant::now() + external_bound(timeout),
-        Some(cancel),
-    )
-}
-
-/// Run `<absolute binary> --version` and return its stdout before
-/// `deadline`. A process that exits but leaves a descendant holding stdout is
-/// `Unavailable`; its process group is killed.
-fn version_output_by(
-    binary: &Path,
-    deadline: Instant,
-    cancel: Option<&Cancellation>,
-) -> Result<Vec<u8>, VersionError> {
-    bounded_output_by(
-        binary,
-        &["--version"],
-        VERSION_OUTPUT_LIMIT,
-        deadline,
-        cancel,
-    )
-}
-
-/// Run `<absolute binary> ARGS...` with no stdin and return at most `limit`
-/// bytes of its stdout, only for a successful exit before `timeout`; the
-/// process group is killed on expiry. Used for read-only CLI queries.
-pub(crate) fn bounded_output(
-    binary: &Path,
-    args: &[&str],
-    limit: u64,
-    timeout: Duration,
-) -> Result<Vec<u8>, VersionError> {
-    bounded_output_by(
-        binary,
-        args,
-        limit,
-        Instant::now() + external_bound(timeout),
-        None,
-    )
-}
-
-fn bounded_output_by(
-    binary: &Path,
-    args: &[&str],
-    limit: u64,
-    deadline: Instant,
-    cancel: Option<&Cancellation>,
-) -> Result<Vec<u8>, VersionError> {
-    let cancelled = || cancel.is_some_and(Cancellation::is_cancelled);
-    if !binary.is_absolute() {
-        return Err(VersionError::Unavailable);
-    }
-    let mut child = Command::new(binary)
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .process_group(0)
-        .spawn()
-        .map_err(|_| VersionError::Unavailable)?;
-    let group = child.id() as libc::pid_t;
-    let kill_group = || {
-        // SAFETY: signals only the fresh process group created for this
-        // observation (leader pid == group id).
-        unsafe { libc::killpg(group, libc::SIGKILL) };
-    };
-    let Some(stdout) = child.stdout.take() else {
-        kill_group();
-        let _ = child.wait();
-        return Err(VersionError::Unavailable);
-    };
-    let (sender, receiver) = mpsc::channel();
-    std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        let result = stdout
-            .take(limit + 1)
-            .read_to_end(&mut bytes)
-            .map(|_| bytes);
-        let _ = sender.send(result);
-    });
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) if Instant::now() < deadline && !cancelled() => {
-                std::thread::sleep(Duration::from_millis(5))
-            }
-            _ => {
-                kill_group();
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(VersionError::Unavailable);
-            }
-        }
-    };
-    let remaining = deadline.saturating_duration_since(Instant::now());
-    let stdout = match receiver.recv_timeout(remaining) {
-        Ok(Ok(bytes)) => bytes,
-        Ok(Err(_)) => return Err(VersionError::Unavailable),
-        Err(_) => {
-            // A descendant still holds stdout past the deadline.
-            kill_group();
-            return Err(VersionError::Unavailable);
-        }
-    };
-    if !status.success() {
-        return Err(VersionError::Unavailable);
-    }
-    Ok(stdout)
 }
 
 /// First absolute, executable `codex` on `path` (a `PATH` value).
@@ -1038,7 +926,7 @@ fn required(value: &Value, key: &str) -> Result<String, ContextError> {
 pub fn parse_event_for_contract(
     bytes: &[u8],
     event_id: &str,
-    _: &super::operational::CodexContract,
+    _: &CodexContract,
 ) -> Result<LifecycleEvent, ContextError> {
     let value = input(bytes, event_id)?;
     check_hooks_v1(&value)?;
@@ -1232,6 +1120,113 @@ fn parse_shape(value: &Value, event_id: &str) -> Result<LifecycleEvent, ContextE
     })
 }
 
+/// Codex's declared context-only hook groups (SessionStart, SubagentStart, Bash PreToolUse) in the
+/// `hooks.json` form. The 10 s timeout bounds Codex's wait (its default is 600 s); the hook's own
+/// watchdog ends it far earlier.
+pub fn declared_hook_groups(command: &str) -> Vec<(&'static str, Value)> {
+    use super::setup::event_command;
+    DECLARATION
+        .owned_hooks
+        .iter()
+        .map(|hook| {
+            let command = event_command(command, hook.event);
+            let mut group = json!({"hooks":[{"type":"command","command":command,"timeout":10}]});
+            if let Some(matcher) = hook.matcher {
+                group["matcher"] = json!(matcher);
+            }
+            (hook.event, group)
+        })
+        .collect()
+}
+
+/// Codex trusts hooks by hash, so rewritten commands need review again.
+pub const RETRUST_WARNING: &str = "Codex trusts hooks by hash: the rewritten hook commands need \
+     review again (the next interactive `codex` start, or /hooks) before Codex runs them";
+
+/// Codex's user hook file in the shared JSON engine: hook groups only, no owned allow member.
+pub static SETTINGS_KIND: super::setup::SettingsKindSpec = super::setup::SettingsKindSpec {
+    harness: "codex",
+    file_name: "hooks.json",
+    hook_groups: declared_hook_groups,
+    owned_allow: None,
+    adoption_note: ", so Codex's recorded trust for them stays valid",
+    legacy_upgrade_warning: RETRUST_WARNING,
+    permission_rules: super::setup::no_permission_rules,
+};
+/// The engine handle of [`SETTINGS_KIND`].
+pub const fn settings_kind() -> super::setup::SettingsKind {
+    super::setup::SettingsKind::new(&SETTINGS_KIND)
+}
+
+/// Help and report fragments of the Codex adapter (verbatim from the core text they replace).
+static TEXT: AdapterText = AdapterText {
+    setup_scope: "  codex   $CODEX_HOME/hooks.json (default ~/.codex/hooks.json) for the hook groups
+          (SessionStart, SubagentStart, Bash PreToolUse). With consent, agent permissions go
+          in their own file, $CODEX_HOME/rules/herdr-threads.rules: an allow rule for
+          `herdr-threads` and `ht` and prompt rules for the same human and setup commands.
+          Setup installs no sandbox socket, writable-root or network allowance. Run
+          herdr-threads commands through Codex's approved outside-sandbox execution; a
+          denied approval is a policy refusal.
+          Historical owned allowances remain inspectable; unsetup removes only unchanged
+          owned values and refuses edited ownership records. Codex runs user hooks only once
+          you trust them: the next interactive `codex` start lists them for review (or use
+          /hooks); Codex records their hashes in config.toml [hooks.state]. setup never writes trust.",
+    setup_foreground: "The inspected Codex has
+no persistent config/environment daemon opt-out; features.daemon_auto_start=false still attaches
+to an existing daemon. Use native --no-daemon, or HERDR_THREADS_CODEX_OPTS='--no-daemon'
+when the selected binary/wrapper supports and forwards it.",
+    launch_notes: "Codex launches report
+`codex`: the effective CODEX_HOME, its config.toml and the selected profile (-p/--profile,
+else `profile` in config.toml, else default). Codex CLI commands use approved
+outside-sandbox execution, without a network/socket allowance. Unsupported Codex subcommands,
+an explicit `--daemon`, a caller `--no-daemon` after the subcommand and a caller `-c hooks.*`
+override are refused.",
+    config_root_hint: "CODEX_HOME",
+    trust_reminder_label: "codex hook trust",
+    version_history_note: "historical attributed metadata; rollout creator does not identify the current runtime",
+    ..AdapterText::NONE
+};
+
+static FOREGROUND: ForegroundAdvice = ForegroundAdvice {
+    settings_file: "config.toml",
+    advice: "Codex 0.160.1 has no persistent user config/environment opt-out for daemon attachment. features.daemon_auto_start = false prevents automatic startup only: Codex still attaches to an existing daemon. Use native codex --no-daemon, or set HERDR_THREADS_CODEX_OPTS='--no-daemon' for herdr-threads launch when the selected binary/wrapper supports and forwards that argument. These configured arguments do not prove that a wrapper runs in the foreground; verify its behavior.",
+    fixed_fields: &[("persistent_opt_out", "unavailable (Codex 0.160.1)")],
+    inspect: inspect_foreground,
+};
+
+/// Codex's foreground-agent choice in user `config.toml`: `features.daemon_auto_start`.
+fn inspect_foreground(bytes: &[u8], report: &mut Value) -> Result<(), String> {
+    let text =
+        std::str::from_utf8(bytes).map_err(|_| "user config TOML is not UTF-8".to_owned())?;
+    let config = text
+        .parse::<toml_edit::DocumentMut>()
+        .map_err(|_| "invalid user config TOML".to_owned())?;
+    report["daemon_auto_start"] = config
+        .get("features")
+        .and_then(|v| v.get("daemon_auto_start"))
+        .and_then(toml_edit::Item::as_bool)
+        .map_or(Value::Null, Value::Bool);
+    Ok(())
+}
+
+static VERSION_SYNTAX: VersionSyntax = VersionSyntax {
+    prefix: "codex-cli ",
+    suffix: "",
+    examples: &[("codex-cli 0.158.0", "0.158.0")],
+};
+
+fn transcript_version(entry: &Value) -> Option<&str> {
+    if entry.get("type")?.as_str()? != "session_meta" {
+        return None;
+    }
+    entry.get("payload")?.get("cli_version")?.as_str()
+}
+static TRANSCRIPT_VERSION: TranscriptVersionSpec = TranscriptVersionSpec {
+    read: TranscriptRead::HeadLine,
+    extract: transcript_version,
+    current_runtime: false,
+};
+
 pub(crate) struct CodexAdapter;
 
 struct CodexCanary;
@@ -1281,9 +1276,23 @@ impl HarnessAdapter for CodexAdapter {
     fn hook_admission_policy(&self) -> HookAdmissionPolicy {
         HookAdmissionPolicy::RegisteredContract
     }
-    type Admission = super::operational::CodexContract;
+    type Admission = CodexContract;
     fn metadata(&self) -> &'static AdapterMetadata {
         static METADATA: AdapterMetadata = AdapterMetadata {
+            agent_env_markers: &[
+                AgentEnvMarker {
+                    name: "CODEX_THREAD_ID",
+                    person_guard: false,
+                },
+                AgentEnvMarker {
+                    name: "CODEX_SANDBOX",
+                    person_guard: true,
+                },
+                AgentEnvMarker {
+                    name: "CODEX_SANDBOX_NETWORK_DISABLED",
+                    person_guard: true,
+                },
+            ],
             id: "codex",
             display_label: "Codex",
             context_spelling: "Codex",
@@ -1305,12 +1314,40 @@ impl HarnessAdapter for CodexAdapter {
         daemon: &serde_json::Value,
         budget: &CallBudget,
     ) -> Option<DoctorProjection> {
-        Some(crate::cli::doctor::legacy_codex_projection(
-            request, daemon, budget,
-        ))
+        Some(doctor::legacy_codex_projection(request, daemon, budget))
     }
     fn legacy_contract_id(&self) -> Option<String> {
         Some(super::contract::contract_id(&CONTRACT))
+    }
+    fn text(&self) -> &'static AdapterText {
+        &TEXT
+    }
+    fn setup_environment_inputs(&self) -> &'static [&'static str] {
+        &["CODEX_HOME"]
+    }
+    fn default_config_root(&self, environment: &SetupEnvironment) -> Option<std::path::PathBuf> {
+        setup::codex_home_from(
+            environment.declared.get("CODEX_HOME").cloned(),
+            environment.home.clone(),
+        )
+    }
+    fn settings_kind(&self) -> Option<&'static super::setup::SettingsKindSpec> {
+        Some(&SETTINGS_KIND)
+    }
+    fn foreground_advice(&self) -> Option<&'static ForegroundAdvice> {
+        Some(&FOREGROUND)
+    }
+    fn doctor_text(&self, hooks: &Value, form: DoctorTextForm) -> String {
+        doctor::doctor_text(hooks, form)
+    }
+    fn doctor_summary_claims(&self) -> &'static [&'static str] {
+        &["Codex hook review required"]
+    }
+    fn version_syntax(&self) -> Option<&'static VersionSyntax> {
+        Some(&VERSION_SYNTAX)
+    }
+    fn transcript_version(&self) -> Option<&'static TranscriptVersionSpec> {
+        Some(&TRANSCRIPT_VERSION)
     }
     fn canary_strategy(&self) -> Option<&dyn super::adapter::CanaryStrategy> {
         Some(&CodexCanary)
@@ -1347,7 +1384,7 @@ impl HarnessAdapter for CodexAdapter {
         &self,
         descriptor: &ContractDescriptor,
     ) -> &'static [&'static str] {
-        static REASONS: [&str; 1] = [super::attribution::Unattributed::CodexCreatorOnly.as_str()];
+        static REASONS: [&str; 1] = [super::attribution::Unattributed::CreatorOnly.as_str()];
         if std::ptr::eq(&self.contracts()[0], descriptor) {
             &REASONS
         } else {
@@ -1368,7 +1405,7 @@ impl HarnessAdapter for CodexAdapter {
         _: &CallBudget,
     ) -> AdmissionDecision<Self::Admission> {
         match &request.installed {
-            InstallObservation::NotRequested | InstallObservation::ExecutableAvailable { .. } => AdmissionDecision::ContractDeclared {state: super::operational::CodexContract::registered(), recipe: RECIPES[0].id},
+            InstallObservation::NotRequested | InstallObservation::ExecutableAvailable { .. } => AdmissionDecision::ContractDeclared {state: CodexContract::registered(), recipe: RECIPES[0].id},
             _ => AdmissionDecision::Refused {diagnostic: "registered codex contract requires executable availability or declared hook selection".into()},
         }
     }
@@ -1390,7 +1427,7 @@ impl HarnessAdapter for CodexAdapter {
     fn output_policy(&self) -> OutputPolicy {
         OutputPolicy {
             child_requires_endpoint: true,
-            extra_guidance: crate::cli::skill::CODEX_COMMAND_GUIDANCE,
+            extra_guidance: CODEX_COMMAND_GUIDANCE,
             empty_lifecycle: true,
             session_start_hint: true,
         }
@@ -1468,14 +1505,8 @@ impl HarnessAdapter for CodexAdapter {
 pub mod launch {
     use crate::cli::setup::SetupEnv;
     use crate::protocol::results::{ApiError, ErrorCode};
-    use crate::protocol::time::CallBudget;
     use serde_json::{Value, json};
-    use std::{
-        fs,
-        io::Read,
-        process::{Command as Process, Stdio},
-        time::{Duration, Instant},
-    };
+    use std::fs;
     fn error(code: ErrorCode, detail: &str) -> ApiError {
         ApiError::new(code, detail)
     }
@@ -1838,131 +1869,6 @@ pub mod launch {
         key == "hooks" || key.starts_with("hooks.")
     }
 
-    /// Bounded pane-shell configuration exports; tests inject synthetic probes.
-    pub trait CodexShellProbe {
-        fn pane_shell_env_bounded(
-            &self,
-            var: &str,
-            clock: &dyn crate::protocol::time::Clock,
-            budget: &CallBudget,
-        ) -> Option<String> {
-            if budget.is_exhausted(clock) {
-                return None;
-            }
-            self.pane_shell_env(var)
-        }
-
-        /// The value the pane's interactive shell itself gives `var` (an `export`
-        /// in its startup files), without the launcher's own value; `None` when
-        /// the shell sets none or cannot be asked. Herdr's `agent.start` carries
-        /// no environment, so the agent inherits whatever the pane shell has.
-        fn pane_shell_env(&self, _var: &str) -> Option<String> {
-            None
-        }
-    }
-
-    /// The bound on configuration-directory shell probes.
-    pub const SHELL_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
-
-    /// Runs the pane interactive shell to inspect configuration exports only.
-    pub struct SystemShellProbe {
-        pub shell: std::path::PathBuf,
-        pub timeout: Duration,
-    }
-
-    impl SystemShellProbe {
-        pub fn from_process() -> Self {
-            let shell = std::env::var_os("SHELL")
-                .filter(|shell| !shell.is_empty())
-                .map_or_else(|| "/bin/zsh".into(), std::path::PathBuf::from);
-            Self {
-                shell,
-                timeout: crate::protocol::time::external_bound(SHELL_PROBE_TIMEOUT),
-            }
-        }
-    }
-
-    impl SystemShellProbe {
-        /// Runs `script` in the interactive shell (`-ic`), stdout only, bounded by
-        /// the probe timeout. `unset` removes one inherited variable first.
-        fn run_script(&self, script: &str, unset: Option<&str>) -> Result<String, String> {
-            let mut command = Process::new(&self.shell);
-            command.arg("-ic").arg(script);
-            if let Some(var) = unset {
-                command.env_remove(var);
-            }
-            let mut child = command
-                .stdin(Stdio::null())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::null())
-                .spawn()
-                .map_err(|error| format!("{}: {error}", self.shell.display()))?;
-            let mut stdout = child.stdout.take().ok_or("no shell stdout")?;
-            let (sender, receiver) = std::sync::mpsc::channel();
-            std::thread::spawn(move || {
-                let mut bytes = Vec::new();
-                let result = stdout.read_to_end(&mut bytes).map(|_| bytes);
-                let _ = sender.send(result);
-            });
-            let deadline = Instant::now() + self.timeout;
-            let status = loop {
-                match child.try_wait() {
-                    Ok(Some(status)) => break status,
-                    Ok(None) if Instant::now() < deadline => {
-                        std::thread::sleep(Duration::from_millis(20));
-                    }
-                    Ok(None) => {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        return Err("the shell probe timed out".into());
-                    }
-                    Err(error) => return Err(error.to_string()),
-                }
-            };
-            if !status.success() {
-                return Err(format!("the shell probe exited with {status}"));
-            }
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            let bytes = receiver
-                .recv_timeout(remaining.max(Duration::from_millis(100)))
-                .map_err(|_| "the shell probe output was not closed".to_owned())?
-                .map_err(|error| error.to_string())?;
-            Ok(String::from_utf8_lossy(&bytes).into_owned())
-        }
-    }
-
-    impl CodexShellProbe for SystemShellProbe {
-        fn pane_shell_env_bounded(
-            &self,
-            var: &str,
-            clock: &dyn crate::protocol::time::Clock,
-            budget: &CallBudget,
-        ) -> Option<String> {
-            let remaining = budget.deadline.0.saturating_sub(clock.monotonic_now().0);
-            if remaining == 0 {
-                return None;
-            }
-            Self {
-                shell: self.shell.clone(),
-                timeout: self.timeout.min(Duration::from_millis(remaining)),
-            }
-            .pane_shell_env(var)
-        }
-
-        fn pane_shell_env(&self, var: &str) -> Option<String> {
-            const BEGIN: &str = "HT_PANE_ENV_BEGIN";
-            const END: &str = "HT_PANE_ENV_END";
-            // Only a plain variable name is ever interpolated into the script.
-            if var.is_empty() || !var.chars().all(|c| c.is_ascii_uppercase() || c == '_') {
-                return None;
-            }
-            let script = format!("printf '%s' {BEGIN}\"${{{var}-}}\"{END}");
-            let output = self.run_script(&script, Some(var)).ok()?;
-            let value = output.split(BEGIN).nth(1)?.split(END).next()?;
-            (!value.is_empty()).then(|| value.to_owned())
-        }
-    }
-
     /// The Codex profile Codex applies: `-p/--profile` before `--` (the last one
     /// wins), else the top-level `profile` key of `config.toml`, else none.
     pub fn codex_profile(argv: &[String], config: Option<&str>) -> (String, &'static str) {
@@ -1995,7 +1901,7 @@ pub mod launch {
     /// The effective Codex home, its `config.toml` and the selected profile,
     /// which answers "why was my Codex profile not applied?".
     pub(crate) fn codex_report(env: &SetupEnv, argv: &[String]) -> Value {
-        let home = env.codex_home.as_deref();
+        let home = crate::harness::codex::setup::codex_root(env);
         let config_path = home.map(|home| home.join("config.toml"));
         let config = config_path
             .as_deref()
@@ -2020,7 +1926,7 @@ impl LaunchPolicy for CodexAdapter {
     fn resolve_scope(
         &self,
         request: &LaunchRequest,
-        probe: &dyn super::launch::CodexShellProbe,
+        probe: &dyn super::launch::PaneShellProbe,
         budget: &CallBudget,
     ) -> Result<LaunchScope, crate::protocol::results::ApiError> {
         let mut scope = super::launch::native_scope(request, "codex", "CODEX_HOME", probe, budget)?;
@@ -2174,7 +2080,7 @@ impl LaunchPolicy for CodexAdapter {
         scope: &LaunchScope,
         admitted: &super::registry::AdmittedHandle,
         status: &LocalSetupStatus,
-        _probe: &dyn super::launch::CodexShellProbe,
+        _probe: &dyn super::launch::PaneShellProbe,
         _budget: &CallBudget,
     ) -> Result<LaunchPreparation, crate::protocol::results::ApiError> {
         if admitted.metadata().id != "codex" || status.scope != scope.setup {
@@ -2229,6 +2135,9 @@ impl LaunchPolicy for CodexAdapter {
 }
 
 impl InstallerPolicy for CodexAdapter {
+    fn permission_backend(&self) -> Option<crate::harness::permissions::PermissionBackend> {
+        Some(permissions::BACKEND)
+    }
     fn permissions_granted(&self, request: &StatusRequest) -> Result<Option<bool>, SetupFailure> {
         let env = crate::harness::setup::legacy::scoped_legacy_environment(
             Harness::Codex,
@@ -2254,6 +2163,10 @@ impl InstallerPolicy for CodexAdapter {
             &request.scope,
             &request.environment,
         )?;
+        // Historical owned allowances beside the hook file: an incomplete or edited record
+        // refuses before the generic hook inspection.
+        setup::installer_allowance_precheck(&env)
+            .map_err(|error| SetupFailure::Invalid(error.to_string()))?;
         crate::harness::setup::legacy::installer_hooks_installed(&env, Harness::Codex)
             .map(|owned| {
                 if owned {

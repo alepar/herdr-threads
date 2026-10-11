@@ -162,6 +162,7 @@ impl Fixture {
                 binding_generation: generation,
                 native_session: NativeSessionId::new("native"),
                 harness: Harness::Claude,
+                idle_wake: IdleWake::Channel,
                 registered_at: self.now(),
             },
             sink.clone(),
@@ -178,6 +179,7 @@ impl Fixture {
             binding_generation: generation,
             native_session: NativeSessionId::new("native"),
             harness: Harness::Claude,
+            idle_wake: IdleWake::Channel,
             registered_at: self.now(),
         };
         let hook_sink = sink.clone();
@@ -217,6 +219,7 @@ fn view(seat_name: &str, generation: u64, fingerprint: ModFingerprint) -> ModSea
             binding_generation: Some(generation),
             ..fingerprint
         },
+        newest_pending_notice: None,
     }
 }
 fn pending(version: u64) -> ModFingerprint {

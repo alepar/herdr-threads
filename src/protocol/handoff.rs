@@ -5,6 +5,10 @@ use super::{
     ids::{OperationId, SeatId, ThreadId},
 };
 use serde::{Deserialize, Serialize};
+pub(crate) mod automatic;
+pub use automatic::*;
+mod automatic_bootstrap;
+pub use automatic_bootstrap::*;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -146,6 +150,7 @@ impl DeliveryMutation {
                 v.delivery_mode == crate::protocol::commands::DeliveryMode::Ordinary
                     && v.claim == self.claim
                     && v.operation == keys.send
+                    && v.direct_recipient.is_none()
                     && v.body == self.plan.payload.body
                     && v.invited_recipients == [self.plan.recipient.clone()]
                     && v.deadline_millis
@@ -193,6 +198,7 @@ pub struct HandoffNamespace {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum HandoffChannel {
+    Automatic,
     Existing {
         thread: ThreadId,
     },
@@ -206,7 +212,7 @@ impl HandoffChannel {
     pub fn thread(&self) -> Option<&ThreadId> {
         match self {
             Self::Existing { thread } => Some(thread),
-            Self::New { .. } => None,
+            Self::New { .. } | Self::Automatic => None,
         }
     }
 }
@@ -271,6 +277,14 @@ pub struct BootstrapLaunch {
     pub binary: Option<String>,
     pub name: Option<String>,
     pub argv: Vec<String>,
+    /// Bootstrap plan V2 only: the adapter's own composition of `argv`, frozen at plan time.
+    /// Absent (and not serialized) for a V1 plan, so V1 plans stay byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub composed_argv: Option<Vec<String>>,
+    /// Bootstrap plan V2 only: the adapter's startup-input placement for `argv`, frozen at plan time.
+    /// Absent (and not serialized) for a V1 plan, so V1 plans stay byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub startup_input: Option<crate::harness::adapter::StartupInputTemplate>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -627,6 +641,9 @@ impl HandoffNamespace {
 impl HandoffPayload {
     pub fn validate(&self) -> Result<(), &'static str> {
         self.namespace.validate()?;
+        if self.channel == HandoffChannel::Automatic {
+            return Err("automatic payload requires V2 contract");
+        }
         if let Some(policy) = &self.policy {
             policy.validate()?;
         }
@@ -672,6 +689,16 @@ impl BootstrapLaunch {
             || self.argv.len() > 256
             || self.argv.iter().any(|a| a.len() > 4096 || a.contains('\0'))
             || self.argv.iter().map(String::len).sum::<usize>() > 65536
+            || self.composed_argv.as_ref().is_some_and(|composed| {
+                composed.len() > 512
+                    || composed.iter().any(|a| a.len() > 4096 || a.contains('\0'))
+                    || composed.iter().map(String::len).sum::<usize>() > 65536
+            })
+            || self.composed_argv.is_some() != self.startup_input.is_some()
+            || self
+                .startup_input
+                .as_ref()
+                .is_some_and(|template| template.validate(self.argv.len()).is_err())
         {
             return Err("invalid frozen bootstrap launch arguments");
         }
@@ -679,6 +706,15 @@ impl BootstrapLaunch {
     }
 }
 impl BootstrapPayload {
+    /// The bootstrap plan version this payload belongs to: 2 when it froze the adapter's own
+    /// composition, else the frozen V1 grammar.
+    pub fn plan_version(&self) -> u32 {
+        if self.launch.composed_argv.is_some() {
+            2
+        } else {
+            1
+        }
+    }
     pub fn validate(&self) -> Result<(), &'static str> {
         self.handoff.validate()?;
         self.launch.validate()?;
@@ -722,7 +758,7 @@ impl BootstrapIdentity {
             claim: self.claim.clone(),
             mutation: Box::new(crate::cli::journal::SemanticMutation::HandoffBootstrap(
                 Box::new(crate::cli::journal::BootstrapPlan {
-                    version: 1,
+                    version: self.payload.plan_version(),
                     payload: self.payload.clone(),
                 }),
             )),
@@ -918,7 +954,9 @@ impl BootstrapAttachment {
             || self.handoff.send_key != identity.payload.handoff.keys.send
             || match &identity.payload.handoff.channel {
                 HandoffChannel::Existing { thread } => self.handoff.thread.as_ref() != Some(thread),
-                HandoffChannel::New { .. } => self.handoff.thread.is_some(),
+                HandoffChannel::New { .. } | HandoffChannel::Automatic => {
+                    self.handoff.thread.is_some()
+                }
             }
         {
             return Err("bootstrap attachment mismatch");
@@ -940,7 +978,9 @@ impl CompleteLinkedBootstrap {
                     self.attachment.handoff.thread.as_ref() != Some(thread)
                         || thread != &self.retained.thread
                 }
-                HandoffChannel::New { .. } => self.attachment.handoff.thread.is_some(),
+                HandoffChannel::New { .. } | HandoffChannel::Automatic => {
+                    self.attachment.handoff.thread.is_some()
+                }
             }
             || self.retained.recipient != self.attachment.resolved_seat
             || self.retained.pane != self.attachment.created.root_pane
@@ -1000,6 +1040,8 @@ pub(crate) mod topology_contract_tests {
                 binary: Some("/bin/codex".into()),
                 name: Some("peer".into()),
                 argv: vec!["--model".into(), "fixed".into()],
+                composed_argv: None,
+                startup_input: None,
             },
             handoff_key: OperationId::new("child"),
             resolve_key: OperationId::new("resolve"),
@@ -1644,5 +1686,198 @@ pub(crate) mod topology_contract_tests {
             decoded.recovery.unwrap().inspection.is_some(),
             "new presentation cannot strip guard for older decoders"
         );
+    }
+}
+
+#[cfg(test)]
+mod automatic_contract_tests {
+    use super::*;
+    use crate::cli::journal::IntentScope;
+    use crate::protocol::{commands::Command, ids::OperationId};
+    const PLAN: &str = r#"{"version":2,"payload":{"namespace":{"instance":"i","state_dir":"/state","host_endpoint":"/host.sock"},"keys":{"compound":"compound","begin":"begin","ensure":"ensure","send":"send","complete":"complete"},"channel":{"kind":"automatic"},"body":"work"},"recipient":"peer"}"#;
+    fn request() -> AutomaticDeliveryMutation {
+        let claim = topology_contract_tests::claim();
+        AutomaticDeliveryMutation::new(
+            IntentScope::Cooperative {
+                instance: claim.instance.clone(),
+                seat: claim.seat.clone(),
+            },
+            claim,
+            AutomaticOriginal::Delivery(serde_json::from_str(PLAN).unwrap()),
+        )
+        .unwrap()
+    }
+    #[test]
+    fn automatic_v2_keys_have_ensure_and_no_legacy_invite() {
+        let json = r#"{"version":2,"payload":{"namespace":{"instance":"i","state_dir":"/state","host_endpoint":"/host.sock"},"keys":{"compound":"compound","begin":"begin","ensure":"ensure","send":"send","complete":"complete"},"channel":{"kind":"automatic"},"body":"work"},"recipient":"peer"}"#;
+        assert!(
+            serde_json::from_str::<crate::cli::journal::DeliveryPlan>(json).is_err(),
+            "legacy payload must reject Ensure keys"
+        );
+        let plan: AutomaticDeliveryPlan = serde_json::from_str(json).expect("V2 automatic plan");
+        plan.validate().unwrap();
+        assert_eq!(serde_json::to_string(&plan).unwrap(), json);
+        let mut old = plan.clone();
+        old.version = 1;
+        assert!(
+            old.validate().is_err(),
+            "V1 must never reinterpret automatic intent"
+        );
+        let mut bad: serde_json::Value = serde_json::from_str(json).unwrap();
+        bad["payload"]["keys"]["invite"] = "invented".into();
+        assert!(serde_json::from_value::<AutomaticDeliveryPlan>(bad).is_err());
+    }
+
+    #[test]
+    fn automatic_original_digest_and_all_restricted_phases_are_exact() {
+        let request = request();
+        assert_eq!(
+            request.digest,
+            "8a9d2f46e0b4786658b9ee4ad9aa011cc91110e9ea9cf932479810c2f0998f71"
+        );
+        for phase in [
+            request.clone(),
+            request.begin(),
+            request.ensure(),
+            request.send(ThreadId::new("selected")),
+            request.complete(),
+        ] {
+            phase.validate().unwrap();
+            let command = Command::AutomaticHandoffDelivery(Box::new(phase));
+            command.validate().unwrap();
+            let encoded = serde_json::to_vec(&command).unwrap();
+            let restored: Command = serde_json::from_slice(&encoded).unwrap();
+            assert_eq!(serde_json::to_vec(&restored).unwrap(), encoded);
+        }
+        let mut changed = request.ensure();
+        if let AutomaticDeliveryAction::Ensure(value) = &mut changed.action {
+            value.operation = OperationId::new("other");
+        }
+        assert!(changed.validate().is_err());
+        let mut changed = request.send(ThreadId::new("selected"));
+        if let AutomaticDeliveryAction::Send(value) = &mut changed.action {
+            value.direct_recipient = None;
+        }
+        assert!(changed.validate().is_err());
+        let mut changed = request.clone();
+        changed.claim.binding_generation += 1;
+        assert!(changed.validate().is_err());
+        let mut changed = request.clone();
+        if let AutomaticOriginal::Delivery(plan) = &mut changed.original {
+            plan.payload.body = "changed".into();
+        }
+        assert!(changed.validate().is_err());
+        let mut changed = request;
+        if let AutomaticOriginal::Delivery(plan) = &mut changed.original {
+            plan.payload.namespace.instance = "other".into();
+        }
+        changed.digest = changed.original.digest(&changed.claim).unwrap();
+        assert!(changed.validate().is_err());
+    }
+    #[test]
+    fn automatic_keys_versions_and_raw_legacy_phases_fail_closed() {
+        let mut plan: AutomaticDeliveryPlan = serde_json::from_str(PLAN).unwrap();
+        plan.payload.keys.ensure = plan.payload.keys.send.clone();
+        assert!(plan.validate().is_err());
+        let mut plan: AutomaticDeliveryPlan = serde_json::from_str(PLAN).unwrap();
+        plan.payload.channel = HandoffChannel::New {
+            name: None,
+            topic: "ordinary".into(),
+            goal: "ordinary".into(),
+        };
+        assert!(plan.validate().is_err());
+        for phase in ["create", "invite"] {
+            let mut encoded = serde_json::to_value(request().ensure()).unwrap();
+            encoded["action"]["phase"] = phase.into();
+            assert!(serde_json::from_value::<AutomaticDeliveryMutation>(encoded).is_err());
+        }
+        let mut encoded = serde_json::to_value(request()).unwrap();
+        encoded["version"] = 1.into();
+        assert!(
+            serde_json::from_value::<AutomaticDeliveryMutation>(encoded)
+                .unwrap()
+                .validate()
+                .is_err()
+        );
+        let payload = AutomaticHandoffPayload::new(
+            topology_contract_tests::payload().handoff.namespace,
+            OperationId::new("stable"),
+            "work".into(),
+        )
+        .unwrap();
+        let same = AutomaticHandoffPayload::new(
+            payload.namespace.clone(),
+            OperationId::new("stable"),
+            "work".into(),
+        )
+        .unwrap();
+        assert_eq!(payload.keys, same.keys);
+        assert_eq!(
+            automatic_selected_thread(&crate::protocol::results::CommandResult::ThreadCreated(
+                ThreadId::new("selected")
+            ))
+            .unwrap()
+            .as_str(),
+            "selected"
+        );
+        assert!(
+            automatic_selected_thread(&crate::protocol::results::CommandResult::Handoff(
+                HandoffResult {
+                    compound: OperationId::new("stable"),
+                    thread: None,
+                    state: HandoffState::Live
+                }
+            ))
+            .is_err()
+        );
+    }
+    #[test]
+    fn automatic_launch_original_binds_outer_launch_context_and_child_payload() {
+        let claim = topology_contract_tests::claim();
+        let original = AutomaticOriginal::Handoff(Box::new(AutomaticHandoffPlan {
+            version: 2,
+            delivery: serde_json::from_str(PLAN).unwrap(),
+            launch: crate::cli::launch::LaunchRequest {
+                target: HostTargetId::new("w1:p2"),
+                harness: crate::harness::context::Harness::Codex,
+                harness_binary: None,
+                argv: vec!["--model".into(), "fixed".into()],
+                name: Some("peer".into()),
+                pane_label: None,
+            },
+            context: crate::protocol::output::ContinuationContext {
+                state_dir: Some("/state".into()),
+                host: Some("/host.sock".into()),
+            },
+            startup_input: None,
+        }));
+        let request = AutomaticDeliveryMutation::new(
+            IntentScope::Cooperative {
+                instance: claim.instance.clone(),
+                seat: claim.seat.clone(),
+            },
+            claim,
+            original,
+        )
+        .unwrap();
+        assert_eq!(request.plan().recipient.as_str(), "peer");
+        let mut changed = request.clone();
+        if let AutomaticOriginal::Handoff(plan) = &mut changed.original {
+            plan.launch.argv.push("changed".into());
+        }
+        assert!(
+            changed.validate().is_err(),
+            "one original digest must bind launch argv too"
+        );
+        assert_ne!(
+            changed.original.digest(&changed.claim).unwrap(),
+            request.digest
+        );
+        let mut changed = request;
+        if let AutomaticOriginal::Handoff(plan) = &mut changed.original {
+            plan.context.host = Some("/other".into());
+        }
+        changed.digest = changed.original.digest(&changed.claim).unwrap();
+        assert!(changed.validate().is_err());
     }
 }

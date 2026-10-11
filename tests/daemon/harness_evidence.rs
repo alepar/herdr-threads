@@ -844,6 +844,7 @@ impl crate::harness::adapter::HarnessAdapter for FourthEvidenceAdapter {
     fn metadata(&self) -> &'static crate::harness::adapter::AdapterMetadata {
         use crate::harness::adapter::*;
         static META: AdapterMetadata = AdapterMetadata {
+            agent_env_markers: &[],
             id: "fourth",
             display_label: "Fourth fixture",
             context_spelling: "Fourth",
@@ -1722,7 +1723,7 @@ fn absorption_codex_creator_only_neither_holds_nor_filters_lifecycle() {
     let recorder = HarnessEvidenceRecorderV2::new(fx.store.clone(), None, fx.clock.clone());
     let mut start = codex_note(false, "SessionStart", "fresh-creator");
     start.unavailable_reason = Some(
-        crate::harness::attribution::Unattributed::CodexCreatorOnly
+        crate::harness::attribution::Unattributed::CreatorOnly
             .as_str()
             .into(),
     );

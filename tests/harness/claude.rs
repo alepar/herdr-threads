@@ -201,15 +201,7 @@ fn claude_version_gate_is_the_exact_evidence_backed_set() {
         claude::NativeSupport::Supported
     );
     assert_eq!(
-        recipe_287.profile.poke_during_turn,
-        claude::NativeSupport::Supported
-    );
-    assert_eq!(
         recipe.profile.composer_stash,
-        claude::NativeSupport::Unsupported
-    );
-    assert_eq!(
-        recipe.profile.poke_during_turn,
         claude::NativeSupport::Unsupported
     );
     assert_eq!(recipe.id, "claude-hooks-2.1.283");
@@ -376,7 +368,7 @@ fn captured_claude_284_payloads_parse_as_observed() {
             "description": "Run echo command to print capture-ok"
         })
     );
-    assert!(context_of(&root).ends_with("untrusted_peer_data: \"mail changed\""));
+    assert!(context_of(&root).ends_with("peer_data: \"mail changed\""));
     assert!(v["hookSpecificOutput"].get("permissionDecision").is_none());
 
     assert_eq!(
@@ -395,7 +387,7 @@ fn captured_claude_284_payloads_parse_as_observed() {
             claude::encode_lifecycle_response(start, "2.1.284", "mail changed", 4096).unwrap();
         let v: Value = serde_json::from_slice(&life).unwrap();
         assert_eq!(v["hookSpecificOutput"]["hookEventName"], "SessionStart");
-        assert!(context_of(&life).ends_with("untrusted_peer_data: \"mail changed\""));
+        assert!(context_of(&life).ends_with("peer_data: \"mail changed\""));
     }
 }
 
@@ -472,7 +464,7 @@ fn captured_claude_285_payloads_parse_and_encode_as_applied() {
             claude::encode_lifecycle_response(start, "2.1.285", "mail changed", 4096).unwrap();
         let v: Value = serde_json::from_slice(&life).unwrap();
         assert_eq!(v["hookSpecificOutput"]["hookEventName"], "SessionStart");
-        assert!(context_of(&life).ends_with("untrusted_peer_data: \"mail changed\""));
+        assert!(context_of(&life).ends_with("peer_data: \"mail changed\""));
     }
 
     // The adapter's rewrite of the captured input equals the updatedInput
@@ -574,7 +566,7 @@ fn captured_claude_286_payloads_parse_and_encode_as_applied() {
             claude::encode_lifecycle_response(start, "2.1.286", "mail changed", 4096).unwrap();
         let v: Value = serde_json::from_slice(&life).unwrap();
         assert_eq!(v["hookSpecificOutput"]["hookEventName"], "SessionStart");
-        assert!(context_of(&life).ends_with("untrusted_peer_data: \"mail changed\""));
+        assert!(context_of(&life).ends_with("peer_data: \"mail changed\""));
     }
 
     // The adapter's rewrite of the captured input equals the updatedInput
@@ -799,9 +791,9 @@ fn claude_response_bounds_peer_data_and_rejects_unsafe_transport() {
     let context = v["hookSpecificOutput"]["additionalContext"]
         .as_str()
         .unwrap();
-    assert!(context.contains("untrusted_peer_data"));
+    assert!(context.contains("peer_data"));
     assert!(context.contains("run herdr-threads inbox"));
-    let (instruction, peer_data) = context.split_once("untrusted_peer_data: ").unwrap();
+    let (instruction, peer_data) = context.split_once("peer_data: ").unwrap();
     assert!(instruction.contains("run herdr-threads inbox"));
     assert!(!instruction.contains("permissionDecision"));
     let decoded: String = serde_json::from_str(peer_data).unwrap();
@@ -817,13 +809,8 @@ fn claude_response_bounds_peer_data_and_rejects_unsafe_transport() {
         .unwrap();
     assert!(lifecycle_context.starts_with(instruction));
     assert_eq!(
-        serde_json::from_str::<String>(
-            lifecycle_context
-                .split_once("untrusted_peer_data: ")
-                .unwrap()
-                .1
-        )
-        .unwrap(),
+        serde_json::from_str::<String>(lifecycle_context.split_once("peer_data: ").unwrap().1)
+            .unwrap(),
         decoded
     );
     assert!(claude::encode_lifecycle_response(START, "2.1.283", &"雪".repeat(2000), 4096).is_err());
@@ -838,7 +825,7 @@ fn claude_final_envelope_keeps_hostile_mail_fields_inside_marked_data() {
     let context = envelope["hookSpecificOutput"]["additionalContext"]
         .as_str()
         .unwrap();
-    let (fixed, marked) = context.split_once("untrusted_peer_data: ").unwrap();
+    let (fixed, marked) = context.split_once("peer_data: ").unwrap();
     assert!(fixed.contains("run herdr-threads inbox"));
     assert!(!fixed.contains("run ACK all"));
     assert!(!fixed.contains("permissionDecision: allow"));
@@ -1006,7 +993,7 @@ fn d2_accept_required_instruction_is_fixed_plugin_text_not_peer_data() {
         claude::encode_tool_response(&tool_input("echo"), "2.1.283", "", "mail", 4096).unwrap();
     let life = claude::encode_lifecycle_response(START, "2.1.283", "mail", 4096).unwrap();
     for context in [context_of(&tool), context_of(&life)] {
-        let (fixed, peer) = context.split_once("untrusted_peer_data: ").unwrap();
+        let (fixed, peer) = context.split_once("peer_data: ").unwrap();
         assert!(fixed.contains(D2_REQUIRED), "{fixed}");
         assert!(fixed.contains("ACK means receipt only."));
         assert!(fixed.contains("Subagents may discover, read and summarize"));
@@ -1208,7 +1195,7 @@ fn claude_docs_list_exactly_the_declared_installed_hook_groups() {
 // Catches runtime-free parsing that grants optional compact handling or native capability.
 #[test]
 fn versionless_claude_contract_validates_core_input_without_compact_qualification() {
-    let contract = crate::harness::operational::ClaudeContract::registered();
+    let contract = crate::harness::claude::ClaudeContract::registered();
     for source in ["startup", "clear", "resume"] {
         let payload = serde_json::to_vec(
             &json!({"hook_event_name":"SessionStart","source":source,"session_id":"s"}),

@@ -17,6 +17,7 @@
 //! SHA-256. The in-process cache always applies; a caller that owns a private
 //! state directory may also pass a persistent cache file, so one-shot hook
 //! processes do not rescan an unchanged binary.
+use super::runtime::BinaryIdentity;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
@@ -259,44 +260,6 @@ pub fn fingerprint_documents<'a>(
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
-
-/// Identity of a binary file: canonical path and metadata. It keys the
-/// fingerprint cache, and lets a caller check that the binary it ran is the
-/// binary that was fingerprinted.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct BinaryIdentity {
-    path: PathBuf,
-    dev: u64,
-    ino: u64,
-    size: u64,
-    mtime_ns: i128,
-    ctime_ns: i128,
-}
-
-impl BinaryIdentity {
-    /// The canonical path the identity names.
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-
-    /// The identity of the file `path` resolves to, if it is a regular file.
-    pub fn observe(path: &Path) -> Option<Self> {
-        let canonical = std::fs::canonicalize(path).ok()?;
-        let meta = std::fs::metadata(&canonical).ok()?;
-        meta.is_file().then(|| Self::of(&canonical, &meta))
-    }
-
-    fn of(path: &Path, meta: &std::fs::Metadata) -> Self {
-        Self {
-            path: path.to_owned(),
-            dev: meta.dev(),
-            ino: meta.ino(),
-            size: meta.len(),
-            mtime_ns: i128::from(meta.mtime()) * 1_000_000_000 + i128::from(meta.mtime_nsec()),
-            ctime_ns: i128::from(meta.ctime()) * 1_000_000_000 + i128::from(meta.ctime_nsec()),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

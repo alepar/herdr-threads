@@ -442,7 +442,7 @@ pub fn stage_snapshot_targets(
         {
             return Err(api_error(
                 ErrorCode::StaleHostObservation,
-                "untrusted snapshot target",
+                "uncharacterized snapshot target",
             ));
         }
         checked.push((
@@ -2555,7 +2555,7 @@ fn validate_resolution_evidence(
     Ok(())
 }
 
-fn current_resolution_owner(
+pub(crate) fn current_resolution_owner(
     tx: &Transaction<'_>,
     instance: &str,
     guard: &OrdinaryResolutionGuard,
@@ -2688,6 +2688,11 @@ pub fn resolve_seat(
     budget: &CallBudget,
 ) -> Result<OrdinaryResolutionOutcome, ApiError> {
     snapshot_budget(context, budget)?;
+    super::topology_handoff::automatic::guard_raw_resolution(
+        conn,
+        instance,
+        request.operation.as_str(),
+    )?;
     let digest = ordinary_resolution_digest(instance, &request)?;
     if matches!(attempt, OrdinaryResolutionAttempt::ReplayOnly) {
         return context.execute_decision(
@@ -2923,7 +2928,7 @@ fn resolve_bootstrap_seat_impl(
 
 /// Shared unchanged ordinary allocation recipe. The boolean records only this
 /// call's successful new seat insert; it is never inferred on replay.
-fn ordinary_resolution_apply(
+pub(crate) fn ordinary_resolution_apply(
     tx: &Transaction<'_>,
     at: DecisionInstant,
     instance: &str,
@@ -4556,10 +4561,6 @@ pub fn record_managed_launch(
     )
 }
 
-/// Bound of the lazy pending count in a mod fingerprint (a change detector,
-/// not a count anyone presents).
-const MOD_LAZY_COUNT_CAP: i64 = 1000;
-
 /// The seat's A2 state for the mod watch channel (spec D2), read-only. Call it
 /// inside the caller's read transaction. `None`: no such seat in `instance`.
 /// The fingerprint is built from the canonical digest (so it moves with every
@@ -4624,15 +4625,7 @@ pub fn mod_seat_view(
     let attention_version = u64::try_from(attention_version)
         .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative attention version"))?;
     let run = super::attention::seat_digest(db, instance, seat, &|| Ok(()))?;
-    let (lazy_pending, max_lazy_rowid): (i64, i64) = db
-        .query_row(
-            // Published rows only: a staged row is invisible to the mod and
-            // its publication (manifest + message) must change the fingerprint.
-            "SELECT count(*),COALESCE(max(ordinal),0) FROM (SELECT r.ordinal FROM lazy_recipients r INDEXED BY lazy_recipients_pending_seat_ordinal JOIN send_manifests sm ON sm.preparation_id=r.preparation_id AND sm.message_id=r.message_id JOIN messages m ON m.id=sm.message_id AND m.delivery_mode='lazy' WHERE r.seat_id=?1 AND r.state='pending' ORDER BY r.ordinal DESC LIMIT ?2)",
-            params![seat.as_str(), MOD_LAZY_COUNT_CAP],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .map_err(store_error)?;
+    let (lazy_pending, max_lazy_rowid) = super::lazy_delivery::pending_summary(db, seat)?;
     let digest = &run.digest;
     // Only warnings that would wake the seat natively raise mod attention
     // (TRUST-POLICY A7): another seat's overdue transition, and every clear,
@@ -4668,6 +4661,7 @@ pub fn mod_seat_view(
         binding,
         attention_version,
         fingerprint,
+        newest_pending_notice: super::attention::newest_pending_notice(db, seat.as_str())?,
     }))
 }
 
@@ -4720,6 +4714,92 @@ fn present_check_in_result(
     }
     Ok(result)
 }
+
+/// The seat's `wake_on` preference (spec DP8); a fresh seat reads `nudge`.
+pub fn wake_on(
+    db: &Connection,
+    seat: &SeatId,
+) -> Result<crate::protocol::commands::WakeOn, ApiError> {
+    let stored: Option<String> = db
+        .query_row(
+            "SELECT wake_on FROM seats WHERE id=?1",
+            [seat.as_str()],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(store_error)?;
+    let stored = stored.ok_or_else(|| api_error(ErrorCode::NotFound, "seat not found"))?;
+    crate::protocol::commands::WakeOn::parse(&stored)
+        .ok_or_else(|| api_error(ErrorCode::StoreCorrupt, "invalid stored wake_on"))
+}
+
+/// Set the caller seat's `wake_on` (TRUST-POLICY A5): an accountable
+/// cooperative transaction scoped `seat:<id>`, decided against the seat's
+/// current binding. Only a top-level claim may set it. A change re-judges the
+/// seat's wake reasons through `wake::note_new_attention`; setting the stored
+/// value again records nothing. The preference is wake eligibility only: it
+/// creates no receipt, ACK evidence or authority.
+pub fn set_wake_on(
+    context: &StoreContext,
+    conn: &mut Connection,
+    budget: &CallBudget,
+    command: &crate::protocol::commands::SetWakeOn,
+    mut permit: MutationPermit,
+) -> Result<CommandResult, ApiError> {
+    use crate::protocol::authority::CallerRole;
+    if command.claim.role == CallerRole::Subagent {
+        return Err(api_error(
+            ErrorCode::InvalidRequest,
+            "declared subagents cannot set wake_on",
+        ));
+    }
+    let seat = command.claim.seat.clone();
+    let digest = control::cooperative_payload_hash("set_wake_on", command)?;
+    let obligation = ObligationRef::CheckIn(seat.clone());
+    schema::execute_accountable_transaction(
+        context,
+        conn,
+        budget,
+        permit.cooperative_metadata(),
+        &format!("seat:{}", seat.as_str()),
+        command.operation.as_str(),
+        digest,
+        |_| Ok(()),
+        |tx, at| {
+            control::decide_accountable(
+                tx,
+                at,
+                &mut permit,
+                &command.claim,
+                &seat,
+                &command.operation,
+                &obligation,
+                &digest,
+            )?;
+            let previous = wake_on(tx, &seat)?;
+            let changed = previous != command.value;
+            if changed {
+                tx.execute(
+                    "UPDATE seats SET wake_on=?1 WHERE id=?2",
+                    params![command.value.as_str(), seat.as_str()],
+                )
+                .map_err(store_error)?;
+                super::wake::note_new_attention(tx, &seat)?;
+            }
+            Ok(CommandResult::WakeOn(
+                crate::protocol::results::WakeOnState {
+                    seat: seat.clone(),
+                    wake_on: command.value,
+                    changed,
+                },
+            ))
+        },
+    )
+}
+
+#[cfg(test)]
+#[path = "../../tests/store/wake_on.rs"]
+mod wake_on_tests;
 
 #[cfg(test)]
 #[path = "../../tests/store/mod_seat_view.rs"]

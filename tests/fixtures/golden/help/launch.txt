@@ -1,0 +1,107 @@
+Start Codex or Claude in one explicit existing empty shell pane with the owned hooks, after resolving the pane's seat. Launch never registers, accepts or ACKs: the handoff is read through the hooks
+
+Usage: herdr-threads launch [OPTIONS] --kind <KIND> [-- <AGENT_ARG>...]
+
+Arguments:
+  [AGENT_ARG]...  Native agent arguments, kept byte for byte and in order after `--`
+
+Options:
+      --space <SPACE>
+          Exact workspace ID or label; omitted inherits the caller's live workspace, never focus
+      --state-dir <STATE_DIR>
+          Select the local herdr-threads state directory. May repeat with an identical value; conflicting values are refused
+      --host-endpoint <HOST_ENDPOINT>
+          Select the local Herdr host socket path. May repeat with an identical value; conflicting values are refused
+      --tab <TAB>
+          Exact tab ID or label in the selected workspace; a tab ID supplies its workspace
+      --json
+          Emit a structured JSON result on stdout
+      --pane <PANE>
+          Exact pane ID, label or live agent name in the selected tab. Omitted parents inherit the live caller; outside Herdr supply parents or a pane ID. Qualify duplicate names with --space/--tab or use an ID; conflicts never pick a pane
+      --human
+          Human-readable tables and transcripts (the default on a terminal)
+      --kind <KIND>
+          Native agent to start [possible values: claude, codex, hermes, agy, synthetic_fourth]
+      --harness-binary <PATH>
+          Absolute harness executable whose `--version` is gated (default: the first `claude`/`codex` on PATH, which Herdr starts by name)
+      --machine
+          The stable `key: value` text form for scripts and models (the default when stdout is not a terminal)
+      --cooperative-seat <COOPERATIVE_SEAT>
+          Explicit seat ID for a cooperative agent call; requires all four --cooperative-* options
+      --name <NAME>
+          Herdr agent name (default: the pane's Herdr label, else the compact seat ID, or `seat-<short seat id>` for a persisted seat). Fitted to Herdr's `[a-z][a-z0-9_-]{0,31}`
+      --cooperative-target <COOPERATIVE_TARGET>
+          Exact live pane ID or scoped name bound to the cooperative seat
+      --cooperative-harness <COOPERATIVE_HARNESS>
+          Agent harness making the cooperative call [possible values: claude, codex, hermes, agy, synthetic_fourth]
+      --cooperative-role <COOPERATIVE_ROLE>
+          Agent role for the cooperative call [possible values: top-level, subagent]
+  -h, --help
+          Print help
+
+Target:
+  --pane names one existing Herdr pane at its interactive shell prompt; launch never
+  creates, splits or picks a pane and never types into an occupied one. Herdr's
+  guarded `agent start` refuses a busy pane.
+
+Preflight (nothing is started when any step refuses):
+  - the selected executable must resolve; its registered contract is declared without
+    invoking --version, --help or schema probes, and runtime metadata remains unknown;
+  - the pane's seat is resolved like `seat resolve --pane`; a recovery-held target
+    needs `seat rebind ... --operator` or a fresh seat first;
+  - the owned user-level hooks must be set up (`herdr-threads setup HARNESS`) in the
+    settings or hook file of the CLAUDE_CONFIG_DIR / CODEX_HOME / HOME the agent
+    will use (an absolute one the pane's shell exports, else launch's own, else HOME;
+    the report's config_dir names it);
+  - a last fresh read of the pane just before Herdr starts the agent.
+
+Agent name: --name NAME, else the pane's Herdr label, else s<short seat id>
+for a new compact ID (seat-<short seat id> for a persisted ID),
+fitted to Herdr's [a-z][a-z0-9_-]{0,31}. If another live agent holds it, launch
+retries once with -<short seat id> appended.
+
+Arguments after `--` are passed to the agent unchanged and in order. Optional
+HERDR_THREADS_CLAUDE_OPTS / HERDR_THREADS_CODEX_OPTS / HERDR_THREADS_AGY_OPTS are prepended to those arguments;
+unset or empty adds nothing. Use shell-style quotes and escapes; variables and
+commands are never expanded.
+The combined arguments use the same managed-launch guards. The owned configuration
+is on disk, so launch adds no hook or daemon-mode arguments by default.
+Native options that would replace the owned configuration are refused. No
+auto-approve flag is added.
+
+Launch is not receipt: it never checks in, accepts or ACKs. Invitations and messages
+sent before launch stay pending; the agent's SessionStart hook shows them, and
+`herdr-threads inbox --seat SEAT` lists them even when the initial prompt is lost.
+After an observed start, a seat with no open binding gets a `managed_launch` binding
+(report `binding`; `seat inspect` shows it as launched, not checked in): it lets the
+daemon wake the idle agent for pending work before its first check-in (some harnesses run no
+SessionStart hook until their first turn), and the agent's first check-in replaces it.
+
+A harness that exits right after the start (for example a harness refusing its arguments)
+fails launch at once with invalid_request and the pane's last lines.
+
+Harness choices come from the same-binary registry.
+
+Codex launches report
+`codex`: the effective CODEX_HOME, its config.toml and the selected profile (-p/--profile,
+else `profile` in config.toml, else default). Codex CLI commands use approved
+outside-sandbox execution, without a network/socket allowance. Unsupported Codex subcommands,
+an explicit `--daemon`, a caller `--no-daemon` after the subcommand and a caller `-c hooks.*`
+override are refused.
+
+Hermes is experimental, natively
+measured on 0.21.5 with a private Herdr build; it joins only through this launch. Its separate startup/profile/API prelaunch observation
+must match the selected executable, owned generation and configured enabled profile.
+Native Hermes -p/--profile NAME after `--` is emitted once (default when omitted);
+--cli and one policy-owned chat token compose the captured interactive grammar.
+Known-arity model/provider options and chat -q/--query are supported in their native
+positions. Resume, TUI/native/oneshot, arbitrary subcommands, plugin suppression and
+approval bypass forms refuse. Launch never enables a plugin or grants native consent.
+The private host must support guarded process hints; a hint or observed launch is
+neither callback activation nor model consumption. Missing Hermes composer support
+permits no in-turn poke or composer stash/restore.
+
+agy launch accepts --add-dir, --agent, --conversation, --effort, --mode, --model, --project, --log-file, -i/--prompt-interactive, -c/--continue and --new-project (Go flag grammar: --name value or --name=value). It refuses -p/--print/--prompt, --dangerously-skip-permissions, --sandbox, --remote-control, the print-only flags, single-dash long forms, unknown flags, positionals, subcommands, `--`, and -c together with --conversation. -c continues the most recent conversation; it is not an alias of --conversation. Extra arguments come from HERDR_THREADS_AGY_OPTS in the same grammar.
+
+Exit status: 0 startup observed; 5 start may have happened but was not confirmed:
+inspect the pane (`herdr agent get` / `herdr agent read`) before launching again.

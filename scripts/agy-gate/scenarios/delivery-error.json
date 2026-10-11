@@ -1,0 +1,46 @@
+{
+  "format": "agy-fake-gemini/1",
+  "name": "delivery-error",
+  "aux_text": "Gate delivery title",
+  "default": {
+    "text": "DELIVERY-UNEXPECTED"
+  },
+  "vars": {
+    "cwd": "/unset"
+  },
+  "steps": [
+    {
+      "label": "error-busy",
+      "match": {
+        "contains": [
+          "ERROR-BUSY"
+        ]
+      },
+      "delay_ms": 5000,
+      "reply": {
+        "text": "ERROR-BUSY-DONE"
+      }
+    },
+    {
+      "label": "error-inv0",
+      "match": {
+        "contains": [
+          "ERROR-NOTE"
+        ]
+      },
+      "reply": {
+        "error": {
+          "http": 400,
+          "status": "INVALID_ARGUMENT",
+          "message": "gate scripted error"
+        }
+      }
+    },
+    {
+      "label": "error-tail",
+      "reply": {
+        "text": "DELIV-TAIL"
+      }
+    }
+  ]
+}

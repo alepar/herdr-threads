@@ -26,6 +26,13 @@ pub const HARNESS_STATES: &str = "harness.states";
 pub const SEAT_MANAGED_LAUNCH: &str = "seat.managed_launch";
 pub const PARTICIPANT_LOCATIONS: &str = "participants.locations_v1";
 
+/// Canonical pair resolution and the independent SendMessage direct audience marker.
+/// Advertise only after transactional pair, enrollment and audience guards are installed.
+pub const DIRECT_THREADS_V1: &str = "thread.direct_v1";
+/// Automatic handoff channel selection and exact canonical Ensure child attachment.
+/// Advertise only with the complete automatic handoff deciding adapters.
+pub const AUTOMATIC_HANDOFF_V1: &str = "handoff.automatic_v1";
+
 pub const THREAD_JOIN: &str = "thread.join_v1";
 
 /// Advertise only once canonical invitation lifecycle handlers honor this policy.
@@ -35,6 +42,7 @@ pub const INVITATION_REJECT: &str = "invitation.reject_v1";
 
 pub const LAZY_SEND: &str = "send.lazy_v1";
 pub const INBOX_BATCH_V2: &str = "inbox.batch_v2";
+pub const SEAT_WAKE_ON_V1: &str = "seat.wake_on_v1";
 pub const MESSAGE_DELIVERY_MODES: &str = "messages.delivery_modes_v1";
 /// Lazy rows in the attention digest (`AttentionDigestQuery.lazy`) and
 /// `CompleteInboxDelivery.via = hook_context` (standard hook inbox pages).
@@ -47,6 +55,10 @@ pub const ATTENTION_NOTICE_DELIVERY: &str = "attention.notice_delivery_v1";
 /// seam contract; its handler (`daemon::transport::watch_connection`) landed
 /// with ht-j16.2.
 pub const MOD_WATCH: &str = "mod.watch_v1";
+
+/// Hook-pull delivery (`protocol::delivery`, delivery-policy DP4). Defined by the
+/// ht-poh.3.1 seam; its handlers (`service::delivery_pull`) landed with L4.
+pub const DELIVERY_PULL: &str = "delivery.pull_v1";
 
 /// Everything this daemon build serves. A capability is listed only once its
 /// handler has landed (ht-p03.105): `HISTORY_FULL_BODIES` landed with
@@ -69,6 +81,7 @@ pub const ADVERTISED: &[&str] = &[
     INBOX_BATCH,
     INVITATION_REJECT,
     THREAD_JOIN,
+    DIRECT_THREADS_V1,
     PARTICIPANT_LOCATIONS,
     PICKER_DIRECTORY_V1,
     ATTENTION_NOTICE_DELIVERY,
@@ -76,6 +89,8 @@ pub const ADVERTISED: &[&str] = &[
     LAZY_SEND,
     INBOX_BATCH_V2,
     MOD_WATCH,
+    SEAT_WAKE_ON_V1,
+    DELIVERY_PULL,
     LAZY_HOOK_DELIVERY,
 ];
 

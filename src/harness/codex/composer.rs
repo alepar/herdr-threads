@@ -59,7 +59,6 @@ impl ComposerPolicy for NativeComposer {
         super::recipe_for(installed)
             .map(|recipe| PokeCapabilities {
                 composer_stash: recipe.profile.composer_stash,
-                poke_during_turn: recipe.profile.poke_during_turn,
             })
             .unwrap_or(PokeCapabilities::NONE)
     }

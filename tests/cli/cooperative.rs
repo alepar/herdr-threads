@@ -4080,6 +4080,7 @@ fn inbox_drained_page_refit_retains_selected_cursor_and_body_offset() {
                     body_start: 7,
                     body_end: 7 + len as u64,
                     body_len: 2000,
+                    wakes: false,
                 }],
                 next_cursor: Some("frozen-next-body".into()),
                 // Final CLI routing can make a wire-selected body exceed its bound.

@@ -23,83 +23,12 @@ use std::{
     os::unix::fs::OpenOptionsExt,
 };
 
-pub const HANDOFF_HELP: &str = "Choose exactly one channel: --new-thread or --thread ID_OR_NAME.
-Choose one target mode:
-  --pane PANE --kind claude|codex launches in an existing explicit pane;
-  --new-tab LABEL --kind claude|codex creates a tab and launches there;
-  --existing with exactly one --seat SEAT or --pane PANE delivers durable work
-    to an existing canonical seat without launching or restarting its session.
-New modes require an original top-level Agent and the guarded daemon capability.
---new-tab conflicts with --existing, --tab, --pane and --seat. --cwd is new-tab
-only: an absolute existing directory, defaulting to the invocation cwd, normalized
-before publication. --space selects one live workspace by exact ID or unique label;
-omission for creation uses the caller's live workspace, never UI focus. New-tab is
-intentional creation even if its label already exists; it does not focus the tab.
-For --existing, --space and --tab may qualify --pane, but conflict with --seat.
-Delivery forbids --kind, --harness-binary, --name and --agent-arg and ignores the
-launch-option environment. An unresolved, held, retired or foreign seat refuses.
-An unbound resolved seat may receive staged work; this does not establish a
-working or available session. Delivery reports staged work, not a launch result.
-
-New threads join the sender; existing threads require a joined sender. --thread-name,
---topic and --goal apply only to new threads. Topic defaults to Handoff to DISPLAY:
-legacy launch uses the pane display, new-tab uses its label, delivery uses the
-canonical seat ID. Goal defaults to topic. --name names the native agent, not the channel.
-Select exactly one instruction source: a quoted body after --, --file PATH, or --stdin.
-Instructions contain 1..65,536 UTF-8 bytes, preserved exactly as durable work, never native argv.
-Files and stdin are acquired once before publication; retries use the frozen content.
-Native launch options use repeatable --agent-arg=OPTION; launch -- native arguments
-is unchanged. HERDR_THREADS_CODEX_OPTS / HERDR_THREADS_CLAUDE_OPTS prepend optional
-arguments using shell-style quotes and escapes without variable or command
-expansion. Unset or empty adds nothing. Launch handoff freezes the combined options
-before preflight; retry uses saved arguments even if the environment changes.
-Handoff stages an invitation when needed and a message addressed to the exact
-recipient; launch modes then perform guarded launch. Startup gets fixed inbox
-instructions, not a second copy of the body. Handoff never accepts or ACKs for
-the recipient, nor declares task adoption or task completion.
-Invitations default to lazy. --require-invite-ack requests timed acceptance;
---invite-deadline SECONDS also requests it with that duration. The addressed body
-always requires its own ACK, with --deadline SECONDS or the configured default,
-starting at send even without registration/join. Missed requested deadlines
-notify the original sender. Explicit policy/durations freeze before staging;
-omitted numeric defaults resolve once at canonical child creation, then replay.
-Missing/stale/wrong-profile owned hook readiness is diagnostic. Native execution
-still respects selected harness approval and all structural safety checks.
-
-Committed work survives failure. pending-ops lists the compound reference; retry REF
-resumes exact keyed steps without duplicate messages or invitations. A confirmed
-pre-start refusal can retry after repair. Unknown creation cannot automatically
-create another tab: inspect the reported exact namespace and attempt. It is distinct
-from downstream possible start; possible start, unknown launch outcome or a crash
-across launch submission never automatically launches again. Inspect the exact
-downstream pane/seat before using any reported manual launch argv after confirming no
-agent started. Manual launch guidance does not prove tab noncreation.
-Completed retry presents the retained historical report and cleans its own local
-intent without repeating effects or proving current availability.
-
-Administrative bootstrap recovery uses human immediately after the executable:
-  herdr-threads human [GLOBALS] handoff recover REF --attempt N --created-pane EXACT_PANE
-  herdr-threads human [GLOBALS] handoff recover REF --attempt N --not-created
-  herdr-threads human [GLOBALS] handoff recover REF --attempt N --cancel --reason TEXT
-Keep the exact reported reference, positive attempt N, state directory and endpoint;
-routing/output globals follow immediate human. Root --human selects output only.
-Recovery needs the guarded daemon capability and records a separate local-account
-operator assertion, preserving the original agent identity. Created-pane asserts
-this exact result belongs to the inspected attempt and needs fresh coherent
-structural evidence and ordinary guards; labels are not ownership evidence.
-Not-created asserts inspected noncreation and quiescence. Cancellation asserts
-quiescence and administrative abandonment, not completion; reason is nonblank and
-at most 4096 UTF-8 bytes. A known in-flight invocation refuses conflicting recovery;
-snapshots or guessed PIDs do not prove quiescence. Recovery never launches downstream
-work. Bootstrap cancellation refuses while an exact legacy child fence or live hint
-remains; that child may stay protected indefinitely after pane loss or retirement.
-Recovery replay presents its exact recorded decision, never authorizes a newer
-attempt. Product cleanup never closes created topology.";
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HandoffRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub policy: Option<crate::protocol::handoff::HandoffPolicy>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub automatic: bool,
     pub thread: Option<ThreadId>,
     pub thread_name: Option<String>,
     pub topic: Option<String>,
@@ -111,6 +40,10 @@ pub struct HandoffRequest {
 pub struct HandoffPlan {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub startup_input: Option<crate::harness::adapter::StartupInputTemplate>,
+    /// Bootstrap plan V2 only: the frozen placement of the frozen V1 prompt text. Distinct from
+    /// `startup_input` (the pane path's envelope with today's text).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bootstrap_input: Option<crate::harness::adapter::StartupInputTemplate>,
     pub request: HandoffRequest,
     pub context: crate::protocol::output::ContinuationContext,
     pub recipient: SeatId,
@@ -148,8 +81,23 @@ impl HandoffRequest {
 }
 impl HandoffPlan {
     pub fn validate(&self) -> io::Result<()> {
+        if self.request.automatic {
+            return Err(io::Error::other(
+                "automatic handoff requires its additive V2 plan",
+            ));
+        }
         self.request.validate()?;
         if let Some(template) = &self.startup_input {
+            template
+                .validate(self.request.launch.argv.len())
+                .map_err(|error| io::Error::other(error.detail))?;
+        }
+        if let Some(template) = &self.bootstrap_input {
+            if self.startup_input.is_some() {
+                return Err(io::Error::other(
+                    "handoff plan carries both startup and bootstrap input",
+                ));
+            }
             template
                 .validate(self.request.launch.argv.len())
                 .map_err(|error| io::Error::other(error.detail))?;
@@ -205,6 +153,9 @@ pub(crate) fn stage_work<C: LocalClient + ?Sized>(
     *phase = "create";
     if progress.thread.is_none() {
         progress.thread = Some(match plan.channel {
+            HandoffChannel::Automatic => {
+                return Err(super::unsupported("automatic handoff producer unavailable"));
+            }
             HandoffChannel::Existing { thread } => thread.clone(),
             HandoffChannel::New { name, topic, goal } => match call(
                 SemanticMutation::CreateThread {
@@ -263,6 +214,7 @@ pub(crate) fn stage_work<C: LocalClient + ?Sized>(
                 delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
                 thread,
                 body: plan.body.into(),
+                direct_recipient: None,
                 invited_recipients: vec![plan.recipient.clone()],
                 deadline_millis: plan.policy.and_then(|p| p.deadline_millis),
                 relays_user: false,
@@ -467,12 +419,16 @@ pub(crate) fn save_progress_at<T: Serialize>(
     let temp = journal
         .root()
         .join(format!(".handoff-{}", uuid::Uuid::new_v4()));
+    // One buffer, one write: `to_writer` on the bare file issues a write(2) per
+    // JSON token (hundreds for a maximal progress record), and under suite load
+    // each of those stalled the CLI's exit for seconds (ht-poh.55).
+    let bytes = serde_json::to_vec(progress)?;
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
         .mode(0o600)
         .open(&temp)?;
-    serde_json::to_writer(&mut file, progress)?;
+    file.write_all(&bytes)?;
     file.sync_all()?;
     fs::rename(temp, path)?;
     File::open(journal.root())?.sync_all()
@@ -657,6 +613,130 @@ fn prepare_saved_startup(
     Ok(envelope)
 }
 
+pub(crate) fn prepare_automatic_startup(
+    launcher: &mut dyn HandoffLauncher,
+    plan: &crate::protocol::handoff::AutomaticHandoffPlan,
+    claim: &CallerClaim,
+    thread: &ThreadId,
+) -> Result<LaunchRequest, RunError> {
+    let template = plan
+        .startup_input
+        .as_ref()
+        .ok_or_else(|| super::invalid_request("automatic handoff lacks frozen startup template"))?;
+    let envelope = startup_envelope(
+        &plan.launch,
+        &plan.context,
+        &claim.instance,
+        Some(thread),
+        template,
+    )?;
+    let prepared =
+        launcher.preflight_saved(&plan.launch, &envelope.request, &plan.delivery.recipient)?;
+    if prepared.recipient != plan.delivery.recipient {
+        return Err(super::invalid_request(
+            "automatic handoff frozen recipient changed",
+        ));
+    }
+    validate_whole_input(&envelope, &prepared.native_argv)?;
+    Ok(envelope.request)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn start_automatic<C: LocalClient + ?Sized, W: Write>(
+    journal: &Journal,
+    request: HandoffRequest,
+    claim: CallerClaim,
+    client: &C,
+    launcher: &mut dyn HandoffLauncher,
+    clock: &dyn Clock,
+    output: &OutputSpec,
+    writer: &mut W,
+) -> Result<(), RunError> {
+    use crate::protocol::handoff::{
+        AUTOMATIC_PLAN_VERSION, AutomaticDeliveryPlan, AutomaticHandoffPayload,
+        AutomaticHandoffPlan, AutomaticOriginal, HandoffNamespace,
+    };
+    request.validate()?;
+    if !request.automatic
+        || request.thread.is_some()
+        || request.thread_name.is_some()
+        || request.topic.is_some()
+        || request.goal.is_some()
+    {
+        return Err(super::invalid_request(
+            "invalid automatic launched-pane request",
+        ));
+    }
+    super::handoff_delivery::require_automatic_capability(client, clock)?;
+    let namespace = HandoffNamespace {
+        instance: claim.instance.clone(),
+        state_dir: output
+            .context
+            .state_dir
+            .as_ref()
+            .ok_or_else(|| super::invalid_request("automatic handoff needs state directory"))?
+            .into(),
+        host_endpoint: output
+            .context
+            .host
+            .as_ref()
+            .ok_or_else(|| super::invalid_request("automatic handoff needs host endpoint"))?
+            .into(),
+    };
+    namespace.validate().map_err(super::invalid_request)?;
+    let template = launcher.select_startup_input(&request.launch)?;
+    let envelope = startup_envelope(
+        &request.launch,
+        &output.context,
+        &claim.instance,
+        None,
+        &template,
+    )?;
+    validate_whole_input(&envelope, &launcher.native_input(&envelope.request)?)?;
+    let prepared = launcher.preflight_startup(&request.launch, &envelope.request)?;
+    validate_whole_input(&envelope, &prepared.native_argv)?;
+    let payload = AutomaticHandoffPayload::new(
+        namespace.clone(),
+        OperationId::new(uuid::Uuid::new_v4().to_string()),
+        request.body,
+    )
+    .map_err(super::invalid_request)?;
+    let delivery =
+        AutomaticDeliveryPlan::new(payload, prepared.recipient).map_err(super::invalid_request)?;
+    let original = AutomaticOriginal::Handoff(Box::new(AutomaticHandoffPlan {
+        version: AUTOMATIC_PLAN_VERSION,
+        delivery,
+        launch: request.launch,
+        context: output.context.clone(),
+        startup_input: Some(template),
+    }));
+    let preparation = super::handoff_delivery::automatic_envelope(&claim, original.clone())?;
+    match client.call(
+        Command::AutomaticHandoffDelivery(Box::new(preparation)),
+        &super::cooperative_budget(clock),
+    )? {
+        CommandResult::SeatResolved(seat) if seat == original.delivery().recipient => {}
+        _ => {
+            return Err(super::invalid_request(
+                "unexpected automatic handoff preparation result",
+            ));
+        }
+    }
+    let reference = super::handoff_delivery::publish_automatic(journal, original, claim, clock)?;
+    super::handoff_delivery::retry_automatic_to_writer(
+        journal,
+        &reference,
+        super::actor_route::InvocationActor::Agent,
+        &namespace,
+        client,
+        Some(launcher),
+        clock,
+        output,
+        writer,
+    )?;
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn start<C: LocalClient + ?Sized, W: Write>(
     journal: &Journal,
@@ -669,6 +749,11 @@ pub fn start<C: LocalClient + ?Sized, W: Write>(
     output: &OutputSpec,
     writer: &mut W,
 ) -> Result<(), RunError> {
+    if request.automatic {
+        return start_automatic(
+            journal, request, claim, client, launcher, clock, output, writer,
+        );
+    }
     request.validate()?;
     super::require_handoff_capabilities(client, clock, request.policy.as_ref())?;
     if claim.role != crate::protocol::authority::CallerRole::TopLevel || claim.instance.is_empty() {
@@ -701,6 +786,7 @@ pub fn start<C: LocalClient + ?Sized, W: Write>(
     let key = || OperationId::new(uuid::Uuid::new_v4().to_string());
     let plan = HandoffPlan {
         startup_input: Some(template),
+        bootstrap_input: None,
         request,
         context: output.context.clone(),
         recipient,
@@ -846,6 +932,7 @@ pub fn resume<C: LocalClient + ?Sized, W: Write>(
                         true,
                         true,
                         &claim,
+                        crate::harness::registry::builtins(),
                         launcher.native_options_env(&plan.request.launch),
                     );
                     if let Some(manual) =
@@ -936,6 +1023,7 @@ pub fn resume<C: LocalClient + ?Sized, W: Write>(
             attempt.is_err(),
             unknown,
             &claim,
+            crate::harness::registry::builtins(),
             launcher.native_options_env(&plan.request.launch),
         )
     };
@@ -1082,17 +1170,30 @@ pub(crate) fn execute_steps<C: LocalClient + ?Sized>(
             // against frozen V1 composition, so refuse before any start when
             // today's composer would launch different native arguments.
             let mut request = plan.request.launch.clone();
-            request.argv.push(bootstrap_v1::prompt(
-                thread.as_str(),
-                &plan.context,
-                &claim.instance,
-            ));
+            let prompt = bootstrap_v1::prompt(thread.as_str(), &plan.context, &claim.instance);
+            match &plan.bootstrap_input {
+                Some(template) => request.argv = template.apply(&request.argv, &prompt)?.0,
+                None => request.argv.push(prompt),
+            }
             let harness = request.harness.into();
-            if crate::harness::launch::compose_native_argv(harness, request.argv.clone(), vec![])?
-                != crate::harness::launch::compose_bootstrap_v1_argv(harness, request.argv.clone())?
+            let current =
+                crate::harness::launch::compose_native_argv(harness, request.argv.clone(), vec![])?;
+            if crate::harness::launch::bootstrap_v1_harness(harness) {
+                if current
+                    != crate::harness::launch::compose_bootstrap_v1_argv(
+                        harness,
+                        request.argv.clone(),
+                    )?
+                {
+                    return Err(super::invalid_request(
+                        "current launch composition differs from bootstrap plan V1; a new bootstrap plan version is required",
+                    ));
+                }
+            } else if current
+                != crate::harness::launch::compose_bootstrap_v2_argv(harness, request.argv.clone())?
             {
                 return Err(super::invalid_request(
-                    "current launch composition differs from bootstrap plan V1; a new bootstrap plan version is required",
+                    "current launch composition differs from bootstrap plan V2; a new bootstrap plan version is required",
                 ));
             }
             request
@@ -1171,6 +1272,13 @@ pub(crate) fn try_completed_retry<C: LocalClient + ?Sized, W: Write>(
     let super::commands::CliAction::Retry(recovery) = &parsed.action else {
         return Ok(false);
     };
+    let original = super::retry::load_original_for_actor(journal, recovery.as_str())?;
+    if matches!(&original.semantic,
+        SemanticMutation::Frozen { mutation, .. }
+            if matches!(mutation.as_ref(), SemanticMutation::AutomaticHandoff(_))
+    ) {
+        return Ok(false);
+    }
     let reference = journal.resolve_recovery_ref(recovery.as_str())?;
     let pending = journal.load(&reference)?;
     if !is_handoff(&pending.semantic) {
@@ -1618,6 +1726,78 @@ pub(crate) mod bootstrap_v1 {
         Ok(false)
     }
 }
+/// Bootstrap plan V2 retained-launch validation: the adapter's own composition, frozen into the
+/// plan. The caller arguments must still compose to the frozen `composed` argv (else the
+/// adapter drifted and the plan is refused), and the retained successful report's `argv` must
+/// be that composition of the caller arguments plus one generated bootstrap prompt. The
+/// prompt text is harness-neutral and shared with V1.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn retained_argv_matches_v2(
+    harness: crate::protocol::authority::Harness,
+    caller: &[String],
+    composed: &[String],
+    template: &crate::harness::adapter::StartupInputTemplate,
+    thread: &str,
+    context: &crate::protocol::output::ContinuationContext,
+    instance: &str,
+    retained: Option<&serde_json::Value>,
+) -> Result<bool, crate::protocol::results::ApiError> {
+    if crate::harness::launch::compose_bootstrap_v2_argv(harness, caller.to_vec())? != composed {
+        return Err(crate::protocol::results::ApiError::new(
+            crate::protocol::results::ErrorCode::Conflict,
+            format!(
+                "bootstrap plan V2: {} now composes its launch arguments differently from the frozen plan",
+                harness.as_str()
+            ),
+        ));
+    }
+    for prompt in bootstrap_v1::retained_prompts(thread, context, instance) {
+        let Ok((argv, _)) = template.apply(caller, &prompt) else {
+            continue;
+        };
+        let expected = crate::harness::launch::compose_bootstrap_v2_argv(harness, argv)?;
+        if retained == Some(&serde_json::json!(expected)) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Retained-launch validation for a bootstrap launch of either plan version: V2 when the plan
+/// froze the adapter's composition, else the frozen V1 grammar.
+pub(crate) fn retained_launch_argv_matches(
+    launch: &crate::protocol::handoff::BootstrapLaunch,
+    thread: &str,
+    context: &crate::protocol::output::ContinuationContext,
+    instance: &str,
+    retained: Option<&serde_json::Value>,
+) -> Result<bool, crate::protocol::results::ApiError> {
+    match &launch.composed_argv {
+        Some(composed) => retained_argv_matches_v2(
+            launch.harness,
+            &launch.argv,
+            composed,
+            launch.startup_input.as_ref().ok_or_else(|| {
+                crate::protocol::results::ApiError::new(
+                    crate::protocol::results::ErrorCode::Conflict,
+                    "bootstrap plan V2 carries no frozen startup input",
+                )
+            })?,
+            thread,
+            context,
+            instance,
+            retained,
+        ),
+        None => bootstrap_v1::retained_argv_matches(
+            launch.harness,
+            &launch.argv,
+            thread,
+            context,
+            instance,
+            retained,
+        ),
+    }
+}
 fn bootstrap_text(
     thread: &str,
     context: &crate::protocol::output::ContinuationContext,
@@ -1659,6 +1839,7 @@ pub(crate) fn report(
         failed,
         unknown,
         claim,
+        crate::harness::registry::builtins(),
         Ok(None),
     )
 }
@@ -1681,6 +1862,7 @@ fn report_with_registry(
         failed,
         unknown,
         claim,
+        registry,
         super::launch::native_options_env(registry, plan.request.launch.harness),
     )
 }
@@ -1693,6 +1875,7 @@ fn report_core(
     failed: bool,
     unknown: bool,
     claim: &CallerClaim,
+    registry: &crate::harness::registry::Registry,
     declaration: Result<Option<&'static str>, ApiError>,
 ) -> serde_json::Value {
     let prefix = super::hook::cli_prefix(&plan.context);
@@ -1711,19 +1894,14 @@ fn report_core(
     // This command already carries the frozen configured prefix. Suppress
     // option re-entry for this launch only, including changed/malformed current
     // settings; retain every saved native argument without deduplication.
-    let mut manual = vec![
-        "env".into(),
-        "HERDR_THREADS_CODEX_OPTS=".into(),
-        "HERDR_THREADS_CLAUDE_OPTS=".into(),
-    ];
+    let mut manual = vec!["env".to_owned()];
+    let mut keys = super::launch::registered_options_keys(registry, |_| true);
     if let Ok(Some(key)) = declaration.as_ref()
-        && !matches!(
-            *key,
-            "HERDR_THREADS_CODEX_OPTS" | "HERDR_THREADS_CLAUDE_OPTS"
-        )
+        && !keys.contains(key)
     {
-        manual.push(format!("{key}="));
+        keys.push(key);
     }
+    manual.extend(keys.into_iter().map(|key| format!("{key}=")));
     manual.extend(prefix);
     manual.extend([
         "launch".into(),
@@ -1751,12 +1929,18 @@ fn report_core(
         } else {
             // Historical caller arrays are display only; do not reselect a
             // transport. Template-free plans carry the frozen V1 input.
-            manual.extend(plan.request.launch.argv.clone());
-            manual.push(bootstrap_v1::prompt(
-                thread.as_str(),
-                &plan.context,
-                &claim.instance,
-            ));
+            let prompt = bootstrap_v1::prompt(thread.as_str(), &plan.context, &claim.instance);
+            match plan
+                .bootstrap_input
+                .as_ref()
+                .map(|template| template.apply(&plan.request.launch.argv, &prompt))
+            {
+                Some(Ok((argv, _))) => manual.extend(argv),
+                _ => {
+                    manual.extend(plan.request.launch.argv.clone());
+                    manual.push(prompt);
+                }
+            }
         }
     } else {
         manual.clear();
@@ -1772,7 +1956,7 @@ fn report_core(
 pub(crate) fn is_handoff(semantic: &SemanticMutation) -> bool {
     match semantic {
         SemanticMutation::Frozen { mutation, .. } => is_handoff(mutation),
-        SemanticMutation::Handoff(_) => true,
+        SemanticMutation::Handoff(_) | SemanticMutation::AutomaticHandoff(_) => true,
         _ => false,
     }
 }
@@ -1916,6 +2100,51 @@ fn retained_retry_phase(journal: &Journal, reference: &IntentRef) -> io::Result<
     };
     Ok(classify_progress(&plan, &load(journal, reference)?))
 }
+#[allow(clippy::too_many_arguments)]
+fn retry_automatic_live<C: LocalClient + ?Sized, W: Write>(
+    journal: &Journal,
+    recovery: &str,
+    current_claim: &CallerClaim,
+    actor: super::actor_route::InvocationActor,
+    namespace: &crate::protocol::handoff::HandoffNamespace,
+    client: &C,
+    launcher: &mut dyn HandoffLauncher,
+    clock: &dyn Clock,
+    output: &OutputSpec,
+    writer: &mut W,
+) -> Result<bool, RunError> {
+    let original = super::retry::load_original_for_actor(journal, recovery)?;
+    if !matches!(&original.semantic,
+        SemanticMutation::Frozen { mutation, .. }
+            if matches!(mutation.as_ref(), SemanticMutation::AutomaticHandoff(_))
+    ) {
+        return Ok(false);
+    }
+    if original.header.scope
+        != (IntentScope::Cooperative {
+            instance: current_claim.instance.clone(),
+            seat: current_claim.seat.clone(),
+        })
+        || original.semantic.frozen_claim() != Some(current_claim)
+    {
+        return Err(super::invalid_request(
+            "live retry differs from original caller",
+        ));
+    }
+    super::handoff_delivery::require_automatic_capability(client, clock)?;
+    super::handoff_delivery::retry_automatic_to_writer(
+        journal,
+        &original.header.reference,
+        actor,
+        namespace,
+        client,
+        Some(launcher),
+        clock,
+        output,
+        writer,
+    )?;
+    Ok(true)
+}
 /// Called only after the shared caller mapping/context checks in run_selected.
 pub(crate) fn run<W: Write>(
     parsed: super::commands::ParsedCli,
@@ -1929,8 +2158,16 @@ pub(crate) fn run<W: Write>(
     let clock: Arc<dyn Clock> = Arc::new(super::SystemClock::new());
     let (instance, _, client) = super::connect(paths, &clock)?;
     if let super::commands::CliAction::Retry(recovery) = &parsed.action {
-        let reference = journal.resolve_recovery_ref(recovery.as_str())?;
-        if retained_retry_phase(journal, &reference)? != ProgressPhase::LaunchEligible {
+        let original = super::retry::load_original_for_actor(journal, recovery.as_str())?;
+        let automatic = matches!(&original.semantic,
+            SemanticMutation::Frozen { mutation, .. }
+                if matches!(mutation.as_ref(), SemanticMutation::AutomaticHandoff(_))
+        );
+        if !automatic
+            && retained_retry_phase(journal, &original.header.reference)?
+                != ProgressPhase::LaunchEligible
+        {
+            let reference = original.header.reference;
             let scope = IntentScope::Cooperative {
                 instance: claim.instance.clone(),
                 seat: claim.seat.clone(),
@@ -1968,6 +2205,11 @@ pub(crate) fn run<W: Write>(
     let mut output = parsed.output.clone();
     output.context.state_dir = Some(runtime.state_dir.display().to_string());
     output.context.host = Some(runtime.host_endpoint.display().to_string());
+    let namespace = crate::protocol::handoff::HandoffNamespace {
+        instance: instance.to_string(),
+        state_dir: runtime.state_dir.clone(),
+        host_endpoint: runtime.host_endpoint.clone(),
+    };
     let host = crate::host::native::NativeCli::new(runtime.host_endpoint, Arc::clone(&clock));
     let seats = super::launch::DaemonSeatResolver::new(&client, journal, instance, clock.as_ref());
     let shell = super::launch::SystemShellProbe::from_process();
@@ -2015,7 +2257,22 @@ pub(crate) fn run<W: Write>(
             )
         }
         super::commands::CliAction::Retry(recovery) => {
-            let reference = journal.resolve_recovery_ref(recovery.as_str())?;
+            if retry_automatic_live(
+                journal,
+                recovery.as_str(),
+                &claim,
+                parsed.actor,
+                &namespace,
+                &client,
+                &mut launcher,
+                clock.as_ref(),
+                &output,
+                writer,
+            )? {
+                return Ok(());
+            }
+            let original = super::retry::load_original_for_actor(journal, recovery.as_str())?;
+            let reference = original.header.reference;
             let scope = IntentScope::Cooperative {
                 instance: claim.instance,
                 seat: claim.seat,

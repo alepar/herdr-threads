@@ -1,0 +1,10 @@
+{
+  "format": "agy-fake-gemini/1",
+  "name": "clear",
+  "aux_text": "Gate clear title",
+  "default": {"text": "CLEAR-UNEXPECTED"},
+  "steps": [
+    {"label": "pre-clear", "match": {"contains": ["PRE-CLEAR-PROMPT"]}, "reply": {"text": "PRE-CLEAR-OK"}},
+    {"label": "post-clear", "match": {"contains": ["POST-CLEAR-PROMPT"]}, "reply": {"text": "POST-CLEAR-OK"}}
+  ]
+}

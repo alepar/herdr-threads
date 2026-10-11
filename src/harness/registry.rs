@@ -80,6 +80,16 @@ pub enum RegistryError {
     InvalidContextSpelling(String),
     DuplicateContextSpelling(String),
     ReservedContextSpelling(String),
+    /// A delivery policy whose `(mechanism, provenance, idle_wake)` is not an allowed pairing.
+    InvalidDeliveryPolicy(String),
+    /// An environment marker name outside `[A-Z][A-Z0-9_]{0,63}`.
+    InvalidEnvMarker(String),
+    /// Two registrations (or one twice) declare the same environment marker.
+    DuplicateEnvMarker(String),
+    /// A settings kind whose `harness` is not the declaring adapter's id.
+    InvalidSettingsKind(String),
+    /// An `AdapterText` field over 4096 bytes or holding a control character other than `\n`.
+    InvalidAdapterText(String),
 }
 #[derive(Debug, PartialEq, Eq)]
 pub enum LookupError {
@@ -111,6 +121,11 @@ impl std::fmt::Display for RegistryError {
             Self::InvalidContextSpelling(value) => ("invalid context spelling", value),
             Self::DuplicateContextSpelling(value) => ("duplicate context spelling", value),
             Self::ReservedContextSpelling(value) => ("reserved context spelling", value),
+            Self::InvalidDeliveryPolicy(value) => ("invalid delivery policy", value),
+            Self::InvalidEnvMarker(value) => ("invalid environment marker", value),
+            Self::DuplicateEnvMarker(value) => ("duplicate environment marker", value),
+            Self::InvalidSettingsKind(value) => ("invalid settings kind", value),
+            Self::InvalidAdapterText(value) => ("invalid adapter text", value),
         };
         write!(
             f,
@@ -268,7 +283,20 @@ trait ErasedAdapter: Send + Sync {
     fn installer_policy(&self) -> Option<&dyn InstallerPolicy>;
     fn launch_policy(&self) -> Option<&dyn LaunchPolicy>;
     fn composer_policy(&self) -> Option<&dyn ComposerPolicy>;
+    fn local_evidence(&self, request: &LocalEvidenceRequest<'_>) -> LocalEvidence;
+    fn hook_step(&self) -> Option<&dyn HookStep>;
+    fn delivery_policy(&self) -> Option<&dyn DeliveryPolicy>;
     fn canary_strategy(&self) -> Option<&dyn CanaryStrategy>;
+    fn text(&self) -> &'static AdapterText;
+    fn default_config_root(&self, environment: &SetupEnvironment) -> Option<std::path::PathBuf>;
+    fn settings_kind(&self) -> Option<&'static super::setup::SettingsKindSpec>;
+    fn foreground_advice(&self) -> Option<&'static ForegroundAdvice>;
+    fn setup_status_extras(&self, request: &StatusRequest, projection: &mut serde_json::Value);
+    fn setup_report_lines(&self, report: &serde_json::Value) -> Vec<String>;
+    fn doctor_text(&self, hooks: &serde_json::Value, form: DoctorTextForm) -> String;
+    fn doctor_summary_claims(&self) -> &'static [&'static str];
+    fn version_syntax(&self) -> Option<&'static VersionSyntax>;
+    fn transcript_version(&self) -> Option<&'static TranscriptVersionSpec>;
 }
 struct TypedAdapter<A: HarnessAdapter>(&'static A);
 impl<A: HarnessAdapter> ErasedAdapter for TypedAdapter<A> {
@@ -455,8 +483,47 @@ impl<A: HarnessAdapter> ErasedAdapter for TypedAdapter<A> {
     fn composer_policy(&self) -> Option<&dyn ComposerPolicy> {
         self.0.composer_policy()
     }
+    fn local_evidence(&self, request: &LocalEvidenceRequest<'_>) -> LocalEvidence {
+        self.0.local_evidence(request)
+    }
+    fn hook_step(&self) -> Option<&dyn HookStep> {
+        self.0.hook_step()
+    }
+    fn delivery_policy(&self) -> Option<&dyn DeliveryPolicy> {
+        self.0.delivery_policy()
+    }
     fn canary_strategy(&self) -> Option<&dyn CanaryStrategy> {
         self.0.canary_strategy()
+    }
+    fn text(&self) -> &'static AdapterText {
+        self.0.text()
+    }
+    fn default_config_root(&self, environment: &SetupEnvironment) -> Option<std::path::PathBuf> {
+        self.0.default_config_root(environment)
+    }
+    fn settings_kind(&self) -> Option<&'static super::setup::SettingsKindSpec> {
+        self.0.settings_kind()
+    }
+    fn foreground_advice(&self) -> Option<&'static ForegroundAdvice> {
+        self.0.foreground_advice()
+    }
+    fn setup_status_extras(&self, request: &StatusRequest, projection: &mut serde_json::Value) {
+        self.0.setup_status_extras(request, projection)
+    }
+    fn setup_report_lines(&self, report: &serde_json::Value) -> Vec<String> {
+        self.0.setup_report_lines(report)
+    }
+    fn doctor_text(&self, hooks: &serde_json::Value, form: DoctorTextForm) -> String {
+        self.0.doctor_text(hooks, form)
+    }
+    fn doctor_summary_claims(&self) -> &'static [&'static str] {
+        self.0.doctor_summary_claims()
+    }
+    fn version_syntax(&self) -> Option<&'static VersionSyntax> {
+        self.0.version_syntax()
+    }
+    fn transcript_version(&self) -> Option<&'static TranscriptVersionSpec> {
+        self.0.transcript_version()
     }
 }
 pub struct Registration {
@@ -713,6 +780,39 @@ impl Registration {
     pub fn setup_environment_inputs(&self) -> &'static [&'static str] {
         self.adapter.setup_environment_inputs()
     }
+    pub fn text(&self) -> &'static AdapterText {
+        self.adapter.text()
+    }
+    pub fn default_config_root(
+        &self,
+        environment: &SetupEnvironment,
+    ) -> Option<std::path::PathBuf> {
+        self.adapter.default_config_root(environment)
+    }
+    pub fn settings_kind(&self) -> Option<&'static super::setup::SettingsKindSpec> {
+        self.adapter.settings_kind()
+    }
+    pub fn foreground_advice(&self) -> Option<&'static ForegroundAdvice> {
+        self.adapter.foreground_advice()
+    }
+    pub fn setup_status_extras(&self, request: &StatusRequest, projection: &mut serde_json::Value) {
+        self.adapter.setup_status_extras(request, projection)
+    }
+    pub fn setup_report_lines(&self, report: &serde_json::Value) -> Vec<String> {
+        self.adapter.setup_report_lines(report)
+    }
+    pub fn doctor_text(&self, hooks: &serde_json::Value, form: DoctorTextForm) -> String {
+        self.adapter.doctor_text(hooks, form)
+    }
+    pub fn doctor_summary_claims(&self) -> &'static [&'static str] {
+        self.adapter.doctor_summary_claims()
+    }
+    pub fn version_syntax(&self) -> Option<&'static VersionSyntax> {
+        self.adapter.version_syntax()
+    }
+    pub fn transcript_version(&self) -> Option<&'static TranscriptVersionSpec> {
+        self.adapter.transcript_version()
+    }
     pub fn resolve_setup_scope(
         &self,
         request: &SetupScopeRequest,
@@ -824,7 +924,7 @@ impl Registration {
         scope: &LaunchScope,
         admitted: &AdmittedHandle,
         status: &LocalSetupStatus,
-        probe: &dyn super::launch::CodexShellProbe,
+        probe: &dyn super::launch::PaneShellProbe,
         budget: &CallBudget,
     ) -> Result<LaunchPreparation, crate::protocol::results::ApiError> {
         use crate::protocol::results::{ApiError, ErrorCode};
@@ -968,7 +1068,7 @@ impl Registration {
         scope: &LaunchScope,
         handle: &PrelaunchHandle,
         status: &LocalSetupStatus,
-        probe: &dyn super::launch::CodexShellProbe,
+        probe: &dyn super::launch::PaneShellProbe,
         budget: &CallBudget,
     ) -> Result<LaunchPreparation, crate::protocol::results::ApiError> {
         self.check_prelaunch(request, scope, handle)?;
@@ -997,6 +1097,15 @@ impl Registration {
     }
     pub fn composer_policy(&self) -> Option<&dyn ComposerPolicy> {
         self.adapter.composer_policy()
+    }
+    pub fn local_evidence(&self, request: &LocalEvidenceRequest<'_>) -> LocalEvidence {
+        self.adapter.local_evidence(request)
+    }
+    pub fn hook_step(&self) -> Option<&dyn HookStep> {
+        self.adapter.hook_step()
+    }
+    pub fn delivery_policy(&self) -> Option<&dyn DeliveryPolicy> {
+        self.adapter.delivery_policy()
     }
     pub fn canary_strategy(&self) -> Option<&dyn CanaryStrategy> {
         self.adapter.canary_strategy()
@@ -1091,17 +1200,46 @@ impl Registration {
 pub struct Registry {
     registrations: &'static [Registration],
 }
+/// `[A-Z][A-Z0-9_]{0,63}`.
+fn env_marker_name(name: &str) -> bool {
+    let bytes = name.as_bytes();
+    (1..=64).contains(&bytes.len())
+        && bytes[0].is_ascii_uppercase()
+        && bytes
+            .iter()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || *b == b'_')
+}
+/// At most 4096 bytes and no control character other than `\n`.
+fn adapter_text_field(text: &str) -> bool {
+    text.len() <= 4096 && text.chars().all(|c| c == '\n' || !c.is_control())
+}
 fn token(s: &str) -> bool {
     !s.is_empty()
         && s.len() <= 64
         && s.bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
+/// Delivery-policy DP1: a provenance string is honest only if A3 defines it, and
+/// a pull harness has no channel that could wake it.
+fn delivery_pairing_allowed(policy: &dyn DeliveryPolicy) -> bool {
+    let (mechanism, provenance, idle_wake) =
+        (policy.mechanism(), policy.provenance(), policy.idle_wake());
+    match mechanism {
+        DeliveryMechanism::PushChannel => {
+            provenance == crate::protocol::authority::COOPERATIVE_MOD_DELIVERY_PROVENANCE
+        }
+        DeliveryMechanism::HookPull => {
+            provenance == crate::protocol::authority::COOPERATIVE_HOOK_DELIVERY_PROVENANCE
+                && idle_wake == IdleWake::Native
+        }
+    }
+}
 impl Registry {
     pub fn new(registrations: &'static [Registration]) -> Result<Self, RegistryError> {
         let mut ids = std::collections::HashSet::new();
         let mut contexts = std::collections::HashSet::new();
         let mut kinds = std::collections::HashSet::new();
+        let mut markers = std::collections::HashSet::new();
         for r in registrations {
             let m = r.metadata();
             if !token(m.id)
@@ -1148,6 +1286,25 @@ impl Registry {
                     return Err(RegistryError::InvalidEvidenceMetadata(m.id.into()));
                 }
             }
+            if let Some(policy) = r.delivery_policy()
+                && !delivery_pairing_allowed(policy)
+            {
+                return Err(RegistryError::InvalidDeliveryPolicy(m.id.into()));
+            }
+            for marker in m.agent_env_markers {
+                if !env_marker_name(marker.name) {
+                    return Err(RegistryError::InvalidEnvMarker(marker.name.into()));
+                }
+                if !markers.insert(marker.name) {
+                    return Err(RegistryError::DuplicateEnvMarker(marker.name.into()));
+                }
+            }
+            if r.settings_kind().is_some_and(|kind| kind.harness != m.id) {
+                return Err(RegistryError::InvalidSettingsKind(m.id.into()));
+            }
+            if !r.text().fields().into_iter().all(adapter_text_field) {
+                return Err(RegistryError::InvalidAdapterText(m.id.into()));
+            }
             if !ids.insert(m.id) {
                 return Err(RegistryError::DuplicateId(m.id.into()));
             }
@@ -1182,6 +1339,40 @@ impl Registry {
     }
     pub fn registrations(&self) -> &'static [Registration] {
         self.registrations
+    }
+    /// Every registered environment marker, in registry order.
+    pub fn env_markers(&self) -> impl Iterator<Item = &'static AgentEnvMarker> {
+        self.registrations
+            .iter()
+            .flat_map(|r| r.metadata().agent_env_markers.iter())
+    }
+    /// The markers whose presence is TRUST-POLICY A4 person-pane refusal evidence.
+    pub fn person_guard_markers(&self) -> impl Iterator<Item = &'static AgentEnvMarker> {
+        self.env_markers().filter(|marker| marker.person_guard)
+    }
+    /// The delivery policy of an agent harness id; `"human"` and unknown ids give `None`.
+    pub fn delivery_policy(&self, harness_id: &str) -> Option<&'static dyn DeliveryPolicy> {
+        self.registrations
+            .iter()
+            .find(|r| r.metadata().id == harness_id)
+            .and_then(|r| r.adapter.delivery_policy())
+    }
+    /// The prompt a native idle wake types for a harness id: the marker unless its delivery
+    /// policy injects the pending items at turn start.
+    pub fn wake_text(&self, harness_id: &str) -> &'static str {
+        self.delivery_policy(harness_id)
+            .map_or(crate::notification::policy::MARKER, |p| p.wake_text())
+    }
+    /// Ids of harnesses that deliver through a push channel (for the clap parser).
+    pub fn push_channel_ids(&self) -> Vec<&'static str> {
+        self.registrations
+            .iter()
+            .filter(|r| {
+                r.delivery_policy()
+                    .is_some_and(|p| p.mechanism() == DeliveryMechanism::PushChannel)
+            })
+            .map(|r| r.metadata().id)
+            .collect()
     }
     pub fn agent(&self, id: &str) -> Result<AgentHarnessId, LookupError> {
         if id == "human" || id == "Human" {
@@ -1228,6 +1419,7 @@ pub fn builtins() -> &'static Registry {
             Registration::new(&crate::harness::claude::ClaudeAdapter),
             Registration::new(&crate::harness::codex::CodexAdapter),
             Registration::new(&crate::harness::hermes::HermesAdapter),
+            Registration::new(&crate::harness::agy::AgyAdapter),
         ];
         #[cfg(feature = "test-support")]
         let registrations = {
@@ -1261,9 +1453,12 @@ mod tests {
             .map(|r| r.metadata().id)
             .collect();
         #[cfg(feature = "test-support")]
-        assert_eq!(rows, ["claude", "codex", "hermes", "synthetic_fourth"]);
+        assert_eq!(
+            rows,
+            ["claude", "codex", "hermes", "agy", "synthetic_fourth"]
+        );
         #[cfg(not(feature = "test-support"))]
-        assert_eq!(rows, ["claude", "codex", "hermes"]);
+        assert_eq!(rows, ["claude", "codex", "hermes", "agy"]);
     }
     fn unsupported(adapter: &'static str, operation: &'static str) -> UnsupportedOperation {
         UnsupportedOperation { adapter, operation }
@@ -1278,11 +1473,27 @@ mod tests {
         offers: std::sync::Mutex<Vec<String>>,
         setup_advice: Option<serde_json::Value>,
         setup_unsupported: bool,
+        delivery: Option<&'static StaticDelivery>,
+    }
+    struct StaticDelivery(DeliveryMechanism, &'static str, IdleWake);
+    impl DeliveryPolicy for StaticDelivery {
+        fn mechanism(&self) -> DeliveryMechanism {
+            self.0
+        }
+        fn provenance(&self) -> &'static str {
+            self.1
+        }
+        fn idle_wake(&self) -> IdleWake {
+            self.2
+        }
     }
     impl HarnessAdapter for TestAdapter {
         type Admission = usize;
         fn metadata(&self) -> &'static AdapterMetadata {
             self.metadata
+        }
+        fn delivery_policy(&self) -> Option<&dyn DeliveryPolicy> {
+            self.delivery.map(|policy| policy as &dyn DeliveryPolicy)
         }
         fn contracts(&self) -> &'static [ContractDescriptor] {
             &[]
@@ -1639,6 +1850,7 @@ mod tests {
             let base = fixture(id, spelling, &[], kinds);
             Box::leak(Box::new(TestAdapter {
                 metadata: Box::leak(Box::new(AdapterMetadata {
+                    agent_env_markers: &[],
                     setup_scopes: &[SetupScopeKind::ConfigRoot],
                     executable: ExecutableLookup::Unsupported,
                     budget: EventBudgetPolicy {
@@ -1653,6 +1865,7 @@ mod tests {
                 offers: std::sync::Mutex::new(vec![]),
                 setup_advice: None,
                 setup_unsupported: false,
+                delivery: None,
             })) as &'static TestAdapter
         };
         let first = root_fixture("first", "First", &["first"]);
@@ -1712,6 +1925,7 @@ mod tests {
         for scopes in CASES {
             let adapter = Box::leak(Box::new(TestAdapter {
                 metadata: Box::leak(Box::new(AdapterMetadata {
+                    agent_env_markers: &[],
                     setup_scopes: scopes,
                     executable: ExecutableLookup::Path("sh"),
                     budget: EventBudgetPolicy {
@@ -1726,6 +1940,7 @@ mod tests {
                 offers: std::sync::Mutex::new(vec![]),
                 setup_advice: None,
                 setup_unsupported: false,
+                delivery: None,
             }));
             let registry = registry(&[adapter]).unwrap();
             let environment = SetupEnvironment {
@@ -1801,6 +2016,7 @@ mod tests {
     ) -> &'static TestAdapter {
         Box::leak(Box::new(TestAdapter {
             metadata: Box::leak(Box::new(AdapterMetadata {
+                agent_env_markers: &[],
                 setup_scopes: scopes,
                 executable: ExecutableLookup::Path("sentinel"),
                 budget: EventBudgetPolicy {
@@ -1815,6 +2031,7 @@ mod tests {
             offers: std::sync::Mutex::new(vec![]),
             setup_advice: advice,
             setup_unsupported: false,
+            delivery: None,
         }))
     }
     #[test]
@@ -2202,6 +2419,7 @@ mod tests {
             offers: std::sync::Mutex::new(vec![]),
             setup_advice: None,
             setup_unsupported: true,
+            delivery: None,
         }));
         let later = aggregate_fixture("later", "Later", &[SetupScopeKind::ConfigRoot], None);
         let registry = registry(&[refused, later]).unwrap();
@@ -2254,6 +2472,7 @@ mod tests {
     ) -> &'static TestAdapter {
         Box::leak(Box::new(TestAdapter {
             metadata: Box::leak(Box::new(AdapterMetadata {
+                agent_env_markers: &[],
                 id,
                 display_label: "Test",
                 context_spelling: spelling,
@@ -2270,7 +2489,88 @@ mod tests {
             offers: std::sync::Mutex::new(vec![]),
             setup_advice: None,
             setup_unsupported: false,
+            delivery: None,
         }))
+    }
+    fn delivery_fixture(
+        id: &'static str,
+        mechanism: DeliveryMechanism,
+        provenance: &'static str,
+        idle_wake: IdleWake,
+    ) -> &'static TestAdapter {
+        let adapter = fixture(id, "Delivery", &[], &[]);
+        Box::leak(Box::new(TestAdapter {
+            metadata: adapter.metadata,
+            calls: AtomicUsize::new(0),
+            event_id: "codex",
+            harness: OnceLock::new(),
+            offers: std::sync::Mutex::new(vec![]),
+            setup_advice: None,
+            setup_unsupported: false,
+            delivery: Some(Box::leak(Box::new(StaticDelivery(
+                mechanism, provenance, idle_wake,
+            )))),
+        }))
+    }
+    #[test]
+    fn registry_accepts_only_the_allowed_delivery_pairings() {
+        use crate::protocol::authority::COOPERATIVE_MOD_DELIVERY_PROVENANCE as MOD;
+        use DeliveryMechanism::{HookPull, PushChannel};
+        for (mechanism, provenance, idle_wake) in [
+            (PushChannel, MOD, IdleWake::Channel),
+            (PushChannel, MOD, IdleWake::Native),
+            (HookPull, "cooperative_hook_delivery", IdleWake::Native),
+        ] {
+            let adapter = delivery_fixture("test-alpha", mechanism, provenance, idle_wake);
+            let registry = registry(&[adapter]).unwrap();
+            let policy = registry.delivery_policy("test-alpha").unwrap();
+            assert_eq!(
+                (policy.mechanism(), policy.provenance(), policy.idle_wake()),
+                (mechanism, provenance, idle_wake)
+            );
+        }
+        for (mechanism, provenance, idle_wake) in [
+            (HookPull, "cooperative_hook_delivery", IdleWake::Channel),
+            (PushChannel, "cooperative_hook_delivery", IdleWake::Channel),
+            (PushChannel, "cooperative_hook_delivery", IdleWake::Native),
+            (HookPull, MOD, IdleWake::Native),
+            (PushChannel, "made_up_delivery", IdleWake::Native),
+            (HookPull, "made_up_delivery", IdleWake::Native),
+        ] {
+            let adapter = delivery_fixture("test-alpha", mechanism, provenance, idle_wake);
+            assert!(
+                matches!(
+                    registry(&[adapter]),
+                    Err(RegistryError::InvalidDeliveryPolicy(id)) if id == "test-alpha"
+                ),
+                "{mechanism:?} {provenance} {idle_wake:?} must be refused"
+            );
+        }
+    }
+    #[test]
+    fn delivery_lookup_is_none_for_human_unknown_and_every_builtin() {
+        let adapter = delivery_fixture(
+            "test-alpha",
+            DeliveryMechanism::PushChannel,
+            crate::protocol::authority::COOPERATIVE_MOD_DELIVERY_PROVENANCE,
+            IdleWake::Channel,
+        );
+        let plain = fixture("test-beta", "Beta", &[], &[]);
+        let registry = registry(&[adapter, plain]).unwrap();
+        assert!(registry.delivery_policy("human").is_none());
+        assert!(registry.delivery_policy("nonexistent").is_none());
+        assert!(registry.delivery_policy("test-beta").is_none());
+        assert!(registry.delivery_policy("test-alpha").is_some());
+        assert_eq!(registry.push_channel_ids(), ["test-alpha"]);
+        // Claude declares a push channel; agy and the test-support synthetic_fourth
+        // declare hook pull; nothing else declares a policy.
+        for r in builtins().registrations() {
+            assert_eq!(
+                builtins().delivery_policy(r.metadata().id).is_some(),
+                matches!(r.metadata().id, "claude" | "agy" | "synthetic_fourth")
+            );
+        }
+        assert_eq!(builtins().push_channel_ids(), ["claude"]);
     }
     fn registry(adapters: &[&'static TestAdapter]) -> Result<Registry, RegistryError> {
         Registry::new(Box::leak(

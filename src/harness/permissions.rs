@@ -1,14 +1,9 @@
-//! Owned native permission components (Claude settings rules, Codex execpolicy rules): the
-//! shared manifest format, consent, and the cooperative per-config-root writer lock.
+//! Owned native permission components: the shared manifest format, consent, and the cooperative
+//! per-config-root writer lock.
 //!
 //! The grant is executable-wide for the bare `herdr-threads` and `ht` spellings; only the
 //! immediate `human` namespace and the self-granting commands ask. The CLI grammar refuses
 //! `human` and those commands anywhere but first, so leading options cannot reach them.
-pub mod claude;
-pub mod claude_settings;
-pub mod codex;
-pub mod codex_rules;
-
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, File, OpenOptions},
@@ -77,10 +72,36 @@ fn read_bounded(path: &Path, limit: u64) -> io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum PermissionBackend {
-    Claude,
-    Codex,
+/// A permission component's backend: the manifest `backend` value, the lock-file stem and the
+/// lock-marker line. Adapters declare theirs (`InstallerPolicy::permission_backend`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PermissionBackend {
+    tag: &'static str,
+}
+impl PermissionBackend {
+    pub const fn new(tag: &'static str) -> Self {
+        Self { tag }
+    }
+    pub fn tag(self) -> &'static str {
+        self.tag
+    }
+}
+impl Serialize for PermissionBackend {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.tag)
+    }
+}
+/// An unknown tag is a deserialization error: only a registered adapter's backend is known.
+impl<'de> Deserialize<'de> for PermissionBackend {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let tag = String::deserialize(deserializer)?;
+        crate::harness::registry::builtins()
+            .registrations()
+            .iter()
+            .filter_map(|registration| registration.installer_policy()?.permission_backend())
+            .find(|backend| backend.tag == tag)
+            .ok_or_else(|| serde::de::Error::custom(format!("unknown permission backend {tag}")))
+    }
 }
 /// Exact file/rule ownership. A pre-existing entry is never removable owned data.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -167,16 +188,16 @@ impl VerifiedConfigIdentity {
         }
         Ok(())
     }
-    fn lock_path(&self) -> PathBuf {
-        self.root.join(match self.backend {
-            PermissionBackend::Claude => ".herdr-threads-claude.lock",
-            PermissionBackend::Codex => ".herdr-threads-codex.lock",
-        })
+    pub(crate) fn lock_path(&self) -> PathBuf {
+        self.root.join(format!(
+            ".herdr-threads-{}.lock",
+            self.backend.tag().to_ascii_lowercase()
+        ))
     }
-    fn marker(&self) -> Vec<u8> {
+    pub(crate) fn marker(&self) -> Vec<u8> {
         format!(
-            "herdr-threads owned config lock v1\n{:?}\n{}:{}\n{}\n",
-            self.backend,
+            "herdr-threads owned config lock v1\n{}\n{}:{}\n{}\n",
+            self.backend.tag(),
             self.device,
             self.inode,
             self.root.display()
@@ -400,6 +421,7 @@ impl Drop for OwnedConfigWriteGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+    const TEST: PermissionBackend = PermissionBackend::new("Test");
     use std::os::unix::fs::{PermissionsExt, symlink};
     struct Fixture(PathBuf);
     impl Fixture {
@@ -410,7 +432,7 @@ mod tests {
             Self(p.canonicalize().unwrap())
         }
         fn identity(&self) -> VerifiedConfigIdentity {
-            VerifiedConfigIdentity::verify(&self.0, PermissionBackend::Claude).unwrap()
+            VerifiedConfigIdentity::verify(&self.0, TEST).unwrap()
         }
     }
     impl Drop for Fixture {
@@ -468,8 +490,7 @@ mod tests {
         let Some(root) = std::env::var_os("HT_PERMISSION_GUARD_CHILD_ROOT") else {
             return;
         };
-        let id =
-            VerifiedConfigIdentity::verify(Path::new(&root), PermissionBackend::Claude).unwrap();
+        let id = VerifiedConfigIdentity::verify(Path::new(&root), TEST).unwrap();
         let barrier = PathBuf::from(std::env::var_os("HT_PERMISSION_GUARD_CHILD_BARRIER").unwrap());
         match OwnedConfigWriteGuard::acquire(&id, Duration::ZERO) {
             Ok(_guard) => {

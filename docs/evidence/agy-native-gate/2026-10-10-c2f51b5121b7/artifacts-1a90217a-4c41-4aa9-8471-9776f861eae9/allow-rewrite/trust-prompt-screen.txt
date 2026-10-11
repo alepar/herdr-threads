@@ -1,0 +1,16 @@
+cd /private/tmp/ih.Q3Q28H/ws2
+alepar@Mac ws % cd /private/tmp/ih.Q3Q28H/ws2
+alepar@Mac ws2 % PATH=/private/tmp/ih.Q3Q28H/bin:"$PATH" /private/tmp/ih.Q3Q28H/bin/agy
+Accessing workspace:
+
+/private/tmp/ih.Q3Q28H/ws2
+
+Do you trust the contents of this project?
+
+Antigravity CLI requires permission to read, edit, and execute files here.
+
+> Yes, I trust this folder
+  No, exit
+
+  ↑/↓ Navigate · enter Confirm
+                                                                                                    Gemini 3.1 Pro · low

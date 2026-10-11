@@ -1,0 +1,65 @@
+{
+  "format": "agy-fake-gemini/1",
+  "name": "downgrade-ignore",
+  "aux_text": "Gate downgrade title",
+  "default": {
+    "text": "DOWNGRADE-UNEXPECTED"
+  },
+  "vars": {
+    "cwd": "/unset"
+  },
+  "steps": [
+    {
+      "label": "ign-busy1",
+      "match": {
+        "contains": [
+          "DOWN-IBUSY1"
+        ]
+      },
+      "reply": {
+        "text": "DOWN-IBUSY1-DONE"
+      },
+      "delay_ms": 5000
+    },
+    {
+      "label": "ign-go1",
+      "match": {
+        "contains": [
+          "DOWN-IGO1"
+        ]
+      },
+      "reply": {
+        "text": "DOWN-IGO1-DONE"
+      }
+    },
+    {
+      "label": "ign-busy2",
+      "match": {
+        "contains": [
+          "DOWN-IBUSY2"
+        ]
+      },
+      "reply": {
+        "text": "DOWN-IBUSY2-DONE"
+      },
+      "delay_ms": 5000
+    },
+    {
+      "label": "ign-go2",
+      "match": {
+        "contains": [
+          "DOWN-IGO2"
+        ]
+      },
+      "reply": {
+        "text": "DOWN-IGO2-DONE"
+      }
+    },
+    {
+      "label": "ign-tail",
+      "reply": {
+        "text": "DOWN-TAIL"
+      }
+    }
+  ]
+}

@@ -1,0 +1,4 @@
+#!/bin/sh
+# Explicit interpreter: the native gate drives a genuine agy in an isolated Herdr; it never runs in CI.
+set -eu
+exec "${HT_AGY_PYTHON:-/usr/bin/python3}" -I -B "$(dirname "$0")/agy-gate/gate.py" "$@"

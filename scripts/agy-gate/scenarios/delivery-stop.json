@@ -1,0 +1,68 @@
+{
+  "format": "agy-fake-gemini/1",
+  "name": "delivery-stop",
+  "aux_text": "Gate delivery title",
+  "default": {
+    "text": "DELIVERY-UNEXPECTED"
+  },
+  "vars": {
+    "cwd": "/unset"
+  },
+  "steps": [
+    {
+      "label": "warm",
+      "match": {
+        "contains": [
+          "DELIV-WARM"
+        ]
+      },
+      "reply": {
+        "text": "DELIV-WARM-OK"
+      }
+    },
+    {
+      "label": "wake-join",
+      "match": {
+        "contains": [
+          "herdr-threads: wake up"
+        ],
+        "not_contains": [
+          "STOP-BUSY",
+          "STOP-NOTE"
+        ]
+      },
+      "reply": {
+        "text": "DELIV-WAKE-OK"
+      }
+    },
+    {
+      "label": "stop-busy",
+      "match": {
+        "contains": [
+          "STOP-BUSY"
+        ]
+      },
+      "delay_ms": 5000,
+      "reply": {
+        "text": "STOP-BUSY-DONE"
+      }
+    },
+    {
+      "label": "stop-inv0",
+      "match": {
+        "contains": [
+          "STOP-NOTE"
+        ]
+      },
+      "reply": {
+        "text": "STOP-INV0-DONE"
+      }
+    },
+    {
+      "label": "stop-tail",
+      "reply": {
+        "text": "DELIV-TAIL"
+      }
+    }
+  ]
+}

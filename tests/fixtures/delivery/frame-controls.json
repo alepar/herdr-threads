@@ -1,0 +1,20 @@
+[
+  {
+    "kind": "message",
+    "id": "m1",
+    "thread": "T\u0001\u001f1",
+    "threadName": "pl\tans\n\"quoted\" \\ back slash",
+    "sender": "S\r\n1",
+    "senderName": "al\u0000ice  \"x\"",
+    "body": "ok"
+  },
+  {
+    "kind": "mes\nsage",
+    "id": "m\u00072",
+    "thread": "T1",
+    "threadName": "plans",
+    "sender": "S1",
+    "senderName": "alice",
+    "body": "ok"
+  }
+]

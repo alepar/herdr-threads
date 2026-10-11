@@ -1,0 +1,21 @@
+[
+  {
+    "kind": "attention",
+    "id": "attention:4",
+    "body": "You have pending herdr-threads items."
+  },
+  {
+    "kind": "message",
+    "id": "m1",
+    "thread": "T1",
+    "threadName": "plans",
+    "sender": "S1",
+    "senderName": "alice",
+    "body": "body of m1"
+  },
+  {
+    "kind": "attention",
+    "id": "attention:5\n",
+    "body": "line one\nline two"
+  }
+]

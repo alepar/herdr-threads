@@ -66,6 +66,7 @@ fn send_request(explicit: Vec<&str>) -> SendMessage {
         delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
         thread: ThreadId::new("t"),
         body: "hello".into(),
+        direct_recipient: None,
         invited_recipients: explicit.into_iter().map(SeatId::new).collect(),
         deadline_millis: None,
         operation: OperationId::new("op"),
@@ -4474,7 +4475,7 @@ fn receipt_discovery_sparse_episodes_survive_source_rowid_reuse_and_snapshot_res
 
 #[test]
 fn receipt_discovery_populated34_upgrade_rolls_back_and_reopens_with_bounded_bootstrap() {
-    let (context, mut db, _) = receipt_discovery_historical(34);
+    let (context, mut db, _) = receipt_discovery_historical(37);
     for n in 0..125 {
         db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,author_kind,actor_seat_id,body,decision_at,decision_seq) VALUES (?1,'i','t',?2,'ordinary',NULL,?3,'x',0,?2)",params![format!("historical-{n}"),n+1,if n==1{"b"}else{"a"}]).unwrap();
         db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES (?1,'t','b','pending',1,0,5000)",[format!("historical-{n}")]).unwrap();
@@ -4509,7 +4510,7 @@ fn receipt_discovery_populated34_upgrade_rolls_back_and_reopens_with_bounded_boo
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        34
+        37
     );
     assert_eq!(
         db.query_row(
@@ -4651,7 +4652,7 @@ fn receipt_discovery_populated34_upgrade_rolls_back_and_reopens_with_bounded_boo
         reopened
             .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        35
+        39
     );
 }
 
@@ -4671,7 +4672,7 @@ fn discovery_manifest(
 
 #[test]
 fn receipt_discovery_four_historical_streams_charge_every_visit_and_reset_once() {
-    let (context, db, clock) = receipt_discovery_historical(31);
+    let (context, db, clock) = receipt_discovery_historical(34);
     for n in 0..50 {
         discovery_receipt(&db, &format!("four-{n}"), n + 1, 5000);
         discovery_manifest(
@@ -4691,7 +4692,7 @@ fn receipt_discovery_four_historical_streams_charge_every_visit_and_reset_once()
             .map(|p| p.unwrap().path())
             .collect::<Vec<_>>();
     migrations.sort();
-    for (n, path) in migrations.into_iter().enumerate().skip(31).take(3) {
+    for (n, path) in migrations.into_iter().enumerate().skip(34).take(3) {
         db.execute_batch(&std::fs::read_to_string(path).unwrap())
             .unwrap();
         db.pragma_update(None, "user_version", (n + 1) as i64)
@@ -4808,7 +4809,7 @@ fn receipt_discovery_four_historical_streams_charge_every_visit_and_reset_once()
 
 #[test]
 fn receipt_discovery_upgrade_combined_reset_warning_and_cursors_roll_back_together() {
-    let (context, mut db, _) = receipt_discovery_historical(34);
+    let (context, mut db, _) = receipt_discovery_historical(37);
     discovery_receipt(&db, "rollback-source", 1, 500);
     db.execute("INSERT INTO receipt_state(message_id,seat_id,state,ack_required,deadline_at) VALUES ('rollback-source','c','pending',1,5000)",[]).unwrap();
     db.execute("UPDATE threads SET next_sequence=2 WHERE id='t'", [])
@@ -4891,7 +4892,7 @@ fn receipt_discovery_upgrade_combined_reset_warning_and_cursors_roll_back_togeth
 
 #[test]
 fn receipt_discovery_terminal_upgrade_counts_rows_and_catalog_rejects_missing_projection() {
-    let (context, mut db, _) = receipt_discovery_historical(34);
+    let (context, mut db, _) = receipt_discovery_historical(37);
     for n in 0..125 {
         discovery_receipt(&db, &format!("terminal-{n}"), n + 1, 500);
         db.execute("INSERT INTO receipt_state(message_id,seat_id,state,ack_required,deadline_at) VALUES (?1,'c','acked',0,500)",[format!("terminal-{n}")]).unwrap();

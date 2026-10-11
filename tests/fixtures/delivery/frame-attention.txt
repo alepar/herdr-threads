@@ -1,0 +1,11 @@
+[herdr-threads] new messages:
+
+[herdr-threads] attention attention:4:
+  You have pending herdr-threads items.
+
+[herdr-threads] message m1 in T1 "plans" from S1 "alice":
+  body of m1
+
+[herdr-threads] attention attention:5 :
+  line one
+  line two

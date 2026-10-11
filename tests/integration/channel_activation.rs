@@ -211,11 +211,11 @@ fn channel_activation_real_daemon_loads_fresh_21_and_22_and_owns_archival_lane()
         // and the seat_archival insertion kicks the existing archival lane.
         w.ok(None, &["seat", "resolve", "--pane", "w1:p1"]);
         let db = w.db();
-        // The initializer upgrades each historical input to the current schema35.
+        // The initializer upgrades each historical input to the current schema38.
         assert_eq!(
             db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
                 .unwrap(),
-            35
+            39
         );
         wait("archival worker initialization", || {
             db.query_row(
@@ -303,8 +303,10 @@ fn channel_activation_cli_complete_removal_failure_archived_binding_retry_is_cle
     std::os::unix::fs::symlink(&w.root, &frozen_alias).unwrap();
     let plan = HandoffPlan {
         startup_input: None,
+        bootstrap_input: None,
         request: HandoffRequest {
             policy: None,
+            automatic: false,
             thread: None,
             thread_name: Some("legacy handoff".into()),
             topic: Some("topic".into()),
@@ -381,6 +383,7 @@ fn channel_activation_cli_complete_removal_failure_archived_binding_retry_is_cle
             delivery_mode: herdr_threads::protocol::commands::DeliveryMode::Ordinary,
             thread: thread.clone(),
             body: plan.request.body.clone(),
+            direct_recipient: None,
             invited_recipients: vec![plan.recipient.clone()],
             deadline_millis: None,
             relays_user: false,

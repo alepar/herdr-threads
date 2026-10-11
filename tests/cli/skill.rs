@@ -1,4 +1,5 @@
 use super::*;
+use crate::harness::codex::CODEX_COMMAND_GUIDANCE;
 
 fn run(words: &[&str]) -> String {
     let mut out = Vec::new();

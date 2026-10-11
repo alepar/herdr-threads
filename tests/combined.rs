@@ -21,6 +21,10 @@ mod canary_manifest_writer;
 mod channel_archival;
 #[path = "contracts.rs"]
 mod contracts;
+#[path = "golden_surfaces.rs"]
+mod golden_surfaces;
+#[path = "handoff_agy.rs"]
+mod handoff_agy;
 #[path = "store/handoff_fences.rs"]
 mod handoff_fences;
 #[path = "handoff_topology_authority.rs"]
@@ -117,3 +121,6 @@ mod lazy_sweep;
 
 #[path = "cli/readme_commands.rs"]
 mod readme_commands;
+
+#[path = "cli/direct_send.rs"]
+mod direct_send;

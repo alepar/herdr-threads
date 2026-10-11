@@ -1174,6 +1174,7 @@ fn elected_public_new_tab_completes_one_native_create_and_start_then_replays_his
         delivery_mode: herdr_threads::protocol::commands::DeliveryMode::Ordinary,
         thread: completed.retained.thread.clone(),
         body: identity.payload.handoff.body.clone(),
+        direct_recipient: None,
         invited_recipients: vec![completed.retained.recipient.clone()],
         deadline_millis: identity
             .payload
@@ -1484,6 +1485,7 @@ fn elected_live_registered_phase_replays_recheck_current_caller_recipient_and_pa
         delivery_mode: herdr_threads::protocol::commands::DeliveryMode::Ordinary,
         thread,
         body: identity.payload.handoff.body.clone(),
+        direct_recipient: None,
         invited_recipients: vec![attachment.resolved_seat.clone()],
         deadline_millis: identity
             .payload
@@ -2244,6 +2246,8 @@ fn elected_generic_refuses_fresh_and_saved_recovery_before_publication_or_effect
             binary: Some("/usr/bin/true".into()),
             name: None,
             argv: vec![],
+            composed_argv: None,
+            startup_input: None,
         },
         handoff_key: OperationId::new("task21-child"),
         resolve_key: OperationId::new("task21-resolve"),

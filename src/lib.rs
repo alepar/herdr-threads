@@ -17,6 +17,7 @@ pub mod archival_legacy;
 pub mod cli;
 pub mod client;
 pub mod daemon;
+pub mod delivery;
 pub mod harness;
 pub mod host;
 pub mod identity;

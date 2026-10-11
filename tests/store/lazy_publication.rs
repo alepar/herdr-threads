@@ -59,6 +59,7 @@ fn send_request() -> SendMessage {
         delivery_mode: herdr_threads::protocol::commands::DeliveryMode::Lazy,
         thread: ThreadId::new("t"),
         body: "hello".into(),
+        direct_recipient: None,
         invited_recipients: vec![],
         deadline_millis: None,
         operation: OperationId::new("op"),
@@ -282,6 +283,34 @@ fn lazy_publication_creates_no_receipt_warning_or_attention() {
             .unwrap(),
         "lazy"
     );
+}
+
+#[test]
+fn lazy_publication_notes_attention_only_for_wake_on_all_recipients() {
+    let iso = TestIsolation::new("lazy-wake-on");
+    let (context, mut conn) = setup(&iso);
+    for seat in ["b", "c"] {
+        member(&conn, seat, "unresolved", "joined");
+    }
+    conn.execute("UPDATE seats SET wake_on='all' WHERE id='b'", [])
+        .unwrap();
+    let request = send_request();
+    ready(&context, &mut conn, &request);
+    let bits = |conn: &Connection, seat: &str| -> Option<(i64, i64)> {
+        use rusqlite::OptionalExtension;
+        conn.query_row(
+            "SELECT reason_bits,attention_version FROM wake_work WHERE seat_id=?1",
+            [seat],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .unwrap()
+    };
+    assert_eq!(bits(&conn, "b"), None, "staging notes nothing");
+    publish(&iso, &context, &mut conn, &request);
+    assert_eq!(bits(&conn, "b"), Some((1, 1)), "the all recipient");
+    assert_eq!(bits(&conn, "c"), None, "a nudge recipient");
+    assert_eq!(bits(&conn, "a"), None, "the sender");
 }
 
 fn member(conn: &Connection, seat: &str, state: &str, membership: &str) {

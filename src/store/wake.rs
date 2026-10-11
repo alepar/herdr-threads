@@ -13,6 +13,7 @@ use crate::{
         WarningOfferFrontier,
     },
     protocol::{
+        commands::WakeOn,
         ids::{ExecutionId, HostBootId, HostTargetId, SeatId, TerminalId, WakeAttemptId},
         results::{ApiError, ErrorCode},
         summary::SummarySettings,
@@ -114,9 +115,10 @@ pub fn load_candidate(
         Option<i64>,
         Option<i64>,
         Option<i64>,
+        Option<i64>,
     );
-    let wake:Option<WakeRow>=db.query_row("SELECT reason_bits,attention_version,checkpoint_version,retry_step,reservation_id,reservation_boot,last_reservation_id,last_reservation_boot,minimum_delay_ms,effective_delay_ms,last_outcome,last_reserved_at_utc,last_invitation_seq,last_invitation_offset,last_receipt_seq,last_receipt_offset,last_warning_seq,last_warning_offset FROM wake_work WHERE seat_id=?1",
-        [seat.as_str()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?,r.get(9)?,r.get(10)?,r.get(11)?,r.get(12)?,r.get(13)?,r.get(14)?,r.get(15)?,r.get(16)?,r.get(17)?))).optional().map_err(store_error)?;
+    let wake:Option<WakeRow>=db.query_row("SELECT reason_bits,attention_version,checkpoint_version,retry_step,reservation_id,reservation_boot,last_reservation_id,last_reservation_boot,minimum_delay_ms,effective_delay_ms,last_outcome,last_reserved_at_utc,last_invitation_seq,last_invitation_offset,last_receipt_seq,last_receipt_offset,last_warning_seq,last_warning_offset,last_lazy_ordinal FROM wake_work WHERE seat_id=?1",
+        [seat.as_str()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?,r.get(9)?,r.get(10)?,r.get(11)?,r.get(12)?,r.get(13)?,r.get(14)?,r.get(15)?,r.get(16)?,r.get(17)?,r.get(18)?))).optional().map_err(store_error)?;
     let (
         reason_bits,
         attention_version,
@@ -136,8 +138,10 @@ pub fn load_candidate(
         last_receipt_offset,
         last_warning_seq,
         last_warning_offset,
+        last_lazy_ordinal,
     ) = wake.unwrap_or((
         0, 0, 0, 0, None, None, None, None, 0, 0, None, None, None, None, None, None, None, None,
+        None,
     ));
     let last_key = |seq: Option<i64>,
                     offset: Option<i64>|
@@ -160,6 +164,7 @@ pub fn load_candidate(
         invitation: last_key(last_invitation_seq, last_invitation_offset)?,
         addressed_receipt: last_key(last_receipt_seq, last_receipt_offset)?,
         actionable_warning: last_key(last_warning_seq, last_warning_offset)?,
+        lazy: last_lazy_ordinal,
     };
     let offer:Option<(i64,String,i64)>=db.query_row("SELECT binding_generation,execution_id,offered_through_seq FROM warning_offer WHERE seat_id=?1",
         [seat.as_str()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(store_error)?;
@@ -447,6 +452,9 @@ fn reason_labels(candidate: &WakeCandidate) -> Vec<String> {
     {
         reasons.push("actionable_warning".into());
     }
+    if candidate.has_unreserved_lazy() {
+        reasons.push("lazy".into());
+    }
     reasons
 }
 
@@ -474,6 +482,12 @@ pub fn reserve(
             params![candidate.seat.as_str(),instance],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).optional().map_err(store_error)?;
         let Some((decision_seq,episode,open,generation,target,target_generation,boot))=row else {return Ok(None)};
         if !witness.valid_for(candidate,instance,nonnegative(decision_seq)?,nonnegative(episode)?,open!=0) {return Ok(None)}
+        // The lazy frontier is not covered by the decision sequence: re-read it
+        // (and `wake_on`) so a reservation never rests on a moved frontier.
+        let current_lazy=match super::seats::wake_on(tx,&candidate.seat)? {
+            WakeOn::All=>super::lazy_delivery::wake_frontier(tx,candidate.seat.as_str())?,
+            WakeOn::Nudge=>None};
+        if current_lazy!=witness.frontier().lazy {return Ok(None)}
         let attention=EffectiveSeatAttention {has_pending_invitation:witness.pending_invitation,
             has_pending_receipt:witness.pending_receipt,latest_warning_seq:witness.latest_warning_seq.map(|seq|i64::try_from(seq).map_err(|_|api_error(ErrorCode::StoreCorrupt,"warning sequence overflow"))).transpose()?,frontier:witness.frontier()};
         let current=load_candidate(tx,instance,&candidate.seat,&attention,decision_seq)?;
@@ -510,8 +524,8 @@ pub fn reserve(
         let (receipt_seq,receipt_offset)=sql_key(frontier.addressed_receipt)?;
         let (warning_seq,warning_offset)=sql_key(frontier.actionable_warning)?;
         let binding_generation=match &authority {ReservedWakeAuthority::Registered {binding_generation,..}|ReservedWakeAuthority::Cooperative {binding_generation:Some(binding_generation),..}=>Some(i64::try_from(*binding_generation).map_err(|_|api_error(ErrorCode::StoreCorrupt,"binding generation overflow"))?),_=>None};
-        tx.execute("INSERT INTO wake_work(seat_id,reason_bits,binding_generation,retry_step,reservation_id,reservation_boot,reserved_at_utc,minimum_delay_ms,effective_delay_ms,last_reservation_id,last_reservation_boot,last_reserved_at_utc,last_invitation_seq,last_invitation_offset,last_receipt_seq,last_receipt_offset,last_warning_seq,last_warning_offset) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?5,?6,?7,?10,?11,?12,?13,?14,?15) ON CONFLICT(seat_id) DO UPDATE SET binding_generation=excluded.binding_generation,retry_step=excluded.retry_step,reservation_id=excluded.reservation_id,reservation_boot=excluded.reservation_boot,reserved_at_utc=excluded.reserved_at_utc,minimum_delay_ms=excluded.minimum_delay_ms,effective_delay_ms=excluded.effective_delay_ms,last_reservation_id=excluded.last_reservation_id,last_reservation_boot=excluded.last_reservation_boot,last_reserved_at_utc=excluded.last_reserved_at_utc,last_invitation_seq=excluded.last_invitation_seq,last_invitation_offset=excluded.last_invitation_offset,last_receipt_seq=excluded.last_receipt_seq,last_receipt_offset=excluded.last_receipt_offset,last_warning_seq=excluded.last_warning_seq,last_warning_offset=excluded.last_warning_offset",
-            params![candidate.seat.as_str(),i64::try_from(current.reason_bits).map_err(|_|api_error(ErrorCode::StoreCorrupt,"wake reason overflow"))?,binding_generation,i64::from(step),attempt.as_str(),daemon_boot.to_string(),at.utc.0,i64::try_from(minimum).map_err(|_|api_error(ErrorCode::InvalidRequest,"wake minimum overflow"))?,i64::try_from(delay).map_err(|_|api_error(ErrorCode::InvalidRequest,"wake delay overflow"))?,invitation_seq,invitation_offset,receipt_seq,receipt_offset,warning_seq,warning_offset]).map_err(store_error)?;
+        tx.execute("INSERT INTO wake_work(seat_id,reason_bits,binding_generation,retry_step,reservation_id,reservation_boot,reserved_at_utc,minimum_delay_ms,effective_delay_ms,last_reservation_id,last_reservation_boot,last_reserved_at_utc,last_invitation_seq,last_invitation_offset,last_receipt_seq,last_receipt_offset,last_warning_seq,last_warning_offset,last_lazy_ordinal) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?5,?6,?7,?10,?11,?12,?13,?14,?15,?16) ON CONFLICT(seat_id) DO UPDATE SET binding_generation=excluded.binding_generation,retry_step=excluded.retry_step,reservation_id=excluded.reservation_id,reservation_boot=excluded.reservation_boot,reserved_at_utc=excluded.reserved_at_utc,minimum_delay_ms=excluded.minimum_delay_ms,effective_delay_ms=excluded.effective_delay_ms,last_reservation_id=excluded.last_reservation_id,last_reservation_boot=excluded.last_reservation_boot,last_reserved_at_utc=excluded.last_reserved_at_utc,last_invitation_seq=excluded.last_invitation_seq,last_invitation_offset=excluded.last_invitation_offset,last_receipt_seq=excluded.last_receipt_seq,last_receipt_offset=excluded.last_receipt_offset,last_warning_seq=excluded.last_warning_seq,last_warning_offset=excluded.last_warning_offset,last_lazy_ordinal=excluded.last_lazy_ordinal",
+            params![candidate.seat.as_str(),i64::try_from(current.reason_bits).map_err(|_|api_error(ErrorCode::StoreCorrupt,"wake reason overflow"))?,binding_generation,i64::from(step),attempt.as_str(),daemon_boot.to_string(),at.utc.0,i64::try_from(minimum).map_err(|_|api_error(ErrorCode::InvalidRequest,"wake minimum overflow"))?,i64::try_from(delay).map_err(|_|api_error(ErrorCode::InvalidRequest,"wake delay overflow"))?,invitation_seq,invitation_offset,receipt_seq,receipt_offset,warning_seq,warning_offset,frontier.lazy]).map_err(store_error)?;
         Ok(Some(WakeReservation {attempt,daemon_boot,seat:candidate.seat.clone(),reasons:reason_labels(&current),
             retained_effective_delay_ms:delay,lease_until:at.monotonic,retained_minimum_delay_ms:minimum,reserved_at_utc:at.utc,
             host_boot,host_epoch,target,target_generation,attention_witness:witness.clone(),authority}))
@@ -576,8 +590,10 @@ pub fn validate_reservation(
         frontier: reservation.attention_witness.frontier(),
     };
     let candidate = load_candidate(db, instance, &reservation.seat, &attention, seq)?;
+    // The reservation just wrote its lazy frontier, so a lazy-only reservation
+    // is no longer "unreserved" here: pending lazy rows still count.
     if !candidate.continuity_resolved
-        || !candidate.has_actionable_work()
+        || !(candidate.has_actionable_work() || candidate.pending_lazy().is_some())
         || candidate.reservation_id.as_ref() != Some(&reservation.attempt)
         || candidate
             .reservation_boot
@@ -680,7 +696,7 @@ pub fn complete_with_pokes(
                 let (invitation_seq,invitation_offset)=key(prior.last_reserved_frontier.invitation)?;
                 let (receipt_seq,receipt_offset)=key(prior.last_reserved_frontier.addressed_receipt)?;
                 let (warning_seq,warning_offset)=key(prior.last_reserved_frontier.actionable_warning)?;
-                tx.execute("UPDATE wake_work SET reservation_id=NULL,reservation_boot=NULL,completed_at_utc=?1,last_outcome=?2,retry_step=?6,minimum_delay_ms=?7,effective_delay_ms=?8,last_reservation_id=?9,last_reservation_boot=?10,last_reserved_at_utc=?11,last_invitation_seq=?12,last_invitation_offset=?13,last_receipt_seq=?14,last_receipt_offset=?15,last_warning_seq=?16,last_warning_offset=?17 WHERE seat_id=?3 AND reservation_id=?4 AND reservation_boot=?5",
+                tx.execute("UPDATE wake_work SET reservation_id=NULL,reservation_boot=NULL,completed_at_utc=?1,last_outcome=?2,retry_step=?6,minimum_delay_ms=?7,effective_delay_ms=?8,last_reservation_id=?9,last_reservation_boot=?10,last_reserved_at_utc=?11,last_invitation_seq=?12,last_invitation_offset=?13,last_receipt_seq=?14,last_receipt_offset=?15,last_warning_seq=?16,last_warning_offset=?17,last_lazy_ordinal=?18 WHERE seat_id=?3 AND reservation_id=?4 AND reservation_boot=?5",
                     params![at.utc.0,disposition,seat,attempt.as_str(),daemon_boot,
                         i64::from(prior.retry_step),
                         i64::try_from(prior.minimum_delay_ms).map_err(|_|api_error(ErrorCode::InvalidRequest,"wake minimum overflow"))?,
@@ -688,7 +704,7 @@ pub fn complete_with_pokes(
                         prior.last_reservation_id.as_ref().map(|id|id.as_str().to_owned()),
                         prior.last_reservation_boot.as_ref().map(|boot|boot.as_str().to_owned()),
                         prior.last_reserved_at_utc.map(|at|at.0),
-                        invitation_seq,invitation_offset,receipt_seq,receipt_offset,warning_seq,warning_offset]).map_err(store_error)?
+                        invitation_seq,invitation_offset,receipt_seq,receipt_offset,warning_seq,warning_offset,prior.last_reserved_frontier.lazy]).map_err(store_error)?
             }
         };
         if changed==1 && disposition=="submitted" {
@@ -932,6 +948,12 @@ pub fn batch_window(
                 first = Some(first.map_or(at, |prior| prior.min(at)));
                 urgent |= super::receipts::effective_deadline(tx, &receipt)?.is_some_and(|at| at <= now);
             }
+        }
+        // A `wake_on: all` seat's oldest pending lazy row batches like an
+        // ordinary receipt (DP8).
+        if scan.attention.frontier.lazy.is_some()
+            && let Some(at) = super::lazy_delivery::oldest_pending_at(tx, candidate.seat.as_str())? {
+            first = Some(first.map_or(at, |prior| prior.min(at)));
         }
         let existing: Option<i64> = tx.query_row("SELECT deadline_at FROM wake_batches WHERE seat_id=?1",
             [candidate.seat.as_str()], |r| r.get(0)).optional().map_err(store_error)?;

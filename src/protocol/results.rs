@@ -39,6 +39,8 @@ pub enum CommandResult {
     InboxBatchV2(Page<InboxBatchV2Item>),
     MessageDeliveryModes(Vec<MessageDeliveryMode>),
     InboxDeliveryCompleted(Vec<MessageId>),
+    /// A seat's `wake_on` preference (read, or the outcome of a set).
+    WakeOn(WakeOnState),
     Warnings(Page<WarningRef>),
     ActiveWarnings(Page<WarningRef>),
     Thread(ThreadDetails),
@@ -83,8 +85,12 @@ pub enum CommandResult {
     Rejected(InvitationRejection),
     RequiredAccepted(RequiredMembership),
     MessageSent(MessageId),
+    AutomaticBootstrap(Box<crate::protocol::handoff::AutomaticBootstrapResult>),
+    AutomaticBootstrapReserved(Box<crate::protocol::handoff::AutomaticBootstrapReserved>),
     Acknowledged(AckResult),
     ModDeliveryAcked(crate::protocol::watch::ModAckReport),
+    DeliveryPulled(crate::protocol::delivery::DeliveryPullReply),
+    DeliveryConfirmed(crate::protocol::delivery::DeliveryConfirmReport),
     Left(ThreadId),
     TopicChanged(ThreadId),
     ThreadNameChanged(ThreadId),
@@ -1142,6 +1148,11 @@ pub enum InboxBatchV2Item {
         body_start: u64,
         body_end: u64,
         body_len: u64,
+        /// The reading seat's `wake_on` is `all` (delivery-policy DP8): a
+        /// push-channel consumer promotes this row to a `message` line.
+        /// Absent (false) for a default seat and from an older daemon.
+        #[serde(default, skip_serializing_if = "is_false")]
+        wakes: bool,
     },
     Warning {
         thread: ThreadId,
@@ -1163,6 +1174,16 @@ pub enum InboxBatchV2Item {
 pub struct MessageDeliveryMode {
     pub message: MessageId,
     pub delivery_mode: crate::protocol::commands::DeliveryMode,
+}
+
+/// A seat's `wake_on` preference. `changed` is true only when a set altered the
+/// stored value; a read, or a set to the value already stored, reports false.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WakeOnState {
+    pub seat: SeatId,
+    pub wake_on: crate::protocol::commands::WakeOn,
+    pub changed: bool,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -1494,6 +1515,7 @@ pub struct LocalIntent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IntentKind {
+    DirectSend,
     Handoff,
     ResolveSeat,
     CheckIn,

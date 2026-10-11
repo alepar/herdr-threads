@@ -1,0 +1,21 @@
+{
+  "format": "agy-fake-gemini/1",
+  "name": "launch",
+  "aux_text": "Gate launch title",
+  "default": {
+    "text": "LAUNCH-UNEXPECTED"
+  },
+  "steps": [
+    {
+      "label": "launch",
+      "match": {
+        "contains": [
+          "LAUNCH-PROMPT"
+        ]
+      },
+      "reply": {
+        "text": "LAUNCH-OK"
+      }
+    }
+  ]
+}

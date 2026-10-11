@@ -1,0 +1,31 @@
+r1 [Should-fix] src/store/lazy_delivery.rs:249
+r1 [Should-fix] src/service/delivery_pull.rs:294
+r1 [Nit] src/delivery/ledger.rs:137
+r1 [Nit] src/delivery/ledger.rs:96
+r1 [Nit] src/harness/agy/delivery.rs:873; src/harness/agy/delivery.rs:880
+r1 [Nit] src/harness/agy/delivery.rs:647; src/harness/agy/delivery.rs:644
+r1 [Nit] src/harness/agy/delivery.rs:830
+r1 [Nit] src/cli/hook.rs:2960
+r1 [Nit] scripts/agy-sandbox/fetch-agy:124
+r1 [Nit] src/cli/hook.rs:2878
+r1 [Nit] src/cli/topology_handoff.rs:192
+r1 [Nit] src/service/delivery_pull.rs:384
+r1 [Nit] src/harness/agy/delivery.rs:842
+r1 [Nit] src/harness/agy/decode.rs:98
+r1 [Nit] scripts/agy-relay/budget.py:71
+r1 [Nit] src/harness/agy/plugin.rs:60
+r1 [Nit] src/protocol/delivery.rs:1; src/protocol/delivery.rs:3
+r1 [Nit] src/harness/agy/delivery.rs:325
+r1 [Nit] src/harness/agy/delivery.rs:909; tests/harness/agy_delivery.rs:794
+r1 [Nit] TRUST-POLICY.md:211
+r1 [FYI] src/store/schema.rs:411; src/store/schema.rs:409
+r1 [FYI] src/harness/agy/setup.rs:379
+r1 [FYI] src/service/delivery_pull.rs:297
+r1 [FYI] src/service/delivery_pull.rs:176
+r1 [Must-fix] untested: post-tool-call delivery confirm on genuine agy (final review S2)
+r1 [Must-fix] parked: unsetup agy leaves v0.6 settings backups (R6 vs v0.6 backup model; human decision)
+r1 [Must-fix] parked: DC-3 ActiveTurn poke branch contradicts contract rule 4 (human decision)
+r1 [Must-fix] parked: daemon-down lifecycle hooks print the check-in-unavailable notice (R4 output discipline; human decision)
+r1 [Must-fix] untested: flaky tests golden_surfaces::handoff_bootstrap_plans, handoff_topology_cli::explicit_pane_preserves_both_harness_configs, final_sdd_actual_native_byte_and_line_limits_refuse_before_effects, gate downgrade flow
+r1 [Must-fix] docs: agent-usage.md handoff kinds, TRANSCRIPT_WINDOW doc comment, claude/permissions.rs:37 doc comment, sweep DP10 'unchanged' claim
+r1 [Must-fix] R17 compact framing (ht-poh.41, re-dispatch filed)

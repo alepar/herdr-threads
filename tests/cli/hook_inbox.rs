@@ -32,6 +32,7 @@ fn lazy(id: &str, body: &str) -> InboxBatchV2Item {
         body_start: 0,
         body_end: body.len() as u64,
         body_len: body.len() as u64,
+        wakes: false,
     }
 }
 fn ordinary(id: &str, body: &str, ack: bool) -> InboxBatchV2Item {

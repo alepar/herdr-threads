@@ -384,6 +384,29 @@ fn truncation_marker_quotes_selector_paths() {
 }
 
 #[test]
+fn attention_marker_for_the_default_prefix_is_the_marker() {
+    let marker = crate::notification::policy::MARKER;
+    assert_eq!(attention_marker_for(&[]), marker);
+    assert_eq!(attention_marker_for(&["herdr-threads".to_owned()]), marker);
+}
+
+#[test]
+fn attention_marker_for_follows_the_prefix() {
+    let prefix: Vec<String> = ["/opt/ht", "--state-dir", "/s"].map(String::from).to_vec();
+    assert_eq!(
+        attention_marker_for(&prefix),
+        "herdr-threads: attention pending; run /opt/ht --state-dir /s inbox"
+    );
+    let spaced: Vec<String> = ["herdr-threads", "--state-dir", "/tmp/my state"]
+        .map(String::from)
+        .to_vec();
+    assert_eq!(
+        attention_marker_for(&spaced),
+        "herdr-threads: attention pending; run herdr-threads --state-dir '/tmp/my state' inbox"
+    );
+}
+
+#[test]
 fn truncation_marker_for_empty_prefix_is_bare() {
     let id = MessageId::new("m9");
     assert_eq!(
@@ -603,6 +626,7 @@ fn no_mod_channels_is_inert() {
         binding_generation: 1,
         native_session: NativeSessionId::new("n1"),
         harness: Harness::Claude,
+        idle_wake: crate::harness::adapter::IdleWake::Channel,
         registered_at: UtcMillis(0),
     };
     assert_eq!(
@@ -616,4 +640,27 @@ fn no_mod_channels_is_inert() {
     channels.record_ack(&seat, 1, UtcMillis(0));
     channels.unregister(crate::ports::ModChannelId(1), UtcMillis(0));
     channels.close(&seat, WatchCloseReason::Stopping, UtcMillis(0));
+}
+
+#[test]
+fn notice_marker_names_body_only_with_and_without_a_prefix() {
+    let id = MessageId::new("w-1");
+    assert_eq!(
+        notice_marker_for(&[], &id),
+        "informational, no ACK; read: herdr-threads body w-1"
+    );
+    let prefixed = notice_marker_for(
+        &[
+            "/opt/ht".to_owned(),
+            "--instance".to_owned(),
+            "x".to_owned(),
+        ],
+        &id,
+    );
+    assert_eq!(
+        prefixed,
+        "informational, no ACK; read: /opt/ht --instance x body w-1"
+    );
+    assert!(!prefixed.contains('\n'));
+    assert!(!prefixed.contains("ack w-1"));
 }

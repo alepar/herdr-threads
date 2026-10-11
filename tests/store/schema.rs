@@ -5696,7 +5696,7 @@ fn user_intent_schema22_fresh_and_v21_upgrade() {
             "SELECT json_array(id,fetched_at,created_at) FROM summary_jobs ORDER BY id",
         ].into_iter().flat_map(|sql| db.prepare(sql).unwrap().query_map([], |r| r.get::<_,String>(0)).unwrap().map(Result::unwrap).collect::<Vec<_>>()).collect();
         let roots = db
-            .prepare("SELECT name,rootpage FROM sqlite_master WHERE type='table' AND name NOT IN ('archival_instances','channel_archival','seat_archival','channel_handoff_fences','harness_contract_diagnostics','lazy_recipients','bootstrap_handoffs','bootstrap_child_keys','bootstrap_attempts','bootstrap_recovery_decisions','bootstrap_attachments','bootstrap_reports','receipt_send_time_cutovers','receipt_deadline_backfill','receipt_discovery_backfill','receipt_due_sparse','receipt_warning_origins') ORDER BY name")
+            .prepare("SELECT name,rootpage FROM sqlite_master WHERE type='table' AND name NOT IN ('archival_instances','channel_archival','seat_archival','channel_handoff_fences','harness_contract_diagnostics','lazy_recipients','bootstrap_handoffs','bootstrap_child_keys','bootstrap_attempts','bootstrap_recovery_decisions','bootstrap_attachments','bootstrap_reports','receipt_send_time_cutovers','receipt_deadline_backfill','receipt_discovery_backfill','receipt_due_sparse','receipt_warning_origins','direct_threads','automatic_handoff_companions','automatic_handoff_keys','automatic_bootstrap_parents','automatic_bootstrap_keys','automatic_bootstrap_attempts','automatic_bootstrap_attachments','automatic_bootstrap_reports','automatic_bootstrap_recoveries') ORDER BY name")
             .unwrap()
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
             .unwrap()
@@ -6263,15 +6263,15 @@ fn absorption_main24_and25_to26_preserves_diagnostics_and_matches_fresh_catalog(
         assert_eq!(catalog(&db), catalog(&fresh));
         assert_eq!(
             catalog(&fresh).iter().filter(|r| r.0 == "table").count(),
-            79
+            88
         );
         assert_eq!(
             catalog(&fresh).iter().filter(|r| r.0 == "index").count(),
-            148
+            149
         );
         assert_eq!(
             catalog(&fresh).iter().filter(|r| r.0 == "trigger").count(),
-            194
+            212
         );
     }
 }
@@ -6482,4 +6482,287 @@ fn invitation_confirmation_schema_refuses_missing_policy_guard() {
         schema::initialize(&db, || UtcMillis(0)).unwrap_err().code,
         ErrorCode::IncompatibleSchema
     );
+}
+
+#[test]
+fn direct_pair_migration_preserves_v28_and_enforces_identity() {
+    let db = Connection::open_in_memory().unwrap();
+    db.pragma_update(None, "foreign_keys", true).unwrap();
+    let mut migrations = std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect::<Vec<_>>();
+    migrations.sort();
+    for path in migrations
+        .into_iter()
+        .filter(|path| path.file_name().unwrap().to_str().unwrap() < "0029")
+    {
+        db.execute_batch(&std::fs::read_to_string(path).unwrap())
+            .unwrap();
+    }
+    db.pragma_update(None, "user_version", 28).unwrap();
+    db.execute_batch("INSERT INTO host_instances(id,created_at) VALUES ('i',0); INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('a','i','resolved','native',0,0),('b','i','resolved','native',0,0),('c','i','resolved','native',0,0); INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0),('u','i','other','goal',0,0); INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i','m','t',1,'ordinary','retained body',0,1);").unwrap();
+    let dump = |table: &str| {
+        let mut statement = db
+            .prepare(&format!("SELECT * FROM {table} ORDER BY ordinal"))
+            .unwrap();
+        let columns = statement.column_count();
+        statement
+            .query_map([], |row| {
+                (0..columns)
+                    .map(|n| row.get::<_, rusqlite::types::Value>(n))
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    };
+    let before = [dump("seats"), dump("threads"), dump("messages")];
+    schema::initialize(&db, || UtcMillis(0)).unwrap();
+    // Later migrations (0031 wake_on) only append defaulted columns: the v28 prefix of
+    // every row is preserved byte for byte.
+    let mut after = [dump("seats"), dump("threads"), dump("messages")];
+    for (table, rows) in after.iter_mut().enumerate() {
+        for (row, old) in rows.iter_mut().zip(&before[table]) {
+            row.truncate(old.len());
+        }
+    }
+    assert_eq!(before, after);
+    assert_eq!(
+        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        39
+    );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM direct_threads", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    db.execute(
+        "INSERT INTO direct_threads(instance_id,seat_a,seat_b,thread_id) VALUES ('i','a','b','t')",
+        [],
+    )
+    .unwrap();
+    for (a, b, t) in [
+        ("a", "a", "u"),
+        ("b", "a", "u"),
+        ("a", "b", "u"),
+        ("a", "c", "t"),
+        ("a", "missing", "u"),
+        ("a", "c", "missing"),
+    ] {
+        assert!(db.execute("INSERT INTO direct_threads(instance_id,seat_a,seat_b,thread_id) VALUES ('i',?1,?2,?3)",params![a,b,t]).is_err(),"{a}/{b}/{t}");
+    }
+    assert!(db.execute("INSERT INTO direct_threads(instance_id,seat_a,seat_b,thread_id) VALUES ('missing','a','c','u')",[]).is_err());
+    let plan: String = db.query_row("EXPLAIN QUERY PLAN SELECT thread_id FROM direct_threads WHERE instance_id='i' AND seat_a='a' AND seat_b='b'",[],|r|r.get(3)).unwrap();
+    assert!(
+        plan.contains("SEARCH direct_threads USING") && plan.contains("INDEX"),
+        "{plan}"
+    );
+    db.execute(
+        "INSERT INTO direct_threads(instance_id,seat_a,seat_b,thread_id) VALUES ('i','a','c','u')",
+        [],
+    )
+    .unwrap();
+    assert!(db.execute("DELETE FROM threads WHERE id='u'", []).is_err());
+    assert!(db.execute("DELETE FROM seats WHERE id='b'", []).is_err());
+}
+
+// Catches losing released direct/automatic rows or omitting the additive capacity upgrade.
+#[test]
+fn released_main31_populated_automatic_graph_physically_upgrades_and_reopens() {
+    let path = std::env::temp_dir().join(format!("main31-upgrade-{}.db", uuid::Uuid::new_v4()));
+    let db = Connection::open(&path).unwrap();
+    db.pragma_update(None, "foreign_keys", true).unwrap();
+    let mut migrations = std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations"))
+        .unwrap()
+        .map(|p| p.unwrap().path())
+        .collect::<Vec<_>>();
+    migrations.sort();
+    for migration in migrations.into_iter().take(31) {
+        db.execute_batch(&std::fs::read_to_string(migration).unwrap())
+            .unwrap();
+    }
+    db.pragma_update(None, "user_version", 31).unwrap();
+    db.execute_batch(r#"INSERT INTO host_instances(id,created_at) VALUES('i',0);
+      INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES('a','i','resolved','native',1,0),('b','i','resolved','native',1,0);
+      INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES('t','i','topic','goal',0,0);
+      INSERT INTO direct_threads VALUES('i','a','b','t');
+      INSERT INTO channel_handoff_fences(instance_id,actor_scope,compound,digest,claim_json,recipient,create_key,invite_key,send_key,original_thread,thread_id,origin,state,created_at) VALUES('i','seat:a','child',printf('%064d',0),'{"generation":1,"provenance":"cooperative_top_level"}','b','begin','ensure','send',NULL,'t','cooperative_pending_claim','live',7);
+      INSERT INTO automatic_handoff_companions VALUES('i','seat:a','child','/state','/host',x'7b7d','begin','ensure','send','complete');
+      INSERT INTO automatic_handoff_keys VALUES('i','seat:a','child','send','send');
+      INSERT INTO automatic_bootstrap_parents VALUES(9,'i','seat:a','parent','/state','/host',x'7b7d','attached',1,1,'t');
+      INSERT INTO automatic_bootstrap_keys VALUES('i','seat:a','parent-key',9,'compound',0);
+      INSERT INTO automatic_bootstrap_attempts VALUES(9,1,'created',0,x'7b7d');
+      INSERT INTO automatic_bootstrap_attachments VALUES(9,1,x'7b7d');
+      INSERT INTO automatic_bootstrap_reports VALUES(9,x'7b7d');
+      INSERT INTO automatic_bootstrap_recoveries VALUES(9,1,'recovery','recovery-key',1,x'7b7d');"#).unwrap();
+    let tables = [
+        "direct_threads",
+        "channel_handoff_fences",
+        "automatic_handoff_companions",
+        "automatic_handoff_keys",
+        "automatic_bootstrap_parents",
+        "automatic_bootstrap_keys",
+        "automatic_bootstrap_attempts",
+        "automatic_bootstrap_attachments",
+        "automatic_bootstrap_reports",
+        "automatic_bootstrap_recoveries",
+    ];
+    let snapshot = |db: &Connection| {
+        tables
+            .iter()
+            .map(|table| {
+                let columns = db
+                    .prepare(&format!("PRAGMA table_info({table})"))
+                    .unwrap()
+                    .query_map([], |r| r.get::<_, String>(1))
+                    .unwrap()
+                    .map(Result::unwrap)
+                    .collect::<Vec<_>>();
+                let values = columns
+                    .iter()
+                    .map(|column| format!("quote({column})"))
+                    .collect::<Vec<_>>()
+                    .join("||','||");
+                db.prepare(&format!("SELECT {values} FROM {table} ORDER BY rowid"))
+                    .unwrap()
+                    .query_map([], |r| r.get::<_, String>(0))
+                    .unwrap()
+                    .map(Result::unwrap)
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>()
+    };
+    let before = snapshot(&db);
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+            .get::<_, i64>(
+            0
+        ))
+        .unwrap(),
+        0
+    );
+    drop(db);
+    let failure_path = path.with_extension("rollback.db");
+    std::fs::copy(&path, &failure_path).unwrap();
+    let db = Connection::open(&path).unwrap();
+    db.pragma_update(None, "foreign_keys", true).unwrap();
+    assert_eq!(
+        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        31
+    );
+    schema::initialize(&db, || UtcMillis(99)).unwrap();
+    assert_eq!(
+        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        39
+    );
+    assert_eq!(snapshot(&db), before);
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+            .get::<_, i64>(
+            0
+        ))
+        .unwrap(),
+        0
+    );
+    assert!(
+        db.pragma_query_value(None, "foreign_keys", |r| r.get::<_, bool>(0))
+            .unwrap()
+    );
+    drop(db);
+    let db = Connection::open(&path).unwrap();
+    schema::initialize(&db, || UtcMillis(100)).unwrap();
+    assert_eq!(snapshot(&db), before);
+    drop(db);
+    let db = Connection::open(&failure_path).unwrap();
+    db.pragma_update(None, "foreign_keys", false).unwrap();
+    let mut migrations = std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations"))
+        .unwrap()
+        .map(|p| p.unwrap().path())
+        .collect::<Vec<_>>();
+    migrations.sort();
+    for migration in migrations.into_iter().skip(31).take(7) {
+        db.execute_batch(&std::fs::read_to_string(migration).unwrap())
+            .unwrap();
+    }
+    db.pragma_update(None, "user_version", 38).unwrap();
+    db.execute(
+        "INSERT INTO automatic_bootstrap_keys VALUES('i','seat:a','orphan',999,'compound',0)",
+        [],
+    )
+    .unwrap();
+    db.pragma_update(None, "foreign_keys", true).unwrap();
+    let catalog = |db: &Connection| {
+        db.prepare("SELECT type,name,tbl_name,rootpage,sql FROM sqlite_schema ORDER BY type,name")
+            .unwrap()
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, i64>(3)?,
+                    r.get::<_, Option<String>>(4)?,
+                ))
+            })
+            .unwrap()
+            .map(Result::unwrap)
+            .collect::<Vec<_>>()
+    };
+    let failed_before = snapshot(&db);
+    let catalog_before = catalog(&db);
+    let error = schema::initialize(&db, || UtcMillis(101)).unwrap_err();
+    assert_eq!(error.code, ErrorCode::StoreCorrupt);
+    assert_eq!(
+        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        38
+    );
+    assert!(
+        db.pragma_query_value(None, "foreign_keys", |r| r.get::<_, bool>(0))
+            .unwrap()
+    );
+    assert_eq!(
+        catalog(&db),
+        catalog_before,
+        "failed rebuild rolls back every object and rootpage"
+    );
+    assert_eq!(
+        snapshot(&db),
+        failed_before,
+        "failed rebuild retains exact original bytes"
+    );
+    let trigger: String = db
+        .query_row(
+            "SELECT sql FROM sqlite_schema WHERE name='automatic_bootstrap_keys_retained'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    db.execute_batch("DROP TRIGGER automatic_bootstrap_keys_retained; DELETE FROM automatic_bootstrap_keys WHERE operation_key='orphan';").unwrap();
+    db.execute_batch(&trigger).unwrap();
+    drop(db);
+    let db = Connection::open(&failure_path).unwrap();
+    db.pragma_update(None, "foreign_keys", true).unwrap();
+    schema::initialize(&db, || UtcMillis(102)).unwrap();
+    assert_eq!(snapshot(&db), before);
+    assert_eq!(
+        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        39
+    );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+            .get::<_, i64>(
+            0
+        ))
+        .unwrap(),
+        0
+    );
+    drop(db);
+    std::fs::remove_file(failure_path).unwrap();
+    std::fs::remove_file(path).unwrap();
 }

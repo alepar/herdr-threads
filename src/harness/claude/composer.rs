@@ -8,6 +8,8 @@ use std::ops::Range;
 /// The shortest run of `─` taken for Claude's composer rule.
 const MIN_RULE: usize = 10;
 const CLAUDE_PROMPT: &str = "❯";
+/// Why Claude composer text is never `Text`.
+pub(crate) const CLAUDE_NOT_KNOWN_EMPTY: &str = "Claude composer text may be a prompt suggestion";
 /// Claude's empty-composer placeholder rows, exact text. Only a captured
 /// placeholder may be listed: `docs/evidence/poke-spike/findings.md` (Q2 table)
 /// records `Try "how do I log an error?"`.
@@ -83,7 +85,7 @@ impl ComposerPolicy for NativeComposer {
         match read {
             ComposerRead::Text(text) => ComposerRead::Unsafe {
                 text,
-                reason: composer::CLAUDE_NOT_KNOWN_EMPTY,
+                reason: CLAUDE_NOT_KNOWN_EMPTY,
             },
             read => read,
         }
@@ -95,7 +97,6 @@ impl ComposerPolicy for NativeComposer {
         super::recipe_for(installed)
             .map(|recipe| PokeCapabilities {
                 composer_stash: recipe.profile.composer_stash,
-                poke_during_turn: recipe.profile.poke_during_turn,
             })
             .unwrap_or(PokeCapabilities::NONE)
     }

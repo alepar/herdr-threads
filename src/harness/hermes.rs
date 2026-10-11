@@ -16,7 +16,33 @@ use std::{
 };
 pub struct HermesAdapter;
 pub const BRIDGE_SCHEMA: &str = "3f599002572f0efc";
+static TEXT: AdapterText = AdapterText {
+    setup_scope: "  hermes  Experimental; natively measured on 0.21.5 with a private Herdr build. Select
+          `setup hermes --profile NAME` (or explicit default when omitted). --profile
+          requires a named harness and is refused for bare multi-harness commands.
+          The captured official resolver selects lexical/physical HERMES_HOME; no
+          profile is created and a sticky active profile is not silently selected.
+          Installs owned plugin.yaml, __init__.py and bridge_config.json under the
+          selected home's plugins/herdr-threads. Enable manually with the printed
+          `hermes --profile NAME plugins enable herdr-threads` command and retain
+          native consent. Installed, configured enabled and native activation are
+          separate. Unsetup preserves foreign/modified assets and native YAML/enable
+          selection, reporting residue and manual disable guidance.",
+    launch_notes: "Hermes is experimental, natively
+measured on 0.21.5 with a private Herdr build; it joins only through this launch. Its separate startup/profile/API prelaunch observation
+must match the selected executable, owned generation and configured enabled profile.
+Native Hermes -p/--profile NAME after `--` is emitted once (default when omitted);
+--cli and one policy-owned chat token compose the captured interactive grammar.
+Known-arity model/provider options and chat -q/--query are supported in their native
+positions. Resume, TUI/native/oneshot, arbitrary subcommands, plugin suppression and
+approval bypass forms refuse. Launch never enables a plugin or grants native consent.
+The private host must support guarded process hints; a hint or observed launch is
+neither callback activation nor model consumption. Missing Hermes composer support
+permits no in-turn poke or composer stash/restore.",
+    ..AdapterText::NONE
+};
 static METADATA: AdapterMetadata = AdapterMetadata {
+    agent_env_markers: &[],
     id: "hermes",
     display_label: "Hermes",
     context_spelling: "Hermes",
@@ -657,6 +683,9 @@ impl HarnessAdapter for HermesAdapter {
     type Admission = HermesAdmission;
     fn metadata(&self) -> &'static AdapterMetadata {
         &METADATA
+    }
+    fn text(&self) -> &'static AdapterText {
+        &TEXT
     }
     fn contracts(&self) -> &'static [ContractDescriptor] {
         CONTRACTS

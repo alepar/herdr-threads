@@ -2,7 +2,7 @@
 
 `herdr-threads` finds the Herdr instance by itself: flags first, then Herdr's environment (`HERDR_PLUGIN_STATE_DIR`, and `HERDR_SOCKET_PATH`, which every Herdr pane has), then Herdr's default plugin state root (`herdr/plugins/herdr-threads` under `$XDG_STATE_HOME` or `~/.local/state`). In a Herdr pane, plain `herdr-threads <command>` therefore works. The Herdr queries that detection makes (`herdr plugin list --json`, `herdr status server --json`) are bounded by a short probe timeout (2 s): a hung Herdr makes the command fail fast with the pass-`--state-dir`/`--host-endpoint` remedy instead of waiting. For an explicit local context, pass `--state-dir PATH --host-endpoint PATH` before the command. Add `--json` for structured output. Commands never choose the currently focused pane.
 
-Output form: when stdout is a terminal and no agent-harness marker is set, text output is human-readable (inbox as a table, `read` as an IRC-style transcript (`[HH:MM] <nick> message`, with `-!-` lines for system events), thread details and participants as lists, one-line confirmations for send/ack/accept/invite). When stdout is not a terminal (pipes, scripts, hooks, and agents running the CLI through a tool) the compact machine text form is used (ht-4is.8.18). An agent harness that runs its shell tool in a PTY also gets the compact form: when any of the harness markers `CLAUDECODE`, `CODEX_THREAD_ID`, `CODEX_SANDBOX` or `CODEX_SANDBOX_NETWORK_DISABLED` is set to a non-empty value in the command's environment, text output defaults to the machine form even on a terminal (the marker beats the terminal check; `--human` still forces the human form). Scripts should not rely on either default and pass `--machine` or `--json` for stable parsing. The compact form: the first line names the result kind; `read` prints one row per timeline entry, `#SEQ MESSAGE_ID AUTHOR HH:MMZ [warn] [human] [relays user] [query|request|rule]: text` (author is the seat ID, a service ID, or `system`; `[human]` marks a message whose author is a declared human, `[relays user]` one the sender sent with `--relays-user`, source markers are fixed plugin text after `warn`; an independent recorded intent marker follows before any `[more: …]`; a clipped preview adds `[more: herdr-threads body MESSAGE_ID]` before the `: `), and a system event is one short row such as `#39 ack SEAT MESSAGE_ID`; `inbox` rows are `THREAD receipts=N invitations=N warnings=N` (zero counts left out, `+` when more may be pending, a required invitation adding its exact `accept-required` command); `pending-receipts` prints `pending_receipts SEAT` then `MESSAGE_ID THREAD#SEQ from SENDER due HH:MMZ [overdue] [deferred: recipient catching up (until HH:MMZ)]` (the suffix appears while the recipient is catching up on that thread, see **Thread summaries**); `thread show` and `thread participants` print one `SEAT STATE [self] [required invitation=ID requirement=ID revision=N]` row per participant; `check-in` prints `checked_in SEAT HARNESS ROLE generation=N DISPOSITION` followed by its inbox rows and pending warning count. `body` prints one header row `#SEQ MESSAGE_ID AUTHOR HH:MMZ` (plus `warn`, `bytes=FROM-TO/TOTAL` when the page is not the whole body, and `escaped` when the body holds a terminal control), then the body text verbatim with each non-empty line indented by two spaces, so no body line can start a row or a command line; an `escaped` body shows each such control as `\uXXXX` and doubles every backslash. A single `more: herdr-threads body ...` line follows only when the body continues; a system event prints `event: JSON` and its `condition: STATE active|inactive` instead of a body. Service-generated fields come first in every row and peer text only after the row's first `: `, escaped to one line. A page prints no metadata: a single trailing `next: herdr-threads ...` line appears only when there is more. Other results keep the `key: value` form, with one JSON object per `item:` line, no page metadata line, and each command (`*_argv`) printed once as its own `label: command` line rather than repeated inside the JSON. `--machine` forces the machine text form on a terminal, `--human` forces the human form anywhere, and `--json` always selects JSON; `--json` cannot be combined with either. Page budgets (`--max-bytes`) are measured on the machine form. `skill` always prints its markdown guide verbatim, and `setup`, `unsetup`, `setup-status` and `doctor` keep their `key: value` report form in either presentation.
+Output form: when stdout is a terminal and no agent-harness marker is set, text output is human-readable (inbox as a table, `read` as an IRC-style transcript (`[HH:MM] <nick> message`, with `-!-` lines for system events), thread details and participants as lists, one-line confirmations for send/ack/accept/invite). When stdout is not a terminal (pipes, scripts, hooks, and agents running the CLI through a tool) the compact machine text form is used (ht-4is.8.18). An agent harness that runs its shell tool in a PTY also gets the compact form: when any of the harness markers `CLAUDECODE`, `CODEX_THREAD_ID`, `CODEX_SANDBOX`, `CODEX_SANDBOX_NETWORK_DISABLED` or `ANTIGRAVITY_AGENT` is set to a non-empty value in the command's environment, text output defaults to the machine form even on a terminal (the marker beats the terminal check; `--human` still forces the human form). Scripts should not rely on either default and pass `--machine` or `--json` for stable parsing. The compact form: the first line names the result kind; `read` prints one row per timeline entry, `#SEQ MESSAGE_ID AUTHOR HH:MMZ [warn] [human] [relays user] [query|request|rule]: text` (author is the seat ID, a service ID, or `system`; `[human]` marks a message whose author is a declared human, `[relays user]` one the sender sent with `--relays-user`, source markers are fixed plugin text after `warn`; an independent recorded intent marker follows before any `[more: …]`; a clipped preview adds `[more: herdr-threads body MESSAGE_ID]` before the `: `), and a system event is one short row such as `#39 ack SEAT MESSAGE_ID`; `inbox` rows are `THREAD receipts=N invitations=N warnings=N` (zero counts left out, `+` when more may be pending, a required invitation adding its exact `accept-required` command); `pending-receipts` prints `pending_receipts SEAT` then `MESSAGE_ID THREAD#SEQ from SENDER due HH:MMZ [overdue] [deferred: recipient catching up (until HH:MMZ)]` (the suffix appears while the recipient is catching up on that thread, see **Thread summaries**); `thread show` and `thread participants` print one `SEAT STATE [self] [required invitation=ID requirement=ID revision=N]` row per participant; `check-in` prints `checked_in SEAT HARNESS ROLE generation=N DISPOSITION` followed by its inbox rows and pending warning count. `body` prints one header row `#SEQ MESSAGE_ID AUTHOR HH:MMZ` (plus `warn`, `bytes=FROM-TO/TOTAL` when the page is not the whole body, and `escaped` when the body holds a terminal control), then the body text verbatim with each non-empty line indented by two spaces, so no body line can start a row or a command line; an `escaped` body shows each such control as `\uXXXX` and doubles every backslash. A single `more: herdr-threads body ...` line follows only when the body continues; a system event prints `event: JSON` and its `condition: STATE active|inactive` instead of a body. Service-generated fields come first in every row and peer text only after the row's first `: `, escaped to one line. A page prints no metadata: a single trailing `next: herdr-threads ...` line appears only when there is more. Other results keep the `key: value` form, with one JSON object per `item:` line, no page metadata line, and each command (`*_argv`) printed once as its own `label: command` line rather than repeated inside the JSON. `--machine` forces the machine text form on a terminal, `--human` forces the human form anywhere, and `--json` always selects JSON; `--json` cannot be combined with either. Page budgets (`--max-bytes`) are measured on the machine form. `skill` always prints its markdown guide verbatim, and `setup`, `unsetup`, `setup-status` and `doctor` keep their `key: value` report form in either presentation.
 
 Agents: `herdr-threads skill` (alias `--skill`) prints the concise agent guide ([integrations/skill/SKILL.md](../integrations/skill/SKILL.md), embedded in the binary, local only, never contacts the daemon). The top-level `--help` ends with an `Are you an AI agent?` pointer to it. This document is the full reference.
 
@@ -52,7 +52,7 @@ herdr-threads invite THREAD --seat SEAT [--deadline SECONDS]
 herdr-threads accept THREAD
 herdr-threads accept-required THREAD --invitation INVITATION_ID --requirement REQUIREMENT_ID --revision N
 herdr-threads leave THREAD
-herdr-threads send THREAD (--body TEXT|--file PATH|--stdin) [--require-ack SEAT ...] [--deadline SECONDS] [--relays-user]
+herdr-threads send (THREAD|--seat SEAT) (--body TEXT|--file PATH|--stdin) [--require-ack SEAT ...] [--deadline SECONDS] [--relays-user]
 herdr-threads ack MESSAGE_ID...
 herdr-threads archive THREAD
 herdr-threads reopen THREAD
@@ -76,7 +76,7 @@ Every command locates its caller the same way. Inside a pane, `inbox` and `pendi
 
 **A person in their own pane** runs `herdr-threads human me init` once instead of any check-in flags. It requires `HERDR_PANE_ID`, resolves that pane's seat by ordinary resolution, and checks in with harness `human`, role top-level and a plugin-context session. The binding and every later send, invite, accept and ACK from that pane are recorded with `operator_human` provenance, not `cooperative_top_level`. After it, the mutations above and the seat-defaulting reads work in that pane with no flags. A person's seat can be named by `--require-ack`, but its human receipt has no ACK obligation or deadline. `me init` waives older pending agent receipt obligations without recording an ACK; a later agent binding receives future mail under the normal agent rules. Re-run `me init` after a daemon restart to restore availability (it continues the same occupant). It is refused (exit 2) without `HERDR_PANE_ID`; the refusals for agent evidence follow below. An agent later started in that pane replaces the person at its first lifecycle check-in. `me init` is not operator repair and grants nothing beyond what an agent's own check-in grants.
 
-**`me init` refusals.** `me init` never takes over an agent. It is refused (`invalid_request`) when an agent environment marker is present (`CLAUDECODE`, or the variables Codex sets inside its own process, `CODEX_SANDBOX` and `CODEX_SANDBOX_NETWORK_DISABLED`; user configuration such as `CODEX_HOME` is not a marker), when Herdr reports a Claude or Codex agent in the pane (any other detected kind does not count; a failed Herdr read is not evidence either), and, decided by the daemon, when the seat's open binding is an agent's (`cooperative_top_level`). The refusal names the way out: use your own shell pane, give the pane a fresh seat with `herdr-threads seat resolve --pane PANE --new-seat --operator`, or override as the local account with `herdr-threads human me init --operator` (recorded as `operator_human_override` in `seat inspect`); after it, person-pane commands in that pane work despite the agent evidence (the override is recorded locally for that human context, and nothing local is replaced until the daemon accepts the check-in). The environment and Herdr checks are best effort and client-side; the daemon's refusal is the guard.
+**`me init` refusals.** `me init` never takes over an agent. It is refused (`invalid_request`) when an agent environment marker is present (`CLAUDECODE`, or the variables Codex sets inside its own process, `CODEX_SANDBOX` and `CODEX_SANDBOX_NETWORK_DISABLED`, or `ANTIGRAVITY_AGENT`, which agy sets; user configuration such as `CODEX_HOME` is not a marker), when Herdr reports a Claude, Codex or agy agent in the pane (any other detected kind does not count; a failed Herdr read is not evidence either), and, decided by the daemon, when the seat's open binding is an agent's (`cooperative_top_level`). The refusal names the way out: use your own shell pane, give the pane a fresh seat with `herdr-threads seat resolve --pane PANE --new-seat --operator`, or override as the local account with `herdr-threads human me init --operator` (recorded as `operator_human_override` in `seat inspect`); after it, person-pane commands in that pane work despite the agent evidence (the override is recorded locally for that human context, and nothing local is replaced until the daemon accepts the check-in). The environment and Herdr checks are best effort and client-side; the daemon's refusal is the guard.
 
 **Resumed sessions reattach themselves.** After a Herdr restart a resumed top-level session (Claude `claude --resume`) whose harness session id uniquely matches an unresolved seat's last binding reattaches that seat when its SessionStart hook runs, with no operator step. This is resume-only: `startup`, `/clear` and `/new` carry a new id and never match. For Codex, run `codex resume` by hand in the pane; `herdr-threads launch` refuses the Codex `resume` form (no captured hook evidence), so use `codex resume` directly or `exec resume`. When no seat matches, the pane stays held and an operator repairs it (see [operations](operations.md#restore-holds-and-repair)).
 
@@ -224,7 +224,41 @@ Type a fuzzy subsequence of a name or topic, use arrows or Ctrl-N/P, then Enter 
 
 Human transcripts name authors and event recipients relative to the live invoking pane: `alice` in the same tab, `tryout/alice` in another tab of the same workspace, and `project/tryout/alice` in another workspace. Scope omission compares parent IDs, even when labels collide. Missing labels use IDs, the pane component stays visible, hostile labels are escaped, and unavailable host labels do not prevent durable history reads. Cached snapshots refresh during follow; JSON, machine output and recovery references keep their canonical IDs.
 
+### Automatic direct channels
+
+Use an exact recipient seat when the work belongs in a continuing one-to-one conversation:
+
+```sh
+herdr-threads send --seat SEAT --body "Nonurgent work"
+herdr-threads send --seat SEAT --file assignment.txt
+herdr-threads send --seat SEAT --stdin
+herdr-threads send --seat SEAT --nudge --body "Please review"
+herdr-threads send --seat SEAT --require-ack SEAT --body "Please confirm receipt"
+herdr-threads human send --seat SEAT --body "A question"
+```
+
+`--seat` selects the recipient, never the caller. Choose either `send THREAD` (unchanged ordinary thread delivery) or `send --seat SEAT`; a thread and seat cannot be combined. Direct send reuses the instance's canonical channel for that exact pair of seats, independent of names or topics. It never adopts an unrelated manually created thread or follows a retired seat to a replacement. Missing, retired, foreign, unresolved, held or self targets refuse; a resolved unbound recipient is valid.
+
+Send remains lazy by default: it freezes the invited target in the audience without waking it or promising receipt, acceptance or task adoption. `--nudge` selects ordinary attention and wake behavior. Direct `--require-ack` may name only the target seat (duplicates deduplicate); sender/third-seat requests and `--require-ack-pane` refuse. Body, deadline and relay rules remain the ordinary send rules.
+
+Creation joins the caller and ordinarily invites the recipient. The immutable pair reserves two seats, including an invited seat; it does not mean both have joined. A pending recipient accepts explicitly with `accept THREAD` (or the reported exact `accept-required` command). No third seat can enroll, and services cannot adopt or own the channel. Names and topics are presentation; the default topic and goal are `1:1 SEAT_A SEAT_B` with sorted canonical seat IDs.
+
+Lifecycle decisions require explicit repair on the reported channel: `reopen THREAD` after archive, `join THREAD` after the caller leaves, `accept THREAD` for an invited caller, and `invite THREAD --seat SEAT` after the target leaves or rejects. Required invitations retain their ordinary acceptance rules. Direct routing never reopens, rejoins or reinvites automatically and never creates a replacement pair. Repair reuses the same channel and preserves existing messages and obligations.
+
+Direct send durably ensures the channel, then uses ordinary send. A later refusal or crash can leave an empty channel and invitation; use the reported `retry REF` or `pending-ops` rather than sending again. Retry keeps the original recipient, body and operation keys. A completed retry prints historical thread/message results without repeating effects.
+
 ### Durable handoff and recovery
+
+```sh
+herdr-threads handoff --existing --seat SEAT -- "Review this change"
+herdr-threads handoff --existing --pane PANE -- "Review this change"
+herdr-threads handoff --pane PANE --kind codex -- "Review this change"
+herdr-threads handoff --new-tab review --kind codex -- "Review this change"
+```
+
+Automatic routing freezes the exact recipient and ensures its canonical pair channel before ordinary addressed send; launch modes then perform guarded launch. New-tab resolves its guarded recipient before ensuring the pair. Ensure creates the initial invitation atomically; it never accepts or ACKs for the recipient. Explicit `--thread` and `--new-thread` retain ordinary channel behavior and their ordinary invitation step. Metadata flags require `--new-thread`. All handoff destinations require an original top-level Agent; immediate human send remains available. Negotiate automatic routing capability before effects; an older daemon refuses without a client fallback.
+
+Explicit ordinary-channel overrides:
 
 ```sh
 herdr-threads handoff --new-thread --thread-name review --topic "Review the change" \
@@ -239,10 +273,10 @@ herdr-threads handoff --existing --pane w9001:p102 --new-thread \
 ```
 
 The fixture IDs and paths above are illustrative. Handoff chooses one target mode
-and exactly one `--new-thread` or `--thread ID_OR_NAME`: an explicit pane launch
-(`--pane PANE --kind claude|codex`), intentional new-tab creation
-(`--new-tab LABEL --kind claude|codex`), or existing-seat delivery
-(`--existing --seat SEAT` or `--existing --pane PANE`). The guarded new modes
+and optionally overrides automatic pair routing with `--new-thread` or `--thread ID_OR_NAME`: an explicit pane launch
+(`--pane PANE --kind claude|codex|agy`), intentional new-tab creation
+(`--new-tab LABEL --kind claude|codex|agy`), or existing-seat delivery
+(`--existing --seat SEAT` or `--existing --pane PANE`). All handoff modes
 require an original top-level Agent and the daemon capability. Native execution
 still requires the selected harness's approval and configuration; this reference
 does not establish installed permission.
@@ -263,8 +297,8 @@ and reports `outcome: staged` with participation `joined`, `invited_pending` or
 `staged_unbound`. An unbound resolved seat may receive work; the report does not
 establish a working or available session, accepted assignment or completed task.
 
-The new channel joins its sender; an existing channel requires the sender already
-joined. `--thread-name`, `--topic` and `--goal` apply only to new channels. Topic
+An explicitly new channel joins its sender; an explicitly existing channel requires the sender already
+joined. `--thread-name`, `--topic` and `--goal` require `--new-thread`. For explicit new channels, topic
 defaults to `Handoff to DISPLAY`: the relative escaped pane display for legacy
 launch, tab label for new-tab, or canonical recipient seat ID for delivery. Goal
 defaults to topic. `--name` names the native agent, not the channel. Thread names
@@ -276,8 +310,9 @@ bytes), never native argv. Repeat `--agent-arg=OPTION` for native launch options
 `HERDR_THREADS_CODEX_OPTS` / `HERDR_THREADS_CLAUDE_OPTS` prepend arguments using
 shell-style quotes and escapes without variable or command expansion; unset or
 empty adds nothing. Launch handoff freezes the combined argv before preflight,
-and retry uses those saved arguments even if the environment changes. Handoff
-stages an invitation when needed and an addressed message; launch modes then
+and retry uses those saved arguments even if the environment changes. Explicit ordinary
+channels invite when needed; automatic channels use Ensure for their initial
+invitation only. Handoff stages an addressed message; launch modes then
 perform guarded launch. Startup gets fixed scoped inbox instructions and the
 canonical thread ID, without duplicating the task body. Handoff never accepts
 or ACKs for the recipient, nor declares task adoption or task completion.
@@ -337,6 +372,22 @@ Where an older workflow copied a seat ID for `invite THREAD --seat SEAT` or `sen
 Outside Herdr, discovery can use an explicit instance (`--state-dir PATH --host-endpoint SOCKET`) and `thread list --recent --all`; use a unique thread name or ID for `read`. For pane selection, provide an exact pane ID or explicit parents, for example `--space project --tab tryout --pane alice`. Accountable writes still need the original pane context or complete cooperative claim. Names and current topology do not rebase a stale lifecycle claim.
 
 Wire protocol 6 rejects older clients/daemons before dispatch; upgrade the CLI and daemon together. Schema 19 adds names and schema 20 adds indexed recent activity. The combined upgrade applies schema 22 for recorded user intent and frozen summary bundles, then schema 23 for canonical handoff fences and quiet-channel archival. Handoff retains private intent/progress files alongside its canonical SQLite fences. Relevant directory changes invalidate recent traversal: rerun the initial query/picker to refresh, rather than treating a partial page as the complete inventory.
+# Antigravity (`agy`) integration
+
+agy sessions get their context from the owned `herdr-threads` plugin (installed by
+`herdr-threads setup agy`). Notes for agents running in agy:
+
+- Run each command with `run_command` as one plain `herdr-threads ...` command. Setup allows
+  `command(herdr-threads)`; chaining (`;`, `&&`, `|`) or prefixes (`cd`, `env`) need approval.
+- Message bodies arrive as hook-injected system messages at turn start (framing: see the skill's
+  Trust model).
+- Subagents never ACK, accept or send; only the top-level agent works threads.
+- `-c` resumes the most recent conversation and `--conversation <id>` a specific one; they cannot
+  be combined. Neither fires a session-start hook, so a resumed conversation is re-checked at its
+  first turn.
+
+Operators: see the [agy operator guide](../integrations/agy/README.md).
+
 # Hermes experimental integration
 
 Hermes support is implemented and source/synthetic tested; actual native acceptance

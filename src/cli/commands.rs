@@ -95,7 +95,7 @@ pub enum CliAction {
     ContractId {
         harness: Option<crate::harness::context::Harness>,
     },
-    /// Hidden `watch --harness claude --session ID`: the mod delivery child.
+    /// Hidden `watch --harness ID --session ID`: the mod delivery child.
     Watch(super::watch::WatchRequest),
     /// Hidden `watch ack --session ID --via VIA IDS...`.
     WatchAck(super::watch::WatchAckRequest),
@@ -121,6 +121,10 @@ pub enum CliAction {
     /// `summary THREAD`, `summary job`, `summary submit`: act as the invoking
     /// seat (cooperative claim from its saved context), never journaled.
     Summary(super::summary::SummaryCli),
+    /// `wake-on [nudge|all]`: read or set the invoking seat's wake preference;
+    /// acts as the seat (cooperative claim from its saved context), never
+    /// journaled.
+    WakeOn(Option<crate::protocol::commands::WakeOn>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -271,7 +275,8 @@ pub fn dispatch<B: CliBackend>(
         | CliAction::InternalJsonField { .. }
         | CliAction::Picker(_)
         | CliAction::Follow(_)
-        | CliAction::Summary(_) => {
+        | CliAction::Summary(_)
+        | CliAction::WakeOn(_) => {
             return Err(ApiError::unsupported(
                 "setup, launch and skill are local compositions without a daemon backend",
             ));
@@ -317,6 +322,7 @@ pub enum MutationSpec {
         expected_revision: u64,
     },
     Leave(ThreadId),
+    DirectSend(super::direct_send::Request),
     Send {
         delivery_mode: DeliveryMode,
         thread: ThreadId,
@@ -459,6 +465,11 @@ impl MutationSpec {
                 operation,
                 claim: claim.unwrap(),
             }),
+            Self::DirectSend(_) => {
+                return Err(ApiError::unsupported(
+                    "direct send requires compound coordinator",
+                ));
+            }
             Self::Send {
                 delivery_mode,
                 thread,
@@ -471,6 +482,7 @@ impl MutationSpec {
                 delivery_mode,
                 thread,
                 body,
+                direct_recipient: None,
                 invited_recipients: require_ack,
                 deadline_millis,
                 operation,
@@ -624,7 +636,11 @@ enum Top {
     },
     /// Leave a thread without changing other participants.
     Leave { thread: String },
-    /// Send a message to a thread, with optional explicit ACK recipients.
+    /// Send to THREAD or use --seat SEAT for its canonical automatic pair channel.
+    /// Lazy by default (--body TEXT, --file PATH or --stdin); --nudge notifies.
+    /// Direct ACK requests name only the target; --require-ack-pane is refused.
+    /// Creation invites the peer without accepting; lifecycle repair is explicit.
+    /// Immediate human send uses the same recipient routing.
     Send(SendArgs),
     /// ACK exact message IDs after reading them.
     Ack {
@@ -706,17 +722,17 @@ enum Top {
     /// plugin state. Setup uses the declared hook contract; installed version
     /// metadata is optional and may be unknown. Configured hooks do not prove
     /// observed delivery or native harness support.
-    #[command(after_help = super::setup::SETUP_HELP)]
+    #[command(after_help = super::help::setup_help())]
     Setup(SetupArgs),
     /// Remove the owned herdr-threads hooks installed by `setup`, keeping
     /// every other setting; unchanged settings are restored byte for byte.
     /// Removal does not depend on installed harness metadata.
-    #[command(after_help = super::setup::SETUP_HELP)]
+    #[command(after_help = super::help::setup_help())]
     Unsetup(SetupArgs),
     /// Report whether the owned hooks are installed (separately from native
     /// observation), with optional installed version metadata. Installation
     /// does not prove native callback delivery or launch support.
-    #[command(after_help = super::setup::SETUP_HELP)]
+    #[command(after_help = super::help::setup_help())]
     SetupStatus(SetupArgs),
     /// List local mutations whose outcome is still unknown.
     PendingOps(PageArgs),
@@ -727,10 +743,10 @@ enum Top {
     /// Start Codex or Claude in one explicit existing empty shell pane with
     /// the owned hooks, after resolving the pane's seat. Launch never
     /// registers, accepts or ACKs: the handoff is read through the hooks.
-    #[command(after_help = super::launch::LAUNCH_HELP)]
+    #[command(after_help = super::help::launch_help())]
     Launch(LaunchArgs),
     /// Deliver durable work to a new tab, explicit launch pane, or existing peer.
-    #[command(after_help = format!("{}\n\n{}", super::handoff::HANDOFF_HELP, super::topology_recover::RECOVERY_HELP))]
+    #[command(after_help = format!("{}\n\n{}", super::help::handoff_help(), super::topology_recover::RECOVERY_HELP))]
     Handoff(Box<HandoffArgs>),
     #[command(name = "_topology-recover", hide = true)]
     TopologyRecover(RecoveryArgs),
@@ -748,6 +764,11 @@ enum Top {
     /// section of `herdr-threads skill`).
     #[command(args_conflicts_with_subcommands = true)]
     Summary(SummaryArgs),
+    /// Show or set whether pending lazy messages also wake this seat when it
+    /// is idle: `nudge` (default) keeps the ordinary wake policy, `all` wakes
+    /// for every pending message. A preference only: it never ACKs or
+    /// changes receipts.
+    WakeOn(WakeOnArgs),
     /// Mod delivery child: streams herdr-threads deliveries as JSON lines.
     #[command(
         hide = true,
@@ -755,10 +776,11 @@ enum Top {
         after_help = "Exit codes: 0 stream ended (restart with backoff), 1 other error \
 (restart with backoff), 2 refused (retry after backoff), 3 permanent (stop until \
 reload). Registration refusals no_binding, session_mismatch, held, unresolved, \
-cooldown, busy and stopping exit 2; not_claude and disabled exit 3. A Close of \
+cooldown, busy and stopping exit 2; no push channel (wire code not_claude) and \
+disabled exit 3. A Close of \
 disabled or replaced exits 3, any other Close exits 0. Local reasons no_pane, \
 env_disabled and unsupported exit 3; daemon_unavailable and error exit 1; \
-stream_ended exits 0. Spawned by the herdr-threads Claude mod."
+stream_ended exits 0. Spawned by a push-channel mod."
     )]
     Watch(WatchArgs),
     /// Discover built-in adapters and their declared tooling metadata. Local only.
@@ -788,9 +810,15 @@ stream_ended exits 0. Spawned by the herdr-threads Claude mod."
 
 #[derive(Args)]
 struct WatchArgs {
-    /// Only `claude` (the id is not `harness`, so the registry-wide harness
-    /// selector choices do not replace this narrower list).
-    #[arg(long = "harness", value_parser = ["claude"])]
+    /// A harness whose adapter declares a push delivery channel (the id is not
+    /// `harness`, so the registry-wide harness selector choices do not replace
+    /// this narrower list).
+    #[arg(
+        long = "harness",
+        value_parser = clap::builder::PossibleValuesParser::new(
+            crate::harness::registry::builtins().push_channel_ids()
+        )
+    )]
     mod_harness: Option<String>,
     #[arg(long)]
     session: Option<String>,
@@ -815,6 +843,13 @@ enum WatchSub {
 enum DoctorSub {
     /// Attempt safe, owned repairs and report remaining manual actions.
     Fix,
+}
+
+#[derive(Args)]
+struct WakeOnArgs {
+    /// The new preference; omit to print the current one.
+    #[arg(value_parser = ["nudge", "all"])]
+    value: Option<String>,
 }
 
 #[derive(Args)]
@@ -874,7 +909,7 @@ enum MeSub {
     /// Record this pane (HERDR_PANE_ID) as your own seat, with operator/human
     /// provenance, so `thread create`, `invite`, `send`, `read`, `ack` and
     /// `accept` run here with no caller flags. Re-run after a daemon restart.
-    #[command(after_help = super::me::ME_INIT_HELP)]
+    #[command(after_help = super::help::me_init_help())]
     Init {
         /// Override the agent guard as the local account: record yourself over
         /// an agent's binding or where agent markers are present.
@@ -1103,8 +1138,12 @@ struct InviteArgs {
 struct SendArgs {
     #[command(flatten)]
     selector: super::panes::PaneSelector,
-    /// Thread that receives the message.
-    thread: String,
+    /// Thread that receives the message, or select a direct recipient with --seat.
+    #[arg(required_unless_present = "seat", conflicts_with = "seat")]
+    thread: Option<String>,
+    /// Exact recipient seat for an automatic one-to-one channel.
+    #[arg(long, required_unless_present = "thread", conflicts_with = "thread")]
+    seat: Option<String>,
     /// Message body given directly on the command line.
     #[arg(long, group = "body_source")]
     body: Option<String>,
@@ -1319,7 +1358,7 @@ struct HandoffArgs {
     cwd: Option<std::path::PathBuf>,
     #[command(flatten)]
     selector: super::panes::PaneSelector,
-    #[arg(long, required_unless_present = "thread", conflicts_with = "thread")]
+    #[arg(long, conflicts_with = "thread")]
     new_thread: bool,
     #[arg(long)]
     thread: Option<String>,
@@ -1421,10 +1460,16 @@ fn setup_action(
         options.insert("disable-prompt-suggestions".into(), true);
     }
     if args.hooks_only
-        && (verb != super::setup::SetupVerb::Install || args.harness.as_deref() != Some("claude"))
+        && (verb != super::setup::SetupVerb::Install
+            || !registration.is_some_and(|registration| {
+                registration
+                    .setup_options()
+                    .iter()
+                    .any(|option| option.name == "hooks-only")
+            }))
     {
         return Err(invalid(
-            "--hooks-only applies to `setup claude` only (unsetup removes the mod with the hooks)",
+            "--hooks-only applies to `setup <harness>` only, for a harness that declares it (unsetup removes the mod with the hooks)",
         ));
     }
     if args.keep_prompt_suggestions {
@@ -1454,11 +1499,11 @@ fn setup_action(
         &Default::default(),
         &options,
     )
-    .map_err(|_| invalid("--disable-prompt-suggestions and --keep-prompt-suggestions apply to `setup` and `setup claude` only (unsetup reverts what setup set)"))?;
+    .map_err(|_| invalid("--disable-prompt-suggestions and --keep-prompt-suggestions apply to `setup` and `setup <harness>` only, for a harness that declares them (unsetup reverts what setup set)"))?;
     let Some(harness) = args.harness else {
         if args.harness_binary.is_some() {
             return Err(invalid(
-                "--harness-binary needs a harness: `setup claude|codex --harness-binary PATH`",
+                "--harness-binary needs a harness: `setup <harness> --harness-binary PATH`",
             ));
         }
         return Ok(CliAction::SetupAll(verb, prompt_suggestions, permissions));
@@ -1575,7 +1620,7 @@ pub fn exit_status_help() -> String {
   3  daemon or host unavailable; {}
      (version mismatch: {})
   4  unsupported capability in this build or environment (including transport_denied:
-     a sandbox refused the daemon socket; see `herdr-threads setup codex`)
+     a sandbox refused the daemon socket; see `herdr-threads setup <harness>`)
   5  outcome unknown; inspect `herdr-threads pending-ops` and `retry` the local reference",
         crate::daemon::remedy::remedy(
             Some(crate::protocol::results::ErrorClass::Unavailable),
@@ -1809,7 +1854,7 @@ where
 
 /// Apply the registry's agent namespace to every selector, including global
 /// cooperative selection. Human-specific commands have no harness selector.
-fn command_for_registry(registry: &crate::harness::registry::Registry) -> clap::Command {
+pub(crate) fn command_for_registry(registry: &crate::harness::registry::Registry) -> clap::Command {
     fn selectors(mut command: clap::Command, choices: &[&'static str]) -> clap::Command {
         // mut_args preserves declaration order, including positional HARNESS RAW.
         command = command.mut_args(|arg| {
@@ -1834,7 +1879,15 @@ fn command_for_registry(registry: &crate::harness::registry::Registry) -> clap::
         .iter()
         .map(|registration| registration.metadata().id)
         .collect();
-    selectors(Cli::command(), &choices)
+    let mut command = selectors(Cli::command(), &choices);
+    // `watch --harness` lists only the harnesses that declare a push channel.
+    let push = registry.push_channel_ids();
+    if let Some(watch) = command.find_subcommand_mut("watch") {
+        *watch = watch.clone().mut_arg("mod_harness", |arg| {
+            arg.value_parser(clap::builder::PossibleValuesParser::new(push))
+        });
+    }
+    command
 }
 
 /// P7 (native Claude demo 3): a global path flag may repeat only with one
@@ -2011,6 +2064,13 @@ fn parse_cli_in_registry(
             selector.is_explicit().then(|| selector.clone())
         }
         Top::Send(args) => {
+            if args.seat.is_some()
+                && (args.selector.is_explicit() || !args.require_ack_pane.is_empty())
+            {
+                return Err(invalid(
+                    "direct send accepts only its --seat recipient; pane ACK selectors are not supported",
+                ));
+            }
             let explicit_ack = !args.require_ack.is_empty() || !args.require_ack_pane.is_empty();
             if args.lazy && (explicit_ack || args.deadline.is_some()) {
                 return Err(invalid(
@@ -2072,7 +2132,7 @@ fn parse_cli_in_registry(
         | Top::Reopen { thread } => Some(thread.clone()),
         Top::Handoff(args) if args.new_tab.is_none() && !args.existing => args.thread.clone(),
         Top::Invite(args) => Some(args.thread.clone()),
-        Top::Send(args) => Some(args.thread.clone()),
+        Top::Send(args) => args.thread.clone(),
         Top::Read(args) => args.thread.clone(),
         Top::PendingReceipts(args) => args.thread.clone(),
         Top::Diagnostics(args) => args.thread.clone(),
@@ -2231,11 +2291,18 @@ fn parse_cli_in_registry(
             if args.require_ack.len() > MAX_BATCH_ITEMS {
                 return Err(invalid("too many explicit recipients"));
             }
-            let recipients = args
+            let mut recipients = args
                 .require_ack
                 .into_iter()
                 .map(|s| id(s, SeatId::parse))
                 .collect::<Result<Vec<_>, _>>()?;
+            let direct_target = args.seat.map(|seat| id(seat, SeatId::parse)).transpose()?;
+            if let Some(target) = &direct_target {
+                if recipients.iter().any(|seat| seat != target) {
+                    return Err(invalid("direct ACK requests may name only the target seat"));
+                }
+                recipients.dedup();
+            }
             if recipients
                 .iter()
                 .collect::<std::collections::HashSet<_>>()
@@ -2244,19 +2311,31 @@ fn parse_cli_in_registry(
             {
                 return Err(invalid("duplicate explicit recipient"));
             }
-            let thread = thread_id(args.thread)?;
+            let thread = args.thread.map(thread_id).transpose()?;
             let deadline_millis = deadline(args.deadline)?;
             let relays_user = args.relays_user;
             let body = crate::cli::input::read_body(args.body, args.file, args.stdin)?;
-            CliAction::Mutation(MutationSpec::Send {
-                delivery_mode,
-                thread,
-                body,
-                require_ack: recipients,
-                deadline_millis,
-                relays_user,
-                user_intent: args.user_intent,
-            })
+            if let Some(target) = direct_target {
+                CliAction::Mutation(MutationSpec::DirectSend(super::direct_send::Request {
+                    target,
+                    delivery_mode,
+                    body,
+                    require_ack: recipients,
+                    deadline_millis,
+                    relays_user,
+                    user_intent: args.user_intent,
+                }))
+            } else {
+                CliAction::Mutation(MutationSpec::Send {
+                    delivery_mode,
+                    thread: thread.expect("clap requires selector"),
+                    body,
+                    require_ack: recipients,
+                    deadline_millis,
+                    relays_user,
+                    user_intent: args.user_intent,
+                })
+            }
         }
         Top::Ack { messages } => {
             if messages.len() > MAX_BATCH_ITEMS {
@@ -2641,6 +2720,7 @@ fn parse_cli_in_registry(
                 }
                 CliAction::TopologyHandoff(super::topology_handoff::Request {
                     policy: Some(policy),
+                    automatic: !args.new_thread && args.thread.is_none(),
                     new_tab: args.new_tab,
                     existing: args.existing,
                     selector: args.selector,
@@ -2659,6 +2739,7 @@ fn parse_cli_in_registry(
             } else {
                 CliAction::Handoff(super::handoff::HandoffRequest {
                     policy: Some(policy),
+                    automatic: !args.new_thread && args.thread.is_none(),
                     thread: args.thread.map(thread_id).transpose()?,
                     thread_name: args.thread_name,
                     topic: args.topic.map(|s| bounded(s, "topic")).transpose()?,
@@ -2680,6 +2761,14 @@ fn parse_cli_in_registry(
         }
         Top::PendingOps(args) => CliAction::PendingOps(page(args)?),
         Top::Skill => CliAction::Skill,
+        Top::WakeOn(args) => CliAction::WakeOn(
+            args.value
+                .map(|value| {
+                    crate::protocol::commands::WakeOn::parse(&value)
+                        .ok_or_else(|| invalid("wake-on takes `nudge` or `all`"))
+                })
+                .transpose()?,
+        ),
         Top::Summary(args) => {
             use super::summary::SummaryCli;
             let job = |job: String, lease: String| -> Result<_, ApiError> {
@@ -2720,13 +2809,13 @@ fn parse_cli_in_registry(
                         .collect::<Result<_, _>>()?,
                 })
             }
-            (None, Some(_), Some(session)) => CliAction::Watch(super::watch::WatchRequest {
-                harness: crate::harness::context::Harness::Claude,
+            (None, Some(harness), Some(session)) => CliAction::Watch(super::watch::WatchRequest {
+                harness: harness_arg(&harness, registry)?,
                 session,
             }),
             _ => {
                 return Err(invalid(
-                    "watch needs --harness claude and --session ID, or the `ack` subcommand",
+                    "watch needs --harness ID and --session ID, or the `ack` subcommand",
                 ));
             }
         },
@@ -2823,7 +2912,7 @@ fn parse_cli_in_registry(
 pub fn reject_inert_handoff(
     semantic: &super::journal::SemanticMutation,
 ) -> Result<(), crate::protocol::results::ApiError> {
-    if semantic.namespace().is_some() {
+    if semantic.namespace().is_some() && super::direct_send::plan(semantic).is_none() {
         return Err(crate::protocol::results::ApiError::new(
             crate::protocol::results::ErrorCode::Unsupported,
             "bootstrap, delivery and recovery execution require canonical guards and original actor classification",

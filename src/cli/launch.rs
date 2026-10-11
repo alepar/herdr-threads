@@ -65,69 +65,7 @@ use std::{
     sync::Mutex,
 };
 
-pub use crate::harness::codex::launch::codex_profile;
-pub use crate::harness::launch::{CodexShellProbe, SHELL_PROBE_TIMEOUT, SystemShellProbe};
-
-/// `launch --help` epilogue.
-pub const LAUNCH_HELP: &str = "Target:
-  --pane names one existing Herdr pane at its interactive shell prompt; launch never
-  creates, splits or picks a pane and never types into an occupied one. Herdr's
-  guarded `agent start` refuses a busy pane.
-
-Preflight (nothing is started when any step refuses):
-  - the selected executable must resolve; its registered contract is declared without
-    invoking --version, --help or schema probes, and runtime metadata remains unknown;
-  - the pane's seat is resolved like `seat resolve --pane`; a recovery-held target
-    needs `seat rebind ... --operator` or a fresh seat first;
-  - the owned user-level hooks must be set up (`herdr-threads setup claude|codex`) in the
-    Claude settings / Codex hooks.json of the CLAUDE_CONFIG_DIR / CODEX_HOME the agent
-    will use (an absolute one the pane's shell exports, else launch's own, else HOME;
-    the report's config_dir names it); Codex CLI commands use approved
-    outside-sandbox execution, without a network/socket allowance;
-  - a last fresh read of the pane just before Herdr starts the agent.
-
-Agent name: --name NAME, else the pane's Herdr label, else s<short seat id>
-for a new compact ID (seat-<short seat id> for a persisted ID),
-fitted to Herdr's [a-z][a-z0-9_-]{0,31}. If another live agent holds it, launch
-retries once with -<short seat id> appended.
-
-Arguments after `--` are passed to the agent unchanged and in order. Optional
-HERDR_THREADS_CODEX_OPTS / HERDR_THREADS_CLAUDE_OPTS are prepended to those arguments;
-unset or empty adds nothing. Use shell-style quotes and escapes; variables and
-commands are never expanded. For example, HERDR_THREADS_CODEX_OPTS='--no-daemon'.
-The combined arguments use the same managed-launch guards. The owned configuration
-is on disk, so launch adds no hook or daemon-mode arguments by default.
-Unsupported Codex subcommands, an explicit `--daemon`, a caller `--no-daemon`
-after the subcommand and a caller `-c hooks.*` override are refused. No
-auto-approve flag is added.
-
-Launch is not receipt: it never checks in, accepts or ACKs. Invitations and messages
-sent before launch stay pending; the agent's SessionStart hook shows them, and
-`herdr-threads inbox --seat SEAT` lists them even when the initial prompt is lost.
-After an observed start, a seat with no open binding gets a `managed_launch` binding
-(report `binding`; `seat inspect` shows it as launched, not checked in): it lets the
-daemon wake the idle agent for pending work before its first check-in (Codex runs no
-SessionStart hook until its first turn), and the agent's first check-in replaces it.
-
-A harness that exits right after the start (for example Codex refusing its arguments)
-fails launch at once with invalid_request and the pane's last lines. Codex launches report
-`codex`: the effective CODEX_HOME, its config.toml and the selected profile (-p/--profile,
-else `profile` in config.toml, else default).
-
-Harness choices come from the same-binary registry. Hermes is experimental, natively
-measured on 0.21.5 with a private Herdr build; it joins only through this launch. Its separate startup/profile/API prelaunch observation
-must match the selected executable, owned generation and configured enabled profile.
-Native Hermes -p/--profile NAME after `--` is emitted once (default when omitted);
---cli and one policy-owned chat token compose the captured interactive grammar.
-Known-arity model/provider options and chat -q/--query are supported in their native
-positions. Resume, TUI/native/oneshot, arbitrary subcommands, plugin suppression and
-approval bypass forms refuse. Launch never enables a plugin or grants native consent.
-The private host must support guarded process hints; a hint or observed launch is
-neither callback activation nor model consumption. Missing Hermes composer support
-permits no in-turn poke or composer stash/restore.
-
-Exit status: 0 startup observed; 5 start may have happened but was not confirmed:
-inspect the pane (`herdr agent get` / `herdr agent read`) before launching again.";
+pub use crate::harness::launch::{PaneShellProbe, SHELL_PROBE_TIMEOUT, SystemShellProbe};
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct LaunchRequest {
@@ -143,6 +81,45 @@ pub struct LaunchRequest {
     pub pane_label: Option<String>,
 }
 
+/// A native-options variable declaration is `HERDR_THREADS_<UPPER>_OPTS`, ASCII, at most 128 bytes.
+fn valid_options_key(key: &str) -> bool {
+    key.is_ascii()
+        && key.len() <= 128
+        && key
+            .strip_prefix("HERDR_THREADS_")
+            .and_then(|middle| middle.strip_suffix("_OPTS"))
+            .is_some_and(|middle| {
+                !middle.is_empty()
+                    && middle.bytes().all(|byte| {
+                        byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_'
+                    })
+            })
+}
+
+/// The valid native-options variables registered launch policies declare, in registry order,
+/// for the registrations `include` accepts (by adapter id). Help text and the recovery argv
+/// derive their lists from it.
+pub(crate) fn registered_options_keys(
+    registry: &crate::harness::registry::Registry,
+    include: impl Fn(&str) -> bool,
+) -> Vec<&'static str> {
+    let mut keys = Vec::new();
+    for registration in registry.registrations() {
+        if !include(registration.metadata().id) {
+            continue;
+        }
+        if let Some(key) = registration
+            .launch_policy()
+            .and_then(|policy| policy.native_options_env())
+            && valid_options_key(key)
+            && !keys.contains(&key)
+        {
+            keys.push(key);
+        }
+    }
+    keys
+}
+
 /// Resolve and validate the current producer declaration before lookup or shell output.
 pub(crate) fn native_options_env(
     registry: &crate::harness::registry::Registry,
@@ -154,24 +131,13 @@ pub(crate) fn native_options_env(
         .launch_policy()
         .expect("checked provider")
         .native_options_env();
-    if let Some(key) = declaration {
-        let valid = key.is_ascii()
-            && key.len() <= 128
-            && key
-                .strip_prefix("HERDR_THREADS_")
-                .and_then(|middle| middle.strip_suffix("_OPTS"))
-                .is_some_and(|middle| {
-                    !middle.is_empty()
-                        && middle.bytes().all(|byte| {
-                            byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_'
-                        })
-                });
-        if !valid {
-            return Err(api(
-                ErrorCode::InvalidRequest,
-                "invalid native options environment declaration",
-            ));
-        }
+    if let Some(key) = declaration
+        && !valid_options_key(key)
+    {
+        return Err(api(
+            ErrorCode::InvalidRequest,
+            "invalid native options environment declaration",
+        ));
     }
     Ok(declaration)
 }
@@ -599,8 +565,8 @@ pub struct LaunchParts<'a> {
     pub clock: &'a dyn Clock,
     /// Directory holding the private launch record (`launches.jsonl`).
     pub record_dir: Option<&'a Path>,
-    /// How the pane shell resolves `codex` (consulted for Codex only).
-    pub shell_probe: &'a dyn CodexShellProbe,
+    /// How the pane shell resolves the agent's configuration directory.
+    pub shell_probe: &'a dyn PaneShellProbe,
 }
 
 /// The finished report and the process exit status (0 observed startup,
@@ -860,7 +826,6 @@ fn execute_guarded_inner(
                 }
                 identity.release_version.clone()
             }
-            InstallObservation::CodexWitness(version) => Some(version.as_str().to_owned()),
             InstallObservation::ExecutableAvailable { binary: observed } => {
                 if fs::canonicalize(observed).ok() != fs::canonicalize(&binary).ok() {
                     return Err(api(
@@ -948,8 +913,8 @@ fn execute_guarded_inner(
         .map_err(|mut error| {
             if error.code == ErrorCode::MissingHook {
                 error.detail = format!(
-                    "the owned {word} hooks are not installed in {} ({}): run `herdr-threads setup {word}` first, with the CLAUDE_CONFIG_DIR / CODEX_HOME the agent uses (nothing was started)",
-                    root.display(), error.detail
+                    "the owned {word} hooks are not installed in {} ({}): run `herdr-threads setup {word}` first, with the {} the agent uses (nothing was started)",
+                    root.display(), error.detail, super::help::config_root_hints(registry)
                 );
             }
             missing_hook(error)
@@ -1435,7 +1400,7 @@ mod task23_tests {
 
     /// A canned pane-shell answer for `codex`; never runs a shell.
     struct FakeProbe(Result<String, String>);
-    impl CodexShellProbe for FakeProbe {}
+    impl PaneShellProbe for FakeProbe {}
 
     struct Scratch {
         root: std::path::PathBuf,
@@ -1461,8 +1426,11 @@ mod task23_tests {
                 state_dir: Some(root.join("state")),
                 cwd: root.clone(),
                 path: Some(root.join("bin").into_os_string()),
-                codex_home: Some(root.join("codex home")),
-                claude_config_dir: Some(root.join("claude config")),
+                config_roots: [
+                    ("codex".into(), root.join("codex home")),
+                    ("claude".into(), root.join("claude config")),
+                ]
+                .into(),
                 host_endpoint: Some(root.join("herdr.sock")),
                 instance_source: Value::Null,
             };
@@ -1484,7 +1452,7 @@ mod task23_tests {
             seats: &FakeSeats,
             handoff: &FakeHandoff,
             request: LaunchRequest,
-            probe: &dyn CodexShellProbe,
+            probe: &dyn PaneShellProbe,
         ) -> Result<LaunchReport, RunError> {
             let clock = Clock0(AtomicU64::new(1));
             execute(

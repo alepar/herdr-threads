@@ -177,8 +177,177 @@ pub trait HarnessAdapter: Send + Sync + 'static {
     fn composer_policy(&self) -> Option<&dyn ComposerPolicy> {
         None
     }
+    /// Native runtime artifacts about the event's session, read by the runner after the pure
+    /// decode and folded with [`LocalEvidence::refine`]. Default: none.
+    fn local_evidence(&self, _: &LocalEvidenceRequest<'_>) -> LocalEvidence {
+        LocalEvidence::default()
+    }
+    /// A step the runner runs for a top-level `Observer` event in place of the neutral output.
+    fn hook_step(&self) -> Option<&dyn HookStep> {
+        None
+    }
+    /// `None`: hooks deliver and the native wake applies (delivery-policy DP1).
+    fn delivery_policy(&self) -> Option<&dyn DeliveryPolicy> {
+        None
+    }
     fn canary_strategy(&self) -> Option<&dyn CanaryStrategy> {
         None
+    }
+    /// Static text fragments the neutral core splices into help and reports.
+    fn text(&self) -> &'static AdapterText {
+        &AdapterText::NONE
+    }
+    /// The config root when the environment names none explicitly: the declared
+    /// environment variable when non-empty, else a directory under `home`.
+    fn default_config_root(&self, _environment: &SetupEnvironment) -> Option<std::path::PathBuf> {
+        None
+    }
+    /// The user settings file this adapter's installation edits through the shared JSON engine.
+    fn settings_kind(&self) -> Option<&'static super::setup::SettingsKindSpec> {
+        None
+    }
+    fn foreground_advice(&self) -> Option<&'static ForegroundAdvice> {
+        None
+    }
+    /// `setup-status` only (never doctor/launch status): adapter-local enrichments.
+    fn setup_status_extras(&self, _: &StatusRequest, _: &mut serde_json::Value) {}
+    /// Extra `setup` text lines rendered as `<id>: <line>` after the outcome line.
+    fn setup_report_lines(&self, _: &serde_json::Value) -> Vec<String> {
+        Vec::new()
+    }
+    /// Text for this adapter's `report.hooks.<id>` object; empty renders nothing.
+    fn doctor_text(&self, _: &serde_json::Value, _: DoctorTextForm) -> String {
+        String::new()
+    }
+    /// Prefixes of report-level limitations the Summary text already printed.
+    fn doctor_summary_claims(&self) -> &'static [&'static str] {
+        &[]
+    }
+    fn version_syntax(&self) -> Option<&'static VersionSyntax> {
+        None
+    }
+    fn transcript_version(&self) -> Option<&'static TranscriptVersionSpec> {
+        None
+    }
+}
+
+/// One environment variable that marks an agent process of this harness.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AgentEnvMarker {
+    /// Exact env var name, `[A-Z][A-Z0-9_]{0,63}`. A non-empty value marks an agent process
+    /// (output form).
+    pub name: &'static str,
+    /// Also TRUST-POLICY A4 person-pane refusal evidence (presence suffices).
+    pub person_guard: bool,
+}
+
+/// Static text fragments of one adapter. Adding a field later touches no adapter: every
+/// adapter spells `..AdapterText::NONE`.
+#[derive(Debug, Clone, Copy)]
+pub struct AdapterText {
+    /// Verbatim block under the setup help "Scope:" heading (its own indentation).
+    pub setup_scope: &'static str,
+    /// Sentence(s) in the setup help "Foreground agents" paragraph.
+    pub setup_foreground: &'static str,
+    /// Own paragraph(s) after it (Claude prompt suggestions).
+    pub setup_notes: &'static str,
+    /// Paragraph(s) appended to the launch help.
+    pub launch_notes: &'static str,
+    /// For example `CLAUDE_CONFIG_DIR`; used in launch and setup messages.
+    pub config_root_hint: &'static str,
+    /// For example `codex hook trust`; empty renders `<id> setup trust`.
+    pub trust_reminder_label: &'static str,
+    /// The per-version note of the harness-state report; empty renders none.
+    pub version_history_note: &'static str,
+}
+impl AdapterText {
+    pub const NONE: Self = Self {
+        setup_scope: "",
+        setup_foreground: "",
+        setup_notes: "",
+        launch_notes: "",
+        config_root_hint: "",
+        trust_reminder_label: "",
+        version_history_note: "",
+    };
+    /// Every field, for registry validation.
+    pub fn fields(&self) -> [&'static str; 7] {
+        [
+            self.setup_scope,
+            self.setup_foreground,
+            self.setup_notes,
+            self.launch_notes,
+            self.config_root_hint,
+            self.trust_reminder_label,
+            self.version_history_note,
+        ]
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DoctorTextForm {
+    Debug,
+    Summary,
+}
+
+/// Read-only foreground-agent advice of one harness (`setup`/`setup-status` reports).
+pub struct ForegroundAdvice {
+    /// Relative to the adapter's config root.
+    pub settings_file: &'static str,
+    pub advice: &'static str,
+    /// For example `("persistent_opt_out", "unavailable (Codex 0.160.1)")`.
+    pub fixed_fields: &'static [(&'static str, &'static str)],
+    pub inspect: fn(&[u8], &mut serde_json::Value) -> Result<(), String>,
+}
+
+/// How `--version` output of one harness is normalized to `X.Y.Z`.
+pub struct VersionSyntax {
+    /// Stripped when present: Codex `codex-cli `.
+    pub prefix: &'static str,
+    /// Stripped when present: Claude ` (Claude Code)`.
+    pub suffix: &'static str,
+    /// `(raw, normalized)` examples; the contract-id listing renders them.
+    pub examples: &'static [(&'static str, &'static str)],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TranscriptRead {
+    NewestEntry,
+    HeadLine,
+}
+/// Where a transcript names the runtime version of its harness.
+pub struct TranscriptVersionSpec {
+    pub read: TranscriptRead,
+    pub extract: fn(&serde_json::Value) -> Option<&str>,
+    /// `false`: the transcript names only its creator (Codex): payload attribution is
+    /// `CreatorOnly`, a known resume `ResumedCreator`. `true`: resume is `ResumeBeforeFirstEntry`.
+    pub current_runtime: bool,
+}
+
+/// How a harness receives pending items (delivery-policy DP1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeliveryMechanism {
+    PushChannel,
+    HookPull,
+}
+/// What wakes an idle seat of this harness.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdleWake {
+    Native,
+    Channel,
+}
+/// Delivery declaration of one adapter; `Registry::new` validates the
+/// `(mechanism, provenance, idle_wake)` triple against the allowed pairings.
+pub trait DeliveryPolicy: Send + Sync + 'static {
+    fn mechanism(&self) -> DeliveryMechanism;
+    /// An A3 provenance constant.
+    fn provenance(&self) -> &'static str;
+    fn idle_wake(&self) -> IdleWake;
+    /// The prompt a native idle wake types. Default: the marker that names `inbox`, for a harness
+    /// whose turn start injects nothing. A policy whose turn-start hook or channel injects the
+    /// pending items returns [`crate::notification::policy::WAKE_UP`].
+    fn wake_text(&self) -> &'static str {
+        crate::notification::policy::MARKER
     }
 }
 
@@ -192,6 +361,8 @@ pub struct AdapterMetadata {
     pub setup_scopes: &'static [SetupScopeKind],
     pub budget: EventBudgetPolicy,
     pub runtime_sources: &'static [&'static str],
+    /// Environment variables that mark an agent process of this harness.
+    pub agent_env_markers: &'static [AgentEnvMarker],
 }
 pub enum ExecutableLookup {
     Path(&'static str),
@@ -225,8 +396,6 @@ pub enum InstallObservation {
     },
     /// Hook-only selection under an explicit registered-contract policy.
     NotRequested,
-    /// Carries the unforgeable installed binary/schema witness, never a payload claim.
-    CodexWitness(super::codex::InstalledVersion),
     Available {
         binary: std::path::PathBuf,
         identity: RuntimeIdentity,
@@ -354,6 +523,107 @@ pub struct DecodedEvent {
     pub metadata: EventMetadata,
     pub delivery: DeliveryEligibility,
     pub runtime: RuntimeAttribution,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Witness {
+    Present,
+    Absent,
+    Unchecked,
+    Unreadable,
+}
+/// Native runtime artifacts about one session's role, mapped by its adapter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RoleWitness {
+    /// The runtime's own top-level marker for this session exists.
+    pub top_level_marker: Witness,
+    /// A runtime child listing names this session under a candidate parent session.
+    pub child_listing: Witness,
+}
+impl RoleWitness {
+    /// Fails toward child: top-level only on a present marker and an examined, absent listing.
+    pub fn decide(&self) -> EventRole {
+        if self.top_level_marker == Witness::Present && self.child_listing == Witness::Absent {
+            EventRole::TopLevel
+        } else {
+            EventRole::Subagent
+        }
+    }
+}
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LocalEvidence {
+    pub role: Option<RoleWitness>,
+    /// Adapter reading of a turn-start that fires no session-start: Startup | Clear | Resume only.
+    pub lifecycle: Option<crate::harness::context::EventKind>,
+}
+impl LocalEvidence {
+    /// Pure fold applied by the runner. It never raises `Subagent`, and `Unknown` becomes
+    /// `TopLevel` only on positive witnesses.
+    pub fn refine(&self, event: &mut DecodedEvent) {
+        use crate::harness::context::EventKind;
+        if let Some(witness) = &self.role
+            && event.role != EventRole::Subagent
+        {
+            event.role = witness.decide();
+        }
+        if let Some(kind) = self.lifecycle
+            && matches!(
+                kind,
+                EventKind::Startup | EventKind::Clear | EventKind::Resume
+            )
+            && event.role == EventRole::TopLevel
+            && matches!(
+                event.intent,
+                EventIntent::Observer | EventIntent::Lifecycle(_)
+            )
+        {
+            event.intent = EventIntent::Lifecycle(kind);
+            event.delivery = DeliveryEligibility::Context;
+            // The lifecycle source a session start would have carried; only `resume` can
+            // reattach a seat (C1), so a resume read from a turn start must say so.
+            event.metadata.context_source = match kind {
+                EventKind::Clear => "clear",
+                EventKind::Resume => crate::protocol::commands::ContinuityCheckIn::RESUME_SOURCE,
+                _ => "startup",
+            }
+            .into();
+        }
+    }
+}
+pub struct LocalEvidenceRequest<'a> {
+    pub input: &'a HookInput,
+    /// The hook process's HOME (the harness's own environment).
+    pub home: Option<&'a std::ffi::OsStr>,
+    /// `<instance_dir>/adapter-state/<id>/` (read-only here).
+    pub state_dir: Option<&'a std::path::Path>,
+    /// Lazy client-local hint (A2: selects what to ask, never authorizes): the native session of
+    /// the pane's current context for this harness, or None.
+    pub pane_session: &'a dyn Fn() -> Option<String>,
+    pub deadline: std::time::Instant,
+}
+pub trait HookStep: Send + Sync {
+    /// Complete native stdout for one top-level `Observer` event; empty means none.
+    /// Fails open: every internal error returns empty bytes. Must finish by `context.deadline`.
+    fn run(&self, context: &HookStepContext<'_>) -> Vec<u8>;
+}
+pub struct HookStepContext<'a> {
+    pub input: &'a HookInput,
+    pub decoded: &'a DecodedEvent,
+    /// `bridge::caller_claim` of the pane context when its harness and native session equal the
+    /// event's (client-local hint; the daemon re-decides each request against A2).
+    pub claim: Option<crate::protocol::authority::CallerClaim>,
+    /// A running daemon of this instance, or None. Never starts one.
+    pub daemon: Option<&'a dyn HookStepDaemon>,
+    /// `<instance_dir>/adapter-state/<id>/`, created 0700 by the runner on first use.
+    pub state_dir: Option<std::path::PathBuf>,
+    /// `cli::hook::cli_prefix` argv for commands printed to the model.
+    pub command_prefix: Vec<String>,
+    pub deadline: std::time::Instant,
+}
+pub trait HookStepDaemon {
+    fn call(
+        &self,
+        command: crate::protocol::commands::Command,
+    ) -> Result<crate::protocol::results::CommandResult, crate::protocol::results::ApiError>;
 }
 pub struct NeutralOffer {
     pub fixed_guidance: String,
@@ -764,7 +1034,7 @@ pub trait LaunchPolicy: Send + Sync {
         _: &LaunchScope,
         _: &(dyn std::any::Any + Send + Sync),
         _: &LocalSetupStatus,
-        _: &dyn super::launch::CodexShellProbe,
+        _: &dyn super::launch::PaneShellProbe,
         _: &CallBudget,
     ) -> Result<LaunchPreparation, crate::protocol::results::ApiError> {
         Err(crate::protocol::results::ApiError::unsupported(
@@ -785,7 +1055,7 @@ pub trait LaunchPolicy: Send + Sync {
     fn resolve_scope(
         &self,
         request: &LaunchRequest,
-        probe: &dyn super::launch::CodexShellProbe,
+        probe: &dyn super::launch::PaneShellProbe,
         budget: &CallBudget,
     ) -> Result<LaunchScope, crate::protocol::results::ApiError>;
     fn validate_native_argv(
@@ -803,7 +1073,7 @@ pub trait LaunchPolicy: Send + Sync {
         scope: &LaunchScope,
         admitted: &super::registry::AdmittedHandle,
         status: &LocalSetupStatus,
-        probe: &dyn super::launch::CodexShellProbe,
+        probe: &dyn super::launch::PaneShellProbe,
         budget: &CallBudget,
     ) -> Result<LaunchPreparation, crate::protocol::results::ApiError>;
     fn configuration_fingerprint(
@@ -921,9 +1191,6 @@ pub fn observe_daemon_default<A: HarnessAdapter + ?Sized>(
     let installed = adapter.observe_install(env, budget);
     let identity = match &installed {
         InstallObservation::Available { identity, .. } => Some(identity.clone()),
-        InstallObservation::CodexWitness(version) => {
-            RuntimeIdentity::stable_release(version.as_str(), "installed_probe").ok()
-        }
         _ => None,
     };
     let status = match &installed {
@@ -1207,6 +1474,13 @@ mod tests {
                     assert!(registration.composer_policy().is_none());
                     assert!(registration.canary_strategy().is_some());
                 }
+                "agy" => {
+                    assert_eq!(
+                        registration.composer_policy().unwrap().capabilities(None),
+                        crate::harness::recipe::PokeCapabilities::NONE
+                    );
+                    assert!(registration.canary_strategy().is_none());
+                }
                 "synthetic_fourth" => {
                     assert!(registration.composer_policy().is_none());
                     assert!(registration.canary_strategy().is_none());
@@ -1432,5 +1706,9 @@ pub trait InstallerPolicy: Send + Sync {
     /// adapter has no permission component (its integration needs no grant).
     fn permissions_granted(&self, _request: &StatusRequest) -> Result<Option<bool>, SetupFailure> {
         Ok(None)
+    }
+    /// The backend of the adapter's permission component, if it has one: its manifest tag and lock name.
+    fn permission_backend(&self) -> Option<crate::harness::permissions::PermissionBackend> {
+        None
     }
 }

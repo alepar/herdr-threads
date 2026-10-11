@@ -1,0 +1,3 @@
+# a lock, and a brain directory one entry past the glob cap
+presence/534e47d6-64b3-4fd6-bd7f-446ceec4d86c.lock
+#generate brain 65537

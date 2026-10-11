@@ -688,6 +688,7 @@ fn rerunning_send_attention_producer_does_not_reenqueue() {
         delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
         thread,
         body: "hello".into(),
+        direct_recipient: None,
         invited_recipients: vec![SeatId::new("s2")],
         deadline_millis: None,
         operation: OperationId::new("send"),

@@ -72,6 +72,7 @@ fn page(start: u64, end: u64) -> CommandResult {
             body: "abcdefghij"[start as usize..end as usize].into(),
             body_start: start,
             body_end: end,
+            wakes: false,
             body_len: 10,
         }],
         next_cursor: None,

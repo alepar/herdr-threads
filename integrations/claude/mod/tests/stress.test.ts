@@ -9,6 +9,9 @@ import { createCore } from '../hooks/register.js'
 
 type Any = any
 
+// R18: an idle delivery appends its frames, then submits only this content-free prompt (no ids).
+const WAKE = 'herdr-threads: wake up'
+
 const BASE_SEED = 20261009
 const SCHEDULES = 800
 const STEPS = 60
@@ -106,6 +109,7 @@ function runSchedule(seed: number) {
       if (seed === TRACE_SEED) console.log('  submit', idsOf(text).join(','), 'sid', core.snapshot().sid)
       if (m.mainOpen !== null) fail(`submit while main turn ${m.mainOpen} is open`)
       if (m.hold) fail('submit within the post-abort hold')
+      if (text !== WAKE) fail(`submit carries more than the wake prompt: ${text.slice(0, 40)}`)
       totals.submits++
       const ids = idsOf(text)
       checkRun(ids)

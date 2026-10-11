@@ -280,6 +280,7 @@ fn capability_constants_are_stable() {
             "inbox.batch_v1",
             "invitation.reject_v1",
             "thread.join_v1",
+            "thread.direct_v1",
             "participants.locations_v1",
             "picker.directory_v1",
             "attention.notice_delivery_v1",
@@ -287,6 +288,8 @@ fn capability_constants_are_stable() {
             "send.lazy_v1",
             "inbox.batch_v2",
             "mod.watch_v1",
+            "seat.wake_on_v1",
+            "delivery.pull_v1",
             "hook.lazy_delivery_v1"
         ]
     );
@@ -345,6 +348,34 @@ fn every_advertised_capability_has_a_handler() {
             }
             INVITATION_REJECT => probe_invitation_reject(),
             THREAD_JOIN => probe_thread_join(),
+            DIRECT_THREADS_V1 => {
+                let command =
+                    Command::EnsureDirectThread(crate::protocol::commands::EnsureDirectThread {
+                        recipient: crate::protocol::ids::SeatId::new("peer"),
+                        operation: crate::protocol::ids::OperationId::new("direct-probe"),
+                        claim: crate::protocol::authority::CallerClaim {
+                            instance: "i".into(),
+                            seat: crate::protocol::ids::SeatId::new("sender"),
+                            binding_generation: 1,
+                            role: crate::protocol::authority::CallerRole::TopLevel,
+                            harness: crate::protocol::authority::Harness::Codex,
+                            native_session: crate::protocol::ids::NativeSessionId::new("n"),
+                            execution: crate::protocol::ids::ExecutionId::new(
+                                "00000000-0000-4000-8000-000000000001",
+                            ),
+                            target: crate::protocol::ids::HostTargetId::new("p"),
+                        },
+                    });
+                assert!(command.validate().is_ok());
+                assert_eq!(
+                    daemon_handler(Uuid::new_v4(), Uuid::new_v4())
+                        .handle(command, PeerIdentity::from_kernel(501), &budget())
+                        .unwrap_err()
+                        .code,
+                    ErrorCode::NotFound
+                );
+                assert!(!ADVERTISED.contains(&AUTOMATIC_HANDOFF_V1));
+            }
             PARTICIPANT_LOCATIONS => probe_participant_locations(),
             PICKER_DIRECTORY_V1 => probe_picker_directory(),
             MESSAGE_DELIVERY_MODES => probe_message_delivery_modes(),
@@ -368,6 +399,38 @@ fn every_advertised_capability_has_a_handler() {
                 );
             }
             MOD_WATCH => probe_mod_watch(),
+            DELIVERY_PULL => {
+                // The command decodes and routes to the domain service (served by
+                // `service::delivery_pull`, tested there); this daemon has none.
+                let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
+                let command: Command = serde_json::from_value(serde_json::json!({"kind":"delivery_pull","args":{"claim":{"instance":"i","seat":"nobody","binding_generation":1,"role":"top_level","harness":"codex","native_session":"n","execution":"00000000-0000-4000-8000-0000000000aa","target":"pa"}}})).unwrap();
+                assert!(command.validate().is_ok());
+                assert_eq!(
+                    handler
+                        .handle(command, PeerIdentity::from_kernel(501), &budget())
+                        .unwrap_err()
+                        .code,
+                    ErrorCode::NotFound
+                );
+            }
+            SEAT_WAKE_ON_V1 => {
+                // The daemon serves the read: an unknown seat is NotFound (a
+                // daemon without the handler would refuse the command itself).
+                let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
+                let command = Command::WakeOn(crate::protocol::commands::WakeOnQuery {
+                    seat: crate::protocol::ids::SeatId::new("nobody"),
+                });
+                assert!(command.validate().is_ok());
+                let json = serde_json::to_value(&command).unwrap();
+                assert_eq!(serde_json::from_value::<Command>(json).unwrap(), command);
+                assert_eq!(
+                    handler
+                        .handle(command, PeerIdentity::from_kernel(501), &budget())
+                        .unwrap_err()
+                        .code,
+                    ErrorCode::NotFound
+                );
+            }
             LAZY_HOOK_DELIVERY => {
                 // The lazy digest request is routed to the store's
                 // seat-scoped read: an unknown seat is NotFound.
@@ -498,6 +561,7 @@ fn bare_daemon_advertises_legacy_capabilities_without_v2_recorder() {
             "inbox.batch_v1",
             "invitation.reject_v1",
             "thread.join_v1",
+            "thread.direct_v1",
             "participants.locations_v1",
             "picker.directory_v1",
             "attention.notice_delivery_v1",
@@ -875,11 +939,11 @@ fn probe_harness_states() {
         .iter()
         .map(|h| h.harness.as_str())
         .collect();
-    assert_eq!(&names[..3], ["claude", "codex", "hermes"]);
+    assert_eq!(&names[..4], ["claude", "codex", "hermes", "agy"]);
     #[cfg(feature = "test-support")]
-    assert_eq!(&names[3..], ["synthetic_fourth"]);
+    assert_eq!(&names[4..], ["synthetic_fourth"]);
     #[cfg(not(feature = "test-support"))]
-    assert_eq!(names.len(), 3);
+    assert_eq!(names.len(), 4);
     let claude = &report.harnesses[0];
     assert_eq!(claude.contract_id.as_deref(), Some("0123456789abcdef"));
     assert_eq!(claude.versions.len(), 1);
@@ -1378,11 +1442,11 @@ fn health_v2_capability_is_negotiated_only_with_cached_provider() {
         .keys()
         .map(String::as_str)
         .collect::<Vec<_>>();
-    assert_eq!(&names[..3], ["claude", "codex", "hermes"]);
+    assert_eq!(&names[..4], ["agy", "claude", "codex", "hermes"]);
     #[cfg(feature = "test-support")]
-    assert_eq!(&names[3..], ["synthetic_fourth"]);
+    assert_eq!(&names[4..], ["synthetic_fourth"]);
     #[cfg(not(feature = "test-support"))]
-    assert_eq!(names.len(), 3);
+    assert_eq!(names.len(), 4);
     let hermes = &report.harnesses["hermes"];
     assert_eq!(hermes.scope, HarnessHealthScope::daemon_default());
     assert_eq!(
@@ -1754,5 +1818,26 @@ fn invitation_confirmation_capability_is_advertised_with_active_lifecycle() {
             .capabilities
             .iter()
             .any(|value| value == INVITATION_CONFIRMATION_V1)
+    );
+}
+
+#[test]
+fn automatic_contract_declarations_do_not_advertise_an_unimplemented_runtime() {
+    let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
+    let CommandResult::Capabilities(caps) = handler
+        .handle(
+            Command::Capabilities,
+            PeerIdentity::from_kernel(501),
+            &budget(),
+        )
+        .unwrap()
+    else {
+        panic!("capability reply")
+    };
+    assert!(
+        !caps
+            .capabilities
+            .iter()
+            .any(|cap| cap == AUTOMATIC_HANDOFF_V1)
     );
 }

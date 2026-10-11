@@ -23,8 +23,11 @@ impl Fixture {
             state_dir: Some(root.join("state")),
             cwd: root.clone(),
             path: Some(root.join("bin").into_os_string()),
-            codex_home: Some(root.join("codex")),
-            claude_config_dir: Some(root.join("claude")),
+            config_roots: [
+                ("codex".into(), root.join("codex")),
+                ("claude".into(), root.join("claude")),
+            ]
+            .into(),
             host_endpoint: Some(root.join("herdr.sock")),
             instance_source: Value::Null,
             home: Some(root.clone().into()),
@@ -208,6 +211,7 @@ impl crate::harness::adapter::HarnessAdapter for FourthInstaller {
     fn metadata(&self) -> &'static crate::harness::adapter::AdapterMetadata {
         use crate::harness::adapter::*;
         static META: AdapterMetadata = AdapterMetadata {
+            agent_env_markers: &[],
             id: "fourth",
             display_label: "Fourth",
             context_spelling: "Fourth",

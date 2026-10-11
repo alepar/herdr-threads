@@ -586,7 +586,7 @@ fn doctor_reports_context_daemon_and_owned_hook_installation() {
         .mode(0o700)
         .create(manifest.parent().unwrap())
         .unwrap();
-    let kind = herdr_threads::harness::setup::SettingsKind::ClaudeUser;
+    let kind = herdr_threads::harness::claude::settings_kind();
     herdr_threads::harness::setup::install_user_settings(
         kind,
         &settings,
@@ -667,7 +667,7 @@ fn doctor_reports_context_daemon_and_owned_hook_installation() {
     assert!(
         report.contains(&format!(
             "hooks.claude.observed: {}\n",
-            herdr_threads::cli::doctor::CLAUDE_NOT_OBSERVABLE
+            herdr_threads::harness::claude::doctor::CLAUDE_NOT_OBSERVABLE
         )),
         "{report}"
     );
@@ -922,8 +922,10 @@ fn stopped_daemon_is_unavailable_for_every_descriptor_read() {
             SemanticMutation::freeze(
                 SemanticMutation::Handoff(Box::new(HandoffPlan {
                     startup_input: None,
+                    bootstrap_input: None,
                     request: HandoffRequest {
                         policy: None,
+                        automatic: false,
                         thread: Some(ThreadId::new("t")),
                         thread_name: None,
                         topic: None,

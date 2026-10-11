@@ -37,10 +37,10 @@ pub(crate) mod foreground;
 
 use super::{RunError, hook};
 #[cfg(test)]
-use crate::harness::{prompt_suggestion, setup::shell_command};
+use crate::harness::{claude::prompt_suggestion, setup::shell_command};
 use crate::{
     daemon::paths::RuntimeContext,
-    harness::{claude, codex, context::Harness},
+    harness::context::Harness,
     protocol::{
         output::{OutputFormat, OutputSpec},
         results::{ApiError, ErrorCode},
@@ -55,105 +55,6 @@ use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
-
-/// Shared `--help` epilogue for the three setup commands.
-pub const SETUP_HELP: &str =
-    "No harness named: every registered harness. `setup` sets up every detected harness
-and prints one line per harness: installed, already
-installed or skipped (not on PATH);
-`unsetup` removes recorded installations (on PATH or not); `setup-status` reports
-every registered harness. The Codex hook-trust reminder is printed once at the end. The exit status is that
-of the first harness that failed; skipped harnesses are not failures.
-
-Agent permissions: --with-permissions grants them, --without-permissions removes them and
-keeps the hooks; otherwise setup asks on a terminal and keeps an existing grant current.
-Every changed configuration file is first backed up beside it as
-<name>.<UTC timestamp>-<uuid>.herdr-threads.
-
-Scope (user level, like Herdr's own agent hooks):
-  claude  $CLAUDE_CONFIG_DIR/settings.json (default ~/.claude/settings.json), created as `{}`
-          when absent. Adds the hook groups (SessionStart, Bash PreToolUse) beside the hooks
-          already there. Agent permissions are a separate component, written only with
-          consent: allow rules for `herdr-threads` and `ht`, and ask rules for `human`, `setup`,
-          `unsetup`, `doctor fix` and `internal installer-integrations`. An older installation's
-          owned `Bash(herdr-threads *)` rule is kept and gains the ask rules. A rule you already
-          have is left as yours.
-  codex   $CODEX_HOME/hooks.json (default ~/.codex/hooks.json) for the hook groups
-          (SessionStart, SubagentStart, Bash PreToolUse). With consent, agent permissions go
-          in their own file, $CODEX_HOME/rules/herdr-threads.rules: an allow rule for
-          `herdr-threads` and `ht` and prompt rules for the same human and setup commands.
-          Setup installs no sandbox socket, writable-root or network allowance. Run
-          herdr-threads commands through Codex's approved outside-sandbox execution; a
-          denied approval is a policy refusal.
-          Historical owned allowances remain inspectable; unsetup removes only unchanged
-          owned values and refuses edited ownership records. Codex runs user hooks only once
-          you trust them: the next interactive `codex` start lists them for review (or use
-          /hooks); Codex records their hashes in config.toml [hooks.state]. setup never writes trust.
-  hermes  Experimental; natively measured on 0.21.5 with a private Herdr build. Select
-          `setup hermes --profile NAME` (or explicit default when omitted). --profile
-          requires a named harness and is refused for bare multi-harness commands.
-          The captured official resolver selects lexical/physical HERMES_HOME; no
-          profile is created and a sticky active profile is not silently selected.
-          Installs owned plugin.yaml, __init__.py and bridge_config.json under the
-          selected home's plugins/herdr-threads. Enable manually with the printed
-          `hermes --profile NAME plugins enable herdr-threads` command and retain
-          native consent. Installed, configured enabled and native activation are
-          separate. Unsetup preserves foreign/modified assets and native YAML/enable
-          selection, reporting residue and manual disable guidance.
-
-Foreground agents (user-managed, read-only inspection): setup and setup-status report user
-settings and manual advice for both harnesses. Claude: merge `disableAgentView: true` into
-user settings.json, or set its env.CLAUDE_CODE_DISABLE_AGENT_VIEW to `1`. The inspected Codex has
-no persistent config/environment daemon opt-out; features.daemon_auto_start=false still attaches
-to an existing daemon. Use native --no-daemon, or HERDR_THREADS_CODEX_OPTS='--no-daemon'
-when the selected binary/wrapper supports and forwards it. Setup never sets these choices;
-configured settings/arguments do not prove foreground execution and overrides may change them.
-
-Claude prompt suggestions: Claude shows a dim prompt suggestion in its input box after every
-turn, which herdr-threads cannot tell from typed text, so it never pokes a Claude pane that shows
-one. Unless `promptSuggestionEnabled` is already false, `setup claude` (and bare `setup`) asks
-`Disable prompt suggestions? [y/N]` on a terminal and writes `promptSuggestionEnabled: false` only
-on yes; without a terminal it only advises. --disable-prompt-suggestions / --keep-prompt-suggestions
-decide without asking. The write is recorded; unsetup reverts it if setup set it.
-
-Herdr instance: --state-dir and --host-endpoint, else HERDR_PLUGIN_STATE_DIR and
-HERDR_SOCKET_PATH (set inside Herdr), else Herdr's defaults when they exist
-($XDG_STATE_HOME or ~/.local/state, then herdr/plugins/herdr-threads; $XDG_CONFIG_HOME or
-~/.config, then herdr/herdr.sock), else detected with the herdr CLI (`herdr plugin list`,
-`herdr status server`).
-Ambiguity is refused. The installed hook command is
-`<this executable> --state-dir <state> --host-endpoint <socket> hook-event <harness> <EVENT>`
-for each native event (legacy hook commands keep working;
-`doctor` suggests re-running setup); in any session that is not a pane of that Herdr
-instance it prints nothing, runs no version probe and starts no daemon, and only sends a
-short best-effort evidence note to a daemon already running (gate files under
-<state>/harness/evidence).
-Each harness's ownership manifest lives in <state>/setup/. Native commands use the stable
-hook-event HARNESS EVENT entrypoint with canonical routing. Installation UUIDs remain in the
-manifest, outside shell commands. Equivalent setup retains exact owned groups in place; unrecorded
-identical stable groups are foreign and cause a safe refusal. Setup explicitly migrates recorded
-legacy hooks; status only inspects them. Changed native commands may require review again.
-
-A hook file that already holds exactly this command's hook groups under another setup's
-owner marker (for example a hooks.json copied with its trust into a second CODEX_HOME) is
-adopted: setup records a manifest for it and leaves the file byte-identical (action
-`adopted`), setup-status and doctor report it installed (adopted), and unsetup removes only
-those groups from that file.
-
-Setup resolves the selected executable without invoking --version, --help or schema probes.
-Admission is contract_declared: the registered hook contract is configured, runtime metadata
-is unknown. Installation does not prove hook delivery, native support or receipt.
-
-Exit status:
-  0  installed / removed / nothing to remove / status reported
-  1  refused: the file changed concurrently, an owned entry was edited or removed by hand,
-     the recorded allow rule was removed by hand, an unowned identical hook exists (for
-     codex also in another Codex config layer), a recorded legacy allowance is partial or
-     edited, or a file could not be written
-  2  invalid arguments, undetectable Herdr instance, or invalid settings file (not a JSON
-     object / not valid TOML, symlink, over 1 MiB)
-  4  the named harness is missing from PATH or --harness-binary is not an executable file;
-     with no harness named an absent harness is skipped";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SetupVerb {
@@ -229,6 +130,10 @@ pub enum PromptSuggestionPolicy {
     Keep,
 }
 
+/// The setup option behind `setup <harness> --hooks-only`; the adapter that declares it through
+/// `setup_options()` owns its meaning.
+const HOOKS_ONLY_OPTION: &str = "hooks-only";
+
 /// A person's pane identity (`me init`) has no hooks to set up.
 const NO_HUMAN_SETUP: &str =
     "setup manages agent hooks only; a person uses `herdr-threads human me init`";
@@ -254,12 +159,9 @@ pub struct SetupEnv {
     pub state_dir: Option<PathBuf>,
     pub cwd: PathBuf,
     pub path: Option<OsString>,
-    /// Codex's config home, resolved the way Codex does: a non-empty
-    /// `CODEX_HOME`, else `$HOME/.codex`.
-    pub codex_home: Option<PathBuf>,
-    /// Claude's config directory: a non-empty `CLAUDE_CONFIG_DIR`, else
-    /// `$HOME/.claude`.
-    pub claude_config_dir: Option<PathBuf>,
+    /// Each adapter's config root by adapter id, resolved by the adapter's
+    /// `default_config_root` from the declared environment and `HOME`.
+    pub config_roots: std::collections::BTreeMap<String, PathBuf>,
     /// The Herdr host endpoint that, with the state directory, names the
     /// daemon instance the installed hook serves.
     pub host_endpoint: Option<PathBuf>,
@@ -303,13 +205,14 @@ fn probe_timeout() -> Duration {
 
 fn herdr_json(herdr: &Path, args: &[&str]) -> Result<Value, String> {
     let timeout = probe_timeout();
-    let bytes = codex::bounded_output(herdr, args, HERDR_QUERY_LIMIT, timeout).map_err(|_| {
-        format!(
-            "`herdr {}` failed or did not answer within {} ms",
-            args.join(" "),
-            timeout.as_millis()
-        )
-    })?;
+    let bytes = crate::harness::process::bounded_output(herdr, args, HERDR_QUERY_LIMIT, timeout)
+        .map_err(|_| {
+            format!(
+                "`herdr {}` failed or did not answer within {} ms",
+                args.join(" "),
+                timeout.as_millis()
+            )
+        })?;
     if bytes.len() as u64 > HERDR_QUERY_LIMIT {
         return Err(format!("`herdr {}` output is too large", args.join(" ")));
     }
@@ -387,7 +290,7 @@ pub fn detect_host_endpoint(inputs: &DetectInputs) -> Result<(PathBuf, String), 
     Ok((socket, "herdr status server".into()))
 }
 
-fn capture_declared_environment(
+pub(crate) fn capture_declared_environment(
     registry: &crate::harness::registry::Registry,
 ) -> std::collections::BTreeMap<String, OsString> {
     let names: std::collections::BTreeSet<_> = registry
@@ -402,6 +305,22 @@ fn capture_declared_environment(
         .collect()
 }
 
+/// The default config root of every registered adapter that has one, by adapter id.
+pub fn default_config_roots(
+    registry: &crate::harness::registry::Registry,
+    environment: &crate::harness::adapter::SetupEnvironment,
+) -> std::collections::BTreeMap<String, PathBuf> {
+    registry
+        .registrations()
+        .iter()
+        .filter_map(|registration| {
+            registration
+                .default_config_root(environment)
+                .map(|root| (registration.metadata().id.to_owned(), root))
+        })
+        .collect()
+}
+
 impl SetupEnv {
     pub(crate) fn from_process(output: &OutputSpec) -> Result<Self, RunError> {
         let executable = std::env::current_exe()?.canonicalize()?;
@@ -409,8 +328,6 @@ impl SetupEnv {
         let cwd = std::env::current_dir()?;
         let declared_environment =
             capture_declared_environment(crate::harness::registry::builtins());
-        let codex_override = std::env::var_os("CODEX_HOME");
-        let claude_override = std::env::var_os("CLAUDE_CONFIG_DIR");
         let mut inputs = super::instance::InstanceInputs::from_process(
             output.context.state_dir.as_ref().map(PathBuf::from),
             output.context.host.as_ref().map(PathBuf::from),
@@ -441,26 +358,35 @@ impl SetupEnv {
             }
         };
         let home = inputs.home.as_ref().map(|home| home.as_os_str().to_owned());
-        Ok(Self {
-            home: home.clone(),
+        let mut env = Self {
+            home,
             declared_environment,
             executable,
             state_dir,
             cwd,
             path,
-            codex_home: codex_home_from(codex_override, home.clone()),
-            claude_config_dir: claude_config_dir_from(claude_override, home.clone()),
+            config_roots: Default::default(),
             host_endpoint,
             instance_source: Value::Object(source),
-        })
+        };
+        env.fill_default_config_roots();
+        Ok(env)
+    }
+
+    /// Resolve every registered adapter's default config root; an entry already present
+    /// (explicit, from a test or a launch) keeps precedence.
+    fn fill_default_config_roots(&mut self) {
+        let defaults = default_config_roots(crate::harness::registry::builtins(), &self.snapshot());
+        for (id, root) in defaults {
+            self.config_roots.entry(id).or_insert(root);
+        }
     }
 
     /// The environment of a command that already resolved its runtime
     /// context (`doctor`): the instance is that context's.
     pub(crate) fn for_context(context: &RuntimeContext) -> Self {
-        let home = std::env::var_os("HOME");
-        Self {
-            home: home.clone(),
+        let mut env = Self {
+            home: std::env::var_os("HOME"),
             declared_environment: capture_declared_environment(crate::harness::registry::builtins()),
             executable: std::env::current_exe()
                 .and_then(|path| path.canonicalize())
@@ -468,14 +394,12 @@ impl SetupEnv {
             state_dir: Some(context.state_dir.clone()),
             cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
             path: std::env::var_os("PATH"),
-            codex_home: codex_home_from(std::env::var_os("CODEX_HOME"), home.clone()),
-            claude_config_dir: claude_config_dir_from(
-                std::env::var_os("CLAUDE_CONFIG_DIR"),
-                home.clone(),
-            ),
+            config_roots: Default::default(),
             host_endpoint: Some(context.host_endpoint.clone()),
             instance_source: json!({"state_dir": "context", "host_endpoint": "context"}),
-        }
+        };
+        env.fill_default_config_roots();
+        env
     }
 
     pub(crate) fn state_dir(&self) -> Result<&Path, RunError> {
@@ -530,18 +454,17 @@ impl SetupEnv {
         ))
     }
 
-    pub(crate) fn claude_settings(&self) -> Result<PathBuf, RunError> {
-        self.claude_config_dir
-            .as_ref()
-            .map(|dir| dir.join("settings.json"))
-            .ok_or_else(|| invalid("neither CLAUDE_CONFIG_DIR nor HOME is set"))
-    }
-
-    pub(crate) fn codex_file(&self, name: &str) -> Result<PathBuf, RunError> {
-        self.codex_home
-            .as_ref()
-            .map(|dir| dir.join(name))
-            .ok_or_else(|| invalid("neither CODEX_HOME nor HOME is set"))
+    /// The config root of adapter `id`; adapters join their own file names to it.
+    pub(crate) fn config_root(&self, id: &str) -> Result<PathBuf, RunError> {
+        self.config_roots.get(id).cloned().ok_or_else(|| {
+            let registry = crate::harness::registry::builtins();
+            let hint = registry
+                .agent(id)
+                .ok()
+                .and_then(|agent| registry.by_id(agent).ok())
+                .map_or("", |registration| registration.text().config_root_hint);
+            invalid(format!("neither {hint} nor HOME is set"))
+        })
     }
 }
 
@@ -607,20 +530,12 @@ impl SetupEnv {
             state_dir: snapshot.state_dir.clone(),
             cwd: snapshot.cwd.clone(),
             path: snapshot.path.clone(),
-            codex_home: snapshot.config_roots.get("codex").cloned(),
-            claude_config_dir: snapshot.config_roots.get("claude").cloned(),
+            config_roots: snapshot.config_roots.clone(),
             host_endpoint: snapshot.host_endpoint.clone(),
             instance_source: snapshot.instance_source.clone(),
         }
     }
     pub fn snapshot(&self) -> crate::harness::adapter::SetupEnvironment {
-        let mut config_roots = std::collections::BTreeMap::new();
-        if let Some(root) = &self.codex_home {
-            config_roots.insert("codex".into(), root.clone());
-        }
-        if let Some(root) = &self.claude_config_dir {
-            config_roots.insert("claude".into(), root.clone());
-        }
         crate::harness::adapter::SetupEnvironment {
             clock: std::sync::Arc::new(crate::app::SystemClock::new()),
             home: self.home.clone(),
@@ -630,7 +545,7 @@ impl SetupEnv {
             path: self.path.clone(),
             host_endpoint: self.host_endpoint.clone(),
             instance_source: self.instance_source.clone(),
-            config_roots,
+            config_roots: self.config_roots.clone(),
             declared: self.declared_environment.clone(),
         }
     }
@@ -659,10 +574,7 @@ pub fn execute(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunError
         _ => {}
     }
     if request.hooks_only {
-        options.insert(
-            crate::harness::claude::setup::HOOKS_ONLY_OPTION.into(),
-            true,
-        );
+        options.insert(HOOKS_ONLY_OPTION.into(), true);
     }
     if let Some(option) = request.permissions.option()
         && registration
@@ -794,32 +706,24 @@ pub(crate) fn execute_registered_with_expected_scope(
             )
             .map(|outcome| outcome.projection)
             .map_err(adapter_run_error),
-        SetupVerb::Status => match registration.status(
-            &StatusRequest {
+        SetupVerb::Status => {
+            let request = StatusRequest {
                 scope: scope.clone(),
                 environment: environment.clone(),
                 native_binary: native_binary.map(Path::to_path_buf),
-            },
-            &budget,
-        ) {
-            SetupStatus::Detailed(status) => {
-                let mut projection = status.projection;
-                if registration.metadata().id == Harness::Claude.as_str() {
-                    // Spec D8: only `setup-status` runs the mod's version gate
-                    // and reads the daemon's channel status.
-                    crate::harness::claude::setup::complete_setup_status(
-                        &mut projection,
-                        &scope,
-                        native_binary,
-                        environment,
-                    );
+            };
+            match registration.status(&request, &budget) {
+                SetupStatus::Detailed(status) => {
+                    let mut projection = status.projection;
+                    // Spec D8: only `setup-status` runs an adapter's local enrichments.
+                    registration.setup_status_extras(&request, &mut projection);
+                    Ok(projection)
                 }
-                Ok(projection)
+                SetupStatus::Failed(error) => Err(adapter_run_error(error)),
+                SetupStatus::Unsupported(error) => Err(invalid(error.to_string())),
+                _ => Err(invalid("adapter did not provide local setup status")),
             }
-            SetupStatus::Failed(error) => Err(adapter_run_error(error)),
-            SetupStatus::Unsupported(error) => Err(invalid(error.to_string())),
-            _ => Err(invalid("adapter did not provide local setup status")),
-        },
+        }
     }
 }
 
@@ -1144,11 +1048,15 @@ pub fn render_all_text(report: &Value) -> String {
             other => other.to_owned(),
         };
         out.push_str(&format!("{name}: {line}\n"));
-        if let Some(line) = prompt_suggestion_line(&inner["prompt_suggestions"]) {
-            out.push_str(&format!("{name}: {line}\n"));
-        }
-        if let Some(line) = crate::harness::claude::setup::mod_line(&inner["mod"]) {
-            out.push_str(&format!("{name}: {line}\n"));
+        let registry = crate::harness::registry::builtins();
+        if let Some(registration) = entry["harness"]
+            .as_str()
+            .and_then(|id| registry.agent(id).ok())
+            .and_then(|id| registry.by_id(id).ok())
+        {
+            for line in registration.setup_report_lines(inner) {
+                out.push_str(&format!("{name}: {line}\n"));
+            }
         }
         if let Some(status) = inner["foreground"]["status"].as_str() {
             out.push_str(&format!(
@@ -1175,10 +1083,16 @@ pub fn render_all_text(report: &Value) -> String {
     if let Some(reminders) = report["trust_reminders"].as_array() {
         for reminder in reminders {
             if let Some(note) = reminder["note"].as_str() {
-                let prefix = if reminder["harness"] == "codex" {
-                    "codex hook trust".to_owned()
-                } else {
+                let registry = crate::harness::registry::builtins();
+                let label = reminder["harness"]
+                    .as_str()
+                    .and_then(|id| registry.agent(id).ok())
+                    .and_then(|id| registry.by_id(id).ok())
+                    .map_or("", |registration| registration.text().trust_reminder_label);
+                let prefix = if label.is_empty() {
                     format!("{} setup trust", scalar(&reminder["harness"]))
+                } else {
+                    label.to_owned()
                 };
                 out.push_str(&format!("{prefix}: {}\n", scalar(&json!(note))));
             }
@@ -1199,34 +1113,6 @@ pub fn render_all_text(report: &Value) -> String {
 pub(crate) fn interactive() -> bool {
     use std::io::IsTerminal;
     io::stdin().is_terminal() && io::stderr().is_terminal()
-}
-
-/// The one-line summary `setup`/`unsetup` with no harness print for Claude's
-/// prompt suggestions; `None` when there is nothing to say (the advice is a
-/// warning).
-fn prompt_suggestion_line(value: &Value) -> Option<String> {
-    let setting = claude::PROMPT_SUGGESTION_SETTING;
-    Some(match value {
-        Value::String(outcome) => match outcome.as_str() {
-            "reverted" => format!("prompt suggestions: reverted `{setting}` (setup had set it)"),
-            "left_changed" => {
-                format!(
-                    "prompt suggestions: `{setting}` was changed by hand since setup; left as is"
-                )
-            }
-            _ => return None,
-        },
-        Value::Object(_) => match value["action"].as_str()? {
-            "disabled" => format!("prompt suggestions: disabled (`{setting}: false`)"),
-            "already_disabled" => "prompt suggestions: already disabled".to_owned(),
-            "kept" => format!(
-                "prompt suggestions: kept ({}); Claude pokes skip a pane that shows one",
-                scalar(&value["state"])
-            ),
-            _ => return None,
-        },
-        _ => return None,
-    })
 }
 
 // ------------------------------------------------------------------ render
@@ -1300,8 +1186,7 @@ mod tests {
             state_dir: state.map(PathBuf::from),
             cwd: PathBuf::from("/"),
             path: None,
-            codex_home: None,
-            claude_config_dir: None,
+            config_roots: Default::default(),
             host_endpoint: Some(PathBuf::from("/tmp/herdr.sock")),
             instance_source: Value::Null,
         }
@@ -1497,7 +1382,8 @@ mod tests {
         fs::create_dir_all(root.join("claude")).unwrap();
         fs::write(root.join("claude/settings.json"), settings).unwrap();
         let mut env = env(Some(root.join("state").to_str().unwrap()));
-        env.claude_config_dir = Some(root.join("claude"));
+        env.config_roots
+            .insert("claude".into(), root.join("claude"));
         let path = root.join("claude/settings.json");
         let mut warnings = Vec::new();
         let report = json!({
@@ -1719,24 +1605,13 @@ pub use crate::harness::setup::legacy::manifest_path;
 use crate::harness::setup::legacy::first_shell_word;
 pub(crate) use crate::harness::setup::legacy::user_inspection;
 
-pub use crate::harness::claude::setup::{
-    PROMPT_SUGGESTION_EXPLANATION, allow_rule_json, ask_include_shell_dirs, claude_config_dir_from,
-    claude_paths, mod_manifest, prompt_suggestion_manifest, prompt_suggestion_status,
-    settle_prompt_suggestions,
-};
-
 #[cfg(test)]
-use crate::harness::claude::setup::prompt_suggestion_step;
-
-pub use crate::harness::codex::setup::{
-    CODEX_SANDBOX_MEASURED_VERSIONS, CODEX_TRUST_NOTE, CODEX_WRITABLE_DIRS, CodexLayerFile,
-    CodexPaths, codex_home_from, codex_layer_paths, codex_paths, codex_sandbox_note,
-    observe_codex_layer,
+use crate::harness::{
+    claude::setup::{
+        PROMPT_SUGGESTION_EXPLANATION, prompt_suggestion_manifest, prompt_suggestion_step,
+        settle_prompt_suggestions,
+    },
+    codex::setup::{
+        codex_home_from, codex_layer_paths, observe_codex_layer, snake, toml_hook_events,
+    },
 };
-
-pub(crate) use crate::harness::codex::setup::{
-    codex_foreign_proxy_warnings, codex_missing_roots_warning, codex_trust_report,
-    codex_unmeasured_allowance_warning,
-};
-#[cfg(test)]
-use crate::harness::codex::setup::{snake, toml_hook_events};

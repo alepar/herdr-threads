@@ -4,17 +4,18 @@ use herdr_threads::cli::{
     commands::{CliAction, MutationSpec, parse_argv},
 };
 
-/// Catches person-authored quickstart mutations being routed as Agent.
+/// Keeps person actions Human and coordinating-agent handoffs Agent.
 #[test]
-fn readme_person_quickstart_commands_route_as_human() {
+fn readme_quickstart_commands_preserve_actor_routes() {
     let readme =
         std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("README.md"))
             .unwrap();
+    // Direct-mode examples below this section are owned by the producer parser tests.
     let quickstart = readme
         .split("## Try it yourself")
         .nth(1)
         .unwrap()
-        .split("## A role that survives its session")
+        .split("## Automatic direct channels")
         .next()
         .unwrap();
     for block in quickstart.split("```sh\n").skip(1) {
@@ -26,11 +27,11 @@ fn readme_person_quickstart_commands_route_as_human() {
             let argv = shlex::split(line).expect("documented shell argv");
             let parsed = parse_argv(argv.iter())
                 .unwrap_or_else(|error| panic!("documented argv {argv:?}: {error:?}"));
-            if matches!(
+            if matches!(parsed.action, CliAction::Handoff(_)) {
+                assert_eq!(parsed.actor, InvocationActor::Agent);
+            } else if matches!(
                 parsed.action,
-                CliAction::MeInit { .. }
-                    | CliAction::Handoff(_)
-                    | CliAction::Mutation(MutationSpec::Send { .. })
+                CliAction::MeInit { .. } | CliAction::Mutation(MutationSpec::Send { .. })
             ) {
                 assert_eq!(
                     parsed.actor,
