@@ -200,6 +200,13 @@ fn ordinary(db: &Connection, n: i64, actor: Option<&str>, receipt_for_s: bool) {
     db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,decision_seq,body,decision_at,actor_seat_id) VALUES(?1,'i','t',?2,'ordinary',?2,'b',0,?3)",params![format!("ord-{n}"),n,actor]).unwrap();
     if receipt_for_s {
         db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES(?1,'t','s','pending',100)",[format!("ord-{n}")]).unwrap();
+        // "Receivable" is a prepared recipient joined to a send manifest (read_cursors).
+        db.execute_batch(&format!(
+            "INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES ('prep-ord-{n}','i','actor','prep-ord-{n}',zeroblob(32),'t',0,0,0,0,0,0,1,'sealed');
+             INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES ('prep-ord-{n}','t','s',1,100,1);
+             INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('prep-ord-{n}','ord-{n}','i','t',{n},0,{n},0,1,0);"
+        ))
+        .unwrap();
     }
 }
 
