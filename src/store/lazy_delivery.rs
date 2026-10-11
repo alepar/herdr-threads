@@ -466,6 +466,20 @@ pub fn complete_for_binding(
     binding: Option<&BindingId>,
     messages: &[MessageId],
 ) -> Result<(), ApiError> {
+    complete_displayed_for_binding(tx, instance, seat, binding, messages, &[])
+}
+
+/// [`complete_for_binding`] for a display that also showed `shown` ordinary messages whole
+/// (settled or already settled by the caller): their sequences join `messages`' in the one
+/// cursor walk per thread, so the cursor passes both. A `shown` id with no row is skipped.
+pub fn complete_displayed_for_binding(
+    tx: &Transaction<'_>,
+    instance: &str,
+    seat: &SeatId,
+    binding: Option<&BindingId>,
+    messages: &[MessageId],
+    shown: &[MessageId],
+) -> Result<(), ApiError> {
     let mut by_thread: std::collections::BTreeMap<String, Vec<u64>> = Default::default();
     let mut displayed = Vec::new();
     for message in messages {
@@ -484,6 +498,23 @@ pub fn complete_for_binding(
                 .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative message sequence"))?,
         );
         displayed.push(message);
+    }
+    for message in shown {
+        let row: Option<(String, i64)> = tx
+            .query_row(
+                "SELECT thread_id,sequence FROM messages WHERE id=?1 AND instance_id=?2",
+                params![message.as_str(), instance],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()
+            .map_err(store_error)?;
+        let Some((thread, sequence)) = row else {
+            continue;
+        };
+        by_thread.entry(thread).or_default().push(
+            u64::try_from(sequence)
+                .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative message sequence"))?,
+        );
     }
     let targets: Vec<BindingId> = match binding {
         Some(binding) => vec![binding.clone()],

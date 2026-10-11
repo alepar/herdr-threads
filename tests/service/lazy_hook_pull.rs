@@ -35,6 +35,7 @@ impl Clock for TestClock {
 struct Fixture {
     service: DomainService,
     db: Connection,
+    clock: Arc<TestClock>,
     directory: std::path::PathBuf,
 }
 impl Drop for Fixture {
@@ -104,6 +105,7 @@ fn fixture() -> Fixture {
     Fixture {
         service,
         db,
+        clock,
         directory,
     }
 }
@@ -123,6 +125,32 @@ fn lazy_message(f: &Fixture, seat: &str, id: &str, body: &str) {
     .unwrap();
     f.db.execute("INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES (?1,?2,'t',?3)", params![prep, id, seat]).unwrap();
     f.db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq,delivery_mode) VALUES (?1,'i','t',?2,'ordinary',?3,0,?4,'lazy')", params![id, sequence, body, sequence + 2]).unwrap();
+    f.db.execute("INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('i',?1,?2,'t',?3,0,?4,0,1,0)", params![prep, id, sequence + 2, sequence]).unwrap();
+    f.db.execute(
+        "UPDATE threads SET next_sequence=?1 WHERE id='t'",
+        [sequence + 1],
+    )
+    .unwrap();
+    f.db.execute(
+        "UPDATE host_instances SET decision_seq=?1 WHERE id='i'",
+        [sequence + 3],
+    )
+    .unwrap();
+}
+
+/// An ordinary message with a pending receipt for `seat`, receivable (a sealed preparation, a
+/// prepared recipient and a manifest), at the next sequence: a cursor cannot pass it unshown.
+fn receivable_ordinary(f: &Fixture, seat: &str, id: &str, body: &str) {
+    let sequence: i64 =
+        f.db.query_row("SELECT next_sequence FROM threads WHERE id='t'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    let prep = format!("prep-{id}");
+    f.db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES (?1,'i','t',?2,'ordinary',?3,0,?4)", params![id, sequence, body, sequence + 2]).unwrap();
+    f.db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES (?1,'t',?2,'pending',300000)", params![id, seat]).unwrap();
+    f.db.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES (?1,'i','actor',?1,zeroblob(32),'t',0,0,0,0,0,0,1,'sealed')", [&prep]).unwrap();
+    f.db.execute("INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES (?1,'t',?2,1,300000,1)", params![prep, seat]).unwrap();
     f.db.execute("INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('i',?1,?2,'t',?3,0,?4,0,1,0)", params![prep, id, sequence + 2, sequence]).unwrap();
     f.db.execute(
         "UPDATE threads SET next_sequence=?1 WHERE id='t'",
@@ -298,4 +326,87 @@ fn claude_seat_hook_context_completion_per_main() {
     )
     .unwrap();
     assert_eq!(lazy_state(&f, "c", "msg-lz3"), "displayed");
+}
+
+/// Kills: a hook-pull confirm that settles an ordinary message and a lazy row yet leaves the
+/// binding's cursor before them (the lazy row then stays unread and is offered again).
+#[test]
+fn hook_pull_confirm_of_ordinary_and_lazy_advances_the_cursor_and_does_not_reoffer() {
+    use crate::store::{lazy_delivery, read_cursors};
+    let f = fixture();
+    let seat = check_in(&f, "s", "p", fourth());
+    receivable_ordinary(&f, "s", "msg-o1", "ordinary text");
+    lazy_message(&f, "s", "msg-lz4", "passive text");
+    let mut first = offered(&f, &seat);
+    first.sort();
+    assert_eq!(
+        first,
+        vec![MessageId::new("msg-lz4"), MessageId::new("msg-o1")]
+    );
+
+    let confirmed = f
+        .service
+        .handle(
+            Command::DeliveryConfirm(DeliveryConfirm {
+                claim: seat.clone(),
+                ids: vec![MessageId::new("msg-o1"), MessageId::new("msg-lz4")],
+                operation: OperationId::new("dc-both"),
+            }),
+            peer(),
+            &budget(),
+        )
+        .unwrap();
+    let CommandResult::DeliveryConfirmed(report) = confirmed else {
+        panic!("unexpected {confirmed:?}");
+    };
+    assert_eq!(report.results.len(), 2);
+    assert!(
+        report
+            .results
+            .iter()
+            .all(|r| r.result == DeliveryConfirmOutcome::Settled)
+    );
+
+    let binding = BindingId::new(
+        f.db.query_row(
+            "SELECT binding_id FROM occupant_bindings WHERE seat_id='s' AND ended_at IS NULL",
+            [],
+            |r| r.get::<_, String>(0),
+        )
+        .unwrap(),
+    );
+    let lazy_sequence: i64 =
+        f.db.query_row(
+            "SELECT sequence FROM messages WHERE id='msg-lz4'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    // At least the lazy row's sequence (the cursor also skips the ack events the settlement
+    // appended after it).
+    assert!(
+        read_cursors::cursor_for(&f.db, &binding, &ThreadId::new("t"))
+            .unwrap()
+            .is_some_and(|c| c >= u64::try_from(lazy_sequence).unwrap())
+    );
+    assert!(!read_cursors::has_unread(&f.db, &binding).unwrap());
+    assert_eq!(
+        lazy_delivery::lazy_completion_state(
+            &f.db,
+            "i",
+            &SeatId::new("s"),
+            Some(&binding),
+            &MessageId::new("msg-lz4")
+        )
+        .unwrap(),
+        lazy_delivery::LazyCompletion::Completed
+    );
+    f.clock.0.fetch_add(
+        crate::delivery::ledger::REOFFER_AFTER_MS + 1,
+        Ordering::SeqCst,
+    );
+    assert!(
+        offered(&f, &seat).is_empty(),
+        "nothing is re-offered once the cursor passed both"
+    );
 }
