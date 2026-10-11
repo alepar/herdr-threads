@@ -21,6 +21,7 @@ pub struct ServiceConfig {
     minimum_wake_delay_ms: u64,
     wake_batch_delay_ms: u64,
     archive_after_ms: u64,
+    watch_connection_cap: usize,
     summary: SummarySettings,
 }
 
@@ -31,6 +32,7 @@ impl Default for ServiceConfig {
             minimum_wake_delay_ms: crate::daemon::settings::DEFAULT_MINIMUM_WAKE_DELAY_MS,
             wake_batch_delay_ms: crate::daemon::settings::DEFAULT_WAKE_BATCH_DELAY_MS,
             archive_after_ms: crate::store::archival::DEFAULT_AFTER_MS,
+            watch_connection_cap: crate::protocol::watch::MAX_WATCH_CONNECTIONS,
             summary: SummarySettings::default(),
         }
     }
@@ -39,6 +41,21 @@ impl Default for ServiceConfig {
 impl ServiceConfig {
     pub fn archive_after_ms(&self) -> u64 {
         self.archive_after_ms
+    }
+    /// The mod watch channel budget (spec D2): 64 in production, never read
+    /// from settings.
+    pub fn watch_connection_cap(&self) -> usize {
+        self.watch_connection_cap
+    }
+    /// Lower the registry's watch budget so a test fills it with a few
+    /// bindings instead of 64.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_watch_connection_cap(mut self, cap: usize) -> Result<Self, &'static str> {
+        if cap == 0 || cap > crate::protocol::watch::MAX_WATCH_CONNECTIONS {
+            return Err("invalid watch connection cap");
+        }
+        self.watch_connection_cap = cap;
+        Ok(self)
     }
     pub fn with_archive_after(mut self, after_ms: u64) -> Result<Self, &'static str> {
         if after_ms > (i64::MAX - crate::store::archival::MAX_GAP_MS) as u64 {
@@ -191,6 +208,7 @@ impl ServiceConfig {
             minimum_wake_delay_ms,
             wake_batch_delay_ms: crate::daemon::settings::DEFAULT_WAKE_BATCH_DELAY_MS,
             archive_after_ms: crate::store::archival::DEFAULT_AFTER_MS,
+            watch_connection_cap: crate::protocol::watch::MAX_WATCH_CONNECTIONS,
             summary: SummarySettings::default(),
         })
     }

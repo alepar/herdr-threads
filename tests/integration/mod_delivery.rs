@@ -341,6 +341,7 @@ struct Rig {
     host: Host,
     claude_hooks: Value,
     daemon: Option<Daemon>,
+    config: ServiceConfig,
     /// The running daemon's lanes (its wake lane's finished passes).
     probe: LaneProbe,
     a: String,
@@ -358,6 +359,12 @@ impl Rig {
     /// `settings`: the content of the instance's `settings.json`, written
     /// before the daemon starts.
     fn with_settings(settings: Option<Value>) -> Self {
+        Self::with_config(settings, ServiceConfig::default())
+    }
+
+    /// As `with_settings`, with the daemon started on `config` (a restart
+    /// keeps it).
+    fn with_config(settings: Option<Value>, config: ServiceConfig) -> Self {
         let guard = crate::ONE_DAEMON.lock().unwrap_or_else(|e| e.into_inner());
         let root = PathBuf::from(format!(
             "{}/htmd-{}",
@@ -399,6 +406,7 @@ impl Rig {
             host,
             claude_hooks: installed["hooks"].clone(),
             daemon: None,
+            config,
             probe: LaneProbe::default(),
             a: String::new(),
             b: String::new(),
@@ -456,7 +464,7 @@ impl Rig {
         let host: Arc<dyn HostPort> = Arc::new(NativeCli::new(self.socket.clone(), clock.clone()));
         let stop = Cancellation::default();
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
-        let (paths, daemon_stop) = (self.paths.clone(), stop.clone());
+        let (paths, daemon_stop, config) = (self.paths.clone(), stop.clone(), self.config.clone());
         // The production composition (`run_elected`), except that the store
         // commits without a per-commit fsync: nothing here can observe the
         // difference (it only matters on power loss), and a shared loaded
@@ -473,7 +481,7 @@ impl Rig {
                     &paths,
                     clock,
                     daemon_stop,
-                    ServiceConfig::default(),
+                    config,
                     host,
                     probe,
                     move |descriptor| {
@@ -2554,13 +2562,20 @@ fn notice_published_while_live_reaches_the_next_pre_tool_use_once() {
     assert!(watch.running(), "the watch child died");
 }
 
-/// Spec D2: watch connections have their own budget of 64 (outside the 32
-/// ordinary slots). With 64 seats holding a channel, a 65th registration is
-/// refused `busy` (retryable, exit 2) while ordinary requests are still served.
+/// Spec D2 end to end: once the registry's watch budget is full (64 in
+/// production; 4 here, the 64 bound is pinned by the transport and registry
+/// unit tests), a further registration is refused `busy` (retryable, exit 2)
+/// while ordinary requests are still served.
 #[test]
 fn watch_admission_over_cap_refuses_busy() {
-    const CAP: usize = herdr_threads::protocol::watch::MAX_WATCH_CONNECTIONS;
-    let rig = Rig::new();
+    const CAP: usize = 4;
+    let deadline = Instant::now() + Duration::from_secs(25);
+    let rig = Rig::with_config(
+        None,
+        ServiceConfig::default()
+            .with_watch_connection_cap(CAP)
+            .unwrap(),
+    );
     let extra: Vec<(String, String)> = (0..CAP)
         .map(|n| (format!("w1:p{}", n + 3), format!("X{n}")))
         .collect();
@@ -2572,61 +2587,55 @@ fn watch_admission_over_cap_refuses_busy() {
             .map(|(n, (id, session))| claude(id, &format!("term-x{n}"), session)),
     );
     rig.host.set_panes(panes);
-    // Register the extra seats through their SessionStart hooks, four at a
-    // time: the daemon commits the check-ins one at a time, so wider batches
-    // (measured: 8 and 16) only queue the hooks past their budgets (an
-    // uncommitted check-in, retried below) and are no faster overall.
-    for chunk in extra.chunks(4) {
-        std::thread::scope(|scope| {
-            for (id, session) in chunk {
-                let rig = &rig;
-                scope.spawn(move || rig.session_start_hook(id, session, "startup"));
-            }
-        });
+    // Register the extra seats through their SessionStart hooks.
+    for (id, session) in &extra {
+        rig.session_start_hook(id, session, "startup");
     }
-    // The holders' `watch` children start sixteen at a time (inside the 32
-    // ordinary request slots their registration also uses: all 64 at once
-    // drew `daemon_unavailable` refusals); each first answer is judged once
-    // its chunk was spawned, and a refusal the mod would retry is retried.
+    assert!(
+        Instant::now() < deadline,
+        "hook registration ran past the test deadline"
+    );
     let spawn_holder = |id: &str, session: &str| {
         Watch::spawn(rig.command(
             Some(id),
             &["watch", "--harness", "claude", "--session", session],
         ))
     };
-    let mut holders: Vec<Watch> = Vec::with_capacity(CAP);
-    for chunk in extra.chunks(16) {
-        let mut spawned: Vec<Watch> = chunk
-            .iter()
-            .map(|(id, session)| spawn_holder(id, session))
-            .collect();
-        for (holder, (id, session)) in spawned.iter_mut().zip(chunk) {
-            for _ in 0..10 {
-                let first = holder.peek_first(STEP);
-                let reason = first
-                    .as_ref()
-                    .filter(|line| line["kind"] == "status" && line["state"] == "refused")
-                    .and_then(|line| line["reason"].as_str().map(str::to_owned));
-                match reason.as_deref() {
-                    // A hook that missed its budget under load left its
-                    // check-in uncommitted; run it again, as the next hook
-                    // would.
-                    Some("no_binding") => {
-                        rig.session_start_hook(id, session, "startup");
-                    }
-                    // Exit 1: the mod restarts the watch.
-                    Some("daemon_unavailable" | "error") => {}
-                    _ => break,
+    let mut spawned: Vec<Watch> = extra
+        .iter()
+        .map(|(id, session)| spawn_holder(id, session))
+        .collect();
+    for (holder, (id, session)) in spawned.iter_mut().zip(&extra) {
+        for _ in 0..5 {
+            let first = holder.peek_first(STEP);
+            let reason = first
+                .as_ref()
+                .filter(|line| line["kind"] == "status" && line["state"] == "refused")
+                .and_then(|line| line["reason"].as_str().map(str::to_owned));
+            match reason.as_deref() {
+                // A hook that missed its budget under load left its check-in
+                // uncommitted; run it again, as the next hook would.
+                Some("no_binding") => {
+                    rig.session_start_hook(id, session, "startup");
                 }
-                std::thread::sleep(Duration::from_millis(150));
-                *holder = spawn_holder(id, session);
+                // Exit 1: the mod restarts the watch.
+                Some("daemon_unavailable" | "error") => {}
+                _ => break,
             }
-            holder.wait_connected();
+            std::thread::sleep(Duration::from_millis(150));
+            *holder = spawn_holder(id, session);
         }
-        holders.append(&mut spawned);
+        holder.wait_connected();
     }
+    let mut holders = spawned;
+    assert!(
+        Instant::now() < deadline,
+        "the holders' connections ran past the test deadline"
+    );
     assert_eq!(rig.channels()["live_channels"], CAP, "{}", rig.channels());
-    let mut over = rig.watch(SESSION_B);
+    let mut over = rig
+        .try_watch(PANE_B, SESSION_B, &[], 3)
+        .expect("the SessionStart check-in never committed for the over-cap seat");
     let refusal = over.wait_line("the busy refusal", STEP, |line| {
         line["kind"] == "status" && line["state"] == "refused"
     });
@@ -2640,8 +2649,12 @@ fn watch_admission_over_cap_refuses_busy() {
     drop(freed);
     rig.advance(31_000);
     wait_until("the freed slot to be usable", STEP, || {
-        let mut retry = rig.watch(SESSION_B);
-        let line = retry.wait_line("a registration answer", STEP, |line| {
+        assert!(
+            Instant::now() < deadline,
+            "the freed slot probe ran past the test deadline"
+        );
+        let mut retry = rig.try_watch(PANE_B, SESSION_B, &[], 1)?;
+        let line = retry.wait_line("a registration answer", Duration::from_secs(5), |line| {
             line["kind"] == "status"
         });
         (line["state"] == "connected").then(|| drop(retry))

@@ -157,6 +157,8 @@ pub struct ModChannelRegistry {
     log: Arc<dyn Fn(&str) + Send + Sync>,
     wake_worker: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     dirty: AtomicBool,
+    /// Binding budget of `register`; production keeps `MAX_WATCH_CONNECTIONS`.
+    cap: usize,
     state: Mutex<State>,
 }
 
@@ -176,6 +178,7 @@ impl ModChannelRegistry {
             log: Arc::new(|_| {}),
             wake_worker: Mutex::new(None),
             dirty: AtomicBool::new(false),
+            cap: MAX_WATCH_CONNECTIONS,
             state: Mutex::new(State {
                 entries: HashMap::new(),
                 by_seat: HashMap::new(),
@@ -190,6 +193,14 @@ impl ModChannelRegistry {
     #[must_use]
     pub fn with_log(mut self, log: Arc<dyn Fn(&str) + Send + Sync>) -> Self {
         self.log = log;
+        self
+    }
+
+    /// Lower the binding budget (never above `MAX_WATCH_CONNECTIONS`).
+    #[must_use]
+    pub fn with_connection_cap(mut self, cap: usize) -> Self {
+        debug_assert!((1..=MAX_WATCH_CONNECTIONS).contains(&cap));
+        self.cap = cap.min(MAX_WATCH_CONNECTIONS);
         self
     }
 
@@ -548,8 +559,7 @@ impl ModChannels for ModChannelRegistry {
             {
                 return Err(WatchRefusalReason::Cooldown);
             }
-            if !state.entries.contains_key(&registration.binding)
-                && state.entries.len() >= MAX_WATCH_CONNECTIONS
+            if !state.entries.contains_key(&registration.binding) && state.entries.len() >= self.cap
             {
                 return Err(WatchRefusalReason::Busy);
             }
