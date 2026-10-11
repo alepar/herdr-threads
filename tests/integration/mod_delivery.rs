@@ -1334,10 +1334,26 @@ impl ActivationRelay {
                         activation_write(&mut downstream, &reply_bytes)?;
                         // Only Watch has further frames on this connection.
                         if log.lock().unwrap()[index].request.get("watch").is_some() {
-                            loop {
-                                let body = activation_read(&mut upstream)?;
-                                activation_write(&mut downstream, &body)?;
-                            }
+                            // Propagate child EOF too: preserving only server-to-child
+                            // frames would incorrectly keep a dead owner live.
+                            let mut client = downstream.try_clone()?;
+                            let mut server = upstream.try_clone()?;
+                            let peer = std::thread::spawn(move || {
+                                let _ = std::io::copy(&mut client, &mut server);
+                                let _ = server.shutdown(std::net::Shutdown::Both);
+                            });
+                            let forwarded = loop {
+                                let body = match activation_read(&mut upstream) {
+                                    Ok(body) => body,
+                                    Err(error) => break Err(error),
+                                };
+                                if let Err(error) = activation_write(&mut downstream, &body) {
+                                    break Err(error);
+                                }
+                            };
+                            let _ = downstream.shutdown(std::net::Shutdown::Both);
+                            let _ = peer.join();
+                            return forwarded;
                         }
                         Ok(())
                     };
