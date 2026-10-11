@@ -2349,3 +2349,70 @@ fn human_guidance_original_retry_ignores_opposite_rendering_view() {
     }
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+// Pins the on-disk bytes of the three journal writes buffered for ht-poh.58 (one write(2) each).
+#[test]
+fn journal_progress_and_intent_files_keep_their_exact_bytes() {
+    let dir = temp();
+    let journal = Journal::open(&dir).unwrap();
+    let display_claim = claim();
+    let message = MessageId::new("message-bytes");
+
+    // record_displayed_chunk: one partial span writes the progress file.
+    assert!(
+        !journal
+            .record_displayed_chunk(&display_claim, &message, 0, 5, 15)
+            .unwrap()
+    );
+    let expected = serde_json::to_vec(&DisplayedProgress {
+        instance: display_claim.instance.clone(),
+        seat: display_claim.seat.clone(),
+        binding_generation: display_claim.binding_generation,
+        execution: display_claim.execution.clone(),
+        message: message.clone(),
+        body_len: 15,
+        flushed_through: 5,
+    })
+    .unwrap();
+    assert_eq!(
+        std::fs::read(journal.displayed_progress_path(&display_claim, &message)).unwrap(),
+        expected
+    );
+
+    // record_lazy_displayed_chunk: same, for the lazy progress file.
+    assert!(
+        !journal
+            .record_lazy_displayed_chunk(&display_claim, &message, 0, 5, 15)
+            .unwrap()
+    );
+    let expected = serde_json::to_vec(&LazyDisplayedProgress {
+        claim: display_claim.clone(),
+        message: message.clone(),
+        body_len: 15,
+        flushed_through: 5,
+    })
+    .unwrap();
+    assert_eq!(
+        std::fs::read(journal.lazy_display_path(&display_claim, &message).unwrap()).unwrap(),
+        expected
+    );
+
+    // record (record_locked): header JSON, "\n", semantic body, "\n".
+    let semantic = send();
+    let body = serde_json::to_vec(&semantic).unwrap();
+    let reference = journal.record(scope(), semantic.clone(), 7).unwrap();
+    let header = IntentHeader {
+        reference: reference.clone(),
+        scope: scope(),
+        created_at_millis: 7,
+        kind: semantic.kind(),
+        thread: semantic.thread().cloned(),
+        semantic_digest: format!("{:x}", Sha256::digest(&body)),
+    };
+    let mut expected = serde_json::to_vec(&header).unwrap();
+    expected.push(b'\n');
+    expected.extend_from_slice(&body);
+    expected.push(b'\n');
+    assert_eq!(std::fs::read(journal.path(&reference)).unwrap(), expected);
+    std::fs::remove_dir_all(dir).unwrap();
+}
