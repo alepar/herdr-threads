@@ -693,7 +693,7 @@ mod binding_presentation {
             self.db.execute_batch("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES('prep','i','actor','op',zeroblob(32),'t',0,0,0,0,0,0,1,'sealed');
                 INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES('prep','t','s',1,300000,1);
                 INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('i','prep','m','t',3,0,1,0,1,0);
-                INSERT INTO receipt_state(message_id,seat_id,state,acked_at,ack_binding_id,ack_actor_seat_id,ack_generation,ack_observation) VALUES('m','s','acked',7,'a','s',1,'original');
+                INSERT INTO receipt_state(message_id,seat_id,state,acked_at,ack_binding_id,ack_actor_seat_id,ack_generation,ack_observation) VALUES('m','s','acked',7,'a','s',1,json_object('harness','claude','session','a','execution','a','host_boot','boot','binding_generation',1,'target_generation',0,'provenance','cooperative_env_session','observed_at',0,'decided_at',7));
                 UPDATE binding_cursors SET seq=1 WHERE binding_id='a';").unwrap();
         }
     }
@@ -877,7 +877,7 @@ mod binding_presentation {
         let carry =
             serde_json::json!({"prefix":[],"items":[{"content":message,"marker_lazy":false}]})
                 .to_string();
-        f.db.execute("UPDATE receipt_state SET state='acked',acked_at=7,ack_binding_id='a',ack_actor_seat_id='s',ack_generation=1,ack_observation='original' WHERE message_id='m'", []).unwrap();
+        f.db.execute("UPDATE receipt_state SET state='acked',acked_at=7,ack_binding_id='a',ack_actor_seat_id='s',ack_generation=1,ack_observation=json_object('harness','claude','session','a','execution','a','host_boot','boot','binding_generation',1,'target_generation',0,'provenance','cooperative_env_session','observed_at',0,'decided_at',7) WHERE message_id='m'", []).unwrap();
         let seed_carry = || {
             f.db.execute("UPDATE invitation_presentation_consumers SET ordinary_pending=?1,ordinary_done=1,rotation=0 WHERE binding_id='b' AND consumer='watch'", [&carry]).unwrap()
         };
@@ -940,7 +940,7 @@ mod binding_presentation {
             f.db.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) SELECT ?1,instance_id,operation_scope,?1,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status FROM send_preparations WHERE id='prep'", [&prep]).unwrap();
             f.db.execute("INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES(?1,'t','s',1,300000,1)", [&prep]).unwrap();
             f.db.execute("INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('i',?1,?2,'t',?3,0,?4,0,1,0)", rusqlite::params![prep,id,n+3,n]).unwrap();
-            f.db.execute("INSERT INTO receipt_state(message_id,seat_id,state,acked_at,ack_binding_id,ack_actor_seat_id,ack_generation,ack_observation) VALUES(?1,'s','acked',7,'a','s',1,'original')", [&id]).unwrap();
+            f.db.execute("INSERT INTO receipt_state(message_id,seat_id,state,acked_at,ack_binding_id,ack_actor_seat_id,ack_generation,ack_observation) VALUES(?1,'s','acked',7,'a','s',1,json_object('harness','claude','session','a','execution','a','host_boot','boot','binding_generation',1,'target_generation',0,'provenance','cooperative_env_session','observed_at',0,'decided_at',7))", [&id]).unwrap();
             let mut item = items[0].clone();
             item["content"]["id"] = serde_json::json!(id);
             items.push(item);
@@ -1013,7 +1013,7 @@ mod binding_presentation {
             INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) SELECT 'later-prep',instance_id,operation_scope,'later-op',digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status FROM send_preparations WHERE id='prep';
             INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES('later-prep','t','s',1,300000,1);
             INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES('i','later-prep','later','t',4,0,2,0,1,0);
-            INSERT INTO receipt_state(message_id,seat_id,state,acked_at,ack_binding_id,ack_actor_seat_id,ack_generation,ack_observation) VALUES('later','s','acked',7,'a','s',1,'original');").unwrap();
+            INSERT INTO receipt_state(message_id,seat_id,state,acked_at,ack_binding_id,ack_actor_seat_id,ack_generation,ack_observation) VALUES('later','s','acked',7,'a','s',1,json_object('harness','claude','session','a','execution','a','host_boot','boot','binding_generation',1,'target_generation',0,'provenance','cooperative_env_session','observed_at',0,'decided_at',7));").unwrap();
         let first = f.store.presentation_pull(input(), &budget()).unwrap();
         let DeliveryPullReplyV2::Page(first) = first.reply else {
             panic!("initial unread presentation must produce its truncated body")
@@ -1560,5 +1560,100 @@ mod binding_presentation {
             before,
             "a fresh-budget retry commits the retirement"
         );
+    }
+    #[test]
+    fn continued_body_cancellation_during_decision_sample_rolls_back_tentative_save() {
+        use herdr_threads::protocol::{
+            pagination::InboxBatchV2CursorState, results::ErrorCode, time::Cancellation,
+        };
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        struct DecisionClock {
+            token: Cancellation,
+            armed: AtomicBool,
+            decision_sample: AtomicBool,
+            utc_samples: AtomicUsize,
+            fired: AtomicBool,
+        }
+        impl Clock for DecisionClock {
+            fn utc_now(&self) -> UtcMillis {
+                // presentation_pull's source work does not sample UTC. Both
+                // decision wrappers sample UTC only AFTER pull returned from
+                // its tentative final state write, before decision acceptance.
+                if self.armed.load(Ordering::SeqCst) {
+                    self.utc_samples.fetch_add(1, Ordering::SeqCst);
+                    self.decision_sample.store(true, Ordering::SeqCst);
+                }
+                UtcMillis(1000)
+            }
+            fn monotonic_now(&self) -> MonoInstant {
+                if self.armed.load(Ordering::SeqCst)
+                    && self.decision_sample.swap(false, Ordering::SeqCst)
+                {
+                    self.token.cancel();
+                    self.fired.store(true, Ordering::SeqCst);
+                }
+                MonoInstant(1)
+            }
+        }
+        let token = Cancellation::default();
+        let clock = Arc::new(DecisionClock {
+            token: token.clone(),
+            armed: AtomicBool::new(false),
+            decision_sample: AtomicBool::new(false),
+            utc_samples: AtomicUsize::new(0),
+            fired: AtomicBool::new(false),
+        });
+        let (f, claim, cursor) = continued_body_fixture_with_clock(clock.clone(), false);
+        read_complete_body_and_advance(&f, &claim, "decision-cancel-read");
+        let mut state = InboxBatchV2CursorState::decode_for(&cursor, "i", &claim.seat).unwrap();
+        state.attention.receipts_done = true;
+        state.attention.next_manifest_warning = true;
+        f.db.execute("UPDATE invitation_presentation_consumers SET ordinary_cursor=?1 WHERE binding_id='b' AND consumer='watch'", [state.encode("i").unwrap()]).unwrap();
+        let snapshot = || {
+            let mut statement = f.db.prepare("SELECT * FROM invitation_presentation_consumers WHERE binding_id='b' AND consumer='watch'").unwrap();
+            let columns = statement.column_count();
+            statement
+                .query_row([], |row| {
+                    (0..columns)
+                        .map(|n| row.get::<_, rusqlite::types::Value>(n))
+                        .collect::<rusqlite::Result<Vec<_>>>()
+                })
+                .unwrap()
+        };
+        let before = snapshot();
+        let input = f.input_for_claim("b", claim.clone());
+        let mut cancelled_budget = budget();
+        cancelled_budget.cancellation = token.clone();
+        clock.armed.store(true, Ordering::SeqCst);
+        let result = f.store.presentation_pull(input, &cancelled_budget);
+        clock.armed.store(false, Ordering::SeqCst);
+        assert_eq!(
+            clock.utc_samples.load(Ordering::SeqCst),
+            1,
+            "the final decision sample was reached after tentative save"
+        );
+        assert!(clock.fired.load(Ordering::SeqCst));
+        assert!(
+            token.is_cancelled(),
+            "cancellation occurred at the actual decision boundary"
+        );
+        assert_eq!(
+            result
+                .expect_err("unaccepted presentation decision must roll back")
+                .code,
+            ErrorCode::Cancelled
+        );
+        assert_eq!(
+            snapshot(),
+            before,
+            "tentative saved retirement is not an accepted commit"
+        );
+        let retry = f
+            .store
+            .presentation_pull(f.input_for_claim("b", claim), &budget())
+            .unwrap();
+        assert_eq!(retry.work.ordinary_continuation_key_probes, 15);
+        assert_eq!(retry.work.ordinary, 1);
+        assert_ne!(snapshot(), before);
     }
 }
