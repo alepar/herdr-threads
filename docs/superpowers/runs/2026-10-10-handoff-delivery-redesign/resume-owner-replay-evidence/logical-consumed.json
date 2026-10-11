@@ -1,0 +1,21 @@
+{
+  "source_head": "4632df8427617130581a727e0560e0d6388c2951",
+  "run_id": "a4fe8bd3-04e5-498d-834c-3a5e7ca29377",
+  "mutant": "logical-consumed",
+  "file": "src/store/invitation_content.rs",
+  "preimage_sha256": "d228ece0a9bbf73dea9d44ea102f6f9812b914e4dafeced30cd40583219bdc85",
+  "before": "        .filter(|id| !owner_progress.emitted.contains_key(*id))\n",
+  "after": "",
+  "test": "service::delivery_pull::tests::presentation_owner_replay_full_final_page_keeps_logical_due_continuation",
+  "mutated_sha256": "79a93bc67676771d1e02a7ee9f37f78c713c46989d22f8eb0033ad5c39b4a165",
+  "red": {
+    "exit": 100,
+    "seconds": 38.4403157500783
+  },
+  "restored_equal": true,
+  "restored_green": {
+    "exit": 0,
+    "seconds": 38.2859765420435
+  },
+  "leak_exit": 0
+}

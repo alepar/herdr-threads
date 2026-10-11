@@ -1,0 +1,21 @@
+{
+  "source_head": "4632df8427617130581a727e0560e0d6388c2951",
+  "run_id": "4d8f8136-7e2a-45a5-86d8-054e4464a993",
+  "mutant": "count-domain",
+  "file": "src/store/invitation_content.rs",
+  "preimage_sha256": "d228ece0a9bbf73dea9d44ea102f6f9812b914e4dafeced30cd40583219bdc85",
+  "before": "stamp.count != 0\n                    && MessageId::parse(id.as_str()).is_ok()",
+  "after": "stamp.count != 0 && stamp.count <= 3\n                    && MessageId::parse(id.as_str()).is_ok()",
+  "test": "service::delivery_pull::tests::presentation_owner_replay_accepts_actual_v1_count_four_and_nonordinary_work",
+  "mutated_sha256": "520e1370f37437920767131d23e2a925998e5fa2e19d7e487b36b25e2ed03310",
+  "red": {
+    "exit": 100,
+    "seconds": 13.496474416926503
+  },
+  "restored_equal": true,
+  "restored_green": {
+    "exit": 0,
+    "seconds": 13.257530958973803
+  },
+  "leak_exit": 0
+}

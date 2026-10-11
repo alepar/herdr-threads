@@ -1,0 +1,69 @@
+{
+  "source_head": "4632df8427617130581a727e0560e0d6388c2951",
+  "selected": [
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::presentation_owner_replay_accepts_actual_v1_count_four_and_nonordinary_work"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::presentation_owner_replay_full_final_page_keeps_logical_due_continuation"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::presentation_owner_replay_missing_quanta_preserve_current_native_outlook"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::presentation_owner_replay_mixed_invalid_keys_and_physical_fallback_drain_finitely"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::presentation_owner_replay_mixed_invitation_page_preserves_native_outlook"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::presentation_owner_replay_nonfull_once_per_lease_preserves_physical_metadata"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::presentation_owner_replay_owner_permit_fences_replacement_during_store"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::presentation_owner_replay_preserves_partial_body_until_real_ack"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::presentation_owner_replay_preserves_post_snapshot_native_outlook_and_newer_stamp"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::presentation_owner_replay_refusal_and_store_error_do_not_consume_first_capture"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::presentation_owner_replay_registry_success_scope_and_incarnation_lifetime"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::presentation_owner_replay_restart_discards_lease_and_recovers_canonical_pending"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::presentation_owner_replay_standalone_unrenderable_attempt_is_finite_and_local"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::presentation_owner_replay_validates_full_scope_and_nonzero_count_domain"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::presentation_owner_replay_waits_for_original_outbox_then_continues"
+    ]
+  ],
+  "run_id": "53f57400-c7a8-4b74-80a3-03e29c342c4c",
+  "exit": 100,
+  "seconds": 1.4266612919745967,
+  "leak_exit": 0
+}

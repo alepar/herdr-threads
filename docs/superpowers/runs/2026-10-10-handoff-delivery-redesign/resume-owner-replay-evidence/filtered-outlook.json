@@ -1,0 +1,21 @@
+{
+  "source_head": "4632df8427617130581a727e0560e0d6388c2951",
+  "run_id": "9c345316-f947-40f6-9c6f-897082862dc6",
+  "mutant": "filtered-outlook",
+  "file": "src/service/delivery_presentation.rs",
+  "preimage_sha256": "eabc26a6764714844fe59247e485f0ada4e84c031079461a0fa26647766a38f8",
+  "before": "if !output.owner_replay.source.preserves_native_outlook() {",
+  "after": "if true {",
+  "test": "service::delivery_pull::tests::presentation_owner_replay_mixed_invitation_page_preserves_native_outlook",
+  "mutated_sha256": "16ed4b867a8c487ecbde684852ec0a3a9008241c3e3dd9b992304ece0ae680ef",
+  "red": {
+    "exit": 100,
+    "seconds": 23.05903791601304
+  },
+  "restored_equal": true,
+  "restored_green": {
+    "exit": 0,
+    "seconds": 22.95079937495757
+  },
+  "leak_exit": 0
+}
