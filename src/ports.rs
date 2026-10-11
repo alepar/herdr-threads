@@ -2054,7 +2054,89 @@ pub enum ReservedWakeAuthority {
         binding_generation: Option<u64>,
         /// The open binding's harness, when the seat has one.
         harness: Option<String>,
+        /// The connected top-level bindings this wake is for (ht-54r.13). Empty means the
+        /// reservation carries no per-binding information (the legacy single-harness rule).
+        targets: Vec<WakeTarget>,
     },
+}
+
+/// One connected top-level binding a wake or poke may reach (spec §3 Wake).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct WakeTarget {
+    pub binding: crate::protocol::ids::BindingId,
+    pub harness: String,
+    /// Pid of the fingerprint the binding was enrolled with; the composer wake matches it
+    /// against Herdr's pane foreground process.
+    pub fingerprint_pid: Option<u32>,
+}
+
+/// Who the pane-level composer wake (typing) may reach, from a reservation's targets and
+/// Herdr's pane foreground pid (TRUST-POLICY A4 wake rows).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ComposerChoice<'a> {
+    /// The reservation names no targets: the legacy single-harness rule applies.
+    Unspecified,
+    /// The one binding whose process is the pane's foreground process (or the only target).
+    Binding(&'a WakeTarget),
+    /// Several targets and no unique foreground match: no composer wake.
+    NoMatch,
+}
+
+impl ReservedWakeAuthority {
+    /// Equality of everything but the per-binding target list, which is a frozen delivery plan
+    /// (a binding reading its mail between reservation and delivery must not void the wake).
+    pub fn same_scope(&self, other: &Self) -> bool {
+        match (self, other) {
+            (
+                Self::Cooperative {
+                    terminal,
+                    incarnation,
+                    binding_generation,
+                    harness,
+                    ..
+                },
+                Self::Cooperative {
+                    terminal: other_terminal,
+                    incarnation: other_incarnation,
+                    binding_generation: other_generation,
+                    harness: other_harness,
+                    ..
+                },
+            ) => {
+                terminal == other_terminal
+                    && incarnation == other_incarnation
+                    && binding_generation == other_generation
+                    && harness == other_harness
+            }
+            _ => self == other,
+        }
+    }
+
+    pub fn targets(&self) -> &[WakeTarget] {
+        match self {
+            Self::Cooperative { targets, .. } => targets,
+            _ => &[],
+        }
+    }
+
+    /// The composer-wake target. One target is that binding; several need a unique
+    /// `fingerprint_pid == foreground_pid` match, no heuristic fallback.
+    pub fn composer_choice(&self, foreground_pid: Option<u32>) -> ComposerChoice<'_> {
+        match self.targets() {
+            [] => ComposerChoice::Unspecified,
+            [only] => ComposerChoice::Binding(only),
+            many => {
+                let Some(pid) = foreground_pid else {
+                    return ComposerChoice::NoMatch;
+                };
+                let mut matching = many.iter().filter(|t| t.fingerprint_pid == Some(pid));
+                match (matching.next(), matching.next()) {
+                    (Some(found), None) => ComposerChoice::Binding(found),
+                    _ => ComposerChoice::NoMatch,
+                }
+            }
+        }
+    }
 }
 impl WakeReservation {
     /// Cooperative structural recheck against a new host read: the same
@@ -2128,6 +2210,8 @@ pub struct WakeCandidate {
     pub binding_execution: Option<ExecutionId>,
     pub target: Option<HostTargetId>,
     pub reason_bits: u64,
+    /// Connected top-level non-human bindings of the seat the wake may reach (ht-54r.13).
+    pub targets: Vec<WakeTarget>,
     pub has_pending_invitation: bool,
     pub has_pending_receipt: bool,
     pub actionable_warning_generation: Option<u64>,
@@ -2363,6 +2447,9 @@ pub struct PokeReceipt {
 pub struct PokeDue {
     pub seat: SeatId,
     pub receipts: Vec<PokeReceipt>,
+    /// The connected top-level bindings the poke may reach (ht-54r.13); empty means the
+    /// source carries no per-binding information.
+    pub targets: Vec<WakeTarget>,
 }
 
 /// A committed poke reservation: the wake slot (same columns, reason
@@ -3216,6 +3303,16 @@ pub trait HostPort: Send + Sync {
     ) -> Result<HostObservation, ApiError> {
         self.observe_current_target(target, context)
     }
+    /// Pid of the one process Herdr reports in the pane's foreground (not its shell), for the
+    /// composer wake of a seat with several bindings (spec §3 Wake). `None` when Herdr reports
+    /// none or several, or the adapter cannot ask: the composer wake then does not fire.
+    fn foreground_pid(
+        &self,
+        _target: &HostTargetId,
+        _context: &HostCallContext,
+    ) -> Result<Option<u32>, ApiError> {
+        Ok(None)
+    }
     /// Archival requires an explicit composer-aware adapter. Each adapter must
     /// provide composer evidence or explicitly refuse this observation; ordinary
     /// Idle status alone cannot qualify a target for archival.
@@ -3784,6 +3881,7 @@ mod allocation_tests {
     #[test]
     fn completed_wake_attention_witness_rejects_wrong_scope_or_revision() {
         let candidate = WakeCandidate {
+            targets: Vec::new(),
             seat: SeatId::new("s"),
             attention_witness: None,
             effectively_retired: false,

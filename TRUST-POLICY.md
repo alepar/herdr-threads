@@ -326,6 +326,20 @@ model open work, and summary closure never changes receipt state or installs glo
 - *Wake*: a wake prompt goes only to a native host kind declared by the bound registered adapter
   (implemented). Recognized aliases do not change the binding or merge seats. A missing composer
   provider defers ordinary idle/done wake; soft poke and stash/restore also send no keys.
+  *Per binding* (ht-54r.13): a seat may hold several bindings, and a wake is decided per connected
+  top-level binding. A wake is reserved per seat (the fence is the seat's mapping generation, so a binding
+  enrolling or reading its mail does not void it) and names as targets the open, connected, top-level,
+  non-human bindings placed on the observed terminal that have something to act on (seat-level attention
+  such as an invitation, receipt or warning reaches every one of them; otherwise the binding's own unread
+  mail). Subagent, disconnected, ended and human bindings are never targets, and a seat that holds a human
+  binding is never woken. A target whose mod channel is live and not stalled is woken through that channel
+  and is never also typed to. The composer wake (typing into the pane) goes at most once per seat per wake:
+  with several targets only when Herdr reports the pane idle, and only to the one target whose fingerprint
+  pid equals Herdr's pane foreground process pid (the single non-shell process of `pane.process_info`);
+  no match, several matches, no fingerprint or no foreground report means no composer wake, with no fallback
+  to the latest claim or touch (nothing is guessed, and the refusal is pre-send so the reminder ladder does
+  not climb). A seat with exactly one target keeps the single-harness rule: its sole target is the
+  composer wake's target. A soft poke follows the same targets and rule.
 - *Poke*: a soft-deadline poke is the fixed reminder
   `herdr-threads: receipt due in <N>s on <thread-ids>; run herdr-threads inbox` (thread ids only),
   submitted through the wake dispatcher and its limits to the seat's bound native agent of the bound
@@ -345,7 +359,8 @@ model open work, and summary closure never changes receipt state or installs glo
   when the poke itself is eligible and needs no stash.
 - *Mod channel*: while a mod channel is live for a seat (from registration until its stream ends, through a
   30 s reconnect grace after a drop, and through a 30 s seat-level rebind grace after `Close{binding_changed}`),
-  no native wake prompt or poke goes to that seat and the Claude check-in results omit the attention digest
+  no native wake prompt or poke goes to a binding it serves (the question is per binding: a seat's other
+  bindings without a channel are still woken natively) and the Claude check-in results omit the attention digest
   and ready commands; pending attention stays pending and deadlines and hard-deadline warnings keep running,
   reaching the agent through the mod. A grace that expires, or a `Close` for `retired`, `unresolved`,
   `stalled`, `disabled` or `stopping`, removes the channel and kicks the wake lane. *Stall handover*: a

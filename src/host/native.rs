@@ -1208,6 +1208,25 @@ impl HostPort for NativeCli {
         self.observe_target(target, context, true)
     }
 
+    /// The pane's single non-shell foreground process from Herdr's `pane.process_info`
+    /// (advisory, unfenced; the same read the managed-launch placeholder uses). Several or no
+    /// such process: `None`, and the composer wake of a multi-binding seat does not fire.
+    fn foreground_pid(
+        &self,
+        target: &HostTargetId,
+        context: &HostCallContext,
+    ) -> Result<Option<u32>, ApiError> {
+        self.check_context(context)?;
+        let raw = self.run_unfenced(
+            &["pane", "process-info", target.as_str()],
+            &context.budget,
+            Duration::from_millis(750),
+        )?;
+        Ok(serde_json::from_str(&raw)
+            .ok()
+            .and_then(|response: serde_json::Value| started_process_pid(&response)))
+    }
+
     fn observe_current_target_for_archival(
         &self,
         target: &HostTargetId,

@@ -736,6 +736,7 @@ impl NotificationPort for FakeNotifier {
 }
 fn due_candidate() -> WakeCandidate {
     WakeCandidate {
+        targets: Vec::new(),
         seat: SeatId::new("seat"),
         attention_witness: Some(test_witness(true, false)),
         effectively_retired: false,
@@ -3654,6 +3655,7 @@ fn cooperative_reservation_rechecks_structure_and_never_crosses_bases() {
     };
     let mut reservation = test_reservation();
     reservation.authority = ReservedWakeAuthority::Cooperative {
+        targets: Vec::new(),
         terminal: TerminalId::new("terminal"),
         incarnation: "incarnation".into(),
         binding_generation: None,
@@ -4747,8 +4749,17 @@ fn pre_send_errors_are_refusals_by_class_and_never_reach_submit() {
 struct CooperativeRecordingHost {
     observation: HostObservation,
     prompted: std::sync::Mutex<Vec<SafeWakeTarget>>,
+    /// What `foreground_pid` answers (Herdr's pane foreground process).
+    foreground: Option<u32>,
 }
 impl HostPort for CooperativeRecordingHost {
+    fn foreground_pid(
+        &self,
+        _: &HostTargetId,
+        _: &HostCallContext,
+    ) -> Result<Option<u32>, ApiError> {
+        Ok(self.foreground)
+    }
     fn observe_current_target_for_archival(
         &self,
         _: &crate::protocol::ids::HostTargetId,
@@ -4836,6 +4847,7 @@ fn dispatcher_passes_bound_harness_to_prompt_target() {
     for bound in [Some("claude"), Some("codex")] {
         let mut reservation = test_reservation();
         reservation.authority = ReservedWakeAuthority::Cooperative {
+            targets: Vec::new(),
             terminal: TerminalId::new("terminal"),
             incarnation: "incarnation".into(),
             binding_generation: None,
@@ -4849,6 +4861,7 @@ fn dispatcher_passes_bound_harness_to_prompt_target() {
         let host = CooperativeRecordingHost {
             observation,
             prompted: std::sync::Mutex::new(vec![]),
+            foreground: None,
         };
         let check = FakeReservationCheck {
             current: true,
@@ -4885,6 +4898,7 @@ fn cooperative_reservation_without_harness_is_not_prompted() {
     };
     let mut reservation = test_reservation();
     reservation.authority = ReservedWakeAuthority::Cooperative {
+        targets: Vec::new(),
         terminal: TerminalId::new("terminal"),
         incarnation: "incarnation".into(),
         binding_generation: None,
@@ -4898,6 +4912,7 @@ fn cooperative_reservation_without_harness_is_not_prompted() {
     let host = CooperativeRecordingHost {
         observation,
         prompted: std::sync::Mutex::new(vec![]),
+        foreground: None,
     };
     let check = FakeReservationCheck {
         current: true,
@@ -4910,6 +4925,156 @@ fn cooperative_reservation_without_harness_is_not_prompted() {
         WakeOutcome::Refused(RefusalCause::Unsafe)
     );
     assert!(host.prompted.lock().unwrap().is_empty());
+}
+
+fn binding_target(id: &str, harness: &str, pid: Option<u32>) -> crate::ports::WakeTarget {
+    crate::ports::WakeTarget {
+        binding: crate::protocol::ids::BindingId::new(id),
+        harness: harness.into(),
+        fingerprint_pid: pid,
+    }
+}
+
+/// One cooperative wake of a seat with `targets` in a pane showing `ui` whose foreground
+/// process Herdr reports as `foreground`: the outcome and the prompt targets handed to the host.
+fn composer_wake(
+    targets: Vec<crate::ports::WakeTarget>,
+    ui: HostUiState,
+    foreground: Option<u32>,
+) -> (WakeOutcome, Vec<SafeWakeTarget>) {
+    let clock = FakeClock(AtomicU64::new(0));
+    let context = HostCallContext {
+        budget: CallBudget {
+            deadline: MonoInstant(5_000),
+            cancellation: Cancellation::default(),
+        },
+        expected_boot: Some(HostBootId::new("boot")),
+        expected_epoch: Some(1),
+    };
+    let mut reservation = test_reservation();
+    reservation.authority = ReservedWakeAuthority::Cooperative {
+        targets,
+        terminal: TerminalId::new("terminal"),
+        incarnation: "incarnation".into(),
+        binding_generation: None,
+        harness: Some("codex".into()),
+    };
+    let mut observation = fresh_observation();
+    observation.occupant = None;
+    observation.ui = ui;
+    observation.occupancy = StructuralOccupancy::Unknown;
+    observation.execution = ExecutionEvidence::Unknown;
+    let host = CooperativeRecordingHost {
+        observation,
+        prompted: std::sync::Mutex::new(vec![]),
+        foreground,
+    };
+    let check = FakeReservationCheck {
+        current: true,
+        calls: AtomicU64::new(0),
+    };
+    let outcome = NativeWakeDispatcher::new(&host, &check, &clock)
+        .attempt_wake(reservation, &context)
+        .unwrap();
+    let prompted = host.prompted.lock().unwrap().clone();
+    (outcome, prompted)
+}
+
+/// Kills: typing to every binding of the seat, or to the first one, instead of the binding
+/// whose process is the pane's foreground process (spec §3, roast r2).
+#[test]
+fn composer_wake_fires_once_to_the_foreground_binding() {
+    let two = || {
+        vec![
+            binding_target("a", "codex", Some(10)),
+            binding_target("b", "claude", Some(20)),
+        ]
+    };
+    let (outcome, prompted) = composer_wake(two(), HostUiState::Idle, Some(20));
+    assert_eq!(outcome, WakeOutcome::Submitted);
+    assert_eq!(prompted.len(), 1, "at most one composer wake per seat");
+    assert_eq!(
+        prompted[0].bound_harness.as_deref(),
+        Some("claude"),
+        "the prompt is for binding b, not the first target or the authority's harness"
+    );
+    let (_, prompted) = composer_wake(two(), HostUiState::Idle, Some(10));
+    assert_eq!(prompted[0].bound_harness.as_deref(), Some("codex"));
+}
+
+/// Kills: a guess (latest touch, first binding) when the foreground process matches none or
+/// several bindings, and when Herdr reports no foreground process at all.
+#[test]
+fn no_foreground_match_means_no_composer_wake() {
+    let two = || {
+        vec![
+            binding_target("a", "codex", Some(10)),
+            binding_target("b", "claude", Some(20)),
+        ]
+    };
+    for (label, targets, foreground) in [
+        ("other process", two(), Some(99)),
+        ("no foreground reported", two(), None),
+        (
+            "ambiguous: two bindings share the pid",
+            vec![
+                binding_target("a", "codex", Some(10)),
+                binding_target("b", "claude", Some(10)),
+            ],
+            Some(10),
+        ),
+        (
+            "bindings without a fingerprint",
+            vec![
+                binding_target("a", "codex", None),
+                binding_target("b", "claude", None),
+            ],
+            Some(10),
+        ),
+    ] {
+        let (outcome, prompted) = composer_wake(targets, HostUiState::Idle, foreground);
+        assert_eq!(
+            outcome,
+            WakeOutcome::Refused(RefusalCause::Unsafe),
+            "{label}: a pre-send refusal, the ladder does not climb"
+        );
+        assert!(prompted.is_empty(), "{label}");
+    }
+}
+
+/// Kills: typing into a multi-binding pane Herdr does not report idle.
+#[test]
+fn composer_wake_requires_idle() {
+    let two = vec![
+        binding_target("a", "codex", Some(10)),
+        binding_target("b", "claude", Some(20)),
+    ];
+    for ui in [
+        HostUiState::Unknown,
+        HostUiState::ApprovalOrQuestion,
+        HostUiState::ActiveTurn,
+        HostUiState::HumanInput,
+    ] {
+        let (outcome, prompted) = composer_wake(two.clone(), ui, Some(20));
+        assert!(
+            matches!(outcome, WakeOutcome::Refused(_) | WakeOutcome::Unsafe),
+            "{ui:?}: {outcome:?}"
+        );
+        assert!(prompted.is_empty(), "{ui:?}");
+    }
+}
+
+/// Kills: requiring a foreground match of a seat with one target, which would silence every
+/// single-session seat when Herdr reports no foreground process.
+#[test]
+fn single_target_seat_keeps_the_single_harness_composer_rule() {
+    let (outcome, prompted) = composer_wake(
+        vec![binding_target("a", "claude", Some(10))],
+        HostUiState::Unknown,
+        None,
+    );
+    assert_eq!(outcome, WakeOutcome::Submitted);
+    assert_eq!(prompted[0].bound_harness.as_deref(), Some("claude"));
 }
 
 /// A cooperative host that answers the plain observation with an unclassified
@@ -4931,6 +5096,7 @@ impl ComposerReadHost {
             inner: CooperativeRecordingHost {
                 observation,
                 prompted: std::sync::Mutex::new(vec![]),
+                foreground: None,
             },
             plain_reads: AtomicU64::new(0),
             poke_reads: AtomicU64::new(0),
@@ -5034,6 +5200,7 @@ fn ordinary_wake_never_reads_the_composer_but_a_poke_does() {
     };
     let cooperative = |reservation: WakeReservation| WakeReservation {
         authority: ReservedWakeAuthority::Cooperative {
+            targets: Vec::new(),
             terminal: TerminalId::new("terminal"),
             incarnation: "incarnation".into(),
             binding_generation: None,
@@ -5095,6 +5262,7 @@ fn poke_receipt(message: &str, thread: &str, effective_deadline: i64) -> PokeRec
 }
 fn poke_due(seat: &str, receipts: Vec<PokeReceipt>) -> PokeDue {
     PokeDue {
+        targets: Vec::new(),
         seat: SeatId::new(seat),
         receipts: receipts
             .into_iter()
@@ -5162,6 +5330,7 @@ impl PokeStore {
                     .cloned()
                     .collect();
                 (!receipts.is_empty()).then(|| PokeDue {
+                    targets: Vec::new(),
                     seat: due.seat.clone(),
                     receipts,
                 })
@@ -6525,6 +6694,7 @@ impl HostPort for CooperativeStashingHost {
 fn cooperative_reservation() -> WakeReservation {
     WakeReservation {
         authority: ReservedWakeAuthority::Cooperative {
+            targets: Vec::new(),
             terminal: TerminalId::new("terminal"),
             incarnation: "incarnation".into(),
             binding_generation: None,
