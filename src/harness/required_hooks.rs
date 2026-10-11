@@ -33,6 +33,24 @@ pub fn required_hook_events(harness: &str) -> Option<&'static [&'static str]> {
     }
 }
 
+/// The stale-install finding of `harness`: `None` when nothing required is missing, else
+/// `{harness, missing, fix, detail}` (setup-status and doctor report it; `doctor fix` re-runs setup).
+pub fn stale_install_json(harness: &str, missing: &[String]) -> Option<serde_json::Value> {
+    if missing.is_empty() {
+        return None;
+    }
+    let fix = format!("herdr-threads setup {harness}");
+    Some(serde_json::json!({
+        "harness": harness,
+        "missing": missing,
+        "fix": fix,
+        "detail": format!(
+            "the installed {harness} integration lacks {}: re-run `{fix}` (agents started before the upgrade also need a restart)",
+            missing.join(", ")
+        ),
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

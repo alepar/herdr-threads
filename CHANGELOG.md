@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Session-keyed seat bindings: one-time upgrade cost.** Agent bindings migrated from the previous schema start disconnected (reason `migrated`): an idle agent waiting at its prompt gets no wake until its next turn, when its first herdr-threads call re-adopts the same binding with its cursors intact. Re-run `herdr-threads setup` to install the new hook groups; `doctor` and `setup-status` flag an install that lacks one (Claude SubagentStart/SubagentStop, Codex SubagentStop/SessionEnd, Hermes bridge callbacks) and `doctor fix` re-runs the owned setup. Agents started before the upgrade re-enroll on their next call; a long-lived pane whose harness does not export its session id is refused with the fix (restart the agent, or re-run setup) rather than attributed to the pane.
+
 ## v0.6.0
 
 - **Explicit harness permissions.** Hooks and command permission rules are separate owned components for Claude, Codex and Hermes. Setup and installation offer explicit permission choices; human and self-granting commands ask for approval. Write escalating command words first, with routing and output options after them.
