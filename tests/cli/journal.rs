@@ -1088,12 +1088,35 @@ fn continuity_semantic(target: &str, event_id: &str) -> SemanticMutation {
         source: "resume".into(),
         event_id: event_id.into(),
         execution: ExecutionId::new("exec-1"),
+        liveness: Some(crate::protocol::authority::LivenessFingerprint::TEST),
     }
 }
 fn continuity_scope(instance: &str, target: &str) -> IntentScope {
     IntentScope::Continuity {
         instance: instance.into(),
         target: HostTargetId::new(target),
+    }
+}
+
+#[test]
+fn continuity_intent_without_liveness_still_loads() {
+    let with = continuity_semantic("w1:p1", "evt");
+    let json = serde_json::to_value(&with).unwrap();
+    assert_eq!(
+        json.get("liveness"),
+        Some(&serde_json::json!({"pid": 1, "start": 1})),
+        "{json}"
+    );
+    assert_eq!(
+        serde_json::from_value::<SemanticMutation>(json.clone()).unwrap(),
+        with
+    );
+    // An intent written before the field existed carries no `liveness` key.
+    let mut old = json;
+    old.as_object_mut().unwrap().remove("liveness");
+    match serde_json::from_value::<SemanticMutation>(old).unwrap() {
+        SemanticMutation::ContinuityCheckIn { liveness, .. } => assert_eq!(liveness, None),
+        other => panic!("{other:?}"),
     }
 }
 
@@ -1146,6 +1169,7 @@ fn continuity_intent_round_trips_and_is_found_by_instance_and_target() {
             source: "resume".into(),
             operation: OperationId::new(reference.operation.as_str()),
             execution: ExecutionId::new("exec-1"),
+            liveness: Some(crate::protocol::authority::LivenessFingerprint::TEST),
         })
     );
     // Completion removes it.
@@ -1202,6 +1226,7 @@ fn continuity_intent_refuses_foreign_scope_and_non_resume_source() {
                     source: "startup".into(),
                     event_id,
                     execution,
+                    liveness: Some(crate::protocol::authority::LivenessFingerprint::TEST),
                 },
                 1
             )
@@ -2034,6 +2059,7 @@ fn original_actor_operator_and_native_lifecycle() {
             source: "resume".into(),
             event_id: "event".into(),
             execution: ExecutionId::new("exec"),
+            liveness: Some(crate::protocol::authority::LivenessFingerprint::TEST),
         };
         assert_eq!(
             classify_original_actor(
@@ -2108,6 +2134,7 @@ fn original_actor_rejects_scope_claim_contradictions() {
         source: "resume".into(),
         event_id: "event".into(),
         execution: ExecutionId::new("exec"),
+        liveness: Some(crate::protocol::authority::LivenessFingerprint::TEST),
     };
     assert!(
         classify_original_actor(

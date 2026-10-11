@@ -179,6 +179,32 @@ impl World {
         run(command)
     }
 
+    /// An agent whose harness process outlives the call, as a real one does: the call is routed
+    /// like `agent`, but the harness identity is a long-lived stand-in process of `session`
+    /// (owned by `test_support::spawn`, reaped with the test process), so the liveness worker
+    /// keeps its binding connected.
+    fn agent_long_lived(
+        &self,
+        harness: &str,
+        session: &str,
+        pane: &str,
+        args: &[&str],
+        json: bool,
+    ) -> Output {
+        let mut routing = self.routing();
+        if !json {
+            routing.retain(|word| word != "--json");
+        }
+        let mut command = crate::scrubbed_command(BIN);
+        command
+            .args(routing)
+            .args(args)
+            .envs(self.env())
+            .env("HERDR_PANE_ID", pane);
+        herdr_threads::test_support::isolation::as_agent(&mut command, harness, session);
+        run(command)
+    }
+
     pub(super) fn data(out: &Output) -> Value {
         assert!(out.status.success(), "{out:?}");
         serde_json::from_slice::<Value>(&out.stdout).unwrap()["result"]["data"].clone()
@@ -445,11 +471,16 @@ fn plain_call_enrolled_agent_display_acks() {
     );
     assert!(invite.status.success(), "{invite:?} {}", stderr(&invite));
     // B never checks in: its first plain call (accept) enrolls it.
-    let join = world.agent("claude", Some("session-B"), "w1:p2", &["accept", &thread]);
+    let join = world.agent_long_lived("claude", "session-B", "w1:p2", &["accept", &thread], true);
     assert!(join.status.success(), "{join:?} {}", stderr(&join));
     let open = world.bindings(&seat_b);
     assert_eq!(open.len(), 1, "{open:?}");
     assert_eq!(open[0].3, "cooperative_env_session", "{open:?}");
+    assert_eq!(open[0].2, "connected", "{open:?}");
+    assert!(
+        open[0].4.is_some(),
+        "the enrolled binding has a fingerprint: {open:?}"
+    );
     let send = world.agent(
         "claude",
         Some("session-A"),
@@ -482,27 +513,7 @@ fn plain_call_enrolled_agent_display_acks() {
             .collect()
     };
     assert_eq!(receipt(), vec!["pending".to_owned()]);
-    // A real agent's harness process outlives its calls; this test's per-command shim does not,
-    // so the liveness worker has already disconnected B. Put B back to connected (no fingerprint,
-    // so nothing judges it again) to model the long-lived agent.
-    {
-        let db = rusqlite::Connection::open(&world.paths.database_path).unwrap();
-        db.busy_timeout(Duration::from_secs(3)).unwrap();
-        db.execute(
-            "UPDATE occupant_bindings SET liveness='connected',disconnected_at=NULL,disconnect_reason=NULL,\
-             liveness_pid=NULL,liveness_start=NULL WHERE seat_id=?1 AND ended_at IS NULL",
-            [&seat_b],
-        )
-        .unwrap();
-    }
-    let inbox = world.agent_raw(
-        "claude",
-        Some("session-B"),
-        "w1:p2",
-        &["inbox"],
-        false,
-        false,
-    );
+    let inbox = world.agent_long_lived("claude", "session-B", "w1:p2", &["inbox"], false);
     assert!(inbox.status.success(), "{inbox:?} {}", stderr(&inbox));
     assert!(
         String::from_utf8_lossy(&inbox.stdout).contains("please read"),

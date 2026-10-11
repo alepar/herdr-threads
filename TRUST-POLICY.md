@@ -262,7 +262,9 @@ model open work, and summary closure never changes receipt state or installs glo
   A binding whose process no longer exists, whose pid now has another start time, or that is
   connected with no fingerprint is disconnected `liveness_process_exit` (decision 9: every
   connected agent binding without a fingerprint is disconnected, migrated or not; the migrated 24 h
-  grace is archival only; human bindings stay exempt); among connected top-level bindings
+  grace is archival only; human bindings stay exempt). A C1 reattachment is a lifecycle check-in: the
+  successor binding records the resumed session's fingerprint, and a reattachment request without one is
+  refused `liveness_fingerprint_required` (decision 9). Among connected top-level bindings
   of one instance and harness sharing one fingerprint, only the latest lifecycle claim stays connected
   and the others are disconnected `superseded` (subagents excluded). Disconnection on liveness evidence
   is structural evidence, never a heuristic: it goes through the one `store::bindings::disconnect`

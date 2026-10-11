@@ -3540,6 +3540,15 @@ pub fn decide_continuity(
         command.operation.as_str(),
         digest,
         |tx| {
+            // Decision 9 / spec §3: a lifecycle check-in records its fingerprint. Checked here,
+            // after the recorded-result lookup, so a replay of a committed reattachment is
+            // still answered.
+            if command.liveness.is_none() {
+                return Err(api_error(
+                    ErrorCode::LivenessFingerprintRequired,
+                    "a resumed session's reattachment must carry its liveness fingerprint",
+                ));
+            }
             if !observed_matches(
                 tx,
                 &instance,
@@ -3704,10 +3713,18 @@ pub fn decide_continuity(
                     (terminal.to_owned(), incarnation.to_owned())
                 }
             };
-            tx.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?11,?12,?13)",
+            let fingerprint = command.liveness.ok_or_else(|| {
+                api_error(
+                    ErrorCode::LivenessFingerprintRequired,
+                    "a resumed session's reattachment must carry its liveness fingerprint",
+                )
+            })?;
+            let liveness_start = checked_host_number(fingerprint.start)?;
+            tx.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation,liveness_pid,liveness_start) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?11,?12,?13,?14,?15)",
                 params![seat.as_str(),new_generation,target.as_str(),expected_boot.as_str(),expected_epoch_sql,expected_generation_sql,
                     command.harness.as_str(),command.native_session.as_str(),command.execution.as_str(),
-                    crate::protocol::authority::COOPERATIVE_TOP_LEVEL_PROVENANCE,at.utc.0,terminal,incarnation]).map_err(store_error)?;
+                    crate::protocol::authority::COOPERATIVE_TOP_LEVEL_PROVENANCE,at.utc.0,terminal,incarnation,
+                    i64::from(fingerprint.pid),liveness_start]).map_err(store_error)?;
             catch_up::supersede_ended_bindings(tx, seat, at.utc)?;
             tx.execute("UPDATE wake_work SET binding_generation=?1 WHERE seat_id=?2 AND reservation_id IS NULL",
                 params![new_generation,seat.as_str()]).map_err(store_error)?;

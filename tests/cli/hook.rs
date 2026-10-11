@@ -2797,6 +2797,7 @@ mod continuity_gate {
                         source: "resume".into(),
                         event_id: "evt-recorded".into(),
                         execution: crate::protocol::ids::ExecutionId::new(execution),
+                        liveness: Some(crate::protocol::authority::LivenessFingerprint::TEST),
                     },
                     1,
                 )
@@ -3193,6 +3194,35 @@ mod continuity_gate {
         }
     }
 
+    // Kills: a reattachment request without the hook's liveness fingerprint (the daemon then
+    // opens a successor binding the liveness worker disconnects), or an intent that does not
+    // record it (a retry would recompute or drop it).
+    #[test]
+    fn continuity_request_carries_the_hook_fingerprint() {
+        let pane = Pane::new();
+        // The install fails, so the recorded intent stays to be inspected.
+        std::fs::write(pane.paths.instance_dir.join("contexts"), b"in the way").unwrap();
+        let daemon = Daemon::new(vec![reattached("saved", 2)]);
+        let result = pane
+            .call(&daemon)
+            .reattach_by_continuity(&resume(Harness::Claude), false);
+        assert!(matches!(result, Reattach::InstallFailed(_)));
+        let requests = daemon.continuity_requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests[0].liveness,
+            Some(crate::protocol::authority::LivenessFingerprint::TEST)
+        );
+        let pending = pane.pending().expect("the intent stays");
+        let SemanticMutation::ContinuityCheckIn { liveness, .. } = pending.semantic else {
+            panic!("not a continuity intent");
+        };
+        assert_eq!(
+            liveness,
+            Some(crate::protocol::authority::LivenessFingerprint::TEST)
+        );
+    }
+
     // Kills: installing the generation a reused intent's replay carries when
     // the pane does not resolve to that seat (a stale ContinuityReattached).
     #[test]
@@ -3534,6 +3564,8 @@ mod continuity_gate {
                 | ErrorCode::CallerUnverified
                 | ErrorCode::Unsupported
                 | ErrorCode::SequenceExhausted
+                // The reattachment request carries no fingerprint: an identical retry repeats it.
+                | ErrorCode::LivenessFingerprintRequired
                 // A deterministic rejection on this branch's retry path
                 // (ht-p03): identical retry repeats it.
                 | ErrorCode::StaleRequirementAcceptance => true,
@@ -3564,7 +3596,6 @@ mod continuity_gate {
                 | ErrorCode::IncompatibleOwnership
                 | ErrorCode::RequiredInvitationNeedsManagedThread
                 | ErrorCode::SessionClaimRequired
-                | ErrorCode::LivenessFingerprintRequired
                 | ErrorCode::ManagedDaemonRefused
                 | ErrorCode::TransportDenied => false,
             }
@@ -7933,6 +7964,7 @@ mod registered_resume {
             source: d.metadata.context_source,
             operation: OperationId::new(uuid()),
             execution: crate::protocol::ids::ExecutionId::new(uuid()),
+            liveness: Some(crate::protocol::authority::LivenessFingerprint::TEST),
         };
         assert_eq!(
             c.validate(),
@@ -8094,6 +8126,7 @@ mod registered_resume {
                         source: "resume".into(),
                         event_id: "planted-resume".into(),
                         execution: crate::protocol::ids::ExecutionId::new(uuid()),
+                        liveness: Some(crate::protocol::authority::LivenessFingerprint::TEST),
                     },
                     1,
                 )

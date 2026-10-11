@@ -373,6 +373,7 @@ pub(crate) fn is_continuity_refusal(code: &ErrorCode) -> bool {
                 | ErrorCode::CallerUnverified
                 | ErrorCode::Unsupported
                 | ErrorCode::SequenceExhausted
+                | ErrorCode::LivenessFingerprintRequired
         )
 }
 

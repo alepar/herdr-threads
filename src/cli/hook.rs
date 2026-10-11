@@ -2001,6 +2001,7 @@ impl PaneCall<'_> {
         event: &LifecycleEvent,
         harness: crate::protocol::authority::Harness,
         session: &crate::protocol::ids::NativeSessionId,
+        liveness: crate::protocol::authority::LivenessFingerprint,
         reuse: bool,
     ) -> Option<(super::journal::IntentRef, uuid::Uuid, bool)> {
         let instance = self.instance.to_string();
@@ -2045,6 +2046,7 @@ impl PaneCall<'_> {
                     source: event.source.clone(),
                     event_id: event.event_id.clone(),
                     execution: crate::protocol::ids::ExecutionId::new(execution.to_string()),
+                    liveness: Some(liveness),
                 },
                 self.clock.utc_now().0,
             )
@@ -2097,11 +2099,16 @@ impl PaneCall<'_> {
         else {
             return Reattach::Declined;
         };
+        // C1 reattachment is a lifecycle check-in: the successor binding records this
+        // process's fingerprint. A failure declines, so ordinary enrollment surfaces it.
+        let Ok(liveness) = hook_fingerprint(event.harness) else {
+            return Reattach::Declined;
+        };
         let Some(journal) = self.journal() else {
             return Reattach::Pending;
         };
         let Some((mut reference, _, reused)) =
-            self.continuity_intent(&journal, event, harness, &session, !pane_resolved)
+            self.continuity_intent(&journal, event, harness, &session, liveness, !pane_resolved)
         else {
             return Reattach::Pending;
         };
@@ -2119,7 +2126,7 @@ impl PaneCall<'_> {
                     // key, which the daemon cannot answer from a replay.
                     let _ = journal.complete(&reference);
                     let Some((fresh, _, _)) =
-                        self.continuity_intent(&journal, event, harness, &session, false)
+                        self.continuity_intent(&journal, event, harness, &session, liveness, false)
                     else {
                         return Reattach::Pending;
                     };
