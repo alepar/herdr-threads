@@ -2788,6 +2788,18 @@ pub trait StorePort: ModStoreReads + Send + Sync {
         read: &ReadContext,
         budget: &CallBudget,
     ) -> Result<CommandResult, ApiError>;
+    /// An `AttentionDigest` / `AttentionDigestDelivery` query together with the open binding the
+    /// digest was read for (`None` for a seat-level read or a claim whose session has no binding
+    /// yet), read in one snapshot. Daemon-internal: the binding is never put on the wire (A2).
+    fn attention_digest_read(
+        &self,
+        command: &Command,
+        read: &ReadContext,
+        budget: &CallBudget,
+    ) -> Result<(CommandResult, Option<BindingId>), ApiError> {
+        self.query(command, read, budget)
+            .map(|result| (result, None))
+    }
     fn mutate(
         &self,
         command: PermitMutation,

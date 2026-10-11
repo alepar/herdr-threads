@@ -1443,6 +1443,29 @@ impl StorePort for SqliteStore {
         )
     }
 
+    fn attention_digest_read(
+        &self,
+        command: &Command,
+        read: &ReadContext,
+        budget: &CallBudget,
+    ) -> Result<(CommandResult, Option<crate::protocol::ids::BindingId>), ApiError> {
+        read.validate()
+            .map_err(|why| api_error(ErrorCode::InvalidRequest, why))?;
+        if read.instance != self.instance {
+            return Err(api_error(
+                ErrorCode::InvalidRequest,
+                "read instance mismatch",
+            ));
+        }
+        queries::query_attention_digest(
+            &self.context,
+            &self.instance,
+            command,
+            &read.output,
+            budget,
+        )
+    }
+
     fn query(
         &self,
         command: &Command,

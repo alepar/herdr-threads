@@ -189,6 +189,33 @@ pub(super) fn query_with_output_for_caller(
     budget: &CallBudget,
     caller: Option<&OperationReadScope>,
 ) -> Result<CommandResult, ApiError> {
+    query_inner(store, instance, command, output, budget, caller, &mut None)
+}
+
+/// An attention digest read together with the binding it was read for (ht-54r.55): the daemon
+/// decides `mod_channel_live` per binding against the same snapshot, so the binding never
+/// travels on the wire.
+pub(super) fn query_attention_digest(
+    store: &StoreContext,
+    instance: &str,
+    command: &Command,
+    output: &OutputSpec,
+    budget: &CallBudget,
+) -> Result<(CommandResult, Option<crate::protocol::ids::BindingId>), ApiError> {
+    let mut binding = None;
+    let result = query_inner(store, instance, command, output, budget, None, &mut binding)?;
+    Ok((result, binding))
+}
+
+fn query_inner(
+    store: &StoreContext,
+    instance: &str,
+    command: &Command,
+    output: &OutputSpec,
+    budget: &CallBudget,
+    caller: Option<&OperationReadScope>,
+    digest_binding: &mut Option<crate::protocol::ids::BindingId>,
+) -> Result<CommandResult, ApiError> {
     command
         .validate()
         .map_err(|why| api_error(ErrorCode::InvalidRequest, why))?;
@@ -297,11 +324,13 @@ pub(super) fn query_with_output_for_caller(
         Command::InboxBatch(q) => inbox_batch(&db, store, instance, q, output, budget),
         Command::InboxBatchV2(q) => inbox_v2::query(&db, store, instance, q, output, budget),
         Command::AttentionDigest(q) => {
-            let (digest, _) = attention_digest(&db, instance, q)?;
+            let (digest, binding) = attention_digest(&db, instance, q)?;
+            *digest_binding = binding;
             Ok(CommandResult::AttentionDigest(digest))
         }
         Command::AttentionDigestDelivery(q) => {
             let (digest, binding) = attention_digest(&db, instance, q)?;
+            *digest_binding = binding.clone();
             let notices_pending = match &binding {
                 Some(binding) => super::attention::binding_has_pending_notices(&db, binding)?,
                 None => super::attention::seat_has_pending_notices(&db, q.seat.as_str())?,

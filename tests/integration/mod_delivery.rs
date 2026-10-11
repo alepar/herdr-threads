@@ -2187,9 +2187,13 @@ fn clear_new_binding_gets_no_digest_or_wake_for_mail_already_read() {
     let mark = rig.host.mark();
     rig.set_session_b("SB2");
     let started = rig.session_start_hook_in_process_of(PANE_B, "SB2", "clear", SESSION_B);
+    // Without a live channel for the new binding the hook still prints the digest line, but it is
+    // empty: nothing pending (the text inbox ACKed the displayed message).
     assert!(
-        !started.stdout.contains(DIGEST_MARK),
-        "digest for mail the old binding already read: {}",
+        started
+            .stdout
+            .contains("attention digest: invitations=0; receipts=0; warnings=0"),
+        "expected an empty digest line: {}",
         started.stdout
     );
     let (_, old_liveness, old_reason) = open_binding_of(&rig, SESSION_B).expect("SB binding");
@@ -2222,6 +2226,11 @@ fn clear_new_binding_digests_and_wakes_for_its_unread_mail_without_grace() {
     assert!(
         started.stdout.contains(DIGEST_MARK),
         "no digest for mail unread by the new binding: {}",
+        started.stdout
+    );
+    assert!(
+        started.stdout.contains("receipts=1 ["),
+        "the digest does not list the unread mail's pending receipt: {}",
         started.stdout
     );
     rig.wait_prompt(mark, PANE_B);
