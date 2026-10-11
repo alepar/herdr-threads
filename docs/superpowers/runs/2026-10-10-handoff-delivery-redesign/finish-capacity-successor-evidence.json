@@ -1,0 +1,56 @@
+{
+  "head": "31e5879781904b9ec20ee5ea3cec7517856260f3",
+  "tree": "f165279e4acd8c43c3edc7cb0e22ab2e9bb08f34",
+  "run_id": "6fe9d557-d954-40c9-83e4-688cab992cd7",
+  "affected_tests": {
+    "passed": 127,
+    "failed": 0,
+    "skipped": 4425,
+    "compile_seconds": 87,
+    "runtime_seconds": 8.847
+  },
+  "strict_clippy": {
+    "exit": 0,
+    "seconds": 89,
+    "within_60_second_budget": false,
+    "scope": "broad rebuild after multiple changed paths; controlled single-source measurement pending"
+  },
+  "scoped_leak_check": {
+    "exit": 0
+  },
+  "neutral": {
+    "exit": 0
+  },
+  "logs": [
+    {
+      "path": "/private/tmp/ht-finish-capacity-successor-sweep.log",
+      "sha256": "b24cd7eb1fbc87fad2e086dd30035e6ce83dec0eae3d6800408d1ad69010eb03"
+    },
+    {
+      "path": "/private/tmp/ht-finish-capacity-successor-sweep-leaks.log",
+      "sha256": "87e8218c7e39ad3f7c328894df8a3c19809b0772116e37ea6d9e45195ffd6a4e"
+    },
+    {
+      "path": "/private/tmp/ht-finish-capacity-successor-clippy.log",
+      "sha256": "f878550f3641e758fbe7690efc591fcb8d322f633d770a94d8d7428fc50ec3c5"
+    },
+    {
+      "path": "/private/tmp/ht-finish-capacity-successor-neutral.log",
+      "sha256": "f13f23c38b0980397ffc5b0dbe1489247908115dad416d101f13c571fc204e85"
+    }
+  ],
+  "controlled_incremental_lint": {
+    "trigger": "touch src/service/delivery_presentation.rs; Git blob unchanged",
+    "exit": 0,
+    "real_seconds": 21.89,
+    "within_60_second_budget": true,
+    "log": "/private/tmp/ht-finish-capacity-controlled-lint.log",
+    "sha256": "b171964214317eaf16ca4f7b9b9f87ea2e632947e94f8049ed4f1dc4e18f42b4"
+  },
+  "default_features": {
+    "exit": 0,
+    "real_seconds": 20.4,
+    "log": "/private/tmp/ht-finish-capacity-successor-default.log",
+    "sha256": "5e7f73bba8e941e6fdfd4872d4928639d6a45f3a0695b7d86d7444727f66bf1b"
+  }
+}
