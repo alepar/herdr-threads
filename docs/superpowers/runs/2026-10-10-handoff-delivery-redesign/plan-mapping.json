@@ -285,7 +285,23 @@
       "tests/handoff_topology_cli.rs",
       "tests/handoff_topology_authority.rs",
       "integrations/skill/SKILL.md",
-      "README.md"
+      "README.md",
+      "src/ports.rs",
+      "src/harness/adapter.rs",
+      "src/harness/claude.rs",
+      "src/harness/codex.rs",
+      "tests/cli/follow_retry.rs",
+      "tests/integration/channel_activation.rs",
+      "tests/integration/topology_activation.rs",
+      "tests/lifecycle_ux.rs",
+      "tests/store/archival_legacy.rs",
+      "tests/store/topology_handoff.rs",
+      "src/harness/hermes/launch.rs",
+      "src/test_support/mod.rs",
+      "src/host/native.rs",
+      "tests/contracts.rs",
+      "TRUST-POLICY.md",
+      "src/harness/hermes/runtime.rs"
     ]
   },
   {
