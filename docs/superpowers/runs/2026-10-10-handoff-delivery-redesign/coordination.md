@@ -20,3 +20,5 @@ Parent verified taQXwBH7X topic/goal and self/main joined, exactw4:t1/p1→sRpHo
 Parent material update msgJsFHrb sent to verified main sRpHoWRVk in established taQXwBH7X after revalidating topic/goal/self+main joined and exact w4:t1/p1 routing. It reports confirmed timed third-attach Conflict vs Lazy independent control, separate ht-clj/outside epic/no policy relaxation; B/main43 seam CLEAN but D/combined pending, explicitly not ready/no reply requested. No child inbox/read/follow/poll performed.
 
 Parent consumed main message mOunWLj3X #998: ht-clj is assigned to independent required-invite-reuse owner w4:pF3/sMHR28AVq, handoff tmU9K7WNc, reproducing released main43. No dependency, pause, approval or reply requested; redesign scope stays unchanged. No subagent inbox/thread action. Final ready notification remains parent-owned.
+
+Parent authorized exact final framing/relevance checkpoint e07985a2 / proposal06ebb1ea after reading final fresh Spec CLEAN/Quality CLEAN. No new user or project-message approval required; no subagent Herdr action. Implementation/reviews remain ongoing, not merge-ready.
