@@ -23,11 +23,11 @@ parked:
 Design hand-off: ht-e99 ready for caller-owned code phase; two design-roast rounds, one design-only repair ht-e99.6 closed at ce11790f. No implementation code delivered.
 
 codeBuckets:
-  completed: ht-e99.1.1, ht-e99.1.2, ht-e99.2, ht-e99.3.1, ht-e99.3.2, ht-e99.3.3, ht-e99.4, ht-e99.5, ht-e99.6
+  completed: ht-e99.1.1, ht-e99.1.2, ht-e99.2, ht-e99.3.1, ht-e99.3.2, ht-e99.3.3, ht-e99.4, ht-e99.5, ht-e99.6, ht-e99.7
   escalated:
   pendingRetry:
   parked:
   stalled: false
-  review: NEEDS_FIX (1 Important)
+  review: PENDING
 
 Code phase started: ht-e99.6 is closed design-only repair at ce11790f, with no implementation merge.
