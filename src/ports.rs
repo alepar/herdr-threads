@@ -3533,8 +3533,8 @@ pub trait HookPullOutlook: Send + Sync {
     ) -> NextPull {
         NextPull::Unknown
     }
-    /// The seat's ledger entry of this generation holds an id shown the maximum number of times (it waits for
-    /// `inbox`).
+    /// The seat's ledger entry of this generation holds an id shown the maximum number of times, or is full (new
+    /// ids are not shown): it waits for `inbox`.
     fn holds_parked(&self, _seat: &SeatId, _binding_generation: u64) -> bool {
         false
     }

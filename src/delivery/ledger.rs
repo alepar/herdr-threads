@@ -9,7 +9,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 /// Seats the ledger remembers; the least recently touched is evicted first.
 pub const MAX_LEDGER_SEATS: usize = 4096;
-/// Offers kept per seat; the oldest is evicted first.
+/// Offers kept per seat. A full table evicts nothing (an evicted pending id would be offered afresh): a new id
+/// waits, pending, for `inbox` until a confirm, a settle or a whole read frees a slot.
 pub const MAX_OFFERS_PER_SEAT: usize = 256;
 /// An unconfirmed id is offered again only after this long.
 pub const REOFFER_AFTER_MS: i64 = 60_000;
@@ -60,14 +61,15 @@ impl SeatOffers {
         self.offers.values().any(|offer| offer.is_due(now))
     }
 
+    /// True when the table holds [`MAX_OFFERS_PER_SEAT`] offers: no new id can be recorded.
+    pub fn is_full(&self) -> bool {
+        self.offers.len() >= MAX_OFFERS_PER_SEAT
+    }
+
     /// What the seat's next pull would show at `now`, given the wake attention counter. Leftover informational
     /// notices (`notices_pending`) are not counted: they never wake.
     pub fn next_pull(&self, attention_version: u64, now: UtcMillis) -> NextPull {
-        if self.read_attention != Some(attention_version)
-            || self.more_pending
-            // An evicted pending id would be shown again.
-            || self.offers.len() >= MAX_OFFERS_PER_SEAT
-            || self.any_due(now)
+        if self.read_attention != Some(attention_version) || self.more_pending || self.any_due(now)
         {
             return NextPull::Delivers;
         }
@@ -79,16 +81,22 @@ impl SeatOffers {
             .map_or(NextPull::Nothing, |at| NextPull::ReofferAt(UtcMillis(at)))
     }
 
-    /// True when some offered id was shown the maximum number of times (it waits for `inbox`).
+    /// True when some offered id was shown the maximum number of times, or the table is full (new ids are not
+    /// shown): either waits for `inbox`.
     pub fn holds_parked(&self) -> bool {
-        self.offers
-            .values()
-            .any(|offer| offer.count >= MAX_OFFERS_PER_GENERATION)
+        self.is_full()
+            || self
+                .offers
+                .values()
+                .any(|offer| offer.count >= MAX_OFFERS_PER_GENERATION)
     }
 
-    /// Record that `id` was shown at `now` (count + 1; the first sight sets
-    /// `first_at`). Over [`MAX_OFFERS_PER_SEAT`] the oldest offer goes.
-    pub fn record(&mut self, id: &MessageId, now: UtcMillis, truncated: bool) {
+    /// Record that `id` was shown at `now` (count + 1; the first sight sets `first_at`) and return true. A full
+    /// table records no new id and evicts none: it returns false.
+    pub fn record(&mut self, id: &MessageId, now: UtcMillis, truncated: bool) -> bool {
+        if self.is_full() && !self.offers.contains_key(id) {
+            return false;
+        }
         let offer = self.offers.entry(id.clone()).or_insert(Offer {
             first_at: now,
             last_at: now,
@@ -98,17 +106,7 @@ impl SeatOffers {
         offer.count = offer.count.saturating_add(1);
         offer.last_at = now;
         offer.truncated = truncated;
-        while self.offers.len() > MAX_OFFERS_PER_SEAT {
-            let oldest = self
-                .offers
-                .iter()
-                .min_by_key(|(id, offer)| (offer.first_at, (*id).clone()))
-                .map(|(id, _)| id.clone());
-            match oldest {
-                Some(oldest) => self.offers.remove(&oldest),
-                None => break,
-            };
-        }
+        true
     }
 
     /// Forget an id (settled, or already settled).
@@ -134,16 +132,24 @@ impl OfferedLedger {
         Self::default()
     }
 
-    /// The seat's entry for the canonical binding `generation`, created when
-    /// missing. An entry of another generation is discarded first (a rotated
-    /// generation discards its offered set), and a new entry over
-    /// [`MAX_LEDGER_SEATS`] evicts the least recently touched seat.
+    /// The seat's entry for the canonical binding `generation`, created when missing. An entry of an older
+    /// generation is discarded first (a rotated generation discards its offered set); an entry of a newer
+    /// generation is left untouched and the answer is `None` (a request that read the binding before a rotation
+    /// must not wipe its successor's offers). A new entry over [`MAX_LEDGER_SEATS`] evicts the least recently
+    /// touched seat.
     pub fn seat_mut(
         &mut self,
         seat: &SeatId,
         generation: u64,
         native_session: &str,
-    ) -> &mut SeatOffers {
+    ) -> Option<&mut SeatOffers> {
+        if self
+            .seats
+            .get(seat)
+            .is_some_and(|entry| entry.generation > generation)
+        {
+            return None;
+        }
         self.clock += 1;
         let touched = self.clock;
         if self
@@ -182,7 +188,7 @@ impl OfferedLedger {
             .expect("the entry was inserted above");
         entry.touched = touched;
         entry.native_session = native_session.to_owned();
-        entry
+        Some(entry)
     }
 
     /// The seat's entry, if any, without touching it.
