@@ -309,6 +309,8 @@ mod fixtures {
                 has_more: true,
             },
             inbox: inbox_page(),
+            first_contact: None,
+            fast_forward: None,
         }
     }
 

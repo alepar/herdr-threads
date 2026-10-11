@@ -654,7 +654,7 @@ fn compose_context(
         return envelope(&context);
     }
     // Compact form: never the offer's peer fields beyond the overview rows.
-    let (notice_line, digest_lines) = split_summary(summary);
+    let (notice_line, history_lines, digest_lines) = split_summary(summary);
     // Overview rows of hot threads beyond the recovery block are marked.
     let rows: Vec<String> = overview.map_or_else(Vec::new, |overview| {
         overview
@@ -670,6 +670,7 @@ fn compose_context(
         rows,
         fallback,
         notice_line,
+        history_lines,
         digest_lines,
         recovery_line: recovery_line.as_deref(),
         hot_rows,
@@ -689,6 +690,8 @@ struct ContextParts<'a> {
     /// The read argv of the oversize fallback (its selectors name the instance).
     fallback: &'a [String],
     notice_line: Option<&'a str>,
+    /// The first-contact / fast-forward lines (`HISTORY_PREFIX`), shown before the digest.
+    history_lines: Vec<&'a str>,
     digest_lines: Vec<&'a str>,
     /// The fixed recovery instruction line (top-level Compact/Resume/Clear).
     recovery_line: Option<&'a str>,
@@ -701,6 +704,8 @@ struct Keep {
     /// Per overview row, in server order: still shown.
     rows: Vec<bool>,
     digest: DigestKeep,
+    /// The history lines in full, else cut to their summary pointers (never dropped).
+    history_full: bool,
     items: usize,
     notices: bool,
     /// Hot-thread recovery rows still shown, from the start.
@@ -803,7 +808,8 @@ fn item_names_thread(item: &str, thread: &str) -> bool {
 /// 2. overview rows whose thread has no kept item command, from the end; the
 ///    main thread's row (the thread of the first item command, else the first
 ///    row) is never dropped, and a kept item command keeps its thread's row;
-/// 3. the digest counts line;
+/// 3. the digest counts line, then the history lines (first-contact stats, fast-forward gap)
+///    shrink to their summary pointers, which stay;
 /// 4. item commands from the end, down to the pinned inbox command; each dropped command
 ///    takes its thread's row with it unless another kept command names it;
 /// 5. the `offered notices:` line, then the pinned commands;
@@ -883,6 +889,16 @@ fn fit_context(parts: &ContextParts, budget: usize) -> String {
                 ));
             }
         }
+        if keep.history_full {
+            data.extend(parts.history_lines.iter().map(|line| (*line).to_owned()));
+        } else {
+            data.extend(
+                parts
+                    .history_lines
+                    .iter()
+                    .filter_map(|line| history_pointer(line)),
+            );
+        }
         match keep.digest {
             DigestKeep::Full => {
                 data.extend(parts.digest_lines.iter().map(|line| (*line).to_owned()))
@@ -916,6 +932,7 @@ fn fit_context(parts: &ContextParts, budget: usize) -> String {
     let mut keep = Keep {
         rows: vec![true; rows.len()],
         digest: DigestKeep::Full,
+        history_full: true,
         items: all,
         notices: true,
         hot: parts.hot_rows.len(),
@@ -942,6 +959,13 @@ fn fit_context(parts: &ContextParts, budget: usize) -> String {
     // 3. The digest counts line.
     if !parts.digest_lines.is_empty() {
         keep.digest = DigestKeep::None;
+        if let Some(candidate) = fits(&keep) {
+            return candidate;
+        }
+    }
+    // 3b. The history lines shrink to their summary pointers.
+    if !parts.history_lines.is_empty() {
+        keep.history_full = false;
         if let Some(candidate) = fits(&keep) {
             return candidate;
         }
@@ -1030,19 +1054,52 @@ fn digest_counts(line: &str) -> String {
     out.replace(" +more", "")
 }
 
-/// Split the joined summary into the `offered notices:` line and the rest
+/// Marks a first-contact or fast-forward line inside the joined summary (spec §2). The lines
+/// come before the digest; the budgeted form trims them on their own (`fit_context`).
+const HISTORY_PREFIX: &str = "history: ";
+/// What a history line keeps when the budget trims it: its summary pointer.
+const SUMMARY_POINTER: &str = " — herdr-threads summary ";
+
+/// `summary` with the offer's history lines (first-contact stats or fast-forward gap) in front
+/// of it, each marked so the budgeted form can tell it from the digest.
+fn with_history(history: &[String], summary: Option<String>) -> Option<String> {
+    if history.is_empty() {
+        return summary;
+    }
+    let mut lines: Vec<String> = history
+        .iter()
+        .map(|line| format!("{HISTORY_PREFIX}{line}"))
+        .collect();
+    lines.extend(summary);
+    Some(lines.join("\n"))
+}
+
+/// A history line cut to its summary pointer (`history: herdr-threads summary <id>`); lines
+/// without one (the `resumed past` heading, a last message, the `+N more` count) vanish.
+fn history_pointer(line: &str) -> Option<String> {
+    let at = line.find(SUMMARY_POINTER)?;
+    Some(format!(
+        "{HISTORY_PREFIX}herdr-threads summary {}",
+        &line[at + SUMMARY_POINTER.len()..]
+    ))
+}
+
+/// Split the joined summary into the `offered notices:` line, the history lines and the rest
 /// (the digest line), so each can give way on its own.
-fn split_summary(summary: Option<&str>) -> (Option<&str>, Vec<&str>) {
+fn split_summary(summary: Option<&str>) -> (Option<&str>, Vec<&str>, Vec<&str>) {
     let mut notices = None;
+    let mut history = Vec::new();
     let mut rest = Vec::new();
     for line in summary.into_iter().flat_map(str::lines) {
         if line.starts_with("offered notices:") {
             notices = Some(line);
+        } else if line.starts_with(HISTORY_PREFIX) {
+            history.push(line);
         } else if !line.is_empty() {
             rest.push(line);
         }
     }
-    (notices, rest)
+    (notices, history, rest)
 }
 
 /// The argv0 of every command the hook tells an agent to run. It is the bare
@@ -2617,6 +2674,10 @@ fn lifecycle_check_in(
     let notices = carried
         .as_ref()
         .and_then(|presented| presented.notices.summary());
+    let history = carried
+        .as_ref()
+        .map(|presented| presented.history.clone())
+        .unwrap_or_default();
     let overview = carried.and_then(|presented| presented.overview);
     let prepared_kind = if turn.is_some()
         && registration_for(event.harness)
@@ -2640,10 +2701,16 @@ fn lifecycle_check_in(
         .as_ref()
         .is_some_and(|(_, digest)| digest.mod_channel_live);
     let (summary, actions, attention) = if mod_live {
-        (bridge::join_summaries(None, notices), None, None)
+        (
+            with_history(&history, bridge::join_summaries(None, notices)),
+            None,
+            None,
+        )
     } else {
-        let summary =
-            bridge::join_summaries(seeded.as_ref().map(|(_, digest)| digest.summary()), notices);
+        let summary = with_history(
+            &history,
+            bridge::join_summaries(seeded.as_ref().map(|(_, digest)| digest.summary()), notices),
+        );
         let actions = next_actions(&prefix, seeded.as_ref().map(|(_, digest)| digest));
         let attention = seeded.map(|(execution, digest)| {
             let token = owned

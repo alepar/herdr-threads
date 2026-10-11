@@ -111,7 +111,9 @@ fn whole(item: &InboxBatchV2Item) -> bool {
             body_len,
             ..
         } => *body_start == 0 && body_end == body_len,
-        InboxBatchV2Item::Invitation { .. } | InboxBatchV2Item::Warning { .. } => true,
+        InboxBatchV2Item::Invitation { .. }
+        | InboxBatchV2Item::Warning { .. }
+        | InboxBatchV2Item::FirstContact(_) => true,
     }
 }
 

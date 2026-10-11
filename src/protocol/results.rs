@@ -1119,6 +1119,9 @@ pub enum InboxBatchItem {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum InboxBatchV2Item {
+    /// First-contact stats of a session the daemon has not enrolled yet (ht-54r.8): only the
+    /// first page of such a read carries it, as its first item. Presentation only.
+    FirstContact(FirstContact),
     Invitation {
         thread: ThreadId,
         topic_data: String,
@@ -1643,6 +1646,59 @@ pub struct CheckInResult {
     #[serde(default, skip_serializing_if = "NoticeOffer::is_empty")]
     pub notices: NoticeOffer,
     pub inbox: Page<InboxItem>,
+    /// Per-thread history before the cursors of a binding this check-in enrolled (spec §2
+    /// First-contact stats). Shown once: only the check-in that creates the binding carries it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_contact: Option<FirstContact>,
+    /// The gap a resumed or reconnected binding was fast-forwarded over (spec §2 Fast-forward).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fast_forward: Option<FastForward>,
+}
+
+/// One joined thread's history, counted over a range of its messages (first-contact stats: up to
+/// the binding's cursor; fast-forward: the gap the cursor jumped over).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ThreadHistory {
+    pub thread: ThreadId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Messages in the range.
+    pub earlier: u64,
+    /// Of those, human-authored, relaying a person, or carrying a recorded user intent.
+    pub from_people: u64,
+    /// Open request and question items of the thread's summary ledger.
+    pub open_requests: u64,
+    /// The newest message in the range.
+    pub last_at: UtcMillis,
+}
+
+/// First-contact stats: at most eight threads, most recent activity first, and how many more.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FirstContact {
+    pub threads: Vec<ThreadHistory>,
+    pub more: u64,
+}
+
+/// One thread a fast-forward skipped over: its gap counts and its last message.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FastForwardThread {
+    pub history: ThreadHistory,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_message: Option<MessageSummary>,
+}
+
+/// A fast-forward: the binding's cursors jumped to the thread heads past a backlog larger than
+/// one ordinary inbox page. Pending ACK obligations are not part of it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FastForward {
+    /// Messages skipped over, all threads.
+    pub skipped: u64,
+    pub threads: Vec<FastForwardThread>,
+    pub more: u64,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

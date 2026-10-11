@@ -101,6 +101,38 @@ pub fn init_for_new_binding(tx: &Connection, binding: &BindingId) -> Result<usiz
     .map_err(store_error)
 }
 
+/// The highest `messages.sequence` of `thread` (0 when it has none): the head a cursor jumps to.
+pub fn thread_head(db: &Connection, thread: &ThreadId) -> Result<u64, ApiError> {
+    let head: Option<i64> = db
+        .query_row(
+            "SELECT MAX(sequence) FROM messages WHERE thread_id=?1",
+            params![thread.as_str()],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    u64::try_from(head.unwrap_or(0))
+        .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative message sequence"))
+}
+
+/// Where a binding enrolled now would start in `thread`: the highest cursor any open or closed
+/// binding of `seat` holds there, else the thread head (the rule of [`init_for_new_binding`], for
+/// a read that must not enroll).
+pub fn seed_preview(db: &Connection, seat: &SeatId, thread: &ThreadId) -> Result<u64, ApiError> {
+    let max: Option<i64> = db
+        .query_row(
+            "SELECT MAX(c.seq) FROM binding_cursors c JOIN occupant_bindings o ON o.binding_id=c.binding_id \
+             WHERE o.seat_id=?1 AND c.thread_id=?2",
+            params![seat.as_str(), thread.as_str()],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    match max {
+        Some(seq) => u64::try_from(seq)
+            .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative read cursor")),
+        None => thread_head(db, thread),
+    }
+}
+
 /// A seat joined `thread`: every open binding of the seat gets a cursor at the join point (the
 /// thread head), keeping a higher cursor it already has. Returns the number of bindings touched.
 pub fn init_for_join(tx: &Connection, seat: &SeatId, thread: &ThreadId) -> Result<usize, ApiError> {
@@ -146,7 +178,7 @@ pub const RECEIVABLE_WHERE: &str =
 pub const UNREAD_EXTRA: &str = "AND EXISTS(SELECT 1 FROM memberships mb WHERE mb.thread_id=m.thread_id AND mb.seat_id=pr.seat_id AND mb.state='joined') \
     AND m.sequence > COALESCE((SELECT c.seq FROM binding_cursors c WHERE c.binding_id=?2 AND c.thread_id=m.thread_id),0)";
 
-fn seat_of(db: &Connection, binding: &BindingId) -> Result<Option<SeatId>, ApiError> {
+pub(crate) fn seat_of(db: &Connection, binding: &BindingId) -> Result<Option<SeatId>, ApiError> {
     db.query_row(
         "SELECT seat_id FROM occupant_bindings WHERE binding_id=?1",
         [binding.as_str()],

@@ -4325,7 +4325,12 @@ pub fn register_available(
     operator: Option<&OperatorActor>,
     mut permit: MutationPermit,
     budget: &CallBudget,
-    build_offer: impl FnOnce(&Transaction<'_>, &SeatId, u64) -> Result<CheckInResult, ApiError>,
+    build_offer: impl FnOnce(
+        &Transaction<'_>,
+        &SeatId,
+        u64,
+        super::first_contact::OfferHistory,
+    ) -> Result<CheckInResult, ApiError>,
 ) -> Result<CommandResult, ApiError> {
     let claim = &command.claim;
     let digest = schema::canonical_digest(&check_in_payload(command))?;
@@ -4393,10 +4398,34 @@ pub fn register_available(
                     ),
                 ));
             }
-            let binding_id = resolve_cooperative(tx, at, claim, Some(command.mode), &mapping)?
-                .binding()
-                .binding_id
-                .clone();
+            let resolution = resolve_cooperative(tx, at, claim, Some(command.mode), &mapping)?;
+            let binding_id = resolution.binding().binding_id.clone();
+            // Spec §2: a new binding's first response carries its history stats (once: only the
+            // check-in that enrolls it); a resumed or reconnected one whose unread backlog
+            // exceeds one page is fast-forwarded. Never on a plain touch, and never for the
+            // binding another check-in superseded (that binding does not run this path).
+            let first_contact = match &resolution {
+                bindings::Resolution::Enrolled {
+                    first_contact: true,
+                    ..
+                } => Some(super::first_contact::first_contact(tx, seat, &|thread| {
+                    super::read_cursors::cursor_for(tx, &binding_id, thread)
+                        .ok()
+                        .flatten()
+                        .unwrap_or(0)
+                })?),
+                _ => None,
+            }
+            .filter(|fc| !fc.threads.is_empty());
+            let fast_forward = match &resolution {
+                bindings::Resolution::Existing {
+                    reconnected: true, ..
+                }
+                | bindings::Resolution::Reopened(_) => {
+                    super::first_contact::fast_forward(tx, &binding_id)?
+                }
+                _ => None,
+            };
             // The seat's mapping generation: check-ins add and refresh bindings, they never
             // bump it (only rebind, unresolve and retire do).
             let generation = mapping.generation as i64;
@@ -4461,7 +4490,15 @@ pub fn register_available(
             schema::apply_eligibility_transition(tx, &claim.instance, |_| {
                 Ok(lifecycle || !previously_available)
             })?;
-            let mut offer = build_offer(tx, seat, seq)?;
+            let mut offer = build_offer(
+                tx,
+                seat,
+                seq,
+                super::first_contact::OfferHistory {
+                    first_contact,
+                    fast_forward,
+                },
+            )?;
             if offer.seat != *seat {
                 return Err(api_error(
                     ErrorCode::StoreCorrupt,

@@ -451,3 +451,175 @@ fn subagent_inbox_never_sends_ack_displayed() {
         "{sent:?}"
     );
 }
+
+// --- First-contact stats on the CLI inbox (ht-54r.8).
+
+/// A daemon that has not enrolled the reader's session yet: its first inbox read carries the
+/// history stats, and the `AdvanceCursors` that follows the display enrolls the binding, after
+/// which the page has none.
+struct Unenrolled {
+    enrolled: std::sync::atomic::AtomicBool,
+    calls: std::sync::Mutex<Vec<Command>>,
+}
+impl Unenrolled {
+    fn page(&self) -> CommandResult {
+        let first_contact = crate::protocol::results::FirstContact {
+            threads: vec![crate::protocol::results::ThreadHistory {
+                thread: ThreadId::new("t1"),
+                name: Some("proj".into()),
+                earlier: 7,
+                from_people: 3,
+                open_requests: 1,
+                last_at: crate::protocol::time::UtcMillis(0),
+            }],
+            more: 2,
+        };
+        let items = if self.enrolled.load(std::sync::atomic::Ordering::SeqCst) {
+            vec![]
+        } else {
+            vec![InboxBatchV2Item::FirstContact(first_contact)]
+        };
+        CommandResult::InboxBatchV2(page_offer(items, false).page)
+    }
+}
+impl LocalClient for Unenrolled {
+    fn call(&self, command: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
+        self.calls.lock().unwrap().push(command.clone());
+        match command {
+            Command::Capabilities => Ok(CommandResult::Capabilities(
+                crate::protocol::results::CapabilityList {
+                    capabilities: CAPS.iter().map(|name| (*name).to_owned()).collect(),
+                },
+            )),
+            Command::AdvanceCursors(advance) => {
+                self.enrolled
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok(CommandResult::CursorsAdvanced(advance.displayed))
+            }
+            Command::InboxBatchV2(_) => Ok(self.page()),
+            other => panic!("unexpected call {other:?}"),
+        }
+    }
+    fn call_with_output(
+        &self,
+        command: Command,
+        _: &OutputSpec,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        self.call(command, budget)
+    }
+}
+
+// Kills: first-contact lines missing from the CLI inbox, shown on every call (nothing enrolled
+// the session: the advance after a page with no messages was skipped), or shown to a machine
+// reader that must not enroll.
+#[test]
+fn cli_inbox_prints_first_contact_once() {
+    use crate::harness::context::{
+        ContextJournal, Harness as ContextHarness, OccupantContext, Role, SessionReference,
+    };
+    use crate::protocol::output::{ContinuationContext, OutputFormat};
+    use std::os::unix::fs::DirBuilderExt;
+    struct Root(PathBuf);
+    impl Drop for Root {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let root = Root(PathBuf::from(format!(
+        "{}/fc-{}",
+        crate::test_support::SHORT_TMP,
+        &uuid::Uuid::new_v4().simple().to_string()[..10]
+    )));
+    let private = |name: &str| {
+        let path = root.0.join(name);
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .recursive(true)
+            .create(&path)
+            .unwrap();
+        path
+    };
+    let directory = private("contexts");
+    let context = OccupantContext {
+        format_version: 1,
+        instance: uuid::Uuid::from_u128(1),
+        seat: "seat-1".into(),
+        target: "pane-1".into(),
+        harness: ContextHarness::Codex,
+        binding_generation: 7,
+        execution: uuid::Uuid::from_u128(2),
+        session: SessionReference::Native("fresh-session".into()),
+        role: Role::TopLevel,
+    };
+    let contexts = ContextJournal::open(
+        &directory,
+        context.instance,
+        &context.seat,
+        std::time::Duration::from_secs(1),
+    )
+    .unwrap();
+    contexts.install_reattached(context).unwrap();
+    let journal = crate::cli::journal::Journal::open(private("intents")).unwrap();
+    let text = OutputSpec {
+        format: OutputFormat::Text,
+        context: ContinuationContext::default(),
+    };
+    let query = InboxQuery {
+        seat: None,
+        page: PageRequest::default(),
+        claim: None,
+    };
+    let daemon = Unenrolled {
+        enrolled: Default::default(),
+        calls: Default::default(),
+    };
+    let show = |daemon: &Unenrolled, spec: &OutputSpec| {
+        let mut out = Vec::new();
+        crate::cli::run_display_inbox(
+            &query, spec, &journal, &contexts, daemon, &StepClock, &mut out,
+        )
+        .unwrap();
+        String::from_utf8(out).unwrap()
+    };
+    // A machine read shows the history in its data and enrolls nothing.
+    let json = OutputSpec {
+        format: OutputFormat::Json,
+        context: ContinuationContext::default(),
+    };
+    assert!(show(&daemon, &json).contains("\"first_contact\""));
+    assert!(
+        !daemon
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|c| matches!(c, Command::AdvanceCursors(_))),
+        "a read-only view never enrolls"
+    );
+    // The first text read prints the lines once and enrolls the session.
+    let first = show(&daemon, &text);
+    assert_eq!(
+        first
+            .matches("first contact: #proj (t1): 7 earlier messages, 3 from people (1 open requests), last ")
+            .count(),
+        1,
+        "{first}"
+    );
+    assert!(first.contains("— herdr-threads summary t1"), "{first}");
+    assert!(
+        first.contains("first contact: +2 more threads (herdr-threads thread list --joined)"),
+        "{first}"
+    );
+    let advances = daemon
+        .calls
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|c| matches!(c, Command::AdvanceCursors(a) if a.displayed.is_empty()))
+        .count();
+    assert_eq!(advances, 1, "one enrolling advance after the display");
+    // The second read has none.
+    let second = show(&daemon, &text);
+    assert!(!second.contains("first contact"), "{second}");
+}

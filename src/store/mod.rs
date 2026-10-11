@@ -6,6 +6,7 @@ pub mod catch_up;
 pub mod connection;
 pub mod control;
 pub mod effective;
+pub mod first_contact;
 pub mod handoff;
 pub mod harness_evidence;
 pub mod invitation_due;
@@ -1841,7 +1842,7 @@ impl StorePort for SqliteStore {
             request.operator.as_ref(),
             permit,
             budget,
-            |tx, seat, seq| {
+            |tx, seat, seq, history| {
                 let _namespace = crate::protocol::output::CommandNamespaceGuard::enter(
                     request.command.claim.harness == crate::protocol::authority::Harness::Human
                         || request.operator.is_some(),
@@ -1918,6 +1919,8 @@ impl StorePort for SqliteStore {
                     warnings,
                     notices: crate::protocol::results::NoticeOffer::default(),
                     inbox,
+                    first_contact: history.first_contact,
+                    fast_forward: history.fast_forward,
                 };
                 let mut selected = CommandResult::CheckedIn(offer);
                 crate::protocol::output::namespace_result(&mut selected);
@@ -1940,6 +1943,20 @@ impl StorePort for SqliteStore {
                         break;
                     }
                     if notices.pop().is_none() {
+                        // History lines give way after the notices, a thread at a time from
+                        // the least recent; the rest is counted in `more`.
+                        if let Some(ff) = offer.fast_forward.as_mut()
+                            && ff.threads.pop().is_some()
+                        {
+                            ff.more += 1;
+                            continue;
+                        }
+                        if let Some(fc) = offer.first_contact.as_mut()
+                            && fc.threads.pop().is_some()
+                        {
+                            fc.more += 1;
+                            continue;
+                        }
                         return Err(api_error(
                             ErrorCode::InvalidBudget,
                             "complete check-in offer exceeds selected output bound",
