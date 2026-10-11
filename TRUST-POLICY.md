@@ -379,12 +379,20 @@ model open work, and summary closure never changes receipt state or installs glo
   mail). Subagent, disconnected, ended and human bindings are never targets, and a seat that holds a human
   binding is never woken. A target whose mod channel is live and not stalled is woken through that channel
   and is never also typed to. The composer wake (typing into the pane) goes at most once per seat per wake:
-  only to the one target whose fingerprint pid equals Herdr's pane foreground process pid (the single
-  non-shell process of `pane.process_info`), and with several targets only when Herdr reports the pane
-  idle. No match, several matches, no fingerprint or no foreground report means no composer wake, with
+  only to the one target whose fingerprint pid is among Herdr's pane foreground processes (the non-shell
+  entries of `pane.process_info`; a harness launcher and its native child, and any helper the harness
+  runs in its foreground process group, are all foreground), and with several targets only when Herdr
+  reports the pane idle. Membership is exact pid equality: an ancestor or descendant of a foreground
+  process is not a match. No match, several matches, no fingerprint or no foreground report means no composer wake, with
   no fallback to the latest claim or touch, even for a seat with one target (nothing is guessed, and the
   refusal is pre-send so the reminder ladder does not climb). Only a reservation that names no targets
   (a legacy source) keeps the single-harness rule. A soft poke follows the same targets and rule.
+  Verified 2026-10-11 (`evidence/ht-54r.89/summary.md`, derived fingerprints, no harness logged in): the
+  fingerprint pid is a foreground process for Claude 2.1.296 (live: `CLAUDE_PID` among seven foreground
+  processes), Codex 0.162.1 native and via npm (node launcher plus native child), Hermes v0.21.5 and
+  agy 1.3.3. Unverified: any real binding row, Hermes through `herdr-threads launch`, and a harness
+  running tools. A fingerprint outside the foreground group (an ancestor or descendant) is not
+  matched and was not observed.
 - *Poke*: a soft-deadline poke is the fixed reminder
   `herdr-threads: receipt due in <N>s on <thread-ids>; run herdr-threads inbox` (thread ids only),
   submitted through the wake dispatcher and its limits to the seat's bound native agent of the bound

@@ -1,0 +1,4 @@
+sample 1: shell_pid=44313 non_shell_foreground=[44462, 44490, 46272] started_process_pid(current)=None
+sample 2: shell_pid=44313 non_shell_foreground=[44462, 44490] started_process_pid(current)=None
+sample 3: shell_pid=44313 non_shell_foreground=[44462, 44490] started_process_pid(current)=None
+candidates (harness-shaped descendants): 44490 /private/tmp/sp-ede3b852/ht-54r.89/npm/prefix/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex;

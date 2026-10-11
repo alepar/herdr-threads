@@ -1,0 +1,4 @@
+sample 1: shell_pid=43250 non_shell_foreground=[43259, 43396] started_process_pid(current)=None
+sample 2: shell_pid=43250 non_shell_foreground=[43259] started_process_pid(current)=43259
+sample 3: shell_pid=43250 non_shell_foreground=[43259] started_process_pid(current)=43259
+candidates (harness-shaped descendants): 43259 /Users/alepar/.local/bin/codex;

@@ -1208,14 +1208,15 @@ impl HostPort for NativeCli {
         self.observe_target(target, context, true)
     }
 
-    /// The pane's single non-shell foreground process from Herdr's `pane.process_info`
-    /// (advisory, unfenced; the same read the managed-launch placeholder uses). Several or no
-    /// such process: `None`, and the composer wake of a multi-binding seat does not fire.
-    fn foreground_pid(
+    /// The pane's non-shell foreground processes from Herdr's `pane.process_info` (advisory,
+    /// unfenced). The composer wake matches a binding's fingerprint pid among them; none
+    /// reported, and it does not fire. (The managed-launch placeholder keeps the stricter
+    /// single-process read, `started_process_pid`.)
+    fn foreground_pids(
         &self,
         target: &HostTargetId,
         context: &HostCallContext,
-    ) -> Result<Option<u32>, ApiError> {
+    ) -> Result<Vec<u32>, ApiError> {
         self.check_context(context)?;
         let raw = self.run_unfenced(
             &["pane", "process-info", target.as_str()],
@@ -1224,7 +1225,8 @@ impl HostPort for NativeCli {
         )?;
         Ok(serde_json::from_str(&raw)
             .ok()
-            .and_then(|response: serde_json::Value| started_process_pid(&response)))
+            .map(|response: serde_json::Value| foreground_process_pids(&response))
+            .unwrap_or_default())
     }
 
     fn observe_current_target_for_archival(
@@ -2367,6 +2369,27 @@ fn started_process_pid(response: &serde_json::Value) -> Option<u32> {
         return None;
     }
     u32::try_from(pid).ok().filter(|pid| *pid != 0)
+}
+
+/// Every foreground process of a `pane.process_info` response other than the pane's shell: the
+/// set the composer wake matches a binding's fingerprint pid against. A harness launcher and its
+/// native child (npm `codex`: `node` plus the native binary) are both foreground, so the set,
+/// not a single pid, is the evidence. Zero and overflowing pids are dropped; a malformed
+/// response gives no pids, and the composer wake then does not fire.
+fn foreground_process_pids(response: &serde_json::Value) -> Vec<u32> {
+    let Some(info) = response.pointer("/result/process_info") else {
+        return Vec::new();
+    };
+    let shell = info.get("shell_pid").and_then(serde_json::Value::as_u64);
+    info.get("foreground_processes")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|process| process.get("pid").and_then(serde_json::Value::as_u64))
+        .filter(|pid| Some(*pid) != shell)
+        .filter_map(|pid| u32::try_from(pid).ok())
+        .filter(|pid| *pid != 0)
+        .collect()
 }
 
 fn shell_prompt_returned(text: &str, kind: &str) -> Option<String> {
@@ -6060,6 +6083,40 @@ pub(crate) mod tests {
             None
         );
         assert_eq!(started_process_pid(&serde_json::json!({"error":{}})), None);
+    }
+
+    /// Live 2026-10-11 (ht-54r.89, evidence/ht-54r.89): `codex` installed with npm is a `node`
+    /// launcher plus its native child in one foreground process group (and a short-lived `git`
+    /// helper while it starts), so the pane's foreground is a set. The composer wake matches a
+    /// binding's fingerprint pid against the whole set. Kills: reading the set as `None` when
+    /// it has several members, keeping the shell, or keeping a zero or oversized pid.
+    #[test]
+    fn foreground_process_pids_are_every_non_shell_foreground_process() {
+        let info = |shell: u64, pids: &[u64]| {
+            serde_json::json!({"result":{"type":"pane_process_info","process_info":{
+                "shell_pid":shell,
+                "foreground_processes":pids.iter().map(|pid| serde_json::json!({
+                    "pid":pid,"name":"p","argv0":"p","argv":["p"],"cmdline":"p"
+                })).collect::<Vec<_>>()
+            }}})
+        };
+        assert_eq!(foreground_process_pids(&info(10, &[20, 21])), vec![20, 21]);
+        assert_eq!(
+            foreground_process_pids(&info(10, &[10, 20, 21])),
+            vec![20, 21],
+            "the shell is not a candidate"
+        );
+        assert_eq!(foreground_process_pids(&info(10, &[20])), vec![20]);
+        assert_eq!(foreground_process_pids(&info(10, &[10])), Vec::<u32>::new());
+        assert_eq!(
+            foreground_process_pids(&info(10, &[0, 20, u64::from(u32::MAX) + 1])),
+            vec![20],
+            "zero and overflowing pids are dropped"
+        );
+        assert_eq!(
+            foreground_process_pids(&serde_json::json!({"error":{}})),
+            Vec::<u32>::new()
+        );
     }
 
     /// Live 2026-10-01 against Herdr 0.9.1 (stand-in `codex` through

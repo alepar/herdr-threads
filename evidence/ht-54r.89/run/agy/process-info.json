@@ -1,0 +1,1 @@
+{"id":"cli:pane:process_info","result":{"process_info":{"foreground_process_group_id":56651,"foreground_processes":[{"argv":["/tmp/sp-ede3b852/ht-54r.89/agybin/1.3.3/agy"],"argv0":"agy","cmdline":"/tmp/sp-ede3b852/ht-54r.89/agybin/1.3.3/agy","cwd":"/private/tmp/ih.oHO4go/home","name":"agy","pid":56651}],"pane_id":"w5:p1","shell_pid":56633},"type":"pane_process_info"}}

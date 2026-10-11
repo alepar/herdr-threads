@@ -2148,7 +2148,7 @@ fn config9_foreground_and_background_agents_in_one_pane() {
         harness: None,
         targets,
     };
-    match authority.composer_choice(Some(wake_pid)) {
+    match authority.composer_choice(&[wake_pid]) {
         herdr_threads::ports::ComposerChoice::Binding(t) => assert_eq!(
             t.binding.as_str(),
             b_fg.id,
@@ -2157,12 +2157,12 @@ fn config9_foreground_and_background_agents_in_one_pane() {
         other => panic!("the foreground binding is the composer target: {other:?}"),
     }
     assert_eq!(
-        authority.composer_choice(Some(absent)),
+        authority.composer_choice(&[absent]),
         herdr_threads::ports::ComposerChoice::NoMatch,
         "no match, no composer wake"
     );
     assert_eq!(
-        authority.composer_choice(None),
+        authority.composer_choice(&[]),
         herdr_threads::ports::ComposerChoice::NoMatch,
         "several targets, no foreground pid: no composer wake"
     );

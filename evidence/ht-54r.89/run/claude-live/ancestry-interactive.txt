@@ -1,0 +1,6 @@
+# Captured by hand from the Bash tool of the live Claude session this task ran under
+# (pid ppid pgid tpgid stat comm args). CLAUDE_PID=51586 in that shell's environment.
+97204 51586 97204    0 Ss   /bin/zsh -c source .../shell-snapshots/snapshot-zsh-...sh
+51586 53834 51586 51586 S+   claude --permission-mode auto --resume <session id>
+53834  1169 53834 51586 Ss   -zsh
+ 1169  1168  1169    0 Ss   herdr server
