@@ -1,0 +1,158 @@
+diff --git a/tests/combined.rs b/tests/combined.rs
+index a10c405a..951c070f 100644
+--- a/tests/combined.rs
++++ b/tests/combined.rs
+@@ -37,6 +37,8 @@ mod host_adapter;
+ mod inbox_continuation_context;
+ #[path = "installer_integrations.rs"]
+ mod installer_integrations;
++#[path = "store/invitation_content.rs"]
++mod invitation_content;
+ #[path = "store/lazy26_prerequisite.rs"]
+ mod lazy26_prerequisite;
+ #[path = "protocol/lazy_delivery.rs"]
+diff --git a/tests/store/invitation_content.rs b/tests/store/invitation_content.rs
+new file mode 100644
+index 00000000..f6096caf
+--- /dev/null
++++ b/tests/store/invitation_content.rs
+@@ -0,0 +1,139 @@
++//! Characterizations of the serializer and linked SQLite assumptions used by
++//! invitation presentation state. These do not exercise private state guards or
++//! claim to test the complete populated-store migration.
++
++use std::collections::HashMap;
++
++use herdr_threads::protocol::MessageId;
++use rusqlite::{Connection, StatementStatus};
++
++#[test]
++fn ordinary_partial_worst_escaped_witness_preserves_exact_bytes() {
++    // Every permitted ASCII-graphic ID byte needs at most two JSON bytes;
++    // every raw UTF-8 byte needs at most six. Quotes/backslashes and NUL attain
++    // those maxima. A one-entry JSON object adds seven structural bytes.
++    let id = "\"\\".repeat(64);
++    let parsed = MessageId::parse(id.clone()).expect("128-byte graphic ID");
++    assert_eq!(parsed.as_str(), id);
++    let body = "\0".repeat(8191);
++    let partial = HashMap::from([(id.clone(), body.clone())]);
++    let json = serde_json::to_string(&partial).expect("serialize witness");
++    assert_eq!(json.len(), 49_409);
++    assert!(json.len() <= 49_415);
++    let restored: HashMap<String, String> = serde_json::from_str(&json).expect("round trip");
++    assert_eq!(restored.len(), 1);
++    assert_eq!(restored.get(&id), Some(&body));
++    assert_eq!(restored[&id].as_bytes(), vec![0; 8191]);
++
++    // The serialized cap alone is insufficient to enforce raw length <8192:
++    // the first forbidden raw length still fits exactly. D's canonical guard
++    // tests must independently cover that semantic rejection.
++    let at_raw_limit = HashMap::from([(id, "\0".repeat(8192))]);
++    assert_eq!(
++        serde_json::to_string(&at_raw_limit)
++            .expect("serialize raw-limit witness")
++            .len(),
++        49_415
++    );
++}
++
++fn populated(rows: i64) -> rusqlite::Result<Connection> {
++    let db = Connection::open_in_memory()?;
++    db.execute_batch("CREATE TABLE invitations(id INTEGER PRIMARY KEY, topic TEXT NOT NULL)")?;
++    db.execute(
++        "WITH RECURSIVE n(id) AS (SELECT 1 WHERE ?1>0 UNION ALL SELECT id+1 FROM n WHERE id<?1)
++         INSERT INTO invitations(id,topic) SELECT id,'retained topic' FROM n",
++        [rows],
++    )?;
++    Ok(db)
++}
++
++fn alter_steps(db: &Connection, sql: &str) -> rusqlite::Result<i32> {
++    let mut statement = db.prepare(sql)?;
++    statement.execute([])?;
++    Ok(statement.get_status(StatementStatus::VmStep))
++}
++
++fn quick_check_steps(db: &Connection) -> rusqlite::Result<i32> {
++    let mut statement = db.prepare("PRAGMA quick_check(invitations)")?;
++    let results = statement
++        .query_map([], |row| row.get::<_, String>(0))?
++        .collect::<rusqlite::Result<Vec<_>>>()?;
++    assert_eq!(results, ["ok"]);
++    Ok(statement.get_status(StatementStatus::VmStep))
++}
++
++#[test]
++fn linked_sqlite_default_column_alter_has_row_independent_vm_work() -> rusqlite::Result<()> {
++    let mut default_steps = Vec::new();
++    let mut checked_outer_steps = Vec::new();
++    let mut direct_check_steps = Vec::new();
++    for count in [0, 64, 4096] {
++        let db = populated(count)?;
++        let version: String = db.query_row("SELECT sqlite_version()", [], |row| row.get(0))?;
++        let steps = alter_steps(
++            &db,
++            "ALTER TABLE invitations ADD COLUMN epoch INTEGER NOT NULL DEFAULT 0",
++        )?;
++        let (retained, defaults): (i64, i64) = db.query_row(
++            "SELECT COUNT(*),COALESCE(SUM(epoch=0 AND topic='retained topic'),0) FROM invitations",
++            [],
++            |row| Ok((row.get(0)?, row.get(1)?)),
++        )?;
++        assert_eq!((retained, defaults), (count, count));
++        assert!(steps > 0, "VM counter must be active");
++        default_steps.push(steps);
++
++        let checked = populated(count)?;
++        let outer_steps = alter_steps(
++            &checked,
++            "ALTER TABLE invitations ADD COLUMN epoch INTEGER NOT NULL DEFAULT 0 CHECK(epoch>=0)",
++        )?;
++        // ALTER's CHECK validation runs a nested pragma_quick_check VDBE.
++        // Its outer statement counter is NOT a measurement of total nested
++        // work. Direct quick_check below characterizes scan work separately.
++        let scan_steps = quick_check_steps(&checked)?;
++        checked_outer_steps.push(outer_steps);
++        direct_check_steps.push(scan_steps);
++        eprintln!(
++            "sqlite_version={version} rows={count} default_alter_vm_steps={steps} checked_alter_outer_vm_steps={outer_steps} direct_quick_check_vm_steps={scan_steps} (outer CHECK counter excludes nested-work guarantee)"
++        );
++    }
++    assert_eq!(default_steps[0], default_steps[1]);
++    assert_eq!(default_steps[1], default_steps[2]);
++    assert!(checked_outer_steps.iter().all(|steps| *steps > 0));
++    assert!(direct_check_steps[1] > direct_check_steps[0]);
++    assert!(direct_check_steps[2] > direct_check_steps[1]);
++    Ok(())
++}
++
++#[test]
++fn linked_sqlite_checked_column_validates_existing_rows_and_rolls_back() -> rusqlite::Result<()> {
++    let db = populated(64)?;
++    // Default zero is valid for the new column; only the last retained row
++    // violates the cross-column CHECK. Success would silently skip old rows.
++    let error = db
++        .execute_batch(
++            "ALTER TABLE invitations ADD COLUMN epoch INTEGER NOT NULL DEFAULT 0 CHECK(epoch>=0 AND id<64)",
++        )
++        .expect_err("the existing last row must fail validation");
++    assert!(
++        error.to_string().contains("CHECK constraint failed"),
++        "expected existing-row CHECK refusal, got {error}"
++    );
++    let version: String = db.query_row("SELECT sqlite_version()", [], |row| row.get(0))?;
++    eprintln!("sqlite_version={version} checked_alter_existing_row_refusal={error}");
++    let epoch_columns: i64 = db.query_row(
++        "SELECT COUNT(*) FROM pragma_table_info('invitations') WHERE name='epoch'",
++        [],
++        |row| row.get(0),
++    )?;
++    assert_eq!(epoch_columns, 0, "failed ALTER must not leave the column");
++    let retained: i64 = db.query_row(
++        "SELECT COUNT(*) FROM invitations WHERE topic='retained topic'",
++        [],
++        |row| row.get(0),
++    )?;
++    assert_eq!(retained, 64);
++    Ok(())
++}
