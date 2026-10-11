@@ -980,7 +980,7 @@ mod activation {
             assert_eq!(startup.code, Some(0), "{}", startup.stderr);
             let db = self.fx.db();
             let origin: CallerClaim = db.query_row("SELECT seat_id,generation,execution_id FROM occupant_bindings WHERE target_id='w9:p2' AND ended_at IS NULL", [], |row| {
-                Ok(CallerClaim { instance: self.fx.instance.to_string(), seat: herdr_threads::protocol::ids::SeatId::new(row.get::<_,String>(0)?), binding_generation: row.get(1)?,
+                Ok(CallerClaim { instance: self.fx.instance.to_string(), seat: herdr_threads::protocol::ids::SeatId::new(row.get::<_,String>(0)?), binding_generation: u64::try_from(row.get::<_, i64>(1)?).expect("canonical binding generation is nonnegative"),
                     role: herdr_threads::protocol::authority::CallerRole::TopLevel, harness: herdr_threads::protocol::authority::Harness::Claude,
                     native_session: herdr_threads::protocol::ids::NativeSessionId::new("origin-session"), execution: herdr_threads::protocol::ids::ExecutionId::new(row.get::<_,String>(2)?), target: herdr_threads::protocol::ids::HostTargetId::new("w9:p2") })
             }).unwrap();
