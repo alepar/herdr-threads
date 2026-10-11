@@ -54,7 +54,8 @@ pub fn prepare_automatic<C: crate::ports::LocalClient + ?Sized>(
         return Err(fail("invalid automatic bootstrap target or channel"));
     }
     let label = request.new_tab.as_ref().unwrap();
-    // Any launch-capable adapter: the automatic plan freezes the adapter's own startup input.
+    // Any launch-capable adapter whose composition launches the caller arguments unchanged
+    // (checked after preflight below): the automatic plan freezes the adapter's own startup input.
     let harness = request
         .kind
         .as_deref()
@@ -180,7 +181,20 @@ pub fn prepare_automatic<C: crate::ports::LocalClient + ?Sized>(
         },
     )
     .map_err(fail)?;
-    preflight_automatic_launch_request(&identity)?;
+    let effective = preflight_automatic_launch_request(&identity)?;
+    // Completion validates the retained native argv against the applied caller argv, not a
+    // frozen composition, so the automatic plan admits only an adapter whose composition
+    // launches those arguments unchanged. Others take the explicit-channel V2 route.
+    if crate::harness::launch::compose_bootstrap_v2_argv(
+        identity.plan.payload.launch.harness,
+        effective.argv.clone(),
+    )? != effective.argv
+    {
+        return Err(super::unsupported(
+            "automatic new-tab handoff needs an adapter that launches the caller arguments \
+             unchanged; add --new-thread or --thread for an explicit channel",
+        ));
+    }
     Ok(identity)
 }
 
