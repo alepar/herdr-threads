@@ -1,7 +1,7 @@
 # super-auto run — 2026-10-09-session-keyed-seat-bindings
 
 flags: planOneShot=f skipPlanRoast=f skipCodeRoast=f autonomous=t
-phase: code
+phase: roast-code
 codeMechanism: Workflow
 
 idea: Goal: implement the new herdr-threads seat-bindings model we designed in this session, absorbing the Hermes global-enrollment work (ht-4ne, branch super-auto/hermes-global-enrollment, unmerged) it sprang from. Flags: planOneShot=false (interactive Mode A design for remaining questions), skipPlanRoast=false, skipCodeRoast=false, autonomous=true from after the design. The Codex CODEX_EXEC_SERVER_URL pane-env installer step runs separately on branch codex-daemon-env and is out of scope here.
@@ -13,6 +13,19 @@ roastDesignRound: 2
 graph-pass: depth 7→6 · width 3.6→4.2 · applied 7 · parked 0 (human-approved; summary.rs split declined)
 stepBackDesign-round-1: patch — four clusters (supersede rule, V29 row classes, human-seat transitions, claim-source completeness), no recurrence; root goal stands
 roast-design: 2026-10-10-session-keyed-seat-bindings-roast-design-1.md, 2026-10-10-session-keyed-seat-bindings-roast-design-2.md
+
+roastCodeRound: 1
+codeBuckets:
+  completed: ht-54r.1 ht-54r.2 ht-54r.3 ht-54r.4 ht-54r.5 ht-54r.6 ht-54r.7 ht-54r.8 ht-54r.9 ht-54r.10 ht-54r.11 ht-54r.12 ht-54r.13 ht-54r.14 ht-54r.15 ht-54r.16 ht-54r.17 ht-54r.18 ht-54r.20 ht-54r.21 ht-54r.22 ht-54r.23 ht-54r.24 ht-54r.39
+  escalated: ht-54r.19
+  pendingRetry: ht-54r.25
+  parked: ht-54r.5 ht-54r.12
+  stalled: false
+  review: not ready (F1 lazy inbox per-seat not per-binding; F2 subagent display/advance broken (ht-6v2); F3 display-ACK refused for cooperative_env_session bindings; 12 deterministic test failures; ht-54r.19 smoke + ht-54r.25 sweep not landed; ht-ozo /clear wake model undecided)
+  sweep: SWEEP DEFERRED (caller-owned)
+  slowness: round 1 hook.rs hot-file cap raised to 4; merge queue peaked at 3
+  worktreesKept: .worktrees/super-auto-session-keyed-seat-bindings--task-ht-54r.19 — task-ht-54r.19 not merged (BLOCKED on ht-6v2)
+  processSweep: stopped 0 · survived 0
 
 approvals:
 - top-split · human · ht-54r.1 LEAF, ht-54r.2 LEAF, ht-54r.3 LEAF, ht-54r.4 LEAF, ht-54r.5 LEAF, ht-54r.6 LEAF, ht-54r.7 LEAF, ht-54r.8 LEAF, ht-54r.9 LEAF, ht-54r.10 LEAF, ht-54r.11 LEAF, ht-54r.12 LEAF, ht-54r.13 LEAF, ht-54r.14 LEAF, ht-54r.15 LEAF, ht-54r.16 LEAF, ht-54r.17 LEAF, ht-54r.18 LEAF, ht-54r.19 LEAF, ht-54r.20 LEAF, ht-54r.21 LEAF, ht-54r.22 LEAF, ht-54r.23 LEAF
