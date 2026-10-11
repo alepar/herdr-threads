@@ -1440,7 +1440,32 @@
       "tests/store/queries.rs",
       "src/protocol/output_compact.rs",
       "tests/cli/lazy_display.rs",
-      "tests/cli/output.rs"
+      "tests/cli/output.rs",
+      "migrations/0040_invitation_presentation.sql",
+      "src/store/schema.rs",
+      "src/store/invitation_content.rs",
+      "src/store/mod.rs",
+      "src/store/control.rs",
+      "src/store/service_controls.rs",
+      "src/protocol/delivery.rs",
+      "src/protocol/commands.rs",
+      "src/protocol/capabilities.rs",
+      "src/service/delivery_presentation.rs",
+      "src/service/mod.rs",
+      "src/service/dispatch.rs",
+      "src/delivery/invitation.rs",
+      "src/delivery/mod.rs",
+      "src/daemon/control.rs",
+      "src/daemon/transport/watch_connection.rs",
+      "tests/protocol/delivery.rs",
+      "tests/protocol/capabilities.rs",
+      "tests/store/invitation_content.rs",
+      "tests/store/control.rs",
+      "tests/store/facade.rs",
+      "tests/service/delivery_presentation.rs",
+      "tests/daemon/watch_connection.rs",
+      "tests/daemon/control.rs",
+      "tests/cli/hook.rs"
     ]
   }
 ]
