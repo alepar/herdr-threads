@@ -6,3 +6,5 @@ Observed main target: workspace w4, tab w4:t1 labeled main, pane w4:p1, canonica
 Established compatible project thread: dev-herdr-threads, taQXwBH7X. Parent joined; main target joined at inspection. Ownership/scope notification mjJm4W2P1 sent there. Revalidate target participation before final --nudge notice with branch, exact code tip, verification and report path.
 
 Original design coordinator seePN0MKW in handoff-redesign teAA2NJVh is office/mod wZ:p1, not the project's main tab. Autonomous user scope was relayed there as m5Yy4QGJy; final main notification goes to project coordination as above.
+
+Parent coordination update: project main seat sRpHoWRVk remains joined taQXwBH7X at w4:t1/p1; parent sent material composition update mmCnxHW49 under herdr-threads skill. Provisional31..38 are local composition choices, not reservations over other work. No subagent thread actions or reply/polling; final ready notification remains parent-owned.
