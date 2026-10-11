@@ -2393,10 +2393,13 @@ fn presentation_v2_service_requirement_attach_release_fresh_replacement_keeps_ex
                         assert_eq!(required.accepted_at, None);
                         format!(
                             "herdr-threads accept-required {} --invitation {} --requirement {} --revision {}",
-                            thread, id, required.requirement, required.revision
+                            thread.as_str(),
+                            id.as_str(),
+                            required.requirement.as_str(),
+                            required.revision
                         )
                     } else {
-                        format!("herdr-threads accept {thread}")
+                        format!("herdr-threads accept {}", thread.as_str())
                     };
                     let expected_body =
                         format!("{TOPIC}\ngoal: {GOAL}\ndeadline: {deadline}\nnext: {command}");
@@ -2417,10 +2420,11 @@ fn presentation_v2_service_requirement_attach_release_fresh_replacement_keeps_ex
                     );
                     crate::cli::commands::parse_argv(argv)
                         .expect("rendered argv parses without executing acceptance");
-                    assert!(
-                        page.text
-                            .contains(&format!("[herdr-threads] invitation {id} in {thread}"))
-                    );
+                    assert!(page.text.contains(&format!(
+                        "[herdr-threads] invitation {} in {}",
+                        id.as_str(),
+                        thread.as_str()
+                    )));
                     assert!(
                         page.text
                             .contains(&format!("  {}", expected_body.replace('\n', "\n  ")))
