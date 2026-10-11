@@ -2453,6 +2453,8 @@ pub(super) fn pull(
     let eligible:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM invitation_presentation_items INDEXED BY invitation_presentation_revisit WHERE seat_id=?1 AND consumer=?2 AND generation=?3 AND required_render_bytes<=?4)",params![claim.seat.as_str(),consumer.as_str(),state.generation,standalone as i64],|r|r.get(0)).map_err(store_error)?;
     let nonordinary_more = publications.more
         || proof.more
+        // Relevance preceded notice settlement; revisit this active episode boundedly.
+        || (!carried_notices.is_empty() && controls.active_epoch.is_some())
         || controls.pending().is_some()
         || eligible
         || state.dirty_after < state.dirty_high
