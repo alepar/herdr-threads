@@ -50,10 +50,16 @@ const BIN: &str = env!("CARGO_BIN_EXE_herdr-threads");
 const PANE_A: &str = "w1:p1";
 const PANE_B: &str = "w1:p2";
 const SESSION_B: &str = "SB";
+const PANE_C: &str = "w1:p3";
+const SESSION_C: &str = "SC";
 
-/// The harness session running in `pane`: B's registered one, or the stand-in agent's (A).
+/// The harness session running in `pane`: B's or C's registered one, or the stand-in agent's (A).
 fn session_of(pane: &str) -> &'static str {
-    if pane == PANE_B { SESSION_B } else { "SA" }
+    match pane {
+        PANE_B => SESSION_B,
+        PANE_C => SESSION_C,
+        _ => "SA",
+    }
 }
 /// A step the sweep waits for; generous because the suite shares the machine.
 const STEP: Duration = Duration::from_secs(20);
@@ -2542,8 +2548,6 @@ fn watch_admission_over_cap_refuses_busy() {
 /// submit it into an idle session), while the affected seat's watch does.
 #[test]
 fn other_seat_overdue_transitions_raise_no_mod_attention_for_a_bystander() {
-    const PANE_C: &str = "w1:p3";
-    const SESSION_C: &str = "SC";
     let rig = Rig::new();
     rig.host.set_panes(vec![
         pane(PANE_A, "term-a"),
