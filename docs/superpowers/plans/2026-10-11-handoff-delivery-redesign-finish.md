@@ -70,6 +70,8 @@ The audits additionally found offer-ledger exhaustion after canonical settlement
 
 Prepared Watch/elected AGY activation tests are being compiled on the inactive source while design review proceeds. This preparation does not authorize advertisement or mark Task3 complete. Task2 corrected-source whole/schema/interface clearance still precedes the production capability change.
 
+Corrected D31e58797 affected sweep passes127/127 (8.847s), including full-capacity quiet/due continuation, bounded negative caches, actual V1 overlap, real file-backed39/40 upgrades, actual all13 source SQL/VM observers and Watch relay cleanup/order regressions. Capacity and Watch helper scoped rereviews are SpecPASS/QualityPASS; leaks0. Strict all-target/all-feature lint passed89s broad rebuild; a controlled single-source touch passed21.89s, preserving the broad timing history. Default-feature gate passed20.40s; harness-neutral passed0 violations. Fresh cumulative whole/schema/interface reviews cover80paths with61exact unchanged blobs and19changed paths. Actual elected AGY4 and Watch5 cases each fail specifically on real missing capability advertisement before active setup. One prepared lazy-only Watch oracle incorrectly waits for a tokenless page Confirm; the source-only author is correcting it before activation. No active-path or completed-D claim follows from these checks.
+
 ## Workspace and ownership map
 
 Let ROOT be `/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign`.
@@ -100,10 +102,10 @@ Let ROOT be `/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-red
 
 **Interfaces:** Existing `bounded_private_text(row, index, limit) -> rusqlite::Result<String>` checks borrowed SQLite TEXT bytes before allocation; `private_read_error` maps malformed private state to `StoreCorrupt`. `InvitationId::parse` validates nonempty ASCII-graphic IDs of at most 128 bytes. No public wire or schema changes.
 
-- [ ] Add one parameterized real-store regression exercising cleanup, dirty sizing and revisit reads independently. Start from `fixture`, `pull_seat`, `canonical_lazy_invitation_backlog`, and a valid admitted Hook page so the private item exists. Isolate the selected branch by its consumer frontiers (`cleanup_after`, `dirty_after/dirty_high`, revisit byte/ordinal frontiers). For each branch corrupt only the private item's ID, using an explicitly scoped foreign-key-disabled repair connection where necessary, then restore/check connection settings.
-- [ ] Cover empty, 129-byte, ASCII whitespace/control, non-ASCII, invalid UTF-8 TEXT and wrong-type values when the STRICT schema permits constructing them through the corruption fixture. Keep an exact 128-byte valid-ID control. Snapshot private consumer/item rows and canonical invitation/receipt/warning state after corruption but before the operation. Require `StoreCorrupt`, no panic and byte-identical snapshots after refusal. Do not infer preallocation safety from the returned error: inspect ordering as well.
-- [ ] Run the new exact test and the existing stale replay test before implementation. Record actual failure and selected counts. A panic/deserialize error is meaningful RED; a fixture that never reaches the intended read is not.
-- [ ] Replace all three reads with `bounded_private_text(r, 0, 128)` and use `.map_err(private_read_error)` for conversion failures. Validate IDs fallibly before cursor advancement or SQL effects; use the following conversion instead of `InvitationId::new`:
+- [x] Add one parameterized real-store regression exercising cleanup, dirty sizing and revisit reads independently. Start from `fixture`, `pull_seat`, `canonical_lazy_invitation_backlog`, and a valid admitted Hook page so the private item exists. Isolate the selected branch by its consumer frontiers (`cleanup_after`, `dirty_after/dirty_high`, revisit byte/ordinal frontiers). For each branch corrupt only the private item's ID, using an explicitly scoped foreign-key-disabled repair connection where necessary, then restore/check connection settings.
+- [x] Cover empty, 129-byte, ASCII whitespace/control, non-ASCII, invalid UTF-8 TEXT and wrong-type values when the STRICT schema permits constructing them through the corruption fixture. Keep an exact 128-byte valid-ID control. Snapshot private consumer/item rows and canonical invitation/receipt/warning state after corruption but before the operation. Require `StoreCorrupt`, no panic and byte-identical snapshots after refusal. Do not infer preallocation safety from the returned error: inspect ordering as well.
+- [x] Run the new exact test and the existing stale replay test before implementation. Record actual failure and selected counts. A panic/deserialize error is meaningful RED; a fixture that never reaches the intended read is not.
+- [x] Replace all three reads with `bounded_private_text(r, 0, 128)` and use `.map_err(private_read_error)` for conversion failures. Validate IDs fallibly before cursor advancement or SQL effects; use the following conversion instead of `InvitationId::new`:
 
 ```rust
 let id = InvitationId::parse(id)
@@ -112,7 +114,7 @@ let id = InvitationId::parse(id)
 
 Cleanup binds `id.as_str()` only after validation. Dirty/revisit candidates store the parsed ID. Keep visit quotas, index ordering and transaction rollback unchanged. Audit adjacent private readers for the same pattern without extending this into canonical caller verification.
 
-- [ ] Correct the replay test's raw request by supplying the settled Hook selector:
+- [x] Correct the replay test's raw request by supplying the settled Hook selector:
 
 ```rust
 let wire = json!({"kind":"delivery_pull_v2","args":{
@@ -125,6 +127,8 @@ Compare `data.status` with `not_current_page`, `confirmed`, and `already_confirm
 
 - [ ] Audit every changed raw V2 JSON producer and Confirm assertion against `src/protocol/delivery.rs`. Build a consolidated affected service selection including all presentation tests, not only the prior 24. Run the new regressions, consolidated selection and affected private/schema/owner tests; record discovered/executed/ignored counts and exact source.
 - [ ] Run fmt, strict clippy and harness-neutral checks. Freeze corrected D, regenerate complete cumulative/delta review packages, and obtain final whole/schema/interface verdicts naming the corrected SHA. Include truthful commit trailer paths and text-size accounting for any new model-visible error text.
+
+- [ ] Complete the reviewed capacity refinement in `finish-capacity-design.md`: bounded terminal reclamation, quiet parked carry, finite due-known traversal, retained cross-route history, explicit work/byte/cache proof, actual Watch continuation and independent exact-successor clearance. The necessary run-ID checker correction is separately tests-first reviewed; it changes only scoped verification behavior.
 
 **Exit:** No unresolved D correctness findings; all affected service tests have dispositions and executed evidence. The new capability remains unadvertised through this gate.
 
