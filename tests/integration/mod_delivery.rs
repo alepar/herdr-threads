@@ -306,9 +306,7 @@ fn collect(output: std::process::Output) -> Out {
 
 fn diagnostic_text(value: &str, limit: usize) -> Value {
     let mut end = value.len().min(limit);
-    while !value.is_char_boundary(end) {
-        end -= 1;
-    }
+    while !value.is_char_boundary(end) { end -= 1; }
     json!({"bytes": value.len(), "prefix": &value[..end], "truncated": end < value.len()})
 }
 
@@ -523,9 +521,7 @@ impl Rig {
             if saved.len() < 8 {
                 let text = info.to_string();
                 let mut end = text.len().min(8192);
-                while !text.is_char_boundary(end) {
-                    end -= 1;
-                }
+                while !text.is_char_boundary(end) { end -= 1; }
                 saved.push(text[..end].to_owned());
             }
             drop(saved);
@@ -542,17 +538,10 @@ impl Rig {
     fn require_advertised_presentation(&self) {
         use herdr_threads::{
             daemon::ownership::{read_descriptor, read_existing_namespace},
-            protocol::{
-                commands::Command,
-                results::CommandResult,
-                wire::{PROTOCOL_VERSION, WireRequest, WireResponse},
-            },
+            protocol::{commands::Command, results::CommandResult, wire::{WireRequest, WireResponse, PROTOCOL_VERSION}},
         };
-        let descriptor = read_descriptor(
-            &self.paths,
-            read_existing_namespace(&self.paths).unwrap().unwrap(),
-        )
-        .unwrap();
+        let descriptor = read_descriptor(&self.paths,
+            read_existing_namespace(&self.paths).unwrap().unwrap()).unwrap();
         let request = WireRequest {
             version: PROTOCOL_VERSION,
             request_id: uuid::Uuid::new_v4().to_string(),
@@ -564,18 +553,14 @@ impl Rig {
         let mut socket = UnixStream::connect(&descriptor.endpoint).unwrap();
         socket.set_read_timeout(Some(STEP)).unwrap();
         activation_write(&mut socket, &serde_json::to_vec(&request).unwrap()).unwrap();
-        let response: WireResponse =
-            serde_json::from_slice(&activation_read(&mut socket).unwrap()).unwrap();
+        let response: WireResponse = serde_json::from_slice(&activation_read(&mut socket).unwrap()).unwrap();
         assert!(response.correlates_to(&request, request.expected_boot.as_deref()));
         let Ok(CommandResult::Capabilities(list)) = response.result else {
             panic!("actual elected Capabilities route refused before activation setup");
         };
-        assert!(
-            list.capabilities.iter().any(|name| {
-                name == herdr_threads::protocol::capabilities::DELIVERY_PRESENTATION_V2
-            }),
-            "actual elected Capabilities must advertise presentation V2 before activation setup"
-        );
+        assert!(list.capabilities.iter().any(|name| {
+            name == herdr_threads::protocol::capabilities::DELIVERY_PRESENTATION_V2
+        }), "actual elected Capabilities must advertise presentation V2 before activation setup");
     }
 
     fn stop_daemon(&mut self) {
@@ -1034,42 +1019,23 @@ impl Rig {
     /// Query errors are data, so diagnostics cannot replace the original panic.
     fn setup_wake_diagnostics(&self) -> Value {
         let db = match rusqlite::Connection::open_with_flags(
-            &self.paths.database_path,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+            &self.paths.database_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
         ) {
             Ok(db) => db,
-            Err(error) => {
-                return json!({"read_error": error.to_string(), "SessionStart": self.setup_hook});
-            }
+            Err(error) => return json!({"read_error": error.to_string(), "SessionStart": self.setup_hook}),
         };
         let _ = db.busy_timeout(Duration::from_millis(100));
         let mut result = serde_json::Map::new();
         result.insert("SessionStart".into(), self.setup_hook.clone());
         for (name, query) in [
-            (
-                "bootstrap_invitation",
-                "SELECT id,thread_id,seat_id,state,confirmation,deadline_at FROM invitations WHERE seat_id=?1 ORDER BY ordinal DESC LIMIT 2",
-            ),
-            (
-                "binding",
-                "SELECT generation,target_generation,target_id,terminal_id,incarnation,host_boot,host_epoch,harness,native_session,observation_provenance,registered_at,ended_at FROM occupant_bindings WHERE seat_id=?1 ORDER BY ordinal DESC LIMIT 2",
-            ),
-            (
-                "seat",
-                "SELECT id,state,generation,target_generation,target_id,structural_terminal_id,structural_incarnation,structural_host_boot,structural_host_epoch FROM seats WHERE id=?1 LIMIT 1",
-            ),
-            (
-                "wake",
-                "SELECT reason_bits,binding_generation,retry_step,reservation_id,last_outcome,attention_version,checkpoint_version FROM wake_work WHERE seat_id=?1 LIMIT 1",
-            ),
+            ("bootstrap_invitation", "SELECT id,thread_id,seat_id,state,confirmation,deadline_at FROM invitations WHERE seat_id=?1 ORDER BY ordinal DESC LIMIT 2"),
+            ("binding", "SELECT generation,target_generation,target_id,terminal_id,incarnation,host_boot,host_epoch,harness,native_session,observation_provenance,registered_at,ended_at FROM occupant_bindings WHERE seat_id=?1 ORDER BY ordinal DESC LIMIT 2"),
+            ("seat", "SELECT id,state,generation,target_generation,target_id,structural_terminal_id,structural_incarnation,structural_host_boot,structural_host_epoch FROM seats WHERE id=?1 LIMIT 1"),
+            ("wake", "SELECT reason_bits,binding_generation,retry_step,reservation_id,last_outcome,attention_version,checkpoint_version FROM wake_work WHERE seat_id=?1 LIMIT 1"),
         ] {
             let rows = (|| -> rusqlite::Result<Vec<Value>> {
                 let mut statement = db.prepare(query)?;
-                let columns: Vec<_> = statement
-                    .column_names()
-                    .iter()
-                    .map(|name| (*name).to_owned())
-                    .collect();
+                let columns: Vec<_> = statement.column_names().iter().map(|name| (*name).to_owned()).collect();
                 let rows = statement.query_map([&self.b], |row| {
                     let mut fields = serde_json::Map::new();
                     for (index, name) in columns.iter().enumerate() {
@@ -1077,12 +1043,8 @@ impl Rig {
                             rusqlite::types::ValueRef::Null => Value::Null,
                             rusqlite::types::ValueRef::Integer(value) => json!(value),
                             rusqlite::types::ValueRef::Real(value) => json!(value),
-                            rusqlite::types::ValueRef::Text(value) => {
-                                diagnostic_text(&String::from_utf8_lossy(value), 256)
-                            }
-                            rusqlite::types::ValueRef::Blob(value) => {
-                                json!({"blob_bytes": value.len()})
-                            }
+                            rusqlite::types::ValueRef::Text(value) => diagnostic_text(&String::from_utf8_lossy(value), 256),
+                            rusqlite::types::ValueRef::Blob(value) => json!({"blob_bytes": value.len()}),
                         };
                         fields.insert(name.clone(), value);
                     }
@@ -1090,13 +1052,10 @@ impl Rig {
                 })?;
                 rows.collect()
             })();
-            result.insert(
-                name.into(),
-                match rows {
-                    Ok(rows) => json!(rows),
-                    Err(error) => json!({"read_error": error.to_string()}),
-                },
-            );
+            result.insert(name.into(), match rows {
+                Ok(rows) => json!(rows),
+                Err(error) => json!({"read_error": error.to_string()}),
+            });
         }
         Value::Object(result)
     }
@@ -1107,12 +1066,8 @@ impl Rig {
         while self.host.prompts_since(mark, pane) == 0 {
             if Instant::now() >= until {
                 let calls: Vec<_> = self.host.calls.lock().unwrap()[mark..]
-                    .iter()
-                    .rev()
-                    .take(8)
-                    .map(|(method, params)| {
-                        format!("{method} {}", diagnostic_text(&params.to_string(), 512))
-                    })
+                    .iter().rev().take(8)
+                    .map(|(method, params)| format!("{method} {}", diagnostic_text(&params.to_string(), 512)))
                     .collect();
                 panic!(
                     "timed out waiting for a native wake prompt; bounded setup diagnostics: {}; last 8 host calls since the mark: {calls:?}",
@@ -1180,12 +1135,7 @@ impl Drop for Rig {
         }
         self.stop_daemon();
         if std::thread::panicking() {
-            for panic in self
-                .panics
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .iter()
-            {
+            for panic in self.panics.lock().unwrap_or_else(|error| error.into_inner()).iter() {
                 eprintln!("{panic}");
             }
         }
@@ -1232,10 +1182,7 @@ impl Watch {
         let reader = std::thread::spawn(move || {
             let mut reader = BufReader::new(stdout);
             let mut line = Vec::new();
-            while reader
-                .read_until(b'\n', &mut line)
-                .is_ok_and(|len| len != 0)
-            {
+            while reader.read_until(b'\n', &mut line).is_ok_and(|len| len != 0) {
                 {
                     let mut bytes = sink.lock().unwrap();
                     // Only the activation proof reads this bounded evidence.
@@ -1426,9 +1373,7 @@ struct CapacityFlow {
 
 impl CapacityFlow {
     fn lock(&self) -> MutexGuard<'_, CapacityFlowState> {
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     fn fail(&self, state: &mut CapacityFlowState, message: String) -> std::io::Error {
@@ -1458,10 +1403,7 @@ impl CapacityFlow {
         state.ready.push(index);
         self.changed.notify_all();
         while !state.stop && state.released < ordinal {
-            state = self
-                .changed
-                .wait(state)
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state = self.changed.wait(state).unwrap_or_else(std::sync::PoisonError::into_inner);
         }
         Ok(!state.stop)
     }
@@ -1471,29 +1413,18 @@ impl CapacityFlow {
         state.attention_seen += 1;
         self.changed.notify_all();
         while !state.stop && state.attention_credits == 0 {
-            state = self
-                .changed
-                .wait(state)
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state = self.changed.wait(state).unwrap_or_else(std::sync::PoisonError::into_inner);
         }
-        if state.stop {
-            return Ok(false);
-        }
+        if state.stop { return Ok(false); }
         if state.attention_expected_requests != Some(state.requests.len()) {
-            return Err(self.fail(
-                &mut state,
-                "extra real Pull before Attention forwarding".into(),
-            ));
+            return Err(self.fail(&mut state, "extra real Pull before Attention forwarding".into()));
         }
         state.attention_credits -= 1;
         // Serialize actual successful frame output with Pull observation. A
         // permission alone, partial output, or failed write is never a marker.
         // Drop shuts down sockets before acquiring this lock to interrupt I/O.
         if let Err(error) = activation_write(downstream, body) {
-            return Err(self.fail(
-                &mut state,
-                format!("real Attention forwarding failed: {error}"),
-            ));
+            return Err(self.fail(&mut state, format!("real Attention forwarding failed: {error}")));
         }
         state.order += 1;
         let order = state.order;
@@ -1508,31 +1439,22 @@ impl CapacityFlow {
 
     fn wait_reply_for(&self, ordinal: usize, timeout: Duration) -> usize {
         let state = self.lock();
-        let (state, _) = self
-            .changed
-            .wait_timeout_while(state, timeout, |state| {
-                !state.stop && state.ready.len() < ordinal
-            })
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (state, _) = self.changed.wait_timeout_while(state, timeout, |state| {
+            !state.stop && state.ready.len() < ordinal
+        }).unwrap_or_else(std::sync::PoisonError::into_inner);
         let (index, requests, failure) = (
             state.ready.get(ordinal.wrapping_sub(1)).copied(),
-            state.requests.clone(),
-            state.failure.clone(),
+            state.requests.clone(), state.failure.clone(),
         );
         drop(state);
-        assert!(
-            failure.is_none(),
-            "capacity relay worker failed: {failure:?}"
-        );
+        assert!(failure.is_none(), "capacity relay worker failed: {failure:?}");
         index.unwrap_or_else(|| panic!("expected real Watch Pull {ordinal}; requests={requests:?}"))
     }
 
     fn release_reply(&self, ordinal: usize) {
         let mut state = self.lock();
         let expected = state.released + 1;
-        if expected == ordinal {
-            state.released = ordinal;
-        }
+        if expected == ordinal { state.released = ordinal; }
         self.changed.notify_all();
         drop(state);
         assert_eq!(expected, ordinal);
@@ -1540,17 +1462,11 @@ impl CapacityFlow {
 
     fn release_attention_after(&self, ordinal: usize) {
         let state = self.lock();
-        let (mut state, _) = self
-            .changed
-            .wait_timeout_while(state, STEP, |state| {
-                !state.stop && state.attention_seen == 0
-            })
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (mut state, _) = self.changed.wait_timeout_while(state, STEP, |state| {
+            !state.stop && state.attention_seen == 0
+        }).unwrap_or_else(std::sync::PoisonError::into_inner);
         let (seen, requests, forwarded, failure) = (
-            state.attention_seen,
-            state.requests.len(),
-            state.attention_forwarded.len(),
-            state.failure.clone(),
+            state.attention_seen, state.requests.len(), state.attention_forwarded.len(), state.failure.clone(),
         );
         if failure.is_none() && seen > 0 && requests == ordinal && forwarded == 0 {
             state.attention_expected_requests = Some(ordinal);
@@ -1558,35 +1474,23 @@ impl CapacityFlow {
             self.changed.notify_all();
         }
         drop(state);
-        assert!(
-            failure.is_none(),
-            "capacity relay worker failed: {failure:?}"
-        );
+        assert!(failure.is_none(), "capacity relay worker failed: {failure:?}");
         assert!(seen > 0, "expected an actual queued daemon Attention");
-        assert_eq!(
-            requests, ordinal,
-            "no new pull before a real channel stimulus"
-        );
+        assert_eq!(requests, ordinal, "no new pull before a real channel stimulus");
         assert_eq!(forwarded, 0, "initial drain had no channel input");
     }
 
     fn assert_resumed_after_attention(&self, ordinal: usize) {
         let state = self.lock();
         let (forwarded, request, failure) = (
-            state.attention_forwarded.clone(),
-            state.requests.get(ordinal.wrapping_sub(1)).copied(),
+            state.attention_forwarded.clone(), state.requests.get(ordinal.wrapping_sub(1)).copied(),
             state.failure.clone(),
         );
         drop(state);
-        assert!(
-            failure.is_none(),
-            "capacity relay worker failed: {failure:?}"
-        );
+        assert!(failure.is_none(), "capacity relay worker failed: {failure:?}");
         assert_eq!(forwarded.len(), 1);
-        assert!(
-            request.is_some_and(|(_, order)| order > forwarded[0]),
-            "the actual next Pull follows the real forwarded channel frame"
-        );
+        assert!(request.is_some_and(|(_, order)| order > forwarded[0]),
+            "the actual next Pull follows the real forwarded channel frame");
     }
 
     fn stop(&self) {
@@ -1631,10 +1535,7 @@ impl ActivationRelay {
     }
 
     fn start_with_capacity(
-        rig: &Rig,
-        hold: bool,
-        fault: ConfirmFault,
-        capacity: Option<Arc<CapacityFlow>>,
+        rig: &Rig, hold: bool, fault: ConfirmFault, capacity: Option<Arc<CapacityFlow>>,
     ) -> Self {
         let endpoint = rig.paths.socket_path.clone();
         let upstream = rig.root.join("activation-upstream.sock");
@@ -1654,11 +1555,7 @@ impl ActivationRelay {
         let open: Arc<Mutex<Vec<UnixStream>>> = Arc::default();
         let used = Arc::new(AtomicBool::new(false));
         let (stopped, released, log, sockets, target) = (
-            stop.clone(),
-            release.clone(),
-            exchanges.clone(),
-            open.clone(),
-            upstream.clone(),
+            stop.clone(), release.clone(), exchanges.clone(), open.clone(), upstream.clone(),
         );
         let capacity_worker = capacity.clone();
         let worker = std::thread::spawn(move || {
@@ -1668,19 +1565,16 @@ impl ActivationRelay {
                     break;
                 }
                 let Ok(mut downstream) = incoming else { break };
-                if downstream.set_write_timeout(Some(STEP)).is_err() {
-                    break;
-                }
-                let Ok(mut upstream) = UnixStream::connect(&target) else {
-                    break;
-                };
+                if downstream.set_write_timeout(Some(STEP)).is_err() { break; }
+                let Ok(mut upstream) = UnixStream::connect(&target) else { break };
                 {
                     let mut open = sockets.lock().unwrap();
                     open.push(downstream.try_clone().unwrap());
                     open.push(upstream.try_clone().unwrap());
                 }
-                let (stopped, released, log, used) =
-                    (stopped.clone(), released.clone(), log.clone(), used.clone());
+                let (stopped, released, log, used) = (
+                    stopped.clone(), released.clone(), log.clone(), used.clone(),
+                );
                 let capacity = capacity_worker.clone();
                 threads.push(std::thread::spawn(move || {
                     let mut serve = || -> std::io::Result<()> {
@@ -1689,8 +1583,7 @@ impl ActivationRelay {
                         let control_confirm = request["command"]["kind"]
                             == "delivery_presentation_confirm_v2"
                             && request["command"]["args"]["emitted_controls"]
-                                .as_array()
-                                .is_some_and(|stamps| !stamps.is_empty());
+                                .as_array().is_some_and(|stamps| !stamps.is_empty());
                         let first = control_confirm && !used.swap(true, Ordering::SeqCst);
                         let index = {
                             let mut log = log.lock().unwrap();
@@ -1699,31 +1592,19 @@ impl ActivationRelay {
                             if index >= 256 {
                                 return Err(std::io::Error::other("activation exchange bound"));
                             }
-                            log.push(ObservedExchange {
-                                request,
-                                reply: None,
-                            });
+                            log.push(ObservedExchange { request, reply: None });
                             index
                         };
-                        let is_pull = log.lock().unwrap()[index].request["command"]["kind"]
-                            == "delivery_pull_v2";
+                        let is_pull = log.lock().unwrap()[index].request["command"]["kind"] == "delivery_pull_v2";
                         let pull_ordinal = if let Some(flow) = &capacity {
-                            if is_pull {
-                                Some(flow.start_pull(index)?)
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        };
+                            if is_pull { Some(flow.start_pull(index)?) } else { None }
+                        } else { None };
                         if first && matches!(fault, ConfirmFault::BeforeCommit) {
                             return Ok(());
                         }
                         if first && matches!(fault, ConfirmFault::None) {
                             while !released.load(Ordering::SeqCst) {
-                                if stopped.load(Ordering::SeqCst) {
-                                    return Ok(());
-                                }
+                                if stopped.load(Ordering::SeqCst) { return Ok(()) }
                                 std::thread::sleep(Duration::from_millis(5));
                             }
                         }
@@ -1740,9 +1621,7 @@ impl ActivationRelay {
                             // Keep the real child/owner live until the test replays
                             // the committed request, then simulate the lost response.
                             while !released.load(Ordering::SeqCst) {
-                                if stopped.load(Ordering::SeqCst) {
-                                    return Ok(());
-                                }
+                                if stopped.load(Ordering::SeqCst) { return Ok(()) }
                                 std::thread::sleep(Duration::from_millis(5));
                             }
                             return Ok(());
@@ -1791,21 +1670,11 @@ impl ActivationRelay {
                     let _ = upstream.shutdown(std::net::Shutdown::Both);
                 }));
             }
-            for thread in threads {
-                let _ = thread.join();
-            }
+            for thread in threads { let _ = thread.join(); }
         });
         Self {
-            endpoint,
-            upstream,
-            descriptor,
-            original_descriptor,
-            capacity,
-            stop,
-            release,
-            exchanges,
-            open,
-            worker: Some(worker),
+            endpoint, upstream, descriptor, original_descriptor, capacity, stop, release,
+            exchanges, open, worker: Some(worker),
         }
     }
 
@@ -1818,8 +1687,7 @@ impl ActivationRelay {
             self.snapshot().into_iter().find(|entry| {
                 entry.request["command"]["kind"] == "delivery_presentation_confirm_v2"
                     && entry.request["command"]["args"]["emitted_controls"]
-                        .as_array()
-                        .is_some_and(|stamps| !stamps.is_empty())
+                        .as_array().is_some_and(|stamps| !stamps.is_empty())
                     && (!replied || entry.reply.is_some())
             })
         })
@@ -1847,20 +1715,11 @@ impl Drop for ActivationRelay {
         self.stop.store(true, Ordering::SeqCst);
         self.release();
         let _ = UnixStream::connect(&self.endpoint);
-        for socket in self
-            .open
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .iter()
-        {
+        for socket in self.open.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter() {
             let _ = socket.shutdown(std::net::Shutdown::Both);
         }
-        if let Some(flow) = &self.capacity {
-            flow.stop();
-        }
-        if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
-        }
+        if let Some(flow) = &self.capacity { flow.stop(); }
+        if let Some(worker) = self.worker.take() { let _ = worker.join(); }
         let _ = fs::remove_file(&self.endpoint);
         let _ = fs::rename(&self.upstream, &self.endpoint);
         let _ = fs::write(&self.descriptor, &self.original_descriptor);
@@ -1871,10 +1730,7 @@ impl Drop for ActivationRelay {
 // Their local byte streams are helper tests, never an activation capture.
 #[test]
 fn activation_capacity_flow_oracle_unwind_restores_relay() {
-    let scratch = Scratch(PathBuf::from(format!(
-        "/private/tmp/ht-cf-{}",
-        uuid::Uuid::new_v4()
-    )));
+    let scratch = Scratch(PathBuf::from(format!("/private/tmp/ht-cf-{}", uuid::Uuid::new_v4())));
     fs::create_dir(&scratch.0).unwrap();
     let endpoint = scratch.0.join("relay.sock");
     let upstream = scratch.0.join("upstream.sock");
@@ -1892,49 +1748,24 @@ fn activation_capacity_flow_oracle_unwind_restores_relay() {
     let (socket, mut peer) = UnixStream::pair().unwrap();
     peer.set_read_timeout(Some(STEP)).unwrap();
     let relay = ActivationRelay {
-        endpoint: endpoint.clone(),
-        upstream: upstream.clone(),
-        descriptor: descriptor.clone(),
-        original_descriptor: b"original descriptor".to_vec(),
-        capacity: Some(flow.clone()),
-        stop: Arc::new(AtomicBool::new(false)),
-        release: Arc::new(AtomicBool::new(false)),
-        exchanges: Arc::default(),
-        open: Arc::new(Mutex::new(vec![socket])),
-        worker: Some(worker),
+        endpoint: endpoint.clone(), upstream: upstream.clone(), descriptor: descriptor.clone(),
+        original_descriptor: b"original descriptor".to_vec(), capacity: Some(flow.clone()),
+        stop: Arc::new(AtomicBool::new(false)), release: Arc::new(AtomicBool::new(false)),
+        exchanges: Arc::default(), open: Arc::new(Mutex::new(vec![socket])), worker: Some(worker),
     };
     assert_eq!(flow.wait_reply(1), 7);
     let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let _relay = relay;
         flow.wait_reply_for(2, Duration::ZERO);
-    }))
-    .expect_err("the missing second Pull must fail the oracle");
-    let diagnostic = failure
-        .downcast_ref::<String>()
-        .expect("original timeout diagnostic");
-    assert!(
-        diagnostic.contains("expected real Watch Pull 2"),
-        "{diagnostic}"
-    );
-    assert!(
-        !flow.state.is_poisoned(),
-        "oracle assertions release the controller lock"
-    );
-    assert!(
-        !completion.recv_timeout(STEP).unwrap().unwrap(),
-        "Drop released and joined the waiting worker"
-    );
-    assert_eq!(
-        peer.read(&mut [0; 1]).unwrap(),
-        0,
-        "Drop shut down the owned socket"
-    );
+    })).expect_err("the missing second Pull must fail the oracle");
+    let diagnostic = failure.downcast_ref::<String>().expect("original timeout diagnostic");
+    assert!(diagnostic.contains("expected real Watch Pull 2"), "{diagnostic}");
+    assert!(!flow.state.is_poisoned(), "oracle assertions release the controller lock");
+    assert!(!completion.recv_timeout(STEP).unwrap().unwrap(), "Drop released and joined the waiting worker");
+    assert_eq!(peer.read(&mut [0; 1]).unwrap(), 0, "Drop shut down the owned socket");
     assert_eq!(fs::read(&descriptor).unwrap(), b"original descriptor");
     assert!(endpoint.exists());
-    assert!(
-        !upstream.exists(),
-        "Drop restored the original socket pathname"
-    );
+    assert!(!upstream.exists(), "Drop restored the original socket pathname");
 }
 
 #[test]
@@ -1957,9 +1788,7 @@ fn activation_capacity_flow_oracle_assertions_do_not_poison() {
 fn activation_capacity_flow_stop_recovers_poison_and_releases_waiter() {
     struct StopOnDrop(Arc<CapacityFlow>);
     impl Drop for StopOnDrop {
-        fn drop(&mut self) {
-            self.0.stop();
-        }
+        fn drop(&mut self) { self.0.stop(); }
     }
     let flow = Arc::new(CapacityFlow::default());
     std::thread::scope(|scope| {
@@ -1974,32 +1803,22 @@ fn activation_capacity_flow_stop_recovers_poison_and_releases_waiter() {
         assert!(poisoned.is_err());
         assert!(flow.state.is_poisoned());
         flow.stop();
-        assert!(
-            !worker.join().unwrap().unwrap(),
-            "poison recovery releases a condvar waiter"
-        );
+        assert!(!worker.join().unwrap().unwrap(), "poison recovery releases a condvar waiter");
     });
 }
 
 #[test]
 fn activation_capacity_flow_failed_or_unwritten_attention_has_no_marker() {
-    struct FailedWrite {
-        prefix_written: bool,
-    }
+    struct FailedWrite { prefix_written: bool }
     impl Write for FailedWrite {
         fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
             if !self.prefix_written {
                 self.prefix_written = true;
                 return Ok(bytes.len());
             }
-            Err(std::io::Error::new(
-                std::io::ErrorKind::BrokenPipe,
-                "induced body write failure",
-            ))
+            Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "induced body write failure"))
         }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
+        fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
     }
     let flow = CapacityFlow::default();
     {
@@ -2009,27 +1828,14 @@ fn activation_capacity_flow_failed_or_unwritten_attention_has_no_marker() {
     flow.release_attention_after(0);
     let forwarded = flow.lock().attention_forwarded.clone();
     assert!(forwarded.is_empty(), "permission is not forwarding");
-    let mut writer = FailedWrite {
-        prefix_written: false,
-    };
-    assert!(
-        flow.forward_attention(&mut writer, b"helper bytes")
-            .is_err()
-    );
-    assert!(
-        writer.prefix_written,
-        "partial output still has no successful frame marker"
-    );
+    let mut writer = FailedWrite { prefix_written: false };
+    assert!(flow.forward_attention(&mut writer, b"helper bytes").is_err());
+    assert!(writer.prefix_written, "partial output still has no successful frame marker");
     let forwarded = flow.lock().attention_forwarded.clone();
     assert!(forwarded.is_empty(), "failed output is not forwarding");
     let failure = std::panic::catch_unwind(|| flow.wait_reply_for(1, Duration::ZERO))
         .expect_err("worker write failure must remain observable");
-    assert!(
-        failure
-            .downcast_ref::<String>()
-            .unwrap()
-            .contains("real Attention forwarding failed")
-    );
+    assert!(failure.downcast_ref::<String>().unwrap().contains("real Attention forwarding failed"));
     assert!(!flow.state.is_poisoned());
     flow.stop();
 
@@ -2038,18 +1844,9 @@ fn activation_capacity_flow_failed_or_unwritten_attention_has_no_marker() {
     flow.release_attention_after(0);
     flow.start_pull(7).unwrap();
     let mut bytes = Vec::new();
-    let error = flow
-        .forward_attention(&mut bytes, b"helper bytes")
-        .unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("extra real Pull before Attention forwarding")
-    );
-    assert!(
-        bytes.is_empty(),
-        "unexpected pre-stimulus Pull prevents frame output"
-    );
+    let error = flow.forward_attention(&mut bytes, b"helper bytes").unwrap_err();
+    assert!(error.to_string().contains("extra real Pull before Attention forwarding"));
+    assert!(bytes.is_empty(), "unexpected pre-stimulus Pull prevents frame output");
     let forwarded = flow.lock().attention_forwarded.clone();
     assert!(forwarded.is_empty());
 }
@@ -2066,39 +1863,23 @@ fn activation_capacity_flow_successful_frame_write_serializes_pull_observation()
         fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
             // Probe BEFORE each actual socket write, including the length
             // prefix: Pull observation must be excluded for all frame bytes.
-            if matches!(
-                self.flow.state.try_lock(),
-                Err(std::sync::TryLockError::WouldBlock)
-            ) {
+            if matches!(self.flow.state.try_lock(), Err(std::sync::TryLockError::WouldBlock)) {
                 self.ordered_writes += 1;
             } else {
                 self.unordered_writes += 1;
             }
             self.socket.write(bytes)
         }
-        fn flush(&mut self) -> std::io::Result<()> {
-            self.socket.flush()
-        }
+        fn flush(&mut self) -> std::io::Result<()> { self.socket.flush() }
     }
     let flow = Arc::new(CapacityFlow::default());
     flow.lock().attention_seen = 1;
     flow.release_attention_after(0);
     let (socket, mut peer) = UnixStream::pair().unwrap();
-    let mut writer = OrderedWrite {
-        socket,
-        flow: flow.clone(),
-        ordered_writes: 0,
-        unordered_writes: 0,
-    };
-    assert!(
-        flow.forward_attention(&mut writer, b"helper frame bytes")
-            .unwrap()
-    );
+    let mut writer = OrderedWrite { socket, flow: flow.clone(), ordered_writes: 0, unordered_writes: 0 };
+    assert!(flow.forward_attention(&mut writer, b"helper frame bytes").unwrap());
     assert_eq!(activation_read(&mut peer).unwrap(), b"helper frame bytes");
-    assert!(
-        writer.ordered_writes >= 2,
-        "both prefix and body writes hold the ordering lock"
-    );
+    assert!(writer.ordered_writes >= 2, "both prefix and body writes hold the ordering lock");
     assert_eq!(writer.unordered_writes, 0);
     assert_eq!(flow.start_pull(7).unwrap(), 1);
     flow.assert_resumed_after_attention(1);
@@ -2112,79 +1893,48 @@ fn activation_owner(relay: &ActivationRelay) -> String {
 
 fn activation_owner_from(relay: &ActivationRelay, start: usize) -> String {
     let log: Vec<_> = relay.snapshot().into_iter().skip(start).collect();
-    let capabilities = log
-        .iter()
-        .find(|entry| entry.request["command"]["kind"] == "capabilities" && entry.reply.is_some())
-        .expect("the watch child must discover capabilities");
+    let capabilities = log.iter().find(|entry| {
+        entry.request["command"]["kind"] == "capabilities" && entry.reply.is_some()
+    }).expect("the watch child must discover capabilities");
     let response: herdr_threads::protocol::wire::WireResponse =
         serde_json::from_value(capabilities.reply.clone().unwrap()).unwrap();
     let Ok(herdr_threads::protocol::results::CommandResult::Capabilities(list)) = response.result
-    else {
-        panic!("real capability route refused")
-    };
-    assert!(
-        list.capabilities.iter().any(|name| {
-            name == herdr_threads::protocol::capabilities::DELIVERY_PRESENTATION_V2
-        }),
-        "elected daemon must advertise presentation V2 before activation proof"
-    );
-    let accepted = log
-        .iter()
-        .find(|entry| entry.request.get("watch").is_some())
+        else { panic!("real capability route refused") };
+    assert!(list.capabilities.iter().any(|name| {
+        name == herdr_threads::protocol::capabilities::DELIVERY_PRESENTATION_V2
+    }), "elected daemon must advertise presentation V2 before activation proof");
+    let accepted = log.iter().find(|entry| entry.request.get("watch").is_some())
         .expect("same child Watch registration");
     let lease = accepted.reply.as_ref().unwrap()["outcome"]["args"]["presentation_lease"]
-        .as_str()
-        .expect("advertised same-child Accepted lease")
-        .to_owned();
-    assert!(herdr_threads::protocol::delivery::valid_presentation_token(
-        &lease
-    ));
+        .as_str().expect("advertised same-child Accepted lease").to_owned();
+    assert!(herdr_threads::protocol::delivery::valid_presentation_token(&lease));
     let log = wait_until("the advertised child's selected V2 Pull", STEP, || {
         let log: Vec<_> = relay.snapshot().into_iter().skip(start).collect();
-        log.iter()
-            .any(|entry| entry.request["command"]["kind"] == "delivery_pull_v2")
+        log.iter().any(|entry| entry.request["command"]["kind"] == "delivery_pull_v2")
             .then_some(log)
     });
-    for entry in log.iter().filter(|entry| {
-        matches!(
-            entry.request["command"]["kind"].as_str(),
-            Some("delivery_pull_v2" | "delivery_presentation_confirm_v2")
-        )
-    }) {
-        assert_eq!(
-            entry.request["command"]["args"]["claim"],
-            accepted.request["watch"]["claim"]
-        );
-        assert_eq!(
-            entry.request["command"]["args"]["presentation_lease"],
-            lease
-        );
+    for entry in log.iter().filter(|entry| matches!(
+        entry.request["command"]["kind"].as_str(),
+        Some("delivery_pull_v2" | "delivery_presentation_confirm_v2")
+    )) {
+        assert_eq!(entry.request["command"]["args"]["claim"], accepted.request["watch"]["claim"]);
+        assert_eq!(entry.request["command"]["args"]["presentation_lease"], lease);
     }
-    assert!(
-        log.iter()
-            .any(|entry| entry.request["command"]["kind"] == "delivery_pull_v2")
-    );
-    assert!(
-        !log.iter()
-            .any(|entry| entry.request["command"]["kind"] == "inbox_batch_v2")
-    );
+    assert!(log.iter().any(|entry| entry.request["command"]["kind"] == "delivery_pull_v2"));
+    assert!(!log.iter().any(|entry| entry.request["command"]["kind"] == "inbox_batch_v2"));
     lease
 }
 
 fn activation_page(relay: &ActivationRelay, confirm: &ObservedExchange) -> Value {
     let token = &confirm.request["command"]["args"]["token"];
-    relay
-        .snapshot()
-        .into_iter()
-        .filter_map(|entry| entry.reply)
+    relay.snapshot().into_iter().filter_map(|entry| entry.reply)
         .find_map(|reply| {
             let result = &reply["result"]["Ok"];
             (result["kind"] == "delivery_pulled_v2"
                 && result["data"]["kind"] == "page"
                 && result["data"]["args"]["presentation_token"] == *token)
                 .then(|| result["data"]["args"].clone())
-        })
-        .expect("actual Pull page matching child's Confirm token")
+        }).expect("actual Pull page matching child's Confirm token")
 }
 
 fn activation_pending(rig: &Rig) -> (Option<String>, Option<String>, i64) {
@@ -2194,31 +1944,46 @@ fn activation_pending(rig: &Rig) -> (Option<String>, Option<String>, i64) {
     ).unwrap()
 }
 
+fn activation_retirement_diagnostics(rig: &Rig, relay: &ActivationRelay) -> Value {
+    let (current, last, mask) = activation_pending(rig);
+    let recent: Vec<_> = relay.snapshot().into_iter().rev().filter(|entry| matches!(
+        entry.request["command"]["kind"].as_str(),
+        Some("delivery_pull_v2" | "delivery_presentation_confirm_v2")
+    )).take(6).map(|entry| {
+        let reply = entry.reply.as_ref().map(|reply| &reply["result"]["Ok"]);
+        let items: Vec<_> = reply.and_then(|reply| reply["data"]["args"]["items"].as_array())
+            .into_iter().flatten().map(|item| json!({"kind": item["kind"], "id": item["id"]})).collect();
+        json!({
+            "request": entry.request["command"]["kind"],
+            "submitted_token": entry.request["command"]["args"]["token"],
+            "submitted_controls": entry.request["command"]["args"]["emitted_controls"],
+            "reply": reply.map(|reply| json!({
+                "kind": reply["kind"], "pull_kind": reply["data"]["kind"],
+                "page_token": reply["data"]["args"]["presentation_token"],
+                "more": reply["data"]["args"]["more"], "items": items,
+                "controls": reply["data"]["args"]["emitted_controls"],
+                "status": reply["data"]["status"],
+                "acknowledged_controls": reply["data"]["acknowledged_controls"],
+            })),
+        })
+    }).collect();
+    json!({"canonical": {"current": current, "last": last, "last_confirmed_mask": mask},
+        "recent_actual_exchanges_newest_first": recent})
+}
+
 fn activation_confirm_result(reply: &Value, status: &str, controls: &Value) {
     let result = &reply["result"]["Ok"];
-    assert_eq!(
-        result["kind"], "delivery_presentation_confirmed_v2",
-        "{reply}"
-    );
+    assert_eq!(result["kind"], "delivery_presentation_confirmed_v2", "{reply}");
     assert_eq!(result["data"]["status"], status, "{reply}");
-    assert_eq!(
-        &result["data"]["acknowledged_controls"], controls,
-        "{reply}"
-    );
+    assert_eq!(&result["data"]["acknowledged_controls"], controls, "{reply}");
 }
 
 fn activation_invitation(rig: &Rig) -> String {
-    let thread = rig
-        .cli(
-            Some((&rig.a, PANE_A)),
-            &["thread", "create", "--topic", "activation invitation"],
-        )
-        .text("activation thread");
-    rig.cli(
-        Some((&rig.a, PANE_A)),
-        &["invite", &thread, "--seat", &rig.b],
-    )
-    .data("activation invitation");
+    let thread = rig.cli(
+        Some((&rig.a, PANE_A)), &["thread", "create", "--topic", "activation invitation"],
+    ).text("activation thread");
+    rig.cli(Some((&rig.a, PANE_A)), &["invite", &thread, "--seat", &rig.b])
+        .data("activation invitation");
     thread
 }
 
@@ -2228,24 +1993,16 @@ fn activation_warn(rig: &Rig) {
         daemon::ownership::{read_descriptor, read_existing_namespace},
         protocol::{
             ids::{OperationId, SeatId, ThreadId},
-            service::{
-                EnsureManagedThread, InvitationConstraint, NotificationSeverity, ServiceInvite,
-                ServiceNotify, ServiceOperation,
-            },
+            service::{EnsureManagedThread, InvitationConstraint, NotificationSeverity,
+                ServiceInvite, ServiceNotify, ServiceOperation},
             time::CallBudget,
         },
     };
-    let descriptor = read_descriptor(
-        &rig.paths,
-        read_existing_namespace(&rig.paths).unwrap().unwrap(),
-    )
-    .unwrap();
+    let descriptor = read_descriptor(&rig.paths,
+        read_existing_namespace(&rig.paths).unwrap().unwrap()).unwrap();
     let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
     let client = PersistentServiceClient::new(
-        descriptor.endpoint,
-        clock.clone(),
-        descriptor.instance_uuid,
-        Some(descriptor.boot_id),
+        descriptor.endpoint, clock.clone(), descriptor.instance_uuid, Some(descriptor.boot_id),
         ServiceIntentJournal::open(rig.root.join("activation-intents")).unwrap(),
     );
     let budget = || CallBudget {
@@ -2253,51 +2010,24 @@ fn activation_warn(rig: &Rig) {
         cancellation: Cancellation::default(),
     };
     let thread = ThreadId::new("activation-warn");
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap()
+    tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
         .block_on(async {
             client.register(&budget()).await.unwrap();
-            client
-                .submit(
-                    ServiceOperation::EnsureThread(EnsureManagedThread {
-                        thread: thread.clone(),
-                        topic: "activation Warn".into(),
-                        goal: "observe canonical notice".into(),
-                        operation: OperationId::new("ensure"),
-                    }),
-                    &budget(),
-                )
-                .await
-                .unwrap();
-            client
-                .submit(
-                    ServiceOperation::Invite(ServiceInvite {
-                        thread: thread.clone(),
-                        seat: SeatId::new(rig.b.clone()),
-                        constraint: InvitationConstraint::Ordinary,
-                        deadline_millis: Some(300_000),
-                        operation: OperationId::new("invite"),
-                    }),
-                    &budget(),
-                )
-                .await
-                .unwrap();
-            rig.cli(Some((&rig.b, PANE_B)), &["accept", thread.as_str()])
-                .data("accept Warn thread");
-            client
-                .submit(
-                    ServiceOperation::Notify(ServiceNotify {
-                        thread: thread.clone(),
-                        severity: NotificationSeverity::Warn,
-                        event_json: json!({"kind":"activation", "detail":"actual Warn notice"}),
-                        operation: OperationId::new("notify"),
-                    }),
-                    &budget(),
-                )
-                .await
-                .unwrap();
+            client.submit(ServiceOperation::EnsureThread(EnsureManagedThread {
+                thread: thread.clone(), topic: "activation Warn".into(),
+                goal: "observe canonical notice".into(), operation: OperationId::new("ensure"),
+            }), &budget()).await.unwrap();
+            client.submit(ServiceOperation::Invite(ServiceInvite {
+                thread: thread.clone(), seat: SeatId::new(rig.b.clone()),
+                constraint: InvitationConstraint::Ordinary, deadline_millis: Some(300_000),
+                operation: OperationId::new("invite"),
+            }), &budget()).await.unwrap();
+            rig.cli(Some((&rig.b, PANE_B)), &["accept", thread.as_str()]).data("accept Warn thread");
+            client.submit(ServiceOperation::Notify(ServiceNotify {
+                thread: thread.clone(), severity: NotificationSeverity::Warn,
+                event_json: json!({"kind":"activation", "detail":"actual Warn notice"}),
+                operation: OperationId::new("notify"),
+            }), &budget()).await.unwrap();
         });
     wait_until("the actual Warn notice projection", STEP, || {
         let count: i64 = rig.db().query_row(
@@ -2323,71 +2053,35 @@ fn activation_v2_elected_watch_capabilities_lease_output_confirm() {
     let lease = activation_owner(&relay);
     let confirm = relay.control_confirm(false);
     let page = activation_page(&relay, &confirm);
-    let token = confirm.request["command"]["args"]["token"]
-        .as_str()
-        .unwrap();
-    assert_eq!(
-        confirm.request["command"]["args"]["emitted_controls"],
-        page["emitted_controls"]
-    );
+    let token = confirm.request["command"]["args"]["token"].as_str().unwrap();
+    assert_eq!(confirm.request["command"]["args"]["emitted_controls"], page["emitted_controls"]);
     assert!(!page["emitted_controls"].as_array().unwrap().is_empty());
     assert_eq!(page["render"]["kind"], "watch_json_lines_v1");
     let items = page["items"].as_array().unwrap();
     assert!(!items.is_empty() && items.len() <= 32);
     for kind in ["message", "invitation", "notice", "attention"] {
-        assert!(
-            items.iter().any(|item| item["kind"] == kind),
-            "missing {kind}: {page}"
-        );
+        assert!(items.iter().any(|item| item["kind"] == kind), "missing {kind}: {page}");
     }
-    assert!(
-        items
-            .iter()
-            .any(|item| item["id"] == lazy && item["lazy"] == true)
-    );
-    assert!(
-        items
-            .iter()
-            .any(|item| item["id"] == ordinary && item["lazy"] == false)
-    );
+    assert!(items.iter().any(|item| item["id"] == lazy && item["lazy"] == true));
+    assert!(items.iter().any(|item| item["id"] == ordinary && item["lazy"] == false));
     watch.wait_attention_marker();
     let bytes = watch.stdout.lock().unwrap().clone();
-    let emitted: Vec<&[u8]> = bytes
-        .split_inclusive(|byte| *byte == b'\n')
-        .skip(1)
-        .collect();
-    assert_eq!(
-        emitted.len(),
-        items.len(),
-        "one ordered line per captured item"
-    );
-    assert_eq!(
-        emitted.iter().map(|line| line.len()).sum::<usize>(),
-        page["output_bytes"].as_u64().unwrap() as usize
-    );
+    let emitted: Vec<&[u8]> = bytes.split_inclusive(|byte| *byte == b'\n').skip(1).collect();
+    assert_eq!(emitted.len(), items.len(), "one ordered line per captured item");
+    assert_eq!(emitted.iter().map(|line| line.len()).sum::<usize>(), page["output_bytes"].as_u64().unwrap() as usize);
     assert!(page["output_bytes"].as_u64().unwrap() <= 65_536);
     for (item, bytes) in items.iter().zip(emitted) {
         let line: Value = serde_json::from_slice(bytes).unwrap();
         match item["kind"].as_str().unwrap() {
             "message" => {
                 assert_eq!(line["id"], item["id"]);
-                assert_eq!(
-                    line["kind"],
-                    if item["lazy"] == true {
-                        "lazy"
-                    } else {
-                        "message"
-                    }
-                );
+                assert_eq!(line["kind"], if item["lazy"] == true { "lazy" } else { "message" });
                 assert_eq!(line["body"], item["content"]["body"]);
                 assert_eq!(line["ack_required"], item["content"]["ack_required"]);
             }
             "invitation" => {
                 assert_eq!(line["kind"], "invitation");
-                assert_eq!(
-                    line["id"],
-                    format!("invitation:{}", item["id"].as_str().unwrap())
-                );
+                assert_eq!(line["id"], format!("invitation:{}", item["id"].as_str().unwrap()));
                 assert_eq!(line["body"], item["content"]["body"]);
                 assert_eq!(line["wakes"], false);
             }
@@ -2404,69 +2098,41 @@ fn activation_v2_elected_watch_capabilities_lease_output_confirm() {
             other => panic!("unexpected initial activation item {other}"),
         }
     }
-    assert_eq!(
-        activation_pending(&rig).0.as_deref(),
-        Some(token),
-        "stdout alone does not retire outbox"
-    );
+    assert_eq!(activation_pending(&rig).0.as_deref(), Some(token), "stdout alone does not retire outbox");
     assert_eq!(rig.receipt_state(&ordinary), "pending");
     assert_eq!(rig.lazy_state(&lazy), "pending");
     let before = activation_pending(&rig);
     let unseen = relay.replay(&confirm, |request| {
         request["command"]["args"]["emitted_controls"][0]["epoch"] = json!("18446744073709551615");
     });
-    assert_eq!(
-        unseen["result"]["Err"]["code"], "invalid_request",
-        "{unseen}"
-    );
-    assert_eq!(
-        activation_pending(&rig),
-        before,
-        "invalid subset cannot retire unseen output"
-    );
+    assert_eq!(unseen["result"]["Err"]["code"], "invalid_request", "{unseen}");
+    assert_eq!(activation_pending(&rig), before, "invalid subset cannot retire unseen output");
     let mark = rig.host.mark();
     relay.release();
     let committed = relay.control_confirm(true);
-    activation_confirm_result(
-        committed.reply.as_ref().unwrap(),
-        "confirmed",
-        &page["emitted_controls"],
-    );
-    wait_until("canonical presentation retirement", STEP, || {
+    activation_confirm_result(committed.reply.as_ref().unwrap(), "confirmed", &page["emitted_controls"]);
+    let until = Instant::now() + STEP;
+    loop {
         let (current, last, mask) = activation_pending(&rig);
-        (current.is_none() && last.as_deref() == Some(token) && mask != 0).then_some(())
-    });
-    assert_eq!(
-        rig.receipt_state(&ordinary),
-        "pending",
-        "presentation is not ACK"
-    );
-    assert_eq!(
-        rig.lazy_state(&lazy),
-        "pending",
-        "presentation is not lazy consumption"
-    );
-    let pending: i64 = rig
-        .db()
-        .query_row(
-            "SELECT count(*) FROM digest_pending_invitations WHERE seat_id=?1 AND thread_id=?2",
-            [&rig.b, invitation.as_str()],
-            |row| row.get(0),
-        )
-        .unwrap();
+        if current.is_none() && last.as_deref() == Some(token) && mask != 0 { break; }
+        assert!(Instant::now() < until,
+            "timed out waiting for canonical presentation retirement of {token}; {}",
+            activation_retirement_diagnostics(&rig, &relay));
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    assert_eq!(rig.receipt_state(&ordinary), "pending", "presentation is not ACK");
+    assert_eq!(rig.lazy_state(&lazy), "pending", "presentation is not lazy consumption");
+    let pending: i64 = rig.db().query_row(
+        "SELECT count(*) FROM digest_pending_invitations WHERE seat_id=?1 AND thread_id=?2",
+        [&rig.b, invitation.as_str()], |row| row.get(0),
+    ).unwrap();
     assert_eq!(pending, 1, "presentation is not acceptance");
     rig.assert_no_prompt(mark, QUIET);
     // ACK and acceptance are later explicit actions; the real Watch then emits
     // a scoped clear. Keep these separate from presentation's passive effects.
-    assert_eq!(
-        rig.ack_result(SESSION_B, "context", &ordinary)["result"],
-        "settled"
-    );
-    rig.cli(Some((&rig.b, PANE_B)), &["accept", &invitation])
-        .data("accept activation invitation");
-    let clear = watch.wait_line("the active scoped clear", STEP, |line| {
-        line["kind"] == "attention_cleared"
-    });
+    assert_eq!(rig.ack_result(SESSION_B, "context", &ordinary)["result"], "settled");
+    rig.cli(Some((&rig.b, PANE_B)), &["accept", &invitation]).data("accept activation invitation");
+    let clear = watch.wait_line("the active scoped clear", STEP, |line| line["kind"] == "attention_cleared");
     assert!(clear["presentation_epoch"].as_str().is_some());
     assert_eq!(rig.channel_state().as_deref(), Some("live"));
     assert_eq!(lease.len(), 32);
@@ -2501,18 +2167,17 @@ fn activation_v2_watch_full_pending_capacity_parks_until_real_channel_input() {
     // UTC governs offers; monotonic request budgets still advance normally.
     rig.clock.freeze_utc();
     let flow = Arc::new(CapacityFlow::default());
-    let relay =
-        ActivationRelay::start_with_capacity(&rig, false, ConfirmFault::None, Some(flow.clone()));
+    let relay = ActivationRelay::start_with_capacity(
+        &rig, false, ConfirmFault::None, Some(flow.clone()),
+    );
     // This body admits roughly ten items per 64KiB page, so the final normal
     // source slice crosses the 256-slot boundary with ID257 still carried.
     // Its 6000 bytes fit the ordinary 8192-byte body limit without truncation.
     let body = "c".repeat(6000);
     let first = rig.send_ordinary(&body);
-    let seed = relay
-        .snapshot()
-        .into_iter()
-        .find(|entry| entry.request["command"]["kind"] == "send_message")
-        .expect("the real sender CLI's canonical SendMessage request");
+    let seed = relay.snapshot().into_iter().find(|entry| {
+        entry.request["command"]["kind"] == "send_message"
+    }).expect("the real sender CLI's canonical SendMessage request");
     let mut sent = vec![first];
     // Canonical RPC seeding reuses the real sender's recorded cooperative
     // claim, with fresh operation/request IDs. It does not seed SQL/ledger
@@ -2521,21 +2186,10 @@ fn activation_v2_watch_full_pending_capacity_parks_until_real_channel_input() {
         let response = relay.replay(&seed, |request| {
             request["command"]["args"]["operation"] = json!(uuid::Uuid::new_v4().to_string());
         });
-        assert_eq!(
-            response["result"]["Ok"]["kind"], "message_sent",
-            "{response}"
-        );
-        sent.push(
-            response["result"]["Ok"]["data"]
-                .as_str()
-                .unwrap()
-                .to_owned(),
-        );
+        assert_eq!(response["result"]["Ok"]["kind"], "message_sent", "{response}");
+        sent.push(response["result"]["Ok"]["data"].as_str().unwrap().to_owned());
     }
-    assert_eq!(
-        sent.iter().collect::<std::collections::BTreeSet<_>>().len(),
-        257
-    );
+    assert_eq!(sent.iter().collect::<std::collections::BTreeSet<_>>().len(), 257);
     let watch_start = relay.snapshot().len();
     let mut watch = rig.watch(SESSION_B);
     watch.wait_connected();
@@ -2559,14 +2213,8 @@ fn activation_v2_watch_full_pending_capacity_parks_until_real_channel_input() {
                 assert!(page["truncated"].as_array().unwrap().is_empty());
                 for id in page["offered"].as_array().unwrap() {
                     let id = id.as_str().unwrap().to_owned();
-                    assert_ne!(
-                        id, sent[256],
-                        "full capacity never offers the unknown identity"
-                    );
-                    assert!(
-                        offered.insert(id),
-                        "frozen UTC forbids an early reoffer/history reset"
-                    );
+                    assert_ne!(id, sent[256], "full capacity never offers the unknown identity");
+                    assert!(offered.insert(id), "frozen UTC forbids an early reoffer/history reset");
                 }
                 page["more"].as_bool().unwrap()
             }
@@ -2587,18 +2235,13 @@ fn activation_v2_watch_full_pending_capacity_parks_until_real_channel_input() {
     assert_eq!(offered, sent[..256].iter().cloned().collect());
     let before = capacity_normal_snapshot(&rig);
     let carry: Value = serde_json::from_str(before["carry"].as_str().unwrap()).unwrap();
-    let retained = carry["items"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|item| item["content"]["id"] == sent[256])
-        .expect("ID257 is retained in the actual canonical normal carry");
+    let retained = carry["items"].as_array().unwrap().iter().find(|item| {
+        item["content"]["id"] == sent[256]
+    }).expect("ID257 is retained in the actual canonical normal carry");
     assert_eq!(retained["content"]["content"]["body"], body);
     flow.release_reply(terminal);
     watch.wait_item(&sent[255]);
-    for id in &sent {
-        assert_eq!(rig.receipt_state(id), "pending");
-    }
+    for id in &sent { assert_eq!(rig.receipt_state(id), "pending"); }
     assert_eq!(rig.mod_ack_events(), 0);
     // No real Attention was forwarded during the initial finite drain. The
     // next Pull is attributable to this explicit release, not continuation.
@@ -2612,25 +2255,16 @@ fn activation_v2_watch_full_pending_capacity_parks_until_real_channel_input() {
         "unchanged" => {}
         "page" => {
             let page = &result["args"];
-            assert_eq!(
-                page["more"], false,
-                "stable full-capacity response must return to stream waiting"
-            );
+            assert_eq!(page["more"], false, "stable full-capacity response must return to stream waiting");
             assert_eq!(page["offered"], json!([]));
             assert_eq!(page["truncated"], json!([]));
             assert_eq!(page["items"], json!([]));
         }
         other => panic!("real channel-triggered Pull refused: {other}"),
     }
-    assert_eq!(
-        capacity_normal_snapshot(&rig),
-        before,
-        "parking preserves exact normal cursor/carry/partial tuple"
-    );
+    assert_eq!(capacity_normal_snapshot(&rig), before, "parking preserves exact normal cursor/carry/partial tuple");
     flow.release_reply(resumed);
-    for id in &sent {
-        assert_eq!(rig.receipt_state(id), "pending");
-    }
+    for id in &sent { assert_eq!(rig.receipt_state(id), "pending"); }
     assert!(watch.running());
     // Owned-child EOF still reaches the canonical registry through the relay.
     rig.kill(&mut watch);
@@ -2661,10 +2295,10 @@ fn activation_v2_watch_lazy_only_page_is_passive() {
             (entry.request["command"]["kind"] == "delivery_pull_v2"
                 && result["kind"] == "delivery_pulled_v2"
                 && result["data"]["kind"] == "page"
-                && page["items"]
-                    .as_array()
-                    .is_some_and(|items| items.iter().any(|item| item["id"] == lazy)))
-            .then(|| (entry.request.clone(), page.clone()))
+                && page["items"].as_array().is_some_and(|items| {
+                    items.iter().any(|item| item["id"] == lazy)
+                }))
+                .then(|| (entry.request.clone(), page.clone()))
         })
     });
     assert_eq!(pull["command"]["args"]["presentation_lease"], lease);
@@ -2676,9 +2310,7 @@ fn activation_v2_watch_lazy_only_page_is_passive() {
     assert!(activation_pending(&rig).0.is_none());
     assert_eq!(rig.lazy_state(&lazy), "pending");
     assert_eq!(rig.mod_ack_events(), 0);
-    watch.assert_no_line("passive page attention", QUIET, |line| {
-        line["kind"] == "attention"
-    });
+    watch.assert_no_line("passive page attention", QUIET, |line| line["kind"] == "attention");
     assert_eq!(rig.host.prompts_since(mark, PANE_B), 0);
     // Crossing the health timeout cannot close a purely passive channel.
     rig.advance(11 * MINUTE_MS);
@@ -2687,21 +2319,11 @@ fn activation_v2_watch_lazy_only_page_is_passive() {
     rig.kill(&mut watch);
     rig.wait_channel(Some("reconnect_grace"));
     let log: Vec<_> = relay.snapshot().into_iter().skip(start).collect();
-    assert!(
-        !log.iter().any(|entry| matches!(
-            entry.request["command"]["kind"].as_str(),
-            Some(
-                "delivery_presentation_confirm_v2"
-                    | "ack"
-                    | "ack_displayed"
-                    | "ack_mod_delivered"
-                    | "accept"
-                    | "accept_required"
-                    | "complete_inbox_delivery"
-            )
-        )),
-        "lazy-only output requests no Confirm, ACK, acceptance or lazy completion"
-    );
+    assert!(!log.iter().any(|entry| matches!(
+        entry.request["command"]["kind"].as_str(),
+        Some("delivery_presentation_confirm_v2" | "ack" | "ack_displayed" | "ack_mod_delivered"
+            | "accept" | "accept_required" | "complete_inbox_delivery")
+    )), "lazy-only output requests no Confirm, ACK, acceptance or lazy completion");
     assert!(activation_pending(&rig).0.is_none());
     assert_eq!(rig.lazy_state(&lazy), "pending");
     assert_eq!(rig.mod_ack_events(), 0);
@@ -2714,6 +2336,9 @@ fn activation_v2_watch_lazy_only_page_is_passive() {
 fn activation_v2_watch_replacement_replays_uncommitted_output() {
     let rig = Rig::activation();
     let invitation = activation_invitation(&rig);
+    // Keep the invitation passive; actual ordinary pending mail supplies the
+    // attention control whose pre-dispatch loss and owner replay are tested.
+    let ordinary = rig.send_ordinary("activation replacement ACK candidate");
     let relay = ActivationRelay::start(&rig, false, ConfirmFault::BeforeCommit);
     let mut old = rig.watch(SESSION_B);
     old.wait_connected();
@@ -2722,25 +2347,13 @@ fn activation_v2_watch_replacement_replays_uncommitted_output() {
     let page = activation_page(&relay, &old_confirm);
     old.wait_attention_marker();
     assert_eq!(old.exit_code(STEP), 1);
-    assert_eq!(
-        activation_pending(&rig).0,
-        Some(
-            old_confirm.request["command"]["args"]["token"]
-                .as_str()
-                .unwrap()
-                .to_owned()
-        )
-    );
+    assert_eq!(activation_pending(&rig).0, Some(old_confirm.request["command"]["args"]["token"].as_str().unwrap().to_owned()));
     let mark = relay.snapshot().len();
     let mut replacement = rig.watch(SESSION_B);
     replacement.wait_connected();
     replacement.wait_attention_marker();
-    let new_accepted = relay
-        .snapshot()
-        .into_iter()
-        .skip(mark)
-        .find(|entry| entry.request.get("watch").is_some())
-        .unwrap();
+    let new_accepted = relay.snapshot().into_iter().skip(mark)
+        .find(|entry| entry.request.get("watch").is_some()).unwrap();
     let new_lease = &new_accepted.reply.unwrap()["outcome"]["args"]["presentation_lease"];
     assert_ne!(new_lease, &json!(old_lease));
     let new_confirm = wait_until("replacement's own exact Confirm", STEP, || {
@@ -2749,38 +2362,24 @@ fn activation_v2_watch_replacement_replays_uncommitted_output() {
                 && entry.reply.is_some()
         })
     });
-    assert_eq!(
-        &new_confirm.request["command"]["args"]["presentation_lease"],
-        new_lease
-    );
-    assert_eq!(
-        new_confirm.request["command"]["args"]["emitted_controls"],
-        page["emitted_controls"]
-    );
-    activation_confirm_result(
-        new_confirm.reply.as_ref().unwrap(),
-        "confirmed",
-        &page["emitted_controls"],
-    );
+    assert_eq!(&new_confirm.request["command"]["args"]["presentation_lease"], new_lease);
+    assert_eq!(new_confirm.request["command"]["args"]["emitted_controls"], page["emitted_controls"]);
+    activation_confirm_result(new_confirm.reply.as_ref().unwrap(), "confirmed", &page["emitted_controls"]);
     let stale = relay.replay(&old_confirm, |_| {});
     activation_confirm_result(&stale, "stale_binding", &json!([]));
-    let invitations: Vec<_> = old
-        .seen
-        .iter()
-        .filter(|line| line["kind"] == "invitation")
-        .collect();
+    let invitations: Vec<_> = old.seen.iter().filter(|line| line["kind"] == "invitation").collect();
     for line in invitations {
-        assert!(
-            replacement.seen.iter().any(|new| new == line),
-            "replacement physically emits invitation bytes"
-        );
+        assert!(replacement.seen.iter().any(|new| new == line), "replacement physically emits invitation bytes");
     }
-    assert!(
-        replacement
-            .seen
-            .iter()
-            .any(|line| line["kind"] == "invitation" && line["thread"] == invitation)
-    );
+    assert!(replacement.seen.iter().any(|line| line["kind"] == "invitation" && line["thread"] == invitation
+        && line["wakes"] == false));
+    assert_eq!(rig.receipt_state(&ordinary), "pending", "owner replay is not receipt ACK");
+    assert_eq!(rig.mod_ack_events(), 0);
+    let pending: i64 = rig.db().query_row(
+        "SELECT count(*) FROM digest_pending_invitations WHERE seat_id=?1 AND thread_id=?2",
+        [&rig.b, invitation.as_str()], |row| row.get(0),
+    ).unwrap();
+    assert_eq!(pending, 1, "owner replay is not invitation acceptance");
 }
 
 /// A committed response lost in transit permits exact idempotent recovery on
@@ -2788,7 +2387,10 @@ fn activation_v2_watch_replacement_replays_uncommitted_output() {
 #[test]
 fn activation_v2_watch_lost_confirm_response_replays_exact_subset() {
     let rig = Rig::activation();
-    activation_invitation(&rig);
+    let invitation = activation_invitation(&rig);
+    // The lazy invitation remains passive; this real require-ACK message is
+    // the independent source of the nonempty attention confirmation subset.
+    let ordinary = rig.send_ordinary("activation lost-response ACK candidate");
     let relay = ActivationRelay::start(&rig, true, ConfirmFault::LoseReply);
     let mut watch = rig.watch(SESSION_B);
     watch.wait_connected();
@@ -2797,10 +2399,7 @@ fn activation_v2_watch_lost_confirm_response_replays_exact_subset() {
     let confirm = relay.control_confirm(true);
     let controls = &confirm.request["command"]["args"]["emitted_controls"];
     activation_confirm_result(confirm.reply.as_ref().unwrap(), "confirmed", controls);
-    assert!(
-        watch.running(),
-        "response held while the real child owns the lease"
-    );
+    assert!(watch.running(), "response held while the real child owns the lease");
     let before = activation_pending(&rig);
     let exact = relay.replay(&confirm, |_| {});
     activation_confirm_result(&exact, "already_confirmed", controls);
@@ -2811,21 +2410,19 @@ fn activation_v2_watch_lost_confirm_response_replays_exact_subset() {
     let foreign = relay.replay(&confirm, |request| {
         request["command"]["args"]["emitted_controls"][0]["epoch"] = json!("18446744073709551615");
     });
-    assert_eq!(
-        foreign["result"]["Err"]["code"], "invalid_request",
-        "{foreign}"
-    );
-    assert_eq!(
-        activation_pending(&rig),
-        before,
-        "replay/subset/refusal cannot consume another page"
-    );
+    assert_eq!(foreign["result"]["Err"]["code"], "invalid_request", "{foreign}");
+    assert_eq!(activation_pending(&rig), before, "replay/subset/refusal cannot consume another page");
     relay.release();
-    assert_eq!(
-        watch.exit_code(STEP),
-        1,
-        "lost completion remains truthful at consumer"
-    );
+    assert_eq!(watch.exit_code(STEP), 1, "lost completion remains truthful at consumer");
+    assert!(watch.seen.iter().any(|line| line["kind"] == "invitation" && line["thread"] == invitation
+        && line["wakes"] == false));
+    assert_eq!(rig.receipt_state(&ordinary), "pending", "presentation recovery is not receipt ACK");
+    assert_eq!(rig.mod_ack_events(), 0);
+    let pending: i64 = rig.db().query_row(
+        "SELECT count(*) FROM digest_pending_invitations WHERE seat_id=?1 AND thread_id=?2",
+        [&rig.b, invitation.as_str()], |row| row.get(0),
+    ).unwrap();
+    assert_eq!(pending, 1, "presentation recovery is not invitation acceptance");
 }
 
 // -------------------------------------------------------------------- tests
