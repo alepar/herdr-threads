@@ -1855,11 +1855,17 @@ fn presentation_watch_requires_both_capability_and_valid_accepted_lease() {
             0
         );
         assert_eq!(
-            lines(&out).into_iter().map(|line| line.id).collect::<Vec<_>>(),
+            lines(&out)
+                .into_iter()
+                .map(|line| line.id)
+                .collect::<Vec<_>>(),
             ["status:0", "historical-item", "status:1"],
             "capability={capability}, lease={lease:?}"
         );
-        assert!(matches!(client.calls().as_slice(), [Command::InboxBatchV2(_)]));
+        assert!(matches!(
+            client.calls().as_slice(),
+            [Command::InboxBatchV2(_)]
+        ));
         server.finish();
     }
 }

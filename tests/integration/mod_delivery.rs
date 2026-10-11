@@ -1056,7 +1056,10 @@ impl Watch {
         let reader = std::thread::spawn(move || {
             let mut reader = BufReader::new(stdout);
             let mut line = Vec::new();
-            while reader.read_until(b'\n', &mut line).is_ok_and(|len| len != 0) {
+            while reader
+                .read_until(b'\n', &mut line)
+                .is_ok_and(|len| len != 0)
+            {
                 {
                     let mut bytes = sink.lock().unwrap();
                     // Only the activation proof reads this bounded evidence.
@@ -1272,7 +1275,11 @@ impl ActivationRelay {
         let open: Arc<Mutex<Vec<UnixStream>>> = Arc::default();
         let used = Arc::new(AtomicBool::new(false));
         let (stopped, released, log, sockets, target) = (
-            stop.clone(), release.clone(), exchanges.clone(), open.clone(), upstream.clone(),
+            stop.clone(),
+            release.clone(),
+            exchanges.clone(),
+            open.clone(),
+            upstream.clone(),
         );
         let worker = std::thread::spawn(move || {
             let mut threads = Vec::new();
@@ -1281,15 +1288,16 @@ impl ActivationRelay {
                     break;
                 }
                 let Ok(mut downstream) = incoming else { break };
-                let Ok(mut upstream) = UnixStream::connect(&target) else { break };
+                let Ok(mut upstream) = UnixStream::connect(&target) else {
+                    break;
+                };
                 {
                     let mut open = sockets.lock().unwrap();
                     open.push(downstream.try_clone().unwrap());
                     open.push(upstream.try_clone().unwrap());
                 }
-                let (stopped, released, log, used) = (
-                    stopped.clone(), released.clone(), log.clone(), used.clone(),
-                );
+                let (stopped, released, log, used) =
+                    (stopped.clone(), released.clone(), log.clone(), used.clone());
                 threads.push(std::thread::spawn(move || {
                     let mut serve = || -> std::io::Result<()> {
                         let request_bytes = activation_read(&mut downstream)?;
@@ -1297,7 +1305,8 @@ impl ActivationRelay {
                         let control_confirm = request["command"]["kind"]
                             == "delivery_presentation_confirm_v2"
                             && request["command"]["args"]["emitted_controls"]
-                                .as_array().is_some_and(|stamps| !stamps.is_empty());
+                                .as_array()
+                                .is_some_and(|stamps| !stamps.is_empty());
                         let first = control_confirm && !used.swap(true, Ordering::SeqCst);
                         let index = {
                             let mut log = log.lock().unwrap();
@@ -1306,7 +1315,10 @@ impl ActivationRelay {
                             if index >= 256 {
                                 return Err(std::io::Error::other("activation exchange bound"));
                             }
-                            log.push(ObservedExchange { request, reply: None });
+                            log.push(ObservedExchange {
+                                request,
+                                reply: None,
+                            });
                             index
                         };
                         if first && matches!(fault, ConfirmFault::BeforeCommit) {
@@ -1314,7 +1326,9 @@ impl ActivationRelay {
                         }
                         if first && matches!(fault, ConfirmFault::None) {
                             while !released.load(Ordering::SeqCst) {
-                                if stopped.load(Ordering::SeqCst) { return Ok(()) }
+                                if stopped.load(Ordering::SeqCst) {
+                                    return Ok(());
+                                }
                                 std::thread::sleep(Duration::from_millis(5));
                             }
                         }
@@ -1326,7 +1340,9 @@ impl ActivationRelay {
                             // Keep the real child/owner live until the test replays
                             // the committed request, then simulate the lost response.
                             while !released.load(Ordering::SeqCst) {
-                                if stopped.load(Ordering::SeqCst) { return Ok(()) }
+                                if stopped.load(Ordering::SeqCst) {
+                                    return Ok(());
+                                }
                                 std::thread::sleep(Duration::from_millis(5));
                             }
                             return Ok(());
@@ -1362,11 +1378,20 @@ impl ActivationRelay {
                     let _ = upstream.shutdown(std::net::Shutdown::Both);
                 }));
             }
-            for thread in threads { let _ = thread.join(); }
+            for thread in threads {
+                let _ = thread.join();
+            }
         });
         Self {
-            endpoint, upstream, descriptor, original_descriptor, stop, release,
-            exchanges, open, worker: Some(worker),
+            endpoint,
+            upstream,
+            descriptor,
+            original_descriptor,
+            stop,
+            release,
+            exchanges,
+            open,
+            worker: Some(worker),
         }
     }
 
@@ -1379,7 +1404,8 @@ impl ActivationRelay {
             self.snapshot().into_iter().find(|entry| {
                 entry.request["command"]["kind"] == "delivery_presentation_confirm_v2"
                     && entry.request["command"]["args"]["emitted_controls"]
-                        .as_array().is_some_and(|stamps| !stamps.is_empty())
+                        .as_array()
+                        .is_some_and(|stamps| !stamps.is_empty())
                     && (!replied || entry.reply.is_some())
             })
         })
@@ -1410,7 +1436,9 @@ impl Drop for ActivationRelay {
         for socket in self.open.lock().unwrap().iter() {
             let _ = socket.shutdown(std::net::Shutdown::Both);
         }
-        if let Some(worker) = self.worker.take() { let _ = worker.join(); }
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
         let _ = fs::remove_file(&self.endpoint);
         let _ = fs::rename(&self.upstream, &self.endpoint);
         let _ = fs::write(&self.descriptor, &self.original_descriptor);
@@ -1421,48 +1449,79 @@ impl Drop for ActivationRelay {
 /// separately opened raw Watch which would replace the child's owner.
 fn activation_owner(relay: &ActivationRelay) -> String {
     let log = relay.snapshot();
-    let capabilities = log.iter().find(|entry| {
-        entry.request["command"]["kind"] == "capabilities" && entry.reply.is_some()
-    }).expect("the watch child must discover capabilities");
+    let capabilities = log
+        .iter()
+        .find(|entry| entry.request["command"]["kind"] == "capabilities" && entry.reply.is_some())
+        .expect("the watch child must discover capabilities");
     let response: herdr_threads::protocol::wire::WireResponse =
         serde_json::from_value(capabilities.reply.clone().unwrap()).unwrap();
     let Ok(herdr_threads::protocol::results::CommandResult::Capabilities(list)) = response.result
-        else { panic!("real capability route refused") };
-    assert!(list.capabilities.iter().any(|name| {
-        name == herdr_threads::protocol::capabilities::DELIVERY_PRESENTATION_V2
-    }), "elected daemon must advertise presentation V2 before activation proof");
-    let accepted = log.iter().find(|entry| entry.request.get("watch").is_some())
+    else {
+        panic!("real capability route refused")
+    };
+    assert!(
+        list.capabilities.iter().any(|name| {
+            name == herdr_threads::protocol::capabilities::DELIVERY_PRESENTATION_V2
+        }),
+        "elected daemon must advertise presentation V2 before activation proof"
+    );
+    let accepted = log
+        .iter()
+        .find(|entry| entry.request.get("watch").is_some())
         .expect("same child Watch registration");
     let lease = accepted.reply.as_ref().unwrap()["outcome"]["args"]["presentation_lease"]
-        .as_str().expect("advertised same-child Accepted lease").to_owned();
-    assert!(herdr_threads::protocol::delivery::valid_presentation_token(&lease));
+        .as_str()
+        .expect("advertised same-child Accepted lease")
+        .to_owned();
+    assert!(herdr_threads::protocol::delivery::valid_presentation_token(
+        &lease
+    ));
     let log = wait_until("the advertised child's selected V2 Pull", STEP, || {
         let log = relay.snapshot();
-        log.iter().any(|entry| entry.request["command"]["kind"] == "delivery_pull_v2")
+        log.iter()
+            .any(|entry| entry.request["command"]["kind"] == "delivery_pull_v2")
             .then_some(log)
     });
-    for entry in log.iter().filter(|entry| matches!(
-        entry.request["command"]["kind"].as_str(),
-        Some("delivery_pull_v2" | "delivery_presentation_confirm_v2")
-    )) {
-        assert_eq!(entry.request["command"]["args"]["claim"], accepted.request["watch"]["claim"]);
-        assert_eq!(entry.request["command"]["args"]["presentation_lease"], lease);
+    for entry in log.iter().filter(|entry| {
+        matches!(
+            entry.request["command"]["kind"].as_str(),
+            Some("delivery_pull_v2" | "delivery_presentation_confirm_v2")
+        )
+    }) {
+        assert_eq!(
+            entry.request["command"]["args"]["claim"],
+            accepted.request["watch"]["claim"]
+        );
+        assert_eq!(
+            entry.request["command"]["args"]["presentation_lease"],
+            lease
+        );
     }
-    assert!(log.iter().any(|entry| entry.request["command"]["kind"] == "delivery_pull_v2"));
-    assert!(!log.iter().any(|entry| entry.request["command"]["kind"] == "inbox_batch_v2"));
+    assert!(
+        log.iter()
+            .any(|entry| entry.request["command"]["kind"] == "delivery_pull_v2")
+    );
+    assert!(
+        !log.iter()
+            .any(|entry| entry.request["command"]["kind"] == "inbox_batch_v2")
+    );
     lease
 }
 
 fn activation_page(relay: &ActivationRelay, confirm: &ObservedExchange) -> Value {
     let token = &confirm.request["command"]["args"]["token"];
-    relay.snapshot().into_iter().filter_map(|entry| entry.reply)
+    relay
+        .snapshot()
+        .into_iter()
+        .filter_map(|entry| entry.reply)
         .find_map(|reply| {
             let result = &reply["result"]["Ok"];
             (result["kind"] == "delivery_pulled_v2"
                 && result["data"]["kind"] == "page"
                 && result["data"]["args"]["presentation_token"] == *token)
                 .then(|| result["data"]["args"].clone())
-        }).expect("actual Pull page matching child's Confirm token")
+        })
+        .expect("actual Pull page matching child's Confirm token")
 }
 
 fn activation_pending(rig: &Rig) -> (Option<String>, Option<String>, i64) {
@@ -1474,17 +1533,29 @@ fn activation_pending(rig: &Rig) -> (Option<String>, Option<String>, i64) {
 
 fn activation_confirm_result(reply: &Value, status: &str, controls: &Value) {
     let result = &reply["result"]["Ok"];
-    assert_eq!(result["kind"], "delivery_presentation_confirmed_v2", "{reply}");
+    assert_eq!(
+        result["kind"], "delivery_presentation_confirmed_v2",
+        "{reply}"
+    );
     assert_eq!(result["data"]["status"], status, "{reply}");
-    assert_eq!(&result["data"]["acknowledged_controls"], controls, "{reply}");
+    assert_eq!(
+        &result["data"]["acknowledged_controls"], controls,
+        "{reply}"
+    );
 }
 
 fn activation_invitation(rig: &Rig) -> String {
-    let thread = rig.cli(
-        Some((&rig.a, PANE_A)), &["thread", "create", "--topic", "activation invitation"],
-    ).text("activation thread");
-    rig.cli(Some((&rig.a, PANE_A)), &["invite", &thread, "--seat", &rig.b])
-        .data("activation invitation");
+    let thread = rig
+        .cli(
+            Some((&rig.a, PANE_A)),
+            &["thread", "create", "--topic", "activation invitation"],
+        )
+        .text("activation thread");
+    rig.cli(
+        Some((&rig.a, PANE_A)),
+        &["invite", &thread, "--seat", &rig.b],
+    )
+    .data("activation invitation");
     thread
 }
 
@@ -1494,16 +1565,24 @@ fn activation_warn(rig: &Rig) {
         daemon::ownership::{read_descriptor, read_existing_namespace},
         protocol::{
             ids::{OperationId, SeatId, ThreadId},
-            service::{EnsureManagedThread, InvitationConstraint, NotificationSeverity,
-                ServiceInvite, ServiceNotify, ServiceOperation},
+            service::{
+                EnsureManagedThread, InvitationConstraint, NotificationSeverity, ServiceInvite,
+                ServiceNotify, ServiceOperation,
+            },
             time::CallBudget,
         },
     };
-    let descriptor = read_descriptor(&rig.paths,
-        read_existing_namespace(&rig.paths).unwrap().unwrap()).unwrap();
+    let descriptor = read_descriptor(
+        &rig.paths,
+        read_existing_namespace(&rig.paths).unwrap().unwrap(),
+    )
+    .unwrap();
     let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
     let client = PersistentServiceClient::new(
-        descriptor.endpoint, clock.clone(), descriptor.instance_uuid, Some(descriptor.boot_id),
+        descriptor.endpoint,
+        clock.clone(),
+        descriptor.instance_uuid,
+        Some(descriptor.boot_id),
         ServiceIntentJournal::open(rig.root.join("activation-intents")).unwrap(),
     );
     let budget = || CallBudget {
@@ -1511,24 +1590,51 @@ fn activation_warn(rig: &Rig) {
         cancellation: Cancellation::default(),
     };
     let thread = ThreadId::new("activation-warn");
-    tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
         .block_on(async {
             client.register(&budget()).await.unwrap();
-            client.submit(ServiceOperation::EnsureThread(EnsureManagedThread {
-                thread: thread.clone(), topic: "activation Warn".into(),
-                goal: "observe canonical notice".into(), operation: OperationId::new("ensure"),
-            }), &budget()).await.unwrap();
-            client.submit(ServiceOperation::Invite(ServiceInvite {
-                thread: thread.clone(), seat: SeatId::new(rig.b.clone()),
-                constraint: InvitationConstraint::Ordinary, deadline_millis: Some(300_000),
-                operation: OperationId::new("invite"),
-            }), &budget()).await.unwrap();
-            rig.cli(Some((&rig.b, PANE_B)), &["accept", thread.as_str()]).data("accept Warn thread");
-            client.submit(ServiceOperation::Notify(ServiceNotify {
-                thread: thread.clone(), severity: NotificationSeverity::Warn,
-                event_json: json!({"kind":"activation", "detail":"actual Warn notice"}),
-                operation: OperationId::new("notify"),
-            }), &budget()).await.unwrap();
+            client
+                .submit(
+                    ServiceOperation::EnsureThread(EnsureManagedThread {
+                        thread: thread.clone(),
+                        topic: "activation Warn".into(),
+                        goal: "observe canonical notice".into(),
+                        operation: OperationId::new("ensure"),
+                    }),
+                    &budget(),
+                )
+                .await
+                .unwrap();
+            client
+                .submit(
+                    ServiceOperation::Invite(ServiceInvite {
+                        thread: thread.clone(),
+                        seat: SeatId::new(rig.b.clone()),
+                        constraint: InvitationConstraint::Ordinary,
+                        deadline_millis: Some(300_000),
+                        operation: OperationId::new("invite"),
+                    }),
+                    &budget(),
+                )
+                .await
+                .unwrap();
+            rig.cli(Some((&rig.b, PANE_B)), &["accept", thread.as_str()])
+                .data("accept Warn thread");
+            client
+                .submit(
+                    ServiceOperation::Notify(ServiceNotify {
+                        thread: thread.clone(),
+                        severity: NotificationSeverity::Warn,
+                        event_json: json!({"kind":"activation", "detail":"actual Warn notice"}),
+                        operation: OperationId::new("notify"),
+                    }),
+                    &budget(),
+                )
+                .await
+                .unwrap();
         });
     wait_until("the actual Warn notice projection", STEP, || {
         let count: i64 = rig.db().query_row(
@@ -1554,35 +1660,71 @@ fn activation_v2_elected_watch_capabilities_lease_output_confirm() {
     let lease = activation_owner(&relay);
     let confirm = relay.control_confirm(false);
     let page = activation_page(&relay, &confirm);
-    let token = confirm.request["command"]["args"]["token"].as_str().unwrap();
-    assert_eq!(confirm.request["command"]["args"]["emitted_controls"], page["emitted_controls"]);
+    let token = confirm.request["command"]["args"]["token"]
+        .as_str()
+        .unwrap();
+    assert_eq!(
+        confirm.request["command"]["args"]["emitted_controls"],
+        page["emitted_controls"]
+    );
     assert!(!page["emitted_controls"].as_array().unwrap().is_empty());
     assert_eq!(page["render"]["kind"], "watch_json_lines_v1");
     let items = page["items"].as_array().unwrap();
     assert!(!items.is_empty() && items.len() <= 32);
     for kind in ["message", "invitation", "notice", "attention"] {
-        assert!(items.iter().any(|item| item["kind"] == kind), "missing {kind}: {page}");
+        assert!(
+            items.iter().any(|item| item["kind"] == kind),
+            "missing {kind}: {page}"
+        );
     }
-    assert!(items.iter().any(|item| item["id"] == lazy && item["lazy"] == true));
-    assert!(items.iter().any(|item| item["id"] == ordinary && item["lazy"] == false));
+    assert!(
+        items
+            .iter()
+            .any(|item| item["id"] == lazy && item["lazy"] == true)
+    );
+    assert!(
+        items
+            .iter()
+            .any(|item| item["id"] == ordinary && item["lazy"] == false)
+    );
     watch.wait_attention_marker();
     let bytes = watch.stdout.lock().unwrap().clone();
-    let emitted: Vec<&[u8]> = bytes.split_inclusive(|byte| *byte == b'\n').skip(1).collect();
-    assert_eq!(emitted.len(), items.len(), "one ordered line per captured item");
-    assert_eq!(emitted.iter().map(|line| line.len()).sum::<usize>(), page["output_bytes"].as_u64().unwrap() as usize);
+    let emitted: Vec<&[u8]> = bytes
+        .split_inclusive(|byte| *byte == b'\n')
+        .skip(1)
+        .collect();
+    assert_eq!(
+        emitted.len(),
+        items.len(),
+        "one ordered line per captured item"
+    );
+    assert_eq!(
+        emitted.iter().map(|line| line.len()).sum::<usize>(),
+        page["output_bytes"].as_u64().unwrap() as usize
+    );
     assert!(page["output_bytes"].as_u64().unwrap() <= 65_536);
     for (item, bytes) in items.iter().zip(emitted) {
         let line: Value = serde_json::from_slice(bytes).unwrap();
         match item["kind"].as_str().unwrap() {
             "message" => {
                 assert_eq!(line["id"], item["id"]);
-                assert_eq!(line["kind"], if item["lazy"] == true { "lazy" } else { "message" });
+                assert_eq!(
+                    line["kind"],
+                    if item["lazy"] == true {
+                        "lazy"
+                    } else {
+                        "message"
+                    }
+                );
                 assert_eq!(line["body"], item["content"]["body"]);
                 assert_eq!(line["ack_required"], item["content"]["ack_required"]);
             }
             "invitation" => {
                 assert_eq!(line["kind"], "invitation");
-                assert_eq!(line["id"], format!("invitation:{}", item["id"].as_str().unwrap()));
+                assert_eq!(
+                    line["id"],
+                    format!("invitation:{}", item["id"].as_str().unwrap())
+                );
                 assert_eq!(line["body"], item["content"]["body"]);
                 assert_eq!(line["wakes"], false);
             }
@@ -1599,36 +1741,69 @@ fn activation_v2_elected_watch_capabilities_lease_output_confirm() {
             other => panic!("unexpected initial activation item {other}"),
         }
     }
-    assert_eq!(activation_pending(&rig).0.as_deref(), Some(token), "stdout alone does not retire outbox");
+    assert_eq!(
+        activation_pending(&rig).0.as_deref(),
+        Some(token),
+        "stdout alone does not retire outbox"
+    );
     assert_eq!(rig.receipt_state(&ordinary), "pending");
     assert_eq!(rig.lazy_state(&lazy), "pending");
     let before = activation_pending(&rig);
     let unseen = relay.replay(&confirm, |request| {
         request["command"]["args"]["emitted_controls"][0]["epoch"] = json!("18446744073709551615");
     });
-    assert_eq!(unseen["result"]["Err"]["code"], "invalid_request", "{unseen}");
-    assert_eq!(activation_pending(&rig), before, "invalid subset cannot retire unseen output");
+    assert_eq!(
+        unseen["result"]["Err"]["code"], "invalid_request",
+        "{unseen}"
+    );
+    assert_eq!(
+        activation_pending(&rig),
+        before,
+        "invalid subset cannot retire unseen output"
+    );
     let mark = rig.host.mark();
     relay.release();
     let committed = relay.control_confirm(true);
-    activation_confirm_result(committed.reply.as_ref().unwrap(), "confirmed", &page["emitted_controls"]);
+    activation_confirm_result(
+        committed.reply.as_ref().unwrap(),
+        "confirmed",
+        &page["emitted_controls"],
+    );
     wait_until("canonical presentation retirement", STEP, || {
         let (current, last, mask) = activation_pending(&rig);
         (current.is_none() && last.as_deref() == Some(token) && mask != 0).then_some(())
     });
-    assert_eq!(rig.receipt_state(&ordinary), "pending", "presentation is not ACK");
-    assert_eq!(rig.lazy_state(&lazy), "pending", "presentation is not lazy consumption");
-    let pending: i64 = rig.db().query_row(
-        "SELECT count(*) FROM digest_pending_invitations WHERE seat_id=?1 AND thread_id=?2",
-        [&rig.b, invitation.as_str()], |row| row.get(0),
-    ).unwrap();
+    assert_eq!(
+        rig.receipt_state(&ordinary),
+        "pending",
+        "presentation is not ACK"
+    );
+    assert_eq!(
+        rig.lazy_state(&lazy),
+        "pending",
+        "presentation is not lazy consumption"
+    );
+    let pending: i64 = rig
+        .db()
+        .query_row(
+            "SELECT count(*) FROM digest_pending_invitations WHERE seat_id=?1 AND thread_id=?2",
+            [&rig.b, invitation.as_str()],
+            |row| row.get(0),
+        )
+        .unwrap();
     assert_eq!(pending, 1, "presentation is not acceptance");
     rig.assert_no_prompt(mark, QUIET);
     // ACK and acceptance are later explicit actions; the real Watch then emits
     // a scoped clear. Keep these separate from presentation's passive effects.
-    assert_eq!(rig.ack_result(SESSION_B, "context", &ordinary)["result"], "settled");
-    rig.cli(Some((&rig.b, PANE_B)), &["accept", &invitation]).data("accept activation invitation");
-    let clear = watch.wait_line("the active scoped clear", STEP, |line| line["kind"] == "attention_cleared");
+    assert_eq!(
+        rig.ack_result(SESSION_B, "context", &ordinary)["result"],
+        "settled"
+    );
+    rig.cli(Some((&rig.b, PANE_B)), &["accept", &invitation])
+        .data("accept activation invitation");
+    let clear = watch.wait_line("the active scoped clear", STEP, |line| {
+        line["kind"] == "attention_cleared"
+    });
     assert!(clear["presentation_epoch"].as_str().is_some());
     assert_eq!(rig.channel_state().as_deref(), Some("live"));
     assert_eq!(lease.len(), 32);
@@ -1657,13 +1832,17 @@ fn activation_v2_watch_lazy_only_page_is_passive() {
         relay.snapshot().into_iter().find(|entry| {
             entry.request["command"]["kind"] == "delivery_presentation_confirm_v2"
                 && entry.reply.is_some()
-                && relay.snapshot().into_iter().filter_map(|pull| pull.reply).any(|reply| {
-                    let page = &reply["result"]["Ok"]["data"]["args"];
-                    page["presentation_token"] == entry.request["command"]["args"]["token"]
-                        && page["items"].as_array().is_some_and(|items| {
-                            items.iter().any(|item| item["id"] == lazy)
-                        })
-                })
+                && relay
+                    .snapshot()
+                    .into_iter()
+                    .filter_map(|pull| pull.reply)
+                    .any(|reply| {
+                        let page = &reply["result"]["Ok"]["data"]["args"];
+                        page["presentation_token"] == entry.request["command"]["args"]["token"]
+                            && page["items"]
+                                .as_array()
+                                .is_some_and(|items| items.iter().any(|item| item["id"] == lazy))
+                    })
         })
     });
     let page = activation_page(&relay, &confirm);
@@ -1672,7 +1851,9 @@ fn activation_v2_watch_lazy_only_page_is_passive() {
     activation_confirm_result(confirm.reply.as_ref().unwrap(), "confirmed", &json!([]));
     assert_eq!(rig.lazy_state(&lazy), "pending");
     assert_eq!(rig.mod_ack_events(), 0);
-    watch.assert_no_line("passive page attention", QUIET, |line| line["kind"] == "attention");
+    watch.assert_no_line("passive page attention", QUIET, |line| {
+        line["kind"] == "attention"
+    });
     assert_eq!(rig.host.prompts_since(mark, PANE_B), 0);
     // Crossing the health timeout cannot close a purely passive channel.
     rig.advance(11 * MINUTE_MS);
@@ -1694,13 +1875,25 @@ fn activation_v2_watch_replacement_replays_uncommitted_output() {
     let page = activation_page(&relay, &old_confirm);
     old.wait_attention_marker();
     assert_eq!(old.exit_code(STEP), 1);
-    assert_eq!(activation_pending(&rig).0, Some(old_confirm.request["command"]["args"]["token"].as_str().unwrap().to_owned()));
+    assert_eq!(
+        activation_pending(&rig).0,
+        Some(
+            old_confirm.request["command"]["args"]["token"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        )
+    );
     let mark = relay.snapshot().len();
     let mut replacement = rig.watch(SESSION_B);
     replacement.wait_connected();
     replacement.wait_attention_marker();
-    let new_accepted = relay.snapshot().into_iter().skip(mark)
-        .find(|entry| entry.request.get("watch").is_some()).unwrap();
+    let new_accepted = relay
+        .snapshot()
+        .into_iter()
+        .skip(mark)
+        .find(|entry| entry.request.get("watch").is_some())
+        .unwrap();
     let new_lease = &new_accepted.reply.unwrap()["outcome"]["args"]["presentation_lease"];
     assert_ne!(new_lease, &json!(old_lease));
     let new_confirm = wait_until("replacement's own exact Confirm", STEP, || {
@@ -1709,16 +1902,38 @@ fn activation_v2_watch_replacement_replays_uncommitted_output() {
                 && entry.reply.is_some()
         })
     });
-    assert_eq!(&new_confirm.request["command"]["args"]["presentation_lease"], new_lease);
-    assert_eq!(new_confirm.request["command"]["args"]["emitted_controls"], page["emitted_controls"]);
-    activation_confirm_result(new_confirm.reply.as_ref().unwrap(), "confirmed", &page["emitted_controls"]);
+    assert_eq!(
+        &new_confirm.request["command"]["args"]["presentation_lease"],
+        new_lease
+    );
+    assert_eq!(
+        new_confirm.request["command"]["args"]["emitted_controls"],
+        page["emitted_controls"]
+    );
+    activation_confirm_result(
+        new_confirm.reply.as_ref().unwrap(),
+        "confirmed",
+        &page["emitted_controls"],
+    );
     let stale = relay.replay(&old_confirm, |_| {});
     activation_confirm_result(&stale, "stale_binding", &json!([]));
-    let invitations: Vec<_> = old.seen.iter().filter(|line| line["kind"] == "invitation").collect();
+    let invitations: Vec<_> = old
+        .seen
+        .iter()
+        .filter(|line| line["kind"] == "invitation")
+        .collect();
     for line in invitations {
-        assert!(replacement.seen.iter().any(|new| new == line), "replacement physically emits invitation bytes");
+        assert!(
+            replacement.seen.iter().any(|new| new == line),
+            "replacement physically emits invitation bytes"
+        );
     }
-    assert!(replacement.seen.iter().any(|line| line["kind"] == "invitation" && line["thread"] == invitation));
+    assert!(
+        replacement
+            .seen
+            .iter()
+            .any(|line| line["kind"] == "invitation" && line["thread"] == invitation)
+    );
 }
 
 /// A committed response lost in transit permits exact idempotent recovery on
@@ -1735,7 +1950,10 @@ fn activation_v2_watch_lost_confirm_response_replays_exact_subset() {
     let confirm = relay.control_confirm(true);
     let controls = &confirm.request["command"]["args"]["emitted_controls"];
     activation_confirm_result(confirm.reply.as_ref().unwrap(), "confirmed", controls);
-    assert!(watch.running(), "response held while the real child owns the lease");
+    assert!(
+        watch.running(),
+        "response held while the real child owns the lease"
+    );
     let before = activation_pending(&rig);
     let exact = relay.replay(&confirm, |_| {});
     activation_confirm_result(&exact, "already_confirmed", controls);
@@ -1746,10 +1964,21 @@ fn activation_v2_watch_lost_confirm_response_replays_exact_subset() {
     let foreign = relay.replay(&confirm, |request| {
         request["command"]["args"]["emitted_controls"][0]["epoch"] = json!("18446744073709551615");
     });
-    assert_eq!(foreign["result"]["Err"]["code"], "invalid_request", "{foreign}");
-    assert_eq!(activation_pending(&rig), before, "replay/subset/refusal cannot consume another page");
+    assert_eq!(
+        foreign["result"]["Err"]["code"], "invalid_request",
+        "{foreign}"
+    );
+    assert_eq!(
+        activation_pending(&rig),
+        before,
+        "replay/subset/refusal cannot consume another page"
+    );
     relay.release();
-    assert_eq!(watch.exit_code(STEP), 1, "lost completion remains truthful at consumer");
+    assert_eq!(
+        watch.exit_code(STEP),
+        1,
+        "lost completion remains truthful at consumer"
+    );
 }
 
 // -------------------------------------------------------------------- tests
