@@ -71,6 +71,7 @@ enum Call {
 /// A recording host whose next observation and stash result the test scripts.
 struct RecordingHost {
     ui: Mutex<HostUiState>,
+    outage: Mutex<bool>,
     focused: Mutex<bool>,
     stash: Mutex<ComposerStash>,
     log: Mutex<Vec<Call>>,
@@ -84,6 +85,7 @@ impl RecordingHost {
     fn new(ui: HostUiState, focused: bool) -> Self {
         Self {
             ui: Mutex::new(ui),
+            outage: Mutex::new(false),
             focused: Mutex::new(focused),
             stash: Mutex::new(ComposerStash::Unsupported),
             log: Mutex::new(Vec::new()),
@@ -135,6 +137,12 @@ impl HostPort for RecordingHost {
         _: &HostCallContext,
     ) -> Result<HostObservation, ApiError> {
         self.log.lock().unwrap().push(Call::Observe);
+        if *self.outage.lock().unwrap() {
+            return Err(ApiError::new(
+                crate::protocol::results::ErrorCode::HostUnavailable,
+                "isolated recording host unavailable",
+            ));
+        }
         Ok(HostObservation {
             target: target.clone(),
             host_boot: HostBootId::new("host"),
@@ -962,4 +970,105 @@ fn frozen_wake_lane_neither_reads_nor_pokes_until_recovery() {
         std::thread::sleep(Duration::from_millis(2));
     }
     assert_eq!(host.prompts().len(), 1, "one poke after recovery");
+}
+
+#[test]
+fn receipt_discovery_original_senders_use_actual_native_guard_and_recovery_path() {
+    for (ui, outage) in [
+        (HostUiState::HumanInput, false),
+        (HostUiState::ActiveTurn, false),
+        (HostUiState::Idle, true),
+    ] {
+        let fx = Fixture::new(&[]);
+        let db = fx.conn();
+        db.execute_batch("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s2','i','resolved','native','pane2',1,1,0),('recipient','i','unresolved','native',NULL,0,0,0);
+        INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','pane2','host',1,1,0,'fresh','term-pane','inc','native_current_target',1);
+        INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('s2',1,1,'pane2','host',0,'codex','session2','original-sender2','cooperative_top_level',0,0,'term-pane','inc');
+        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES ('t','i','topic','goal',0,0,3);
+        INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t','s','left'),('t','s2','left');").unwrap();
+        for (n, seat) in [(1, "s"), (2, "s2")] {
+            db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,author_kind,actor_seat_id,decision_seq,decision_at) VALUES (?1,'i','t',?2,'ordinary','handoff','native',?3,?2,0)",rusqlite::params![format!("source-{n}"),n,seat]).unwrap();
+            db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES (?1,'t','recipient','pending',?2,0,?2)",rusqlite::params![format!("source-{n}"),WINDOW]).unwrap();
+        }
+        db.execute("UPDATE host_instances SET decision_seq=2 WHERE id='i'", [])
+            .unwrap();
+        drop(db);
+        fx.clock.set(WINDOW);
+        let host = RecordingHost::new(ui, false);
+        *host.outage.lock().unwrap() = outage;
+        let dispatcher = NativeWakeDispatcher::new(&host, &fx.store, fx.clock.as_ref());
+        let flow = scheduler(&fx, &dispatcher, &NO_CAPS);
+        flow.drive_deadlines(&budget(&fx)).unwrap();
+        let db = fx.conn();
+        assert_eq!(db.query_row("SELECT count(*) FROM warning_conditions WHERE condition_kind='receipt' AND clear_warning_id IS NULL",[],|r|r.get::<_,i64>(0)).unwrap(),1);
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM receipt_warning_origins", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+        drop(db);
+        // This enters real candidate discovery/loading, dispatcher host guards,
+        // reservation and completion; no helper-built candidate is submitted.
+        let guarded = flow.drive_wakes(&budget(&fx));
+        if let Err(error) = guarded {
+            assert!(outage, "unexpected guarded wake error: {error:?}");
+            assert_eq!(
+                error.code,
+                crate::protocol::results::ErrorCode::HostUnavailable
+            );
+        }
+        assert!(
+            host.prompts().is_empty(),
+            "{ui:?}/outage={outage} must defer every native prompt"
+        );
+        assert!(
+            !host.log().is_empty(),
+            "guard must be reached through actual host observation"
+        );
+        assert_eq!(
+            fx.conn()
+                .query_row("SELECT count(*) FROM receipt_warning_origins", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            2,
+            "guarded host does not clear durable original-sender attention"
+        );
+        host.set(HostUiState::Idle, false);
+        *host.outage.lock().unwrap() = false;
+        host.clear();
+        fx.clock.set(WINDOW + 1_000_000);
+        flow.clear_wake_refusals().unwrap();
+        for _ in 0..6 {
+            let result = flow.drive_wakes(&budget(&fx)).unwrap();
+            if !result.has_more {
+                break;
+            }
+        }
+        assert_eq!(
+            host.prompts().len(),
+            2,
+            "both departed original senders recover independently: {ui:?}/outage={outage}; log={:?}",
+            host.log()
+        );
+        for _ in 0..3 {
+            flow.drive_wakes(&budget(&fx)).unwrap();
+        }
+        assert_eq!(
+            host.prompts().len(),
+            2,
+            "same occupant/frontier submission dedup remains in force"
+        );
+        assert_eq!(
+            fx.conn()
+                .query_row(
+                    "SELECT count(*) FROM warning_conditions WHERE clear_warning_id IS NULL",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+            1,
+            "successful notification is not a receipt ACK"
+        );
+    }
 }

@@ -35,16 +35,16 @@ use crate::service::kicks::{Lane, LaneSet};
 use crate::{
     ports::{
         ClosureEvidence, DuePhase, DuePhaseCursor, DuePhaseProgress, DueScanProgress,
-        DueScanRequest, DurableWorkAdmission, GuardedInvalidationTransition, GuardedSeatTransition,
-        HostInvalidationFence, HostInvalidationReason, HostObservation, HostObservationAdmission,
-        InvalidationSeatPage, OperationReadScope, OperatorRequest, PokeDue, PokeReceipt,
-        PokeReservation, PriorLadder, PruneProgress, PublishedSnapshot, ReadContext,
-        ReceiptSparseCursor, ReconciliationOutcome, RegisterAvailableRequest, RetirementJob,
-        RetirementProgress, RetirementSummary, SendPreparationProgress, SnapshotCleanupProgress,
-        SnapshotGenerationId, SnapshotHeader, SnapshotSeatPage, SnapshotStage,
-        SnapshotStageProgress, StorePort, WakeCandidate, WakeOutcome, WakeRecoveryCandidate,
-        WakeRecoveryOutcome, WakeRecoveryRequest, WakeReservation, WorkAdmission, WorkCandidate,
-        WorkKind, WorkProgress,
+        DueScanRequest, DueScanState, DurableWorkAdmission, GuardedInvalidationTransition,
+        GuardedSeatTransition, HostInvalidationFence, HostInvalidationReason, HostObservation,
+        HostObservationAdmission, InvalidationSeatPage, OperationReadScope, OperatorRequest,
+        PokeDue, PokeReceipt, PokeReservation, PriorLadder, PruneProgress, PublishedSnapshot,
+        ReadContext, ReceiptSparseCursor, ReconciliationOutcome, RegisterAvailableRequest,
+        RetirementJob, RetirementProgress, RetirementSummary, SendPreparationProgress,
+        SnapshotCleanupProgress, SnapshotGenerationId, SnapshotHeader, SnapshotSeatPage,
+        SnapshotStage, SnapshotStageProgress, StorePort, WakeCandidate, WakeOutcome,
+        WakeRecoveryCandidate, WakeRecoveryOutcome, WakeRecoveryRequest, WakeReservation,
+        WorkAdmission, WorkCandidate, WorkKind, WorkProgress,
     },
     protocol::{
         authority::{MutationPermit, OperatorActor},
@@ -432,15 +432,19 @@ fn receipt_cursor(value: &DuePhaseCursor) -> Result<receipts::ReceiptDueCursor, 
             "invalid receipt due cursor",
         ));
     }
-    let sparse_high_water_rowid = sparse
-        .map(|c| due_i64(c.high_water_rowid))
+    let sparse_high_water_ordinal = sparse
+        .map(|c| due_i64(c.high_water_ordinal))
         .transpose()?
         .unwrap_or(0);
     Ok(receipts::ReceiptDueCursor {
         high_water_ordinal: due_i64(value.high_water_ordinal)?,
         after_deadline: value.after_deadline.map(|at| at.0),
         after_ordinal: due_i64(value.after_ordinal)?,
-        sparse_high_water_rowid,
+        sparse_high_water_ordinal,
+        sparse_after_ordinal: sparse
+            .map(|c| due_i64(c.after_ordinal))
+            .transpose()?
+            .unwrap_or(0),
         sparse_after_deadline: sparse.and_then(|c| c.after_deadline.map(|at| at.0)),
         sparse_after_message: sparse
             .and_then(|c| c.after_message.as_ref().map(|id| id.as_str().to_owned())),
@@ -467,7 +471,9 @@ fn exported_receipt_cursor(value: &receipts::ReceiptDueCursor) -> Result<DuePhas
         after_ordinal: u64::try_from(value.after_ordinal)
             .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative receipt ordinal"))?,
         receipt_sparse: Some(ReceiptSparseCursor {
-            high_water_rowid: u64::try_from(value.sparse_high_water_rowid)
+            after_ordinal: u64::try_from(value.sparse_after_ordinal)
+                .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative sparse ordinal"))?,
+            high_water_ordinal: u64::try_from(value.sparse_high_water_ordinal)
                 .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative sparse high water"))?,
             after_deadline: value.sparse_after_deadline.map(UtcMillis),
             after_message: value
@@ -2279,34 +2285,45 @@ impl StorePort for SqliteStore {
         }
         let mut writer = self.writer(budget)?;
         let mut state = request.state.clone();
-        let first = if request.run_invitations && request.run_receipts {
-            state.next_phase
-        } else if request.run_invitations {
-            DuePhase::Invitations
-        } else {
-            DuePhase::Receipts
+        // Completion belongs to a paired finite cycle, independent of the
+        // native wake lane. A finished class cannot restart while its peer is
+        // still walking the captured snapshot.
+        if (!request.run_invitations || state.invitations_complete)
+            && (!request.run_receipts || state.receipts_complete)
+        {
+            if request.run_invitations {
+                state.invitations_complete = false;
+            }
+            if request.run_receipts {
+                state.receipts_complete = false;
+            }
+        }
+        let eligible = |phase: DuePhase, state: &DueScanState| match phase {
+            DuePhase::Invitations => request.run_invitations && !state.invitations_complete,
+            DuePhase::Receipts => request.run_receipts && !state.receipts_complete,
         };
-        state.next_phase = match first {
+        let other = |phase| match phase {
             DuePhase::Invitations => DuePhase::Receipts,
             DuePhase::Receipts => DuePhase::Invitations,
         };
-        let (first_cap, second_cap) = if request.run_invitations && request.run_receipts {
-            (
-                request.max_candidates.div_ceil(2),
-                request.max_candidates / 2,
-            )
+        let first = if eligible(state.next_phase, &state) {
+            state.next_phase
         } else {
-            (request.max_candidates, 0)
+            other(state.next_phase)
         };
         let mut examined = 0u16;
+        let mut maintenance_sessions = 0u16;
         let mut warnings = 0u16;
         let mut invitation_phase = DuePhaseProgress::Skipped;
         let mut receipt_phase = DuePhaseProgress::Skipped;
-        for (index, phase) in [first, state.next_phase].into_iter().enumerate() {
-            let cap = if index == 0 { first_cap } else { second_cap };
-            if cap == 0 {
+        for phase in [first, other(first)] {
+            // A nonempty turn consumes this quantum. An empty completed/error
+            // probe may lend its whole allowance to the unfinished peer.
+            if examined > 0 || !eligible(phase, &state) {
                 continue;
             }
+            let cap = request.max_candidates;
+            state.next_phase = other(phase);
             match phase {
                 DuePhase::Invitations if request.run_invitations => {
                     let cursor = state
@@ -2331,10 +2348,11 @@ impl StorePort for SqliteStore {
                                 extension_through: None,
                                 extension_after: None,
                             });
-                            invitation_phase = if state.invitations.is_some() {
-                                DuePhaseProgress::More
-                            } else {
+                            state.invitations_complete = state.invitations.is_none();
+                            invitation_phase = if state.invitations_complete {
                                 DuePhaseProgress::Complete
+                            } else {
+                                DuePhaseProgress::More
                             };
                         }
                         Err(error) => {
@@ -2362,22 +2380,21 @@ impl StorePort for SqliteStore {
                     );
                     let scanned = match stalled {
                         Ok(ended) => {
-                            examined += ended;
-                            receipts::scan_due(&self.context, &mut writer, cap, &mut cursor)
-                                .and_then(|mut due| {
-                                    // Extension lapses (spec §8): scan_due skips
-                                    // candidates whose effective deadline is
-                                    // future; the lapse itself is found here.
-                                    let lapses = receipts::scan_extension_lapses(
-                                        &self.context,
-                                        &mut writer,
-                                        &mut cursor,
-                                    )?;
-                                    due.warnings = due.warnings.saturating_add(lapses.warnings);
-                                    due.inspected = due.inspected.saturating_add(lapses.inspected);
-                                    due.more |= lapses.more;
-                                    Ok(due)
-                                })
+                            // These are session records, not due obligations.
+                            // end_row performs fixed writes and never walks
+                            // receipts. Maintenance is bounded separately and
+                            // included in the caller's budget and quantum Q.
+                            maintenance_sessions = ended;
+                            if budget.is_exhausted(self.context.clock()) {
+                                Err(ApiError::deadline_exceeded(
+                                    "due scan budget exhausted after maintenance",
+                                ))
+                            } else {
+                                // A fresh finite ordinary cycle rechecks every
+                                // original deadline against its current A6
+                                // extension. No unbounded lapse child scan.
+                                receipts::scan_due(&self.context, &mut writer, cap, &mut cursor)
+                            }
                         }
                         Err(error) => Err(error),
                     };
@@ -2390,10 +2407,11 @@ impl StorePort for SqliteStore {
                             } else {
                                 None
                             };
-                            receipt_phase = if result.more {
-                                DuePhaseProgress::More
-                            } else {
+                            state.receipts_complete = !result.more;
+                            receipt_phase = if state.receipts_complete {
                                 DuePhaseProgress::Complete
+                            } else {
+                                DuePhaseProgress::More
                             };
                         }
                         Err(error) => {
@@ -2407,16 +2425,12 @@ impl StorePort for SqliteStore {
                 _ => {}
             }
         }
-        let has_more = matches!(
-            invitation_phase,
-            DuePhaseProgress::More | DuePhaseProgress::Failed(..)
-        ) || matches!(
-            receipt_phase,
-            DuePhaseProgress::More | DuePhaseProgress::Failed(..)
-        ) || (request.run_invitations && request.run_receipts && second_cap == 0);
+        let has_more = (request.run_invitations && !state.invitations_complete)
+            || (request.run_receipts && !state.receipts_complete);
         Ok(DueScanProgress {
             state,
             examined_candidates: examined,
+            maintenance_sessions,
             warnings_added: warnings,
             invitations: invitation_phase,
             receipts: receipt_phase,

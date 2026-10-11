@@ -225,8 +225,18 @@ impl<'a, P: DeadlinePort + ?Sized> DeadlineDriver<'a, P> {
             outcome.due_examined_candidates = progress.examined_candidates;
             outcome.due_warnings_added = progress.warnings_added;
             self.due_continuation = progress.has_more
-                && (matches!(progress.invitations, DuePhaseProgress::More)
-                    || matches!(progress.receipts, DuePhaseProgress::More));
+                && ((run_invitations
+                    && !progress.state.invitations_complete
+                    && !matches!(
+                        progress.invitations,
+                        DuePhaseProgress::Failed(..) | DuePhaseProgress::Complete
+                    ))
+                    || (run_receipts
+                        && !progress.state.receipts_complete
+                        && !matches!(
+                            progress.receipts,
+                            DuePhaseProgress::Failed(..) | DuePhaseProgress::Complete
+                        )));
             outcome.due_continuation = self.due_continuation;
             outcome.due_progress = Some(progress);
         } else {

@@ -384,7 +384,9 @@ pub struct ExtensionLapseKey {
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReceiptSparseCursor {
-    pub high_water_rowid: u64,
+    /// Monotonic ordinal of the maintained sparse candidate projection.
+    pub high_water_ordinal: u64,
+    pub after_ordinal: u64,
     pub after_deadline: Option<UtcMillis>,
     pub after_message: Option<MessageId>,
     pub after_seat: Option<SeatId>,
@@ -392,7 +394,9 @@ pub struct ReceiptSparseCursor {
 }
 impl ReceiptSparseCursor {
     pub fn validate(&self) -> Result<(), &'static str> {
-        if self.after_message.is_some() != self.after_seat.is_some() {
+        if self.after_ordinal > self.high_water_ordinal {
+            Err("sparse cursor exceeds captured high water")
+        } else if self.after_message.is_some() != self.after_seat.is_some() {
             Err("incomplete sparse receipt cursor key")
         } else if self.after_message.is_some() != self.after_deadline.is_some() {
             Err("incomplete sparse receipt deadline key")
@@ -406,6 +410,9 @@ pub struct DueScanState {
     pub invitations: Option<DuePhaseCursor>,
     pub receipts: Option<DuePhaseCursor>,
     pub next_phase: DuePhase,
+    /// Completion is retained until both finite class snapshots finish.
+    pub invitations_complete: bool,
+    pub receipts_complete: bool,
 }
 impl Default for DueScanState {
     fn default() -> Self {
@@ -413,6 +420,8 @@ impl Default for DueScanState {
             invitations: None,
             receipts: None,
             next_phase: DuePhase::Invitations,
+            invitations_complete: false,
+            receipts_complete: false,
         }
     }
 }
@@ -462,6 +471,9 @@ pub enum DuePhaseProgress {
 pub struct DueScanProgress {
     pub state: DueScanState,
     pub examined_candidates: u16,
+    /// Separately bounded catch-up session maintenance; never receipt or
+    /// invitation candidate inspection and never a child receipt walk.
+    pub maintenance_sessions: u16,
     pub warnings_added: u16,
     pub invitations: DuePhaseProgress,
     pub receipts: DuePhaseProgress,

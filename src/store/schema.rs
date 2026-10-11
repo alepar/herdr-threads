@@ -71,7 +71,8 @@ const V31: &str = include_str!("../../migrations/0031_handoff_body_bounds.sql");
 const V32: &str = include_str!("../../migrations/0032_receipt_deadline_backfill.sql");
 const V33: &str = include_str!("../../migrations/0033_invitation_lifecycle.sql");
 const V34: &str = include_str!("../../migrations/0034_invitation_warning_origin.sql");
-pub(crate) const LATEST_VERSION: i64 = 34;
+const V35: &str = include_str!("../../migrations/0035_receipt_warning_origins.sql");
+pub(crate) const LATEST_VERSION: i64 = 35;
 
 /// Decode only persisted results, after the caller's digest has matched. Live
 /// protocol responses still require disposition. Missing original context
@@ -414,7 +415,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             verify_existing(conn)
         }
         17 => verify_existing(conn),
-        18..=34 => verify_existing(conn),
+        18..=35 => verify_existing(conn),
         _ => Err(api_error(
             ErrorCode::IncompatibleSchema,
             format!("unsupported schema version {version}"),
@@ -665,7 +666,82 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             }
         }
     }
-    verify_invitation_warning_origin_schema(conn)
+    verify_invitation_warning_origin_schema(conn)?;
+    if version <= 34 {
+        conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
+        let result = conn
+            .execute_batch(V35)
+            .map_err(store_error)
+            .and_then(|_| verify_receipt_warning_origins_schema(conn))
+            .and_then(|_| {
+                conn.pragma_update(None, "user_version", 35)
+                    .map_err(store_error)
+            });
+        match result {
+            Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(error);
+            }
+        }
+    }
+    verify_receipt_warning_origins_schema(conn)
+}
+
+fn verify_receipt_warning_origins_schema(conn: &Connection) -> Result<(), ApiError> {
+    // SQLite itself parses the immutable DDL, including compound trigger
+    // bodies. Compare every created object, rather than splitting on semicolons.
+    let expected = Connection::open_in_memory().map_err(store_error)?;
+    // A schema-only reference needs parent names for trigger creation; no data
+    // is copied and foreign keys remain off in this isolated parser connection.
+    expected.execute_batch("CREATE TABLE receipts(ordinal INTEGER PRIMARY KEY,message_id,seat_id,warning_message_id,state,ack_required,deadline_at); CREATE TABLE receipt_state(message_id,seat_id,warning_message_id); CREATE TABLE warning_conditions(condition_kind,clear_warning_id,open_warning_id,cleared_seq);").map_err(store_error)?;
+    // Population statements require the canonical parent schema. Parse only
+    // CREATE objects, retaining whole trigger bodies.
+    let mut sql = String::new();
+    for line in V35.lines() {
+        if sql.is_empty() && !line.trim_start().starts_with("CREATE ") {
+            continue;
+        }
+        sql.push_str(line);
+        sql.push('\n');
+        let complete = if sql.starts_with("CREATE TRIGGER ") {
+            line.trim_end().ends_with("END;")
+        } else {
+            line.trim_end().ends_with(';')
+        };
+        if complete {
+            expected.execute_batch(&sql).map_err(store_error)?;
+            sql.clear();
+        }
+    }
+    let mut stmt=expected.prepare("SELECT type,name,sql FROM sqlite_master WHERE name NOT IN ('receipts','receipt_state','warning_conditions') AND name NOT LIKE 'sqlite_%' ORDER BY name").map_err(store_error)?;
+    let objects = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(store_error)?;
+    for object in objects {
+        let (kind, name, sql) = object.map_err(store_error)?;
+        let actual: Option<String> = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type=?1 AND name=?2",
+                params![kind, name],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(store_error)?;
+        if actual.as_deref() != Some(sql.as_str()) {
+            return Err(api_error(
+                ErrorCode::IncompatibleSchema,
+                format!("missing or altered receipt warning origin {name}"),
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn verify_invitation_warning_origin_schema(conn: &Connection) -> Result<(), ApiError> {

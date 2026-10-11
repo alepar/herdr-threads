@@ -29,6 +29,10 @@ fn setup() -> (StoreContext, Connection, Arc<TestClock>) {
         std::env::temp_dir().join(format!("receipt-test-{}.db", uuid::Uuid::new_v4()));
     let context = StoreContext::new(path, clock.clone());
     let conn = context.open_writer().unwrap();
+    seed_discovery_database(&conn);
+    (context, conn, clock)
+}
+fn seed_discovery_database(conn: &Connection) {
     conn.execute(
         "INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'b',1,1)",
         [],
@@ -56,7 +60,6 @@ fn setup() -> (StoreContext, Connection, Arc<TestClock>) {
             conn.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('t',?1,1,1)",[seat]).unwrap();
         }
     }
-    (context, conn, clock)
 }
 fn send_request(explicit: Vec<&str>) -> SendMessage {
     SendMessage {
@@ -3618,4 +3621,1277 @@ fn adapter_display_ack_rechecks_exact_binding_and_cooperative_provenance() {
             None
         );
     }
+}
+
+fn discovery_receipt(db: &Connection, id: &str, sequence: i64, deadline: i64) {
+    db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,author_kind,actor_seat_id,body,decision_at,decision_seq) VALUES (?1,'i','t',?2,'ordinary','native','a','x',0,?2)",params![id,sequence]).unwrap();
+    db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES (?1,'t','b','pending',1,0,?2)",params![id,deadline]).unwrap();
+}
+
+#[test]
+fn receipt_discovery_snapshot_excludes_earlier_deadline_arrivals_before_limit() {
+    let (context, mut db, _) = setup();
+    for n in 0..250 {
+        discovery_receipt(&db, &format!("snapshot-{n}"), n + 1, 500);
+    }
+    db.execute("UPDATE threads SET next_sequence=10000 WHERE id='t'", [])
+        .unwrap();
+    db.execute(
+        "UPDATE host_instances SET decision_seq=10000 WHERE id='i'",
+        [],
+    )
+    .unwrap();
+    let mut cursor = receipts::ReceiptDueCursor::default();
+    let first = receipts::scan_due(&context, &mut db, 100, &mut cursor).unwrap();
+    assert_eq!(first.inspected, 100);
+    for n in 0..125 {
+        discovery_receipt(&db, &format!("arrival-{n}"), 20000 + n, 501);
+    }
+    let mut total_inspected = first.inspected;
+    for _ in 0..5 {
+        let page = receipts::scan_due(&context, &mut db, 100, &mut cursor).unwrap();
+        assert!(page.inspected <= 100);
+        total_inspected += page.inspected;
+        if !page.more {
+            break;
+        }
+    }
+    assert_eq!(
+        total_inspected, 250,
+        "arrivals outside the captured high water consume no inspection allowance"
+    );
+    assert_eq!(db.query_row("SELECT count(*) FROM receipts WHERE message_id LIKE 'snapshot-%' AND warning_message_id IS NOT NULL",[],|r|r.get::<_,i64>(0)).unwrap(),250);
+    assert_eq!(db.query_row("SELECT count(*) FROM receipts WHERE message_id LIKE 'arrival-%' AND warning_message_id IS NOT NULL",[],|r|r.get::<_,i64>(0)).unwrap(),0,"later ordinals must be excluded by SQL before LIMIT, even when they fit the deadline keyset");
+}
+
+#[test]
+fn receipt_discovery_lends_empty_sparse_half_to_physical_snapshot() {
+    let (context, mut db, _) = setup();
+    for n in 0..250 {
+        discovery_receipt(&db, &format!("physical-{n}"), n + 1, 500);
+    }
+    discovery_receipt(&db, "sparse-source", 500, 500);
+    db.execute("INSERT INTO receipt_state(message_id,seat_id,state,ack_required,deadline_at) VALUES ('sparse-source','c','pending',1,500)",[]).unwrap();
+    db.execute("UPDATE threads SET next_sequence=10000 WHERE id='t'", [])
+        .unwrap();
+    db.execute(
+        "UPDATE host_instances SET decision_seq=10000 WHERE id='i'",
+        [],
+    )
+    .unwrap();
+    let page = receipts::scan_due(
+        &context,
+        &mut db,
+        100,
+        &mut receipts::ReceiptDueCursor::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        page.inspected, 100,
+        "one sparse row cannot strand 49 physical inspection slots"
+    );
+}
+
+#[test]
+fn receipt_discovery_coalesced_origins_survive_offers_departure_and_partial_ack() {
+    let (context, mut db, clock) = setup();
+    db.execute("UPDATE memberships SET state='left' WHERE seat_id!='b'", [])
+        .unwrap();
+    db.execute(
+        "UPDATE membership_intervals SET left_seq=2 WHERE seat_id!='b'",
+        [],
+    )
+    .unwrap();
+    for (n, author) in [(1, "a"), (2, "a"), (3, "b")] {
+        db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,author_kind,actor_seat_id,body,decision_at,decision_seq) VALUES (?1,'i','t',?2,'ordinary','native',?3,'x',0,?2)",params![format!("origin-{n}"),n,author]).unwrap();
+        if n < 3 {
+            db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES (?1,'t','c','pending',1,0,500)",[format!("origin-{n}")]).unwrap();
+        } else {
+            discovery_manifest(&db, "origin-3", "origin-preparation", "c", 1500, 3);
+        }
+    }
+    db.execute("UPDATE threads SET next_sequence=1000 WHERE id='t'", [])
+        .unwrap();
+    db.execute(
+        "UPDATE host_instances SET decision_seq=1000 WHERE id='i'",
+        [],
+    )
+    .unwrap();
+    receipts::scan_due(
+        &context,
+        &mut db,
+        100,
+        &mut receipts::ReceiptDueCursor::default(),
+    )
+    .unwrap();
+    let warning: String = db
+        .query_row(
+            "SELECT open_warning_id FROM warning_conditions WHERE condition_kind='receipt'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM warning_conditions WHERE condition_kind='receipt'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM receipts WHERE warning_message_id=?1",
+            [&warning],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        2
+    );
+    let budget = crate::protocol::time::CallBudget {
+        deadline: MonoInstant(u64::MAX),
+        cancellation: Default::default(),
+    };
+    while crate::store::materialization::advance_work(
+        &mut db,
+        &format!("work:{warning}"),
+        crate::ports::DurableWorkAdmission::new(16).unwrap(),
+        &budget,
+        context.clock(),
+    )
+    .unwrap()
+    .has_more
+    {}
+    for (seat, execution) in [
+        ("a", "00000000-0000-4000-8000-0000000000aa"),
+        ("b", "00000000-0000-4000-8000-0000000000bb"),
+    ] {
+        let carried: Vec<_> = attention::notice_offer_page(&db, seat, 100)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.notice)
+            .collect();
+        let tx = db.transaction().unwrap();
+        attention::settle_carried_notices(&tx, seat, 1, execution, &carried).unwrap();
+        tx.execute("INSERT INTO warning_offer(seat_id,binding_generation,execution_id,offered_through_seq) SELECT ?1,1,?2,decision_seq FROM host_instances WHERE id='i'",params![seat,execution]).unwrap();
+        tx.commit().unwrap();
+    }
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM receipt_warning_origins WHERE seat_id='b'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0,
+        "B has only informational observer attention before its own source coalesces"
+    );
+    db.execute("UPDATE memberships SET state='left' WHERE seat_id='b'", [])
+        .unwrap();
+    db.execute(
+        "UPDATE membership_intervals SET left_seq=2 WHERE seat_id='b'",
+        [],
+    )
+    .unwrap();
+    clock.0.store(2000, Ordering::SeqCst);
+    receipts::scan_due(
+        &context,
+        &mut db,
+        100,
+        &mut receipts::ReceiptDueCursor::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM warning_conditions WHERE condition_kind='receipt'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1,
+        "late B association reuses the previously offered shared condition"
+    );
+    assert_eq!(db.query_row("SELECT warning_message_id FROM receipt_state WHERE message_id='origin-3' AND seat_id='c'",[],|r|r.get::<_,String>(0)).unwrap(),warning);
+    let high = db
+        .query_row("SELECT max(ordinal) FROM seats", [], |r| r.get::<_, i64>(0))
+        .unwrap() as u64;
+    let found = crate::store::discover_wake_candidates(&db, "i", 0, high, 100, &|| Ok(())).unwrap();
+    for seat in ["a", "b"] {
+        let candidate = found
+            .items
+            .iter()
+            .find(|c| c.seat.as_str() == seat)
+            .unwrap_or_else(|| {
+                panic!("departed original sender {seat} missing from actual discovery")
+            });
+        assert!(candidate.has_actionable_work());
+        assert_eq!(
+            crate::store::seats::mod_seat_view(&db, "i", &SeatId::new(seat))
+                .unwrap()
+                .unwrap()
+                .fingerprint
+                .other_pending,
+            1
+        );
+        let refreshed =
+            crate::store::discover_wake_candidates(&db, "i", 0, high, 100, &|| Ok(())).unwrap();
+        let refreshed = refreshed
+            .items
+            .iter()
+            .find(|c| c.seat.as_str() == seat)
+            .unwrap();
+        let reservation = crate::store::wake::reserve(
+            &context,
+            &mut db,
+            "i",
+            refreshed,
+            uuid::Uuid::new_v4(),
+            30000,
+        )
+        .unwrap();
+        assert!(
+            reservation.is_some(),
+            "each actual discovered original sender must reserve independently"
+        );
+    }
+    db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES ('c',1,'pc','b',1,1,'codex','nc','00000000-0000-4000-8000-0000000000cc','cooperative_top_level',0,'term-pc','inc')",[]).unwrap();
+    for (n, remaining) in [(1, 2), (2, 1), (3, 0)] {
+        let mut request = ack_request(vec![MessageId::new(format!("origin-{n}"))]);
+        request.operation = OperationId::new(format!("origin-ack-{n}"));
+        request.claim.seat = SeatId::new("c");
+        request.claim.native_session = NativeSessionId::new("nc");
+        request.claim.execution = ExecutionId::new("00000000-0000-4000-8000-0000000000cc");
+        request.claim.target = HostTargetId::new("pc");
+        receipts::ack(
+            &context,
+            &mut db,
+            &budget,
+            &request,
+            &mut ack_permit(&request),
+        )
+        .unwrap();
+        assert_eq!(db.query_row("SELECT (SELECT count(*) FROM receipts WHERE state='pending' AND warning_message_id=?1)+(SELECT count(*) FROM receipt_state WHERE state='pending' AND warning_message_id=?1)",[&warning],|r|r.get::<_,i64>(0)).unwrap(),remaining);
+        assert_eq!(
+            db.query_row(
+                "SELECT count(*) FROM warning_conditions WHERE clear_warning_id IS NOT NULL",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            i64::from(remaining == 0),
+            "only final associated ACK clears the shared condition"
+        );
+        let effective =
+            crate::store::effective::effective_receipt(&db, &format!("origin-{n}"), "c")
+                .unwrap()
+                .unwrap();
+        assert_eq!(effective.ack_actor_seat_id.as_deref(), Some("c"));
+        assert!(
+            effective.ack_observation.is_some(),
+            "canonical ACK observation is retained for both physical and published-manifest sources"
+        );
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM receipt_warning_origins", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            if remaining == 0 { 0 } else { 2 }
+        );
+    }
+}
+
+#[test]
+fn receipt_discovery_deadline_arrivals_do_not_inflate_sqlite_walk_work() {
+    use crate::test_support::isolation::{CostCounter, count_vm_units};
+    let (context, mut db, _) = setup();
+    for n in 0..250 {
+        discovery_receipt(&db, &format!("work-{n}"), n + 1, 500);
+    }
+    db.execute("UPDATE threads SET next_sequence=10000 WHERE id='t'", [])
+        .unwrap();
+    db.execute(
+        "UPDATE host_instances SET decision_seq=10000 WHERE id='i'",
+        [],
+    )
+    .unwrap();
+    let mut cursor = receipts::ReceiptDueCursor::default();
+    receipts::scan_due(&context, &mut db, 100, &mut cursor).unwrap();
+    receipts::scan_due(&context, &mut db, 100, &mut cursor).unwrap();
+    // Measure the real producer statement's empty end-probe under the same
+    // captured high water. Excluded later rows must cost only an index seek.
+    let probe = |counter: &CostCounter| {
+        count_vm_units(&db, counter, || {
+            let mut statement = db.prepare(receipts::PHYSICAL_DUE_SELECTION).unwrap();
+            statement
+                .query_map(
+                    params![
+                        500,
+                        cursor.high_water_ordinal,
+                        cursor.high_water_ordinal,
+                        100
+                    ],
+                    |r| r.get::<_, i64>(0),
+                )
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+        })
+    };
+    let baseline_counter = CostCounter::default();
+    assert!(probe(&baseline_counter).is_empty());
+    let baseline = baseline_counter.units();
+    for n in 0..5000 {
+        discovery_receipt(&db, &format!("outside-{n}"), 20000 + n, 501);
+    }
+    let grown_counter = CostCounter::default();
+    assert!(probe(&grown_counter).is_empty());
+    assert!(
+        grown_counter.units() <= baseline + 100,
+        "excluded deadline arrivals inflated indexed work: baseline={baseline}, grown={}",
+        grown_counter.units()
+    );
+}
+
+struct ReceiptDiscoveryPort {
+    store: crate::store::SqliteStore,
+    clock: Arc<TestClock>,
+}
+impl crate::scheduler::deadlines::DeadlinePort for ReceiptDiscoveryPort {
+    crate::no_durable_work!();
+    fn clock(&self) -> &dyn Clock {
+        self.clock.as_ref()
+    }
+    fn due_obligations(
+        &self,
+        request: crate::ports::DueScanRequest,
+        budget: &crate::protocol::time::CallBudget,
+    ) -> Result<crate::ports::DueScanProgress, crate::protocol::results::ApiError> {
+        crate::ports::StorePort::due_obligations(&self.store, request, budget)
+    }
+    fn pending_retirement_jobs(
+        &self,
+        _: crate::protocol::pagination::PageRequest,
+        _: &crate::protocol::time::CallBudget,
+    ) -> Result<
+        crate::protocol::pagination::Page<crate::protocol::results::RetirementStatus>,
+        crate::protocol::results::ApiError,
+    > {
+        Ok(crate::protocol::pagination::Page {
+            items: vec![],
+            next_cursor: None,
+            next_argv: None,
+            high_water_ordinal: 0,
+            scope_revision: None,
+            has_more: false,
+            stop_reason: crate::protocol::pagination::StopReason::Complete,
+            consistency: crate::protocol::pagination::Consistency::BoundedLive,
+        })
+    }
+    fn advance_retirement(
+        &self,
+        _: RetirementJobId,
+        _: crate::ports::WorkAdmission,
+        _: &crate::protocol::time::CallBudget,
+    ) -> Result<crate::ports::RetirementProgress, crate::protocol::results::ApiError> {
+        unreachable!()
+    }
+}
+fn receipt_discovery_driver_fixture(
+    historical: bool,
+    receipt_count: i64,
+    invitation_count: i64,
+) -> (ReceiptDiscoveryPort, Connection) {
+    let (context, db, clock) = setup();
+    for n in 0..receipt_count {
+        discovery_receipt(
+            &db,
+            &format!("driver-{n}"),
+            n + 1,
+            if n % 5 == 0 { 5000 } else { 500 },
+        );
+    }
+    if historical {
+        db.execute("UPDATE receipts SET available_at=NULL,deadline_at=NULL,frozen_duration_ms=CASE WHEN message_id IN (SELECT id FROM messages WHERE sequence%5=1) THEN 5000 ELSE 500 END",[]).unwrap();
+        db.execute("UPDATE receipt_deadline_backfill SET physical_high_water=(SELECT COALESCE(MAX(ordinal),0) FROM receipts),completed=0",[]).unwrap();
+    }
+    for n in 0..invitation_count {
+        db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES (?1,'t','c',?2,'pending',0,1,?3,500)",params![format!("driver-inv-{n}"),n+1,if n%5==0{5000}else{500}]).unwrap();
+    }
+    db.execute("UPDATE threads SET next_sequence=10000 WHERE id='t'", [])
+        .unwrap();
+    db.execute(
+        "UPDATE host_instances SET decision_seq=10000 WHERE id='i'",
+        [],
+    )
+    .unwrap();
+    // Every native wake is blocked: the store does not claim availability.
+    db.execute("UPDATE observed_targets SET observed_at=-999999", [])
+        .unwrap();
+    let store =
+        crate::store::SqliteStore::new(context, "i", crate::store::StoreSettings::default())
+            .unwrap();
+    (ReceiptDiscoveryPort { store, clock }, db)
+}
+
+#[test]
+fn receipt_discovery_global_short_first_turn_continues_other_class_then_stops() {
+    let (port, _db) = receipt_discovery_driver_fixture(false, 3, 1);
+    let mut driver = crate::scheduler::deadlines::DeadlineDriver::new(&port);
+    let budget = crate::protocol::time::CallBudget {
+        deadline: MonoInstant(u64::MAX),
+        cancellation: Default::default(),
+    };
+    let first = driver.drive(&budget).unwrap();
+    assert_eq!(
+        first.due_examined_candidates, 1,
+        "one full class turn per quantum"
+    );
+    assert!(
+        first.due_continuation,
+        "short completed invitation phase must continue unfinished receipts immediately"
+    );
+    let second = driver.drive(&budget).unwrap();
+    assert!(second.ticked);
+    assert_eq!(second.due_examined_candidates, 3);
+    assert!(
+        !second.due_continuation,
+        "both completed snapshots stop immediately"
+    );
+    assert!(!driver.drive(&budget).unwrap().ticked);
+}
+
+#[test]
+fn receipt_discovery_global_extension_keeps_original_clock_and_restart_finds_lapse() {
+    use crate::ports::{DueScanRequest, DueScanState, StorePort};
+    let (port, db) = receipt_discovery_driver_fixture(false, 1, 0);
+    db.execute("UPDATE receipts SET deadline_at=500", [])
+        .unwrap();
+    db.execute("INSERT INTO catch_up(seat_id,thread_id,frontier_seq,binding_generation,execution_id,entered_at,extension_until,state) VALUES ('b','t',0,1,'00000000-0000-4000-8000-0000000000bb',0,5000,'active')",[]).unwrap();
+    let budget = crate::protocol::time::CallBudget {
+        deadline: MonoInstant(u64::MAX),
+        cancellation: Default::default(),
+    };
+    let original = StorePort::due_obligations(
+        &port.store,
+        DueScanRequest {
+            state: DueScanState::default(),
+            max_candidates: 100,
+            run_invitations: false,
+            run_receipts: true,
+        },
+        &budget,
+    )
+    .unwrap();
+    assert_eq!(
+        original.warnings_added, 0,
+        "effective extension defers warning despite overdue original deadline"
+    );
+    assert_eq!(
+        db.query_row("SELECT deadline_at FROM receipts", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        500
+    );
+    port.clock.0.store(6000, Ordering::SeqCst);
+    let mut restarted = crate::scheduler::deadlines::DeadlineDriver::new(&port);
+    for _ in 0..4 {
+        let out = restarted.drive(&budget).unwrap();
+        assert!(out.due_examined_candidates <= 100);
+        if !out.due_continuation {
+            break;
+        }
+    }
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM receipts WHERE warning_message_id IS NOT NULL",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        db.query_row("SELECT deadline_at FROM receipts", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        500,
+        "restart never rewrites original deadline"
+    );
+    assert_eq!(
+        db.query_row("SELECT end_reason FROM catch_up", [], |r| r
+            .get::<_, String>(0))
+            .unwrap(),
+        "stalled"
+    );
+}
+
+#[test]
+fn receipt_discovery_global_fair_snapshots_cover_upgrade_and_restart_with_blocked_wakes() {
+    for historical in [false, true] {
+        let (port, db) = receipt_discovery_driver_fixture(historical, 250, 250);
+        let budget = crate::protocol::time::CallBudget {
+            deadline: MonoInstant(u64::MAX),
+            cancellation: Default::default(),
+        };
+        let mut driver = crate::scheduler::deadlines::DeadlineDriver::new(&port);
+        let mut quanta = 0u64;
+        let mut receipt_turns = 0i64;
+        let mut invitation_turns = 0i64;
+        let mut last_receipt_turn = 0u64;
+        let mut last_invitation_turn = 0u64;
+        let mut saw_due_during_repair = false;
+        // Finite arrivals before the post-repair capture are included in D.
+        let arrivals = 24u64;
+        let h = if historical { 250u64 } else { 0 };
+        // Completion resets the historical ordinary snapshot once. D counts
+        // every possible repeat visit as well as finite arrivals.
+        let d = (250 + arrivals) * if historical { 2 } else { 1 };
+        let i = 250u64;
+        let bound_quanta = if h == 0 {
+            2 * d.div_ceil(100) + 2
+        } else {
+            2 * ((h.div_ceil(50) + 2 + d.div_ceil(100) + 1).max(i.div_ceil(100) + 1))
+        };
+        let mut inspected = 0u64;
+        for turn in 0..bound_quanta {
+            let out = driver.drive(&budget).unwrap();
+            assert!(
+                out.ticked,
+                "successful continuation cannot wait for safety tick at turn{turn}"
+            );
+            quanta += 1;
+            assert!(out.due_examined_candidates <= 100);
+            inspected += u64::from(out.due_examined_candidates);
+            let progress = out.due_progress.as_ref().unwrap();
+            if !matches!(progress.receipts, crate::ports::DuePhaseProgress::Skipped) {
+                receipt_turns += 1;
+            }
+            if !matches!(
+                progress.invitations,
+                crate::ports::DuePhaseProgress::Skipped
+            ) {
+                invitation_turns += 1;
+            }
+            if !matches!(progress.receipts, crate::ports::DuePhaseProgress::Skipped) {
+                last_receipt_turn = quanta;
+            }
+            if !matches!(
+                progress.invitations,
+                crate::ports::DuePhaseProgress::Skipped
+            ) {
+                last_invitation_turn = quanta;
+            }
+            if !progress.state.receipts_complete {
+                assert!(
+                    quanta - last_receipt_turn <= 1,
+                    "unfinished receipts wait at most one peer turn"
+                );
+            }
+            if !progress.state.invitations_complete {
+                assert!(
+                    quanta - last_invitation_turn <= 1,
+                    "unfinished invitations wait at most one peer turn"
+                );
+            }
+            if !progress.state.receipts_complete && !progress.state.invitations_complete {
+                assert!(
+                    (receipt_turns - invitation_turns).abs() <= 1,
+                    "both unfinished classes alternate full turns"
+                );
+                assert_eq!(
+                    out.due_examined_candidates, 100,
+                    "unfinished class receives the full candidate allowance"
+                );
+            }
+            let repair: i64 = db
+                .query_row("SELECT completed FROM receipt_deadline_backfill", [], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            let warned:i64=db.query_row("SELECT count(*) FROM receipts WHERE message_id LIKE 'driver-%' AND warning_message_id IS NOT NULL",[],|r|r.get(0)).unwrap();
+            if historical && repair == 0 && warned > 0 {
+                saw_due_during_repair = true;
+            }
+            if turn < 4 {
+                for n in 0..6 {
+                    discovery_receipt(
+                        &db,
+                        &format!("driver-arrival-{turn}-{n}"),
+                        20000 + turn as i64 * 6 + n,
+                        1,
+                    );
+                }
+            }
+            if !out.due_continuation {
+                break;
+            }
+        }
+        assert!(quanta <= bound_quanta);
+        assert!(inspected <= 100 * quanta);
+        assert!(
+            inspected <= h + d + i,
+            "all actual repeated repair/due/invitation visits fit declared H/D/I"
+        );
+        assert_eq!(db.query_row("SELECT count(*) FROM receipts WHERE message_id GLOB 'driver-[0-9]*' AND warning_message_id IS NOT NULL",[],|r|r.get::<_,i64>(0)).unwrap(),200);
+        assert_eq!(db.query_row("SELECT count(*) FROM invitations WHERE id LIKE 'driver-inv-%' AND warning_message_id IS NOT NULL",[],|r|r.get::<_,i64>(0)).unwrap(),200);
+        if historical {
+            assert!(
+                saw_due_during_repair,
+                "ordinary due discovery must run before repair exhaustion"
+            );
+        }
+        let mut restarted = crate::scheduler::deadlines::DeadlineDriver::new(&port);
+        for _ in 0..12 {
+            let out = restarted.drive(&budget).unwrap();
+            assert!(out.due_examined_candidates <= 100);
+            if !out.due_continuation {
+                break;
+            }
+        }
+        assert_eq!(db.query_row("SELECT count(*) FROM receipts WHERE message_id LIKE 'driver-arrival-%' AND warning_message_id IS NOT NULL",[],|r|r.get::<_,i64>(0)).unwrap(),24);
+        assert_eq!(db.query_row("SELECT count(*) FROM receipts WHERE message_id GLOB 'driver-[0-9]*' AND deadline_at>1000 AND warning_message_id IS NOT NULL",[],|r|r.get::<_,i64>(0)).unwrap(),0);
+    }
+}
+
+fn receipt_discovery_historical(version: usize) -> (StoreContext, Connection, Arc<TestClock>) {
+    let clock = Arc::new(TestClock(AtomicI64::new(1000)));
+    let path = std::env::temp_dir().join(format!("receipt-upgrade-{}.db", uuid::Uuid::new_v4()));
+    let db = Connection::open(&path).unwrap();
+    let context = StoreContext::new(path, clock.clone());
+    let mut paths =
+        std::fs::read_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations"))
+            .unwrap()
+            .map(|p| p.unwrap().path())
+            .collect::<Vec<_>>();
+    paths.sort();
+    for path in paths.into_iter().take(version) {
+        db.execute_batch(&std::fs::read_to_string(path).unwrap())
+            .unwrap();
+    }
+    db.pragma_update(None, "user_version", version as i64)
+        .unwrap();
+    seed_discovery_database(&db);
+    (context, db, clock)
+}
+
+#[test]
+fn receipt_discovery_sparse_episodes_survive_source_rowid_reuse_and_snapshot_restart() {
+    let (context, mut db, _) = setup();
+    db.execute("INSERT INTO receipt_state(message_id,seat_id,state,ack_required,deadline_at) VALUES ('old','c','pending',1,5000)",[]).unwrap();
+    let (rowid,ordinal):(i64,i64)=db.query_row("SELECT r.rowid,p.ordinal FROM receipt_state r JOIN receipt_due_sparse p USING(message_id,seat_id)",[],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();
+    let mut cursor = receipts::ReceiptDueCursor::default();
+    assert_eq!(
+        receipts::scan_due(&context, &mut db, 1, &mut cursor)
+            .unwrap()
+            .inspected,
+        1
+    );
+    db.execute(
+        "UPDATE receipt_state SET deadline_at=6000 WHERE message_id='old'",
+        [],
+    )
+    .unwrap();
+    assert_eq!(
+        db.query_row("SELECT ordinal FROM receipt_due_sparse", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        ordinal,
+        "same eligible episode retains identity"
+    );
+    db.execute(
+        "UPDATE receipt_state SET ack_required=0 WHERE message_id='old'",
+        [],
+    )
+    .unwrap();
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM receipt_due_sparse", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    db.execute(
+        "UPDATE receipt_state SET ack_required=1 WHERE message_id='old'",
+        [],
+    )
+    .unwrap();
+    let reeligible: i64 = db
+        .query_row("SELECT ordinal FROM receipt_due_sparse", [], |r| r.get(0))
+        .unwrap();
+    assert!(reeligible > ordinal);
+    db.execute("DELETE FROM receipt_state", []).unwrap();
+    db.execute("INSERT INTO receipt_state(message_id,seat_id,state,ack_required,deadline_at) VALUES ('new','c','pending',1,5000)",[]).unwrap();
+    assert_eq!(
+        db.query_row("SELECT rowid FROM receipt_state", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        rowid,
+        "fixture actually reuses the raw source rowid"
+    );
+    assert!(
+        db.query_row("SELECT ordinal FROM receipt_due_sparse", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap()
+            > reeligible
+    );
+    assert_eq!(
+        receipts::scan_due(&context, &mut db, 100, &mut cursor)
+            .unwrap()
+            .inspected,
+        0,
+        "old snapshot excludes new ordinal despite reused raw rowid"
+    );
+    drop(db);
+    let mut reopened = context.open_writer().unwrap();
+    assert_eq!(
+        receipts::scan_due(
+            &context,
+            &mut reopened,
+            100,
+            &mut receipts::ReceiptDueCursor::default()
+        )
+        .unwrap()
+        .inspected,
+        1,
+        "restart captures the new eligible episode"
+    );
+}
+
+#[test]
+fn receipt_discovery_populated34_upgrade_rolls_back_and_reopens_with_bounded_bootstrap() {
+    let (context, mut db, _) = receipt_discovery_historical(34);
+    for n in 0..125 {
+        db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,author_kind,actor_seat_id,body,decision_at,decision_seq) VALUES (?1,'i','t',?2,'ordinary','native',?3,'x',0,?2)",params![format!("historical-{n}"),n+1,if n==1{"b"}else{"a"}]).unwrap();
+        db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES (?1,'t','b','pending',1,0,5000)",[format!("historical-{n}")]).unwrap();
+        db.execute("INSERT INTO receipt_state(message_id,seat_id,state,ack_required,deadline_at) VALUES (?1,'c','pending',1,5000)",[format!("historical-{n}")]).unwrap();
+        if n == 1 {
+            // The second original sender is justified only by a published
+            // sparse episode, never by a physical warning association.
+            discovery_manifest(&db, "historical-1", "old-published", "b", 5000, 2);
+        }
+    }
+    // Both canonical authors are associated with the one already-open warning.
+    db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_key,event_json,decision_at,decision_seq,source_message_id) VALUES ('old-warning','i','t',126,'warn','old-warning','{}',0,126,'historical-0')",[]).unwrap();
+    db.execute("INSERT INTO warning_conditions(condition_kind,thread_id,condition_id,affected_seat_id,open_warning_id,opened_seq) VALUES ('receipt','t','b','b','old-warning',126)",[]).unwrap();
+    db.execute(
+        "UPDATE receipts SET warning_message_id='old-warning' WHERE message_id='historical-0'",
+        [],
+    )
+    .unwrap();
+    db.execute("UPDATE receipt_state SET warning_message_id='old-warning' WHERE message_id='historical-1' AND seat_id='b'",[]).unwrap();
+    db.execute("UPDATE threads SET next_sequence=1000 WHERE id='t'", [])
+        .unwrap();
+    db.execute(
+        "UPDATE host_instances SET decision_seq=1000 WHERE id='i'",
+        [],
+    )
+    .unwrap();
+    // Force failure after several new objects have been created: the actual
+    // migration transaction must restore the complete populated34 image.
+    db.execute("CREATE TABLE receipt_due_sparse(collision)", [])
+        .unwrap();
+    assert!(crate::store::schema::initialize(&db, || UtcMillis(1000)).is_err());
+    assert_eq!(
+        db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        34
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM sqlite_master WHERE name='receipt_warning_origins'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    db.execute("DROP TABLE receipt_due_sparse", []).unwrap();
+    crate::store::schema::initialize(&db, || UtcMillis(1000)).unwrap();
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM receipt_due_sparse", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0,
+        "upgrade captures bounds without scanning history"
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT physical_high_water,sparse_high_water FROM receipt_discovery_backfill",
+            [],
+            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
+        )
+        .unwrap(),
+        (125, 126)
+    );
+    let mut cursor = receipts::ReceiptDueCursor::default();
+    let mut inspected = 0;
+    for turn in 0..10 {
+        let page = receipts::scan_due(&context, &mut db, 100, &mut cursor).unwrap();
+        assert!(page.inspected <= 100);
+        inspected += u64::from(page.inspected);
+        if turn == 0 {
+            assert_eq!(
+                db.query_row(
+                    "SELECT physical_after FROM receipt_discovery_backfill",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+                50,
+                "repair gets exactly half the allowance"
+            );
+            // Reuse the highest raw source ROWID while sparse historical
+            // repair is still unfinished. Its new ordinal is trigger-created;
+            // later bounded repair must neither miss nor duplicate the episode.
+            let old_rowid:i64=db.query_row("SELECT rowid FROM receipt_state WHERE message_id='historical-124' AND seat_id='c'",[],|r|r.get(0)).unwrap();
+            assert_eq!(old_rowid, 126);
+            db.execute(
+                "DELETE FROM receipt_state WHERE message_id='historical-124' AND seat_id='c'",
+                [],
+            )
+            .unwrap();
+            db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,author_kind,actor_seat_id,body,decision_at,decision_seq) VALUES ('bootstrap-reused','i','t',2000,'ordinary','native','b','x',0,2000)",[]).unwrap();
+            discovery_manifest(
+                &db,
+                "bootstrap-reused",
+                "bootstrap-new-published",
+                "c",
+                500,
+                2000,
+            );
+            assert_eq!(db.query_row("SELECT rowid FROM receipt_state WHERE message_id='bootstrap-reused' AND seat_id='c'",[],|r|r.get::<_,i64>(0)).unwrap(),old_rowid);
+            assert_eq!(
+                db.query_row(
+                    "SELECT completed FROM receipt_discovery_backfill",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+                0
+            );
+            db.execute("UPDATE threads SET next_sequence=2001 WHERE id='t'", [])
+                .unwrap();
+            db.execute(
+                "UPDATE host_instances SET decision_seq=2000 WHERE id='i'",
+                [],
+            )
+            .unwrap();
+            drop(db);
+            db = context.open_writer().unwrap();
+        }
+        if !page.more {
+            break;
+        }
+        assert!(turn < 9, "finite bootstrap and snapshot must terminate");
+    }
+    assert!(
+        inspected >= 251,
+        "both physical and sparse bootstrap visits are charged, in addition to ordinary candidates"
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT completed FROM receipt_discovery_backfill",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM receipt_due_sparse", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        124
+    );
+    let origins:Vec<String>=db.prepare("SELECT seat_id FROM receipt_warning_origins WHERE warning_id='old-warning' ORDER BY seat_id").unwrap().query_map([],|r|r.get(0)).unwrap().collect::<Result<_,_>>().unwrap();
+    assert_eq!(origins, vec!["a", "b"]);
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM warning_conditions", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        2
+    );
+    assert!(db.query_row("SELECT warning_message_id IS NOT NULL FROM receipt_state WHERE message_id='bootstrap-reused' AND seat_id='c'",[],|r|r.get::<_,bool>(0)).unwrap());
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM receipt_state WHERE warning_message_id='old-warning'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM receipts WHERE warning_message_id='old-warning'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+    drop(db);
+    let reopened = context.open_writer().unwrap();
+    assert_eq!(
+        reopened
+            .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        35
+    );
+}
+
+fn discovery_manifest(
+    db: &Connection,
+    message: &str,
+    preparation: &str,
+    seat: &str,
+    duration: i64,
+    sequence: i64,
+) {
+    db.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES (?1,'i','actor',?1,zeroblob(32),'t',0,0,0,0,0,0,1,'sealed')",[preparation]).unwrap();
+    db.execute("INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES (?1,'t',?2,1,?3,0)",params![preparation,seat,duration]).unwrap();
+    db.execute("INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES (?1,?2,'i','t',?3,0,?3,0,1,0)",params![preparation,message,sequence]).unwrap();
+    db.execute("INSERT INTO receipt_state(message_id,seat_id,state,deadline_at,ack_required) VALUES (?1,?2,'pending',?3,1)",params![message,seat,duration]).unwrap();
+}
+
+#[test]
+fn receipt_discovery_four_historical_streams_charge_every_visit_and_reset_once() {
+    let (context, db, clock) = receipt_discovery_historical(31);
+    for n in 0..50 {
+        discovery_receipt(&db, &format!("four-{n}"), n + 1, 5000);
+        discovery_manifest(
+            &db,
+            &format!("four-{n}"),
+            &format!("four-p-{n}"),
+            "c",
+            5000,
+            n + 1,
+        );
+    }
+    // Populate31 before the actual32 capture, then reach genuine34 through
+    // immutable migration DDL. No relabeled current image or synthetic bounds.
+    let mut migrations =
+        std::fs::read_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations"))
+            .unwrap()
+            .map(|p| p.unwrap().path())
+            .collect::<Vec<_>>();
+    migrations.sort();
+    for (n, path) in migrations.into_iter().enumerate().skip(31).take(3) {
+        db.execute_batch(&std::fs::read_to_string(path).unwrap())
+            .unwrap();
+        db.pragma_update(None, "user_version", (n + 1) as i64)
+            .unwrap();
+    }
+    crate::store::schema::initialize(&db, || UtcMillis(1000)).unwrap();
+    for n in 0..250 {
+        db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES (?1,'t','d',?2,'pending',0,1,500,500)",params![format!("four-inv-{n}"),n+1]).unwrap();
+    }
+    db.execute("UPDATE threads SET next_sequence=10000 WHERE id='t'", [])
+        .unwrap();
+    db.execute(
+        "UPDATE host_instances SET decision_seq=10000 WHERE id='i'",
+        [],
+    )
+    .unwrap();
+    let positions = |db: &Connection| -> (i64, i64, i64, i64, bool) {
+        db.query_row("SELECT a.physical_after,a.prepared_after,b.physical_after,b.sparse_after,b.completed FROM receipt_deadline_backfill a CROSS JOIN receipt_discovery_backfill b",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).unwrap()
+    };
+    let mut prior = positions(&db);
+    assert_eq!(prior, (0, 0, 0, 0, false));
+    let port = ReceiptDiscoveryPort {
+        store: crate::store::SqliteStore::new(context, "i", crate::store::StoreSettings::default())
+            .unwrap(),
+        clock,
+    };
+    let budget = crate::protocol::time::CallBudget {
+        deadline: MonoInstant(u64::MAX),
+        cancellation: Default::default(),
+    };
+    let mut driver = crate::scheduler::deadlines::DeadlineDriver::new(&port);
+    let (h, d, i) = (200u64, 200u64, 250u64); // repeated ordinary snapshot visits count again
+    let bound = 2 * ((h.div_ceil(50) + 2 + d.div_ceil(100) + 1).max(i.div_ceil(100) + 1));
+    let mut actual_h = 0u64;
+    let mut actual_due = 0u64;
+    let mut completions = 0;
+    let mut last_receipt = 0;
+    let mut last_invitation = 0;
+    for quantum in 1..=bound {
+        let out = driver.drive(&budget).unwrap();
+        assert!(out.ticked);
+        assert!(out.due_examined_candidates <= 100);
+        let progress = out.due_progress.unwrap();
+        let next = positions(&db);
+        let repair =
+            (next.0 - prior.0) + (next.1 - prior.1) + (next.2 - prior.2) + (next.3 - prior.3);
+        assert!(
+            (0..=50).contains(&repair),
+            "all four repair producers share one half allowance"
+        );
+        actual_h += repair as u64;
+        actual_due += u64::from(out.due_examined_candidates) - repair as u64;
+        if !prior.4 && next.4 {
+            completions += 1;
+            assert_eq!(
+                (next.0, next.1, next.2, next.3),
+                (50, 50, 50, 50),
+                "combined reset waits for all four producers"
+            );
+        }
+        if !matches!(progress.receipts, crate::ports::DuePhaseProgress::Skipped) {
+            last_receipt = quantum;
+        }
+        if !matches!(
+            progress.invitations,
+            crate::ports::DuePhaseProgress::Skipped
+        ) {
+            last_invitation = quantum;
+        }
+        if !progress.state.receipts_complete {
+            assert!(quantum - last_receipt <= 1);
+        }
+        if !progress.state.invitations_complete {
+            assert!(quantum - last_invitation <= 1);
+        }
+        prior = next;
+        if !out.due_continuation {
+            break;
+        }
+        assert!(
+            quantum < bound,
+            "actual four-stream workload must terminate inside normative bound"
+        );
+    }
+    assert_eq!(
+        actual_h, h,
+        "physical/prepared plus physical/sparse bootstrap visits are all charged"
+    );
+    assert!(
+        actual_due <= d + i,
+        "future/ordinary duplicate visits and all invitations are counted"
+    );
+    assert_eq!(completions, 1);
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM invitations WHERE warning_message_id IS NOT NULL",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        250
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM receipts WHERE warning_message_id IS NOT NULL",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0,
+        "future candidates consume work without premature warnings"
+    );
+}
+
+#[test]
+fn receipt_discovery_upgrade_combined_reset_warning_and_cursors_roll_back_together() {
+    let (context, mut db, _) = receipt_discovery_historical(34);
+    discovery_receipt(&db, "rollback-source", 1, 500);
+    db.execute("INSERT INTO receipt_state(message_id,seat_id,state,ack_required,deadline_at) VALUES ('rollback-source','c','pending',1,5000)",[]).unwrap();
+    db.execute("UPDATE threads SET next_sequence=2 WHERE id='t'", [])
+        .unwrap();
+    crate::store::schema::initialize(&db, || UtcMillis(1000)).unwrap();
+    db.execute_batch("CREATE TRIGGER abort_discovery_warning BEFORE INSERT ON messages WHEN NEW.kind='warn' BEGIN SELECT RAISE(ABORT,'injected warning rollback');END;").unwrap();
+    let mut cursor = receipts::ReceiptDueCursor::default();
+    assert!(receipts::scan_due(&context, &mut db, 100, &mut cursor).is_err());
+    assert_eq!(cursor.high_water_ordinal, 0);
+    assert_eq!(cursor.sparse_high_water_ordinal, 0);
+    assert_eq!(
+        db.query_row(
+            "SELECT physical_after,sparse_after,completed FROM receipt_discovery_backfill",
+            [],
+            |r| Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, i64>(2)?
+            ))
+        )
+        .unwrap(),
+        (0, 0, 0)
+    );
+    assert_eq!(
+        db.query_row("SELECT completed FROM receipt_deadline_backfill", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0,
+        "producer-local completion also rolls back"
+    );
+    for table in [
+        "receipt_due_sparse",
+        "receipt_warning_origins",
+        "warning_conditions",
+    ] {
+        assert_eq!(
+            db.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0,
+            "derived work in {table} rolls back with warning and combined reset"
+        );
+    }
+    assert_eq!(
+        db.query_row("SELECT warning_message_id FROM receipts", [], |r| r
+            .get::<_, Option<String>>(0))
+            .unwrap(),
+        None
+    );
+    db.execute("DROP TRIGGER abort_discovery_warning", [])
+        .unwrap();
+    let page = receipts::scan_due(&context, &mut db, 100, &mut cursor).unwrap();
+    assert_eq!(page.warnings, 1);
+    assert_eq!(
+        db.query_row(
+            "SELECT completed FROM receipt_discovery_backfill",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM receipt_warning_origins", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    drop(db);
+    let reopened = context.open_writer().unwrap();
+    assert_eq!(
+        reopened
+            .query_row("SELECT count(*) FROM warning_conditions", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        1,
+        "reopen retains one committed condition and reset"
+    );
+}
+
+#[test]
+fn receipt_discovery_terminal_upgrade_counts_rows_and_catalog_rejects_missing_projection() {
+    let (context, mut db, _) = receipt_discovery_historical(34);
+    for n in 0..125 {
+        discovery_receipt(&db, &format!("terminal-{n}"), n + 1, 500);
+        db.execute("INSERT INTO receipt_state(message_id,seat_id,state,ack_required,deadline_at) VALUES (?1,'c','acked',0,500)",[format!("terminal-{n}")]).unwrap();
+    }
+    db.execute("UPDATE receipts SET state='acked',ack_required=0", [])
+        .unwrap();
+    crate::store::schema::initialize(&db, || UtcMillis(1000)).unwrap();
+    let mut cursor = receipts::ReceiptDueCursor::default();
+    let mut inspected = 0;
+    for turn in 0..7 {
+        let page = receipts::scan_due(&context, &mut db, 100, &mut cursor).unwrap();
+        assert!(
+            page.inspected <= 50,
+            "all-terminal data consumes only the bounded repair allowance"
+        );
+        inspected += page.inspected;
+        assert_eq!(page.warnings, 0);
+        if !page.more {
+            break;
+        }
+        assert!(
+            turn < 6,
+            "empty end probes do not consume extra row allowance or stall completion"
+        );
+    }
+    assert_eq!(
+        inspected, 250,
+        "every terminal physical/sparse history row is charged once"
+    );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM receipt_due_sparse", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    db.execute("DROP INDEX receipts_required_due_ordinal", [])
+        .unwrap();
+    assert_eq!(
+        crate::store::schema::initialize(&db, || UtcMillis(1000))
+            .unwrap_err()
+            .code,
+        crate::protocol::results::ErrorCode::IncompatibleSchema
+    );
+}
+
+#[test]
+fn receipt_discovery_orphan_wrong_audience_and_service_markers_cannot_invent_origins() {
+    let (context, mut db, _) = setup();
+    db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,author_kind,actor_seat_id,body,decision_at,decision_seq) VALUES ('valid-source','i','t',1,'ordinary','native','a','x',0,1)",[]).unwrap();
+    db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES ('valid-source','t','c','pending',1,0,500)",[]).unwrap();
+    db.execute("UPDATE threads SET next_sequence=100 WHERE id='t'", [])
+        .unwrap();
+    db.execute(
+        "UPDATE host_instances SET decision_seq=100 WHERE id='i'",
+        [],
+    )
+    .unwrap();
+    receipts::scan_due(
+        &context,
+        &mut db,
+        100,
+        &mut receipts::ReceiptDueCursor::default(),
+    )
+    .unwrap();
+    let warning: String = db
+        .query_row(
+            "SELECT open_warning_id FROM warning_conditions WHERE condition_kind='receipt'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    for (n, id) in [(2, "orphan"), (3, "wrong-audience")] {
+        db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,author_kind,actor_seat_id,body,decision_at,decision_seq) VALUES (?1,'i','t',?2,'ordinary','native','b','x',0,?2)",params![id,n]).unwrap();
+        if id == "wrong-audience" {
+            discovery_manifest(&db, id, "wrong-audience-preparation", "d", 500, 3);
+        }
+        db.execute("INSERT INTO receipt_state(message_id,seat_id,state,deadline_at,ack_required,warning_message_id) VALUES (?1,'c','pending',500,1,?2)",params![id,warning]).unwrap();
+        assert!(
+            crate::store::effective::effective_receipt(&db, id, "c")
+                .unwrap()
+                .is_none(),
+            "fixture has no canonical published audience for c"
+        );
+    }
+    db.execute(
+        "INSERT INTO service_authors(id,instance_id,created_at) VALUES ('service','i',0)",
+        [],
+    )
+    .unwrap();
+    for (n, kind, actor, service) in [
+        (4, None, Some("b"), None),
+        (5, Some("programmatic"), None, Some("service")),
+    ] {
+        let id = format!("unknown-service-{n}");
+        db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,author_kind,actor_seat_id,author_service_id,actor_label,body,decision_at,decision_seq) VALUES (?1,'i','t',?2,'ordinary',?3,?4,?5,'b','x',0,?2)",params![id,n,kind,actor,service]).unwrap();
+        db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,deadline_at,warning_message_id) VALUES (?1,'t','c','pending',500,500,?2)",params![id,warning]).unwrap();
+    }
+    let high = db
+        .query_row("SELECT max(ordinal) FROM seats", [], |r| r.get::<_, i64>(0))
+        .unwrap() as u64;
+    let found = crate::store::discover_wake_candidates(&db, "i", 0, high, 100, &|| Ok(())).unwrap();
+    assert!(
+        !found
+            .items
+            .iter()
+            .any(|c| c.seat.as_str() == "b" && c.has_actionable_work()),
+        "invalid source must be excluded by the actual upstream discovery path"
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM receipt_warning_origins WHERE seat_id='b'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0,
+        "raw overlay markers, wrong manifest audience, nullable kind and service label cannot establish canonical native origin"
+    );
 }

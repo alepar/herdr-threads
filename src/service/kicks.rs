@@ -105,6 +105,7 @@ const WAKE_TABLES: &[&str] = &[
     "seat_availability",
     "warning_recipients",
     "warning_offer",
+    "receipt_warning_origins",
 ];
 /// Tables whose commits wake the deadline lane (spec D1).
 const DEADLINE_TABLES: &[&str] = &[
@@ -116,6 +117,9 @@ const DEADLINE_TABLES: &[&str] = &[
     "invitation_rejections",
     "receipts",
     "receipt_state",
+    "receipt_deadline_backfill",
+    "receipt_discovery_backfill",
+    "receipt_due_sparse",
     // Catch-up rows move effective receipt deadlines (TRUST-POLICY A6).
     "catch_up",
 ];
@@ -142,6 +146,8 @@ pub const KNOWN_UNMAPPED: &[&str] = &[
     "human_receipt_reconciliation_bounds",
     "digest_programmatic_warnings",
     "filter_revisions",
+    // Immutable send-time cutovers are captured only at schema startup.
+    "receipt_send_time_cutovers",
     // Advisory diagnostics do not alter canonical state or schedule work.
     "harness_contract_diagnostics",
     "harness_contract_evidence_v2",
