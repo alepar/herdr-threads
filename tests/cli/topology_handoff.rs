@@ -5581,6 +5581,9 @@ mod live {
         }
         impl AutoPeer {
             fn new() -> Self {
+                Self::with_kind("codex")
+            }
+            fn with_kind(kind: &'static str) -> Self {
                 let base = Fixture::aligned(Fault::None, None);
                 base.journal.complete(&base.peer.reference).unwrap();
                 let parsed = super::super::super::super::commands::parse_argv([
@@ -5589,7 +5592,7 @@ mod live {
                     "--new-tab",
                     "new peer",
                     "--kind",
-                    "codex",
+                    kind,
                     "--",
                     "literal work",
                 ])
@@ -6479,6 +6482,170 @@ mod live {
                     .get::<_, i64>(0))
                     .unwrap(),
                 invitations_before + 1
+            );
+        }
+
+        fn ordinary_and_invitation_counts(peer: &AutoPeer) -> (i64, i64) {
+            let state = peer.base.peer.state.lock().unwrap();
+            (
+                state
+                    .db
+                    .query_row(
+                        "SELECT count(*) FROM messages WHERE kind='ordinary'",
+                        [],
+                        |r| r.get::<_, i64>(0),
+                    )
+                    .unwrap(),
+                state
+                    .db
+                    .query_row("SELECT count(*) FROM invitations", [], |r| {
+                        r.get::<_, i64>(0)
+                    })
+                    .unwrap(),
+            )
+        }
+
+        fn intent_count(journal: &super::super::super::super::journal::Journal) -> usize {
+            std::fs::read_dir(journal.root())
+                .unwrap()
+                .filter(|entry| {
+                    entry
+                        .as_ref()
+                        .unwrap()
+                        .path()
+                        .extension()
+                        .is_some_and(|extension| extension == "intent")
+                })
+                .count()
+        }
+
+        /// The automatic route refuses an adapter whose composition rewrites the applied caller
+        /// argv before the host preflight, journal publication, tab creation, launch or any
+        /// store write: such a launch could never complete against the automatic plan.
+        #[test]
+        fn parsed_new_tab_automatic_route_refuses_a_rewriting_kind_before_any_effect() {
+            let peer = AutoPeer::new();
+            let before = ordinary_and_invitation_counts(&peer);
+            let intents_before = intent_count(&peer.base.journal);
+            let parsed = super::super::super::super::commands::parse_argv([
+                "ht",
+                "handoff",
+                "--new-tab",
+                "new peer",
+                "--kind",
+                "hermes",
+                "--",
+                "literal work",
+            ])
+            .unwrap();
+            let super::super::super::super::commands::CliAction::TopologyHandoff(request) =
+                &parsed.action
+            else {
+                panic!("parsed route")
+            };
+            assert!(request.automatic && !request.existing);
+            let mut launcher = DownstreamLauncher::default();
+            let mut output = Vec::new();
+            let result =
+                super::super::super::super::topology_runtime::try_run_automatic_new_with_ports(
+                    &parsed,
+                    &peer.base.peer.identity.claim,
+                    &peer.base.journal,
+                    peer.ns(),
+                    &peer,
+                    &peer,
+                    &mut launcher,
+                    &peer.base.clock,
+                    peer.base._temp.path(),
+                    None,
+                    &mut || Ok(topology()),
+                    &mut |_| panic!("a refused kind must not preflight the host"),
+                    &crate::protocol::output::OutputSpec::default(),
+                    &mut output,
+                );
+            let Err(RunError::Api(error)) = &result else {
+                panic!("refused: {result:?}")
+            };
+            assert_eq!(
+                error.code,
+                crate::protocol::results::ErrorCode::Unsupported,
+                "{error:?}"
+            );
+            assert!(error.detail.contains("--new-thread"), "{error:?}");
+            assert_eq!(peer.base.peer.state.lock().unwrap().native_calls, 0);
+            assert_eq!(launcher.starts, 0);
+            assert_eq!(intent_count(&peer.base.journal), intents_before);
+            assert_eq!(ordinary_and_invitation_counts(&peer), before);
+            assert!(output.is_empty());
+        }
+
+        /// The automatic counterpart of the explicit-channel agy test: agy's composition leaves
+        /// the applied caller argv unchanged, so its automatic plan launches with
+        /// `--prompt-interactive` placing the frozen prompt and completes.
+        #[test]
+        fn automatic_new_tab_agy_completes_end_to_end_with_prompt_interactive() {
+            let peer = AutoPeer::with_kind("agy");
+            assert_eq!(peer.identity.plan.payload.launch.harness.as_str(), "agy");
+            assert!(peer.identity.plan.payload.startup_input.is_some());
+            let before = ordinary_and_invitation_counts(&peer);
+            let mut launcher = DownstreamLauncher::default();
+            let mut output = Vec::new();
+            let result = resume_automatic_to_writer(
+                &peer.base.journal,
+                &peer.reference,
+                super::super::super::super::actor_route::InvocationActor::Agent,
+                peer.ns(),
+                &peer,
+                &peer,
+                &mut launcher,
+                &peer.base.clock,
+                BootstrapSubmissionInputs {
+                    witness: &peer.base.witness,
+                    context: &peer.base.context,
+                },
+                &crate::protocol::output::OutputSpec {
+                    format: crate::protocol::output::OutputFormat::Json,
+                    ..Default::default()
+                },
+                &mut output,
+            )
+            .unwrap_or_else(|error| panic!("agy automatic bootstrap must complete: {error:?}"));
+            assert_eq!(result.state, BootstrapState::Completed);
+            assert_eq!(peer.base.peer.state.lock().unwrap().native_calls, 1);
+            assert_eq!(launcher.starts, 1);
+            assert_eq!(
+                ordinary_and_invitation_counts(&peer),
+                (before.0 + 1, before.1 + 1)
+            );
+            let selected = peer.status().thread.expect("exact selected pair thread");
+            assert_eq!(
+                peer.base
+                    .peer
+                    .state
+                    .lock()
+                    .unwrap()
+                    .db
+                    .query_row(
+                        "SELECT thread_id FROM direct_threads WHERE thread_id=?1",
+                        [selected.as_str()],
+                        |r| r.get::<_, String>(0)
+                    )
+                    .unwrap(),
+                selected.as_str()
+            );
+            let report = &result.completed.as_ref().expect("completed").report;
+            assert_eq!(report["harness"], "agy");
+            let argv = report["argv"].as_array().unwrap();
+            let flag = argv
+                .iter()
+                .position(|arg| arg == "--prompt-interactive")
+                .unwrap_or_else(|| panic!("no --prompt-interactive in {argv:?}"));
+            assert_eq!(flag + 2, argv.len(), "the prompt is the flag's value, last");
+            assert!(
+                argv[flag + 1]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("Expected handoff command routing")
             );
         }
 
@@ -7845,6 +8012,67 @@ fn automatic_bootstrap_preparation_freezes_v2_without_invite_or_create_child() {
     let json = serde_json::to_string(&identity).unwrap();
     assert!(!json.contains("invite_key"));
     assert!(!json.contains("create_key"));
+    assert!(!temp.path().join("intents").exists());
+}
+
+/// Completion compares the retained native argv with the applied caller argv, so the
+/// automatic plan admits only an adapter whose composition leaves those arguments unchanged;
+/// the others are refused before any effect and pointed at the explicit-channel route.
+#[test]
+fn automatic_bootstrap_preparation_refuses_a_kind_whose_composition_rewrites_the_caller_argv() {
+    let temp = Temp::new();
+    let namespace = crate::protocol::handoff::HandoffNamespace {
+        instance: "i".into(),
+        state_dir: temp.path().join("state dir"),
+        host_endpoint: temp.path().join("host.sock"),
+    };
+    let prepare = |kind: &str, argv: &[&str]| {
+        let mut request = kind_request(kind, argv);
+        request.automatic = true;
+        request.thread = None;
+        prepare_automatic(
+            &request,
+            Preparation {
+                claim: &claim(),
+                namespace: &namespace,
+                topology: &topology(),
+                invocation_cwd: temp.path(),
+                options: None,
+                client: &ReadOnly,
+                clock: &crate::app::SystemClock::new(),
+            },
+        )
+    };
+    for (kind, argv) in [
+        ("hermes", &[][..]),
+        ("hermes", &["--model", "m"][..]),
+        ("synthetic_fourth", &[][..]),
+    ] {
+        let refused = prepare(kind, argv).expect_err(kind);
+        let RunError::Api(error) = &refused else {
+            panic!("{kind}: {refused:?}")
+        };
+        assert_eq!(
+            error.code,
+            crate::protocol::results::ErrorCode::Unsupported,
+            "{kind}: {error:?}"
+        );
+        assert!(
+            error.detail.contains("--new-thread") && error.detail.contains("--thread "),
+            "{kind}: {error:?}"
+        );
+        assert!(
+            !error.detail.contains(kind),
+            "core error names no harness: {error:?}"
+        );
+    }
+    for (kind, argv) in [
+        ("claude", &[][..]),
+        ("codex", &["--model", "saved value"][..]),
+        ("agy", &[][..]),
+    ] {
+        prepare(kind, argv).unwrap_or_else(|e| panic!("{kind} stays accepted: {e:?}"));
+    }
     assert!(!temp.path().join("intents").exists());
 }
 
