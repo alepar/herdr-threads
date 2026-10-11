@@ -2954,7 +2954,25 @@ class WarningOfferedTests(WarningScenarioTests):
         self.db.execute("INSERT INTO warning_offer(binding_id,seat_id,offered_through_seq) VALUES ('b-old',?,10)", (SEAT,))
         self.db.commit()
         status, detail, _ = self.driver.s_warning_wake()
-        self.assertNotEqual(status, demo.NOT_EXERCISED, detail)
+        self.assertEqual(status, demo.UNVERIFIED, detail)
+
+    def test_agent_session_binding_decides_over_a_newer_open_binding(self):
+        # The agent's own session binding (older, ended) is preferred over another session's newer open
+        # binding: the agent's offer decides, whichever binding holds one.
+        self.receipt(acked_at=9000, warning="w-1")
+        self.warn("w-1", 10)
+        self.driver.s_warning_event()
+        self.bind("b-agent", 1, SESSION, ended_at=5)
+        self.bind("b-other", 2, "other-session", ended_at=None)
+        self.db.execute("INSERT INTO warning_offer(binding_id,seat_id,offered_through_seq) VALUES ('b-agent',?,10)", (SEAT,))
+        self.db.commit()
+        status, detail, _ = self.driver.s_warning_wake()
+        self.assertEqual(status, demo.NOT_EXERCISED, detail)
+        self.db.execute("DELETE FROM warning_offer")
+        self.db.execute("INSERT INTO warning_offer(binding_id,seat_id,offered_through_seq) VALUES ('b-other',?,10)", (SEAT,))
+        self.db.commit()
+        status, detail, _ = self.driver.s_warning_wake()
+        self.assertEqual(status, demo.UNVERIFIED, detail)
 
     def bind(self, binding_id, ordinal, session, ended_at):
         self.driver.facts.setdefault("sessions", {})["initial"] = SESSION
