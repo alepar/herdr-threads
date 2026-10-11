@@ -572,7 +572,10 @@ fn bare_daemon_advertises_legacy_capabilities_without_v2_recorder() {
             "send.lazy_v1",
             "inbox.batch_v2",
             "mod.watch_v1",
+            "seat.wake_on_v1",
+            "delivery.pull_v1",
             "hook.lazy_delivery_v1",
+            "delivery.presentation_v2",
             "invitation.confirmation_v1"
         ]
     );
