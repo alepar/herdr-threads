@@ -485,7 +485,9 @@
       "migrations/0036_invitation_warning_origin.sql",
       "migrations/0035_receipt_warning_origins.sql",
       "migrations/0037_receipt_warning_origins.sql",
-      "migrations/0038_automatic_handoff_body_bounds.sql"
+      "migrations/0038_automatic_handoff_body_bounds.sql",
+      "tests/store/effective.rs",
+      "tests/store/invitation_due.rs"
     ]
   },
   {
