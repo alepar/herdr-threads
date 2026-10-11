@@ -211,6 +211,25 @@ impl Sweep {
             .unwrap()
     }
 
+    /// The seat's open Hermes bindings in ordinal order:
+    /// (native session, liveness, disconnect reason, role).
+    fn hermes_rows(&self, seat: &str) -> Vec<(String, String, Option<String>, String)> {
+        let db = self.db();
+        let mut statement = db
+            .prepare(
+                "SELECT native_session, liveness, disconnect_reason, role FROM occupant_bindings \
+                 WHERE seat_id=?1 AND harness='hermes' AND ended_at IS NULL ORDER BY ordinal",
+            )
+            .unwrap();
+        statement
+            .query_map([seat], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    }
+
     fn open_session(&self, seat: &str) -> String {
         self.db()
             .query_row(
@@ -301,7 +320,8 @@ impl Drop for Sweep {
 
 /// The goal's main flow through the real binary: a bare CLI start enrolls (no
 /// `seat resolve` anywhere), the first turn checks in with context, `/new` keeps
-/// the seat, delegate children never enroll, and Claude/Codex still enroll on
+/// the seat (a new binding; the new session's check-in supersedes the old one in
+/// the same process), delegate children never take the seat, and Claude/Codex still enroll on
 /// their own start events.
 #[test]
 fn hermes_bare_cli_main_flow_enrolls_checks_in_keeps_seat_on_new_and_excludes_children() {
@@ -399,8 +419,28 @@ fn hermes_bare_cli_main_flow_enrolls_checks_in_keeps_seat_on_new_and_excludes_ch
         assert_eq!(seats.len(), 1, "{harness}: {seats:?}");
         assert_eq!(sweep.open_bindings(harness, &seats[0]), 1, "{harness}");
     }
-    // Hermes' seat is untouched by the other adapters.
-    assert_eq!(sweep.open_bindings("hermes", &seat), 1);
+    // Hermes' seat is untouched by the other adapters. `/new` added a binding and
+    // ended nothing (decision 3, spec section 1); every hook here runs under one
+    // stand-in process, so sweep-s2's check-in disconnected sweep-s1 (spec
+    // section 3, same-PID supersede). Children registered no `subagent` row.
+    assert_eq!(sweep.open_bindings("hermes", &seat), 2);
+    assert_eq!(
+        sweep.hermes_rows(&seat),
+        vec![
+            (
+                "sweep-s1".to_string(),
+                "disconnected".to_string(),
+                Some("superseded".to_string()),
+                "top_level".to_string()
+            ),
+            (
+                "sweep-s2".to_string(),
+                "connected".to_string(),
+                None,
+                "top_level".to_string()
+            ),
+        ]
+    );
     assert_eq!(sweep.open_session(&seat), "sweep-s2");
 }
 
