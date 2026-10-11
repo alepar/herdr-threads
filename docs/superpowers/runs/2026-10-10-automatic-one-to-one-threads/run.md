@@ -23,7 +23,7 @@ parked:
 Design hand-off: ht-e99 ready for caller-owned code phase; two design-roast rounds, one design-only repair ht-e99.6 closed at ce11790f. No implementation code delivered.
 
 codeBuckets:
-  completed: ht-e99.1.1, ht-e99.1.2, ht-e99.2, ht-e99.3.1, ht-e99.3.2, ht-e99.3.3, ht-e99.4, ht-e99.5, ht-e99.6, ht-e99.7, ht-e99.8
+  completed: ht-e99.1.1, ht-e99.1.2, ht-e99.2, ht-e99.3.1, ht-e99.3.2, ht-e99.3.3, ht-e99.4, ht-e99.5, ht-e99.6, ht-e99.7, ht-e99.8, ht-e99.9
   escalated:
   pendingRetry:
   parked:
@@ -49,3 +49,5 @@ Post-roast verification failure: exact d137e530 full nextest ran 4621 tests: 461
 Required verification repair merged: ht-e99.8 at d06a484f7476a34d13e7375eba619228f0f3f7d7, reviewed source d9f5282e, identical source/merge tree84f4ef13. Two current-schema fixture lines corrected28→30; historical0/21/22 preserved. Genuine unchanged targeted RED and final GREEN, related integration2/2 and package1/1 passed; independent task review CLEAN and serial gates/leak passed. Final whole-epic-review-3 pending; first full suite remains a failed historical run, five-minute full-suite budget not yet verified.
 
 Current-base refresh pending: main advanced to bcb49485a4dd72837bef311d0065a0f7af477523 (0.6.4 metadata/Claude mod logging, seven incoming files). Required Task11 ht-e99.9 will materialize and independently review this combined candidate before fresh whole-epic-review-3 and PR round2. Incorporated main is still6107075f until reviewed import; branch is not integration-ready.
+
+Current-base refresh merged: ht-e99.9 at cbf055c709bf3f15fcfc38b993ce2adbb490c983, reviewed source6239a9a, identical tree2e5607f7. Current main bcb49485 ancestry and all seven imported files matching main byte-for-byte independently verified. Fresh task review CLEAN; serial focused38/38, lint/default/fmt/diff and scoped leak checks passed. All12 mapped leaves closed; root scoped closure completed. Fresh whole-epic-review-3 remains PENDING at the next checkpoint; PR round2 and exact-tip full-suite gates still required. Earlier full-suite failure remains preserved.
