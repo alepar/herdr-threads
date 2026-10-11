@@ -1145,21 +1145,23 @@ fn revisit_candidates(
                 state.cleanup_after,
                 cleanup_limit as i64
             ],
-            |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
+            |r| Ok((bounded_private_text(r, 0, 128)?, r.get::<_, i64>(1)?)),
         )
         .map_err(store_error)?
         .collect::<Result<Vec<_>, _>>()
-        .map_err(store_error)?;
+        .map_err(private_read_error)?;
     for (id, ordinal) in &rows {
+        let id = InvitationId::parse(id)
+            .map_err(|_| corrupt("invalid private invitation identity"))?;
         visited += 1;
         state.cleanup_after = *ordinal;
-        let pending:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM digest_pending_invitations WHERE seat_id=?1 AND invitation_id=?2)",params![claim.seat.as_str(),id],|r|r.get(0)).map_err(store_error)?;
+        let pending:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM digest_pending_invitations WHERE seat_id=?1 AND invitation_id=?2)",params![claim.seat.as_str(),id.as_str()],|r|r.get(0)).map_err(store_error)?;
         if !pending {
             // The fixed Watch row also carries a not-yet-observed passive
             // removal. Keep that current-row evidence until maintenance
             // advances its content version, but exclude it from output work.
-            db.execute("UPDATE invitation_presentation_items SET required_render_bytes=?4 WHERE seat_id=?1 AND consumer=?2 AND invitation_id=?3 AND consumer='watch' AND mod_key!=''",params![claim.seat.as_str(),consumer.as_str(),id,i64::MAX]).map_err(store_error)?;
-            db.execute("DELETE FROM invitation_presentation_items WHERE seat_id=?1 AND consumer=?2 AND invitation_id=?3 AND (consumer!='watch' OR mod_key='')",params![claim.seat.as_str(),consumer.as_str(),id]).map_err(store_error)?;
+            db.execute("UPDATE invitation_presentation_items SET required_render_bytes=?4 WHERE seat_id=?1 AND consumer=?2 AND invitation_id=?3 AND consumer='watch' AND mod_key!=''",params![claim.seat.as_str(),consumer.as_str(),id.as_str(),i64::MAX]).map_err(store_error)?;
+            db.execute("DELETE FROM invitation_presentation_items WHERE seat_id=?1 AND consumer=?2 AND invitation_id=?3 AND (consumer!='watch' OR mod_key='')",params![claim.seat.as_str(),consumer.as_str(),id.as_str()]).map_err(store_error)?;
         }
     }
     if rows.len() < cleanup_limit {
@@ -1178,16 +1180,18 @@ fn revisit_candidates(
                     state.dirty_high,
                     (limit - visited) as i64
                 ],
-                |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
+                |r| Ok((bounded_private_text(r, 0, 128)?, r.get::<_, i64>(1)?)),
             )
             .map_err(store_error)?
             .collect::<Result<Vec<_>, _>>()
-            .map_err(store_error)?;
+            .map_err(private_read_error)?;
         for (id, ordinal) in &rows {
+            let id = InvitationId::parse(id)
+                .map_err(|_| corrupt("invalid private invitation identity"))?;
             visited += 1;
             state.dirty_after = *ordinal;
             result.push(Candidate {
-                id: InvitationId::new(id),
+                id,
                 source: Source::Revisit,
             });
         }
@@ -1222,7 +1226,7 @@ fn revisit_candidates(
             ],
             |r| {
                 Ok((
-                    r.get::<_, String>(0)?,
+                    bounded_private_text(r, 0, 128)?,
                     r.get::<_, i64>(1)?,
                     r.get::<_, i64>(2)?,
                 ))
@@ -1230,13 +1234,15 @@ fn revisit_candidates(
         )
         .map_err(store_error)?
         .collect::<Result<Vec<_>, _>>()
-        .map_err(store_error)?;
+        .map_err(private_read_error)?;
     for (id, bytes, ordinal) in rows {
+        let id = InvitationId::parse(id)
+            .map_err(|_| corrupt("invalid private invitation identity"))?;
         visited += 1;
         state.revisit_after_bytes = bytes;
         state.revisit_after_ordinal = ordinal;
         result.push(Candidate {
-            id: InvitationId::new(id),
+            id,
             source: Source::Revisit,
         });
     }
