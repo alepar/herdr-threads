@@ -332,9 +332,27 @@ fn invite(
             },
         ));
     }
-    let pending:Option<(String,i64,i64)>=tx.query_row(
-        "SELECT i.id,i.episode,i.created_decision_seq FROM invitations i WHERE i.thread_id=?1 AND i.seat_id=?2 AND i.state='pending' AND NOT EXISTS (SELECT 1 FROM invitation_cancellations c WHERE c.invitation_id=i.id) AND NOT EXISTS(SELECT 1 FROM invitation_rejections rejection WHERE rejection.invitation_id=i.id) AND NOT EXISTS (SELECT 1 FROM requirement_episodes r WHERE r.invitation_id=i.id AND r.created_decision_seq=i.created_decision_seq) ORDER BY i.episode DESC LIMIT 1",
-        params![v.thread.as_str(),v.seat.as_str()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(store_error)?;
+    // Ordinary invites retain independently created invitations after release.
+    // Required attaches cannot reuse any invitation with a historical requirement:
+    // the immutable requirement ledger permits only one requirement per invitation.
+    let pending: Option<(String, i64, i64)> = tx
+        .query_row(
+            "SELECT i.id,i.episode,i.created_decision_seq FROM invitations i
+             WHERE i.thread_id=?1 AND i.seat_id=?2 AND i.state='pending'
+             AND NOT EXISTS (SELECT 1 FROM invitation_cancellations c WHERE c.invitation_id=i.id)
+             AND NOT EXISTS (SELECT 1 FROM invitation_rejections r WHERE r.invitation_id=i.id)
+             AND NOT EXISTS (SELECT 1 FROM requirement_episodes r WHERE r.invitation_id=i.id
+                 AND (r.created_decision_seq=i.created_decision_seq OR ?3))
+             ORDER BY i.episode DESC LIMIT 1",
+            params![
+                v.thread.as_str(),
+                v.seat.as_str(),
+                v.constraint == InvitationConstraint::Required
+            ],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()
+        .map_err(store_error)?;
     if v.constraint == InvitationConstraint::Ordinary
         && let Some((id, _, _)) = pending
     {

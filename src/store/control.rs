@@ -828,6 +828,37 @@ pub fn join(
     )
 }
 
+/// Prefer work the caller can still settle over a newer accepted invitation.
+/// The fallback preserves idempotent acceptance and terminal-state diagnostics.
+/// Permit preparation and acceptance must select the same exact obligation.
+pub(crate) fn current_invitation_for_accept(
+    conn: &Connection,
+    thread: &ThreadId,
+    seat: &SeatId,
+) -> Result<Option<InvitationId>, ApiError> {
+    let pending: Option<String> = conn.query_row(
+        "SELECT i.id FROM invitations i WHERE i.thread_id=?1 AND i.seat_id=?2 AND i.state='pending'
+         AND NOT EXISTS (SELECT 1 FROM invitation_cancellations c WHERE c.invitation_id=i.id)
+         AND NOT EXISTS (SELECT 1 FROM invitation_rejections r WHERE r.invitation_id=i.id)
+         ORDER BY i.episode DESC LIMIT 1",
+        params![thread.as_str(), seat.as_str()], |r| r.get(0),
+    ).optional().map_err(store_error)?;
+    if let Some(id) = pending {
+        return Ok(Some(InvitationId::new(id)));
+    }
+    let latest: Option<String> = conn
+        .query_row(
+            "SELECT i.id FROM invitations i WHERE i.thread_id=?1 AND i.seat_id=?2
+         AND NOT EXISTS (SELECT 1 FROM invitation_cancellations c WHERE c.invitation_id=i.id)
+         ORDER BY i.episode DESC LIMIT 1",
+            params![thread.as_str(), seat.as_str()],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(store_error)?;
+    Ok(latest.map(InvitationId::new))
+}
+
 pub fn accept(
     context: &StoreContext,
     conn: &mut Connection,
@@ -840,10 +871,8 @@ pub fn accept(
     let scope = format!("seat:{}", caller.as_str());
     let cooperative = permit.cooperative_metadata();
     let digest = cooperative_payload_hash("accept", command)?;
-    let invitation: String = conn.query_row("SELECT i.id FROM invitations i WHERE i.thread_id=?1 AND i.seat_id=?2 AND NOT EXISTS (SELECT 1 FROM invitation_cancellations c WHERE c.invitation_id=i.id) ORDER BY i.episode DESC LIMIT 1",
-        params![command.thread.as_str(),caller.as_str()], |r| r.get(0)).optional().map_err(store_error)?
+    let invitation = current_invitation_for_accept(conn, &command.thread, &caller)?
         .ok_or_else(|| api_error(ErrorCode::NotFound,format!("current invitation missing: seat {} has no invitation in thread {}; pass a thread ID listed by herdr-threads inbox",caller.as_str(),command.thread.as_str())))?;
-    let invitation = InvitationId::new(invitation);
     let obligation = ObligationRef::Invitation(invitation.clone());
     schema::execute_accountable_transaction(
         context,
