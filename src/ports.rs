@@ -2796,30 +2796,20 @@ pub trait StorePort: ModStoreReads + Send + Sync {
     ) -> Result<CommandResult, ApiError>;
     /// Move the caller binding's own read cursors (spec §2): decided in one idempotent
     /// transaction against the canonical view (A2), allowed for subagent claims because it
-    /// changes no seat state. A store without per-binding cursors refuses it.
+    /// changes no seat state.
     fn advance_cursors(
         &self,
-        _request: &crate::protocol::commands::AdvanceCursors,
-        _budget: &CallBudget,
-    ) -> Result<CommandResult, ApiError> {
-        Err(ApiError::new(
-            crate::protocol::results::ErrorCode::Unsupported,
-            "per-binding cursors unsupported by this store",
-        ))
-    }
+        request: &crate::protocol::commands::AdvanceCursors,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError>;
     /// Apply a harness lifecycle event to the caller's bindings (spec §2, §3): a subagent start
     /// enrolls, a subagent stop or session end disconnects. Decided in one idempotent
     /// transaction against the canonical view (A2); allowed for subagent claims.
     fn binding_event(
         &self,
-        _request: &crate::protocol::commands::BindingEvent,
-        _budget: &CallBudget,
-    ) -> Result<CommandResult, ApiError> {
-        Err(ApiError::new(
-            crate::protocol::results::ErrorCode::Unsupported,
-            "binding events unsupported by this store",
-        ))
-    }
+        request: &crate::protocol::commands::BindingEvent,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError>;
     /// Hidden bounded staging keyed by the request's durable operation identity.
     /// Caller authority is rechecked at final `mutate` publication.
     fn prepare_send_step(
