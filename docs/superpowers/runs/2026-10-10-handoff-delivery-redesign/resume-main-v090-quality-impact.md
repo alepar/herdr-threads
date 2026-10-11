@@ -1,0 +1,124 @@
+# Main v0.9.0 composition quality and concurrency impact
+
+2026-10-11. Read-only impact review and proposed author plan; no merged-candidate verdict or roast severity adjudication.
+
+## Immutable inputs and result
+
+- New released Main: `b6dd5dd122772599a02e2cc7f76b20e5492f0af3`, tree `3a7ba4d535aa4d9556aff9c21207953b4b29f5a6`.
+- Frozen composed branch: `f330bdab3abee8535213228e5465b085b65be750`, tree `5576d25210259cada7b4b00c484c33693369f228`.
+- Verified common ancestor: `026ad3ab444779216748cc5733e2241e2834ebaf`.
+- Inspected immutable Main changes and frozen composition source; did not use the uncommitted v0.9.0 merge as authority. Read Main AGENTS and the relevant Main TRUST-POLICY A2/A4/A5/A7 changes alongside the already reviewed D refinements.
+
+**Material integration work is required. The prior static quality PASS cannot transfer to a composition with v0.9.0 unchanged.** Main permits multiple independent native bindings of one seat. Its offer ledger, channel registry, unread cursors, notice frontiers, health and wake routing now follow those bindings. D adds presentation state and recovery against the previous single-binding model. Several necessary adaptations live in D-only files, so a clean textual merge cannot establish correctness.
+
+The items below are confirmed semantic differences between the two immutable inputs and consequences of retaining the incompatible implementation. They are not claims that an inspected merged binary has already exhibited those failures. No merge, source edit, Cargo/build/test/plugin execution, Herdr action or subagent was performed. The only write was this artifact. Existing composed runtime failures remain separate open gates.
+
+## Confirmed semantic seams
+
+### 1. Presentation state must belong to the receiving binding
+
+Main `src/delivery/ledger.rs` stores `BindingOffers` by `BindingId`, with a seat index for aggregate outlook. Main `src/service/mod_channels.rs` similarly keeps independent entries, cooldowns, closes and fingerprints per binding. D `src/service/delivery_presentation.rs:165,228,353` still accesses `ledger.seat_mut`; D `src/service/mod_channels.rs:533,547,595,790` selects owner/lease/replay/health through the seat. D's new durable consumers and proof tables have primary key `(seat_id, consumer)`; its invitation-item key is `(seat_id, invitation_id, consumer)`.
+
+With two bindings A/B, both are valid simultaneous consumers, not successive generations of one recipient. Keeping those keys causes A/B to replace or reset each other's outboxes, render selection, invitation completion, body continuation, controls and proof state. D `load` (`invitation_content.rs:399`) resets the shared state on generation/execution mismatch; that reset is no longer a sound way to distinguish recipients. Rekeying only the registry or ledger does not fix the durable rows.
+
+The per-seat permit is different: retaining it is safe serialization, although it serializes sibling work. It does not itself require changing to a per-binding lock. The owned entries and canonical state protected by it do require binding identity.
+
+### 2. D's canonical admission must adopt Main's binding resolver and liveness rules
+
+Main `hook_pull_view` uses `mod_binding_view(ModBindingRef::Claim)`, canonical role/liveness/harness, and the plain reconnect policy. A same-session process-exit/migrated binding may reconnect through the canonical transaction; a superseded session may not. `watch_register` explicitly rejects subagent-shaped claims and requires the resolved row to hold a channel. Provenance is audit, not a substitute for canonical top-level role.
+
+D `delivery_pull.rs:246` chooses `presentation_seat_view` and requires `cooperative_top_level` provenance; D `invitation_content.rs:261` repeats an old SQL fence requiring `b.generation=s.generation`, a particular observation provenance, execution and native session. Its passive maintenance `current_claim` at approximately2663 reconstructs a seat's single occupant. Main's binding generation is informational relative to the seat mapping; the binding key also distinguishes harness/agent identity, and disconnected-but-open is not channel authority. Simply adding fields to `CallerClaim` literals would leave these decisions wrong.
+
+Presentation admission, transaction recheck, notice reader and physical confirmation must resolve the same canonical binding. A top-level-shaped claim resolving to a canonical subagent must not acquire a presentation owner or use completion to mutate seat obligations. Retain Main's attribution and reconnect semantics without replacing D's exact Live Watch lease with the broader legacy ACK grace predicate.
+
+### 3. Reader::Bound must reach D's normal and exact ordinary sources
+
+Main `store/queries.rs:6205` distinguishes `Reader::Seat`, `Unknown`, and `Bound(BindingId)`. Bound readers have their own ordinary unread source, lazy eligibility, cursor identity and warning frontier. Main V1 Hook and Watch producers pass their claim into `InboxQuery`.
+
+D `ordinary_presentation_page` (`queries.rs:6635`) constructs an unbound `InboxQuery`; its service caller passes only instance/seat. D's exact-key helper (`queries.rs:6690`) accepts only a seat and requires ordinary receipt state Pending or lazy recipient state pending. These are not equivalent to the binding's unread stream. After A settles a receipt, B can still need the body. After B displays a lazy row, A's unread copy must not make B see it again. Fixing the normal page alone leaves owner replay/logical due wrong, and fixing due alone leaves new-page discovery wrong.
+
+This is an explicit Main regression contract, not an inferred preference: `tests/service/lazy_hook_pull.rs::hook_pull_ordinary_settled_by_a_sibling_still_reaches_the_other_binding`, `hook_pull_late_first_pull_after_a_sibling_settled_delivers`, and `hook_pull_lazy_row_completed_by_one_binding_is_not_reoffered_to_it` check it. The actual channel path is covered by `tests/integration/session_bindings_smoke.rs::config9_a_late_drain_after_a_sibling_settles_still_delivers`.
+
+### 4. Logical receipt terminality is no longer physical delivery terminality
+
+D `reclaim_terminal_offers` (`invitation_content.rs:1670`) currently reclaims ordinary offers for acked/waived receipt state and lazy offers for displayed state. Its owner replay filters those reclaimed keys before exact hydration. Under Main, receipt settlement is shared by the seat; read completion is per binding. A sibling's ACK must not reclaim B's still-unread captured offer, erase its finite recovery pass or make its due source permanently defer the body.
+
+Main `receipts.rs` already separates these: `AlreadySettled` ordinary displays join `shown_ids`, and `complete_displayed_for_binding` advances only the displaying binding's contiguous cursor while preserving the first ACK row/actor/time. The composed code must reuse that separation. Presentation Confirm remains non-message bookkeeping; it must not advance ordinary read cursors or fabricate receipt ACKs. Message display completion follows the existing validated DeliveryConfirm/AckModDelivered path.
+
+### 5. Notice frontiers and relevance proofs must use the same bound reader
+
+Main `attention.rs:859,1096,1142` provides `binding_notice_frontier`, `notice_offer_page_for`, and exact-binding frontier settlement. The seat-level helper intentionally selects the newest connected top-level binding and is appropriate only for seat-level observers. D `invitation_content.rs:2013,2262` still uses that seat helper for proof/frontier and notice allocation.
+
+Using the newest sibling's frontier for A can silently skip A's unoffered notices or refetch already-carried events. D's proof state is also keyed by seat/consumer; a correctly bound frontier passed into a wrongly shared proof is insufficient. Carry the bound identity through page allocation, prefix validation/settlement, proof load/save, physical outbox replay and current/last control confirmation. Keep D's allocation-versus-physical-confirm distinction: allocated notices retain exact outbox recovery until output completion, while the canonical bounded notice prefix is settled by its defined transaction. Another binding cannot confirm that token or advance its frontier.
+
+Main A7's per-binding frontiers and D's canonical origin wake exceptions both need to survive policy reconciliation. Passive observer notice settlement must not erase an open actionable warning or become a wake.
+
+### 6. Combine both mod changes, including the meaning of ackable
+
+Main `register.js` deliberately treats every whole message/lazy line as ackable for delivery completion, including `ack_required:false` ordinary messages a sibling settled. Its passive classification routes those messages without an idle submit unless `wakes:true`. Main `Assembler::emit_chunk` carries `WatchMessage.wakes` for promoted lazy mail, represented as kind message.
+
+D's current mod only acknowledges ordinary messages with `ack_required:true`, and its passive helper recognizes lazy, notice and nonwaking invitation. Retaining that combination would wake on a sibling-settled ordinary message and fail to advance the receiver's cursor after it is displayed. Taking Main's helper wholesale would lose D's invitation/notice distinction and potentially its exact invitation-context dedupe/control handling.
+
+The combined classification must preserve four independent facts: whole Message/Lazy completion is eligible; Invitation/Notice/Attention are never message ACK candidates; ordinary no-ACK mail is passive unless explicitly waking; invitation wake eligibility remains its own canonical field, and every notice remains passive. Preserve promoted-lazy `wakes` through all V2 serializers/renderers, exact byte sizing and decoder tests. The wire `ack_required` bit describes a seat obligation, not whether a binding should report a whole display.
+
+### 7. Bind wake outlook and health without weakening physical confirmation
+
+Main adds `unread/max_unread_rowid` to the fingerprint and binding target lists to `HookPullOutlook`. Native dispatch selects the unique foreground binding and uses only that target's parked state for the marker. A superseded binding's rebind grace no longer hides the successor's digest or suppresses its wake. Other live bindings of the seat remain independent targets.
+
+D must keep those inputs while retaining its separate passive publication/version signal, no ordinary-ledger clobber on recovery-only/control-only output, and exact physically confirmed Attention health evidence. Main's historical `notify_binding` updates `last_attention_push` after socket enqueue; that cannot replace D's stricter `record_presentation_attention_push` rule for the V2 route. Likewise, legacy `is_live` permits ACK grace and cannot authorize a V2 physical presentation Pull/Confirm. Hook, AlreadyConfirmed, stale lease and passive-only confirmation must not refresh Watch health. One binding's healthy channel must not mask another binding's stall or native wake.
+
+## Minimal binding-aware adaptation proposal
+
+These interfaces are proposed implementation boundaries, not new wire authority. Names are illustrative; retain neutral core/adapters.
+
+1. **Resolve one canonical presentation binding.** Introduce an internal scope containing instance, seat, canonical `BindingId`, canonical native session/harness, current execution/placement fence, and fixed consumer. Service lookup should be `presentation_binding_view(seat, ModBindingRef::Claim(claim), budget)` (or a mode on the existing view) rather than `presentation_seat_view`. Inside each deciding store transaction, resolve the claim again and verify that it is the same eligible binding with the applicable execution/placement fence. Do not accept a client-supplied BindingId as authority. Preserve Main's peer/runtime checks for a permitted Hook plain reconnect; do not silently reconnect Watch through its lease check. Separate canonical identity from the wire claim so a resumed stale generation does not arbitrarily reset another binding or bypass policy.
+
+2. **Scope durable slots to binding plus fixed consumer.** Consumers use `(binding_id, consumer)`; item completion/revisit records use `(binding_id, invitation_id, consumer)`; warning proof uses `(binding_id, consumer)`. Retain seat as an explicitly checked association/index prefix where queries need it. Current/last token uniqueness and original descriptors/masks remain unchanged. Every lookup, save, cleanup/revisit index and reclaim trigger must use the new scope; updating only primary keys is insufficient. Shared invitation context, confirming-invitation projection, publication facts and warning facts remain seat/thread authority. Binding-local counters/proofs/output history do not become seat-wide settlement.
+
+3. **Keep seat serialization initially; rekey owned state.** Reuse the same per-seat permit for register/replacement/unregister/close and Pull/Confirm so replacement cannot overtake post-store replay progress installation. Resolve the target binding before touching its registry entry. Registry entries, lease/replay/health/cooldown/fingerprint and `by_seat` bookkeeping follow Main `BindingId`; replacement of A affects only A. Add canonical BindingId to `WatchReplayScope` and `OrdinaryDueSnapshot`/validation, or bind them through an equally explicit canonical scope type. Keep lease, execution, incarnation and complete Offer stamp comparisons; BindingId alone is not an incarnation fence. Do not hold the registry or ledger mutex over store work, and preserve D's push-after-registry-unlock discipline. No need to introduce a second permit cache or reverse lock order.
+
+4. **Port D fields into Main BindingOffers.** Keep ordinary offer history, invitation bookkeeping where still used, per-consumer due cache and presentation incarnation on each binding entry. All V1/V2 producers and confirmations use that same canonical binding entry. The LRU seat index must stay consistent on removal/recreation; stale snapshot application must never resurrect an evicted entry's replay pass. Keep physical owner replay count/timestamp-neutral, including counts above logical eligibility, with a finite captured set and no recapture after exhaustion/incarnation loss in that lease.
+
+5. **Use one bound eligibility definition in all three ordinary paths.** Normal presentation page accepts the canonical claim/scope and constructs `InboxQuery { claim: Some(...), ... }`, preserving D's invitations-excluded mode and physical traversal budget. Exact-key due/owner hydration accepts the canonical binding and uses the same bound ordinary/lazy predicates and pending-versus-AlreadySettled metadata as Main's Reader::Bound. Reclamation releases a known offer only on proven terminal delivery state for this binding (or canonical recipient termination), not merely sibling receipt settlement. Missing/ambiguous keys still do not release slots. Keep receipt obligation Pending independent from physical unread: an unread already-acked ordinary row remains eligible and is emitted without a fresh ACK obligation. Exact indexed probes must be charged to the existing work envelope; do not replace the bounded source with a full inbox walk.
+
+6. **Use bound notice and passive maintenance interfaces.** Page, relevance frontier and settlement take the canonical binding, never `seat_notice_binding` for a claimed presentation. `mod_invitation`/passive maintenance must accept the registry entry's BindingId instead of choosing/reconstructing a seat's newest occupant; derive execution and claim from that exact row in its transaction. Preserve D's passive publication invalidation across lazy presentation resets, with bound unread eligibility rather than `lazy_recipients.state` alone. A notice/frontier or ordinary cursor advance by B cannot falsely quiet A. Keep shared seat facts shared, but output/proof/version consumption local to the recipient binding.
+
+7. **Retain distinct output completion boundaries.** A V2 stdout write plus flush authorizes only that bound page's exact presentation token/control subset. Whole messages delivered into the mod/model continue through Main's canonical display completion to advance the binding cursor and settle a still-pending shared receipt at most once. Successful AlreadySettled completion advances only the binding read position. Truncated, failed stdout, foreign-token and canceled operations do neither. Keep Watch exact Live lease fencing separate from the legacy ACK grace policy.
+
+### Capacity, lifecycle and schema constraints for the author plan
+
+- Preserve the global `MAX_WATCH_CONNECTIONS=64` as a count of binding entries, not64 per seat; each entry retains at most256 captured IDs. Maximum concurrently retained Watch replay IDs therefore remains64×256, with no body copies in the owner snapshot. Grace entries count against the same registry capacity.
+- Adopt Main's global `MAX_LEDGER_BINDINGS=4096` with256 offers per binding, not4096 ledgers per seat. This changes the former seat unit deliberately while preserving the global entry count. Preserve the existing1024 live weak permit-cache bound if retaining per-seat serialization.
+- Preserve D per-quantum limits and per-row byte caps:32/64KiB output, bounded partial/carry, finite100 exact attempts/32 hydrated bodies and charged key probes,256-key reconciliation, bounded publication and13-source relevance work. Extra bound-cursor probes require measured query-plan/VM accounting; no blanket increase or uncharged sibling scan.
+- Durable presentation growth must be stated honestly: at most two fixed consumer rows per canonical binding that actually uses presentation, not two rows per seat. Item rows are bounded by that binding's relevant invitation history and existing incremental cleanup. Never multiply rows by arbitrary lease/epoch/token or eagerly backfill every binding×invitation. Keep disconnected/resumable binding state distinct from an ended binding; a bounded cleanup policy may reclaim state only after its continuation is canonically invalid. Binding retention and terminal cleanup must be explicit in the implementation design. If the original2×seats storage bound is required literally, independent durable outboxes for multiple simultaneous bindings cannot satisfy it; do not claim otherwise.
+- Main's worker scans at most the global channel set under its aggregate budget. Reusing a seat permit does not enlarge that set; avoid unbounded per-seat sibling walks or a fresh full publication/relevance scan for every sibling on each tick. Test fairness when one sibling holds a large continuation. An optimization may share immutable seat facts, never a binding's cursor, proof exhaustion, completion or health.
+- Released Main migrations1..35 are immutable; in particular Main32..35 now have published meanings, colliding with D's old unlanded numbering. This review does not prescribe renumbering or rewrite published DDL. Follow a separately reviewed additive lineage plan and explicit supported upgrade sources. Do not heuristically assign an old seat-level outbox to the newest binding. Any supported pre-composition presentation-state transfer needs an exact retained identity association or an explicit non-authoritative recovery/reset policy; never transfer message receipts, acceptance or ACK provenance by inference.
+
+## Required integration validation
+
+Run these on the eventual composed identity, not on either parent alone. Existing parent tests are regression seeds; new V2 routes need actual activation coverage.
+
+| Test seam | Concrete oracle |
+| --- | --- |
+| Two bindings, one seat | Create A/B in separate processes so both remain connected. Interleave V1 and V2 Hook pulls, plus two Watch channels. Each receives its own ordinary/lazy stream, invitation context and notice prefix. One channel/consumer cannot replace, confirm, suppress or reset the other. |
+| Late first drain and sibling settlement | A settles ordinary receipt before B first pulls. B still receives whole body with no new obligation, passive in mod. B's completion advances only B cursor; original ACK actor/binding/time is byte-for-byte unchanged. Repeat after B Watch replacement and at256 occupied offers. |
+| Finite owner replay with binding read state | Capture B's exact offers; A settles between capture and hydration. B replay remains eligible until B's own display completion. Lost completion response, logical counts over3, missing canonical row, truncated body, an unrenderable item, final empty recovery, mixed control output and incarnation recreation stay finite without normal-ledger clobber. A's simultaneous offer update survives. |
+| Lease and transaction races | Hold B inside store work, replace B, cancel/refuse/error and race late Confirm. Replacement cannot install until protected B progress finishes; old lease cannot modify new owner health/output state. Concurrent A Pull/Confirm is correctly serialized or independent and never mistaken for replacement. Registry/ledger locks are not nested over store work. |
+| Notice/control frontiers | Give A/B different prior notice frontiers and a third newer binding. Pull/allocate/Confirm on A never follows B/newest. Lost physical Confirm replays A's original frozen outbox. Unknown relevance withholds but retains Attention; exact subset, older subset, empty subset and foreign stamp checks remain. Only fresh applicable Attention on the exact Live Watch updates that binding's health. |
+| Binding lifecycle and attribution | Same-session disconnected process-exit/migrated Hook can follow Main's permitted reconnect; superseded/end-event session cannot. `/clear` and lineage successor get the canonical new binding/read position without taking predecessor outbox. Canonical subagent with top-level-shaped claim is refused at the deciding boundary; read-only own-cursor behavior remains available through Main's designated APIs. |
+| Lazy/wake/mod classification | Ordinary ACK-required, already-settled ordinary, unpromoted lazy, promoted lazy, lazy/required invitation, notice and Attention are independently tested through actual V2 serializer and mod. Passive items do not idle-submit; promoted lazy does; whole messages complete cursors even without a receipt obligation; invitations/notices never ACK. Failed/truncated output cannot complete. |
+| Targeted wake and health | A parked ledger/B fresh ledger, A channel/B no channel, A rebind grace/B successor, A stalled/B healthy. Foreground binding chooses marker and harness; no match/ambiguous foreground refuses native composer wake. Recovery-only/passive output does not reset native outlook. Notice-only publication cannot become a wake. |
+| Bounded work and lifecycle growth | Full64 binding channels (including same-seat siblings),65th refusal,4096 global ledger entries with recreation,256 full offers per target, long pending histories and bounded cleanup. Assert actual indexed probes/VM work, page bytes, finite recovery, aggregate worker budget and no per-seat multiplication of registry/ledger limits. |
+| Additive upgrade | Populated released Main35 upgrades and reopens; failure rolls back catalog/data; retained binding cursors, frontiers, ACK attribution and old receipts are unchanged. Separately exercise only the pre-release upgrade sources explicitly approved by the lineage plan. |
+
+Retain Main's existing multi-binding ledger, bound-inbox, lazy, attention, channel, session-binding smoke and foreground wake tests; retain D's owner/capacity/relevance/cancel/exact-confirm tests. Extend producer-to-consumer coverage to real V2 Watch stdout/flush/Confirm and registered Hook completion, with independently queried canonical rows. Mock-only serializer assertions cannot prove the cross-binding contract. Process tests use owned children, release relay gates and join workers, stop isolated services, and finish with the exact run-id leak check. No new live-model/native-harness uptake claim follows from those fixture tests.
+
+## Suggested implementation order
+
+1. Freeze the combined canonical binding and additive schema plan, including explicit storage units and lifecycle handling.
+2. Adapt canonical admission plus bound store/ledger/notice interfaces; retain legacy V1 and Main policy paths.
+3. Port durable presentation state, finite owner replay and exact Live lease/physical-control handling onto binding identity under the existing permit discipline.
+4. Reconcile mod/wire rendering and Main cursor completion, then passive refresh and targeted wake/health.
+5. Run the cross-binding tests above and existing focused suites with exact source provenance; obtain a new review of the composed implementation and its gates.
+
+This is routine integration work with material semantics, not an instruction to merge either parent over the other. No readiness or current runtime PASS is asserted.

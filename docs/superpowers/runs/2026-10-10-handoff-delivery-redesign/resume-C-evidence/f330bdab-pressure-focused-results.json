@@ -1,0 +1,1939 @@
+{
+  "executed_cases": [
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::topology_handoff::tests::live::automatic_live::modern_automatic_actual_admission_boundary_completes_and_next_metadata_size_has_zero_effects",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::topology_handoff::tests::live::automatic_live::modern_automatic_maximum_escaped_body_completes_and_recovers_exactly",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads::integration",
+      "name": "mod_delivery::activation_capacity_flow_oracle_assertions_do_not_poison",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads::integration",
+      "name": "mod_delivery::activation_capacity_flow_failed_or_unwritten_attention_has_no_marker",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads::integration",
+      "name": "mod_delivery::activation_capacity_flow_stop_recovers_poison_and_releases_waiter",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads::integration",
+      "name": "mod_delivery::activation_capacity_flow_successful_frame_write_serializes_pull_observation",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads::integration",
+      "name": "mod_delivery::activation_capacity_flow_oracle_unwind_restores_relay",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::handoff::tests::automatic_launched_pane_lost_start_never_resubmits_on_retry",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::handoff::tests::acquired_stdin_survives_retry_after_reader_is_unavailable",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::handoff::tests::automatic_launched_noncompletion_keeps_exact_artifact_and_bounded_progress",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::handoff_delivery::tests::automatic_existing_pane_full_request_resolves_one_seat",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::handoff_delivery::tests::automatic_existing_max_escaped_body_and_independent_frozen_deadlines",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::handoff_delivery::tests::automatic_existing_seat_full_request_ensures_and_sends",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::handoff::tests::maximum_instruction_file_freezes_through_explicit_launch_retry",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::hook::neutral_tests::adapter_completion_requires_successful_stdout_write_and_flush",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::hook::neutral_tests::default_hook_step_completion_is_inert",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::hook::neutral_tests::every_hooks_own_harness_finds_its_resolved_binding",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::hook::neutral_tests::parse_failure_report_follows_the_legacy_contract_predicate",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::human::tests::presentation_flags_parse_and_conflict_with_json",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::human::tests::presentation_is_machine_unless_selected_and_never_for_json",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::handoff::tests::automatic_launched_maximum_escaped_body_is_frozen_and_retries_without_relaunch",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::launch::tests::adapter_launch_configuration_mutation_before_submit_refuses",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::skill::tests::skill_prints_verbatim_in_every_presentation",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::handoff_delivery::tests::handoff_policy_completed_canonical_status_bypasses_missing_capabilities_but_pending_refuses",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::topology_handoff::tests::live::automatic_live::automatic_old_peer_with_all_other_caps_refuses_before_selector_or_caller_allocation",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::handoff_delivery::tests::handoff_policy_already_joined_unavailable_recipient_warns_without_new_invitation",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::handoff_delivery::tests::handoff_policy_lazy_invitation_still_warns_sender_for_unregistered_ack_required_recipient",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::topology_contract_retry_tests::topology_contract_retry_refuses_unavailable_or_unconfigured_runtime_before_presentation",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::launch::tests::agy_guarded_launch_keeps_plugin_readiness_advisory_and_native_guards",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::topology_handoff::tests::live::automatic_live::historical_automatic_recovery_below_limit_replays_exact_bytes",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::topology_handoff::tests::live::automatic_live::historical_automatic_recovery_over_limit_read_refuses",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::topology_handoff::tests::live::automatic_live::historical_automatic_recovery_over_limit_write_refuses_atomically",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::topology_handoff::tests::live::automatic_live::historical_automatic_recovery_over_limit_replay_refuses",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::topology_handoff::tests::live::automatic_live::modern_automatic_artifact_failure_keeps_synced_summary_and_reopened_retry_never_starts",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::topology_handoff::tests::live::automatic_live::modern_automatic_canonical_completion_refuses_full_diagnostic_report",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads::hook_entrypoint",
+      "name": "agy::activation::activation_v2_registered_agy_failed_stdout_replays_without_completion",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads::service",
+      "name": "graph_d2::registered_service_and_native_caller_complete_required_flow_with_exact_replay",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::topology_handoff::tests::live::automatic_live::modern_automatic_committed_completion_reply_loss_reopens_without_artifact_or_relaunch",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::handoff_delivery::tests::maximum_instruction_file_freezes_through_existing_delivery_and_retry",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::watch::tests::a_drain_that_finds_nothing_pending_retracts_the_last_attention_line",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::watch::tests::a_failed_chunk_marks_only_its_ids_retryable",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::watch::tests::a_run_without_attention_never_retracts",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::watch::tests::attention_frame_triggers_another_drain",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::watch::tests::body_over_8_kib_is_truncated_with_marker_and_hint_file_records_id",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::watch::tests::busy_or_timed_out_probe_is_retryable",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::watch::tests::capable_watch_streams_ordered_v2_then_explicitly_confirms_captured_controls",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::watch::tests::chunked_body_is_reassembled_before_emitting",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::topology_handoff::tests::live::automatic_live::modern_automatic_large_diagnostics_preserve_full_local_report_and_complete_summary",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::watch::tests::dead_parent_stops_the_stream_loop_without_a_status_line",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::watch::tests::definitive_unknown_wire_version_probe_exits_3_unsupported",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::watch::tests::drain_pages_until_exhausted_with_schema_kind_and_stable_ids",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::watch::tests::close_frame_prints_closing_status_and_exits_with_close_code",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::watch::tests::drain_surfaces_daemon_errors_and_closed_stdout",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::watch::tests::env_off_exits_3_with_env_disabled_status_before_connecting",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::watch::tests::every_chunk_failing_prints_nothing_and_exits_1",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::watch::tests::exactly_the_batch_limit_is_one_call",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::watch::tests::failed_capability_probe_exits_retryable_daemon_unavailable",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::watch::tests::informational_warnings_raise_no_attention_line",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::watch::tests::invitation_policy_lazy_is_bookkeeping_while_timed_and_legacy_raise_attention",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::watch::tests::invitations_and_warnings_collapse_into_one_attention_line_per_version",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::watch::tests::lazy_rows_stream_as_lazy_without_ack_required",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::topology_recover::tests::root_operator_retry_refuses_before_completed_presentation_and_cleanup",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::watch::tests::message_lines_carry_the_thread_topic_and_sender_names",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::watch::tests::missing_mod_watch_capability_exits_3_unsupported",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::watch::tests::missing_pane_exits_3_with_no_pane_status_and_registers_nothing",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::watch::tests::missing_pane_through_run_in_pane_prints_one_status_and_exits_3",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::watch::tests::one_over_is_two_calls",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::watch::tests::parent_death_ends_watch",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::watch::tests::parses_watch_ack_argv",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::watch::tests::parses_watch_argv",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::watch::tests::presentation_watch_close_wins_before_next_more_quantum",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::topology_handoff::tests::live::automatic_live::modern_automatic_recovery_above_historical_limit_succeeds_and_replays",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::watch::tests::presentation_watch_failed_flush_never_confirms_or_writes_success_hint",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::watch::tests::presentation_watch_foreign_acknowledgement_is_error_not_success",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::topology_handoff::tests::live::live_preallocation_budget_entry_and_final_presentation_zero_effect",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::watch::tests::presentation_watch_new_owner_physically_reemits_before_own_confirmation",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::watch::tests::presentation_watch_refused_confirmation_never_records_truncation_hint",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::watch::tests::presentation_watch_requires_both_capability_and_valid_accepted_lease",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::watch::tests::rejects_bad_watch_argv",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::watch::tests::stdout_closed_exits_0_quietly",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::watch::tests::refusal_prints_status_line_and_exits_with_contract_code",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::watch::tests::stream_eof_prints_stream_ended_and_exits_0",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::watch::tests::stub_mod_files_follow_the_layout",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::watch::tests::the_attention_line_follows_the_command_prefix",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::watch::tests::unknown_wire_version_reply_exits_3_unsupported",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::watch::tests::unlocated_caller_exits_2_no_binding",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::watch::tests::unreachable_socket_exits_1_daemon_unavailable",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::watch::tests::watch_ack_error_prints_nothing_and_exits_1",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::watch::tests::watch_ack_prints_one_line_per_id_and_exits_0",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::watch::tests::watch_ack_over_the_batch_limit_sends_chunks_and_settles_every_id",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::watch::tests::unreachable_daemon_exits_1_daemon_unavailable",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::watch::tests::watch_carries_a_passive_invitation_as_invitation_content_never_a_message",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::watch::tests::watch_ack_refuses_hinted_truncated_ids_locally_and_sends_the_rest",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads::integration",
+      "name": "mod_delivery::activation_v2_watch_lost_confirm_response_replays_exact_subset",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::topology_handoff::tests::live::automatic_live::modern_automatic_unknown_large_diagnostics_keep_bounded_truthful_progress",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::topology_handoff::tests::live::automatic_live::modern_automatic_completed_missing_child_and_artifact_is_readonly_and_truthful",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "daemon::transport::tests::automatic_response_overlimit_length_refuses_before_body_read",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "daemon::transport::tests::automatic_historical_response_keeps_one_mib_scoped_encoder_limit",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "daemon::transport::tests::automatic_known_request_rejects_unrelated_success_result_family",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "daemon::transport::watch_connection::tests::presentation_owner_accepted_wire_carries_the_registered_lease",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "delivery::ledger::tests::due_cache_filters_full_stamps_and_isolates_consumer_and_session",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "delivery::ledger::tests::due_cache_recreation_and_retention_never_reuse_an_old_incarnation",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::decode::tests::native_presentation_encoder_caps_actual_final_bytes",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::decode::tests::registered_presentation_codecs_equal_actual_native_shapes",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "daemon::transport::tests::automatic_response_embedded_identity_must_match_exact_request",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "daemon::transport::tests::automatic_recovery_response_larger_than_one_mib_survives_actual_local_client_transport",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::a_cancelled_probation_turn_re_downgrades_with_a_fresh_timestamp",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::a_downgrade_of_another_executable_identity_is_not_shown",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::a_forged_header_after_a_literal_backslash_n_in_a_body_does_not_confirm",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::a_confirmed_probation_frame_clears_the_downgrade",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::a_frame_pushed_past_a_fixed_tail_by_tool_output_is_still_confirmed",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::a_full_page_of_offered_ids_is_tracked",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::a_genuine_system_message_frame_confirms",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::a_genuine_post_tool_call_frame_confirms",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::a_genuine_user_message_frame_confirms",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::a_header_in_a_step_with_a_user_source_does_not_confirm",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::a_header_in_a_tool_result_does_not_confirm",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "cli::watch::tests::hint_file_keeps_only_the_newest_1024_ids",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::a_header_in_model_output_does_not_confirm",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::a_header_quoted_inside_a_body_is_not_a_frame_and_an_id_prefix_is_not_the_id",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::a_launcher_parent_falls_back_to_the_path_resolved_agy",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::a_new_binding_generation_forgets_the_previous_generations_ids",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::a_notices_only_page_renders_a_system_message_when_not_downgraded",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::a_page_with_no_offered_id_neither_opens_nor_spends_probation",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::a_new_executable_identity_injects_a_system_message_again",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "daemon::transport::tests::unscoped_ordinary_encoder_keeps_one_mib_even_for_automatic_result",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::a_shorter_transcript_than_the_offset_is_scanned_from_its_start",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::a_probation_confirmed_at_a_later_pre_invocation_clears_the_downgrade",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::a_retryable_confirm_keeps_the_id_for_the_next_attempt",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::a_probation_with_no_stop_re_downgrades_at_the_next_injection_after_24_hours",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::a_window_that_starts_inside_a_record_skips_that_record",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::a_single_injection_miss_does_not_downgrade",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::a_symlinked_binary_is_identified_by_its_resolved_target",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::agy_declares_hook_pull_with_native_idle_wake",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "daemon::transport::tests::automatic_historical_response_keeps_one_mib_client_allocation_limit",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::admission_selects_user_message_only_for_the_current_identity",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::a_stale_never_found_id_does_not_block_confirming_newer_frames",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::an_existing_conversation_does_not_prune",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::an_id_within_one_window_of_the_end_stays_tracked",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::an_unchanged_reply_caches_the_attention_version_and_the_next_pull_sends_it",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::completion_rejects_duplicate_captured_control_stamps",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::an_errored_probation_turn_re_downgrades_with_a_fresh_timestamp",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::an_abort_style_stop_error_downgrades_at_once",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::an_unreadable_transcript_ends_the_probation_turn",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::completion_applies_only_the_daemon_acknowledged_captured_control_subset",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::doctor_reports_the_downgrade_and_the_never_confirmed_count",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::expired_probation_maintenance_remains_independent_of_page_emission",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::emitted_v2_controls_apply_exact_epochs_and_old_replay_cannot_resurrect_a_clear",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::frozen_reply_codec_overrides_new_local_preference_without_opening_early_probation",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::historical_downgraded_user_message_scripted_page_preserves_native_bytes_and_oversize_geometry",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::daemon::a_clear_rotation_discards_the_agy_pull_ledger",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::hook_step_does_not_commit_offered_page_before_stdout_emission",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::malformed_and_truncated_lines_are_skipped",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::historical_system_message_scripted_page_preserves_native_bytes_and_oversize_geometry",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::malformed_or_oversized_completion_is_inert",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads::integration",
+      "name": "mod_delivery::activation_v2_watch_lazy_only_page_is_passive",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::mismatched_or_unsupported_v2_native_output_is_not_emitted_or_confirmed",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::daemon::pull_inject_fixture_transcript_confirm_settles_with_hook_delivery_provenance",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::misses_on_the_same_turn_twice_do_not_downgrade",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::only_a_hook_command_argv_names_a_state_dir",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::invalid_acknowledged_control_subset_never_saves_hints_or_opens_probation",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::output_shapes_are_byte_locked",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::postflush_confirmation_loss_keeps_state_replayable_after_restart",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::nothing_is_printed_for_unchanged_refusals_and_daemon_errors",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::misses_on_two_distinct_turns_downgrade_to_user_message",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::postflush_state_hint_does_not_overwrite_an_observed_concurrent_change",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::preparing_probation_does_not_open_it_before_emission",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::probation_completion_preserves_an_observed_changed_downgrade_hint",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::scan_finds_the_frame_ids_after_the_offset",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::probation_confirmation_loss_keeps_the_retry_available",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::scan_ignores_frames_before_the_recorded_offset",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::probation_opening_is_deferred_until_successful_completion",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::probation_after_24_hours_is_one_system_message_turn",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::stale_confirmation_and_expired_completion_never_save_injected_state",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::state_files_untouched_for_30_days_are_pruned_when_a_new_conversation_starts",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads::integration",
+      "name": "mod_delivery::activation_v2_elected_watch_capabilities_lease_output_confirm",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::stop_confirms_a_frame_in_the_turns_last_call_and_records_no_miss",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::the_next_pre_invocation_confirms_the_frame_it_finds_after_the_offset",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::stop_confirms_newer_frames_past_a_stale_id_and_records_no_miss_for_it",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::the_scan_is_bounded_at_8_mib_and_past_the_bound_is_non_evidence",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::the_state_file_never_exceeds_4_kib",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::the_state_file_is_created_after_a_pull_and_deleted_on_session_mismatch",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::unparseable_missing_and_non_file_transcripts_find_nothing",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads::integration",
+      "name": "mod_delivery::activation_v2_watch_replacement_replays_uncommitted_output",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads::hook_entrypoint",
+      "name": "agy::activation::activation_v2_registered_agy_lost_completion_preserves_exact_recovery",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::setup_clears_the_downgrade_record",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::v2_invitation_only_empty_and_unchanged_pages_never_cache_current_metadata_as_seen",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "protocol::capabilities::tests::automatic_contract_declarations_do_not_advertise_an_unimplemented_runtime",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "protocol::capabilities::tests::bare_daemon_advertises_legacy_capabilities_without_v2_recorder",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::typed_completion_fits_two_maximal_admitted_records_and_escaped_claim_fields",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "protocol::capabilities::tests::capabilities_reply_round_trips_and_defaults_empty",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "protocol::capabilities::tests::capability_constants_are_stable",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "protocol::capabilities::tests::control_without_a_recorder_accepts_and_drops_evidence",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "protocol::capabilities::tests::daemon_counts_a_hook_parse_failure_report",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "protocol::capabilities::tests::client_caches_capabilities_per_session",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::daemon::canonical_v2_downgraded_user_allocated_pages_fit_actual_native_codec",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "protocol::capabilities::tests::harness_evidence_round_trips_on_the_wire",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "protocol::capabilities::tests::harness_evidence_validation_bounds_every_field",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::unreadable_cancelled_errored_and_oversized_transcripts_are_non_evidence",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "protocol::capabilities::tests::harness_states_round_trips_on_the_wire",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::bridge_tests::cached_pinned_continuations_use_verified_recipient_presentation_without_changing_cache",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "protocol::capabilities::tests::invitation_confirmation_capability_is_advertised_with_active_lifecycle",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "protocol::capabilities::tests::invitation_confirmation_wire_preserves_legacy_and_distinguishes_modern_requests",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "protocol::capabilities::tests::old_daemon_that_answers_an_error_reads_as_no_capabilities",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "protocol::capabilities::tests::directory_search_generated_continuation_preserves_literal_scope_order_and_output",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "protocol::capabilities::tests::old_daemon_that_closes_reads_as_no_capabilities",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "protocol::capabilities::tests::pre_change_cli_decodes_this_daemons_hello_and_history",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "protocol::capabilities::tests::picker_directory_wire_keeps_old_directory_shape_and_cursor_only_contract",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "protocol::capabilities::tests::health_v2_capability_is_negotiated_only_with_cached_provider",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "protocol::delivery::tests::presentation_confirmation_exact_control_shape_and_removed_piggyback",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "harness::agy::delivery::tests::daemon::canonical_v2_system_allocated_pages_fit_actual_native_codec",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "protocol::delivery::tests::presentation_confirmation_maximum_valid_controls_fit_actual_framed_wrapper_reserve",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "protocol::delivery::tests::presentation_v2_decodes_scoped_commands_without_changing_v1",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "protocol::delivery::tests::presentation_v2_rejects_invalid_tokens_consumers_and_watch_without_lease",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "protocol::capabilities::tests::v2_capability_is_negotiated_only_with_recorder",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "protocol::capabilities::tests::public_operation_status_cannot_bypass_send_time_capability_guard",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "protocol::watch::tests::accepted_presentation_lease_survives_new_decoder_and_old_bytes_stay_omitted",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "protocol::capabilities::tests::presentation_capability_routes_use_configured_domain",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "daemon::transport::tests::automatic_response_path_alias_is_not_exact_identity_in_either_family",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::a_departed_inviter_remains_actionable_after_whole_deadline_warning_until_acceptance",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_capacity_cache_progress_survives_lost_reply_but_not_ledger_restart",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::departed_receipt_origins_survive_pull_offers_late_association_and_partial_ack",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_capacity_due_promoted_lazy_defers_oversize_render_then_retries",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_capacity_due_size_failure_after_passive_output_retries_standalone",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads::hook_entrypoint",
+      "name": "agy::activation::activation_v2_registered_agy_system_hook_round_trip",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads::integration",
+      "name": "mod_delivery::lazy_row_appended_then_completed",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "protocol::capabilities::tests::every_advertised_capability_has_a_handler",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_capacity_missing_due_keys_finish_a_finite_pass",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_capacity_due_walk_preserves_partial_body_until_real_ack",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_capacity_last_slot_parks_unknown_carry_and_only_continues_for_due_keys",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_capacity_parked_ordinary_still_drains_passive_context_and_notices",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_actual_candidate_sizing_and_rpc_wrapper_work_remain_bounded",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_capacity_retained_concurrent_offer_count_does_not_refuse_passive_work",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_capacity_reclaimed_or_initially_free_with_missing_due_keys_quiets",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_capacity_snapshot_validation_scope_and_failed_calls",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_capacity_replay_preserves_finite_due_progress_and_positive_slot_quiet",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_current_handler_derives_timed_invitation_attention",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_confirmation_preserves_original_slots_and_exact_subsets_on_restart",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_final_cleanup_preserves_passive_removal_observation",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads::integration",
+      "name": "mod_delivery::agy_sweep::agy_pull_confirm_and_the_claude_watch_path_coexist_on_one_daemon",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads::hook_entrypoint",
+      "name": "agy::activation::activation_v2_registered_agy_user_hook_round_trip",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_final_watch_codec_counts_escaped_canonical_invitation_batch",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_handler_initial_ordinary_receipt_delivers_body_without_invented_attention",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_handler_partial_confirmation_retains_canonical_slots_across_restart",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_handler_clears_unconfirmed_epoch_then_reopens_new_episode",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_handler_published_warn_reopens_at_unchanged_native_version",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads::integration",
+      "name": "mod_delivery::fresh_watch_after_accept_prints_no_attention",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_hook_notice_settles_current_execution_without_reoffer",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_last_token_control_serializer_has_exact_bounded_witness",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_full_pending_carry_reaches_quiet_without_evicting_offers",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_owner_replay_accepts_actual_v1_count_four_and_nonordinary_work",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads::hook_entrypoint",
+      "name": "agy::activation::modern_direct_ensure_lazy_pair_reaches_actual_turn_hook_without_settlement",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_full_pending_carry_serves_due_known_offers_without_admitting_fresh_id",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads::integration",
+      "name": "mod_delivery::no_mod_or_env_off_keeps_native_wake_and_exits_3",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_ordinary_carry_survives_completed_control_partial_and_invitation_priority",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_owner_replay_mid_work_budget_keeps_first_capture_uninstalled",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads::integration",
+      "name": "mod_delivery::live_channel_suppresses_native_wake",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_hook_manual_ack_reclaims_live_offer_capacity",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_confirm_rejects_oversized_private_json_before_decoding",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_owner_replay_mixed_invalid_keys_and_physical_fallback_drain_finitely",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_owner_replay_missing_quanta_preserve_current_native_outlook",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_owner_replay_deferred_control_only_preserves_current_outlook",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_owner_replay_owner_permit_fences_replacement_during_store",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_owner_replay_mixed_invitation_page_preserves_native_outlook",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_owner_replay_preserves_post_snapshot_native_outlook_and_newer_stamp",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_owner_replay_preserves_partial_body_until_real_ack",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_owner_replay_full_final_page_keeps_logical_due_continuation",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_owner_replay_pruned_all_allows_real_logical_allocation_bookkeeping",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads::integration",
+      "name": "mod_delivery::send_attention_drain_ack_settles_with_mod_delivery_provenance",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads::hook_entrypoint",
+      "name": "agy::activation::registered_agy_omitted_or_refused_capability_uses_historical_pull",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_owner_replay_registry_success_scope_and_incarnation_lifetime",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_owner_replay_refusal_and_store_error_do_not_consume_first_capture",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_owner_replay_restart_discards_lease_and_recovers_canonical_pending",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_owner_replay_nonfull_once_per_lease_preserves_physical_metadata",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_owner_replay_validates_full_scope_and_nonzero_count_domain",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_owner_replay_standalone_unrenderable_attempt_is_finite_and_local",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_private_invitation_id_wrong_types_refuse_at_strict_storage_boundary",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads::integration",
+      "name": "mod_delivery::notice_published_while_live_reaches_the_next_pre_tool_use_once",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_owner_replay_waits_for_original_outbox_then_continues",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_private_item_refresh_text_bounds_refuse_before_effects",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_private_invitation_ids_allow_exact_128_byte_ids_in_each_reader",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads::hook_entrypoint",
+      "name": "agy::agy_turn_hook_carries_lazy_invitation_without_accepting_or_confirming_it",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_private_skipped_body_requires_exact_retained_cursor",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_private_watch_cleanup_ids_allow_128_byte_id_without_canonical_owner_changes",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_private_watch_cleanup_ids_enforce_borrowed_text_bounds_without_effects",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_private_partial_guards_reject_corrupt_supported_shapes",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads::integration",
+      "name": "mod_delivery::stale_attention_is_retracted_after_accept_and_after_a_notice_offer",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_publication_foreign_refresh_refuses_without_touching_hook_or_watch",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads::integration",
+      "name": "mod_delivery::reconnect_within_grace_keeps_wake_suppressed_restreams_and_late_ack_settles_once",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_promoted_lazy_raw_carry_survives_restart_with_frozen_prefix",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_publication_generation_overflow_rolls_back_frontier_and_version",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_publication_scalar_maximum_roundtrips_without_changing_carry",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_publication_invalid_scalars_refuse_before_confirmation_effects",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_private_watch_cleanup_ids_refuse_malformed_identity_without_effects",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_publication_signal_preserves_active_capture_and_replays_across_restart",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_private_context_cursors_refuse_invalid_thread_ids_before_effects",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_private_state_rejects_typed_corruption_without_confirmation_effects",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_raw_carry_serializer_accounting_witness",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_quiet_channel_observes_new_lazy_ordinary_without_wake",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_owner_replay_pruned_all_passive_page_preserves_current_outlook",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_reclamation_keeps_pending_missing_and_deduplicates_snapshot_work",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_quiet_channel_observes_new_ordinary_ack_message",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_publication_walk_counts_foreign_prefix_before_filter_and_progresses",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_reclamation_replay_returns_delta_and_refusals_do_no_reconciliation",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_reclamation_requires_published_addressed_lazy_completion",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_reclamation_refuses_oversize_hints_before_effects",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_reclamation_legacy_terminal_delta_has_exact_bounded_work_on_unchanged",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_refresh_observes_lazy_context_and_removal_without_consuming_output",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_refresh_preserves_live_presentation_header_and_outbox_across_rebind",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_refresh_stub_allows_actual_watch_full_offer_and_replaced_owner_replay",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_publication_watch_reconnect_keeps_positive_frontier_without_native_wake",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_registered_channel_materializes_each_published_warn_before_drain",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_registry_pass_drives_bounded_passive_refresh_before_full_pull",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_v2_replays_one_canonical_invitation_until_emit_confirmation",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_v2_keeps_truncated_ordinary_cursor_progress_across_quanta",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_v2_resumes_control_heavy_ordinary_partial_without_changing_body_limit",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_v2_service_requirement_attach_release_fresh_replacement_keeps_exact_commands",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_watch_fresh_confirmation_records_exact_owner_publication_cutoff_once",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_watch_notice_continuation_preserves_remaining_confirming_condition",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::kicks::tests::invitation_presentation_bookkeeping_is_passive_but_context_producers_refresh_mod",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::mod_channels::tests::presentation_attention_cutoff_requires_exact_live_owner",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::mod_channels::tests::presentation_owner_lease_is_exact_live_and_replacement_fenced",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_watch_notice_settles_current_execution_without_reoffer",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::mod_channels::tests::presentation_owner_permit_serializes_replacement",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::mod_channels::tests::domain::presentation_owner_current_watch_is_admitted_and_old_lease_is_refused",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "store::attention::tests::presentation_relevance_all_thirteen_physical_sources_progress_through_stale_candidates",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::an_old_visible_invitation_topic_change_survives_a_saturated_newest_window",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_reclamation_preserves_logical_precedence_and_explicit_waiver_flags",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "store::attention::tests::presentation_relevance_canonical_receipt_sweep_closes_before_clear_publication",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::a_finite_invitation_backlog_progresses_beyond_the_whole_display_cache",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "store::attention::tests::presentation_relevance_direct_association_survives_prepared_same_id",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads::integration",
+      "name": "mod_delivery::activation_v2_watch_full_pending_capacity_parks_until_real_channel_input",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_watch_completed_lazy_rows_reclaim_live_offer_capacity",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "store::attention::tests::presentation_relevance_direct_legacy_survives_canonical_lazy_churn",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "store::attention::tests::presentation_relevance_private_proof_refuses_corruption_without_effects",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "store::attention::tests::presentation_relevance_quiet_proof_does_not_fence_itself_and_overflow_aborts_writer",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "store::attention::tests::presentation_relevance_required_lazy_overlay_tracks_digest_and_requirement",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "store::attention::tests::presentation_relevance_coverage_reserves_fallback_progress_under_source_load",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "store::attention::tests::presentation_relevance_suspended_membership_unchanged_high_still_opens",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "store::attention::tests::presentation_relevance_sweep_mutations_fence_and_overflow_roll_back_without_self_invalidation",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "store::attention::tests::presentation_relevance_unavailable_exact_episode_and_late_publication_are_swept",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "store::attention::tests::presentation_relevance_walks_retained_membership_and_revalidates_exact_witness",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "store::connection::tests::presentation_schema_populated_v39_failed_ddl_rolls_back_epoch_and_catalog",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_watch_settled_receipts_reclaim_live_offer_capacity",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_reclamation_preserves_pending_truncated_and_reoffer_history",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "store::connection::tests::presentation_schema_pending_index_build_work_tracks_only_pending_projection",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "store::attention::tests::presentation_relevance_suspended_membership_respects_repaired_current_high",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "store::control::tests::invitation_confirmation_required_service_gets_fresh_timed_episode_without_mutating_lazy",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "store::attention::tests::presentation_capacity_due_exact_keys_have_bounded_actual_sql_plans_and_vm",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "store::attention::tests::presentation_relevance_all_thirteen_actual_source_heads_and_ranges_have_bounded_plans_and_vm",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "store::control::tests::managed_required_controls_preserve_left_history_and_independent_ordinary_invite",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_private_invitation_ids_refuse_corruption_in_each_reader_without_effects",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "store::control::tests::managed_release_cancels_only_required_invitation_and_replay_retains_history",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "store::control::tests::managed_required_upgrade_preserves_deadline_and_demands_native_revision",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "service::delivery_pull::tests::presentation_publication_refresh_and_pull_rebind_preserve_each_others_progress",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "store::control::tests::managed_required_reattach_preserves_upgraded_ordinary_invitation_and_history",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "store::queries::tests::presentation_generated_marker_inverse_refuses_wrong_variant_or_body",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "store::control::tests::same_invitation_requirement_attach_release_replacement_has_distinct_context_epochs",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "store::control::tests::service_requirement_uses_an_independent_episode_without_mutating_native_lazy_invitation",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "store::queries::tests::presentation_publication_range_uses_exact_index_and_bounded_sqlite_work",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "store::control::tests::required_then_independent_ordinary_acceptance_keeps_one_join_interval",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "store::control::tests::native_ordinary_offer_after_required_offer_can_be_accepted_after_join",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "store::queries::tests::presentation_publication_observes_old_staging_only_after_late_manifest",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "store::receipts::tests::receipt_discovery_coalesced_origins_survive_offers_departure_and_partial_ack",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "store::receipts::tests::receipt_discovery_orphan_wrong_audience_and_service_markers_cannot_invent_origins",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "store::connection::tests::presentation_schema_populated_v39_upgrade_is_additive_and_reopens",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "store::queries::tests::presentation_hydrate_exact_query_is_driven_by_bounded_wanted_ids",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "store::receipts::tests::receipt_origin_actual_ordinary_send_with_null_native_author_notifies_sender",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "store::attention::tests::presentation_relevance_successor_plan_and_vm_stay_bounded_in_retained_canonical_sweeps",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads::combined",
+      "name": "direct_send::direct_file_body_is_frozen_across_send_failure",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "store::effective::tests::dormant_upgrade_actual_v31_backfill32_reopens_and_rolls_back_without_recapture",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads::combined",
+      "name": "direct_send::historical_ensure_omits_new_result_and_modern_reuse_reports_old_timed_origin_honestly",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "store::connection::tests::presentation_schema_populated_v40_failed_v41_rolls_back_bootstrap_and_catalog",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads::combined",
+      "name": "lazy_inbox_v2::invitation_decision_context_is_additive_and_old_omitted_bytes_stay_exact",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "store::connection::tests::presentation_schema_populated_v40_consumers_upgrade_revised_v41_and_reopen",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads::combined",
+      "name": "direct_send::modern_direct_send_creates_lazy_pending_invitation_without_invitation_wake",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads::combined",
+      "name": "direct_send::modern_ensure_returns_actual_canonical_policy_and_selection_outcome",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads::combined",
+      "name": "direct_send::old_direct_peer_with_lazy_support_refuses_creation_policy_before_any_effect",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "store::effective::tests::dormant_upgrade_bounded_batches_survive_restart_and_continuing_arrivals",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "store::connection::tests::released_main31_populated_automatic_graph_physically_upgrades_and_reopens",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "store::receipts::tests::receipt_discovery_upgrade_combined_reset_warning_and_cursors_roll_back_together",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads",
+      "name": "store::receipts::tests::receipt_discovery_global_fair_snapshots_cover_upgrade_and_restart_with_blocked_wakes",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads::combined",
+      "name": "direct_send::modern_ensure_joined_rejected_and_left_use_actual_canonical_lifecycle",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads::combined",
+      "name": "direct_send::lost_committed_replies_restart_with_exact_keys_body_and_lazy_audience",
+      "status": "PASS"
+    },
+    {
+      "binary_id": "herdr-threads::integration",
+      "name": "setup_canary_seam::actual_claude_setup_consumer_rejects_bad_output_and_owned_configuration",
+      "status": "PASS"
+    }
+  ],
+  "executed_count": 385,
+  "passed_count": 385,
+  "statuses": {
+    "PASS": 385
+  },
+  "missing": [],
+  "extra": [],
+  "duplicates": [],
+  "evidence_complete": true,
+  "parser_contract": "Observed nextest PASS/FAIL status lines; never infer counts from exit alone."
+}

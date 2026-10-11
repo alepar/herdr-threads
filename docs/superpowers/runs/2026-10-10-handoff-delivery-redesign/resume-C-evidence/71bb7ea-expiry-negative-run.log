@@ -1,0 +1,7 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.04s
+────────────
+ Nextest run ID 15472384-a1f5-4c74-8530-bf8a8ab6a6b4 with nextest profile: default
+    Starting 1 test across 1 binary (4405 tests skipped)
+        PASS [   0.624s] (1/1) herdr-threads cli::topology_handoff::tests::live::automatic_live::automatic_child_begin_expired_permit_has_no_effects_and_fresh_permit_succeeds
+────────────
+     Summary [   0.637s] 1 test run: 1 passed, 4405 skipped
