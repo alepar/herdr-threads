@@ -1,0 +1,13 @@
+# Task15 diagnostic relevance regressions
+
+Test-only checkpoint `09d65b0c73d293c6574d1a262cabb1e7e65ee871` atop frozen production helper `25ac0d69fa214c903bf0ef51c8b66950748fae60`. Exactly `tests/store/attention.rs` changed, +189 lines. No source/migration/registration/Cargo actions. Source-only rustfmt and git diff --check succeeded; tests remain unrun pending D's sole Cargo execution. Fixture/setup/compile errors are not RED evidence. Parent permits private diagnostic application only after new quiescent ACK.
+
+- `presentation_relevance_direct_legacy_survives_canonical_lazy_churn`: retained pre-ledger direct invitation warning to other seat, historical membership recipient spanning301 intervals, no condition/invitation-to-recipient/exact warning recipient shortcut. Every bounded pull follows real `messages::stage_recipient` and `messages::insert_publication` for an unrelated native-authored Lazy ordinary message to a third seat. Checks published manifest, Lazy recipient and no receipts, and actual fence increase. Bounded256 calls must find Open and preserve its exact positive witness across another publication. The sealed preparation and joined sender/recipient are fixture SQL; actual publication, manifest, sequence and lazy bookkeeping are production functions, not a manual fence increment. This private helper test does not itself invoke V2Pull; actual composed-handler Attention evidence remains D-owned.
+- `presentation_relevance_canonical_receipt_sweep_closes_before_clear_publication`: real `schema::record_overdue_if_pending` creates the warning and condition. Canonical human waiver cutoff plus `clear_waived_receipt_conditions_for_seat` creates the sweep/work job. No worker is run. Verifies condition physical clear NULL, covered exact ordinal, physically pending receipt; positive relevance must stop immediately and quiescent proof converge to Absent without publishing clear. Real V2 handler control/Attention consequence remains separate D evidence.
+
+Delta artifact `task-15-relevance-red-fixtures.diff` SHA256 `c1e6194d747f6bcd46f60ee2e56c48c943da31a06d4422a96bf324695e700090`.
+Final attention SHA256 `7e31cf4e164a90ac42d0777e67b56a686c8a6783befe08535f9bba6c20324cc5`.
+Unchanged helper SHA256 `4ed238221c1abaaa788fd64044252470610383f1e09852a3da1633b34772b42a`.
+Unchanged migration41 SHA256 `59395af89cc100ece4bd5d700d25f9b3e62cdf907a886a632fe3eeb300fcc4af`.
+
+Expected new production model-visible strings:0 bytes. Commit trailer names only the changed attention test path. Corrective production edits remain held until D supplies actual owned failures at the intended assertions, then final corrected source/schema review and a new application ACK remain mandatory.

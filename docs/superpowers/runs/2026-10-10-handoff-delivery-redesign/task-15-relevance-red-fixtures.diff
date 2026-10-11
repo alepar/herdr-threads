@@ -1,0 +1,197 @@
+diff --git a/tests/store/attention.rs b/tests/store/attention.rs
+index 8e6a3c1c..d3868020 100644
+--- a/tests/store/attention.rs
++++ b/tests/store/attention.rs
+@@ -2344,3 +2344,192 @@ fn presentation_relevance_walks_retained_membership_and_revalidates_exact_witnes
+         "quiescent full proof must converge after witness loss"
+     );
+ }
++
++// Kills global negative-fence stability being required for a positive retained
++// direct warning. The ordinary Lazy writes use the real stage/publication
++// producers, rather than incrementing the relevance fence by hand.
++fn relevance_publish_unrelated_lazy(db: &mut Connection, n: u32) {
++    use crate::store::messages::{PublicationAuthor, insert_publication, stage_recipient};
++    let tx = db.transaction().unwrap();
++    let preparation = format!("prep-relevance-churn-{n}");
++    let operation = format!("relevance-churn-{n}");
++    tx.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES (?1,'i','seat:o',?2,zeroblob(32),'relevance-unrelated',0,0,0,0,0,0,0,'building','lazy')",params![preparation,operation]).unwrap();
++    let (mut recipients, mut warnings) = (0, 0);
++    stage_recipient(
++        &tx,
++        &preparation,
++        "i",
++        &ThreadId::new("relevance-unrelated"),
++        "relevance-third",
++        100,
++        &mut recipients,
++        &mut warnings,
++    )
++    .unwrap();
++    assert_eq!((recipients, warnings), (0, 0));
++    tx.execute(
++        "UPDATE send_preparations SET status='sealed' WHERE id=?1",
++        [&preparation],
++    )
++    .unwrap();
++    let publication = insert_publication(
++        &tx,
++        i64::from(n) + 100,
++        "seat:o",
++        &operation,
++        &[0; 32],
++        &ThreadId::new("relevance-unrelated"),
++        "unrelated lazy publication",
++        PublicationAuthor::Native {
++            seat: &SeatId::new("o"),
++            observation: "cooperative_top_level",
++            relays_user: false,
++            user_intent: None,
++        },
++    )
++    .unwrap();
++    let row: (String, String, i64) = tx.query_row("SELECT m.delivery_mode,r.seat_id,(SELECT count(*) FROM receipts WHERE message_id=m.id) FROM messages m JOIN lazy_recipients r ON r.message_id=m.id JOIN send_manifests sm ON sm.message_id=m.id WHERE m.id=?1",[publication.message.as_str()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
++    assert_eq!(row, ("lazy".into(), "relevance-third".into(), 0));
++    tx.commit().unwrap();
++}
++
++#[test]
++fn presentation_relevance_direct_legacy_survives_canonical_lazy_churn() {
++    use crate::store::presentation_relevance::Relevance;
++    let mut db = relevance_db();
++    db.execute_batch("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('relevance-third','i','resolved','native','pane-third',1,1,0);
++        INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('relevance-unrelated','i','unrelated','unrelated',0,0);
++        INSERT INTO memberships(thread_id,seat_id,state) VALUES ('relevance-unrelated','o','joined'),('relevance-unrelated','relevance-third','joined');
++        INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('relevance-unrelated','o',1,1),('relevance-unrelated','relevance-third',1,1);
++        INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,created_decision_seq,deadline_at,frozen_duration_ms) VALUES ('relevance-churn-invite','relevance-thread','o',1,'pending',0,2,100,100);
++        INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_at,decision_seq,event_offset,source_invitation_id) VALUES ('relevance-churn-warning','i','relevance-thread',1,'warn','{}',0,20,1,'relevance-churn-invite');
++        INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id) VALUES ('relevance-churn-warning',20,'relevance-thread',1000000,'o','invitation','relevance-churn-invite');
++        WITH RECURSIVE n(x) AS(SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<301)
++        INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq,left_seq) SELECT 'relevance-thread','s',x,CASE WHEN x=301 THEN 1 ELSE 50 END,CASE WHEN x=301 THEN 30 ELSE 60 END FROM n;").unwrap();
++    let shape: (i64, i64, i64) = db.query_row("SELECT (SELECT count(*) FROM warning_conditions),(SELECT count(*) FROM invitations WHERE seat_id='s'),(SELECT count(*) FROM warning_recipients WHERE warning_id='relevance-churn-warning' AND seat_id='s')",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
++    assert_eq!(shape, (0, 0, 0), "retained pre-ledger membership authority");
++    let mut opened = false;
++    for n in 0..256 {
++        let before: i64 = db
++            .query_row(
++                "SELECT version FROM presentation_warning_fence WHERE singleton=1",
++                [],
++                |r| r.get(0),
++            )
++            .unwrap();
++        relevance_publish_unrelated_lazy(&mut db, n);
++        let after: i64 = db
++            .query_row(
++                "SELECT version FROM presentation_warning_fence WHERE singleton=1",
++                [],
++                |r| r.get(0),
++            )
++            .unwrap();
++        assert!(
++            after > before,
++            "real unrelated publication must mutate the fence"
++        );
++        let proof = relevance_pull(&db);
++        assert_ne!(
++            proof.relevance,
++            Relevance::Absent,
++            "the invitation and historical recipient remain actionable"
++        );
++        if proof.relevance == Relevance::Open {
++            opened = true;
++            break;
++        }
++    }
++    assert!(
++        opened,
++        "canonical unrelated Lazy publications must not prevent finite retained direct membership discovery"
++    );
++    relevance_publish_unrelated_lazy(&mut db, 256);
++    let witnessed = relevance_pull(&db);
++    assert_eq!(
++        witnessed.relevance,
++        Relevance::Open,
++        "unrelated Lazy publication must preserve exact positive witness"
++    );
++    assert_eq!(
++        witnessed.work.sources + witnessed.work.fallback + witnessed.work.highwater_seeks,
++        0,
++        "legacy invitation witness needs no condition coverage or discovery"
++    );
++}
++
++// Kills a physically open condition being treated as actionable after its
++// canonical close sweep but before the budgeted clear worker publishes.
++#[test]
++fn presentation_relevance_canonical_receipt_sweep_closes_before_clear_publication() {
++    use crate::protocol::{authority::ObligationRef, time::UtcMillis};
++    use crate::store::presentation_relevance::Relevance;
++    let mut db = relevance_db();
++    db.execute_batch("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('relevance-close-message','i','relevance-thread',1,'ordinary','body',0,2);
++        INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES ('relevance-close-message','relevance-thread','s','pending',100,0,100);
++        UPDATE threads SET next_sequence=2 WHERE id='relevance-thread';").unwrap();
++    let warning = {
++        let tx = db.transaction().unwrap();
++        let overdue = schema::record_overdue_if_pending(
++            &tx,
++            &ObligationRef::Receipt {
++                message: MessageId::new("relevance-close-message"),
++                seat: SeatId::new("s"),
++            },
++            &crate::ports::TimeBasis::Decision,
++            UtcMillis(101),
++        )
++        .unwrap();
++        assert!(overdue.inserted);
++        let warning = overdue.warning.unwrap();
++        tx.commit().unwrap();
++        warning
++    };
++    assert_eq!(
++        relevance_pull(&db).relevance,
++        Relevance::Open,
++        "the real producer's condition is initially actionable"
++    );
++    {
++        let tx = db.transaction().unwrap();
++        let cutoff = schema::next_decision_seq(&tx, "i").unwrap();
++        tx.execute("INSERT INTO human_receipt_waivers(seat_id,through_decision_seq,human_generation,decided_at) VALUES ('s',?1,1,102)",[cutoff as i64]).unwrap();
++        assert_eq!(
++            schema::clear_waived_receipt_conditions_for_seat(&tx, "s", UtcMillis(102)).unwrap(),
++            1
++        );
++        tx.commit().unwrap();
++    }
++    let state: (i64, i64, String) = db.query_row("SELECT c.clear_warning_id IS NULL,(SELECT count(*) FROM warning_close_sweeps s WHERE s.condition_kind='receipt' AND s.affected_seat_id=c.affected_seat_id AND s.episode IS NULL AND s.after_ordinal<c.ordinal AND c.ordinal<=s.through_ordinal),(SELECT state FROM receipts WHERE message_id='relevance-close-message' AND seat_id='s') FROM warning_conditions c WHERE c.open_warning_id=?1",[warning.as_str()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
++    assert_eq!(
++        state,
++        (1, 1, "pending".into()),
++        "canonical sweep exists while clear worker and receipt reconciliation remain undrained"
++    );
++    let mut absent = false;
++    for _ in 0..64 {
++        let proof = relevance_pull(&db);
++        assert_ne!(
++            proof.relevance,
++            Relevance::Open,
++            "canonical logical closure must invalidate positive relevance before physical clear publication"
++        );
++        if proof.relevance == Relevance::Absent {
++            absent = true;
++            break;
++        }
++    }
++    assert!(
++        absent,
++        "quiescent covered union must converge to exact absence"
++    );
++    assert!(
++        db.query_row(
++            "SELECT clear_warning_id IS NULL FROM warning_conditions WHERE open_warning_id=?1",
++            [warning.as_str()],
++            |r| r.get::<_, bool>(0)
++        )
++        .unwrap(),
++        "the helper must not materialize the clear itself"
++    );
++}

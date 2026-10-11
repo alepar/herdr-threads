@@ -1,0 +1,16 @@
+{
+  "purpose": "KNOWN-Important private diagnostic baseline ONLY; NOT CLEAN; cannot merge/promote/advertise/readiness",
+  "parent_authority_commit": "1b467086",
+  "base": "308564b887e1d0f4af866c69a5ed40275c860b69",
+  "tip": "25ac0d69fa214c903bf0ef51c8b66950748fae60",
+  "immediate_ack_source": "4cb175863972ee3b9d93482dedfc99d7ccf7adebdc88f7718272bd285f493759",
+  "pre_dirtydiff": "8669d6db8c6713556a255bdf6af2a4ec1f6ca3c00177d4ee47388d71ee6ee981",
+  "patch_sha256": "799c4f456820dbf8d188e35e7ffb775f37e8caeaeae74141f4bd52d4f1cf270a",
+  "paths": {
+    "src/store/presentation_relevance.rs": "4ed238221c1abaaa788fd64044252470610383f1e09852a3da1633b34772b42a",
+    "migrations/0041_presentation_relevance.sql": "59395af89cc100ece4bd5d700d25f9b3e62cdf907a886a632fe3eeb300fcc4af",
+    "tests/store/attention.rs": "13b189cfc27769b9ebdc3c5dd69a323e7f8ca8f2341727321dad77e096d339b0"
+  },
+  "all_final_bytes_equal_immutable_baseline": true,
+  "exact_three_paths_only": true
+}
