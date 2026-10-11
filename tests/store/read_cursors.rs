@@ -353,3 +353,43 @@ fn advance_through_displayed_stops_at_the_first_gap() {
     assert_eq!(advance_through_displayed(&db, &a, &t(), &[1]).unwrap(), 6);
     assert_eq!(advance_through_displayed(&db, &a, &t(), &[7]).unwrap(), 7);
 }
+
+/// ht-54r F1: a receipt this binding display-ACKed (its observation carries `action_provenance`:
+/// a text-inbox display, a mod or hook-pull display settlement) is evidence the binding showed
+/// the message whole, so the walk passes it. Another binding's display ACK, or this binding's
+/// explicit (non-display) `ack`, is not.
+#[test]
+fn advance_through_displayed_counts_only_this_bindings_display_acks() {
+    let db = db();
+    let a = open(&db, "sess-A");
+    let b = open(&db, "sess-B");
+    db.execute("UPDATE binding_cursors SET seq=0", []).unwrap();
+    for (id, seq) in [("m1", 1), ("m2", 2), ("m3", 3), ("m4", 4)] {
+        deliver(&db, id, seq);
+    }
+    let acked = |id: &str, by: &BindingId, observation: &str| {
+        db.execute(
+            "INSERT INTO receipt_state(message_id,seat_id,state,ack_actor_seat_id,ack_generation,ack_observation,acked_at,ack_binding_id) VALUES (?1,'s','acked','s',4,?2,9,?3)",
+            [id, observation, by.as_str()],
+        )
+        .unwrap();
+    };
+    acked(
+        "m2",
+        &a,
+        r#"{"provenance":"cooperative_top_level","action_provenance":"cooperative_mod_delivery"}"#,
+    );
+    acked(
+        "m3",
+        &b,
+        r#"{"provenance":"cooperative_top_level","action_provenance":"cooperative_inbox_display"}"#,
+    );
+    acked("m4", &a, r#"{"provenance":"cooperative_top_level"}"#);
+    // 1 shown now, 2 displayed earlier by a's own mod settlement; b's display of 3 is not a's.
+    assert_eq!(advance_through_displayed(&db, &a, &t(), &[1]).unwrap(), 2);
+    // 3 shown now; a's explicit ACK of 4 shows nothing.
+    assert_eq!(advance_through_displayed(&db, &a, &t(), &[3]).unwrap(), 3);
+    // b: its own display ACK of 3 counts, a's ACKs of 2 and 4 do not.
+    assert_eq!(advance_through_displayed(&db, &b, &t(), &[1]).unwrap(), 1);
+    assert_eq!(advance_through_displayed(&db, &b, &t(), &[2]).unwrap(), 3);
+}

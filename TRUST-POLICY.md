@@ -726,10 +726,13 @@ or followed the body's own continuation, the CLI sends that one id in the callin
 settlement is refused, no longer holds the binding's cursor once it is read whole. A partial read (a chunk
 short of the end, or a read from an explicit offset past 0) moves nothing, and neither the read nor an
 explicit `ack` settles or moves anything else: an `ack` carries no display, and a message the binding read
-whole was already passed by that read. Accepted limits: a continuation chain begun at an explicit offset
-counts as whole (the continuation does not record where the read began); and a whole display of a later
-message made while the cursor was held behind the truncated one is not remembered, so that message stays in
-the binding's unread stream (already settled, so it creates no wake work) until an inbox page shows it again.
+whole was already passed by that read. The walk also counts as displayed a message whose seat receipt this
+same binding display-ACKed (`ack_binding_id` is the walking binding and the ACK observation carries
+`action_provenance`, which only display settlements write: text-inbox display, mod or hook-pull delivery),
+so a later message shown whole while the cursor was held behind a truncated one is passed together with it.
+Another binding's ACK and an explicit (non-display) `ack` are never such evidence. Accepted limit: a
+continuation chain begun at an explicit offset counts as whole (the continuation does not record where the
+read began).
 
 **First-contact stats and fast-forward.** Two bounded, informational summaries ride on the response that
 creates or resumes a binding; neither is authority and neither writes a receipt. The lifecycle check-in that

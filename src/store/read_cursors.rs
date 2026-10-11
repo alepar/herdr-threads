@@ -233,7 +233,11 @@ pub fn binding_unread_stats(
 
 /// Advance `binding`'s cursor in `thread` over the longest prefix of messages past the cursor
 /// whose sequences are all in `displayed`. Messages the seat cannot receive in that thread (its
-/// own sends, kinds the inbox never shows) count as displayed. Monotonic. Returns the cursor.
+/// own sends, kinds the inbox never shows) count as displayed, and so does a message whose seat
+/// receipt this same binding display-ACKed: `ack_binding_id` is the binding and the ACK
+/// observation carries `action_provenance`, which only display settlements write (text-inbox
+/// display, mod or hook-pull delivery). Another binding's ACK and an explicit `ack` do not count
+/// (ht-54r F1). Monotonic. Returns the cursor.
 // ht-54r.22 adds lazy-mode messages to the receivable set.
 pub fn advance_through_displayed(
     tx: &Connection,
@@ -248,22 +252,37 @@ pub fn advance_through_displayed(
     let mut stmt = tx
         .prepare(&format!(
             "SELECT x.sequence, EXISTS(SELECT 1 FROM {RECEIVABLE_FROM} WHERE {RECEIVABLE_WHERE} AND m.id=x.id) \
-             OR EXISTS(SELECT 1 FROM lazy_recipients lr WHERE lr.message_id=x.id AND lr.seat_id=?1) \
+             OR EXISTS(SELECT 1 FROM lazy_recipients lr WHERE lr.message_id=x.id AND lr.seat_id=?1), \
+             EXISTS(SELECT 1 FROM receipt_state rs WHERE rs.message_id=x.id AND rs.seat_id=?1 AND rs.state='acked' \
+               AND rs.ack_binding_id=?4 AND json_extract(rs.ack_observation,'$.action_provenance') IS NOT NULL) \
+             OR EXISTS(SELECT 1 FROM receipts rc WHERE rc.message_id=x.id AND rc.seat_id=?1 AND rc.state='acked' \
+               AND rc.ack_binding_id=?4 AND json_extract(rc.ack_observation,'$.action_provenance') IS NOT NULL) \
              FROM messages x WHERE x.thread_id=?2 AND x.sequence>?3 ORDER BY x.sequence"
         ))
         .map_err(store_error)?;
     let rows = stmt
         .query_map(
-            params![seat.as_str(), thread.as_str(), to_i64(current)?],
-            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, bool>(1)?)),
+            params![
+                seat.as_str(),
+                thread.as_str(),
+                to_i64(current)?,
+                binding.as_str()
+            ],
+            |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, bool>(1)?,
+                    r.get::<_, bool>(2)?,
+                ))
+            },
         )
         .map_err(store_error)?;
     let mut reached = current;
     for row in rows {
-        let (sequence, receivable) = row.map_err(store_error)?;
+        let (sequence, receivable, display_acked) = row.map_err(store_error)?;
         let sequence = u64::try_from(sequence)
             .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative message sequence"))?;
-        if receivable && !displayed.contains(&sequence) {
+        if receivable && !display_acked && !displayed.contains(&sequence) {
             break;
         }
         reached = sequence;

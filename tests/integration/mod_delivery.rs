@@ -1624,6 +1624,38 @@ fn full_body_read_of_truncated_message_unblocks_binding_cursor() {
     );
 }
 
+/// ht-54r F1: the mod displayed a later message whole (and settled it) while the cursor was held
+/// behind the truncated one. That display ACK is this binding's own evidence, so the full
+/// `body` read of the truncated message moves the cursor past both.
+#[test]
+fn full_body_read_passes_later_message_the_binding_already_displayed() {
+    let rig = Rig::new();
+    let mut watch = rig.raw_watch(SESSION_B);
+    watch.wait_connected();
+    let long = rig.send_ordinary(&"t".repeat(9000));
+    let line = watch.wait_item(&long);
+    let refused = rig.ack_result(SESSION_B, "context", &long);
+    assert_eq!(refused["result"], "refused_terminal", "{refused}");
+    let later = rig.send_ordinary("displayed while held");
+    watch.wait_item(&later);
+    let settled = rig.ack_result(SESSION_B, "context", &later);
+    assert_eq!(settled["result"], "settled", "{settled}");
+    let (binding, _, _) = open_binding_of(&rig, SESSION_B).expect("SB binding");
+    assert!(
+        cursor_of(&rig, &binding).is_none_or(|seq| seq < sequence_of(&rig, &long)),
+        "held behind the truncated message"
+    );
+    let steps = rig.marker_steps(line["body"].as_str().unwrap());
+    let out = rig.run_marker_step(&steps[0]);
+    assert_eq!(out.code, 0, "{:?}: {}{}", steps[0], out.stdout, out.stderr);
+    let read_to = cursor_of(&rig, &binding);
+    assert!(
+        read_to.is_some_and(|seq| seq >= sequence_of(&rig, &later)),
+        "the full read passes the truncated message and the one already displayed: {read_to:?}"
+    );
+    assert_eq!(rig.receipt_state(&long), "pending", "body settles nothing");
+}
+
 /// ht-54r F1: only a full read advances. A first chunk, or a read that starts at an explicit
 /// offset and reaches the end, leaves the cursor where it was; following the body's own
 /// continuation to the end is a full read.
