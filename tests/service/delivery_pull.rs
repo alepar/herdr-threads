@@ -6155,3 +6155,189 @@ fn presentation_quiet_channel_observes_new_ordinary_ack_message() {
     );
     registry.unregister(channel, f.clock.utc_now());
 }
+
+// These fixtures catch unbounded/private ID reads and unchecked constructors in
+// each independently reachable cleanup, dirty-sizing and revisit branch.
+fn private_invitation_id_fixture(branch: &str) -> (Fixture, CallerClaim, i64) {
+    use crate::protocol::delivery::DeliveryPullReplyV2;
+    let f = fixture(0);
+    let recipient = pull_seat(&f);
+    let inviter = check_in(
+        &f,
+        claim("x", "px", fourth(), "private-id-inviter", 0),
+        "private-id-ci",
+    );
+    canonical_lazy_invitation_backlog(&f, &recipient, &inviter, 1, "private-id");
+    let DeliveryPullReplyV2::Page(page) = presentation_test_pull(&f, &recipient) else {
+        panic!("admitted Hook page")
+    };
+    assert_eq!(presentation_invitations(&page).len(), 1);
+    presentation_test_confirm(&f, &recipient, &page);
+    let ordinal = f.db.query_row(
+        "SELECT revisit_ordinal FROM invitation_presentation_items WHERE seat_id='s' AND consumer='hook'",
+        [],
+        |r| r.get::<_, i64>(0),
+    ).unwrap();
+    let cleanup_after = if branch == "cleanup" { 0 } else { ordinal };
+    let dirty_after = if branch == "dirty" { 0 } else { ordinal };
+    let required_bytes = if branch == "revisit" { 1 } else { i64::MAX };
+    f.db.execute(
+        "UPDATE invitation_presentation_items SET required_render_bytes=?1 WHERE seat_id='s' AND consumer='hook'",
+        [required_bytes],
+    ).unwrap();
+    f.db.execute(
+        "UPDATE invitation_presentation_consumers SET initial_after=?1,initial_high=?1,context_after_seq=COALESCE((SELECT MAX(last_change_seq) FROM invitation_context_latest),0),context_high=COALESCE((SELECT MAX(last_change_seq) FROM invitation_context_latest),0),context_after_thread=?2,context_thread='',context_selected_seq=0,context_invitation_after=0,context_invitation_high=0,cleanup_after=?3,dirty_after=?4,dirty_high=?1,revisit_after_bytes=0,revisit_after_ordinal=0,revisit_high_bytes=?5,revisit_high_ordinal=?6 WHERE seat_id='s' AND consumer='hook'",
+        params![ordinal, "\u{10ffff}", cleanup_after, dirty_after, i64::from(branch == "revisit"), if branch == "revisit" { ordinal } else { 0 }],
+    ).unwrap();
+    assert!(f.db.query_row(
+        "SELECT outbox_token IS NULL FROM invitation_presentation_consumers WHERE seat_id='s' AND consumer='hook'",
+        [], |r| r.get::<_, bool>(0),
+    ).unwrap(), "confirmed allocation cannot bypass private reads through replay");
+    let selected = f.db.query_row(
+        "SELECT (SELECT COUNT(*) FROM invitation_presentation_items i WHERE i.seat_id=s.seat_id AND i.consumer=s.consumer AND i.revisit_ordinal>s.cleanup_after),(SELECT COUNT(*) FROM invitation_presentation_items i WHERE i.seat_id=s.seat_id AND i.consumer=s.consumer AND i.revisit_ordinal>s.dirty_after AND i.revisit_ordinal<=s.dirty_high),(SELECT COUNT(*) FROM invitation_presentation_items i WHERE i.seat_id=s.seat_id AND i.consumer=s.consumer AND i.generation=s.generation AND (i.required_render_bytes,i.revisit_ordinal)>(s.revisit_after_bytes,s.revisit_after_ordinal) AND (i.required_render_bytes,i.revisit_ordinal)<=(s.revisit_high_bytes,s.revisit_high_ordinal) AND i.required_render_bytes<=65536) FROM invitation_presentation_consumers s WHERE s.seat_id='s' AND s.consumer='hook'",
+        [], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)),
+    ).unwrap();
+    assert_eq!(selected, match branch {
+        "cleanup" => (1, 0, 0),
+        "dirty" => (0, 1, 0),
+        "revisit" => (0, 0, 1),
+        _ => panic!("unknown branch"),
+    }, "one private reader is independently reachable");
+    (f, recipient, ordinal)
+}
+
+// Preserve raw SQLite type and bytes, including malformed UTF-8. Snapshot every
+// table so private frontiers, canonical invitations, receipts and warnings all
+// participate in the no-effect assertion; row sorting also supports WITHOUT ROWID.
+fn private_invitation_id_snapshot(db: &Connection) -> Vec<(String, Vec<Vec<u8>>)> {
+    use rusqlite::types::ValueRef;
+    let mut tables = db.prepare(
+        "SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+    ).unwrap();
+    let names = tables.query_map([], |r| r.get::<_, String>(0)).unwrap()
+        .collect::<Result<Vec<_>, _>>().unwrap();
+    names.into_iter().map(|name| {
+        let mut query = db.prepare(&format!("SELECT * FROM \"{}\"", name.replace('"', "\"\""))).unwrap();
+        let columns = query.column_count();
+        let mut rows = query.query_map([], |row| {
+            let mut bytes = Vec::new();
+            for column in 0..columns {
+                let (tag, raw) = match row.get_ref(column)? {
+                    ValueRef::Null => (0, Vec::new()),
+                    ValueRef::Integer(v) => (1, v.to_le_bytes().to_vec()),
+                    ValueRef::Real(v) => (2, v.to_bits().to_le_bytes().to_vec()),
+                    ValueRef::Text(v) => (3, v.to_vec()),
+                    ValueRef::Blob(v) => (4, v.to_vec()),
+                };
+                bytes.push(tag);
+                bytes.extend_from_slice(&(raw.len() as u64).to_le_bytes());
+                bytes.extend_from_slice(&raw);
+            }
+            Ok(bytes)
+        }).unwrap().collect::<Result<Vec<_>, _>>().unwrap();
+        rows.sort();
+        (name, rows)
+    }).collect()
+}
+
+fn repair_private_invitation_id(f: &Fixture, value: rusqlite::types::Value, cast_text: bool) -> rusqlite::Result<usize> {
+    // Deliberately corrupt only the private ID through a short-lived repair
+    // connection. Never relax the service/writer connection's foreign keys.
+    let repair = Connection::open(f.directory.join("store.db")).unwrap();
+    repair.pragma_update(None, "foreign_keys", true).unwrap();
+    let before = repair.pragma_query_value(None, "foreign_keys", |r| r.get::<_, bool>(0)).unwrap();
+    repair.pragma_update(None, "foreign_keys", false).unwrap();
+    assert!(!repair.pragma_query_value(None, "foreign_keys", |r| r.get::<_, bool>(0)).unwrap());
+    let sql = if cast_text {
+        "UPDATE invitation_presentation_items SET invitation_id=CAST(?1 AS TEXT) WHERE seat_id='s' AND consumer='hook'"
+    } else {
+        "UPDATE invitation_presentation_items SET invitation_id=?1 WHERE seat_id='s' AND consumer='hook'"
+    };
+    let result = repair.execute(sql, [value]);
+    repair.pragma_update(None, "foreign_keys", before).unwrap();
+    assert!(repair.pragma_query_value(None, "foreign_keys", |r| r.get::<_, bool>(0)).unwrap());
+    assert!(f.db.pragma_query_value(None, "foreign_keys", |r| r.get::<_, bool>(0)).unwrap());
+    result
+}
+
+fn pull_private_invitation_id(f: &Fixture, recipient: &CallerClaim) -> Result<crate::ports::PresentationOutput, crate::protocol::results::ApiError> {
+    use crate::{
+        delivery::presentation::{FrozenPresentationRender, PresentationRenderProfile},
+        ports::PresentationInput,
+        protocol::delivery::{DeliveryPullV2, PresentationConsumer, PresentationRenderRequest},
+    };
+    let registry = crate::harness::registry::builtins();
+    let adapter = registry.by_id(registry.agent(recipient.harness.as_str()).unwrap()).unwrap();
+    let codec = adapter.presentation_codec(0).unwrap();
+    let frozen_render = f.store.presentation_render_selection(recipient, PresentationConsumer::Hook, &budget()).unwrap()
+        .map(|identity| FrozenPresentationRender { identity, codec: Some(codec) });
+    f.store.presentation_pull(PresentationInput {
+        frozen_render,
+        render_profile: PresentationRenderProfile::Hook {
+            confirmable_selector: 0, passive_selector: 0, confirmable: codec, passive: codec,
+        },
+        pull: DeliveryPullV2 {
+            claim: recipient.clone(), consumer: PresentationConsumer::Hook,
+            render: PresentationRenderRequest::Hook { confirmable_selector: 0, passive_selector: 0 },
+            presentation_lease: None, marker_prefix: vec![],
+        },
+        attention_version: 0, ordinary_version: 0, with_attention: false,
+        retry_messages: false, blocked_messages: vec![], known_messages: vec![], new_message_slots: 256,
+    }, &budget())
+}
+
+#[test]
+fn presentation_private_invitation_ids_refuse_corruption_in_each_reader_without_effects() {
+    use crate::protocol::results::{ApiError, ErrorCode};
+    use rusqlite::types::Value;
+    let mut failures = Vec::new();
+    for branch in ["cleanup", "dirty", "revisit"] {
+        for (kind, value) in [
+            ("empty", Value::Text(String::new())),
+            ("overlong", Value::Text("x".repeat(129))),
+            ("space", Value::Text("bad id".into())),
+            ("tab", Value::Text("bad\tid".into())),
+            ("control", Value::Text("bad\0id".into())),
+            ("non_ascii", Value::Text("λ".into())),
+            ("invalid_utf8", Value::Blob(vec![0x80])),
+        ] {
+            let (f, recipient, _) = private_invitation_id_fixture(branch);
+            assert_eq!(repair_private_invitation_id(&f, value, true).unwrap(), 1);
+            let before = private_invitation_id_snapshot(&f.db);
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                pull_private_invitation_id(&f, &recipient)
+            }));
+            if !matches!(result, Ok(Err(ApiError { code: ErrorCode::StoreCorrupt, .. }))) {
+                failures.push(format!("{branch}/{kind}: expected StoreCorrupt without panic, got {result:?}"));
+            }
+            if private_invitation_id_snapshot(&f.db) != before {
+                failures.push(format!("{branch}/{kind}: private or canonical rows changed after refusal"));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn presentation_private_invitation_ids_allow_exact_128_byte_ids_in_each_reader() {
+    for branch in ["cleanup", "dirty", "revisit"] {
+        let (f, recipient, _) = private_invitation_id_fixture(branch);
+        assert_eq!(repair_private_invitation_id(&f, rusqlite::types::Value::Text("x".repeat(128)), true).unwrap(), 1);
+        let output = pull_private_invitation_id(&f, &recipient).unwrap();
+        assert_eq!(output.work.initial, 0);
+        assert_eq!(output.work.context, 0);
+        assert_eq!(output.work.revisit, 1, "{branch}: valid boundary ID reaches its private reader");
+        assert_eq!(f.db.query_row("SELECT COUNT(*) FROM invitations WHERE seat_id='s' AND state='pending'", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+        assert_eq!(f.db.query_row("SELECT COUNT(*) FROM receipts", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+    }
+}
+
+#[test]
+fn presentation_private_invitation_id_wrong_types_refuse_at_strict_storage_boundary() {
+    for value in [rusqlite::types::Value::Blob(vec![0x80]), rusqlite::types::Value::Null] {
+        let (f, _, _) = private_invitation_id_fixture("cleanup");
+        let before = private_invitation_id_snapshot(&f.db);
+        assert!(repair_private_invitation_id(&f, value, false).is_err(), "STRICT TEXT NOT NULL blocks constructing wrong-type corruption");
+        assert_eq!(private_invitation_id_snapshot(&f.db), before);
+    }
+}
