@@ -23,7 +23,7 @@ parked:
 Design hand-off: ht-e99 ready for caller-owned code phase; two design-roast rounds, one design-only repair ht-e99.6 closed at ce11790f. No implementation code delivered.
 
 codeBuckets:
-  completed: ht-e99.1.1, ht-e99.1.2, ht-e99.2, ht-e99.3.1, ht-e99.3.2, ht-e99.3.3, ht-e99.4, ht-e99.5, ht-e99.6, ht-e99.7
+  completed: ht-e99.1.1, ht-e99.1.2, ht-e99.2, ht-e99.3.1, ht-e99.3.2, ht-e99.3.3, ht-e99.4, ht-e99.5, ht-e99.6, ht-e99.7, ht-e99.8
   escalated:
   pendingRetry:
   parked:
@@ -45,3 +45,5 @@ scope-filter: 0 in-scope · 1 punch-listed
 PR roast disposition: clean (1 nits), 12/12 scouts, 5 raw → 4 deduped → 3 panels/1 spot, 10/10 judge seats, no escalation or caps. Fresh scope filter routes the Nit to the final out-of-scope punch list; no fix bead or second round required. Full-suite verification is next; phase remains roast-code until its gate completes.
 
 Post-roast verification failure: exact d137e530 full nextest ran 4621 tests: 4619 passed, 1 failed (channel_activation current schema 30 versus stale28), 1 timed out (release failpoint proof at300s); wall325.384s exceeds300s. Scoped leak check passed. Required fixture repair and release-preparation investigation reopen the code phase; prior roast remains preserved, final readiness withheld. Logs: `.superpowers/sdd/ht-e99-plan/root-verification/full-d137e530e6a2-8c0ec368-0d76-40cb-a030-af4f4b0ed6d7.{log,json,leaks.log}`.
+
+Required verification repair merged: ht-e99.8 at d06a484f7476a34d13e7375eba619228f0f3f7d7, reviewed source d9f5282e, identical source/merge tree84f4ef13. Two current-schema fixture lines corrected28→30; historical0/21/22 preserved. Genuine unchanged targeted RED and final GREEN, related integration2/2 and package1/1 passed; independent task review CLEAN and serial gates/leak passed. Final whole-epic-review-3 pending; first full suite remains a failed historical run, five-minute full-suite budget not yet verified.
