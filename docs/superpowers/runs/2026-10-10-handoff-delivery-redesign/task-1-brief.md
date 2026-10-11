@@ -144,3 +144,4 @@ Read TRUST-POLICY.md before any protected source changes. Only implement declare
 ### Authorized scope amendments during execution
 
 Additional admitted files: `migrations/0029_receipt_send_time.sql`. See progress.md and execution-seams.md for the actual regression evidence, schema composition and ownership. Admission metadata lists permissible touch surfaces; unchanged listed files do not require cosmetic edits when their behavior is covered through the canonical implementation.
+Additional migration verification surface: tests/store/schema.rs. Update additive marker table counts/snapshots truthfully while retaining every old object/rootpage preservation assertion; any incomplete old fixture must be repaired with canonical prerequisite rows after proving exact FK incompleteness, never by weakening final FK validation.

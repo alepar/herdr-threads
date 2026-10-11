@@ -27,3 +27,7 @@ Task4 envelope seam: preserve existing bootstrap derived origin = 2*identity+409
 ## Task11 review follow-through
 
 Task2 fresh review approved with Minor suggestion: assess public run_cooperative retry coverage beyond helper tests at tests/cli/cooperative.rs:5190. The mandatory suite already covers frozen policy preservation; add public-entrypoint coverage only if it closes a real untested integration contract, rather than mirroring implementation. No blocked finding or required fix was issued.
+
+Task6→Task10 activation guard: until handoff policy is frozen, linked topology Invite must have confirmation None. Task6 installs narrow attachment.rs guard while ordinary lifecycle activates; Task10 replaces it with exact comparison against frozen invitation policy. Do not merely remove it. Task6 metadata producer may require output_compact mechanical exhaustive-match plumbing; Task8 owns final user presentation. Lazy inherited physical timing values are ineffective and omitted from deadline projections.
+
+Task6→Task7 cursor: scan_invitation_due_batch retains high_water_ordinal/after_ordinal with after_deadline informational compatibility only, indexed ordinal finite snapshot, <=100 inspected pending eligible rows (including future timing rows). Return next only for remaining finite snapshot; Task7 schedules immediate continuation independently from blocked native wake.

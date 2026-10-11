@@ -19,7 +19,8 @@
       "tests/protocol/capabilities.rs",
       "tests/store/service_send.rs",
       "TRUST-POLICY.md",
-      "migrations/0029_receipt_send_time.sql"
+      "migrations/0029_receipt_send_time.sql",
+      "tests/store/schema.rs"
     ]
   },
   {
@@ -130,7 +131,15 @@
       "tests/store/wake.rs",
       "tests/store/queries.rs",
       "tests/daemon/control.rs",
-      "TRUST-POLICY.md"
+      "TRUST-POLICY.md",
+      "src/protocol/results.rs",
+      "src/store/attention.rs",
+      "src/store/effective.rs",
+      "src/store/topology_handoff/attachment.rs",
+      "src/protocol/output_compact.rs",
+      "tests/store/lazy_inbox.rs",
+      "tests/store/topology_attachment_guard.rs",
+      "tests/protocol/capabilities.rs"
     ]
   },
   {
