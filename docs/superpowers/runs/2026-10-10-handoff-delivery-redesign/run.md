@@ -26,7 +26,7 @@ parked:
 - 2026-10-10-handoff-delivery-redesign-roast-design-2.md · degraded-verdict · "clean (0 nits) [low coverage] — proceeded, not re-roasted under caller-owned fully autonomous exception; sole cause literal zero-raw rule despite all nine fresh scouts completed and both prior Blockings resolved; no dead stages, caps, escalations or unverified findings"
 
 codeBuckets:
-  completed: ht-0lo.6, ht-0lo.7
+  completed: ht-0lo.6, ht-0lo.7, ht-0lo.2.1
   escalated:
   pendingRetry:
   parked:

@@ -140,3 +140,7 @@ Read TRUST-POLICY.md before any protected source changes. Only implement declare
 3. Advertise messages.send_time_receipts_v1 only when handlers implement the new semantics. Require it before every new ACK-required ordinary send across actual CLI, retained pending retry, and service-capable client entry paths; completed historical replay remains unchanged. Add new/old client-daemon matrix tests and explicit unsupported/refused discovery no-effects assertions.
 4. Run focused projection/materialization/send/capability tests and per-change format/clippy. Expose the capability string and canonical projection semantics to .1.3, .1.2 and .3.2.
 
+
+### Authorized scope amendments during execution
+
+Additional admitted files: `migrations/0029_receipt_send_time.sql`. See progress.md and execution-seams.md for the actual regression evidence, schema composition and ownership. Admission metadata lists permissible touch surfaces; unchanged listed files do not require cosmetic edits when their behavior is covered through the canonical implementation.

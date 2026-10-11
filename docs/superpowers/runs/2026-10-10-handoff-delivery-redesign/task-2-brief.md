@@ -132,3 +132,7 @@ Read TRUST-POLICY.md before any protected source changes. Only implement declare
 3. Test supported and unsupported capability negotiation before new representation effects; schema restart and original inviter/timing persistence. Document exact new wire type/field/capability for .2.2, .2.3 and .3.2.
 4. Run focused protocol/schema compatibility tests, cargo fmt and required clippy. Do not implement the lifecycle or modern CLI default assigned to later leaves.
 
+
+### Authorized scope amendments during execution
+
+Additional admitted files: `src/store/control.rs`, `migrations/0029_invitation_confirmation.sql`. See progress.md and execution-seams.md for the actual regression evidence, schema composition and ownership. Admission metadata lists permissible touch surfaces; unchanged listed files do not require cosmetic edits when their behavior is covered through the canonical implementation.

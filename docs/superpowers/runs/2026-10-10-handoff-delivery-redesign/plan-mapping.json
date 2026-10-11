@@ -18,7 +18,8 @@
       "tests/cli/lazy_send.rs",
       "tests/protocol/capabilities.rs",
       "tests/store/service_send.rs",
-      "TRUST-POLICY.md"
+      "TRUST-POLICY.md",
+      "migrations/0029_receipt_send_time.sql"
     ]
   },
   {
@@ -49,7 +50,9 @@
       "tests/cli/cooperative.rs",
       "tests/cli/handoff_delivery.rs",
       "tests/service/cooperative.rs",
-      "tests/service/crash_matrix.rs"
+      "tests/service/crash_matrix.rs",
+      "src/store/control.rs",
+      "migrations/0029_invitation_confirmation.sql"
     ]
   },
   {
@@ -89,7 +92,11 @@
       "tests/store/topology_handoff.rs",
       "tests/store/topology_handoff_schema.rs",
       "tests/handoff_topology_cli.rs",
-      "TRUST-POLICY.md"
+      "TRUST-POLICY.md",
+      "src/store/schema.rs",
+      "migrations/0029_handoff_body_bounds.sql",
+      "src/archival_legacy.rs",
+      "tests/store/archival_legacy.rs"
     ]
   },
   {

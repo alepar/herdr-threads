@@ -134,3 +134,9 @@ Read TRUST-POLICY.md before any protected source changes. Only implement declare
 3. Inventory body duplication and nested escaping across public wire/canonical identity/recovery/completion/local progress/linked/terminal/origin snapshots. Exercise actual serializer worst-case six-byte escape 64KiB fixtures through all three paths; preflight encoded limits before effects. Raise only approved body-bearing bounds, with narrowly justified exceptions supported by fixtures; preserve historical bytes/digests.
 4. Update TRUST-POLICY encoded-limit clauses in this same change. Run focused parser/journal/topology retained-retry tests and format/clippy. Export frozen payload shapes to .3.2.
 
+
+### Authorized scope amendments during execution
+
+Additional admitted files: `src/store/schema.rs`, `migrations/0029_handoff_body_bounds.sql`, `src/archival_legacy.rs`. See progress.md and execution-seams.md for the actual regression evidence, schema composition and ownership. Admission metadata lists permissible touch surfaces; unchanged listed files do not require cosmetic edits when their behavior is covered through the canonical implementation.
+Task4 also owns focused archival loader/coverage tests: supported max-body composition RED exposed historical hardcoded body-bearing loader caps. Reuse bounded handoff envelope limits; preserve generic non-handoff/header caps and historical bytes/digests. Existing generic journal acceptance remains unchanged; new source and owned envelope loaders stay bounded.
+Concrete additional archival test surface: `tests/store/archival_legacy.rs`, real Source::scan loader/coverage path for max escaped handoff records.
