@@ -601,9 +601,24 @@ fn execute_locked<C: LocalClient + ?Sized>(
     progress.report = Some(report.clone());
     progress.report_digest = Some(retained_digest(&report)?);
     handoff::save_progress(journal, reference, &progress)?;
+    // Exact retained terminal capacity is known before canonical completion.
+    // Preserve the original bytes rather than rebuilding its historical JSON.
+    let preview = Terminal {
+        version: 1,
+        original: String::from_utf8(journal.snapshot_delivery_origin(reference)?)
+            .map_err(io::Error::other)?,
+        completed: HandoffResult {
+            compound: identity.compound.clone(),
+            thread: staged.thread.clone(),
+            state: HandoffState::Completed,
+        },
+        progress_digest: retained_digest(&progress)?,
+        progress,
+    };
+    terminal_bytes(&preview)?;
     observe(observed, "complete", &staged);
     let completed = handoff::keyed_fence(client, clock, &identity, keys.complete.clone(), true)?;
-    retained_report(reference, &plan, &completed, &progress)?;
+    retained_report(reference, &plan, &completed, &preview.progress)?;
     observe(observed, "terminal", &staged);
     if let Some(observed) = observed.as_mut() {
         observed.last_observed = Some(completed.clone());
@@ -621,6 +636,9 @@ struct Terminal {
     progress: Progress,
     progress_digest: String,
 }
+// A maximum body consumes 393216 JSON bytes in the original and 458752
+// when that exact JSON is nested as a string. Keep bounded report headroom.
+pub(crate) const MAX_DELIVERY_TERMINAL_BYTES: usize = 1024 * 1024;
 fn terminal_path(journal: &Journal, reference: &IntentRef) -> std::path::PathBuf {
     journal.root().join(format!(
         "delivery-{:020}-{}.terminal",
@@ -660,14 +678,15 @@ fn read_terminal(journal: &Journal, reference: &IntentRef) -> Result<Option<Term
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.into()),
     };
-    if !file.metadata()?.is_file() || file.metadata()?.len() > 131072 {
+    if !file.metadata()?.is_file() || file.metadata()?.len() > MAX_DELIVERY_TERMINAL_BYTES as u64 {
         return Err(super::invalid_request(
             "unsafe or oversized delivery terminal record",
         ));
     }
     let mut bytes = Vec::new();
-    file.take(131073).read_to_end(&mut bytes)?;
-    if bytes.len() > 131072 {
+    file.take((MAX_DELIVERY_TERMINAL_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > MAX_DELIVERY_TERMINAL_BYTES {
         return Err(super::invalid_request("oversized delivery terminal record"));
     }
     let terminal: Terminal = serde_json::from_slice(&bytes).map_err(io::Error::other)?;
@@ -714,15 +733,19 @@ fn read_terminal(journal: &Journal, reference: &IntentRef) -> Result<Option<Term
     }
     Ok(Some(terminal))
 }
+fn terminal_bytes(terminal: &Terminal) -> Result<Vec<u8>, RunError> {
+    let bytes = serde_json::to_vec(terminal).map_err(io::Error::other)?;
+    if bytes.len() > MAX_DELIVERY_TERMINAL_BYTES {
+        return Err(super::invalid_request("oversized delivery terminal record"));
+    }
+    Ok(bytes)
+}
 fn save_terminal(
     journal: &Journal,
     reference: &IntentRef,
     terminal: &Terminal,
 ) -> Result<(), RunError> {
-    let bytes = serde_json::to_vec(terminal).map_err(io::Error::other)?;
-    if bytes.len() > 131072 {
-        return Err(super::invalid_request("oversized delivery terminal record"));
-    }
+    let bytes = terminal_bytes(terminal)?;
     let temp = journal
         .root()
         .join(format!(".delivery-terminal-{}", uuid::Uuid::new_v4()));

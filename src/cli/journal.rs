@@ -789,6 +789,7 @@ impl PendingIntent {
 pub type PendingPage = Page<LocalIntent>;
 // Compact published semantic and header each fit the canonical identity envelope;
 // fixed reference/digest/header fields have 4096 bytes of additional headroom.
+pub(crate) const MAX_DELIVERY_ORIGIN_BYTES: usize = 512 * 1024;
 pub(crate) const MAX_BOOTSTRAP_ORIGIN_BYTES: usize =
     2 * crate::store::topology_handoff::MAX_IDENTITY_BYTES + 4096;
 pub struct Journal {
@@ -1337,7 +1338,6 @@ impl Journal {
             .counter()?
             .checked_add(1)
             .ok_or_else(|| invalid("intent allocator exhausted"))?;
-        self.reserve(ordinal)?;
         let reference = IntentRef {
             ordinal,
             operation: OperationId::new(Uuid::new_v4().to_string()),
@@ -1350,9 +1350,19 @@ impl Journal {
             thread: semantic.thread().cloned(),
             semantic_digest: format!("{:x}", Sha256::digest(&body)),
         };
+        let encoded_header = serde_json::to_vec(&header)?;
+        let origin_limit = match header.kind {
+            IntentKind::HandoffDelivery => Some(MAX_DELIVERY_ORIGIN_BYTES),
+            IntentKind::HandoffBootstrap => Some(MAX_BOOTSTRAP_ORIGIN_BYTES),
+            _ => None,
+        };
+        if origin_limit.is_some_and(|limit| encoded_header.len() + body.len() + 2 > limit) {
+            return Err(invalid("handoff origin exceeds retained byte cap"));
+        }
+        self.reserve(ordinal)?;
         let path = self.root.join(format!(".intent-{}", Uuid::new_v4()));
         let mut file = private_new(&path)?;
-        serde_json::to_writer(&mut file, &header)?;
+        file.write_all(&encoded_header)?;
         file.write_all(b"\n")?;
         file.write_all(&body)?;
         file.write_all(b"\n")?;
@@ -1409,7 +1419,12 @@ impl Journal {
     }
     /// Exact bounded original bytes for delivery-only terminal cleanup recovery.
     pub(crate) fn snapshot_delivery_origin(&self, reference: &IntentRef) -> io::Result<Vec<u8>> {
-        self.snapshot_origin(reference, IntentKind::HandoffDelivery, 65536, "delivery")
+        self.snapshot_origin(
+            reference,
+            IntentKind::HandoffDelivery,
+            MAX_DELIVERY_ORIGIN_BYTES,
+            "delivery",
+        )
     }
     pub(crate) fn decode_delivery_origin(
         reference: &IntentRef,
@@ -1419,7 +1434,7 @@ impl Journal {
             reference,
             bytes,
             IntentKind::HandoffDelivery,
-            65536,
+            MAX_DELIVERY_ORIGIN_BYTES,
             "delivery",
         )
     }

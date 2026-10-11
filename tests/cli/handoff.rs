@@ -165,6 +165,7 @@ fn request() -> HandoffRequest {
     }
 }
 struct Client {
+    expected_body: String,
     joined: bool,
     already_joined: bool,
     calls: Mutex<Vec<Command>>,
@@ -174,6 +175,7 @@ struct Client {
 impl Client {
     fn new(lost: Option<&'static str>) -> Self {
         Self {
+            expected_body: "secret durable task".into(),
             joined: true,
             already_joined: false,
             calls: Mutex::new(vec![]),
@@ -247,7 +249,7 @@ impl LocalClient for Client {
             }
             Command::SendMessage(q) => {
                 assert_eq!(q.claim, claim());
-                assert_eq!(q.body, "secret durable task");
+                assert_eq!(q.body, self.expected_body);
                 assert_eq!(q.invited_recipients, vec![SeatId::new("recipient")]);
                 (
                     q.operation.as_str(),
@@ -3782,4 +3784,274 @@ fn frozen_v1_prompt_and_manual_projection_ignore_current_renderer_drift() {
         .as_array()
         .unwrap();
     assert_eq!(manual.last().unwrap(), &serde_json::json!(v1));
+}
+
+#[test]
+fn handoff_instruction_sources_preserve_message_bytes_and_exclude_conflicts() {
+    use crate::cli::commands::{CliAction, parse_argv};
+    let (temp, _journal) = journal();
+    let path = temp.0.join("instructions");
+    for body in [
+        " \0\n\r\t".to_owned(),
+        "x".repeat(65_536),
+        "\u{1}".repeat(65_536),
+    ] {
+        std::fs::write(&path, &body).unwrap();
+        for mode in [
+            vec!["--pane", "w1:p2", "--kind", "codex"],
+            vec!["--new-tab", "peer", "--kind", "codex"],
+            vec!["--existing", "--seat", "recipient"],
+        ] {
+            for source in [
+                vec!["--", body.as_str()],
+                vec!["--file", path.to_str().unwrap()],
+            ] {
+                let mut argv = vec!["ht", "handoff", "--thread", "t1"];
+                argv.extend(mode.clone());
+                argv.extend(source);
+                let parsed = parse_argv(argv).expect("valid source must parse");
+                let saved = match parsed.action {
+                    CliAction::Handoff(request) => request.body,
+                    CliAction::TopologyHandoff(request) => request.body,
+                    _ => panic!("wrong action"),
+                };
+                assert_eq!(saved, body);
+            }
+        }
+    }
+    for bytes in [vec![], vec![0xff], vec![b'x'; 65_537]] {
+        std::fs::write(&path, bytes).unwrap();
+        assert!(
+            parse_argv([
+                "ht",
+                "handoff",
+                "--existing",
+                "--seat",
+                "recipient",
+                "--thread",
+                "t1",
+                "--file",
+                path.to_str().unwrap()
+            ])
+            .is_err()
+        );
+    }
+    std::fs::remove_file(&path).unwrap();
+    assert!(
+        parse_argv([
+            "ht",
+            "handoff",
+            "--existing",
+            "--seat",
+            "recipient",
+            "--thread",
+            "t1",
+            "--file",
+            path.to_str().unwrap()
+        ])
+        .is_err()
+    );
+    for source in [
+        vec![],
+        vec!["--stdin", "--", "body"],
+        vec!["--file", "missing", "--stdin"],
+        vec!["--file", "missing", "--", "body"],
+    ] {
+        let mut argv = vec![
+            "ht",
+            "handoff",
+            "--existing",
+            "--seat",
+            "recipient",
+            "--thread",
+            "t1",
+        ];
+        argv.extend(source);
+        assert!(parse_argv(argv).is_err());
+    }
+}
+
+#[test]
+fn handoff_stdin_acquisition_is_bounded_and_preserves_exact_message_bytes() {
+    use crate::cli::input::read_body_from;
+    for body in [
+        " \0\n\r\t".to_owned(),
+        "x".repeat(65_536),
+        "\u{1}".repeat(65_536),
+    ] {
+        let mut input = std::io::Cursor::new(body.as_bytes());
+        assert_eq!(read_body_from(None, None, true, &mut input).unwrap(), body);
+    }
+    for bytes in [vec![], vec![0xff], vec![b'x'; 65_537]] {
+        let mut input = std::io::Cursor::new(bytes);
+        assert!(read_body_from(None, None, true, &mut input).is_err());
+    }
+    let mut input = std::io::Cursor::new(vec![b'x'; 1_000_000]);
+    assert!(read_body_from(None, None, true, &mut input).is_err());
+    assert_eq!(input.position(), 65_537);
+    for body in [" \0\n", "x"] {
+        let request = HandoffRequest {
+            body: body.into(),
+            ..request()
+        };
+        request.validate().unwrap();
+    }
+    let mut request = request();
+    request.body = "x".repeat(65_536);
+    request.validate().unwrap();
+    request.body.push('x');
+    assert!(request.validate().is_err());
+}
+
+#[test]
+fn maximum_instruction_file_freezes_through_explicit_launch_retry() {
+    for body in ["x".repeat(65_536), "\u{1}".repeat(65_536)] {
+        let (temp, journal) = journal();
+        let path = temp.0.join("instructions");
+        std::fs::write(&path, &body).unwrap();
+        let parsed = crate::cli::commands::parse_argv([
+            "ht",
+            "handoff",
+            "--pane",
+            "w1:p2",
+            "--kind",
+            "codex",
+            "--thread",
+            "t1",
+            "--file",
+            path.to_str().unwrap(),
+        ])
+        .unwrap();
+        let crate::cli::commands::CliAction::Handoff(mut r) = parsed.action else {
+            panic!("wrong action")
+        };
+        r.thread = None;
+        r.launch.argv = request().launch.argv;
+        r.topic = Some("review".into());
+        r.goal = Some("review changes".into());
+        let mut client = Client::new(Some("send"));
+        client.expected_body = body.clone();
+        let mut launcher = Launcher::default();
+        assert!(
+            start(
+                &journal,
+                r,
+                claim(),
+                "bob",
+                &client,
+                &mut launcher,
+                &TestClock,
+                &OutputSpec::default(),
+                &mut Vec::new()
+            )
+            .is_err()
+        );
+        let reference = reference(&journal);
+        let original = std::fs::read(journal.root().join(format!(
+            "{:020}-{}.intent",
+            reference.ordinal,
+            reference.operation.as_str()
+        )))
+        .unwrap();
+        std::fs::write(&path, "changed").unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(
+            std::fs::read(journal.root().join(format!(
+                "{:020}-{}.intent",
+                reference.ordinal,
+                reference.operation.as_str()
+            )))
+            .unwrap(),
+            original
+        );
+        resume(
+            &journal,
+            &reference,
+            &scope(),
+            &client,
+            &mut launcher,
+            &TestClock,
+            &OutputSpec::default(),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        assert_eq!(launcher.starts, 1);
+        assert!(
+            launcher
+                .submitted_argv
+                .iter()
+                .all(|arg| !arg.contains(&body) && !arg.contains(path.to_str().unwrap()))
+        );
+        assert!(
+            journal.load(&reference).is_err(),
+            "successful retry cleans the original intent"
+        );
+        let commands = client.calls.lock().unwrap();
+        let sends = commands
+            .iter()
+            .filter_map(|c| {
+                if let Command::SendMessage(q) = c {
+                    Some(q)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(sends.len(), 2);
+        assert_eq!(sends[0], sends[1]);
+        assert_eq!(sends[0].body, body);
+    }
+}
+
+#[test]
+fn acquired_stdin_survives_retry_after_reader_is_unavailable() {
+    let (_temp, journal) = journal();
+    let body = "\u{1}".repeat(65_536);
+    let acquired = {
+        let mut stdin = std::io::Cursor::new(body.as_bytes());
+        crate::cli::input::read_body_from(None, None, true, &mut stdin).unwrap()
+    };
+    let mut r = request();
+    r.body = acquired;
+    let mut client = Client::new(Some("send"));
+    client.expected_body = body.clone();
+    let mut launcher = Launcher::default();
+    assert!(
+        start(
+            &journal,
+            r,
+            claim(),
+            "bob",
+            &client,
+            &mut launcher,
+            &TestClock,
+            &OutputSpec::default(),
+            &mut Vec::new(),
+        )
+        .is_err()
+    );
+    let reference = reference(&journal);
+    resume(
+        &journal,
+        &reference,
+        &scope(),
+        &client,
+        &mut launcher,
+        &TestClock,
+        &OutputSpec::default(),
+        &mut Vec::new(),
+    )
+    .unwrap();
+    let commands = client.calls.lock().unwrap();
+    let sends = commands
+        .iter()
+        .filter_map(|command| match command {
+            Command::SendMessage(send) => Some(send),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(sends.len(), 2);
+    assert_eq!(sends[0], sends[1]);
+    assert_eq!(sends[0].body, body);
+    assert_eq!(launcher.starts, 1);
 }

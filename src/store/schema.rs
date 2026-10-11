@@ -67,7 +67,8 @@ const V28: &str = include_str!("../../migrations/0028_handoff_topology.sql");
 const V29: &str = include_str!("../../migrations/0029_invitation_confirmation.sql");
 
 const V30: &str = include_str!("../../migrations/0030_receipt_send_time.sql");
-pub(crate) const LATEST_VERSION: i64 = 30;
+const V31: &str = include_str!("../../migrations/0031_handoff_body_bounds.sql");
+pub(crate) const LATEST_VERSION: i64 = 31;
 
 /// Decode only persisted results, after the caller's digest has matched. Live
 /// protocol responses still require disposition. Missing original context
@@ -410,7 +411,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             verify_existing(conn)
         }
         17 => verify_existing(conn),
-        18..=30 => verify_existing(conn),
+        18..=31 => verify_existing(conn),
         _ => Err(api_error(
             ErrorCode::IncompatibleSchema,
             format!("unsupported schema version {version}"),
@@ -578,7 +579,11 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             }
         }
     }
-    verify_existing_v28(conn)?;
+    if version <= 30 {
+        verify_existing_v28(conn)?;
+    } else {
+        verify_handoff_body_bounds_schema(conn)?;
+    }
     if (1..=28).contains(&version) {
         conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
         let result = conn
@@ -601,7 +606,11 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
     if version <= 29 {
         migrate_receipts_v29_to_v30(conn)?;
     }
-    verify_receipt_send_time_schema(conn)
+    verify_receipt_send_time_schema(conn)?;
+    if version <= 30 {
+        migrate_handoff_v30_to_v31(conn)?;
+    }
+    verify_handoff_body_bounds_schema(conn)
 }
 
 fn verify_existing_v29(conn: &Connection) -> Result<(), ApiError> {
@@ -4066,8 +4075,65 @@ fn verify_existing_v24(conn: &Connection) -> Result<(), ApiError> {
     Ok(())
 }
 
+fn migrate_handoff_v30_to_v31(conn: &Connection) -> Result<(), ApiError> {
+    // SQLite ignores foreign_keys changes inside a transaction. Disable it
+    // before BEGIN so rebuilding the cyclic parent/recovery tables cannot
+    // delete child rows; verify the complete graph before committing.
+    if !conn.is_autocommit() {
+        return Err(api_error(
+            ErrorCode::IncompatibleSchema,
+            "handoff bounds migration requires an idle connection",
+        ));
+    }
+    let foreign_keys: bool = conn
+        .pragma_query_value(None, "foreign_keys", |r| r.get(0))
+        .map_err(store_error)?;
+    conn.pragma_update(None, "foreign_keys", false)
+        .map_err(store_error)?;
+    let migrate = (|| {
+        conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
+        conn.execute_batch(V31).map_err(store_error)?;
+        verify_handoff_body_bounds_schema(conn)?;
+        let violation: Option<String> = conn
+            .query_row("PRAGMA foreign_key_check", [], |r| r.get(0))
+            .optional()
+            .map_err(store_error)?;
+        if violation.is_some() {
+            return Err(api_error(
+                ErrorCode::StoreCorrupt,
+                "handoff bounds migration found a foreign-key violation",
+            ));
+        }
+        conn.pragma_update(None, "user_version", 31)
+            .map_err(store_error)?;
+        conn.execute_batch("COMMIT").map_err(store_error)
+    })();
+    if migrate.is_err() && !conn.is_autocommit() {
+        let _ = conn.execute_batch("ROLLBACK");
+    }
+    let restore = conn
+        .pragma_update(None, "foreign_keys", foreign_keys)
+        .map_err(store_error);
+    migrate.and(restore)
+}
+
 fn verify_existing_v28(conn: &Connection) -> Result<(), ApiError> {
+    verify_bootstrap_ddl(conn, V28)
+}
+fn verify_handoff_body_bounds_schema(conn: &Connection) -> Result<(), ApiError> {
     let ddl = V28
+        .replace(
+            "length(identity_json)<=131072",
+            "length(identity_json)<=524288",
+        )
+        .replace(
+            "length(result_json)<=262144",
+            "length(result_json)<=1048576",
+        );
+    verify_bootstrap_ddl(conn, &ddl)
+}
+fn verify_bootstrap_ddl(conn: &Connection, source: &str) -> Result<(), ApiError> {
+    let ddl = source
         .lines()
         .filter(|line| !line.trim_start().starts_with("--"))
         .collect::<Vec<_>>()

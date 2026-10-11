@@ -67,7 +67,7 @@ fn setup(db: &Connection) {
     assert_eq!(
         db.pragma_query_value::<i64, _>(None, "user_version", |r| r.get(0))
             .unwrap(),
-        28
+        29
     );
     db.execute_batch("INSERT INTO host_instances(id,created_at) VALUES('i',0)")
         .unwrap();
@@ -665,6 +665,7 @@ fn full_completed_report_with_large_json_escaping_replays_and_rejects_tamper() {
     let tx = db.transaction().unwrap();
     let mut id = identity();
     id.payload.launch.argv = vec!["\"".repeat(4096); 14];
+    id.payload.handoff.body = "\u{1}".repeat(65_536);
     id.digest = id.semantic_digest().unwrap();
     id.validate().unwrap();
     topology_handoff::begin_pending(&tx, &namespace(), &id, UtcMillis(0)).unwrap();
@@ -1211,6 +1212,50 @@ fn recovery_matching_created_and_cancelled_evidence_survive_reopen() {
     }
 }
 
+#[test]
+fn maximum_escaped_body_recovery_survives_reopen() {
+    for cancelled in [false, true] {
+        let (_directory, path, mut db) = file_fixture();
+        let mut id = identity();
+        id.payload.handoff.body = "\u{1}".repeat(65_536);
+        id.digest = id.semantic_digest().unwrap();
+        let tx = db.transaction().unwrap();
+        topology_handoff::begin_pending(&tx, &namespace(), &id, UtcMillis(0)).unwrap();
+        record_created(&tx);
+        let state = if cancelled {
+            BootstrapState::Cancelled
+        } else {
+            BootstrapState::Created
+        };
+        let disposition = if cancelled {
+            cancellation()
+        } else {
+            BootstrapRecoveryDisposition::CreatedPane {
+                evidence: created(),
+                structural_reference: HostCallId::new("inspection"),
+            }
+        };
+        let retained = saved_recovery(&tx, &id, disposition, state, Some(created()));
+        if cancelled {
+            tx.execute(
+                "UPDATE bootstrap_handoffs SET state='cancelled',terminal_at=1 WHERE id=1",
+                [],
+            )
+            .unwrap();
+        }
+        tx.commit().unwrap();
+        drop(db);
+        let db = Connection::open(path).unwrap();
+        schema::initialize(&db, || UtcMillis(2)).unwrap();
+        let result = topology_handoff::current(&db, &namespace(), &id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.state, state);
+        assert_eq!(result.creation, Some(created()));
+        assert_eq!(result.recovery, Some(Box::new(retained)));
+    }
+}
+
 #[path = "topology_attachment.rs"]
 mod attachment;
 #[path = "topology_attempts.rs"]
@@ -1286,7 +1331,7 @@ fn current_main_fresh_and_canonical26_upgrade_to_topology28() {
         assert_eq!(
             db.pragma_query_value::<i64, _>(None, "user_version", |r| r.get(0))
                 .unwrap(),
-            28
+            29
         );
         assert!(
             db.query_row(

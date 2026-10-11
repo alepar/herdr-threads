@@ -491,15 +491,29 @@ impl Fixture {
                 &budget,
             )
             .unwrap();
-        store
-            .stage_snapshot_targets(
-                &stage.id,
-                0,
-                &snapshot.targets,
-                DurableWorkAdmission::new(16).unwrap(),
-                &budget,
-            )
-            .unwrap();
+        // A writer turn can commit a prefix when its quantum expires. Honor
+        // that progress before sealing, under the original overall budget.
+        let mut offset = 0u64;
+        let mut targets = &snapshot.targets[..];
+        while !targets.is_empty() {
+            let batch = &targets[..targets.len().min(16)];
+            let progress = store
+                .stage_snapshot_targets(
+                    &stage.id,
+                    offset,
+                    batch,
+                    DurableWorkAdmission::new(16).unwrap(),
+                    &budget,
+                )
+                .unwrap();
+            let visited = usize::from(progress.visited);
+            offset += visited as u64;
+            assert!(
+                visited > 0 && visited <= batch.len() && progress.stage.staged_targets == offset,
+                "snapshot staging did not advance exactly"
+            );
+            targets = &targets[visited..];
+        }
         store.seal_snapshot_stage(&stage.id, &budget).unwrap();
         store.publish_snapshot_stage(&stage.id, &budget).unwrap();
         let execution = Uuid::new_v4();

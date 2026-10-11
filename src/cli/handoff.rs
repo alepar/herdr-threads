@@ -45,7 +45,9 @@ New threads join the sender; existing threads require a joined sender. --thread-
 --topic and --goal apply only to new threads. Topic defaults to Handoff to DISPLAY:
 legacy launch uses the pane display, new-tab uses its label, delivery uses the
 canonical seat ID. Goal defaults to topic. --name names the native agent, not the channel.
-The one quoted body after -- is durable work (1..1024 UTF-8 bytes), never native argv.
+Select exactly one instruction source: a quoted body after --, --file PATH, or --stdin.
+Instructions contain 1..65,536 UTF-8 bytes, preserved exactly as durable work, never native argv.
+Files and stdin are acquired once before publication; retries use the frozen content.
 Native launch options use repeatable --agent-arg=OPTION; launch -- native arguments
 is unchanged. HERDR_THREADS_CODEX_OPTS / HERDR_THREADS_CLAUDE_OPTS prepend optional
 arguments using shell-style quotes and escapes without variable or command
@@ -109,10 +111,12 @@ pub struct HandoffPlan {
 }
 impl HandoffRequest {
     fn validate(&self) -> io::Result<()> {
-        for value in std::iter::once(&self.body)
-            .chain(self.topic.iter())
-            .chain(self.goal.iter())
-        {
+        if self.body.is_empty() || self.body.len() > super::input::MAX_BODY_BYTES {
+            return Err(io::Error::other(
+                "handoff body must contain 1..65536 UTF-8 bytes",
+            ));
+        }
+        for value in self.topic.iter().chain(self.goal.iter()) {
             if value.is_empty() || value.len() > 1024 {
                 return Err(io::Error::other(
                     "handoff text must contain 1..1024 UTF-8 bytes",

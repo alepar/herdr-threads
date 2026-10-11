@@ -2014,6 +2014,19 @@ impl LocalClient for GuardedCanonical {
             }
             return self.base.fake.call(c, b);
         };
+        if request.plan.payload.body.len() == 65_536 {
+            let wire = crate::protocol::wire::WireRequest {
+                version: crate::protocol::wire::PROTOCOL_VERSION,
+                request_id: "maximum-body".into(),
+                expected_instance: "00000000-0000-4000-8000-000000000001".into(),
+                expected_boot: None,
+                output: None,
+                command: Command::HandoffDelivery(request.clone()),
+            };
+            let bytes = serde_json::to_vec(&wire).unwrap();
+            assert!(bytes.len() + 4 <= crate::protocol::wire::MAX_WIRE_FRAME_BYTES);
+            crate::protocol::wire::WireRequest::decode(&bytes).unwrap();
+        }
         let canonical = request.plan.payload.namespace.clone();
         let phase = match &request.action {
             DeliveryAction::Status(_) | DeliveryAction::Prepare(_) => {
@@ -2570,5 +2583,109 @@ fn pending_delivery_writer_inspect_argv_parses_as_public_pending_ops() {
             );
             assert_delivery_inspect_is_public_pending_ops(&plan, json, &bytes);
         }
+    }
+}
+
+#[test]
+fn maximum_escaped_delivery_origin_and_terminal_survive_cleanup_retry() {
+    let temp = TempRoot::new();
+    let journal = Journal::open(temp.0.join("intents")).unwrap();
+    let mut plan = plan();
+    plan.payload.body = "\u{1}".repeat(65_536);
+    let reference = record(&journal, plan.clone());
+    let origin = journal.snapshot_delivery_origin(&reference).unwrap();
+    assert!(origin.len() >= 393_216);
+    assert_eq!(
+        delivery_plan(&Journal::decode_delivery_origin(&reference, &origin).unwrap())
+            .unwrap()
+            .payload
+            .body,
+        "\u{1}".repeat(65_536)
+    );
+    let progress = Progress::default();
+    // The terminal serializer nests the exact original JSON as a string;
+    // every six-byte body escape gains one more backslash.
+    let terminal = Terminal {
+        version: 1,
+        original: String::from_utf8(origin).unwrap(),
+        completed: HandoffResult {
+            compound: plan.payload.keys.compound.clone(),
+            thread: Some(ThreadId::new("t1")),
+            state: HandoffState::Completed,
+        },
+        progress_digest: retained_digest(&progress).unwrap(),
+        progress,
+    };
+    let bytes = serde_json::to_vec(&terminal).unwrap();
+    assert!(bytes.len() >= 458_752);
+    eprintln!(
+        "maximum escaped delivery: origin={} terminal={}",
+        terminal.original.len(),
+        bytes.len()
+    );
+    save_terminal(&journal, &reference, &terminal).unwrap();
+    let saved: Terminal =
+        serde_json::from_slice(&std::fs::read(terminal_path(&journal, &reference)).unwrap())
+            .unwrap();
+    let pending = Journal::decode_delivery_origin(&reference, saved.original.as_bytes()).unwrap();
+    assert_eq!(
+        delivery_plan(&pending).unwrap().payload.body,
+        "\u{1}".repeat(65_536)
+    );
+}
+
+#[test]
+fn maximum_instruction_file_freezes_through_existing_delivery_and_retry() {
+    for body in ["x".repeat(65_536), "\u{1}".repeat(65_536)] {
+        let temp = TempRoot::new();
+        let path = temp.0.join("instructions");
+        std::fs::write(&path, &body).unwrap();
+        let parsed = crate::cli::commands::parse_argv([
+            "ht",
+            "handoff",
+            "--existing",
+            "--seat",
+            "recipient",
+            "--new-thread",
+            "--topic",
+            "review",
+            "--goal",
+            "review changes",
+            "--file",
+            path.to_str().unwrap(),
+        ])
+        .unwrap();
+        let crate::cli::commands::CliAction::TopologyHandoff(request) = parsed.action else {
+            panic!("wrong action")
+        };
+        let mut plan = plan();
+        plan.payload.body = request.body;
+        plan.payload.channel = HandoffChannel::New {
+            name: None,
+            topic: "review".into(),
+            goal: "review changes".into(),
+        };
+        let journal = Journal::open(temp.0.join("intents")).unwrap();
+        let reference = publish(&journal, plan.clone(), canonical_claim(), &TestClock).unwrap();
+        let original = journal.snapshot_delivery_origin(&reference).unwrap();
+        std::fs::write(&path, "changed").unwrap();
+        std::fs::remove_file(&path).unwrap();
+        let client = GuardedCanonical::new(&temp.0);
+        *client.lose_reply.lock().unwrap() = Some("send");
+        assert!(
+            guarded_retry(&journal, &reference, &plan, &client, true, &mut Vec::new()).is_err()
+        );
+        guarded_retry(&journal, &reference, &plan, &client, true, &mut Vec::new()).unwrap();
+        let conn = client.base.context.open_writer().unwrap();
+        let saved: String = conn
+            .query_row("SELECT body FROM messages WHERE kind='ordinary'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(saved, body);
+        let terminal = read_terminal(&journal, &reference).unwrap().unwrap();
+        assert_eq!(terminal.original.as_bytes(), original);
+        guarded_retry(&journal, &reference, &plan, &client, true, &mut Vec::new()).unwrap();
+        assert_eq!(client.counts(), (1, 1, 1));
     }
 }

@@ -1289,6 +1289,7 @@ struct LaunchArgs {
 }
 
 #[derive(Args)]
+#[command(group(clap::ArgGroup::new("instruction_source").required(true).multiple(false).args(["body", "file", "stdin"])))]
 struct HandoffArgs {
     #[arg(long, conflicts_with_all = ["existing", "tab", "pane", "seat"])]
     new_tab: Option<String>,
@@ -1325,8 +1326,14 @@ struct HandoffArgs {
     #[arg(long = "agent-arg", allow_hyphen_values = true)]
     agent_args: Vec<String>,
     /// Exactly one quoted durable message after --; never native argv.
-    #[arg(last = true, required = true, num_args = 1, allow_hyphen_values = true)]
-    body: String,
+    #[arg(last = true, num_args = 1, allow_hyphen_values = true)]
+    body: Option<String>,
+    /// Read the complete durable instructions from this UTF-8 file.
+    #[arg(long)]
+    file: Option<String>,
+    /// Read the complete durable instructions from standard input.
+    #[arg(long)]
+    stdin: bool,
 }
 
 #[derive(Args)]
@@ -2567,7 +2574,7 @@ fn parse_cli_in_registry(
             if let Some(name) = &args.thread_name {
                 validate_thread_name(name).map_err(validation_error)?;
             }
-            let body = bounded(args.body, "body")?;
+            let body = super::input::read_body(args.body, args.file, args.stdin)?;
             if args.new_tab.is_some() || args.existing {
                 if args.existing
                     && (args.harness_binary.is_some()
