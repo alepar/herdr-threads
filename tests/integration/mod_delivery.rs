@@ -725,6 +725,13 @@ impl Rig {
 
     /// The installed hook, exactly as setup installs it.
     fn hook(&self, pane: &str, stdin: &str) -> Out {
+        self.hook_in_process_of(pane, stdin, None)
+    }
+
+    /// `hook`, run by the harness process of `process_of` (default: the payload's own session):
+    /// a `/clear` starts a new session inside the same process, so the new session's hook
+    /// shares the old one's liveness fingerprint and supersedes its binding.
+    fn hook_in_process_of(&self, pane: &str, stdin: &str, process_of: Option<&str>) -> Out {
         let payload: Value = serde_json::from_str(stdin).unwrap();
         let event = payload["hook_event_name"].as_str().unwrap();
         let command = self.claude_hooks[event][0]["hooks"][0]["command"]
@@ -737,7 +744,7 @@ impl Rig {
         // Each session is a process of its own, as in a real run: hooks of several sessions
         // sharing one fingerprint would supersede one another's bindings, and a disconnected
         // binding loses its mod channel (spec §3 Wake).
-        if let Some(session) = payload["session_id"].as_str() {
+        if let Some(session) = process_of.or(payload["session_id"].as_str()) {
             let stand_in =
                 herdr_threads::test_support::isolation::stand_in_fingerprint("claude", session)
                     .pid
@@ -772,6 +779,24 @@ impl Rig {
 
     fn session_start_hook(&self, pane: &str, session: &str, source: &str) -> Out {
         let out = self.hook(pane, &session_start(session, source));
+        assert_eq!(
+            out.code, 0,
+            "SessionStart hook: {}{}",
+            out.stdout, out.stderr
+        );
+        out
+    }
+
+    /// A SessionStart of a new session started inside the process that ran `old_session`
+    /// (`/clear`).
+    fn session_start_hook_in_process_of(
+        &self,
+        pane: &str,
+        session: &str,
+        source: &str,
+        old_session: &str,
+    ) -> Out {
+        let out = self.hook_in_process_of(pane, &session_start(session, source), Some(old_session));
         assert_eq!(
             out.code, 0,
             "SessionStart hook: {}{}",
@@ -886,11 +911,20 @@ impl Rig {
     /// The state of B's channel (`live`, `reconnect_grace`, `rebind_grace`),
     /// or `None` when the registry has no entry for B.
     fn channel_state(&self) -> Option<String> {
-        self.channels()["channels"]
+        // Channels are per binding: a seat can hold a superseded session's channel in grace
+        // beside the new session's live one. The seat's state is the strongest of them.
+        let channels = self.channels();
+        let states: Vec<&str> = channels["channels"]
             .as_array()?
             .iter()
-            .find(|channel| channel["seat"] == self.b.as_str())
-            .and_then(|channel| channel["state"].as_str().map(str::to_owned))
+            .filter(|channel| channel["seat"] == self.b.as_str())
+            .filter_map(|channel| channel["state"].as_str())
+            .collect();
+        states
+            .iter()
+            .find(|state| **state == "live")
+            .or(states.first())
+            .map(|state| (*state).to_owned())
     }
 
     fn wait_channel(&self, state: Option<&str>) {
@@ -2072,27 +2106,25 @@ fn snapshot(dir: &std::path::Path) -> Vec<(PathBuf, Vec<u8>)> {
     out
 }
 
-/// Spec D2/D6 `/clear`: the lifecycle check-in rotates the binding
-/// generation and closes the channel (`binding_changed`); an ack naming the
-/// cleared session is `stale_generation` and settles nothing; the new
-/// session's watch registers and gets the still-pending item re-streamed.
+/// Spec D2/D6 `/clear`: the new session supersedes the cleared session's binding
+/// (session-keyed bindings: the generation no longer rotates) and closes its channel
+/// (`binding_changed`); the new session's watch registers and gets the still-pending item
+/// re-streamed, and its ack settles.
 #[test]
-fn clear_rebind_stale_generation_ack_refused_and_restreamed() {
+fn clear_rebind_pending_item_restreamed_to_new_session() {
     let rig = Rig::new();
     let mut old = rig.watch(SESSION_B);
     old.wait_connected();
     let id = rig.send_ordinary("pending across /clear");
     old.wait_item(&id);
     rig.set_session_b("SB2");
-    rig.session_start_hook(PANE_B, "SB2", "clear");
+    rig.session_start_hook_in_process_of(PANE_B, "SB2", "clear", SESSION_B);
     let closing = old.wait_line("the binding_changed close", STEP, |line| {
         line["kind"] == "status" && line["state"] == "closing"
     });
     assert_eq!(closing["reason"], "binding_changed", "{closing}");
     assert_eq!(old.exit_code(STEP), 0);
     rig.wait_channel(Some("rebind_grace"));
-    let stale = rig.ack_result(SESSION_B, "context", &id);
-    assert_eq!(stale["result"], "stale_generation", "{stale}");
     assert_eq!(rig.receipt_state(&id), "pending");
     let mut new = rig.watch("SB2");
     new.wait_connected();
@@ -2119,7 +2151,7 @@ fn clear_within_rebind_grace_emits_no_session_start_digest_and_no_native_kick() 
     watch.wait_item(&id);
     let mark = rig.host.mark();
     rig.set_session_b("SB2");
-    let started = rig.session_start_hook(PANE_B, "SB2", "clear");
+    let started = rig.session_start_hook_in_process_of(PANE_B, "SB2", "clear", SESSION_B);
     assert!(
         !started.stdout.contains(DIGEST_MARK),
         "digest during rebind grace: {}",
