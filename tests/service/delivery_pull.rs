@@ -907,16 +907,16 @@ fn presentation_q3_ordinary_publication_generation_observes_early_store_ack_with
     assert_eq!(q.receipt(&message), "acked");
 }
 
-fn q3_receipt_snapshot(
-    f: &Fixture,
-) -> Vec<(
+type Q3ReceiptSnapshot = (
     String,
     String,
     String,
     String,
     Option<String>,
     Option<String>,
-)> {
+);
+
+fn q3_receipt_snapshot(f: &Fixture) -> Vec<Q3ReceiptSnapshot> {
     let mut query = f.db.prepare("SELECT 'physical',message_id,seat_id,state,ack_binding_id,ack_observation FROM receipts UNION ALL SELECT 'sparse',message_id,seat_id,state,ack_binding_id,ack_observation FROM receipt_state ORDER BY 1,2,3").unwrap();
     query
         .query_map([], |row| {
