@@ -1,3 +1,3 @@
 exit: 0
 stderr:
-herdr-threads hook: adapter admission refused: Hermes startup callback qualification unavailable
+herdr-threads hook: undeclared hook event hermes/Stop

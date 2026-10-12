@@ -29,6 +29,7 @@ observed: unknown
 permissions.rules_file: <root>/codex home/rules/herdr-threads.rules
 permissions.state: not_installed
 recipes: codex-hooks-v1 {0.157.1, 0.158.0, 0.159.3}
+registration_conflict: none
 sandbox.omitted: setup uses approved outside-sandbox commands and installs no sandbox allowance
 sandbox.present: false
 sandbox.recorded: false

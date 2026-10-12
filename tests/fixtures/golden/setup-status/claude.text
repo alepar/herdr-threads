@@ -1,7 +1,11 @@
 action: status
 adopted: none
 allow_rule: none
-command: '<bin>' '--state-dir' '<root>/state' '--host-endpoint' '<root>/host.sock' 'hook' 'claude' # herdr-threads-owner:<uuid>
+command: '<bin>' '--state-dir' '<root>/state' '--host-endpoint' '<root>/host.sock' 'hook' 'claude'
+commands.PreToolUse: '<bin>' '--state-dir' '<root>/state' '--host-endpoint' '<root>/host.sock' 'hook-event' 'claude' 'PreToolUse'
+commands.SessionStart: '<bin>' '--state-dir' '<root>/state' '--host-endpoint' '<root>/host.sock' 'hook-event' 'claude' 'SessionStart'
+commands.SubagentStart: '<bin>' '--state-dir' '<root>/state' '--host-endpoint' '<root>/host.sock' 'hook-event' 'claude' 'SubagentStart'
+commands.SubagentStop: '<bin>' '--state-dir' '<root>/state' '--host-endpoint' '<root>/host.sock' 'hook-event' 'claude' 'SubagentStop'
 current_command_matches: true
 foreground.CLAUDE_CODE_DISABLE_AGENT_VIEW: none
 foreground.advice: Set disableAgentView to true in Claude's user settings.json (merge {"disableAgentView":true} into the existing object), or set env.CLAUDE_CODE_DISABLE_AGENT_VIEW to "1" there. This disables agent view, --bg/background and on-demand daemon mode. CLAUDE_CODE_DISABLE_BACKGROUND_TASKS is a different setting and does not replace this choice.
@@ -50,6 +54,7 @@ prompt_suggestions.setting: promptSuggestionEnabled
 prompt_suggestions.state: default (enabled)
 recipes: claude-hooks-2.1.283 [2.1.283, 2.1.286]; claude-hooks-2.1.287 {2.1.287}
 recorded_phase: installed
+registration_conflict: false
 scope: user
 settings: <root>/claude config/settings.json
 warning: Foreground user settings required. herdr-threads requires each managed agent to remain in its pane: a shared harness server may run hooks/tools with its own pane environment instead of the TUI environment used for seat attribution. Setup inspects user settings only and never changes foreground settings. User settings and launch arguments are not proof of execution; project/managed settings, environment, and wrapper behavior may override them. Set disableAgentView to true in Claude's user settings.json (merge {"disableAgentView":true} into the existing object), or set env.CLAUDE_CODE_DISABLE_AGENT_VIEW to "1" there. This disables agent view, --bg/background and on-demand daemon mode. CLAUDE_CODE_DISABLE_BACKGROUND_TASKS is a different setting and does not replace this choice.

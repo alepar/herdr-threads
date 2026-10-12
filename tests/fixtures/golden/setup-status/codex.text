@@ -2,7 +2,13 @@ action: status
 adopted: none
 codex_config.codex_home: <root>/codex home
 codex_config.layers: [{"herdr_threads_hook":"identical","owned_events_with_hooks":["SessionStart","SubagentStart","PreToolUse","UserPromptSubmit","SubagentStop","SessionEnd"],"path":"<root>/codex home/hooks.json","unreadable":null}]
-command: '<bin>' '--state-dir' '<root>/state' '--host-endpoint' '<root>/host.sock' 'hook' 'codex' # herdr-threads-owner:<uuid>
+command: '<bin>' '--state-dir' '<root>/state' '--host-endpoint' '<root>/host.sock' 'hook' 'codex'
+commands.PreToolUse: '<bin>' '--state-dir' '<root>/state' '--host-endpoint' '<root>/host.sock' 'hook-event' 'codex' 'PreToolUse'
+commands.SessionEnd: '<bin>' '--state-dir' '<root>/state' '--host-endpoint' '<root>/host.sock' 'hook-event' 'codex' 'SessionEnd'
+commands.SessionStart: '<bin>' '--state-dir' '<root>/state' '--host-endpoint' '<root>/host.sock' 'hook-event' 'codex' 'SessionStart'
+commands.SubagentStart: '<bin>' '--state-dir' '<root>/state' '--host-endpoint' '<root>/host.sock' 'hook-event' 'codex' 'SubagentStart'
+commands.SubagentStop: '<bin>' '--state-dir' '<root>/state' '--host-endpoint' '<root>/host.sock' 'hook-event' 'codex' 'SubagentStop'
+commands.UserPromptSubmit: '<bin>' '--state-dir' '<root>/state' '--host-endpoint' '<root>/host.sock' 'hook-event' 'codex' 'UserPromptSubmit'
 config_file: <root>/codex home/config.toml
 current_command_matches: true
 duplicate_hook: false
@@ -31,6 +37,7 @@ permissions.rules_file: <root>/codex home/rules/herdr-threads.rules
 permissions.state: not_installed
 recipes: codex-hooks-v1 {0.157.1, 0.158.0, 0.159.3}
 recorded_phase: installed
+registration_conflict: false
 sandbox.omitted: setup uses approved outside-sandbox commands and installs no sandbox allowance
 sandbox.present: false
 sandbox.recorded: false
