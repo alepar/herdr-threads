@@ -1,0 +1,52 @@
+{
+  "head": "33c74793a369fad377036bf182b832c8cb05bac7",
+  "tree": "0c1922d5432308ce41e15d277211892f4d4ded32",
+  "run_id": "b36e4e14-d9e6-4144-b6b9-77e58b4ad1e0",
+  "expected": [
+    "agy::activation::activation_v2_registered_agy_failed_stdout_replays_without_completion"
+  ],
+  "commands": [],
+  "list": {
+    "exit": 0,
+    "seconds": 15.727995957946405
+  },
+  "selected": [
+    [
+      "herdr-threads::hook_entrypoint",
+      "agy::activation::activation_v2_registered_agy_failed_stdout_replays_without_completion"
+    ]
+  ],
+  "binaries": [
+    {
+      "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target/debug/deps/hook_entrypoint-a6c34f3f3a02c12c",
+      "sha256": "9c18652b8fa3d87d910115b60a5656a9c4a36e41a644c56e9373e848bd23c954"
+    }
+  ],
+  "run": {
+    "exit": 100,
+    "seconds": 1.9052422499516979,
+    "argv": [
+      "nice",
+      "cargo",
+      "nextest",
+      "run",
+      "--locked",
+      "--all-features",
+      "--test",
+      "hook_entrypoint",
+      "--no-fail-fast",
+      "-E",
+      "test(=agy::activation::activation_v2_registered_agy_failed_stdout_replays_without_completion)"
+    ]
+  },
+  "leaks": {
+    "exit": 0,
+    "seconds": 0.29429904103744775,
+    "argv": [
+      "scripts/check-no-leaked-processes",
+      "--run-id",
+      "b36e4e14-d9e6-4144-b6b9-77e58b4ad1e0"
+    ]
+  },
+  "leak_exit": 0
+}

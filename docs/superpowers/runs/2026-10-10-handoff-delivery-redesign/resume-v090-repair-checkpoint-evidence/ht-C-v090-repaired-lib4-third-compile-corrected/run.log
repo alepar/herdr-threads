@@ -1,0 +1,10 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+────────────
+ Nextest run ID 9e38435f-80a1-45cf-9a09-878420c7a474 with nextest profile: default
+    Starting 4 tests across 1 binary (4838 tests skipped)
+        PASS [   0.458s] (1/4) herdr-threads harness::agy::delivery::tests::daemon::canonical_v2_system_allocated_pages_fit_actual_native_codec
+        PASS [   0.459s] (2/4) herdr-threads harness::agy::delivery::tests::daemon::canonical_v2_downgraded_user_allocated_pages_fit_actual_native_codec
+        PASS [   0.770s] (3/4) herdr-threads service::delivery_pull::tests::presentation_capacity_due_walk_preserves_partial_body_until_real_ack
+        PASS [   0.774s] (4/4) herdr-threads service::delivery_pull::tests::presentation_owner_replay_preserves_partial_body_until_real_ack
+────────────
+     Summary [   0.788s] 4 tests run: 4 passed, 4838 skipped

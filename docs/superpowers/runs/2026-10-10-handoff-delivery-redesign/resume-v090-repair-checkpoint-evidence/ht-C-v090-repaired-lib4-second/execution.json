@@ -1,0 +1,26 @@
+{
+  "head": "6c7bcb572108209a07e41b6ca7f7d5ca4f4e392b",
+  "tree": "1ed0a4a53301e6edc0198ab10b7d8e22ff52df69",
+  "run_id": "82602e03-53d5-48a3-86e6-2e8f257e1214",
+  "expected": [
+    "harness::agy::delivery::tests::daemon::canonical_v2_downgraded_user_allocated_pages_fit_actual_native_codec",
+    "harness::agy::delivery::tests::daemon::canonical_v2_system_allocated_pages_fit_actual_native_codec",
+    "service::delivery_pull::tests::presentation_capacity_due_walk_preserves_partial_body_until_real_ack",
+    "service::delivery_pull::tests::presentation_owner_replay_preserves_partial_body_until_real_ack"
+  ],
+  "commands": [],
+  "list": {
+    "exit": 101,
+    "seconds": 7.350410792045295
+  },
+  "leaks": {
+    "exit": 0,
+    "seconds": 0.17886020906735212,
+    "argv": [
+      "scripts/check-no-leaked-processes",
+      "--run-id",
+      "82602e03-53d5-48a3-86e6-2e8f257e1214"
+    ]
+  },
+  "leak_exit": 0
+}

@@ -1,0 +1,8 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+────────────
+ Nextest run ID 17298d0f-fccd-4442-817c-a55e3c156a25 with nextest profile: default
+    Starting 2 tests across 1 binary (4841 tests skipped)
+        PASS [   0.166s] (1/2) herdr-threads store::materialization::tests::unavailable_send_materializes_due_deadline_without_availability
+        PASS [   0.166s] (2/2) herdr-threads store::materialization::tests::stall_before_first_unit_still_does_one_unit_within_call_budget
+────────────
+     Summary [   0.180s] 2 tests run: 2 passed, 4841 skipped

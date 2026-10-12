@@ -1,0 +1,7 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+────────────
+ Nextest run ID 0becd13c-84e3-4daa-b8ad-0a2632fe4909 with nextest profile: default
+    Starting 1 test across 1 binary (726 tests skipped)
+        PASS [   0.296s] (1/1) herdr-threads::combined invitation_content::binding_presentation::carry_quantum_accounts_all_thirty_two_keys_and_refuses_a_thirty_third
+────────────
+     Summary [   0.298s] 1 test run: 1 passed, 726 skipped
