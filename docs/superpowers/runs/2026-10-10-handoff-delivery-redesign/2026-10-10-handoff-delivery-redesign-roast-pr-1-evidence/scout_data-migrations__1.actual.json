@@ -1,0 +1,12 @@
+{
+  "findings": [
+    {
+      "claim": "The populated receipt-upgrade preservation test rejects the six intentionally added migration-45 receipt triggers, so its catalog-equality assertion fails on the final schema.",
+      "location": "tests/store/effective.rs:2136",
+      "category": "data-migrations",
+      "external": false,
+      "kind": "ISSUE",
+      "evidence": "In receipt_send_time_upgrade_preserves_populated_v28_and_v29_graph_and_restarts_once, objects() selects every non-null trigger/index SQL definition attached to receipts or receipt_state except a named list of migration-42 additions (lines 2135-2141). It captures old_objects from schema 28 or 36, calls schema::initialize, and asserts objects(&db) == old_objects at line 2145. initialize now installs migration 45. migrations/0045_presentation_relevance.sql:385-438 adds presentation_fence_receipt_state_insert/update/delete and presentation_fence_receipts_insert/update/delete, none of which appears in the exclusion list. The post-upgrade query therefore returns six extra rows and the equality fails even for a correct preservation migration. The test is active through src/store/effective.rs:2036. Reproduction nominated to the parent's sole runtime lane: nice cargo test --locked --all-features store::effective::tests::receipt_send_time_upgrade_preserves_populated_v28_and_v29_graph_and_restarts_once. This is a defect in the executable migration-preservation oracle; no data-loss claim or completed final-matrix claim is made. This scout performed static review only."
+    }
+  ]
+}

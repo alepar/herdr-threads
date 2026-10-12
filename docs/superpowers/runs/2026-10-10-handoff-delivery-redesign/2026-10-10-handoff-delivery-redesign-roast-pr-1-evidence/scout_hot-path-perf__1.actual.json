@@ -1,0 +1,12 @@
+{
+  "findings": [
+    {
+      "claim": "The new private ordinary presentation source can traverse an unbounded membership history while charging only the outer warning candidate, defeating its physical-work bound.",
+      "location": "src/store/invitation_content.rs:2442",
+      "category": "hot-path-perf",
+      "external": false,
+      "kind": "ISSUE",
+      "evidence": "The fresh Hook/Watch presentation path calls ordinary_presentation_page here and copies only ordinary.visited into PresentationWork. Its ordinary_only mode disables invitations but leaves Source::Warnings active (queries.rs:6437-6539, 7008-7054, 7158-7163). Each warning candidate calls is_warning_recipient at queries.rs:7025. If the target is neither a projected recipient nor the affected seat, effective.rs:1650-1655 executes EXISTS over membership_intervals with thread/seat equality, ordinal/joined upper bounds, and a residual left_seq predicate. The installed indexes are (thread_id,seat_id,joined_seq), (thread_id,seat_id,ordinal), and a partial open-interval index; none bounds inspection of closed intervals for a negative result. A valid target that repeatedly joined and left a thread before the warning cutoff, with no membership at that cutoff and no projected recipient, therefore forces inspection proportional to its retained closed intervals within one outer candidate. Those inspections are absent from slice.visited, and the budget check runs between scan calls, not inside that membership query. This route runs during normal capable delivery pulls, including finite Watch continuation calls, under the store writer transaction. The new presentation_relevance module has an explicitly resumable membership fallback, but this independent ordinary source bypasses it; assemble_message even discards the resulting warning variants because notices and controls have their own sources. The accepted Q4 public-Lazy/completion-walk limits do not cover this private warning-recipient traversal, and the Q4 selected-query VM proof exercises different SQL. This is a static algorithmic finding, not a measured latency claim. A precise parent-owned runtime control is to execute the actual private ordinary page with one such warning and 128 versus 8192 valid closed membership intervals, recording linked-SQLite work and the unchanged outer visited count. The private path must either avoid this redundant warning source or account for and resume its history traversal before claiming the 100-candidate physical envelope."
+    }
+  ]
+}

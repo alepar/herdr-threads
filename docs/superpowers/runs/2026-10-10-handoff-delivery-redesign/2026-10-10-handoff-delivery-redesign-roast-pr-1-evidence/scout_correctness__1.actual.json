@@ -1,0 +1,20 @@
+{
+  "findings": [
+    {
+      "claim": "A queued timed invitation can wake the session after its attention episode has been cleared because the clear retracts only Attention items and leaves the invitation's wake eligibility intact.",
+      "location": "integrations/claude/mod/hooks/register.js:246",
+      "category": "correctness",
+      "external": false,
+      "kind": "ISSUE",
+      "evidence": "The new invitation path copies wakes=true into the queued item at lines 296-313. The new passive predicate at line 540 excludes waking invitations, so pump's filters at lines 440 and 457 treat that invitation alone as sufficient reason to append and submit a wake. On attention_cleared, lines 246-249 remove only q.kind==='attention'; the invitation is neither removed nor made passive. A timed invitation and its matching Attention can be received while a draft or an active turn holds delivery; acceptance elsewhere then produces the scoped clear, removing the Attention but leaving the timed invitation. Once the hold ends, that stale invitation still triggers the idle wake even though the canonical invitation is accepted. InvitationContext::wakes in src/delivery/invitation.rs supplies the timed classification; Controls::absent in src/store/invitation_content.rs supplies the clear after relevance becomes absent. Existing delivery.test.ts:1911 explicitly establishes that a timed invitation alone submits a wake, while the clear tests cover Attention and ordinary messages only. Cheapest focused reproduction: use the existing mod core harness with IDLE and a nonempty draft, enqueue a wakes=true invitation plus epochAttention('1'), receive epochCleared('1'), clear the draft and tick; assert no wake is submitted. Static source review only; no test was executed by this scout."
+    },
+    {
+      "claim": "A late append refusal from an ended watch run deletes a newer invitation context queued by the replacement run under the same invitation ID.",
+      "location": "integrations/claude/mod/hooks/register.js:289",
+      "category": "correctness",
+      "external": false,
+      "kind": "ISSUE",
+      "evidence": "The changed duplicate check at lines 289-290 deliberately permits multiple invitation contexts under one ID, and complete() at line 327 now removes invitation objects by identity to preserve the newer context. Its error-path counterpart remains ID-wide: discardStale() at lines 155-161 collects stale item IDs and filters every matching queue entry, regardless of its run or contextVersion. Reproduction chain: enqueue passive invitation context A with io.append still pending; end and restart the watch child, which retains the old inflight item; receive context B with the same invitation ID and a changed command_context_epoch on the replacement run. B is queued separately and cannot append yet because appendInflight is still true. Resolve A's append with a denial. pumpLazy at lines 563-569 calls discardStale(A), which removes both A and live B. B was never appended, and the canonical Watch presentation has already been flushed/confirmed independently of this later mod append. The newly added same-ID inflight tests at delivery.test.ts:1973 and 2038 exercise successful completion only, so they do not cover this path. Cheapest focused reproduction: extend that existing manual-append harness sequence with h.exit(1), advance through restart, connect, deliver B, then resolve pendingAppends[0] with {deny:'late'}; verify B remains queued and eventually appends. Static source review only; no test was executed by this scout."
+    }
+  ]
+}

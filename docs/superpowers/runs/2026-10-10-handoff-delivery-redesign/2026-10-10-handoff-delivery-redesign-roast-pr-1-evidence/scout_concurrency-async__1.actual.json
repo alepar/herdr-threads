@@ -1,0 +1,12 @@
+{
+  "findings": [
+    {
+      "claim": "V2 presentation requests waiting for the per-seat owner mutex ignore cancellation and deadlines, retaining their worker and transport admission slot until the current owner releases the mutex.",
+      "location": "src/service/delivery_presentation.rs:62",
+      "category": "concurrency-async",
+      "external": false,
+      "kind": "ISSUE",
+      "evidence": "presentation_pull acquires the new owner permit with unconditional permit.lock() at line 62, before budget-aware admission; presentation_confirm repeats this at line 306. The owner guard remains held through store.presentation_pull (line 199) and post-commit ledger/replay installation. A second request for the same seat that expires or disconnects while waiting cannot observe its CallBudget until the first request finishes. transport.rs:514-533 cancels on timeout, EOF or shutdown but then awaits the synchronous worker specifically to retain all admission permits until it exits. This therefore ties cancelled predecision calls and their ordinary slots to somebody else's potentially slow transaction/commit. StoreContext explicitly does not bound physical commit/fsync time (src/store/connection.rs:330-336), whereas the store writer's existing try_lock loop checks cancellation/deadline during contention (src/store/mod.rs:355-385). This finding concerns the waiter, not cancellation of an already accepted commit. A deterministic check can hold the exact presentation_owner permit, dispatch a valid V2 pull or confirmation with a cancelled or short-deadline budget on another thread, and assert that it exits before releasing the held permit; the current code cannot do so. Hook and Watch V2 calls, confirmations, and Watch replacement share this per-seat permit, so overlapping hooks or reconnect activity exercise the contention path."
+    }
+  ]
+}

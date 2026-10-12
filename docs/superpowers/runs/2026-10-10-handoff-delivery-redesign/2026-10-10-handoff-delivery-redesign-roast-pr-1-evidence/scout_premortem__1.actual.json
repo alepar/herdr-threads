@@ -1,0 +1,12 @@
+{
+  "findings": [
+    {
+      "claim": "The long-lived mod retains an unbounded history of bodies for one invitation when context revisions arrive while append is stalled or repeatedly refused.",
+      "location": "integrations/claude/mod/hooks/register.js:289",
+      "category": "premortem",
+      "external": false,
+      "kind": "ISSUE",
+      "evidence": "The new invitation duplicate predicate at lines 289-290 matches both identity and contextVersion, so each different topic_revision/command_context_epoch for the same canonical invitation appends another body to S.queue at lines 296-314. No old non-inflight revision is superseded and this queue has no cardinality or byte bound. pumpLazy returns while S.appendInflight is true (line 544); its io.append promise has no completion bound, and a normal deny preserves current-run items and sets only a retry delay (lines 568-572; discardStale only removes a lost run). Consequently a single still-pending lazy invitation, successive successfully streamed revisions, and an unresolved append or repeated append denials retain every revision indefinitely in this session. This is independent of the acknowledged transport-queue limit: src/cli/watch.rs:690-711 confirms each daemon presentation after stdout flush without waiting for the mod append, so the canonical outbox does not provide backpressure for S.queue. The 1024-entry cap at register.js:336-338 applies only to successfully delivered invitationVersions, not pending bodies. After append recovers, pumpLazy selects every queued passive revision into one frame (lines 546-554), also making the recovery allocation grow with accumulated history. The existing manual-append tests at delivery.test.ts:1973 and :2038 establish retention across one changed/whole revision but do not bound repeated changes. This is newly introduced same-invitation history in a long-lived process; the accepted latest-context-after-quiescence contract in TRUST-POLICY.md:1554-1556 does not require retaining every obsolete queued revision. Keeping the currently in-flight item plus a coalesced latest pending revision would preserve that contract without this growth."
+    }
+  ]
+}

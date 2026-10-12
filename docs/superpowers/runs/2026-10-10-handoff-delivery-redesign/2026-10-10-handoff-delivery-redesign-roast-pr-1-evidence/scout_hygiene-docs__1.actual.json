@@ -1,0 +1,36 @@
+{
+  "findings": [
+    {
+      "claim": "The compiled launch help still presents installed owned hooks as a mandatory preflight condition even though this change allows launch without them.",
+      "location": "src/cli/help.rs:74",
+      "category": "hygiene-docs",
+      "external": false,
+      "kind": "ISSUE",
+      "evidence": "LAUNCH_HEAD says \"the owned user-level hooks must be set up\" under \"Preflight (nothing is started when any step refuses)\". commands.rs:768 attaches launch_help() to the public launch command, and help.rs:261 incorporates this text unchanged. In contrast, src/harness/launch.rs:893 now handles missing configuration with (None, native argv), src/harness/claude.rs:1410 and src/harness/codex.rs:2214 use optional_launch_hook, and src/cli/launch.rs:884 converts unavailable setup status into diagnostic status. tests/cli/launch.rs:466 explicitly covers successful launch with missing/wrong-profile/disabled/stale/malformed readiness. The same stale prerequisite remains in the current linked installation guide at docs/install.md:349 (\"If the installation is absent ... launch refuses\"). Users consulting launch help are therefore told that a removed gate still protects launch."
+    },
+    {
+      "claim": "The embedded agent skill still classifies invitations generally as idle-waking nudges after ordinary agent invitations become lazy by default.",
+      "location": "integrations/skill/SKILL.md:23",
+      "category": "hygiene-docs",
+      "external": false,
+      "kind": "ISSUE",
+      "evidence": "The \"Waking on every message\" paragraph lists \"invitations\" alongside send --nudge, ACK requests and warnings as things that wake an idle seat. This diff changes src/cli/commands.rs:2260 to choose InvitationConfirmation::Lazy unless --require-ack or --deadline is supplied; src/store/attention.rs:721 selects only NULL/require_ack policies for timed attention, and TRUST-POLICY.md:542 explicitly says modern Lazy invitations have no native/mod wake. The new paragraph later in this same skill (line 119) also says invitations are lazy by default. The contradictory early operational guidance can cause an agent to rely on bare invite to notify an idle peer instead of requesting timed acceptance."
+    },
+    {
+      "claim": "The expanded public handoff body API leaves the linked current command reference describing only a positional body capped at 1024 bytes.",
+      "location": "src/cli/help.rs:141",
+      "category": "hygiene-docs",
+      "external": false,
+      "kind": "ISSUE",
+      "evidence": "This changed help line advertises positional/--file/--stdin instruction sources and 1..65536 UTF-8 bytes. The changed HandoffArgs in src/cli/commands.rs:1362 and :1408 enforces exactly one of those three sources, and src/protocol/handoff.rs:650 uses messages::MAX_BODY_BYTES while automatic.rs:117 permits 65536 bytes. However docs/agent-usage.md:339 still says \"One quoted argument after -- ... (1\u20131024 UTF-8 bytes)\" and gives no --file/--stdin handoff form. This is the current command reference linked by README.md:201, not historical RUN evidence. Users following that reference cannot discover the newly supported complete-instruction input path and are told a valid longer handoff is invalid."
+    },
+    {
+      "claim": "The stable-hook ownership change leaves the current installation guide instructing users that every owned command contains the removed per-install owner marker.",
+      "location": "src/harness/setup.rs:59",
+      "category": "hygiene-docs",
+      "external": false,
+      "kind": "ISSUE",
+      "evidence": "native_event_command explicitly emits only the quoted event argv and no installation owner marker; native_entries at :265 builds hook-event HARNESS EVENT groups from it. The updated integrations/codex/README.md:224 and integrations/claude/README.md:112 correctly say UUIDs live in the private manifest rather than shell commands. But docs/install.md:187 still states \"Every owned hook command carries a # herdr-threads-owner:<id> marker\", and :183 still identifies the installed command as hook claude|codex --event EVENT. Both README.md:19 and integrations/codex/README.md:23 send users to this current setup/ownership guide. Its advertised way to recognize managed hooks now disagrees with every new stable installation and omits the explicit legacy-to-stable migration behavior."
+    }
+  ]
+}

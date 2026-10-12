@@ -1,0 +1,20 @@
+{
+  "findings": [
+    {
+      "claim": "Upgrading the executable and daemon while retaining the published Claude mod makes Watch select V2 output whose invitation and notice items that installed mod silently discards.",
+      "location": "src/cli/watch.rs:365",
+      "category": "deploy-safety",
+      "external": false,
+      "kind": "ISSUE",
+      "evidence": "probe_mod_watch selects presentation solely from daemon capabilities (delivery.presentation_v2, mod.watch_presentation_v2 and inbox.binding_cursors_v1); run_session_marked forwards that selection without any opt-in from the process consuming stdout. Both published565 and this branch start the child with the same watch --harness claude --session SID arguments (integrations/claude/mod/hooks/register.js startChild). The published565 onLine explicitly returns for every kind other than message, lazy and attention after its status/attention_cleared handling; this diff adds invitation and notice handling only to the separately installed register.js file. The new presentation_watch_lines at src/delivery/presentation.rs:107-121 emits precisely these additional kinds. The new watch writes/flushed bytes and sends DeliveryPresentationConfirmV2 at src/cli/watch.rs:690-702 without checking that consumer. Replacing the binary does not itself rewrite installed mod files; a subsequent child restart can therefore connect old JS to new CLI/new daemon. This is deterministic incompatibility at the parser boundary, not a claim of transcript proof or a demand to eliminate TRUST A7 downstream silent loss. Gate the new stdout contract on explicit support from the mod, or preserve legacy output for unqualified consumers. A focused reproduction can load published createCore with fake io, feed a new invitation/notice line, and observe it never reaches append or tool context; pair with the new Watch fixture that confirms the emitted page. No runtime reproduction was executed by this scout."
+    },
+    {
+      "claim": "A binary rollback to the published build cannot reopen an instance after this build commits its first new database migration.",
+      "location": "src/store/schema.rs:689",
+      "category": "deploy-safety",
+      "external": false,
+      "kind": "ISSUE",
+      "evidence": "initialize automatically executes V36 and commits user_version=36 for every database at version35 or below (lines689-705), then runs further migrations through version45. In the named published565 base, src/store/schema.rs defines LATEST_VERSION=35 and initialize accepts 18..=35 but returns IncompatibleSchema for higher versions. The new schema path has transaction rollback on migration failure, but no reverse migration or pre-migration database snapshot; successfully committed upgrades remain beyond the published binary's accepted range. Therefore reverting just the executable after discovering a delivery regression cannot restore service on the same state directory; a pre-upgrade state restoration or a forward repair is required. The new hook downgrade warning in src/harness/setup.rs only tells operators to unsetup with the new build before downgrading, which does not address this database barrier. This is a local single-instance tool, so there is no claim of a distributed rolling-deployment requirement; the failure is specifically rollback of the shared durable instance after the new migration has committed."
+    }
+  ]
+}

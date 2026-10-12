@@ -1,0 +1,21 @@
+{
+  "groups": [
+    {"ids": [9], "suggestedSeverity": "Blocking", "rank": 1},
+    {"ids": [1], "suggestedSeverity": "Blocking", "rank": 2},
+    {"ids": [6], "suggestedSeverity": "Blocking", "rank": 3},
+    {"ids": [8], "suggestedSeverity": "Blocking", "rank": 4},
+    {"ids": [7], "suggestedSeverity": "Should-fix", "rank": 5},
+    {"ids": [11], "suggestedSeverity": "Should-fix", "rank": 6},
+    {"ids": [2], "suggestedSeverity": "Should-fix", "rank": 7},
+    {"ids": [0], "suggestedSeverity": "Should-fix", "rank": 8},
+    {"ids": [12], "suggestedSeverity": "Should-fix", "rank": 9},
+    {"ids": [5], "suggestedSeverity": "Should-fix", "rank": 10},
+    {"ids": [10], "suggestedSeverity": "Should-fix", "rank": 11},
+    {"ids": [4], "suggestedSeverity": "Should-fix", "rank": 12},
+    {"ids": [14], "suggestedSeverity": "Nit", "rank": 13},
+    {"ids": [16], "suggestedSeverity": "Nit", "rank": 14},
+    {"ids": [13], "suggestedSeverity": "Nit", "rank": 15},
+    {"ids": [15], "suggestedSeverity": "Nit", "rank": 16},
+    {"ids": [3], "suggestedSeverity": "Nit", "rank": 17}
+  ]
+}

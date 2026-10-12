@@ -1,0 +1,28 @@
+{
+  "findings": [
+    {
+      "claim": "The new invitation module exposes an unused second frozen-outbox representation and rendering API alongside the representation that production actually uses.",
+      "location": "src/delivery/invitation.rs:119",
+      "category": "simplicity-design",
+      "external": false,
+      "kind": "ISSUE",
+      "evidence": "FrozenInvitation, its block/watch methods, block_text, join_blocks and this module's render_key are newly introduced public APIs (src/lib.rs exports delivery; delivery/mod.rs exports invitation), but repository searches of src and tests find no consumers or constructors outside their definitions. MAX_BLOCKS and MAX_TEXT_BYTES in this same module are also unused. The actual durable outbox instead uses invitation_content.rs:1560 FrozenPresentation { item: PresentationItemV2, context_key }, reconstructs replay items from those typed descriptors at 1683-1770, and sizes/renders via delivery/presentation.rs. Thus the offset-based format, inverse frame parser, separate prefix-only hash and duplicate limits add an alternate public contract with no delivery or test requirement using it. Removing this unused surface leaves the implemented behavior intact and avoids maintaining two purported frozen formats."
+    },
+    {
+      "claim": "Presentation allocation and replay render and persist a duplicate outbox_text payload that no output or recovery path reads.",
+      "location": "src/store/invitation_content.rs:2774",
+      "category": "simplicity-design",
+      "external": false,
+      "kind": "ISSUE",
+      "evidence": "Fresh allocation sets state.outbox_text = presentation_hook_text(&frozen_items) at 2774 while storing full typed bodies again in outbox_descriptors at 2775. replay repeats that rendering at 1754. All occurrences of outbox_text in source are its field/default, load-time byte validation, these assignments, and clearing in retire_outbox; no branch consumes it. page() at 1603-1648 renders Hook text afresh from items, and Watch renders those same typed items separately. Nevertheless generic save() at 473-520 includes outbox_text in every INSERT/UPDATE, and load_raw() at 289-415 copies it through JSON values. The new migration admits up to 65536 bytes for this unused persisted string. Keep a single canonical typed outbox representation and stop computing/persisting the unused body copy; this removes actual serialization and stored bytes on both allocation and replay without altering replay semantics."
+    },
+    {
+      "claim": "Small presentation metadata reads and passive maintenance are coupled to loading and rewriting the full retained presentation payload through the monolithic State accessor.",
+      "location": "src/store/invitation_content.rs:2945",
+      "category": "simplicity-design",
+      "external": false,
+      "kind": "ISSUE",
+      "evidence": "refresh() loads all State fields at 2945 and unconditionally calls save() at 3080, although its work changes the passive mod_* progress/version and ordinary-publication signal scalars. load_raw() derives SELECT columns from every State field and materializes each value in a JSON map, converts that map to State, then serializes the whole State to another JSON value merely to inspect negative counters (289-415). save() serializes every field again, clones all text into SQL values, and includes every field in the upsert (473-520). This includes unrelated ordinary_pending (155731-byte cap), ordinary_partial (49415-byte cap), outbox_descriptors (262144-byte cap) and outbox_text (65536-byte cap). ModChannelRegistry::pass invokes this for every capable live binding (service/mod_channels.rs:434), including the worker's periodic safety pass, under SqliteStore::presentation_refresh's writer transaction (store/mod.rs:1231). The same accessor is used by render_selection() at 608 just to obtain the frozen identity; that accessor is called once in service admission and again in the deciding pull before load() loads the payload a third time. Narrow SELECT/UPDATE accessors for metadata and passive-owned fields, as already used in store/presentation_reader.rs, would preserve the fixed row and protocol while removing this unnecessary body copying and passive full-row upsert. This finding does not assert an unmeasured wall-clock budget breach."
+    }
+  ]
+}

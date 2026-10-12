@@ -86,3 +86,5 @@ SQLite work measurement: outer VmStep hid nested ALTER validation. Actual linked
 - [2026-10-12] Slowness: historical repeat deep reviews/pre-roast final matrix → current5.1 one light review per task/family and final matrix after roast fix loop, plus concurrent cold selector/official engine preparation. Adopted audit preserved.
 - [2026-10-12] Code roast execution rung: manual fan-out (native ordinary subagents); full shipped engine Node bridge owns routing/caps/coverage/enforcement.
 - [2026-10-12] Broad ROOT worktree-switch lint rebuild73.087s exceeds60 incremental limit; preserve it as broad rebuild, require controlled final production-file build/lint measurements rather than claiming budget PASS.
+
+- [2026-10-12] Formal roast two distinct claims shared exact severity/location key; reporter refined retention to its actual insertion anchor296 with provenance, preserving original output/votes. This avoids ambiguous scope-filter routing without repeated reviews.
