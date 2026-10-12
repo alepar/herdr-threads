@@ -1,0 +1,543 @@
+#!/usr/bin/env python3
+"""Linux Docker runner for the herdr-threads e2e checks (usage and costs: scripts/linux-e2e/README.md).
+
+  scripts/linux-e2e/run self-test     [common options]
+  scripts/linux-e2e/run release-smoke [--versions V ...] [common options]
+  scripts/linux-e2e/run doctor        [--hide-harnesses] [common options]
+  scripts/linux-e2e/run wake-e2e      [--codex-auth-file F] [--claude-oauth-token-file F | --anthropic-api-key-file F]
+                                      [--live] [--timeout S] [common options] [-- DRIVER ARGS...]
+  scripts/linux-e2e/run clean         [--keep-image]
+  scripts/linux-e2e/run --self-test   # this script's own parsing/cleanup paths, with a fake docker (no Docker)
+
+Common options: --evidence-dir DIR (default: a new dir under the system temp dir, printed), --platform arm64|amd64
+(default: the Docker server's architecture; the other one runs emulated), --no-cache (no named cargo/target volumes).
+
+Every subcommand builds the image (scripts/linux-e2e/Dockerfile, context from `git archive HEAD`), starts one
+`docker run --init` container labelled dev.herdr-threads.linux-e2e, streams `git archive HEAD` into it (never a bind
+mount; uncommitted changes are not tested), proves the exported tree equals HEAD^{tree} and rebuilds HEAD's
+commit object over it (so `git rev-parse HEAD` inside is the host's SHA), runs its steps
+(scripts/linux-e2e/in-container.sh), copies the container's evidence into the evidence dir, and removes the
+container on every exit path, including Ctrl-C and SIGTERM. Nothing on the host is touched besides Docker objects
+carrying that label and the evidence dir. No credential ever enters an image or the evidence; wake-e2e copies the
+ones it is given into its container only (README.md, "Credentials").
+
+Exit codes: 0 passed; 1 failed; 2 refused (usage, preflight, missing credentials); 128+N interrupted by signal N.
+Python 3.9+, standard library only.
+"""
+from __future__ import annotations
+
+import argparse
+import datetime
+import json
+import os
+import shutil
+import signal
+import stat
+import subprocess
+import sys
+import tarfile
+import tempfile
+import time
+import uuid
+from pathlib import Path
+
+LABEL = "dev.herdr-threads.linux-e2e"
+IMAGE = "ht-linux-e2e-runner"
+HOME = "/home/tester"
+SRC = f"{HOME}/src"
+STEP = ["bash", f"{SRC}/scripts/linux-e2e/in-container.sh"]
+# name -> mount point; the volume name carries the architecture (an amd64 target dir is no use to arm64).
+VOLUMES = {"cargo": f"{HOME}/.cargo/registry", "target": f"{SRC}/target", "herdr": f"{HOME}/.cache/herdr-releases"}
+EXIT_OK, EXIT_FAIL, EXIT_REFUSED = 0, 1, 2
+# Driver options the runner sets itself inside the container.
+RUNNER_OWNED_DRIVER_ARGS = ("--bin", "--codex-auth-home", "--self-test")
+
+
+class Refused(Exception):
+    pass
+
+
+class Interrupted(BaseException):
+    def __init__(self, signum):
+        super().__init__(f"signal {signum}")
+        self.signum = signum
+
+
+def docker_cmd():
+    return os.environ.get("HT_LINUX_E2E_DOCKER", "docker")
+
+
+def repo_root():
+    override = os.environ.get("HT_LINUX_E2E_REPO")
+    return Path(override).resolve() if override else Path(__file__).resolve().parent.parent.parent
+
+
+def git(repo, *argv):
+    return subprocess.run(["git", "-C", str(repo), *argv], check=True, capture_output=True, text=True).stdout.strip()
+
+
+def listed_herdr_versions(repo):
+    versions = []
+    for line in (repo / "tests" / "herdr-releases.tsv").read_text().splitlines():
+        if line.strip() and not line.startswith("#"):
+            version = line.split("\t")[0]
+            if version not in versions:
+                versions.append(version)
+    return versions
+
+
+def credential_file(path, what):
+    """A credential input: an existing, non-empty regular file (symlinks resolved). Never read into the evidence."""
+    p = Path(path).expanduser()
+    try:
+        st = p.stat()
+    except OSError as e:
+        raise Refused(f"{what}: cannot read {p}: {e.strerror}")
+    if not stat.S_ISREG(st.st_mode) or st.st_size == 0:
+        raise Refused(f"{what}: {p} is not a non-empty regular file")
+    if st.st_mode & 0o077:
+        print(f"linux-e2e: warning: {what} {p} is readable by others (mode {stat.S_IMODE(st.st_mode):o})",
+              file=sys.stderr)
+    return p
+
+
+def token_from(path, what):
+    token = path.read_text().strip()
+    if not token or any(c in token for c in "\r\n\0"):
+        raise Refused(f"{what}: {path} must hold exactly one line")
+    return token
+
+
+def parse(argv):
+    ap = argparse.ArgumentParser(prog="scripts/linux-e2e/run", description=__doc__.splitlines()[0],
+                                 epilog="See scripts/linux-e2e/README.md.")
+    ap.add_argument("--self-test", action="store_true", help="this script's own tests (fake docker, no Docker)")
+    sub = ap.add_subparsers(dest="command")
+
+    def common(p):
+        p.add_argument("--evidence-dir", help="host dir for the evidence (default: new dir under the temp dir)")
+        p.add_argument("--platform", choices=("arm64", "amd64"), help="container architecture (default: native)")
+        p.add_argument("--no-cache", action="store_true", help="no named cargo/target/Herdr cache volumes")
+        return p
+
+    common(sub.add_parser("self-test", help="wake-e2e driver --self-test in Linux"))
+    rs = common(sub.add_parser("release-smoke", help="scripts/herdr-release-smoke against listed Herdr releases"))
+    rs.add_argument("--versions", nargs="+", help="subset of tests/herdr-releases.tsv (default: all)")
+    dr = common(sub.add_parser("doctor", help="install the static release from a file:// tree; doctor in/out of a pane"))
+    dr.add_argument("--hide-harnesses", action="store_true", help="run without claude/codex on PATH")
+    we = common(sub.add_parser("wake-e2e", help="the live wake matrix in a Herdr pane (needs credentials and --live)"))
+    we.add_argument("--codex-auth-file", help="Codex auth.json, copied mode 0600 into the container's scratch home")
+    claude = we.add_mutually_exclusive_group()
+    claude.add_argument("--claude-oauth-token-file",
+                        help="file holding a `claude setup-token` token, passed as CLAUDE_CODE_OAUTH_TOKEN")
+    claude.add_argument("--anthropic-api-key-file", help="file holding an API key, passed as ANTHROPIC_API_KEY")
+    we.add_argument("--live", action="store_true", help="really start the harnesses (spends Claude/Codex quota)")
+    we.add_argument("--timeout", type=int, default=3600, help="seconds to wait for the driver (default %(default)s)")
+    we.add_argument("driver_args", nargs=argparse.REMAINDER, help="-- then scripts/wake-e2e.py arguments")
+    cl = sub.add_parser("clean", help="remove every container, volume and image labelled " + LABEL)
+    cl.add_argument("--keep-image", action="store_true", help="keep the runner image (only containers, volumes)")
+    args = ap.parse_args(argv)
+    if not args.self_test and not args.command:
+        ap.error("a subcommand is required")
+    if args.command == "wake-e2e":
+        rest = list(args.driver_args)
+        if rest[:1] == ["--"]:
+            rest = rest[1:]
+        owned = [a for a in rest if a.split("=", 1)[0] in RUNNER_OWNED_DRIVER_ARGS]
+        if owned:
+            ap.error(f"the runner sets these driver options itself: {', '.join(owned)}")
+        args.driver_args = rest
+    return args
+
+
+def wake_harnesses(driver_args):
+    value = "claude,codex"
+    for i, word in enumerate(driver_args):
+        if word == "--harness" and i + 1 < len(driver_args):
+            value = driver_args[i + 1]
+        elif word.startswith("--harness="):
+            value = word.split("=", 1)[1]
+    return [h for h in value.split(",") if h]
+
+
+class Runner:
+    def __init__(self, args):
+        self.args = args
+        self.repo = repo_root()
+        self.docker = docker_cmd()
+        self.run_id = datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6]
+        self.name = f"ht-linux-e2e-{args.command}-{self.run_id}"
+        base = Path(tempfile.gettempdir()) / "ht-linux-e2e"
+        self.evidence = Path(args.evidence_dir) if args.evidence_dir else base / f"{args.command}-{self.run_id}"
+        self.private = None      # 0700 host dir for an env-file; removed at exit
+        self.container = False   # a `docker run` was attempted: cleanup must remove self.name
+        self.child = None
+        self.step_no = 0
+        self.facts = {"command": args.command, "run_id": self.run_id, "container": self.name, "steps": []}
+
+    # ---------- helpers ----------
+    def log_path(self, name):
+        self.step_no += 1
+        d = self.evidence / "host"
+        d.mkdir(parents=True, exist_ok=True)
+        return d / f"{self.step_no:02d}-{name}.log"
+
+    def call(self, argv, name, stdin=None, quiet=False):
+        """Run argv, tee its output into evidence/host/NN-name.log (and the terminal unless quiet)."""
+        path = self.log_path(name)
+        started = time.monotonic()
+        with path.open("w", encoding="utf-8", errors="replace") as log:
+            log.write("$ " + " ".join(argv) + "\n")
+            log.flush()
+            self.child = subprocess.Popen(argv, stdin=stdin if stdin is not None else subprocess.DEVNULL,
+                                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                                          errors="replace")
+            try:
+                for line in self.child.stdout:
+                    log.write(line)
+                    if not quiet:
+                        sys.stdout.write(line)
+                        sys.stdout.flush()
+                rc = self.child.wait()
+            finally:
+                if self.child.poll() is None:
+                    self.child.kill()
+                    self.child.wait()
+                self.child = None
+        self.facts["steps"].append({"step": name, "rc": rc, "elapsed_s": round(time.monotonic() - started, 1),
+                                    "log": str(path.relative_to(self.evidence))})
+        if quiet and rc != 0:
+            sys.stdout.write("".join(path.read_text().splitlines(keepends=True)[-40:]))
+        return rc
+
+    def capture(self, *argv):
+        return subprocess.run([self.docker, *argv], check=True, capture_output=True, text=True).stdout.strip()
+
+    def platform(self):
+        if self.args.platform:
+            return self.args.platform
+        arch = self.capture("info", "--format", "{{.Architecture}}")
+        return {"aarch64": "arm64", "arm64": "arm64", "x86_64": "amd64", "amd64": "amd64"}.get(arch) or \
+            self.refuse(f"unsupported Docker architecture {arch!r}")
+
+    def refuse(self, why):
+        raise Refused(why)
+
+    # ---------- phases ----------
+    def source(self):
+        self.sha = git(self.repo, "rev-parse", "HEAD")
+        self.tree = git(self.repo, "rev-parse", "HEAD^{tree}")
+        dirty = bool(git(self.repo, "status", "--porcelain"))
+        self.facts.update(sha=self.sha, tree=self.tree, host_worktree_dirty=dirty)
+        print(f"linux-e2e {self.args.command}: HEAD {self.sha[:12]}" +
+              (" (uncommitted changes are NOT exported)" if dirty else ""), flush=True)
+
+    def build_image(self, arch):
+        tag = f"{IMAGE}:{arch}"
+        with tempfile.TemporaryDirectory(prefix="ht-linux-e2e-ctx.") as ctx:
+            archive = subprocess.run(["git", "-C", str(self.repo), "archive", "--format=tar", "HEAD",
+                                      "scripts/linux-e2e", "tests/herdr-releases.tsv"],
+                                     check=True, capture_output=True).stdout
+            tar_path = Path(ctx) / "context.tar"
+            tar_path.write_bytes(archive)
+            with tarfile.open(tar_path) as tar:  # our own `git archive` output
+                if hasattr(tarfile, "data_filter"):
+                    tar.extractall(Path(ctx) / "c", filter="data")
+                else:
+                    tar.extractall(Path(ctx) / "c")
+            print(f"  building image {tag} (log: evidence/host)", flush=True)
+            rc = self.call([self.docker, "build", "--progress=plain", "--platform", f"linux/{arch}",
+                            "--label", f"{LABEL}=1", "-t", tag,
+                            "-f", str(Path(ctx) / "c/scripts/linux-e2e/Dockerfile"), str(Path(ctx) / "c")],
+                           "image-build", quiet=True)
+        if rc != 0:
+            raise RuntimeError(f"docker build failed (rc {rc})")
+        self.facts["image"] = {"tag": tag, "id": self.capture("image", "inspect", "--format", "{{.Id}}", tag)}
+        return tag
+
+    def start(self, tag, arch):
+        argv = [self.docker, "run", "-d", "--init", "--name", self.name, "--label", f"{LABEL}=1",
+                "--platform", f"linux/{arch}", "--hostname", "ht-linux-e2e"]
+        if not self.args.no_cache:
+            for key, mount in VOLUMES.items():
+                volume = f"{IMAGE}-{key}-{arch}"
+                self.capture("volume", "create", "--label", f"{LABEL}=1", volume)
+                argv += ["-v", f"{volume}:{mount}"]
+        argv += [tag, "sleep", "infinity"]
+        self.container = True
+        if self.call(argv, "container-start", quiet=True) != 0:
+            raise RuntimeError("docker run failed")
+        print(f"  container {self.name}", flush=True)
+
+    def export_source(self):
+        archive = subprocess.Popen(["git", "-C", str(self.repo), "archive", "--format=tar", "HEAD"],
+                                   stdout=subprocess.PIPE)
+        try:
+            rc = self.call([self.docker, "exec", "-i", self.name, "sh", "-c", f"mkdir -p {SRC} && tar -x -C {SRC}"],
+                           "export-source", stdin=archive.stdout, quiet=True)
+        finally:
+            archive.stdout.close()
+            archive_rc = archive.wait()
+        if rc != 0 or archive_rc != 0:
+            raise RuntimeError(f"source export failed (git archive {archive_rc}, tar {rc})")
+        commit = subprocess.run(["git", "-C", str(self.repo), "cat-file", "commit", self.sha], check=True,
+                                capture_output=True).stdout
+        self.stage(commit, f"{HOME}/run/export-commit", "stage-commit")
+        if self.step("prepare-src", self.sha, self.tree, quiet=True) != 0:
+            raise RuntimeError("the exported tree is not HEAD's tree")
+
+    def step(self, name, *argv, env=None, env_file=None, quiet=False, label=None):
+        cmd = [self.docker, "exec"]
+        if env_file:
+            cmd += ["--env-file", str(env_file)]
+        for k, v in (env or {}).items():
+            cmd += ["-e", f"{k}={v}"]
+        if getattr(self.args, "hide_harnesses", False):
+            cmd += ["-e", "HT_HIDE_HARNESSES=1"]
+        return self.call(cmd + [self.name, *STEP, name, *argv], label or name, quiet=quiet)
+
+    def stage(self, data, dest, name):
+        """Copy bytes into the container as tester, mode 0600 under a 0700 dir; never through the evidence."""
+        parent = dest.rsplit("/", 1)[0]
+        with tempfile.TemporaryFile() as f:
+            f.write(data)
+            f.seek(0)
+            rc = self.call([self.docker, "exec", "-i", self.name, "sh", "-c",
+                            f"umask 077 && mkdir -p {parent} && cat > {dest}"], name, stdin=f, quiet=True)
+        if rc != 0:
+            raise RuntimeError(f"staging {name} failed")
+
+    def copy_evidence(self):
+        out = self.evidence / "container"
+        out.mkdir(parents=True, exist_ok=True)
+        r = subprocess.run([self.docker, "cp", f"{self.name}:{HOME}/evidence/.", str(out)],
+                           capture_output=True, text=True, timeout=300)
+        if r.returncode != 0:
+            print(f"linux-e2e: evidence copy failed: {r.stderr.strip()}", file=sys.stderr)
+
+    def cleanup(self):
+        problems = []
+        if self.child is not None and self.child.poll() is None:
+            self.child.terminate()
+        if self.container:
+            try:
+                self.copy_evidence()
+            except Exception as e:  # noqa: BLE001 - cleanup continues
+                problems.append(f"evidence copy: {e!r}")
+            r = subprocess.run([self.docker, "rm", "-f", "-v", self.name], capture_output=True, text=True)
+            gone = subprocess.run([self.docker, "ps", "-a", "-q", "--filter", f"name=^{self.name}$"],
+                                  capture_output=True, text=True)
+            if r.returncode != 0 and "No such container" not in r.stderr:
+                problems.append(f"docker rm -f {self.name}: {r.stderr.strip()}")
+            elif gone.stdout.strip():
+                problems.append(f"container {self.name} still exists")
+            self.facts["container_removed"] = not problems
+        if self.private:
+            shutil.rmtree(self.private, ignore_errors=True)
+        return problems
+
+    # ---------- subcommands ----------
+    def run_self_test(self):
+        self.source()
+        arch = self.platform()
+        self.start(self.build_image(arch), arch)
+        self.export_source()
+        return EXIT_OK if self.step("self-test") == 0 else EXIT_FAIL
+
+    def run_release_smoke(self):
+        listed = listed_herdr_versions(self.repo)
+        unknown = [v for v in (self.args.versions or []) if v not in listed]
+        if unknown:
+            raise Refused(f"not in tests/herdr-releases.tsv: {', '.join(unknown)} (listed: {', '.join(listed)})")
+        self.source()
+        arch = self.platform()
+        self.start(self.build_image(arch), arch)
+        self.export_source()
+        return EXIT_OK if self.step("release-smoke", *(self.args.versions or [])) == 0 else EXIT_FAIL
+
+    def run_doctor(self):
+        self.source()
+        arch = self.platform()
+        self.start(self.build_image(arch), arch)
+        self.export_source()
+        for name in ("herdr-up", "build-release", "install-release", "daemon-wait", "doctor-outside"):
+            if self.step(name) != 0:
+                return EXIT_FAIL
+        self.step("pane-run", "doctor-pane", "300", "bash", "-c",
+                  "herdr-threads doctor; echo rc=$?; echo; herdr-threads doctor --debug; echo rc=$?",
+                  label="doctor-pane")
+        self.copy_evidence()
+        verdicts = {}
+        for name in ("doctor-outside", "doctor-pane"):
+            path = self.evidence / "container" / f"{name}.txt"
+            text = path.read_text() if path.exists() else ""
+            status = next((ln.split(":", 1)[1].strip() for ln in text.splitlines() if ln.startswith("doctor:")),
+                          "missing")
+            daemon = next((ln.split(":", 1)[1].strip() for ln in text.splitlines() if ln.startswith("daemon:")),
+                          "missing")
+            verdicts[name] = {"doctor": status, "daemon": daemon}
+        self.facts["doctor"] = verdicts
+        for name, v in verdicts.items():
+            print(f"  {name}: doctor {v['doctor']}, daemon {v['daemon']}", flush=True)
+        ok = all(v["doctor"] in ("ok", "degraded") and v["daemon"] == "healthy" for v in verdicts.values())
+        return EXIT_OK if ok else EXIT_FAIL
+
+    def wake_credentials(self):
+        """Host preflight. Returns (env-file lines, codex auth bytes, missing harness credentials)."""
+        a = self.args
+        harnesses = wake_harnesses(a.driver_args)
+        unknown = [h for h in harnesses if h not in ("claude", "codex")]
+        if unknown:
+            raise Refused(f"unknown harness: {', '.join(unknown)}")
+        env_lines, codex_auth, missing = [], None, []
+        given = a.codex_auth_file or a.claude_oauth_token_file or a.anthropic_api_key_file
+        if given and not a.live:
+            raise Refused("credentials given without --live: nothing is staged unless the run may spend quota")
+        if "claude" in harnesses:
+            if a.claude_oauth_token_file:
+                p = credential_file(a.claude_oauth_token_file, "--claude-oauth-token-file")
+                env_lines.append(f"CLAUDE_CODE_OAUTH_TOKEN={token_from(p, '--claude-oauth-token-file')}")
+            elif a.anthropic_api_key_file:
+                p = credential_file(a.anthropic_api_key_file, "--anthropic-api-key-file")
+                env_lines.append(f"ANTHROPIC_API_KEY={token_from(p, '--anthropic-api-key-file')}")
+            else:
+                missing.append("claude (--claude-oauth-token-file or --anthropic-api-key-file)")
+        if "codex" in harnesses:
+            if a.codex_auth_file:
+                p = credential_file(a.codex_auth_file, "--codex-auth-file")
+                codex_auth = p.read_bytes()
+                try:
+                    json.loads(codex_auth)
+                except ValueError:
+                    raise Refused(f"--codex-auth-file: {p} is not JSON (expected a Codex auth.json)")
+            else:
+                missing.append("codex (--codex-auth-file)")
+        self.facts["credentials"] = {"claude": next((ln.split("=", 1)[0] for ln in env_lines), None),
+                                     "codex_auth_json": codex_auth is not None, "live": a.live,
+                                     "harnesses": harnesses}
+        return env_lines, codex_auth, missing
+
+    def run_wake_e2e(self):
+        env_lines, codex_auth, missing = self.wake_credentials()
+        if missing:
+            print("linux-e2e wake-e2e: no credentials for " + "; ".join(missing) +
+                  ": preparing the container anyway; the in-pane preflight will refuse before any harness starts",
+                  flush=True)
+        elif not self.args.live:
+            print("linux-e2e wake-e2e: --live not given: the in-pane preflight will refuse", flush=True)
+        env_file = None
+        if env_lines:
+            self.private = Path(tempfile.mkdtemp(prefix="ht-linux-e2e-cred."))
+            os.chmod(self.private, 0o700)
+            env_file = self.private / "claude.env"
+            fd = os.open(env_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "w") as f:
+                f.write("\n".join(env_lines) + "\n")
+        self.source()
+        arch = self.platform()
+        self.start(self.build_image(arch), arch)
+        self.export_source()
+        # The Claude credential reaches only the headless Herdr server's environment (`docker exec --env-file` from
+        # the host's 0600 file: not in the container config, not in the image, never in the evidence); its panes,
+        # and so the driver and the agents in them, inherit it.
+        if self.step("herdr-up", env_file=env_file) != 0 or self.step("build-bin") != 0:
+            return EXIT_FAIL
+        self.stage(b"".join(a.encode() + b"\0" for a in self.args.driver_args), f"{HOME}/run/driver-args",
+                   "stage-driver-args")
+        if codex_auth is not None:
+            self.stage(codex_auth, f"{HOME}/.ht-creds/codex/auth.json", "stage-codex-auth")
+        if self.args.live:
+            self.stage(b"live\n", f"{HOME}/run/live", "stage-live")
+        self.step("harness-snapshot", "harnesses-before", quiet=True)
+        rc = self.step("pane-run", "wake-e2e", str(self.args.timeout), *STEP, "wake-e2e-pane",
+                       label="wake-e2e-pane")  # the step enforces --timeout inside the container
+        self.step("harness-snapshot", "harnesses-after", quiet=True)
+        if rc == EXIT_REFUSED:
+            print("linux-e2e wake-e2e: refused by the in-pane preflight (see evidence container/wake-e2e.txt)",
+                  flush=True)
+            return EXIT_REFUSED
+        return EXIT_OK if rc == 0 else EXIT_FAIL
+
+    def run(self):
+        return getattr(self, "run_" + self.args.command.replace("-", "_"))()
+
+
+def clean(args):
+    docker = docker_cmd()
+    removed = {}
+    ls = {"containers": ["ps", "-a", "-q", "--filter", f"label={LABEL}"],
+          "volumes": ["volume", "ls", "-q", "--filter", f"label={LABEL}"],
+          "images": ["images", "-q", "--filter", f"label={LABEL}", "--filter", f"reference={IMAGE}"]}
+    rm = {"containers": ["rm", "-f", "-v"], "volumes": ["volume", "rm", "-f"], "images": ["rmi", "-f"]}
+    rc = EXIT_OK
+    for kind in ("containers", "volumes", "images"):
+        if kind == "images" and args.keep_image:
+            continue
+        ids = sorted(set(subprocess.run([docker, *ls[kind]], check=True, capture_output=True,
+                                        text=True).stdout.split()))
+        if ids:
+            r = subprocess.run([docker, *rm[kind], *ids], capture_output=True, text=True)
+            if r.returncode != 0:
+                print(f"linux-e2e clean: {kind}: {r.stderr.strip()}", file=sys.stderr)
+                rc = EXIT_FAIL
+        removed[kind] = ids
+        print(f"linux-e2e clean: {kind}: {' '.join(ids) if ids else 'none'}")
+    return rc
+
+
+def main(argv=None):
+    args = parse(sys.argv[1:] if argv is None else argv)
+    if args.self_test:
+        return self_test()
+    if args.command == "clean":
+        return clean(args)
+    runner = Runner(args)
+
+    def interrupt(signum, _frame):
+        raise Interrupted(signum)
+
+    saved = {s: signal.getsignal(s) for s in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)}
+    for s in saved:
+        signal.signal(s, interrupt)
+    rc = EXIT_FAIL
+    try:
+        runner.evidence.mkdir(parents=True, exist_ok=True)
+        rc = runner.run()
+    except Refused as e:
+        print(f"linux-e2e: refused: {e}", file=sys.stderr)
+        rc = EXIT_REFUSED
+    except Interrupted as e:
+        print(f"linux-e2e: interrupted ({e}); removing the container", file=sys.stderr)
+        rc = 128 + e.signum
+    except Exception as e:  # noqa: BLE001 - reported, then cleanup
+        print(f"linux-e2e: failed: {e}", file=sys.stderr)
+        rc = EXIT_FAIL
+    finally:
+        for s in saved:  # cleanup runs to the end: a second Ctrl-C must not cut it off
+            signal.signal(s, signal.SIG_IGN)
+        problems = runner.cleanup()
+        if problems:
+            print("linux-e2e: cleanup incomplete: " + "; ".join(problems), file=sys.stderr)
+            rc = EXIT_FAIL
+        runner.facts["exit"] = rc
+        try:
+            runner.evidence.mkdir(parents=True, exist_ok=True)
+            (runner.evidence / "runner.json").write_text(json.dumps(runner.facts, indent=2) + "\n")
+        except OSError:
+            pass
+        print(f"evidence: {runner.evidence} (exit {rc})", flush=True)
+        for s, handler in saved.items():
+            signal.signal(s, handler)
+    return rc
+
+
+def self_test():
+    """This script's own tests with a fake docker (scripts/tests/test_linux_e2e_run.py)."""
+    import unittest
+    tests = Path(__file__).resolve().parent.parent / "tests"
+    suite = unittest.defaultTestLoader.discover(str(tests), pattern="test_linux_e2e_run.py")
+    return EXIT_OK if unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful() else EXIT_FAIL
+
+
+if __name__ == "__main__":
+    sys.exit(main())
