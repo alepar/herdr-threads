@@ -399,14 +399,26 @@ fn preaccept_utf8_body_final_flushed_text_advances_only_its_binding_and_invalida
     let mut argv = body_argv(&message, &["--max-bytes", "2048"]);
     let mut exact_body = String::new();
     let mut complete = false;
-    for _ in 0..128 {
+    for step in 0..128 {
         flushed.store(false, Ordering::SeqCst);
         let mut writer = BodyWriter {
             flushed: &flushed,
             failure: Failure::None,
             bytes: vec![],
         };
-        f.cli(&f.a, &client, &argv, &mut writer).unwrap();
+        f.cli(&f.a, &client, &argv, &mut writer)
+            .unwrap_or_else(|error| {
+                let last_offset = client.last.lock().unwrap().as_ref().and_then(|details| {
+                    if let MessageContent::Ordinary { body_offset, .. } = details.content {
+                        Some(body_offset)
+                    } else {
+                        None
+                    }
+                });
+                panic!(
+                    "body output step={step} argv={argv:?} last_offset={last_offset:?}: {error:?}"
+                );
+            });
         assert!(flushed.load(Ordering::SeqCst));
         let details = client.last.lock().unwrap().take().unwrap();
         let MessageContent::Ordinary {
@@ -631,5 +643,178 @@ fn private_captured_lazy_tail_resumes_preaccept_after_sibling_full_text_display(
         None,
         "physical presentation still supplies no display cursor authority"
     );
+    f.assert_pending();
+}
+
+#[test]
+fn private_old_episode_lazy_tail_retires_and_reaches_fresh_preaccept_body() {
+    use crate::protocol::{
+        commands::{Invite, Reject},
+        delivery::{DeliveryPresentationConfirmV2, DeliveryPresentationConfirmationV2},
+        pagination::{InboxBatchV2CursorState, InboxBatchV2Source},
+    };
+    let f = BodyFixture::new();
+    let old = f.send("old-episode-long", &long_utf8_body());
+    let initial = f.private_pull(&f.b);
+    let DeliveryPullReplyV2::Page(first) = initial.reply else {
+        panic!("initial private prefix");
+    };
+    assert!(first.items.iter().any(|item| matches!(item,PresentationItemV2::Message { id,lazy:true,content } if id==&old && content.truncated && !content.ack_required)));
+    let cursor: String = f.db.query_row("SELECT ordinary_cursor FROM invitation_presentation_consumers WHERE binding_id=?1 AND consumer='watch'", [f.binding(&f.b).as_str()], |r| r.get(0)).unwrap();
+    let captured =
+        InboxBatchV2CursorState::decode_for(&cursor, &f.instance.to_string(), &f.b.seat).unwrap();
+    assert_eq!(captured.source, InboxBatchV2Source::Lazy);
+    let tail = captured.body.expect("real canonical long-body capture");
+    assert_eq!(tail.message, old);
+    assert!(tail.offset > 0 && long_utf8_body().is_char_boundary(tail.offset as usize));
+    let confirm_output = |page: &crate::protocol::delivery::DeliveryPageV2| {
+        let mut bytes = Vec::new();
+        for line in crate::delivery::presentation::presentation_watch_lines(&page.items) {
+            serde_json::to_writer(&mut bytes, &line).unwrap();
+            bytes.push(b'\n');
+        }
+        bytes.flush().unwrap();
+        assert_eq!(bytes.len(), page.output_bytes as usize);
+        assert!(bytes.len() <= 65_536);
+        if let Some(token) = &page.presentation_token {
+            let confirmed = f
+                .store
+                .presentation_confirm(
+                    &DeliveryPresentationConfirmV2 {
+                        claim: f.b.clone(),
+                        consumer: PresentationConsumer::Watch,
+                        presentation_lease: Some("0123456789abcdef0123456789abcdef".into()),
+                        token: token.clone(),
+                        emitted_controls: page.emitted_controls.clone(),
+                    },
+                    &budget(),
+                )
+                .unwrap();
+            assert_eq!(
+                confirmed.status,
+                DeliveryPresentationConfirmationV2::Confirmed
+            );
+        }
+    };
+    confirm_output(&first);
+    assert_eq!(
+        (f.cursor(&f.a), f.cursor(&f.b)),
+        (None, None),
+        "physical prefix is not semantic completion"
+    );
+    let old_rows = || {
+        f.db.query_row("SELECT m.sequence,m.delivery_mode,m.actor_seat_id,length(CAST(m.body AS BLOB)),r.state,r.legacy_pending,r.preparation_id FROM messages m JOIN lazy_recipients r ON r.message_id=m.id JOIN send_manifests sm ON sm.preparation_id=r.preparation_id AND sm.message_id=m.id WHERE m.id=?1 AND r.seat_id=?2", params![old.as_str(),f.b.seat.as_str()], |r| Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,i64>(3)?,r.get::<_,String>(4)?,r.get::<_,i64>(5)?,r.get::<_,String>(6)?))).unwrap()
+    };
+    let before_old = old_rows();
+    assert_eq!(before_old.1, "lazy");
+    assert_eq!(before_old.2, f.sender.seat.as_str());
+    assert_eq!(before_old.3, 65_536);
+    assert_eq!(before_old.4, "pending");
+    assert_eq!(before_old.5, 0);
+    let old_invitation: InvitationId =
+        f.db.query_row(
+            "SELECT id FROM invitations WHERE thread_id=?1 AND seat_id=?2 AND episode=1",
+            params![f.thread.as_str(), f.b.seat.as_str()],
+            |r| r.get::<_, String>(0),
+        )
+        .map(InvitationId::new)
+        .unwrap();
+    let rejected = f
+        .service
+        .handle(
+            Command::Reject(Reject {
+                claim: f.b.clone(),
+                thread: f.thread.clone(),
+                invitation: old_invitation.clone(),
+                reason: "close old episode without displaying the captured remainder".into(),
+                operation: OperationId::new("reject-captured-episode"),
+            }),
+            peer(),
+            &budget(),
+        )
+        .unwrap();
+    assert!(matches!(rejected, CommandResult::Rejected(_)));
+    let reinvited = f
+        .service
+        .handle(
+            Command::Invite(Invite {
+                claim: f.sender.clone(),
+                thread: f.thread.clone(),
+                seat: f.b.seat.clone(),
+                confirmation: Some(InvitationConfirmation::Lazy),
+                deadline_millis: None,
+                operation: OperationId::new("reinvite-captured-episode"),
+            }),
+            peer(),
+            &budget(),
+        )
+        .unwrap();
+    let CommandResult::Invitation(current_invitation) = reinvited else {
+        panic!("canonical fresh invitation");
+    };
+    assert_ne!(current_invitation, old_invitation);
+    let fresh_body = "new episode starts at byte zero: β🚦";
+    let fresh = f.send("fresh-episode-body", fresh_body);
+    let scope: (i64,String,String,i64,i64,i64) = f.db.query_row("SELECT i.episode,m.state,COALESCE(m.voluntary_state,m.state),i.created_decision_seq,(SELECT decision_seq FROM messages WHERE id=?3),(SELECT decision_seq FROM messages WHERE id=?4) FROM invitations i JOIN memberships m ON m.thread_id=i.thread_id AND m.seat_id=i.seat_id AND m.episode=i.episode WHERE i.id=?1 AND i.seat_id=?2",params![current_invitation.as_str(),f.b.seat.as_str(),old.as_str(),fresh.as_str()],|r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?))).unwrap();
+    assert_eq!(
+        (scope.0, scope.1.as_str(), scope.2.as_str()),
+        (2, "invited", "invited")
+    );
+    assert!(
+        scope.4 < scope.3 && scope.3 < scope.5,
+        "real current-invitation decision separates old and fresh bodies"
+    );
+    assert_eq!(
+        f.cursor(&f.b),
+        None,
+        "no display cursor enables the new episode"
+    );
+    let mut following = false;
+    for _ in 0..8 {
+        let result = f.private_pull(&f.b);
+        assert!(result.work.ordinary <= 100);
+        assert_eq!(result.work.ordinary_due_key_probes, 0);
+        assert_eq!(result.work.ordinary_carry_key_probes, 0);
+        if let DeliveryPullReplyV2::Page(page) = result.reply {
+            assert!(
+                !page
+                    .items
+                    .iter()
+                    .any(|item| matches!(item,PresentationItemV2::Message { id,.. } if id==&old)),
+                "a prior-episode captured tail cannot reappear or supply the fresh body's offset"
+            );
+            following |= page.items.iter().any(|item| matches!(item,PresentationItemV2::Message { id,lazy:true,content } if id==&fresh && content.body==fresh_body && content.body_len==fresh_body.len() as u64 && !content.truncated && !content.ack_required));
+            confirm_output(&page);
+        }
+        if following {
+            break;
+        }
+    }
+    assert!(
+        following,
+        "private ineligible old-episode continuation must retire and reach the actual fresh body without accepting"
+    );
+    assert_eq!((f.cursor(&f.a), f.cursor(&f.b)), (None, None));
+    assert_eq!(
+        old_rows(),
+        before_old,
+        "retirement keeps canonical historical addressing and origin"
+    );
+    let retained_old_body: String =
+        f.db.query_row(
+            "SELECT body FROM messages WHERE id=?1",
+            [old.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        retained_old_body == long_utf8_body(),
+        "retirement does not rewrite historical body bytes"
+    );
+    let (skip,partial): (Option<String>,String) = f.db.query_row("SELECT ordinary_skip_body,ordinary_partial FROM invitation_presentation_consumers WHERE binding_id=?1 AND consumer='watch'",[f.binding(&f.b).as_str()],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();
+    assert_ne!(skip.as_deref(), Some(old.as_str()));
+    let partial: std::collections::HashMap<String, String> =
+        serde_json::from_str(&partial).unwrap();
+    assert!(!partial.contains_key(old.as_str()));
     f.assert_pending();
 }

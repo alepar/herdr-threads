@@ -1005,3 +1005,6 @@ fn manual_two_member_channel_is_not_adopted_and_normal_send_is_unchanged() {
 
 #[path = "direct_lazy_readers.rs"]
 mod reader_controls;
+
+#[path = "direct_lazy_writer_floors.rs"]
+mod writer_floor_controls;
