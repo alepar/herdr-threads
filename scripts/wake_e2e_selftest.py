@@ -583,8 +583,12 @@ class IdleWakeOracle(TempDir):
             windows.append(window)
             return 0.5 if woke else None
         recipient.watch_for_wake = watch
+        quiet = []
+        recipient.watch_quiet = lambda seconds: quiet.append(seconds)  # the trailing window: stays quiet
         recipient.case(case)
         self.assertEqual(len(rows), 1)
+        self.assertEqual(len(quiet), 1)
+        self.assertIsNone(rows[0]["checks"]["trailing_wake_s"])
         return rows[0], calls, prompts, windows
 
     def test_lazy_direct_invitation_is_passive_under_nudge(self):
@@ -631,6 +635,137 @@ class IdleWakeOracle(TempDir):
         row_, _, _, _ = self.run_case("invite/1:1", "nudge", woke=False, delivered=False)
         self.assertEqual(row_["checks"]["opening_message_delivered"], False)
         self.assertEqual(row_["result"], "FAIL")
+# Pane text captured by the v0.9.1 Codex run 121116-d949 (busy-invite/1:1, co-all; anchors trimmed): the opener
+# was not shown in the busy turn and a wake followed it once the turn had ended.
+CODEX_BUSY_INVITE_PAIR = """\
+\u203a Busy-turn test busy-invite/1:1 121116-d949: run the shell command `sleep 12`, then run the shell command
+  `sleep 1`, then handle any herdr-threads items exactly as your standing instructions say, and finally print
+  BUSY-DONE.
+
+\u2022 I'll run both sleep commands, then handle any delivered items.
+
+\u2022 Ran herdr-threads --state-dir /private/tmp/ht-wake-e2e.jt1uzg3f/state accept tSkTc0bQd
+  \u2514 accepted
+    value: "iFbz3zbB8"
+
+\u2022 BUSY-DONE
+
+  Worked for 23s \u2022 12:20
+
+
+\u203a herdr-threads: attention pending; run herdr-threads inbox
+
+
+\u2022 RECEIVED mngVD1bj4: pair-open-busy 121116-d949
+
+  Worked for 2s \u2022 12:20
+"""
+
+
+class BusyTurnBoundary(unittest.TestCase):
+    ANCHOR = "Busy-turn test busy-invite/1:1 121116-d949"
+
+    def test_captured_post_turn_wake_is_after_the_turn_and_the_opener_is_not_in_it(self):
+        in_turn, after, seen = W.busy_turn_split(CODEX_BUSY_INVITE_PAIR, self.ANCHOR)
+        self.assertTrue(seen)
+        self.assertEqual(W.wake_count(in_turn), 0)
+        self.assertEqual(W.wake_count(after), 1)
+        self.assertNotIn("mngVD1bj4", in_turn)
+        self.assertIn("accept tSkTc0bQd", in_turn)
+
+    def test_in_turn_delivery_and_claude_output_shape(self):
+        text = (f"> {self.ANCHOR}: run ... and finally print BUSY-DONE.\n\u23fa Bash(sleep 12)\n"
+                "  \u23bf delivered 1 message(s)\n\u23fa RECEIVED mOPEN: pair-open-busy\n\u23fa BUSY-DONE\n")
+        in_turn, after, seen = W.busy_turn_split(text, self.ANCHOR)
+        self.assertTrue(seen)
+        self.assertIn("mOPEN", in_turn)
+        self.assertEqual(after, "\n")
+
+    def test_the_prompt_text_is_never_the_turn_end(self):
+        for line in ("  BUSY-DONE.", "and finally print BUSY-DONE.", "  `sleep 1`, then print BUSY-DONE."):
+            self.assertIsNone(W.BUSY_DONE_LINE.search(line), line)
+        self.assertEqual(W.busy_turn_split(f"\u203a {self.ANCHOR}: ...\n  BUSY-DONE.\n", self.ANCHOR)[2], False)
+        self.assertIsNone(W.busy_turn_split("no prompt here", self.ANCHOR))
+
+
+class FakeAgent:
+    """A recipient whose turns follow a fake daemon: a wake is reserved no sooner than `guard` after the previous
+    reservation, and a pair opener that the accept turn does not show is owed a follow-up wake (the v0.9.1 Codex gap)."""
+
+    def __init__(self, guard, opener_in_accept_turn):
+        self.guard, self.in_accept = guard, opener_in_accept_turn
+        self.turns, self.shown, self.reserved = [], {}, -1e9
+        self.lock = threading.Lock()
+
+    def wake(self, after=0.0, show=None, length=0.15):
+        with self.lock:
+            at = max(time.time() + after, self.reserved + self.guard)
+            self.reserved = at
+            self.turns.append((at, at + length))
+            if show:
+                self.shown[show] = at + 0.05
+
+    def status(self):
+        now = time.time()
+        return "working" if any(a <= now < b for a, b in self.turns) else "idle"
+
+    def visible(self, mid):
+        return mid in self.shown and time.time() >= self.shown[mid]
+
+
+class CaseSpacing(unittest.TestCase):
+    """A follow-up wake owed by one case fails that case, and the next case is measured after it, not against the
+    guard of a wake it did not cause (v0.9.1 Codex run: invite/1:1 then send-lazy/group, late_wake 11.58 s)."""
+
+    def setUp(self):
+        saved = {k: getattr(W, k) for k in ("SPACING_S", "WAKE_WINDOW_S")}
+        self.addCleanup(lambda: [setattr(W, k, v) for k, v in saved.items()])
+        # The 35 s spacing / 6 s window for a 30 s guard, scaled to a 5 s guard: still long against the driver's fixed
+        # ~1 s idle confirmations, as the real guard is, so the owed wake lands after the case has settled.
+        W.SPACING_S, W.WAKE_WINDOW_S = 6.0, 0.4
+        self.rows = []
+
+    def recipient(self, agent):
+        r = object.__new__(W.Recipient)
+        run = SimpleNamespace(run_id="000000-test", record=self.rows.append, stopping=threading.Event())
+        r.run, r.name, r.harness, r.wake_on, r.pane, r.seat = run, "co-all", "codex", "all", "w9:p1", "sREC"
+        r.last_wake, r.group, r.pair = 0.0, "tGROUP", None
+        r.status = agent.status
+        r.on_screen = lambda mid, tries=15: agent.visible(mid)
+        r.joined = lambda thread, role="main": (True, "joined")
+        r.pair_thread = lambda role="main": "tPAIR"
+        r.prompt = lambda text, expect=None: self.fail(f"unexpected prompt {text!r}")
+
+        def send(mode, body, direct, role="main"):
+            mid = f"m{len(self.rows)}{mode}"
+            if body.startswith("pair-open"):  # invitation wakes; the lazy opener rides the accept turn or a later wake
+                agent.wake(show=mid if agent.in_accept else None)
+                if not agent.in_accept:
+                    agent.wake(show=mid)
+            else:
+                agent.wake(show=mid)
+            return mid
+        r.send = send
+        return r
+
+    def run_pair_then_lazy(self, opener_in_accept_turn):
+        agent = FakeAgent(guard=5.0, opener_in_accept_turn=opener_in_accept_turn)
+        r = self.recipient(agent)
+        r.case("invite/1:1")
+        r.case("send-lazy/group")
+        return {row["case"]: row for row in self.rows}
+
+    def test_the_owed_follow_up_wake_fails_its_own_case_and_not_the_next(self):
+        rows = self.run_pair_then_lazy(opener_in_accept_turn=False)
+        self.assertEqual(rows["send-lazy/group"]["result"], "PASS", rows["send-lazy/group"])
+        self.assertEqual(rows["invite/1:1"]["result"], "FAIL")
+        self.assertIsNotNone(rows["invite/1:1"]["checks"].get("trailing_wake_s"))
+        self.assertFalse(rows["invite/1:1"]["checks"]["opening_message_delivered"])
+
+    def test_opener_in_the_accept_turn_passes_both(self):
+        rows = self.run_pair_then_lazy(opener_in_accept_turn=True)
+        self.assertEqual([rows[c]["result"] for c in ("invite/1:1", "send-lazy/group")], ["PASS", "PASS"], rows)
+        self.assertIsNone(rows["invite/1:1"]["checks"].get("trailing_wake_s"))
 
 
 def row(recipient, case, result="PASS"):
