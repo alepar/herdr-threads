@@ -7772,13 +7772,15 @@ fn presentation_publication_walk_counts_foreign_prefix_before_filter_and_progres
             .unwrap()
     };
     let first = refresh();
+    // Each valid physical manifest costs one exact message point plus its
+    // mode-selected recipient point, even when that recipient is unrelated.
     assert_eq!(
         (
             first.ordinary_publication_visits,
             first.ordinary_publication_probes,
             first.ordinary_publication_seeks
         ),
-        (100, 100, 2)
+        (100, 200, 2)
     );
     assert!(
         first.more,
@@ -7795,7 +7797,7 @@ fn presentation_publication_walk_counts_foreign_prefix_before_filter_and_progres
             second.ordinary_publication_probes,
             second.ordinary_publication_seeks
         ),
-        (2, 3, 2)
+        (2, 4, 2)
     );
     assert!(
         second.version > first.version,
