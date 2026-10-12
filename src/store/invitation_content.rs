@@ -1770,6 +1770,20 @@ fn replay(
 }
 /// Reconcile only the bounded offer snapshot, never the full pending queue.
 /// Canonical terminal facts release capacity; missing/ambiguous facts retain it.
+pub(crate) const OFFER_RECONCILIATION_MESSAGE_SQL: &str = "SELECT delivery_mode,thread_id,sequence,decision_seq FROM messages WHERE id=?1 AND instance_id=?2 AND kind='ordinary'";
+
+/// The canonical message scalars come from the preceding exact point in the
+/// same transaction. No second messages lookup is needed for Lazy eligibility.
+/// ?1 seat, ?2 message, ?3 binding, ?4 instance, ?5 thread, ?6 sequence, ?7 decision.
+pub(crate) const OFFER_RECONCILIATION_LAZY_SQL: &str = concat!(
+    "SELECT ",
+    super::lazy_delivery::binding_lazy_unread_sql! {
+        binding: "b.binding_id", seat: "r.seat_id", thread: "?5", instance: "?4",
+        sequence: "?6", publication: "?7", legacy: "r.legacy_pending", role: "b.role"
+    },
+    " FROM lazy_recipients r JOIN send_manifests sm ON sm.preparation_id=r.preparation_id AND sm.message_id=?2 AND sm.thread_id=?5 AND sm.instance_id=?4 AND sm.decision_seq=?7 JOIN occupant_bindings b ON b.binding_id=?3 AND b.seat_id=r.seat_id WHERE r.message_id=?2 AND r.seat_id=?1 AND r.thread_id=?5"
+);
+
 fn reclaim_terminal_offers(
     db: &Connection,
     input: &mut PresentationInput,
@@ -1792,20 +1806,44 @@ fn reclaim_terminal_offers(
     for id in &known {
         work.offer_reconciliation_visits += 1;
         work.offer_reconciliation_probes += 1;
-        let mode: Option<String> = db.query_row(
-            "SELECT delivery_mode FROM messages WHERE id=?1 AND instance_id=?2 AND kind='ordinary'",
-            params![id.as_str(), claim.instance], |r| r.get(0),
-        ).optional().map_err(store_error)?;
-        let terminal = match mode.as_deref() {
+        let canonical: Option<(String, String, i64, Option<i64>)> = db
+            .query_row(
+                OFFER_RECONCILIATION_MESSAGE_SQL,
+                params![id.as_str(), claim.instance],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .optional()
+            .map_err(store_error)?;
+        let terminal = match canonical.as_ref().map(|row| row.0.as_str()) {
             Some("lazy") => {
-                // Four exact relations plus two cursor probes and membership.
+                let (_, thread, sequence, published) = canonical.as_ref().expect("matched row");
+                // Missing publication or invalid sequence cannot prove terminal authority.
+                let Some(published) = published.filter(|decision| *decision > 0) else {
+                    continue;
+                };
+                if *sequence <= 0 {
+                    continue;
+                }
+                // Recipient, manifest, binding, two cursor points, membership,
+                // pair, seat and current invitation: nine, plus the first message point.
                 // Historical seat display state says nothing about this reader.
-                work.offer_reconciliation_probes += 7;
-                let unread: Option<bool> = db.query_row(
-                    concat!("SELECT ", super::lazy_delivery::binding_lazy_unread_sql!(),
-                        " FROM lazy_recipients r JOIN send_manifests sm ON sm.preparation_id=r.preparation_id AND sm.message_id=r.message_id AND sm.thread_id=r.thread_id JOIN messages m ON m.id=r.message_id JOIN occupant_bindings b ON b.binding_id=?4 AND b.seat_id=r.seat_id WHERE r.message_id=?1 AND r.seat_id=?2 AND sm.instance_id=?3"),
-                    params![id.as_str(),claim.seat.as_str(),claim.instance,input.binding_id.as_str()], |r| r.get(0),
-                ).optional().map_err(store_error)?;
+                work.offer_reconciliation_probes += 9;
+                let unread: Option<bool> = db
+                    .query_row(
+                        OFFER_RECONCILIATION_LAZY_SQL,
+                        params![
+                            claim.seat.as_str(),
+                            id.as_str(),
+                            input.binding_id.as_str(),
+                            claim.instance,
+                            thread,
+                            sequence,
+                            published
+                        ],
+                        |r| r.get(0),
+                    )
+                    .optional()
+                    .map_err(store_error)?;
                 unread == Some(false)
             }
             Some("ordinary") => {
@@ -2411,6 +2449,7 @@ pub(super) fn pull(
         )?;
         work.ordinary = ordinary.visited;
         work.ordinary_continuation_key_probes = ordinary.continuation_probes;
+        work.ordinary_lazy_scope_probes = ordinary.lazy_scope_probes;
         if let Some(retired) = &ordinary.retired_body {
             if old_body.map(|body| &body.message) != Some(retired) {
                 return Err(corrupt("ordinary retirement does not match continued body"));
@@ -2830,6 +2869,8 @@ fn finish(
         || work.ordinary_due_key_probes > 1803
         || work.ordinary_due_seeks > 100
         || work.ordinary_due_hydrated > 32
+        || work.ordinary_lazy_scope_probes > 300
+        || work.ordinary_lazy_scope_probes > work.ordinary.saturating_mul(3)
         || work.ordinary_continuation_key_probes > 15
         || (work.ordinary_continuation_key_probes != 0
             && (work.ordinary_due_key_probes != 0 || work.ordinary_carry_key_probes != 0))

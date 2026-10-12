@@ -1078,6 +1078,28 @@ pub fn accept(
             if cancelled {
                 return Err(api_error(ErrorCode::Conflict, "invitation was cancelled"));
             }
+            let thread = ThreadId::new(thread);
+            let already_joined = joined_in_thread(tx, &thread, &caller)?;
+            let instance: String = tx
+                .query_row(
+                    "SELECT instance_id FROM seats WHERE id=?1",
+                    [caller.as_str()],
+                    |r| r.get(0),
+                )
+                .map_err(store_error)?;
+            // Capture the current episode while the invitation/membership are
+            // still pending/invited. A generic acceptance keeps its head policy.
+            let direct_floor = if already_joined {
+                None
+            } else {
+                super::lazy_delivery::direct_acceptance_floor(
+                    tx,
+                    &instance,
+                    &caller,
+                    &thread,
+                    &invitation,
+                )?
+            };
             schema::record_overdue_if_pending(tx, &obligation, &TimeBasis::Decision, decision.utc)?;
             let generation: i64 = tx
                 .query_row(
@@ -1090,15 +1112,6 @@ pub fn accept(
             tx.execute("UPDATE invitations SET state='accepted', accepted_at=?1,accepted_actor_seat_id=?2,accepted_generation=?3,accepted_observation=?4 WHERE id=?5",
                 params![decision.utc.0,caller.as_str(),generation,observation,invitation.as_str()]).map_err(store_error)?;
             schema::clear_warning_condition_for_invitation(tx, invitation.as_str(), decision.utc)?;
-            let thread = ThreadId::new(thread);
-            let already_joined = joined_in_thread(tx, &thread, &caller)?;
-            let instance: String = tx
-                .query_row(
-                    "SELECT instance_id FROM seats WHERE id=?1",
-                    [caller.as_str()],
-                    |r| r.get(0),
-                )
-                .map_err(store_error)?;
             let event_seq = schema::next_decision_seq(tx, &instance)?;
             // This invitation needs its own acceptance event even when another
             // invitation already joined the seat. The join interval belongs to
@@ -1115,7 +1128,14 @@ pub fn accept(
                     params![episode,decision.utc.0,thread.as_str(),caller.as_str()]).map_err(store_error)?;
                 tx.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES (?1,?2,?3,?4)",
                     params![thread.as_str(),caller.as_str(),episode,event_seq as i64]).map_err(store_error)?;
-                super::read_cursors::init_for_join(tx, &caller, &thread)?;
+                match direct_floor {
+                    Some(floor) => {
+                        super::read_cursors::init_for_direct_accept(tx, &caller, &thread, floor)?;
+                    }
+                    None => {
+                        super::read_cursors::init_for_join(tx, &caller, &thread)?;
+                    }
+                }
             }
             let payload = serde_json::json!({"action":"accept", "seat":caller.as_str(), "invitation":invitation.as_str()}).to_string();
             schema::append_event_once_with_decision_seq(
@@ -2596,7 +2616,8 @@ pub fn complete_inbox_delivery(
 /// Advance the caller binding's own cursors over the messages it fully displayed (spec §2). The
 /// claim resolves with the plain trigger (it may enroll); only that binding's cursor moves, so a
 /// subagent claim is accepted: no seat state changes and no receipt is settled. Idempotent per
-/// operation key. Messages of threads the seat has not joined are ignored.
+/// operation key. Unjoined threads remain ignored except exact published addressed Lazy
+/// pair IDs in an existing own stream or the active direct-invitation episode.
 pub fn advance_cursors(
     context: &StoreContext,
     conn: &mut Connection,
@@ -2622,6 +2643,7 @@ pub fn advance_cursors(
                 .binding_id
                 .clone();
             let mut by_thread: std::collections::BTreeMap<String, Vec<u64>> = Default::default();
+            let mut joined_threads: std::collections::BTreeMap<String, bool> = Default::default();
             for id in &request.displayed {
                 let row: Option<(String, i64)> = tx
                     .query_row(
@@ -2634,26 +2656,43 @@ pub fn advance_cursors(
                 let (thread, sequence) = row.ok_or_else(|| {
                     api_error(ErrorCode::InvalidRequest, "displayed message not found")
                 })?;
-                by_thread.entry(thread).or_default().push(sequence as u64);
+                let joined = match joined_threads.get(&thread) {
+                    Some(joined) => *joined,
+                    None => {
+                        let joined: bool = tx.query_row(
+                            "SELECT EXISTS(SELECT 1 FROM memberships WHERE thread_id=?1 AND seat_id=?2 AND state='joined')",
+                            params![thread, claim.seat.as_str()], |r| r.get(0),
+                        ).map_err(store_error)?;
+                        joined_threads.insert(thread.clone(), joined);
+                        joined
+                    }
+                };
+                // Filter before sequence vectors: a supplied system, ordinary,
+                // foreign or old-episode ID cannot bootstrap a cursorless pair.
+                if joined
+                    || super::lazy_delivery::direct_lazy_display_admitted(
+                        tx,
+                        &claim.instance,
+                        &claim.seat,
+                        &binding,
+                        id,
+                    )?
+                {
+                    let sequence = u64::try_from(sequence).map_err(|_| {
+                        api_error(ErrorCode::StoreCorrupt, "negative message sequence")
+                    })?;
+                    by_thread.entry(thread).or_default().push(sequence);
+                }
             }
             let mut reader_changed = false;
             for (thread, sequences) in by_thread {
-                let joined: bool = tx
-                    .query_row(
-                        "SELECT EXISTS(SELECT 1 FROM memberships WHERE thread_id=?1 AND seat_id=?2 AND state='joined')",
-                        params![thread, claim.seat.as_str()],
-                        |r| r.get(0),
-                    )
-                    .map_err(store_error)?;
-                if joined {
-                    let (_, changed) = super::read_cursors::advance_through_displayed_with_change(
-                        tx,
-                        &binding,
-                        &ThreadId::new(thread),
-                        &sequences,
-                    )?;
-                    reader_changed |= changed;
-                }
+                let (_, changed) = super::read_cursors::advance_through_displayed_with_change(
+                    tx,
+                    &binding,
+                    &ThreadId::new(thread),
+                    &sequences,
+                )?;
+                reader_changed |= changed;
             }
             if reader_changed {
                 super::presentation_reader::note_binding_reader_change(tx, &binding)?;

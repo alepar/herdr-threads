@@ -746,7 +746,9 @@ Only the caller's default text inbox, a standard native hook, a push-channel mod
 been written and flushed. The completion handler validates the current top-level or human canonical
 caller (A2) and exact published addressed message IDs in its deciding transaction; declared subagents
 cannot complete delivery. JSON, machine, explicit-seat reads, history, bodies and summaries remain
-read-only. Local display journals are cooperative hints, never authority. Completion is idempotent
+read-only for Lazy completion. A complete successful own text body display may separately advance only
+the calling binding's read cursor, as specified below; it is not Lazy completion or a receipt ACK.
+Local display journals are cooperative hints, never authority. Completion is idempotent
 presentation bookkeeping: it records no ACK actor, receipt provenance, timeline ACK, agreement,
 instruction adoption, task completion or proof of model consumption. Partial output and changed
 bindings cannot manufacture complete display. Frozen completion retries preserve their original full
@@ -793,8 +795,9 @@ session's transcript (`DeliveryConfirm`), decided by the daemon against A2, rest
 generation, under the `cooperative_hook_delivery` claim (no per-row source is stored). Same presentation-bookkeeping limits. It is the only hook path that completes a hook-pull seat's lazy rows.
 
 **Per-binding read position (`AdvanceCursors`, `InboxQuery.claim`).** An inbox read that carries the caller's
-claim is that binding's own stream: the messages of the seat's joined threads past the binding's cursors, plus
-the seat's open invitations and its still-pending ACK obligations. A display moves only the displaying
+claim is that binding's own stream: the messages of the seat's joined threads past the binding's cursors,
+the narrowly admitted current direct-invitation Lazy stream below, plus the seat's open invitations and
+its still-pending ACK obligations. A display moves only the displaying
 binding's cursors, with the exact message IDs it showed whole. The command is decided in the daemon against
 the canonical view (A2) and resolves the claim to its own binding like any plain cooperative call (it may
 enroll). It is the one write a declared subagent may send, because it changes no seat state: it records no ACK
@@ -816,6 +819,76 @@ so a later message shown whole while the cursor was held behind a truncated one 
 Another binding's ACK and an explicit (non-display) `ack` are never such evidence. Accepted limit: a
 continuation chain begun at an explicit offset counts as whole (the continuation does not record where the
 read began).
+
+**Direct Lazy readers during an invitation.** An exact published Lazy recipient in an immutable
+canonical pair may be read before acceptance in any active invitation episode, not only the first.
+For a binding without its own cursor and an unjoined recipient, admission requires the exact pair
+endpoint/instance, a nonretired seat, current voluntarily invited membership, and its exact pending
+invitation by `(thread,seat,episode)`. Only messages published after that invitation's immutable creation
+decision enter this cursorless stream. Retained `lazy_recipients.state` is not modern binding unread
+authority. Existing own cursors retain their addressed unread stream, including earlier episodes and
+A8-retained work after leave, retirement or archival; the new episode boundary never raises them.
+Joined-reader and frozen legacy-pending rules remain separate and unchanged.
+
+Canonical pair writers make this a bounded current-episode decision. Native, operator and ordinary
+service invitations reuse an active voluntary invitation rather than create parallel active episodes.
+Rejection clears that episode's voluntary invited marker even if raw invited/pending states remain.
+Pairs cannot become service-owned, Required invitations require that ownership, and requirement release
+is the only invitation-cancellation writer. Thus exact current pending invitation plus voluntary invited
+membership excludes canonically rejected/cancelled pair episodes; future writers must preserve this
+implication or revise the predicate and its counted work. This is not a claim about hand-edited stores.
+
+The invitation creation decision is the publication lower bound, not a thread cursor value. When a
+cursorless reader needs a baseline, resolve the invitation's actual timeline event using at most three
+UNIQUE event-key points: `invite:<id>`, `operator_invite:<id>` and `service_invite:<id>:ordinary`.
+Validate instance, thread, kind, source invitation and decision ordering; choose the earliest valid
+thread sequence among these fixed results. A current duplicate Ordinary ServiceInvite returns the
+original invitation without appending another event. Missing or conflicting event authority is an
+error, never a guessed zero/head/timestamp baseline or an invitation-history scan.
+
+An exact currently eligible full display may use this event sequence as a virtual baseline in the
+common cursor walk, through both own `AdvanceCursors` and existing logical Lazy completion entry points.
+Only resulting progress beyond the virtual floor is persisted; an earlier unshown current-episode
+receivable message still blocks progress. Existing cursors start unchanged. A query, partial/failed
+output, machine read, arbitrary message ID or physical V2 presentation confirmation cannot establish
+that baseline. A delayed older-episode display cannot borrow a newer invitation floor. Existing explicit
+published-ID completion authority is preserved with its existing baseline/gap rules where the new
+current-episode baseline is inapplicable. Cursor scope is not evidence that older mail was displayed;
+Lazy completion remains presentation bookkeeping with no ACK, adoption or participation effect.
+
+Accepting this exact active direct invitation preserves every existing own cursor and inserts missing
+open-binding cursors at the event floor, never at the thread head. Capture the floor in the deciding
+transaction before changing membership; acceptance is not display. In the existing open-binding fanout,
+invalidate each affected binding's reader exactly once even if its cursor did not change: joining also
+makes settled addressed ordinary direct messages above the retained baseline newly readable. This
+mixed ordinary/Lazy consequence is intentional because they share a cursor. The helper uses exact
+current binding/seat scope and two fixed Hook/Watch consumer points, increments only matching existing
+private passive-generation/content-version counters, and preserves carry, token, partial body and
+parked progress. No consumer-history scan or sibling substitution is allowed. Checked overflow or any
+failure rolls back invitation, membership/interval, cursor and all tentative private writes together.
+Historical accept replay neither reseeds nor invalidates again. General Join and nonpair acceptance
+retain their head policy; no new binding fanout occurs at publication or reading.
+
+A new binding while the invitation is pending can independently receive that episode's addressed work,
+even if a sibling displayed it. A new binding after acceptance retains normal joined-thread seat-maximum
+or head seeding. These rules do not rewind historical cursors already advanced by prior join or genuine
+display, and do not claim to recover historically skipped bodies. Existing explicit lifecycle
+fast-forward remains the separate accepted Lazy limit described below. No binding-birth heuristic,
+autoaccept, receipt provenance, new schema or deadline is inferred from this reader exception.
+
+For private ordinary presentation only, an intact captured modern Lazy continuation whose current
+reader scope has become inapplicable may retire its exact private body/ordinal instead of blocking
+later episodes. Exact message/instance/Lazy mode, published addressing, captured publication/range,
+canonical binding, and the assembler's matching ID/offset or skip-body state must validate first;
+missing/corrupt authority remains an error. This retirement requires `legacy_pending=0`: modern-scope
+failure alone never discards the independent top-level legacy-pending branch. Public continuation
+remains strict. Advance only that captured Lazy ordinal, clear only its matching body/prefix, and
+charge one existing physical candidate visit plus three scope probes once. Preserve the frozen scan
+version/passive-generation/publication/ordinal capture so that finishing the old scan allows the next
+normal quantum to observe newer publications. Preserve unrelated carry, token, parked state and logical
+offer stamps. Retirement creates no canonical Lazy completion, deletion, receipt, ACK, read cursor,
+acceptance or display evidence; any failure rolls back private progress. Existing private work caps
+remain unchanged, with no history scan, event lookup or new durable state.
 
 **First-contact stats and fast-forward.** Two bounded, informational summaries ride on the response that
 creates or resumes a binding; neither is authority and neither writes a receipt. The lifecycle check-in that
@@ -1536,6 +1609,28 @@ reset deadlines. Development stores already stamped with the earlier redesign's
 migration numbers are not claimed to rerun or reinterpret this refinement.
 Existing 155731-byte raw carry, 8KiB ordinary body and final64KiB/RPC bounds
 remain unchanged.
+
+Direct-invitation Lazy reader eligibility adds three exact indexed relation probes per evaluation:
+pair, seat and current invitation, reusing the membership point. It does not seek invitation events in
+the presentation predicate. Lazy due/replay costs at most 14 probes; ordinary remains the maximum 18,
+so due 1803 and carry 579 caps remain unchanged. Known-offer reconciliation reuses the canonical
+message mode/thread/sequence/decision point already read in the same snapshot and removes its duplicate
+message join: first point 1 plus eligibility 9 is at most 10 per key, retaining 256 visits and 2560 probes.
+Exact recipient, manifest message/thread/instance/publication and binding-seat checks remain required;
+client scalars or an uncounted second message lookup cannot substitute for that canonical row.
+Fresh/private Lazy scope checks, including continued-body scope checks, charge three additional probes
+per physically visited candidate, at most 300 across the existing 100-candidate envelope; rejected
+candidates count before filtering. These costs are separate from the unchanged publication-observation
+scan above. Production SQL and actual query plans must establish the exact-key accounting.
+
+Direct acceptance additionally makes N reader-invalidation helper calls within its existing fanout over N open bindings;
+at most 4N indexed relation reads (binding, seat and two consumer points) and 2N exact private
+updates, besides cursor writes. This is fixed work per binding, not constant work for acceptance, and
+is outside presentation caps. Each required cursorless event floor uses only three fixed key points.
+The inherited public Lazy readers may filter many physical rows before LIMIT, seat unread may examine
+multiple connected bindings, and the display walk may cross arbitrarily many nonreceivable messages.
+The episode floor reduces old-history work without making these paths globally bounded; the private
+100-candidate presentation bound is not an end-to-end public-read or completion-mutation guarantee.
 
 A fresh explicit Watch presentation confirmation may record local channel health
 only for an applicable acknowledged Attention and the exact currently Live

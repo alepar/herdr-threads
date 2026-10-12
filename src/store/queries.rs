@@ -6195,6 +6195,26 @@ fn participant_locations(
     Ok(CommandResult::ParticipantLocations(locations))
 }
 
+/// The actual private normal-source Lazy eligibility statement. Rejected raw
+/// recipient candidates still consume one visit and three added scope probes.
+pub(crate) const PRIVATE_LAZY_ELIGIBILITY_SQL: &str = concat!(
+    "SELECT EXISTS(SELECT 1 FROM lazy_recipients r JOIN send_manifests sm ON sm.preparation_id=r.preparation_id AND sm.message_id=r.message_id AND sm.thread_id=r.thread_id JOIN messages m ON m.id=r.message_id AND m.instance_id=sm.instance_id AND m.thread_id=r.thread_id AND m.decision_seq=sm.decision_seq JOIN occupant_bindings b ON b.binding_id=?3 AND b.seat_id=r.seat_id WHERE r.seat_id=?1 AND r.message_id=?2 AND sm.instance_id=?4 AND sm.decision_seq<=?5 AND m.kind='ordinary' AND m.delivery_mode='lazy' AND ",
+    super::lazy_delivery::binding_lazy_unread_sql!(),
+    ")"
+);
+
+/// A captured Lazy tail requires scope, not sequence unreadness: completing
+/// another chunk must never apply this offset to a different message. This
+/// preserves the historical continuation's absence of a Legacy exception.
+pub(crate) const LAZY_CONTINUATION_SCOPE_SQL: &str = concat!(
+    "SELECT EXISTS(SELECT 1 FROM messages m WHERE m.id=?2 AND m.instance_id=?4 AND m.kind='ordinary' AND m.delivery_mode='lazy' AND ",
+    super::lazy_delivery::binding_lazy_scope_sql! {
+        binding: "?3", seat: "?1", thread: "m.thread_id", instance: "?4",
+        publication: "m.decision_seq"
+    },
+    ")"
+);
+
 // Separate passive traversal: source positions and completion never enter v1
 // attention. Start with Lazy, then rotate after each inspected candidate.
 mod inbox_v2 {
@@ -6412,6 +6432,7 @@ mod inbox_v2 {
         pub visited: usize,
         pub retired_body: Option<MessageId>,
         pub continuation_probes: usize,
+        pub lazy_scope_probes: usize,
     }
     fn capture(
         db: &Connection,
@@ -6694,6 +6715,7 @@ mod inbox_v2 {
             }
         }))
     }
+    #[allow(clippy::too_many_arguments)]
     fn scan(
         db: &Connection,
         instance: &str,
@@ -6702,6 +6724,8 @@ mod inbox_v2 {
         reading: Option<&BindingId>,
         ordinary_only: bool,
         continuation: Option<&ContinuedOrdinary>,
+        lazy_scope_probes: &mut usize,
+        retired_body: &mut Option<MessageId>,
     ) -> Result<(Option<Item>, usize), ApiError> {
         let seat = &state.seat.clone();
         match state.source {
@@ -6801,21 +6825,46 @@ mod inbox_v2 {
                 // Concurrent completion removes it from the pending index but
                 // must not apply its offset to the next pending message.
                 if let Some(body) = &state.body {
-                    let ordinal: i64 = db.query_row(
-                        "SELECT ordinal FROM lazy_recipients WHERE seat_id=?1 AND message_id=?2",
+                    let (ordinal, legacy_pending): (i64, i64) = db.query_row(
+                        "SELECT ordinal,legacy_pending FROM lazy_recipients WHERE seat_id=?1 AND message_id=?2",
                         params![seat.as_str(), body.message.as_str()],
-                        |r| r.get(0),
+                        |r| Ok((r.get(0)?,r.get(1)?)),
                     ).map_err(store_error)?;
-                    // The membership half of the lazy predicate: a binding with no cursor row for
-                    // the thread (enrolled after the seat left it) gets no content from a thread
-                    // the seat no longer has joined.
+                    if !matches!(legacy_pending, 0 | 1) {
+                        return Err(invalid("continued body is not captured addressed content"));
+                    }
+                    // Recheck only scope. A captured tail must survive its own
+                    // cursor progress, but a cursorless reader cannot borrow a
+                    // later invitation episode for an older publication.
                     if let Some(binding) = reading {
-                        let visible: bool = db.query_row(
-                            "SELECT EXISTS(SELECT 1 FROM messages m WHERE m.id=?2 AND (EXISTS(SELECT 1 FROM binding_cursors c WHERE c.binding_id=?3 AND c.thread_id=m.thread_id) OR EXISTS(SELECT 1 FROM memberships mb WHERE mb.thread_id=m.thread_id AND mb.seat_id=?1 AND mb.state='joined')))",
-                            params![seat.as_str(), body.message.as_str(), binding.as_str()],
-                            |r| r.get(0),
-                        ).map_err(store_error)?;
+                        if ordinary_only {
+                            *lazy_scope_probes += 3;
+                        }
+                        let visible: bool = db
+                            .query_row(
+                                super::LAZY_CONTINUATION_SCOPE_SQL,
+                                params![
+                                    seat.as_str(),
+                                    body.message.as_str(),
+                                    binding.as_str(),
+                                    instance
+                                ],
+                                |r| r.get(0),
+                            )
+                            .map_err(store_error)?;
                         if !visible {
+                            // Positive captured publication/address/range and
+                            // accumulator validation preceded this scan. Only
+                            // modern private tails may retire on scope loss;
+                            // public and legacy continuations remain strict.
+                            if ordinary_only && legacy_pending == 0 {
+                                state.lazy_after_ordinal = ordinal as u64;
+                                *retired_body = Some(body.message.clone());
+                                state.body = None;
+                                // The caller charges this one physical visit.
+                                // Keep the captured cutoffs and signal tuple.
+                                return Ok((None, 1));
+                            }
                             return Err(invalid("continued body is not captured unread content"));
                         }
                     }
@@ -6836,10 +6885,20 @@ mod inbox_v2 {
                         return Ok((None, 0));
                     };
                     state.lazy_after_ordinal = ordinal as u64;
-                    let visible: bool = db.query_row(
-                        concat!("SELECT EXISTS(SELECT 1 FROM lazy_recipients r JOIN send_manifests sm ON sm.preparation_id=r.preparation_id AND sm.message_id=r.message_id JOIN messages m ON m.id=r.message_id JOIN occupant_bindings b ON b.binding_id=?3 AND b.seat_id=r.seat_id WHERE r.seat_id=?1 AND r.message_id=?2 AND sm.instance_id=?4 AND sm.decision_seq<=?5 AND m.delivery_mode='lazy' AND ", super::super::lazy_delivery::binding_lazy_unread_sql!(), ")"),
-                        params![seat.as_str(),id,binding.as_str(),instance,state.publication_decision_high_water as i64], |r|r.get(0),
-                    ).map_err(store_error)?;
+                    *lazy_scope_probes += 3;
+                    let visible: bool = db
+                        .query_row(
+                            super::PRIVATE_LAZY_ELIGIBILITY_SQL,
+                            params![
+                                seat.as_str(),
+                                id,
+                                binding.as_str(),
+                                instance,
+                                state.publication_decision_high_water as i64
+                            ],
+                            |r| r.get(0),
+                        )
+                        .map_err(store_error)?;
                     return Ok((
                         if visible {
                             message(db, &id, true, false, state)?
@@ -7132,6 +7191,7 @@ mod inbox_v2 {
         let mut continuation = None;
         let mut retired_body = None;
         let mut continuation_probes = 0;
+        let mut lazy_scope_probes = 0;
         if let Some(body) = state.body.clone() {
             let lazy = state.source == Source::Lazy;
             if message(db, body.message.as_str(), lazy, current_agent, &state)?.is_none() {
@@ -7174,7 +7234,7 @@ mod inbox_v2 {
                     })
                 })
             } else if lazy {
-                db.query_row("SELECT EXISTS(SELECT 1 FROM lazy_recipients r JOIN send_manifests sm ON sm.preparation_id=r.preparation_id AND sm.message_id=r.message_id JOIN messages m ON m.id=r.message_id WHERE r.seat_id=?1 AND r.message_id=?2 AND sm.instance_id=?3 AND sm.decision_seq<=?4 AND r.ordinal>?5 AND r.ordinal<=?6 AND m.delivery_mode='lazy')",params![seat.as_str(),body.message.as_str(),instance,state.publication_decision_high_water as i64,state.lazy_after_ordinal as i64,state.lazy_high_water_ordinal as i64],|r|r.get::<_,bool>(0)).map_err(store_error)?
+                db.query_row("SELECT EXISTS(SELECT 1 FROM lazy_recipients r JOIN send_manifests sm ON sm.preparation_id=r.preparation_id AND sm.message_id=r.message_id AND sm.thread_id=r.thread_id JOIN messages m ON m.id=r.message_id AND m.instance_id=sm.instance_id AND m.thread_id=r.thread_id AND m.decision_seq=sm.decision_seq WHERE r.seat_id=?1 AND r.message_id=?2 AND sm.instance_id=?3 AND sm.decision_seq<=?4 AND r.ordinal>?5 AND r.ordinal<=?6 AND m.kind='ordinary' AND m.delivery_mode='lazy')",params![seat.as_str(),body.message.as_str(),instance,state.publication_decision_high_water as i64,state.lazy_after_ordinal as i64,state.lazy_high_water_ordinal as i64],|r|r.get::<_,bool>(0)).map_err(store_error)?
             } else {
                 super::super::effective::effective_receipt(
                     db,
@@ -7248,6 +7308,8 @@ mod inbox_v2 {
                 reading,
                 ordinary_only,
                 continuation.as_ref(),
+                &mut lazy_scope_probes,
+                &mut retired_body,
             )?;
             visited += work;
             state.body = None;
@@ -7343,7 +7405,11 @@ mod inbox_v2 {
         {
             return Err(ApiError::invalid_budget("selected response cannot fit"));
         }
-        if continuation_probes > 15 || (ordinary_only && visited > CANDIDATE_LIMIT) {
+        if continuation_probes > 15
+            || lazy_scope_probes > 300
+            || lazy_scope_probes > visited.saturating_mul(3)
+            || (ordinary_only && visited > CANDIDATE_LIMIT)
+        {
             return Err(api_error(
                 ErrorCode::StoreCorrupt,
                 "private continuation work bound",
@@ -7354,6 +7420,7 @@ mod inbox_v2 {
             visited,
             retired_body,
             continuation_probes,
+            lazy_scope_probes,
         })
     }
 }
@@ -7366,6 +7433,7 @@ pub(super) struct OrdinaryPresentationPage {
     pub visited: usize,
     pub retired_body: Option<MessageId>,
     pub continuation_probes: usize,
+    pub lazy_scope_probes: usize,
 }
 pub(super) fn ordinary_presentation_page(
     db: &Connection,
@@ -7399,6 +7467,7 @@ pub(super) fn ordinary_presentation_page(
             visited: result.visited,
             retired_body: result.retired_body,
             continuation_probes: result.continuation_probes,
+            lazy_scope_probes: result.lazy_scope_probes,
         }),
         _ => Err(api_error(
             ErrorCode::StoreCorrupt,
@@ -7455,9 +7524,10 @@ pub(super) fn ordinary_presentation_message_by_id(
     let mut ack_candidate = false;
     let lazy = match mode.as_str() {
         "lazy" => {
-            work.ordinary_due_key_probes += 7;
+            // Existing seven relations plus the three exact episode points.
+            work.ordinary_due_key_probes += 10;
             let addressed: bool = db.query_row(
-                concat!("SELECT EXISTS(SELECT 1 FROM lazy_recipients r JOIN send_manifests sm ON sm.preparation_id=r.preparation_id AND sm.message_id=r.message_id AND sm.thread_id=r.thread_id JOIN messages m ON m.id=r.message_id JOIN occupant_bindings b ON b.binding_id=?6 AND b.seat_id=r.seat_id WHERE r.message_id=?1 AND r.seat_id=?2 AND r.thread_id=?3 AND sm.instance_id=?4 AND sm.decision_seq<=?5 AND ", super::lazy_delivery::binding_lazy_unread_sql!(), ")"),
+                concat!("SELECT EXISTS(SELECT 1 FROM lazy_recipients r JOIN send_manifests sm ON sm.preparation_id=r.preparation_id AND sm.message_id=r.message_id AND sm.thread_id=r.thread_id JOIN messages m ON m.id=r.message_id AND m.instance_id=sm.instance_id AND m.thread_id=r.thread_id AND m.decision_seq=sm.decision_seq JOIN occupant_bindings b ON b.binding_id=?6 AND b.seat_id=r.seat_id WHERE r.message_id=?1 AND r.seat_id=?2 AND r.thread_id=?3 AND sm.instance_id=?4 AND sm.decision_seq<=?5 AND ", super::lazy_delivery::binding_lazy_unread_sql!(), ")"),
                 params![id.as_str(),seat.as_str(),thread,instance,head,binding.as_str()], |r|r.get(0),
             ).map_err(store_error)?;
             if !addressed {

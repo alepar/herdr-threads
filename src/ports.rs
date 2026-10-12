@@ -5264,6 +5264,10 @@ pub struct PresentationInput {
 }
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct PresentationWork {
+    /// Additional exact direct-episode relations for the private fresh Lazy
+    /// source, including captured continuation: three per physical candidate,
+    /// at most 300. Due/replay/carry account for these in their own counters.
+    pub ordinary_lazy_scope_probes: usize,
     /// Exact-key logical due or owner replay replaces the normal ordinary slice.
     /// Both mutually exclusive modes share these keyed costs.
     pub ordinary_due_key_probes: usize,
