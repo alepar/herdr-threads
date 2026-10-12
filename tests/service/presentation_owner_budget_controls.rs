@@ -129,7 +129,7 @@ fn budget() -> CallBudget {
     }
 }
 fn peer() -> PeerIdentity {
-    PeerIdentity::from_kernel(501)
+    herdr_threads::test_support::peer_identity(501)
 }
 
 impl Fixture {
