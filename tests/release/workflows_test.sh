@@ -86,6 +86,23 @@ check "ci.yml: clippy runs on macOS and Linux" bash -c \
   'test "$(yq -o=json -I=0 ".jobs.clippy.strategy.matrix.runner" "$1")" = "[\"macos-15\",\"ubuntu-24.04\"]"' _ "$ci"
 check "ci.yml: actionlint job exists" test "$(yq '.jobs | has("actionlint")' "$ci")" = true
 
+full=.github/workflows/full-suite.yml
+check "full-suite.yml: manual dispatch only, contents read" bash -c \
+  'test "$(yq -o=json -I=0 ".on | keys" "$1")" = "[\"workflow_dispatch\"]" && test "$(yq ".permissions.contents" "$1")" = read' _ "$full"
+check "full-suite.yml: the exact unsharded command, timed under 300 s" bash -c '
+  run=$(yq ".jobs.full-suite.steps[] | select(.name == \"Full suite*\") | .run" "$1")
+  printf "%s\n" "$run" | grep -qxF "cargo nextest run --locked --all-targets --all-features 2>&1 | tee full-suite.log" &&
+  printf "%s\n" "$run" | grep -qF "if [ \"\$elapsed\" -ge 300 ]; then" &&
+  ! printf "%s\n" "$run" | grep -qE -- "--partition|--profile|--retries|--test-threads"' _ "$full"
+check "full-suite.yml: prewarm builds precede the timed step" bash -c '
+  steps=$(yq ".jobs.full-suite.steps[].name" "$1")
+  warm=$(printf "%s\n" "$steps" | grep -n "^Prewarm" | cut -d: -f1)
+  timed=$(printf "%s\n" "$steps" | grep -n "^Full suite" | cut -d: -f1)
+  [ -n "$warm" ] && [ -n "$timed" ] && [ "$warm" -lt "$timed" ]' _ "$full"
+check "full-suite.yml: run-scoped always() leak check" bash -c \
+  'test "$(yq ".jobs.full-suite.steps[] | select(.run == \"scripts/check-no-leaked-processes*\") | .if" "$1")" = "always()" &&
+   yq ".jobs.full-suite.env.HT_LEAK_RUN_ID" "$1" | grep -qF "github.run_id"' _ "$full"
+
 check "herdr-plugin.toml platforms = [\"macos\", \"linux\"]" \
   grep -qxF 'platforms = ["macos", "linux"]' herdr-plugin.toml
 
