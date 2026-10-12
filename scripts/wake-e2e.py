@@ -8,8 +8,9 @@ The matrix is every combination of
   channel     ordinary thread | automatic 1:1 pair
   wake-on     nudge (default) | all
   harness     claude | codex
-Expected: every case wakes the idle recipient except a lazy send to a `wake-on nudge` seat, which must keep it idle
-and be delivered on the recipient's next turn (a neutral `hello` prompt). ACK requests must come back acknowledged,
+Expected: every case wakes the idle recipient except a lazy send or the Lazy invitation created by a first direct
+send to a `wake-on nudge` seat. These stay idle and arrive on the next turn (a neutral `hello` prompt).
+ACK requests must come back acknowledged,
 invitations must be accepted, and the first message of a 1:1 pair must be delivered once the pair is accepted.
 The busy-* cases repeat invite/lazy/nudge/ack while the recipient is mid-turn: a recipient is nudged only when idle,
 so no wake prompt may be typed during or after that turn, and the item must arrive inside the turn instead.
@@ -769,7 +770,8 @@ class Recipient:
         if case.startswith("busy-"):
             return self.busy_case(case)
         action, channel = case.split("/")
-        expect_wake = not (action == "send-lazy" and self.wake_on == "nudge")
+        passive = action == "send-lazy" or (action == "invite" and channel == "1:1")
+        expect_wake = not (passive and self.wake_on == "nudge")
         gap = SPACING_S - (time.time() - self.last_wake)
         if gap > 0:
             self.run.stopping.wait(gap)  # spacing ends early when cleanup begins
@@ -784,7 +786,7 @@ class Recipient:
             self.coord("invite", self.group, "--seat", self.seat)
             ref = {"thread": self.group}
         elif action == "invite":
-            # First contact: the direct send creates the pair and its invitation; the lazy body itself never wakes.
+            # First contact creates a Lazy invitation and opening body: only wake-on all wakes for these.
             ref = {"message": self.send("lazy", f"pair-open {self.run.run_id}", direct=True)}
             self.pair = "pending"
         else:
