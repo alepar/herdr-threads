@@ -5526,3 +5526,63 @@ fn display_ack_settles_for_a_readopted_migrated_binding() {
     display_ack_for_b(&context, &mut conn).unwrap();
     assert_eq!(receipt_state_b(&conn), "acked");
 }
+
+/// A due scan over a store whose receipt deadline and discovery backfills are
+/// both complete commits nothing: the deadline lane runs it on every safety
+/// tick, and an idle daemon must stay idle (no row change, no Deadlines kick).
+/// The one false->true completion still writes the marker exactly once.
+#[test]
+fn completed_receipt_discovery_scan_commits_nothing_and_completion_writes_once() {
+    use crate::service::kicks::Lane;
+    let (context, mut db, _) = setup();
+    let mut cursor = receipts::ReceiptDueCursor::default();
+    let completed = |db: &Connection| -> (i64, i64) {
+        db.query_row(
+            "SELECT a.completed,b.completed FROM receipt_deadline_backfill a CROSS JOIN receipt_discovery_backfill b",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap()
+    };
+    for _ in 0..100 {
+        if completed(&db) == (1, 1) {
+            break;
+        }
+        receipts::scan_due(&context, &mut db, 100, &mut cursor).unwrap();
+    }
+    assert_eq!(completed(&db), (1, 1), "both backfills complete");
+    let hooks = crate::store::connection::KickHooks::install(&db);
+    let _ = hooks.take_sealed();
+    for pass in 0..2 {
+        let before = db.total_changes();
+        receipts::scan_due(&context, &mut db, 100, &mut cursor).unwrap();
+        assert_eq!(
+            db.total_changes() - before,
+            0,
+            "idle scan {pass} changed rows"
+        );
+        assert!(
+            !hooks.take_sealed().contains(Lane::Deadlines),
+            "idle scan {pass} kicked the deadline lane"
+        );
+    }
+    // The completion transition still records its marker, exactly once.
+    db.execute("UPDATE receipt_discovery_backfill SET completed=0", [])
+        .unwrap();
+    let _ = hooks.take_sealed();
+    let before = db.total_changes();
+    receipts::scan_due(&context, &mut db, 100, &mut cursor).unwrap();
+    assert_eq!(completed(&db), (1, 1));
+    assert_eq!(
+        db.total_changes() - before,
+        1,
+        "one marker write on completion"
+    );
+    assert!(hooks.take_sealed().contains(Lane::Deadlines));
+    let before = db.total_changes();
+    receipts::scan_due(&context, &mut db, 100, &mut cursor).unwrap();
+    assert_eq!(db.total_changes() - before, 0, "and nothing after it");
+    // The hooks' user data must outlive every use of the connection.
+    drop(db);
+    drop(hooks);
+}
