@@ -85,6 +85,16 @@ check "ci.yml: tests job ends with an always() leak check" bash -c \
 check "ci.yml: clippy runs on macOS and Linux" bash -c \
   'test "$(yq -o=json -I=0 ".jobs.clippy.strategy.matrix.runner" "$1")" = "[\"macos-15\",\"ubuntu-24.04\"]"' _ "$ci"
 check "ci.yml: actionlint job exists" test "$(yq '.jobs | has("actionlint")' "$ci")" = true
+check "ci.yml: linux-e2e runs on Linux x86_64 and aarch64" bash -c \
+  'test "$(yq -o=json -I=0 "[.jobs.linux-e2e.strategy.matrix.include[].runner] | sort" "$1")" = "[\"ubuntu-24.04\",\"ubuntu-24.04-arm\"]"' _ "$ci"
+check "ci.yml: linux-e2e runs the wake-e2e self-test and the Herdr release smoke" bash -c \
+  'yq ".jobs.linux-e2e.steps[].run" "$1" | grep -qxF "python3 scripts/wake-e2e.py --self-test" \
+   && yq ".jobs.linux-e2e.steps[].run" "$1" | grep -qF "scripts/herdr-release-smoke --cache"' _ "$ci"
+check "ci.yml: linux-e2e never runs the live wake matrix or --check-upstream" bash -c \
+  '! yq ".jobs.linux-e2e.steps[].run" "$1" | grep -E "wake-e2e.py( |$)" | grep -vqF -- "--self-test" \
+   && ! yq ".jobs.linux-e2e.steps[].run" "$1" | grep -qF -- "--check-upstream"' _ "$ci"
+check "ci.yml: linux-e2e ends with an always() leak check" bash -c \
+  'test "$(yq ".jobs.linux-e2e.steps[] | select(.run == \"scripts/check-no-leaked-processes*\") | .if" "$1")" = "always()"' _ "$ci"
 
 check "herdr-plugin.toml platforms = [\"macos\", \"linux\"]" \
   grep -qxF 'platforms = ["macos", "linux"]' herdr-plugin.toml

@@ -375,6 +375,71 @@ jobs:
         if: always()
         run: cat "$RUNNER_TEMP/herdr-releases.md" >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
 
+  linux-e2e:
+    name: Herdr release smoke and wake-e2e self-test (Linux ${{ matrix.arch }})
+    # The no-credential e2e checks on both Linux architectures, every push:
+    # scripts/herdr-release-smoke (plugin link, startup daemon, seats, required
+    # ACK round trip, stand-in agent) against every official Herdr release in
+    # tests/herdr-releases.tsv, each binary checksum-verified and each run in
+    # its own private IsolatedHerdr root, and the wake-e2e driver's
+    # --self-test (credential, cleanup, completeness and oracle paths with
+    # fakes). The live wake matrix drives authenticated agents and never runs
+    # in CI (AGENTS.md "Pre-release wake e2e"); nor does --check-upstream (the
+    # manual macOS herdr-releases job owns it, so a new upstream Herdr release
+    # does not fail every push).
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x86_64, runner: ubuntu-24.04 }
+          - { arch: aarch64, runner: ubuntu-24.04-arm }
+    env:
+      HT_LEAK_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}-linux-e2e-${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Python for the runner and the driver
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.11.9'
+
+      - name: lsof and procps for the leak check
+        # scripts/check-no-leaked-processes reads open files with lsof and
+        # scans with pgrep (Linux Docker scoping: it fails without lsof).
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends lsof procps
+
+      - name: Rust toolchain
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
+
+      - name: wake-e2e driver self-test
+        run: python3 scripts/wake-e2e.py --self-test
+
+      - name: Herdr release matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = "${{ matrix.arch }}"
+          # Short TMPDIR: tests bind Unix sockets (108-byte limit on Linux).
+          TMPDIR=$(mktemp -d /tmp/htci.XXXXXX)
+          export TMPDIR
+          scripts/herdr-release-smoke --cache "$RUNNER_TEMP/herdr-releases" \
+            --report "$RUNNER_TEMP/herdr-releases.md"
+
+      - name: Matrix (job summary)
+        if: always()
+        run: cat "$RUNNER_TEMP/herdr-releases.md" >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+
+      - name: No leaked test processes
+        if: always()
+        shell: bash
+        run: scripts/check-no-leaked-processes --run-id "$HT_LEAK_RUN_ID" --grace 15
+
   clippy:
     # Both OSes: each lints its own platform-gated code.
     name: Clippy -D warnings (${{ matrix.runner }})
