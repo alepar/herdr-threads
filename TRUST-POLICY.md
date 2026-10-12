@@ -670,6 +670,7 @@ warning `informational` in the inbox batch, so `watch` raises no `attention` lin
 independent of sender role, relay and human intent. A lazy audience is frozen by canonical preparation
 and publication; recipient identity is immutable, and its pending/displayed progress is monotonic.
 Already addressed rows survive leaving, retirement and archival, with no transfer to another seat.
+Rows past the seat's furthest cursor when it joins become seat-pending (join frontier, below).
 Unpublished rows are invisible and may be discarded in bounded cleanup; published progress is retained.
 Lazy delivery creates no receipt, deadline, ACK evidence, wake attention, wake, poke or automatic adoption,
 except that a seat with `wake_on: all` is woken (wake eligibility only; still no receipt, digest
@@ -741,7 +742,8 @@ generation, under the `cooperative_hook_delivery` claim (no per-row source is st
 
 **Per-binding read position (`AdvanceCursors`, `InboxQuery.claim`).** An inbox read that carries the caller's
 claim is that binding's own stream: the messages of the seat's joined threads past the binding's cursors, plus
-the seat's open invitations and its still-pending ACK obligations. A display moves only the displaying
+the seat's open invitations, its still-pending ACK obligations and, for a top-level binding, the seat-wide
+pending pre-join lazy rows (join frontier, below). A display moves only the displaying
 binding's cursors, with the exact message IDs it showed whole. The command is decided in the daemon against
 the canonical view (A2) and resolves the claim to its own binding like any plain cooperative call (it may
 enroll). It is the one write a declared subagent may send, because it changes no seat state: it records no ACK
@@ -749,7 +751,8 @@ actor, creates no receipt, settles no obligation and attributes no action. Its `
 standard hook's in-turn display, above) adds only the binding's `in_turn_offer` rows, which affect wake
 eligibility and nothing else; a subagent's or a non-in-turn advance records none, and only the `in_turn`
 form may name invitations. A cursor never moves backwards,
-never moves past an unshown message the seat can receive, and a read never enrolls. A client that fails to
+never moves past an unshown message the seat can receive except at a join and a resumed fast-forward (both
+below), and a read never enrolls. A client that fails to
 send it only causes redisplay (at least once). Only a top-level binding's display ACK settles the seat's
 obligation; other bindings see that message in their own stream marked settled. A full text `body <id>` read
 is such a display (ht-54r F1; a `--json` or `--machine` body read, like a machine inbox read, is read-only and
@@ -773,8 +776,8 @@ creates or resumes a binding; neither is authority and neither writes a receipt.
 an inbox read of a session the daemon has not enrolled carries the same counts and enrolls nothing (the CLI's
 following `AdvanceCursors`, possibly empty, enrolls it). A lifecycle check-in that *reconnects or reopens* an
 existing binding whose unread backlog exceeds one ordinary inbox page jumps that binding's own cursors to the
-thread heads and reports the gap per thread. This is the one place a cursor passes unshown mail the seat can
-receive; it is decided in the daemon in the check-in's transaction, never on enrollment, a plain touch, a plain-call reconnect or a
+thread heads and reports the gap per thread. Apart from the join frontier (below), this is the one place a
+cursor passes unshown mail the seat can receive; it is decided in the daemon in the check-in's transaction, never on enrollment, a plain touch, a plain-call reconnect or a
 supersede-induced disconnect (the superseded binding's cursors are untouched until it itself resumes), and it
 moves only the resumed binding's cursors. The seat's still-pending ACK obligations are not cursor-bound: the
 inbox keeps listing them until they are settled, so a fast-forward never hides or settles one, and a subagent
@@ -782,7 +785,51 @@ binding's fast-forward moves only its own cursors. Accepted limit: a binding a p
 already connected when its own lifecycle resume arrives, so that resume is not a reconnect and does not
 fast-forward. The limit covers only a binding a plain call reconnected after a process exit.
 
+**Join frontier and pre-join lazy mail (ht-8y9).** Every transition of a seat into Joined (`accept`,
+`accept-required`, `join`, thread creation and a direct pair's Ensure for its caller) runs one
+deciding-transaction step, `read_cursors::init_for_join`, in this order:
+
+1. *Seat-wide pending population.* Every `lazy_recipients` row of the seat in that thread whose published
+   message's sequence is greater than the seat's furthest cursor there (the highest cursor any binding of the
+   seat holds in the thread, open or ended; 0 when none) and that no completion has displayed (`state` is
+   still `pending`) is marked seat-pending (`legacy_pending`, the same flag rows carried from before V34 use).
+   So a row displayed out of order while a cursor was held behind an undisplayed one (a truncated delivery)
+   is never shown again after a join. Nothing else selects the population: not membership intervals and not
+   when the row was addressed. Typically these are a direct send's
+   frozen invited target rows (A8), plus joined-era rows no binding has passed yet.
+2. *Join-head frontier.* Every open binding of the seat, any role, gets a cursor at the thread head; a higher
+   cursor it already has is kept.
+
+A seat-pending row is unread for every top-level binding of the seat whatever its cursor (the lazy predicate's
+legacy branch, not membership-gated), and it counts as seat-level unread lazy mail (digest; wake only for
+`wake_on: all`, A8). The first completion that displays it from a top-level binding, or one matching no open
+binding (which completes for the whole seat), clears the flag for the seat and advances only that binding's
+cursors: a sibling top-level binding then gets no copy of it, even though its own cursor never moved. A
+subagent binding never sees a seat-pending row (the branch requires `top_level`) and, like every subagent,
+cannot complete one; it sees only mail past its head cursor. A binding enrolled later sees still-pending rows
+if it is top-level. Ordinary messages are not part of this: one addressed to the seat before it joined (an
+ACK request to an invitee, a direct `--nudge` target) is a pending receipt from publication, listed with the
+seat's ACK obligations until settled and never re-offered through the cursor stream after the join, because
+every cursor starts at the head. That pending-receipt path is an agent seat's; a human seat's receipt is waived,
+and the join frontier gives a human seat's pre-join ordinary messages no separate path (unchanged from before
+ht-8y9).
+
+A rejoin follows the same rule: an older sibling's cursor rises to the head, past joined-era mail another
+binding of the seat read (lazy rows at or below the seat's furthest cursor are not marked; ordinary ones keep
+only their seat-level receipts). Lazy rows past the furthest cursor are marked, so at seat level no lazy row is
+lost by a join.
+
 ## Accepted limits
+
+Pre-join lazy mail is seat-level, not per binding (join frontier, A8). A seat-pending row is settled for the
+seat by the first top-level binding that displays it; a sibling top-level binding gets no copy, and a subagent
+never sees it. A join raises every open binding's cursor to the head, so on a rejoin an older sibling skips
+joined-era mail another binding of the seat already read. This keeps a mixed opening (lazy and ordinary rows
+interleaved) from re-offering ordinary rows already offered or ACKed as pending receipts, which one per-binding
+cursor cannot express. A human seat's pre-join ordinary messages get no pending-receipt path (unchanged).
+Pinned by `tests/hook_entrypoint.rs`
+`pair_accept_delivers_mixed_opening_mail_once` and `pair_rejoin_with_two_bindings_pins_read_positions` and the
+store test `accepting_a_pair_invitation_keeps_the_opening_messages_unread`.
 
 Delivery-only cleanup recovery retains a private, bounded versioned terminal record after
 intent/progress removal. It preserves exact original immutable intent bytes and the genuine
