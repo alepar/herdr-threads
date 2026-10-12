@@ -236,7 +236,7 @@ impl Q3Channel {
         use crate::protocol::watch::WatchFrame;
         // These are normal safety/worker passes at the unchanged clock. No
         // notify, mark_dirty, reconnect or synthetic version drives the client.
-        let manifests: usize = self
+        let manifests: i64 = self
             .window
             .f
             .db
@@ -248,6 +248,7 @@ impl Q3Channel {
             .unwrap();
         // The stable-prefix publication contract is ceil(M/100)+2 successful
         // quanta. There are no concurrent arrivals, new threads or deadlines.
+        let manifests = usize::try_from(manifests).expect("nonnegative manifest count fits usize");
         for _ in 0..manifests.div_ceil(100) + 2 {
             self.registry().pass(now_utc(&self.window.f)).unwrap();
             let frames = self.take_frames();
