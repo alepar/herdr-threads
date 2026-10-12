@@ -706,7 +706,7 @@ fn unclassified(error: &rusqlite::Error) -> ApiError {
 
 #[cfg(test)]
 #[path = "../../tests/store/schema.rs"]
-mod tests;
+pub(crate) mod tests;
 
 /// Unit tests run one process per test and open hundreds of fresh stores;
 /// replaying every migration costs each ~60 ms of CPU (schema 27's table

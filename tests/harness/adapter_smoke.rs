@@ -37,7 +37,7 @@ fn adapter_smoke_four_configurations_real_entrypoints_and_main_conservation() {
             .iter()
             .map(|r| r.metadata().id)
             .collect::<Vec<_>>(),
-        ["claude", "codex", "hermes", "synthetic_fourth"]
+        ["claude", "codex", "hermes", "agy", "synthetic_fourth"]
     );
     fourth_author_consumers();
     settings_conservation();
@@ -110,9 +110,9 @@ fn fourth_author_consumers() {
             .iter()
             .map(|entry| entry.id.as_str())
             .collect::<Vec<_>>(),
-        ["claude", "codex", "hermes", ID]
+        ["claude", "codex", "hermes", "agy", ID]
     );
-    let entry = &discovery.adapters[3];
+    let entry = &discovery.adapters[4];
     assert_eq!(entry.display_name, "Synthetic fourth (test-support only)");
     assert_eq!(entry.contracts.len(), 1);
     assert_eq!(entry.contracts[0].domain, "synthetic");
@@ -409,7 +409,7 @@ fn fourth_author_consumers() {
             .keys()
             .map(String::as_str)
             .collect::<Vec<_>>(),
-        ["claude", "codex", "hermes", ID]
+        ["agy", "claude", "codex", "hermes", ID]
     );
     let fourth_health = &health.harnesses[ID];
     assert!(fourth_health.runtime_evidence.is_empty());
@@ -461,7 +461,7 @@ fn fourth_author_consumers() {
 }
 
 struct NoShell;
-impl herdr_threads::harness::launch::CodexShellProbe for NoShell {}
+impl herdr_threads::harness::launch::PaneShellProbe for NoShell {}
 
 fn settings_conservation() {
     use herdr_threads::{protocol::results::HealthSettings, service::config::ServiceConfig};

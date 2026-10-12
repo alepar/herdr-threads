@@ -59,6 +59,7 @@ fn send_request() -> SendMessage {
         delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
         thread: ThreadId::new("t"),
         body: "hello".into(),
+        direct_recipient: None,
         invited_recipients: vec![],
         deadline_millis: None,
         operation: OperationId::new("op"),
@@ -71,6 +72,8 @@ fn send_request() -> SendMessage {
             native_session: NativeSessionId::new("n"),
             execution: ExecutionId::new("00000000-0000-4000-8000-0000000000aa"),
             target: HostTargetId::new("pa"),
+            agent_id: None,
+            liveness: Some(crate::protocol::authority::LivenessFingerprint::TEST),
         },
         relays_user: false,
         user_intent: None,
@@ -497,9 +500,10 @@ fn user_intent_send_canonical_eligibility_refuses_unrelayed_agent() {
 fn user_intent_send_rechecks_live_role() {
     use crate::protocol::summary::UserIntent;
     for (change, expected) in [
+        // ht-54r.3: a claim names its own binding and an unknown session of an agent enrolls
+        // one, so a closed or re-roled stored binding no longer refuses an agent's send; only
+        // a person's claim must already hold a binding.
         ("mismatched_human_hint", ErrorCode::CallerUnverified),
-        ("closed_binding", ErrorCode::CallerUnverified),
-        ("role_replaced", ErrorCode::CallerUnverified),
         ("revision_changed", ErrorCode::Conflict),
         ("stale_generation", ErrorCode::CallerUnverified),
     ] {
@@ -641,5 +645,117 @@ fn user_intent_send_priority_and_receipts_unchanged() {
                 baseline = Some(comparison);
             }
         }
+    }
+}
+
+// Kills: a send that leaves messages.sender_binding_id NULL, or stamps the seat's first binding
+// for a second session's send.
+#[test]
+fn send_records_sender_binding_id() {
+    let iso = TestIsolation::new("sender-binding");
+    let (context, mut conn) = setup(&iso);
+    conn.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES ('a',1,'pa','b',1,1,'codex','n2','00000000-0000-4000-8000-0000000000a2','cooperative_top_level',0,'term-pa','inc')", []).unwrap();
+    let binding_of = |conn: &Connection, session: &str| -> String {
+        conn.query_row(
+            "SELECT binding_id FROM occupant_bindings WHERE seat_id='a' AND native_session=?1",
+            [session],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    for (session, execution, operation) in [
+        ("n", "00000000-0000-4000-8000-0000000000aa", "op-1"),
+        ("n2", "00000000-0000-4000-8000-0000000000a2", "op-2"),
+    ] {
+        let mut request = send_request();
+        request.operation = OperationId::new(operation);
+        request.body = format!("from {session}");
+        request.claim.native_session = NativeSessionId::new(session);
+        request.claim.execution = ExecutionId::new(execution);
+        prepare_intent_send(&context, &mut conn, &request);
+        messages::publish_send(
+            &context,
+            &mut conn,
+            &request,
+            &mut permit(&request),
+            &budget(),
+            || messages::MAX_BODY_BYTES,
+        )
+        .unwrap();
+        let stamped: Option<String> = conn
+            .query_row(
+                "SELECT sender_binding_id FROM messages WHERE body=?1",
+                [format!("from {session}")],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stamped, Some(binding_of(&conn, session)), "{session}");
+    }
+    assert_ne!(binding_of(&conn, "n"), binding_of(&conn, "n2"));
+}
+
+#[test]
+fn direct_recipient_hash_binds_target_and_preserves_absent_payload() {
+    use crate::store::schema::canonical_digest;
+    let mut request = send_request();
+    let historical = serde_json::json!({"kind":"send_message","thread":request.thread,"body":request.body,"invited_recipients":[],"deadline_millis":null,"claim":request.claim});
+    assert_eq!(messages::send_payload(&request), historical);
+    let absent = canonical_digest(&historical).unwrap();
+    assert_eq!(
+        canonical_digest(&messages::send_payload(&request)).unwrap(),
+        absent
+    );
+    request.direct_recipient = Some(SeatId::new("b"));
+    let target_b = canonical_digest(&messages::send_payload(&request)).unwrap();
+    assert_ne!(target_b, absent);
+    request.direct_recipient = Some(SeatId::new("c"));
+    assert_ne!(
+        canonical_digest(&messages::send_payload(&request)).unwrap(),
+        target_b
+    );
+}
+
+#[test]
+fn direct_recipient_nonpair_store_refuses_preparation_and_publication() {
+    use crate::{
+        ports::StorePort,
+        protocol::commands::PermitMutation,
+        store::{SqliteStore, StoreSettings},
+    };
+    let iso = TestIsolation::new("direct-nonpair-store");
+    let (context, db) = setup(&iso);
+    let store = SqliteStore::new(context, "i", StoreSettings::default()).unwrap();
+    let mut request = send_request();
+    request.direct_recipient = Some(SeatId::new("b"));
+    assert_eq!(
+        store
+            .prepare_send_step(
+                &request,
+                crate::ports::DurableWorkAdmission::new(16).unwrap(),
+                &budget()
+            )
+            .unwrap_err()
+            .code,
+        ErrorCode::InvalidRequest
+    );
+    assert_eq!(
+        store
+            .mutate(
+                PermitMutation::SendMessage(request.clone()),
+                permit(&request),
+                &budget()
+            )
+            .unwrap_err()
+            .code,
+        ErrorCode::InvalidRequest
+    );
+    for table in ["messages", "send_preparations", "operations"] {
+        assert_eq!(
+            db.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0,
+            "{table}"
+        );
     }
 }

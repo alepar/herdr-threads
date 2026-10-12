@@ -1,0 +1,9 @@
+{
+  "format": "agy-fake-gemini/1",
+  "name": "enroll",
+  "aux_text": "Gate enroll title",
+  "default": {"text": "ENROLL-UNEXPECTED"},
+  "steps": [
+    {"label": "enroll", "match": {"contains": ["ENROLL-PROMPT"]}, "reply": {"text": "ENROLL-OK"}}
+  ]
+}

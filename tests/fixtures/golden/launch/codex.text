@@ -1,0 +1,30 @@
+agent_name: seat-recipien
+agent_name_source: seat
+argv: 
+binding.binding_generation: 1
+binding.provenance: managed_launch
+binding.recorded: true
+binding.state: launched, not checked in
+codex.codex_home: <root>/codex-home
+codex.command_execution: approved_outside_sandbox
+codex.command_guidance: Run herdr-threads commands outside the sandbox through Codex approval; if denied, report the policy refusal without bypassing it
+codex.config_path: <root>/codex-home/config.toml
+codex.config_present: false
+codex.profile: default
+codex.profile_source: none
+config_dir.path: <root>/codex-home
+config_dir.source: launcher
+handoff.has_more: false
+handoff.pending_invitations: 0
+handoff.pending_receipts: 0
+handoff.threads: []
+harness: codex
+harness_version.admission: contract_declared
+harness_version.binary: <root>/codex
+harness_version.recipe: codex-hooks-v1
+harness_version.version: none
+next: the agent's SessionStart hook shows pending invitations and messages; if its initial prompt is lost, the idle agent is woken for pending work, and `herdr-threads inbox --seat recipient` still lists it
+outcome: started
+pane: w4:p2
+receipt: launch is not receipt: nothing was checked in, accepted or ACKed
+seat: recipient

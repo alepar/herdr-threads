@@ -1,4 +1,5 @@
 //! Canonical compound protection and absorbing terminal replay.
+pub(crate) mod automatic;
 use super::connection::{api_error, store_error};
 use crate::protocol::{
     handoff::{HandoffIdentity, HandoffResult, HandoffState},
@@ -42,6 +43,13 @@ fn validate_identity(identity: &HandoffIdentity) -> Result<(), ApiError> {
 /// Read the CURRENT state only after matching the entire immutable identity.
 /// Completed rows grant historical presentation, never live action authority.
 pub fn current(
+    db: &Connection,
+    identity: &HandoffIdentity,
+) -> Result<Option<HandoffResult>, ApiError> {
+    automatic::guard_legacy_identity(db, identity)?;
+    current_legacy(db, identity)
+}
+fn current_legacy(
     db: &Connection,
     identity: &HandoffIdentity,
 ) -> Result<Option<HandoffResult>, ApiError> {
@@ -104,7 +112,7 @@ pub(crate) fn validate_live(
     identity: &HandoffIdentity,
     thread: Option<&ThreadId>,
 ) -> Result<(), ApiError> {
-    super::seats::cooperative_mapping(db, &identity.claim, None)?;
+    super::seats::cooperative_bound_mapping(db, &identity.claim, None)?;
     if let Some(thread) = thread {
         let row:Option<(bool,bool)>=db.query_row("SELECT archived,EXISTS(SELECT 1 FROM memberships m WHERE m.thread_id=t.id AND m.seat_id=?2 AND m.state='joined') FROM threads t WHERE id=?1 AND instance_id=?3",params![thread.as_str(),identity.claim.seat.as_str(),identity.claim.instance],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(store_error)?;
         match row {
@@ -128,6 +136,12 @@ pub(crate) fn validate_handoff_requirement(
     replay: bool,
 ) -> Result<(), ApiError> {
     match requirement {
+        crate::protocol::authority::HandoffRequirement::AutomaticBootstrap(request) => {
+            super::topology_handoff::automatic::validate_parent_phase(db, request, replay)
+        }
+        crate::protocol::authority::HandoffRequirement::AutomaticDelivery(request) => {
+            automatic::validate_phase(db, request, replay)
+        }
         crate::protocol::authority::HandoffRequirement::Delivery(request) => {
             if replay {
                 validate_delivery_replay(db, request)
@@ -327,7 +341,7 @@ pub(crate) fn complete_linked_child(
     if result.state == HandoffState::Completed {
         return Ok(result);
     }
-    super::seats::cooperative_mapping(tx, &identity.claim, None)?;
+    super::seats::cooperative_bound_mapping(tx, &identity.claim, None)?;
     if result.thread.is_none() {
         return Err(api_error(
             ErrorCode::Conflict,

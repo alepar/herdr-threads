@@ -5,20 +5,25 @@ use crate::cli::{
     RunError,
     setup::{PermissionPolicy, SetupEnv, SetupRequest, SetupVerb},
 };
+use crate::harness::launch::compose_native_argv;
 use crate::harness::setup::legacy::*;
+use crate::harness::setup::{
+    EventGroups, HookInspection, InstallPhase, NativeObservation, OwnedEntry, OwnershipManifest,
+    event_command, groups_fingerprint, merge, owned, uninstall_json,
+};
+use crate::ports::ConfiguredHook;
 use crate::{
     daemon::paths::{RuntimeContext, instance_dir},
     harness::{
-        codex, codex_config,
+        codex,
+        codex::permissions::{CodexPermissionState, CodexPermissions},
+        codex_config,
         context::Harness,
-        permissions::{
-            PermissionConsent,
-            codex_rules::{CodexPermissionState, CodexPermissions},
-        },
+        permissions::PermissionConsent,
         recipe,
         setup::{
-            self as lib, SettingsKind, SetupError, read_settings_manifest, remove_user_settings,
-            shared_command, shell_command,
+            self as lib, SetupError, read_settings_manifest, remove_user_settings, shared_command,
+            shell_command,
         },
     },
     protocol::results::ErrorCode,
@@ -29,6 +34,16 @@ use std::{
     io::{self, Read},
     path::{Path, PathBuf},
 };
+/// A file under Codex's config root.
+pub(crate) fn codex_file(env: &SetupEnv, name: &str) -> Result<PathBuf, RunError> {
+    Ok(env.config_root("codex")?.join(name))
+}
+
+/// Codex's config root, when one resolved.
+pub(crate) fn codex_root(env: &SetupEnv) -> Option<&Path> {
+    env.config_roots.get("codex").map(PathBuf::as_path)
+}
+
 pub fn codex_home_from(
     codex_home: Option<std::ffi::OsString>,
     home: Option<std::ffi::OsString>,
@@ -175,7 +190,7 @@ pub fn observe_codex_layer(path: &Path, owned_command: &str) -> Option<CodexLaye
     };
     let stable_commands = shlex::split(owned_command)
         .and_then(|argv| {
-            lib::native_entries(SettingsKind::CodexUser, &argv)
+            lib::native_entries(codex::settings_kind(), &argv)
                 .ok()
                 .flatten()
         })
@@ -194,7 +209,7 @@ pub fn observe_codex_layer(path: &Path, owned_command: &str) -> Option<CodexLaye
 
 /// Every existing Codex config layer file, observed read-only.
 pub(crate) fn observe_codex_config(env: &SetupEnv, owned_command: &str) -> Vec<CodexLayerFile> {
-    codex_layer_paths(env.codex_home.as_deref(), &env.cwd)
+    codex_layer_paths(codex_root(env), &env.cwd)
         .iter()
         .filter_map(|path| observe_codex_layer(path, owned_command))
         .collect()
@@ -202,7 +217,7 @@ pub(crate) fn observe_codex_config(env: &SetupEnv, owned_command: &str) -> Vec<C
 
 pub(crate) fn codex_config_json(env: &SetupEnv, layers: &[CodexLayerFile]) -> Value {
     json!({
-        "codex_home": env.codex_home.as_ref().map(|home| home.display().to_string()),
+        "codex_home": codex_root(env).map(|home| home.display().to_string()),
         "layers": layers.iter().map(|layer| json!({
             "path": layer.path.display().to_string(),
             "owned_events_with_hooks": layer.events,
@@ -419,8 +434,8 @@ pub struct CodexPaths {
 }
 
 pub fn codex_paths(env: &SetupEnv) -> Result<CodexPaths, RunError> {
-    let hooks = env.codex_file("hooks.json")?;
-    let config = env.codex_file("config.toml")?;
+    let hooks = codex_file(env, "hooks.json")?;
+    let config = codex_file(env, "config.toml")?;
     let state = env.state_dir()?;
     Ok(CodexPaths {
         hooks_manifest: manifest_path(state, "codex-user", &hooks),
@@ -428,6 +443,23 @@ pub fn codex_paths(env: &SetupEnv) -> Result<CodexPaths, RunError> {
         hooks,
         config,
     })
+}
+
+/// The installer's check of the historical owned allowance beside the hook file: a recorded
+/// allowance that is partial or edited refuses before hooks are inspected.
+pub(crate) fn installer_allowance_precheck(env: &SetupEnv) -> Result<(), RunError> {
+    let failure = |detail: String| RunError::Io(io::Error::other(detail));
+    let paths = codex_paths(env)?;
+    let allowance = codex_config::inspect(&paths.config, &paths.config_manifest)
+        .map_err(|error| failure(format!("invalid Codex allowance ownership: {error:?}")))?;
+    if allowance.recorded.as_ref().is_some_and(|manifest| {
+        manifest.phase != lib::InstallPhase::Installed || !allowance.present
+    }) {
+        return Err(failure(
+            "recorded Codex allowance is partial or edited; preserved".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// Codex's trust-key spelling of a hook event (`hooks.state` keys and
@@ -529,7 +561,13 @@ pub(crate) fn codex_trust_report(env: &SetupEnv) -> Value {
         return json!({"status": "unknown", "note": CODEX_TRUST_NOTE});
     };
     let mut status = json!({});
-    if settings_status(SettingsKind::CodexUser, env, &paths.hooks, &mut status).is_err()
+    if settings_status(
+        crate::harness::codex::settings_kind(),
+        env,
+        &paths.hooks,
+        &mut status,
+    )
+    .is_err()
         || status["installed"] != true
     {
         return json!({"status": "unknown", "note": CODEX_TRUST_NOTE});
@@ -590,10 +628,7 @@ pub(crate) fn with_unmeasured(mut sandbox: Value, warning: Option<String>) -> Va
 
 /// The permission component of this CODEX_HOME and state directory.
 fn permission_component(env: &SetupEnv) -> Result<CodexPermissions, RunError> {
-    let home = env
-        .codex_home
-        .as_ref()
-        .ok_or_else(|| invalid("neither CODEX_HOME nor HOME is set"))?;
+    let home = codex_root(env).ok_or_else(|| invalid("neither CODEX_HOME nor HOME is set"))?;
     let rules = home.join("rules").join("herdr-threads.rules");
     Ok(CodexPermissions::new(
         home,
@@ -710,17 +745,15 @@ fn codex_install(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunErr
     let (observed, contract) = observe(request, env).map_err(refuse_executable)?;
     let contract = contract.expect("Codex has a registered contract");
     // Validate the declared composition without manufacturing a version witness.
-    lib::plan_codex_for_contract(&[], &env.hook_argv(Harness::Codex)?, &contract).map_err(
-        |error| {
-            settings_error(
-                error,
-                request.verb,
-                SettingsKind::CodexUser,
-                &paths.hooks,
-                &paths.hooks_manifest,
-            )
-        },
-    )?;
+    plan_codex_for_contract(&[], &env.hook_argv(Harness::Codex)?, &contract).map_err(|error| {
+        settings_error(
+            error,
+            request.verb,
+            crate::harness::codex::settings_kind(),
+            &paths.hooks,
+            &paths.hooks_manifest,
+        )
+    })?;
     let owned_command = codex_owned_command(env)?;
     let layers = observe_codex_config(env, &owned_command);
     refuse_duplicate(&layers, &owned_command, &paths.hooks)?;
@@ -751,7 +784,7 @@ fn codex_install(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunErr
     let mut warnings = Vec::new();
     let mut hooks_file = OwnedFile::new(paths.hooks.clone(), paths.hooks_manifest.clone(), b"{}");
     let (installed, already, adopted) = install_settings(
-        SettingsKind::CodexUser,
+        crate::harness::codex::settings_kind(),
         request.verb,
         env,
         &mut hooks_file,
@@ -839,7 +872,7 @@ fn codex_install(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunErr
         ),
         "trust": codex_trust_json(&paths, command.as_deref()),
         "permissions": permission_report,
-        "harness_version": observation_json(&Ok((observed, None))),
+        "harness_version": observation_json::<codex::CodexContract>(&Ok((observed, None))),
         "codex_config": codex_config_json(env, &layers),
         "observed": "unknown",
         "note": "installed is not observed: run `herdr-threads doctor` for native evidence. \
@@ -851,7 +884,7 @@ fn codex_install(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunErr
 
 pub(crate) fn codex_remove(env: &SetupEnv) -> Result<Value, RunError> {
     let paths = codex_paths(env)?;
-    let kind = SettingsKind::CodexUser;
+    let kind = crate::harness::codex::settings_kind();
     let mut report = json!({
         "harness": "codex",
         "scope": "user",
@@ -951,7 +984,7 @@ pub(crate) fn codex_remove(env: &SetupEnv) -> Result<Value, RunError> {
 
 fn codex_status(
     env: &SetupEnv,
-    observation: Result<(Observed, Option<crate::harness::operational::CodexContract>), String>,
+    observation: Result<(Observed, Option<crate::harness::codex::CodexContract>), String>,
 ) -> Result<Value, RunError> {
     let mut report = json!({
         "action": "status",
@@ -961,9 +994,14 @@ fn codex_status(
         "recipes": recipe::describe(codex::RECIPES),
         "harness_version": observation_json(&observation),
     });
-    let hooks = env.codex_file("hooks.json")?;
+    let hooks = codex_file(env, "hooks.json")?;
     report["hooks_file"] = json!(hooks.display().to_string());
-    settings_status(SettingsKind::CodexUser, env, &hooks, &mut report)?;
+    settings_status(
+        crate::harness::codex::settings_kind(),
+        env,
+        &hooks,
+        &mut report,
+    )?;
     let Ok(paths) = codex_paths(env) else {
         return Ok(report);
     };
@@ -1005,6 +1043,7 @@ pub(crate) fn setup(
         request,
         codex_install,
         crate::cli::setup::PromptSuggestionPolicy::Ask,
+        false,
     )
 }
 pub(crate) fn status(
@@ -1034,14 +1073,14 @@ pub(crate) fn unsetup(
 pub(crate) fn observe(
     request: &SetupRequest,
     env: &SetupEnv,
-) -> Result<(Observed, Option<crate::harness::operational::CodexContract>), String> {
+) -> Result<(Observed, Option<crate::harness::codex::CodexContract>), String> {
     observe_with_cache(request, env, None)
 }
 pub(crate) fn observe_with_cache(
     request: &SetupRequest,
     env: &SetupEnv,
     codex_cache: Option<&Path>,
-) -> Result<(Observed, Option<crate::harness::operational::CodexContract>), String> {
+) -> Result<(Observed, Option<crate::harness::codex::CodexContract>), String> {
     observe_bounded(
         request,
         env,
@@ -1057,7 +1096,7 @@ fn observe_bounded(
     _codex_cache: Option<&Path>,
     timeout: Duration,
     cancellation: &crate::protocol::time::Cancellation,
-) -> Result<(Observed, Option<crate::harness::operational::CodexContract>), String> {
+) -> Result<(Observed, Option<crate::harness::codex::CodexContract>), String> {
     if timeout.is_zero() || cancellation.is_cancelled() {
         return Err("native status observation budget exhausted or cancelled".into());
     }
@@ -1076,6 +1115,272 @@ fn observe_bounded(
             version: None,
             recipe: "codex-hooks-v1",
         },
-        Some(crate::harness::operational::CodexContract::registered()),
+        Some(crate::harness::codex::CodexContract::registered()),
     ))
+}
+
+// ------------------------------------------------------- session plan
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodexSetupPlan {
+    pub base_fingerprint: String,
+    pub events: Vec<EventGroups>,
+    /// The owned session overrides for a launch with no caller arguments.
+    pub launch_argv: Vec<String>,
+    /// The session `-c hooks.*=...` overrides alone.
+    pub session_config: Vec<String>,
+    pub owned: Vec<OwnedEntry>,
+}
+
+impl CodexSetupPlan {
+    /// Compose owned overrides with caller arguments using the launch rule.
+    pub fn launch_argv_for(&self, caller: Vec<String>) -> Result<Vec<String>, SetupError> {
+        compose_native_argv(
+            crate::protocol::authority::Harness::Codex,
+            caller,
+            self.session_config.clone(),
+        )
+        .map_err(|_| SetupError::Invalid)
+    }
+}
+
+/// `existing` is the session-flags layer the printed launch line owns (the
+/// public CLI passes it empty): Codex discovers the hooks of config.toml,
+/// hooks.json and trusted project layers separately and runs them alongside
+/// these `-c` values (hooks/list on 0.157.1, 0.158.0 and 0.159.2), so copying
+/// them in would register them twice. Each session override includes the
+/// supplied existing groups. hooks.state is untouched and must be measured separately.
+/// Internal composition shared by contract planning and historical diagnostics.
+fn plan_codex(
+    existing: &[EventGroups],
+    hook_argv: &[String],
+) -> Result<CodexSetupPlan, SetupError> {
+    let command = shell_command(hook_argv)?;
+    let native = lib::native_entries(codex::settings_kind(), hook_argv)?;
+    if existing.len() > 64 {
+        return Err(SetupError::TooLarge);
+    }
+    let mut events = existing.to_vec();
+    let mut seen = std::collections::BTreeSet::new();
+    for event in &events {
+        if !valid_event(&event.event)
+            || !seen.insert(event.event.clone())
+            || event.groups.len() > 128
+        {
+            return Err(SetupError::Invalid);
+        }
+    }
+    let mut owned_entries = Vec::new();
+    // Exactly the adapter's declared context-only hook groups. The Bash
+    // PreToolUse group carries tool-boundary attention context; the gated
+    // invocation rewrite is never part of any installed group.
+    for hook in codex::DECLARATION.owned_hooks {
+        let name = hook.event;
+        let mut group = json!({"hooks":[{"type":"command","command":native.as_ref().and_then(|entries| entries.iter().find(|e| e.event == name)).and_then(|entry| entry.group["hooks"][0]["command"].as_str()).map(str::to_owned).unwrap_or_else(|| event_command(&command, name))}]});
+        if let Some(matcher) = hook.matcher {
+            group["matcher"] = json!(matcher);
+        }
+        let entry = owned(name, group)?;
+        if let Some(event) = events.iter_mut().find(|event| event.event == name) {
+            merge(&mut event.groups, &entry)?;
+        } else {
+            events.push(EventGroups {
+                event: name.into(),
+                groups: vec![entry.group.clone()],
+            });
+        }
+        owned_entries.push(entry);
+    }
+    let mut session_config: Vec<String> = Vec::new();
+    for entry in &owned_entries {
+        let event = events
+            .iter()
+            .find(|e| e.event == entry.event)
+            .ok_or(SetupError::Invalid)?;
+        session_config.push("-c".into());
+        session_config.push(format!(
+            "hooks.{}={}",
+            event.event,
+            toml_inline(&json!(event.groups))?
+        ));
+    }
+    if session_config.iter().map(String::len).sum::<usize>() > 65536 {
+        return Err(SetupError::TooLarge);
+    }
+    let mut plan = CodexSetupPlan {
+        base_fingerprint: groups_fingerprint(existing)?,
+        events,
+        launch_argv: Vec::new(),
+        session_config,
+        owned: owned_entries,
+    };
+    plan.launch_argv = plan.launch_argv_for(Vec::new())?;
+    Ok(plan)
+}
+
+/// Compose the registered Codex setup contract without executable metadata.
+/// The handle declares registration, never runtime support or native delivery.
+pub fn plan_codex_for_contract(
+    existing: &[EventGroups],
+    hook_argv: &[String],
+    _: &codex::CodexContract,
+) -> Result<CodexSetupPlan, SetupError> {
+    plan_codex(existing, hook_argv)
+}
+
+/// Diagnostic/fixture compatibility for historical installed-version callers.
+pub fn plan_codex_for_version(
+    existing: &[EventGroups],
+    hook_argv: &[String],
+    version: &codex::InstalledVersion,
+) -> Result<CodexSetupPlan, SetupError> {
+    if !codex::DECLARATION.recipes.contains(version.recipe()) {
+        return Err(SetupError::Invalid);
+    }
+    plan_codex(existing, hook_argv)
+}
+fn valid_event(s: &str) -> bool {
+    !s.is_empty() && s.len() < 64 && s.chars().all(|c| c.is_ascii_alphanumeric())
+}
+/// Serialize the bounded JSON-compatible hook schema into TOML inline values; null is rejected.
+fn toml_inline(v: &Value) -> Result<String, SetupError> {
+    match v {
+        Value::String(s) => serde_json::to_string(s).map_err(|_| SetupError::Invalid),
+        Value::Bool(b) => Ok(b.to_string()),
+        Value::Number(n) => Ok(n.to_string()),
+        Value::Array(items) => {
+            let values: Result<Vec<_>, _> = items.iter().map(toml_inline).collect();
+            Ok(format!("[{}]", values?.join(",")))
+        }
+        Value::Object(map) => {
+            let values: Result<Vec<_>, _> = map
+                .iter()
+                .map(|(k, v)| {
+                    Ok(format!(
+                        "{}={}",
+                        serde_json::to_string(k).map_err(|_| SetupError::Invalid)?,
+                        toml_inline(v)?
+                    ))
+                })
+                .collect();
+            Ok(format!("{{{}}}", values?.join(",")))
+        }
+        Value::Null => Err(SetupError::Invalid),
+    }
+}
+
+/// Typed Codex counterpart of exact-entry uninstall. Missing/edited entries are conservatively refused.
+pub fn uninstall_codex(
+    existing: &[EventGroups],
+    entries: &[OwnedEntry],
+) -> Result<Vec<EventGroups>, SetupError> {
+    let mut root = serde_json::Map::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for event in existing {
+        if !valid_event(&event.event) || !seen.insert(event.event.clone()) {
+            return Err(SetupError::Invalid);
+        }
+        root.insert(event.event.clone(), json!(event.groups));
+    }
+    let bytes = serde_json::to_vec(&json!({"hooks":root})).map_err(|_| SetupError::Invalid)?;
+    let removed: Value = serde_json::from_slice(&uninstall_json(&bytes, entries)?)
+        .map_err(|_| SetupError::Invalid)?;
+    existing
+        .iter()
+        .map(|event| {
+            Ok(EventGroups {
+                event: event.event.clone(),
+                groups: removed["hooks"][&event.event]
+                    .as_array()
+                    .ok_or(SetupError::Invalid)?
+                    .clone(),
+            })
+        })
+        .collect()
+}
+
+/// Codex hooks are session `-c` arguments; this records ownership without a global write.
+pub fn codex_session_manifest(plan: &CodexSetupPlan) -> Result<OwnershipManifest, SetupError> {
+    Ok(OwnershipManifest {
+        version: 1,
+        harness: "codex".into(),
+        scope: "session".into(),
+        path: "codex:-c".into(),
+        original_bytes: Vec::new(),
+        installation_base_bytes: Vec::new(),
+        installation_id: String::new(),
+        owned: plan.owned.clone(),
+        installed_fingerprint: groups_fingerprint(&plan.events)?,
+        phase: InstallPhase::Installed,
+        superseded: Vec::new(),
+        permission: None,
+        superseded_permission: None,
+        adopted: false,
+    })
+}
+
+pub fn inspect_codex_session(
+    events: &[EventGroups],
+    manifest: &OwnershipManifest,
+    observed: NativeObservation,
+) -> Result<HookInspection, SetupError> {
+    if manifest.version != 1
+        || manifest.harness != "codex"
+        || manifest.scope != "session"
+        || manifest.path != "codex:-c"
+    {
+        return Err(SetupError::Invalid);
+    }
+    let owned_hooks = codex::DECLARATION.owned_hooks;
+    let declaration_valid = manifest.owned.len() == owned_hooks.len()
+        && owned_hooks
+            .iter()
+            .zip(&manifest.owned)
+            .all(|(hook, entry)| {
+                entry.event == hook.event
+                    && entry.group["hooks"]
+                        .as_array()
+                        .is_some_and(|hooks| hooks.len() == 1)
+                    && entry.group["hooks"][0]["type"] == "command"
+                    && entry.group["hooks"][0]["command"]
+                        .as_str()
+                        .is_some_and(|s| !s.is_empty())
+                    && entry.group.get("matcher").and_then(Value::as_str) == hook.matcher
+                    && entry.group.get("matcher").is_none_or(Value::is_string)
+            });
+    let installed = declaration_valid
+        && manifest.owned.iter().all(|entry| {
+            events
+                .iter()
+                .find(|event| event.event == entry.event)
+                .is_some_and(|event| event.groups.contains(&entry.group))
+                && owned(&entry.event, entry.group.clone())
+                    .is_ok_and(|actual| actual.fingerprint == entry.fingerprint)
+        });
+    let current_fingerprint = if installed {
+        Some(groups_fingerprint(events)?)
+    } else {
+        None
+    };
+    Ok(HookInspection {
+        installed,
+        observed,
+        configured_hook: current_fingerprint.map(|fingerprint| ConfiguredHook {
+            scope: "session".into(),
+            path: "codex:-c".into(),
+            fingerprint,
+        }),
+        allow_rule: None,
+        adopted: None,
+        legacy_event_registration: false,
+        missing_required_events: Vec::new(),
+    })
+}
+/// Check the typed reader's exact structural input before future session overrides are published.
+pub fn verify_codex_base(plan: &CodexSetupPlan, current: &[EventGroups]) -> Result<(), SetupError> {
+    if groups_fingerprint(current)? == plan.base_fingerprint {
+        Ok(())
+    } else {
+        Err(SetupError::Conflict)
+    }
 }

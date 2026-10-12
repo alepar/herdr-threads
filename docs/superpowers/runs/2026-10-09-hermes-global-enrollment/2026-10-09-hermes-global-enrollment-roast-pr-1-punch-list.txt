@@ -1,0 +1,2 @@
+[Should-fix] .config/nextest.toml:101
+[Nit] tests/cli/hook.rs:8260

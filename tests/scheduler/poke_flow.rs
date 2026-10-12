@@ -63,7 +63,7 @@ enum Call {
     Observe,
     Stash,
     Submit(String),
-    /// A prompt submitted through the during-turn mode (`poke_during_turn`).
+    /// A prompt submitted through `submit_prompt_during_turn` (dispatch never calls it).
     SubmitDuringTurn(String),
     Restore(String),
 }
@@ -119,6 +119,11 @@ impl RecordingHost {
     }
 }
 impl HostPort for RecordingHost {
+    /// The pane's foreground process is the fixture binding's process (`liveness_pid`), the
+    /// composer-wake match a single-target seat needs (ht-54r.82).
+    fn foreground_pids(&self, _: &HostTargetId, _: &HostCallContext) -> Result<Vec<u32>, ApiError> {
+        Ok(vec![4242])
+    }
     fn observe_current_target_for_archival(
         &self,
         _: &crate::protocol::ids::HostTargetId,
@@ -265,11 +270,6 @@ impl PokeCapabilitySource for Declared {
 const NO_CAPS: Declared = Declared(PokeCapabilities::NONE);
 const STASH_CAPS: Declared = Declared(PokeCapabilities {
     composer_stash: NativeSupport::Supported,
-    poke_during_turn: NativeSupport::Unsupported,
-});
-const DURING_TURN_CAPS: Declared = Declared(PokeCapabilities {
-    composer_stash: NativeSupport::Unsupported,
-    poke_during_turn: NativeSupport::Supported,
 });
 
 struct RemoveOnDrop(PathBuf);
@@ -303,7 +303,7 @@ impl Fixture {
             INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'host',1,1);\
             INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s','i','resolved','native','pane',1,1,0);\
             INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','pane','host',1,1,0,'fresh','term-pane','inc','native_current_target',1);\
-            INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('s',1,1,'pane','host',0,'codex','session','self-reported','cooperative_top_level',0,0,'term-pane','inc');\
+            INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation,liveness_pid,liveness_start) VALUES ('s',1,1,'pane','host',0,'codex','session','self-reported','cooperative_top_level',0,0,'term-pane','inc',4242,1);\
         ").unwrap();
         for (n, thread) in threads.iter().enumerate() {
             let message = format!("m-{thread}");
@@ -380,16 +380,24 @@ impl Fixture {
         };
         let seat = SeatId::new("s");
         let thread = ThreadId::new(thread);
+        let binding = crate::protocol::ids::BindingId::parse(
+            conn.query_row(
+                "SELECT binding_id FROM occupant_bindings WHERE seat_id='s'",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .unwrap(),
+        )
+        .unwrap();
         self.clock.set(enter);
         let tx = conn.transaction().unwrap();
         catch_up::enter_or_keep(
             &tx,
             &catch_up::CatchUpEntry {
+                binding: &binding,
                 seat: &seat,
                 thread: &thread,
                 frontier_seq: 0,
-                binding_generation: 1,
-                execution: &ExecutionId::new("self-reported"),
                 now: UtcMillis(enter),
             },
             &settings,
@@ -399,7 +407,7 @@ impl Fixture {
         self.clock.set(ready);
         let tx = conn.transaction().unwrap();
         assert!(
-            catch_up::on_ready(&tx, &seat, &thread, 1, UtcMillis(ready), &settings).unwrap(),
+            catch_up::on_ready(&tx, &binding, &thread, UtcMillis(ready), &settings).unwrap(),
             "the active row ends on a Ready answer"
         );
         tx.commit().unwrap();
@@ -579,11 +587,11 @@ fn skips_leave_the_receipt_unpoked_and_the_next_idle_evaluation_pokes() {
 }
 
 #[test]
-fn active_turn_pokes_remain_pending_even_with_the_capability() {
+fn active_turn_pokes_remain_pending_until_idle() {
     let fx = Fixture::new(&["t1"]);
     let host = RecordingHost::new(HostUiState::ActiveTurn, false);
     let dispatcher = NativeWakeDispatcher::new(&host, &fx.store, fx.clock.as_ref());
-    let flow = scheduler(&fx, &dispatcher, &DURING_TURN_CAPS);
+    let flow = scheduler(&fx, &dispatcher, &STASH_CAPS);
     assert_eq!(tick(&fx, &flow, SOFT), (1, 1));
     assert_eq!(host.log(), [Call::Observe]);
     assert!(host.prompts().is_empty());
@@ -952,6 +960,7 @@ fn frozen_wake_lane_neither_reads_nor_pokes_until_recovery() {
         Arc::new(Declared(PokeCapabilities::NONE)),
         reachability.clone(),
         Arc::new(crate::ports::NoModChannels),
+        Arc::new(crate::ports::NoHookPullOutlook),
     )
     .unwrap();
     let _stop = Stop(cancel, Some(worker));
@@ -1091,6 +1100,8 @@ fn receipt_discovery_original_senders_use_actual_native_guard_and_recovery_path(
                 native_session: crate::protocol::ids::NativeSessionId::new("recipient-session"),
                 execution: ExecutionId::new("00000000-0000-4000-8000-0000000000cc"),
                 target: HostTargetId::new("recipient-pane"),
+                agent_id: None,
+                liveness: Some(crate::protocol::authority::LivenessFingerprint::TEST),
             },
         };
         let mut permit = crate::protocol::authority::MutationPermit::cooperative(
@@ -1120,7 +1131,8 @@ fn receipt_discovery_original_senders_use_actual_native_guard_and_recovery_path(
             .unwrap() as u64;
         let candidates =
             crate::store::discover_wake_candidates(&db, "i", 0, high, 100, &|| Ok(())).unwrap();
-        for seat in ["s", "s2"] {
+        for (seat, session) in [("s", "session"), ("s2", "session2")] {
+            let binding = crate::protocol::ids::BindingId::new(db.query_row("SELECT binding_id FROM occupant_bindings WHERE seat_id=?1 AND harness='codex' AND native_session=?2 AND agent_id=''", rusqlite::params![seat,session], |r|r.get::<_,String>(0)).unwrap());
             assert!(
                 !candidates
                     .items
@@ -1144,11 +1156,16 @@ fn receipt_discovery_original_senders_use_actual_native_guard_and_recovery_path(
             .unwrap();
             assert!(!loaded.has_actionable_work());
             assert_eq!(
-                crate::store::seats::mod_seat_view(&db, "i", &SeatId::new(seat))
-                    .unwrap()
-                    .unwrap()
-                    .fingerprint
-                    .other_pending,
+                crate::store::seats::mod_binding_view(
+                    &db,
+                    "i",
+                    &SeatId::new(seat),
+                    crate::ports::ModBindingRef::Id(&binding)
+                )
+                .unwrap()
+                .unwrap()
+                .fingerprint
+                .other_pending,
                 0
             );
         }

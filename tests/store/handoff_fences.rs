@@ -21,6 +21,8 @@ pub(super) fn identity() -> HandoffIdentity {
             harness: Harness::Codex,
             native_session: NativeSessionId::new("session"),
             execution: ExecutionId::new("00000000-0000-4000-8000-000000000001"),
+            agent_id: None,
+            liveness: None,
         },
         thread: Some(ThreadId::new("t")),
         recipient: SeatId::new("s"),
@@ -391,6 +393,9 @@ fn handoff_actual22_upgrade_imports_already_committed_create_then_replays_withou
     thread(&db);
     joined_agent(&db);
     let mut id = identity();
+    // The migrated session binding is disconnected; its re-adopting call carries a fingerprint
+    // (spec section 4 Migration V29, shipped as V32, decision 9), or the daemon refuses it.
+    id.claim.liveness = Some(herdr_threads::protocol::authority::LivenessFingerprint::TEST);
     id.thread = None;
     let create = CreateThread {
         name: None,
@@ -408,11 +413,11 @@ fn handoff_actual22_upgrade_imports_already_committed_create_then_replays_withou
         StoreSettings::default(),
     )
     .unwrap();
-    // The initializer upgrades the historical22 fixture to current schema35.
+    // The initializer upgrades the historical22 fixture to current schema38.
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        35
+        45
     );
     let tx = db.transaction().unwrap();
     let imported = handoff::import_hint(&tx, &id, None, "legacy22", UtcMillis(100)).unwrap();
@@ -429,6 +434,22 @@ fn handoff_actual22_upgrade_imports_already_committed_create_then_replays_withou
         panic!("handoff")
     };
     assert_eq!(result.thread, Some(ThreadId::new("t")));
+    // The Begin re-adopted the migrated binding (connected again with the caller's fingerprint)
+    // instead of enrolling a second one.
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*), min(liveness), min(liveness_pid), min(liveness_start) FROM occupant_bindings WHERE seat_id='s' AND ended_at IS NULL",
+            [],
+            |r| Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, i64>(3)?
+            ))
+        )
+        .unwrap(),
+        (1, "connected".to_owned(), 1, 1)
+    );
     assert_eq!(
         mutate(&store, PermitMutation::CreateThread(create)).unwrap(),
         CommandResult::ThreadCreated(ThreadId::new("t"))

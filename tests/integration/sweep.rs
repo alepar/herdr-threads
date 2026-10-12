@@ -99,6 +99,25 @@ pub(crate) fn host_reply(panes: &[Value], request: &Value) -> Value {
                 }
             }
         }
+        // Herdr's foreground process of the pane: the scripted `foreground_pid` (the composer
+        // wake matches it against the binding's fingerprint pid), none when unscripted.
+        "pane.process_info" => match panes
+            .iter()
+            .find(|pane| pane["pane_id"] == request["params"]["pane_id"])
+        {
+            Some(pane) => {
+                let foreground: Vec<Value> = pane["foreground_pid"]
+                    .as_u64()
+                    .map(|pid| json!({"pid":pid,"name":"agent","argv0":"agent"}))
+                    .into_iter()
+                    .collect();
+                json!({"id":id,"result":{"type":"pane_process_info","process_info":{
+                    "pane_id":pane["pane_id"],"shell_pid":1,"foreground_processes":foreground}}})
+            }
+            None => {
+                json!({"id":id,"error":{"code":"pane_not_found","message":"pane not found"}})
+            }
+        },
         "agent.read" => match panes
             .iter()
             .find(|pane| pane["pane_id"] == request["params"]["target"])
@@ -111,6 +130,9 @@ pub(crate) fn host_reply(panes: &[Value], request: &Value) -> Value {
                     Some("codex") => include_str!(
                         "../../docs/evidence/poke-spike/captures/codex-q6-workers.read-detection.txt"
                     ),
+                    Some("agy") => {
+                        include_str!("../fixtures/agy/composer/empty.read-detection.txt")
+                    }
                     _ => "unrecognized composer",
                 };
                 json!({"id":id,"result":{"type":"pane_read","read":{
@@ -203,6 +225,12 @@ impl Plugin {
             .arg("--host-endpoint")
             .arg(&self.host);
         if let Some(caller) = caller {
+            // A stand-in seat is an agent: it acts as a harness session (decision 15).
+            herdr_threads::test_support::isolation::as_agent(
+                &mut command,
+                "claude",
+                &format!("sweep-{}", caller.seat),
+            );
             command.args([
                 "--cooperative-seat",
                 caller.seat,
@@ -765,12 +793,29 @@ fn cooperative_setup_sweep_reports_healthy_daemon_and_pending_codex_review() {
         "{doctor}"
     );
     let limitations = doctor["doctor"]["limitations"].as_array().unwrap();
+    let stale: Vec<_> = limitations
+        .iter()
+        .filter(|line| {
+            line.as_str()
+                .unwrap()
+                .contains("re-run `herdr-threads setup codex`")
+        })
+        .collect();
+    assert_eq!(
+        stale.len(),
+        0,
+        "a fresh `setup codex` installs the end events, ht-54r.11: {doctor}"
+    );
     assert_eq!(limitations.len(), 1, "{doctor}");
     assert!(
         limitations.iter().any(|line| line
             .as_str()
             .unwrap()
             .starts_with("Codex hook review required")),
+        "{doctor}"
+    );
+    assert!(
+        doctor["doctor"]["hooks"]["codex"]["stale_install"].is_null(),
         "{doctor}"
     );
     assert_eq!(

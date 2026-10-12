@@ -105,7 +105,7 @@ fn lazy_pending_scan_bounds_unpublished_work() {
     }
     publish(&db, 1200);
     let seat = SeatId::new("s");
-    let high = lazy_delivery::capture_high_water(&db, "i", &seat).unwrap();
+    let high = lazy_delivery::capture_high_water(&db, "i", &seat, None).unwrap();
     stage(&db, 1201);
     publish(&db, 1201);
     // A row published after capture stays outside the publication fence even
@@ -115,7 +115,7 @@ fn lazy_pending_scan_bounds_unpublished_work() {
     let mut work = 0;
     let mut seen = Vec::new();
     loop {
-        let page = lazy_delivery::pending_page(&db, "i", &seat, after, high, 37).unwrap();
+        let page = lazy_delivery::pending_page(&db, "i", &seat, None, after, high, 37).unwrap();
         assert!(page.inspected <= 37);
         if page.inspected > 0 {
             assert!(page.last_inspected > after);
@@ -137,7 +137,7 @@ fn lazy_pending_scan_bounds_unpublished_work() {
         ..high
     };
     assert!(
-        lazy_delivery::pending_page(&db, "i", &seat, 1099, old, 1)
+        lazy_delivery::pending_page(&db, "i", &seat, None, 1099, old, 1)
             .unwrap()
             .recipients
             .is_empty()
@@ -145,11 +145,11 @@ fn lazy_pending_scan_bounds_unpublished_work() {
     assert_eq!(work, 1200);
     assert_eq!(after, high.recipient_ordinal);
     assert_eq!(seen, vec![MessageId::new("msg-1200")]);
-    assert!(lazy_delivery::pending_page(&db, "i", &seat, 0, high, 0).is_err());
+    assert!(lazy_delivery::pending_page(&db, "i", &seat, None, 0, high, 0).is_err());
     assert_index(
         &db,
         lazy_delivery::PENDING_CANDIDATES_SQL,
-        "lazy_recipients_pending_seat_ordinal",
+        "lazy_recipients_seat_ordinal",
     );
 }
 fn assert_index(db: &Connection, sql: &str, index: &str) {
@@ -178,8 +178,10 @@ fn lazy_pending_scan_skips_large_displayed_history() {
         stage(&db, n);
         publish(&db, n);
     }
+    // The binding's cursor has passed all but the last message (V34: display state is the
+    // cursor, not the recipient row's state).
     db.execute(
-        "UPDATE lazy_recipients SET state='displayed' WHERE ordinal<=1199",
+        "INSERT INTO binding_cursors(binding_id,thread_id,seq) SELECT binding_id,'t',1199 FROM occupant_bindings WHERE seat_id='s'",
         [],
     )
     .unwrap();
@@ -187,21 +189,19 @@ fn lazy_pending_scan_skips_large_displayed_history() {
     // retirement/archive; scanning must not consult those lifecycle filters.
     db.execute_batch("UPDATE memberships SET state='left' WHERE seat_id='s'; UPDATE seats SET state='retired',retired_at=0 WHERE id='s'; UPDATE threads SET archived=1 WHERE id='t'").unwrap();
     let seat = SeatId::new("s");
-    let high = lazy_delivery::capture_high_water(&db, "i", &seat).unwrap();
-    let page = lazy_delivery::pending_page(&db, "i", &seat, 0, high, 2).unwrap();
+    let high = lazy_delivery::capture_high_water(&db, "i", &seat, None).unwrap();
+    let page = lazy_delivery::pending_page(&db, "i", &seat, None, 0, high, 2).unwrap();
     assert_eq!(page.inspected, 1);
     assert_eq!(page.recipients[0].message, MessageId::new("msg-1200"));
     assert!(!page.has_more);
     let tx = db.transaction().unwrap();
-    assert!(
-        lazy_delivery::complete_addressed(&tx, "i", &seat, &MessageId::new("msg-1200")).unwrap()
-    );
-    assert!(
-        lazy_delivery::complete_addressed(&tx, "i", &seat, &MessageId::new("msg-1200")).unwrap()
-    );
+    for _ in 0..2 {
+        lazy_delivery::complete_for_binding(&tx, "i", &seat, None, &[MessageId::new("msg-1200")])
+            .unwrap();
+    }
     tx.commit().unwrap();
     assert_eq!(
-        lazy_delivery::pending_page(&db, "i", &seat, 0, high, 2)
+        lazy_delivery::pending_page(&db, "i", &seat, None, 0, high, 2)
             .unwrap()
             .inspected,
         0
@@ -209,7 +209,7 @@ fn lazy_pending_scan_skips_large_displayed_history() {
     assert_index(
         &db,
         lazy_delivery::PENDING_CANDIDATES_SQL,
-        "lazy_recipients_pending_seat_ordinal",
+        "lazy_recipients_seat_ordinal",
     );
 }
 
@@ -230,12 +230,13 @@ fn lazy_mode_lookup_is_exact_and_instance_scoped() {
         lazy_delivery::recorded_mode(&db, "i", &MessageId::new("msg-")).unwrap(),
         None
     );
-    assert!(lazy_delivery::capture_high_water(&db, "other", &SeatId::new("s")).is_err());
+    assert!(lazy_delivery::capture_high_water(&db, "other", &SeatId::new("s"), None).is_err());
     assert!(
         lazy_delivery::pending_page(
             &db,
             "other",
             &SeatId::new("s"),
+            None,
             0,
             HighWater {
                 recipient_ordinal: 1,

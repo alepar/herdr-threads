@@ -1,0 +1,11 @@
+# worktree at c906ab95 (the .80 commit, tests as committed) with its src diff (a comment) reverse-applied. Expected: characterization tests pass on the old code too.
+
+running 5 tests
+test harness::caller_env::tests::agy_conversation_without_lock_or_listing_is_unattributed ... ok
+test harness::caller_env::tests::agy_unreadable_listing_is_unattributed_never_top_level ... ok
+test harness::caller_env::tests::agy_top_level_conversation_with_a_presence_lock ... ok
+test harness::caller_env::tests::agy_invalid_conversation_id_is_unattributed ... ok
+test harness::caller_env::tests::agy_child_conversation_is_a_subagent_claim_of_its_parent ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 4438 filtered out; finished in 0.01s
+

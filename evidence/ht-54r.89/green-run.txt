@@ -1,0 +1,19 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 38s
+     Running unittests src/lib.rs (target/debug/deps/herdr_threads-38f1e6f612d0a088)
+
+running 12 tests
+test scheduler::tests::composer_wake_requires_idle ... ok
+test scheduler::tests::composer_wake_refuses_an_ambiguous_or_absent_match_in_the_foreground_set ... ok
+test scheduler::tests::no_foreground_match_means_no_composer_wake ... ok
+test host::native::tests::started_process_is_the_single_non_shell_foreground_process ... ok
+test host::native::tests::foreground_process_pids_are_every_non_shell_foreground_process ... ok
+test harness::launch::tests::managed_launch_command_carries_the_started_process_fingerprint ... ok
+test scheduler::tests::a_launch_placeholder_target_matches_the_started_process ... ok
+test scheduler::tests::composer_wake_fires_once_to_the_foreground_binding ... ok
+test scheduler::tests::composer_wake_matches_a_fingerprint_among_several_foreground_processes ... ok
+test scheduler::tests::single_target_composer_wake_requires_the_foreground_match ... ok
+test cli::launch::tests::launch_is_refused_without_an_observable_started_process ... ok
+test store::wake_tests::composer_choice_over_wake_targets_is_the_unique_fingerprint_pid_match ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 4460 filtered out; finished in 0.58s
+

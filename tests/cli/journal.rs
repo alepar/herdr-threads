@@ -28,6 +28,8 @@ fn claim() -> CallerClaim {
         native_session: NativeSessionId::new("session-secret"),
         execution: ExecutionId::new("execution-secret"),
         target: HostTargetId::new("target-secret"),
+        agent_id: None,
+        liveness: None,
     }
 }
 fn send() -> SemanticMutation {
@@ -35,6 +37,7 @@ fn send() -> SemanticMutation {
         delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
         thread: ThreadId::new("thread-1"),
         body: "body secret\n".into(),
+        direct_recipient: None,
         invited_recipients: vec![],
         deadline_millis: None,
         relays_user: false,
@@ -854,6 +857,7 @@ fn invalid_semantic_batch_does_not_reserve_ordinal_or_publish_intent() {
                     delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
                     thread: ThreadId::new("thread-1"),
                     body: "hello".into(),
+                    direct_recipient: None,
                     invited_recipients: (0..101)
                         .map(|n| SeatId::new(format!("seat-{n}")))
                         .collect(),
@@ -1084,12 +1088,35 @@ fn continuity_semantic(target: &str, event_id: &str) -> SemanticMutation {
         source: "resume".into(),
         event_id: event_id.into(),
         execution: ExecutionId::new("exec-1"),
+        liveness: Some(crate::protocol::authority::LivenessFingerprint::TEST),
     }
 }
 fn continuity_scope(instance: &str, target: &str) -> IntentScope {
     IntentScope::Continuity {
         instance: instance.into(),
         target: HostTargetId::new(target),
+    }
+}
+
+#[test]
+fn continuity_intent_without_liveness_still_loads() {
+    let with = continuity_semantic("w1:p1", "evt");
+    let json = serde_json::to_value(&with).unwrap();
+    assert_eq!(
+        json.get("liveness"),
+        Some(&serde_json::json!({"pid": 1, "start": 1})),
+        "{json}"
+    );
+    assert_eq!(
+        serde_json::from_value::<SemanticMutation>(json.clone()).unwrap(),
+        with
+    );
+    // An intent written before the field existed carries no `liveness` key.
+    let mut old = json;
+    old.as_object_mut().unwrap().remove("liveness");
+    match serde_json::from_value::<SemanticMutation>(old).unwrap() {
+        SemanticMutation::ContinuityCheckIn { liveness, .. } => assert_eq!(liveness, None),
+        other => panic!("{other:?}"),
     }
 }
 
@@ -1142,6 +1169,7 @@ fn continuity_intent_round_trips_and_is_found_by_instance_and_target() {
             source: "resume".into(),
             operation: OperationId::new(reference.operation.as_str()),
             execution: ExecutionId::new("exec-1"),
+            liveness: Some(crate::protocol::authority::LivenessFingerprint::TEST),
         })
     );
     // Completion removes it.
@@ -1198,6 +1226,7 @@ fn continuity_intent_refuses_foreign_scope_and_non_resume_source() {
                     source: "startup".into(),
                     event_id,
                     execution,
+                    liveness: Some(crate::protocol::authority::LivenessFingerprint::TEST),
                 },
                 1
             )
@@ -1313,6 +1342,7 @@ fn send_relays_user_is_journaled_only_when_set_and_old_intents_still_load() {
         SemanticMutation::SendMessage {
             thread,
             body,
+            direct_recipient,
             invited_recipients,
             deadline_millis,
             user_intent,
@@ -1321,6 +1351,7 @@ fn send_relays_user_is_journaled_only_when_set_and_old_intents_still_load() {
             delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
             thread,
             body,
+            direct_recipient,
             invited_recipients,
             deadline_millis,
             relays_user: true,
@@ -2028,6 +2059,7 @@ fn original_actor_operator_and_native_lifecycle() {
             source: "resume".into(),
             event_id: "event".into(),
             execution: ExecutionId::new("exec"),
+            liveness: Some(crate::protocol::authority::LivenessFingerprint::TEST),
         };
         assert_eq!(
             classify_original_actor(
@@ -2049,6 +2081,7 @@ fn original_actor_operator_and_native_lifecycle() {
             seat: human.seat.clone(),
         };
         let lifecycle = SemanticMutation::CooperativeCheckIn {
+            lineage_parent: None,
             claim: human,
             mode: CheckInMode::Lifecycle {
                 expected_binding_generation: 0,
@@ -2101,6 +2134,7 @@ fn original_actor_rejects_scope_claim_contradictions() {
         source: "resume".into(),
         event_id: "event".into(),
         execution: ExecutionId::new("exec"),
+        liveness: Some(crate::protocol::authority::LivenessFingerprint::TEST),
     };
     assert!(
         classify_original_actor(
@@ -2348,4 +2382,105 @@ fn human_guidance_original_retry_ignores_opposite_rendering_view() {
         );
     }
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+// Pins the on-disk bytes of the three journal writes buffered for ht-poh.58 (one write(2) each).
+#[test]
+fn journal_progress_and_intent_files_keep_their_exact_bytes() {
+    let dir = temp();
+    let journal = Journal::open(&dir).unwrap();
+    let display_claim = claim();
+    let message = MessageId::new("message-bytes");
+
+    // record_displayed_chunk: one partial span writes the progress file.
+    assert!(
+        !journal
+            .record_displayed_chunk(&display_claim, &message, 0, 5, 15)
+            .unwrap()
+    );
+    let expected = serde_json::to_vec(&DisplayedProgress {
+        instance: display_claim.instance.clone(),
+        seat: display_claim.seat.clone(),
+        binding_generation: display_claim.binding_generation,
+        execution: display_claim.execution.clone(),
+        message: message.clone(),
+        body_len: 15,
+        flushed_through: 5,
+    })
+    .unwrap();
+    assert_eq!(
+        std::fs::read(journal.displayed_progress_path(&display_claim, &message)).unwrap(),
+        expected
+    );
+
+    // record_lazy_displayed_chunk: same, for the lazy progress file.
+    assert!(
+        !journal
+            .record_lazy_displayed_chunk(&display_claim, &message, 0, 5, 15)
+            .unwrap()
+    );
+    let expected = serde_json::to_vec(&LazyDisplayedProgress {
+        claim: display_claim.clone(),
+        message: message.clone(),
+        body_len: 15,
+        flushed_through: 5,
+    })
+    .unwrap();
+    assert_eq!(
+        std::fs::read(journal.lazy_display_path(&display_claim, &message).unwrap()).unwrap(),
+        expected
+    );
+
+    // record (record_locked): header JSON, "\n", semantic body, "\n".
+    let semantic = send();
+    let body = serde_json::to_vec(&semantic).unwrap();
+    let reference = journal.record(scope(), semantic.clone(), 7).unwrap();
+    let header = IntentHeader {
+        reference: reference.clone(),
+        scope: scope(),
+        created_at_millis: 7,
+        kind: semantic.kind(),
+        thread: semantic.thread().cloned(),
+        semantic_digest: format!("{:x}", Sha256::digest(&body)),
+    };
+    let mut expected = serde_json::to_vec(&header).unwrap();
+    expected.push(b'\n');
+    expected.extend_from_slice(&body);
+    expected.push(b'\n');
+    assert_eq!(std::fs::read(journal.path(&reference)).unwrap(), expected);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn direct_recipient_semantic_preserves_absent_bytes_and_roundtrips() {
+    use sha2::{Digest, Sha256};
+    let historical=r#"{"kind":"send_message","thread":"thread-1","body":"body secret\n","invited_recipients":[],"deadline_millis":null}"#.to_owned();
+    assert_eq!(serde_json::to_string(&send()).unwrap(), historical);
+    assert!(!historical.contains("direct_recipient"));
+    let mut direct = serde_json::to_value(send()).unwrap();
+    direct["direct_recipient"] = serde_json::json!("b");
+    let semantic: SemanticMutation = serde_json::from_value(direct).unwrap();
+    let SemanticMutation::SendMessage {
+        direct_recipient, ..
+    } = &semantic
+    else {
+        panic!("send")
+    };
+    assert_eq!(direct_recipient.as_ref().unwrap().as_str(), "b");
+    let Command::SendMessage(request) = semantic
+        .to_command(
+            crate::protocol::ids::OperationId::new("direct"),
+            Some(claim()),
+        )
+        .unwrap()
+    else {
+        panic!("send command")
+    };
+    assert_eq!(request.direct_recipient.as_ref().unwrap().as_str(), "b");
+    let decoded: SemanticMutation = serde_json::from_str(&historical).unwrap();
+    assert_eq!(serde_json::to_string(&decoded).unwrap(), historical);
+    assert_eq!(
+        Sha256::digest(serde_json::to_vec(&decoded).unwrap()),
+        Sha256::digest(historical)
+    );
 }

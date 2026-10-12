@@ -14,10 +14,10 @@ use crate::protocol::{
     output::{ContinuationContext, OutputFormat, OutputSpec, encode_selected, with_render_now},
     pagination::{Consistency, Page, StopReason},
     results::{
-        AckResult, AlreadyJoined, CheckInContextDisposition, CheckInResult, CommandResult,
-        InboxItem, MembershipStatus, MessageContent, MessageDetails, MessageKind, MessageSummary,
-        NoticeOffer, Participant, PendingReceipt, SearchHit, SearchPage, ThreadDetails,
-        ThreadSummary, WarningRef,
+        AckResult, AlreadyJoined, BindingPresence, CheckInContextDisposition, CheckInResult,
+        CommandResult, InboxItem, MembershipStatus, MessageContent, MessageDetails, MessageKind,
+        MessageSummary, NoticeOffer, Participant, PendingReceipt, SearchHit, SearchPage,
+        ThreadDetails, ThreadSummary, WarningRef,
     },
     service::{EventAuthor, RequiredMembership, RequirementState},
     time::UtcMillis,
@@ -145,6 +145,23 @@ mod fixtures {
         )
     }
 
+    pub fn presence_bindings(seat: &str) -> Vec<BindingPresence> {
+        let binding = |role: &str, connected: bool, agent: Option<&str>| BindingPresence {
+            harness: "claude".to_owned(),
+            role: role.to_owned(),
+            connected,
+            agent_id: agent.map(str::to_owned),
+        };
+        if seat == "seat-b" {
+            vec![
+                binding("top_level", true, None),
+                binding("subagent", true, Some("agent-7")),
+            ]
+        } else {
+            vec![binding("top_level", false, None)]
+        }
+    }
+
     pub fn participant(seat: &str, state: MembershipStatus, is_self: bool) -> Participant {
         Participant {
             seat: SeatId::new(seat),
@@ -160,6 +177,9 @@ mod fixtures {
             retirement_cutover: None,
             cleanup_state: None,
             accepted_invitation: None,
+            active: seat == "seat-b",
+            bindings: presence_bindings(seat),
+            availability: None,
         }
     }
 
@@ -273,6 +293,8 @@ mod fixtures {
                 native_session: NativeSessionId::new("native-1"),
                 execution: ExecutionId::new("execution-1"),
                 target: HostTargetId::new("pane-1"),
+                agent_id: None,
+                liveness: None,
             },
             seat: SeatId::new("seat-a"),
             offered_through: Some("evt-9".to_owned()),
@@ -287,6 +309,8 @@ mod fixtures {
                 has_more: true,
             },
             inbox: inbox_page(),
+            first_contact: None,
+            fast_forward: None,
         }
     }
 
@@ -740,6 +764,7 @@ fn run_inbox(presentation: crate::cli::output::Presentation) -> (String, Vec<Str
     let spec = text_spec();
     let _guard = crate::cli::output::PresentationGuard::enter(presentation, &spec);
     let query = InboxQuery {
+        claim: None,
         seat: Some(SeatId::new("seat-a")),
         page: Default::default(),
     };

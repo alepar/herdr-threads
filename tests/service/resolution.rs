@@ -699,6 +699,7 @@ fn direct_socket_hook_keeps_selected_check_in_and_directory_continuations() {
     )
     .unwrap();
     let execution = Uuid::new_v4();
+    // The hook acts as the harness session its payload names (decision 15).
     let seed = OccupantContext {
         format_version: 1,
         instance: fixture.descriptor.instance_uuid,
@@ -707,17 +708,24 @@ fn direct_socket_hook_keeps_selected_check_in_and_directory_continuations() {
         harness: Harness::Codex,
         binding_generation: 0,
         execution,
-        session: SessionReference::PluginContext(execution),
+        session: SessionReference::Native("selected-hook-session".into()),
         role: Role::TopLevel,
     };
+    let contexts = contexts
+        .with_agent_caller(
+            seed.clone(),
+            herdr_threads::protocol::authority::LivenessFingerprint::TEST,
+        )
+        .unwrap();
     let event = LifecycleEvent {
         harness: Harness::Codex,
         source: "explicit".into(),
         kind: EventKind::Startup,
-        native_session: None,
+        native_session: Some("selected-hook-session".into()),
         role: Role::TopLevel,
         event_id: "selected-socket-start".into(),
         capability: Capability::SourceSupported,
+        agent_id: None,
     };
     let first = OutputSpec {
         format: OutputFormat::Text,
@@ -859,6 +867,11 @@ fn direct_socket_hook_keeps_selected_check_in_and_directory_continuations() {
         fixture.descriptor.instance_uuid,
         seat.as_str(),
         Duration::from_millis(500),
+    )
+    .unwrap()
+    .with_agent_caller(
+        seed.clone(),
+        herdr_threads::protocol::authority::LivenessFingerprint::TEST,
     )
     .unwrap();
     assert_eq!(contexts.pending().unwrap().unwrap(), pending);
@@ -1848,11 +1861,14 @@ fn held_real_sqlite_search_allows_health_and_writer_then_cancels_and_reuses_work
         binding_generation: 0,
         role: CallerRole::TopLevel,
         harness: Harness::Codex,
-        native_session: NativeSessionId::new("plugin_context:search-checkin"),
+        native_session: NativeSessionId::new("session-search-checkin"),
         execution: ExecutionId::new("00000000-0000-4000-8000-000000000001"),
         target: HostTargetId::new("w1:p1"),
+        agent_id: None,
+        liveness: Some(herdr_threads::protocol::authority::LivenessFingerprint::TEST),
     };
     let check_in = Command::CheckIn(CheckIn {
+        lineage_parent: None,
         mode: CheckInMode::Lifecycle {
             expected_binding_generation: 0,
         },
@@ -1870,12 +1886,13 @@ fn held_real_sqlite_search_allows_health_and_writer_then_cancels_and_reuses_work
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(generation, 1);
+    // ht-54r.3: the check-in registers a binding and leaves the generation (0) alone.
+    assert_eq!(generation, 0);
     let ack = Command::Ack(Ack {
         messages: vec![MessageId::new("search-message")],
         operation: OperationId::new("ack-during-held-search"),
         claim: CallerClaim {
-            binding_generation: 1,
+            binding_generation: 0,
             ..claim
         },
     });
@@ -2748,6 +2765,10 @@ impl HostPort for LaunchHost {
                 epoch: context.expected_epoch.unwrap(),
                 submitted_at_mono: diagnostic.started_at_mono,
                 completed_at_mono: diagnostic.completed_at_mono,
+                started_process: Some(herdr_threads::protocol::authority::LivenessFingerprint {
+                    pid: 4242,
+                    start: 1,
+                }),
             },
             diagnostic,
         })
@@ -2775,7 +2796,7 @@ impl HostPort for LaunchHost {
 fn managed_launch_uses_daemon_seat_and_keeps_prelaunch_handoff_pending() {
     use herdr_threads::cli::{
         journal::Journal,
-        launch::{CodexShellProbe, DaemonSeatResolver, LaunchParts, LaunchRequest, execute},
+        launch::{DaemonSeatResolver, LaunchParts, LaunchRequest, PaneShellProbe, execute},
         setup::{self, SetupEnv, SetupRequest, SetupVerb},
     };
     use herdr_threads::harness::context::Harness as ContextHarness;
@@ -2821,8 +2842,7 @@ fn managed_launch_uses_daemon_seat_and_keeps_prelaunch_handoff_pending() {
         state_dir: Some(root.join("state")),
         cwd: root.clone(),
         path: Some(root.join("bin").into_os_string()),
-        codex_home: None,
-        claude_config_dir: Some(root.join("claude-config")),
+        config_roots: [("claude".into(), root.join("claude-config"))].into(),
         host_endpoint: Some(root.join("host.sock")),
         instance_source: serde_json::Value::Null,
     };
@@ -2850,7 +2870,7 @@ fn managed_launch_uses_daemon_seat_and_keeps_prelaunch_handoff_pending() {
     );
     // No configuration exports from this pane shell.
     struct NoShell;
-    impl CodexShellProbe for NoShell {}
+    impl PaneShellProbe for NoShell {}
     for unknown in [false, true] {
         let host = LaunchHost {
             sequence: AtomicU64::new(1),

@@ -2,6 +2,7 @@ pub mod attention;
 pub mod authority;
 pub mod capabilities;
 pub mod commands;
+pub mod delivery;
 pub mod handoff;
 pub mod ids;
 pub mod output;

@@ -114,8 +114,25 @@ pub fn operate(
         }
         ServiceOperation::SetTopic(v) => {
             require_owner(tx, instance, &v.thread, &author)?;
-            tx.execute("UPDATE threads SET topic=?1,topic_revision=topic_revision+1,updated_at=?2 WHERE id=?3 AND topic!=?1",
-                params![v.topic,at.0,v.thread.as_str()]).map_err(store_error)?;
+            let old: String = tx
+                .query_row(
+                    "SELECT topic FROM threads WHERE id=?1",
+                    [v.thread.as_str()],
+                    |r| r.get(0),
+                )
+                .map_err(store_error)?;
+            if old != v.topic {
+                let changed=tx.execute("UPDATE threads SET topic=?1,topic_revision=topic_revision+1,updated_at=?2 WHERE id=?3 AND topic_revision<?4",
+                    params![v.topic,at.0,v.thread.as_str(),i64::MAX]).map_err(store_error)?;
+                if changed != 1 {
+                    return Err(api_error(
+                        ErrorCode::SequenceExhausted,
+                        "topic revision exhausted",
+                    ));
+                }
+                let seq = schema::next_decision_seq(tx, instance)?;
+                super::invitation_content::record_context_change(tx, instance, &v.thread, seq)?;
+            }
             schema::bump_filter_revision(tx, instance, "topic", v.thread.as_str())?;
             schema::bump_filter_revision(tx, instance, "topic", "all")?;
             schema::bump_filter_revision(tx, instance, "directory", "all")?;
@@ -188,6 +205,7 @@ pub(super) fn require_owner(
     thread: &ThreadId,
     author: &crate::protocol::ids::ServiceAuthorId,
 ) -> Result<(), ApiError> {
+    super::control::guard_pair_service_owner(tx, thread)?;
     let owner: Option<(String, Option<String>)> = tx
         .query_row(
             "SELECT instance_id,managed_owner_author_id FROM threads WHERE id=?1",
@@ -233,6 +251,7 @@ fn ensure_thread(
     v: &crate::protocol::service::EnsureManagedThread,
     at: UtcMillis,
 ) -> Result<ServiceResult, ApiError> {
+    super::control::guard_pair_service_owner(tx, &v.thread)?;
     if v.topic.is_empty() || v.topic.len() > 1024 || v.goal.is_empty() || v.goal.len() > 1024 {
         return Err(api_error(
             ErrorCode::InvalidRequest,
@@ -269,6 +288,7 @@ fn invite(
     at: UtcMillis,
     default_ms: Option<u64>,
 ) -> Result<ServiceResult, ApiError> {
+    super::control::guard_pair_member(tx, &v.thread, &v.seat)?;
     let (thread_instance, owner): (String, Option<String>) = tx
         .query_row(
             "SELECT instance_id,managed_owner_author_id FROM threads WHERE id=?1",
@@ -329,9 +349,27 @@ fn invite(
             },
         ));
     }
-    let pending:Option<(String,i64,i64,bool)>=tx.query_row(
-        "SELECT i.id,i.episode,i.created_decision_seq,COALESCE(i.confirmation='lazy',0) FROM invitations i WHERE i.thread_id=?1 AND i.seat_id=?2 AND i.state='pending' AND NOT EXISTS (SELECT 1 FROM invitation_cancellations c WHERE c.invitation_id=i.id) AND NOT EXISTS(SELECT 1 FROM invitation_rejections rejection WHERE rejection.invitation_id=i.id) AND NOT EXISTS (SELECT 1 FROM requirement_episodes r WHERE r.invitation_id=i.id AND r.created_decision_seq=i.created_decision_seq) ORDER BY i.episode DESC LIMIT 1",
-        params![v.thread.as_str(),v.seat.as_str()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional().map_err(store_error)?;
+    // Ordinary invites retain independently created invitations after release.
+    // Required attaches cannot reuse any invitation with a historical requirement:
+    // the immutable requirement ledger permits only one requirement per invitation.
+    let pending: Option<(String, i64, i64, bool)> = tx
+        .query_row(
+            "SELECT i.id,i.episode,i.created_decision_seq,COALESCE(i.confirmation='lazy',0) FROM invitations i
+             WHERE i.thread_id=?1 AND i.seat_id=?2 AND i.state='pending'
+             AND NOT EXISTS (SELECT 1 FROM invitation_cancellations c WHERE c.invitation_id=i.id)
+             AND NOT EXISTS (SELECT 1 FROM invitation_rejections r WHERE r.invitation_id=i.id)
+             AND NOT EXISTS (SELECT 1 FROM requirement_episodes r WHERE r.invitation_id=i.id
+                 AND (r.created_decision_seq=i.created_decision_seq OR ?3))
+             ORDER BY i.episode DESC LIMIT 1",
+            params![
+                v.thread.as_str(),
+                v.seat.as_str(),
+                v.constraint == InvitationConstraint::Required
+            ],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional()
+        .map_err(store_error)?;
     if v.constraint == InvitationConstraint::Ordinary
         && let Some((id, _, _, _)) = pending
     {
@@ -400,6 +438,13 @@ fn invite(
         };
         tx.execute("INSERT INTO requirement_episodes(id,thread_id,seat_id,issuer_author_id,invitation_id,state,created_decision_seq,created_at) VALUES (?1,?2,?3,?4,?5,'pending',?6,?7)",
             params![id.as_str(),v.thread.as_str(),v.seat.as_str(),author.as_str(),invitation.as_str(),seq,at.0]).map_err(store_error)?;
+        super::invitation_content::record_command_change(
+            tx,
+            instance,
+            &v.thread,
+            &invitation,
+            Some(seq as u64),
+        )?;
         service_substrate::current_requirement(tx, &v.thread, &v.seat)?
     } else {
         None
@@ -482,7 +527,7 @@ fn release(
     let payload = serde_json::json!({"action":"release_requirement","issuer":author.as_str(),
         "requirement":v.requirement.as_str(),"seat":v.seat.as_str()})
     .to_string();
-    schema::append_attributed_event_once(
+    let (event, _) = schema::append_attributed_event_once(
         tx,
         EventInput {
             thread: &v.thread,
@@ -494,6 +539,25 @@ fn release(
             source_invitation: Some(&released.invitation),
         },
         EventAuthor::Programmatic(author.clone()),
+    )?;
+    let seq: i64 = tx
+        .query_row(
+            "SELECT decision_seq FROM messages WHERE id=?1",
+            [event.as_str()],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    super::invitation_content::record_command_change(
+        tx,
+        instance,
+        &v.thread,
+        &released.invitation,
+        Some(u64::try_from(seq).map_err(|_| {
+            api_error(
+                ErrorCode::StoreCorrupt,
+                "negative context decision sequence",
+            )
+        })?),
     )?;
     Ok(ServiceResult::RequirementReleased(released))
 }

@@ -1,4 +1,5 @@
 use super::*;
+use crate::harness::codex::CODEX_COMMAND_GUIDANCE;
 
 fn run(words: &[&str]) -> String {
     let mut out = Vec::new();
@@ -145,7 +146,7 @@ fn skill_file_is_a_well_formed_concise_guide() {
     assert_eq!(lines.next(), Some("name: herdr-threads"));
     assert!(lines.next().unwrap().starts_with("description: "));
     assert_eq!(lines.next(), Some("---"));
-    assert!(SKILL_MD.lines().count() < 200);
+    assert!(SKILL_MD.lines().count() < 215);
     let summary_header = format!("## {}", crate::protocol::summary::SUMMARY_PROCEDURE_REF);
     for needle in [
         summary_header.as_str(),
@@ -163,6 +164,18 @@ fn skill_file_is_a_well_formed_concise_guide() {
         "send THREAD --body",
         "herdr-threads <command> --help",
         "Ready commands (run exactly as written, in this pane):",
+        "Delegated children (platform `subagent`) register as read-only subagent bindings",
+        "## Sessions and the shared seat",
+        "`subagent_read_only`",
+        "applies to every session in the pane",
+        "`session_claim_required`",
+        "`liveness_fingerprint_required`",
+        "`managed_daemon_refused`",
+        "keep Codex in its pane",
+        "`history: resumed past N messages:`",
+        "herdr-threads summary THREAD",
+        "`active`",
+        "`inactive`",
     ] {
         assert!(SKILL_MD.contains(needle), "{needle}");
     }

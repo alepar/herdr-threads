@@ -63,6 +63,7 @@ fn send_request() -> SendMessage {
         delivery_mode: herdr_threads::protocol::commands::DeliveryMode::Lazy,
         thread: ThreadId::new("t"),
         body: "hello".into(),
+        direct_recipient: None,
         invited_recipients: vec![],
         deadline_millis: None,
         operation: OperationId::new("op"),
@@ -75,6 +76,8 @@ fn send_request() -> SendMessage {
             native_session: NativeSessionId::new("n"),
             execution: ExecutionId::new("00000000-0000-4000-8000-0000000000aa"),
             target: HostTargetId::new("pa"),
+            agent_id: None,
+            liveness: Some(herdr_threads::protocol::authority::LivenessFingerprint::TEST),
         },
         relays_user: false,
         user_intent: None,
@@ -145,6 +148,8 @@ fn fixture(name: &str) -> (TestIsolation, StoreContext, Connection) {
     )
     .unwrap();
     conn.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES('t','b',1,1)", []).unwrap();
+    // A binding open while its seat joins holds a cursor for the thread (join seeds it).
+    conn.execute("INSERT INTO binding_cursors(binding_id,thread_id,seq) SELECT binding_id,'t',0 FROM occupant_bindings WHERE seat_id='b'", []).unwrap();
     (iso, context, conn)
 }
 fn send(
@@ -182,6 +187,7 @@ fn query(
         context,
         "i",
         &Command::InboxBatchV2(InboxQuery {
+            claim: None,
             seat: Some(SeatId::new("b")),
             page: request,
         }),
@@ -552,6 +558,7 @@ fn lazy_inbox_addressed_leave_retire_archive() {
         &context,
         "i",
         &Command::InboxBatchV2(InboxQuery {
+            claim: None,
             seat: Some(SeatId::new("b")),
             page: PageRequest::default(),
         }),
@@ -590,6 +597,7 @@ fn lazy_inbox_v2_rejects_changed_binding_foreign_and_bad_body_cursor() {
             &context,
             "i",
             &Command::InboxBatchV2(InboxQuery {
+                claim: None,
                 seat: Some(SeatId::new("b")),
                 page: PageRequest {
                     cursor: Some(raw),
@@ -748,6 +756,7 @@ fn lazy_inbox_v2_small_budget_and_read_only_queries() {
             &context,
             "i",
             &Command::InboxBatchV2(InboxQuery {
+                claim: None,
                 seat: Some(SeatId::new("b")),
                 page: PageRequest {
                     max_bytes: 256,
@@ -865,6 +874,7 @@ fn lazy_inbox_v2_ack_candidates_follow_registered_agent_harnesses() {
     let offer = InboxOffer {
         page,
         claim: claim(),
+        cursors: false,
     };
     let (context_text, lazy) = append(String::new(), &offer, &["herdr-threads".to_owned()], 4096);
     assert!(lazy.is_empty(), "ordinary rows are never lazy-completed");
@@ -897,12 +907,13 @@ fn lazy_inbox_completion_prevalidates_all_ids_and_authority_before_progress() {
         complete(&iso, request).unwrap_err().code,
         ErrorCode::InvalidRequest
     );
-    for bad in 0..5 {
+    // ht-54r.3: a different harness or native session is a different binding key, so a plain
+    // call from it enrolls its own binding on the seat instead of being refused as "occupant
+    // context changed"; those two cases are no longer bad claims. The rest still are.
+    for bad in [1, 3, 4] {
         let mut caller = claim();
         match bad {
-            0 => caller.harness = Harness::Claude,
             1 => caller.execution = ExecutionId::new("other"),
-            2 => caller.native_session = NativeSessionId::new("other"),
             3 => caller.target = HostTargetId::new("pa"),
             _ => caller = send_request().claim,
         }
@@ -912,7 +923,7 @@ fn lazy_inbox_completion_prevalidates_all_ids_and_authority_before_progress() {
             operation: OperationId::new(format!("bad-claim-{bad}")),
             claim: caller,
         };
-        assert!(complete(&iso, request).is_err());
+        assert!(complete(&iso, request).is_err(), "bad case {bad}");
         assert_eq!(
             conn.query_row("SELECT state FROM lazy_recipients", [], |r| r
                 .get::<_, String>(0))
@@ -1208,10 +1219,12 @@ fn invitation_confirmation_inbox_metadata_distinguishes_lazy_timed_and_legacy() 
         Command::InboxBatch(InboxQuery {
             seat: Some(SeatId::new("b")),
             page: PageRequest::default(),
+            claim: Some(claim()),
         }),
         Command::InboxBatchV2(InboxQuery {
             seat: Some(SeatId::new("b")),
             page: PageRequest::default(),
+            claim: Some(claim()),
         }),
     ] {
         let result = herdr_threads::store::queries::query_with_output(
@@ -1235,4 +1248,98 @@ fn invitation_confirmation_inbox_metadata_distinguishes_lazy_timed_and_legacy() 
             "legacy item bytes stay unchanged"
         );
     }
+}
+
+/// Delivery-policy DP8: the InboxBatchV2 query marks a lazy row `wakes` only
+/// when the reading seat's `wake_on` is `all`, and a push-channel ACK completes
+/// the promoted row as a lazy row.
+#[test]
+fn lazy_inbox_wakes_follows_wake_on_and_mod_ack_completes_it() {
+    let (iso, context, mut conn) = fixture("lazy-wakes");
+    let lazy = send(
+        &iso,
+        &context,
+        &mut conn,
+        "lazy",
+        "quiet",
+        DeliveryMode::Lazy,
+    );
+    let first_page = |context: &StoreContext| {
+        query(
+            context,
+            PageRequest {
+                limit: 5,
+                max_bytes: 65536,
+                ..Default::default()
+            },
+            &OutputSpec::default(),
+        )
+    };
+    let wakes_of =
+        |page: &herdr_threads::protocol::pagination::Page<InboxBatchV2Item>| match &page.items[0] {
+            InboxBatchV2Item::LazyMessage { message, wakes, .. } => {
+                assert_eq!(message, &lazy);
+                *wakes
+            }
+            other => panic!("expected lazy row, got {other:?}"),
+        };
+    assert!(
+        !wakes_of(&first_page(&context)),
+        "default seat does not wake"
+    );
+    conn.execute("UPDATE seats SET wake_on='all' WHERE id='b'", [])
+        .unwrap();
+    let page = first_page(&context);
+    assert!(wakes_of(&page), "wake_on=all seat wakes");
+    // Wire: the waking row carries the key, nothing else changed.
+    let wire = serde_json::to_value(&page.items[0]).unwrap();
+    assert_eq!(wire["wakes"], serde_json::json!(true));
+    conn.execute("UPDATE seats SET wake_on='nudge' WHERE id='b'", [])
+        .unwrap();
+    let wire = serde_json::to_value(&first_page(&context).items[0]).unwrap();
+    assert!(wire.as_object().unwrap().get("wakes").is_none());
+
+    // A push-channel ACK (`watch ack --via submit`) completes it as a lazy row.
+    conn.execute("UPDATE seats SET wake_on='all' WHERE id='b'", [])
+        .unwrap();
+    conn.execute(
+        "UPDATE occupant_bindings SET harness='claude' WHERE seat_id='b'",
+        [],
+    )
+    .unwrap();
+    let mut claim = claim();
+    claim.harness = Harness::Claude;
+    use herdr_threads::ports::StorePort;
+    let store = herdr_threads::store::SqliteStore::new(
+        StoreContext::new(iso.path("store.db"), Arc::new(FixedClock)),
+        "i",
+        Default::default(),
+    )
+    .unwrap();
+    let mutation =
+        PermitMutation::AckModDelivered(herdr_threads::protocol::commands::AckModDelivered {
+            via: herdr_threads::protocol::watch::ModDeliveryVia::Submit,
+            messages: vec![lazy.clone()],
+            operation: OperationId::new("promoted-ack"),
+            claim,
+        });
+    let permit = store
+        .issue_cooperative_permit(
+            herdr_threads::store::cooperative_permit_request(&mutation).unwrap(),
+            &budget(),
+        )
+        .unwrap();
+    let CommandResult::ModDeliveryAcked(report) =
+        store.mutate(mutation, permit, &budget()).unwrap()
+    else {
+        panic!("mod ack");
+    };
+    assert_eq!(
+        report.results[0].result,
+        herdr_threads::protocol::watch::ModAckOutcome::Settled
+    );
+    assert!(
+        first_page(&context).items.is_empty(),
+        "the completed lazy row leaves the inbox"
+    );
 }

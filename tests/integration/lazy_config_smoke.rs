@@ -1,10 +1,11 @@
 //! Actual executable/current-daemon configuration matrix. Legacy means inbox-v1
-//! capabilities on wire protocol 6, never a historical executable or protocol-1 daemon.
+//! capabilities on wire protocol 7, never a historical executable or protocol-1 daemon.
 use herdr_threads::{
     daemon::{
         ownership::{read_descriptor, read_existing_namespace},
         paths::{InstancePaths, RuntimeContext},
     },
+    protocol::wire::PROTOCOL_VERSION,
     test_support::spawn,
 };
 use serde_json::{Value, json};
@@ -270,6 +271,11 @@ impl World {
             if human {
                 c.env("HERDR_PANE_ID", target);
             } else {
+                herdr_threads::test_support::isolation::as_agent(
+                    &mut c,
+                    "codex",
+                    &format!("lazy-session-{n}"),
+                );
                 c.args([
                     "--cooperative-seat",
                     &self.seats[n],
@@ -573,7 +579,7 @@ fn lazy_config_inbox_v1_client_current_daemon_ordinary_shapes() {
     let instance = read_existing_namespace(&p).unwrap().unwrap();
     let d = read_descriptor(&p, instance).unwrap();
     // Frozen pre-lazy envelope/command: no delivery_mode, v2 item or new selectors.
-    let q = json!({"version":6,"request_id":"legacy-inbox-smoke","expected_instance":instance.to_string(),"expected_boot":d.boot_id.to_string(),"command":{"kind":"inbox_batch","args":{"seat":w.seats[1],"page":{"cursor":null,"limit":20,"max_bytes":16384}}}});
+    let q = json!({"version":PROTOCOL_VERSION,"request_id":"legacy-inbox-smoke","expected_instance":instance.to_string(),"expected_boot":d.boot_id.to_string(),"command":{"kind":"inbox_batch","args":{"seat":w.seats[1],"page":{"cursor":null,"limit":20,"max_bytes":16384}}}});
     let mut s = UnixStream::connect(&p.socket_path).unwrap();
     write_frame(&mut s, &serde_json::to_vec(&q).unwrap());
     let v: Value = serde_json::from_slice(&frame(&mut s).unwrap()).unwrap();
@@ -629,7 +635,7 @@ fn lazy_config_inbox_v1_client_current_daemon_ordinary_shapes() {
     }
     // Frozen legacy body command, so current CLI capability choices cannot mask
     // a backwards-incompatible body result.
-    let q = json!({"version":6,"request_id":"legacy-body-smoke","expected_instance":instance.to_string(),"expected_boot":d.boot_id.to_string(),"command":{"kind":"message","args":{"message":lazy,"body":{"cursor":null,"offset":null,"max_bytes":16384}}}});
+    let q = json!({"version":PROTOCOL_VERSION,"request_id":"legacy-body-smoke","expected_instance":instance.to_string(),"expected_boot":d.boot_id.to_string(),"command":{"kind":"message","args":{"message":lazy,"body":{"cursor":null,"offset":null,"max_bytes":16384}}}});
     let mut socket = UnixStream::connect(&p.socket_path).unwrap();
     write_frame(&mut socket, &serde_json::to_vec(&q).unwrap());
     let reply: Value = serde_json::from_slice(&frame(&mut socket).unwrap()).unwrap();

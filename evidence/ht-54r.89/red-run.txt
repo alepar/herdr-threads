@@ -1,0 +1,42 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.04s
+     Running unittests src/lib.rs (target/debug/deps/herdr_threads-38f1e6f612d0a088)
+
+running 4 tests
+test scheduler::tests::composer_wake_refuses_an_ambiguous_or_absent_match_in_the_foreground_set ... ok
+test host::native::tests::foreground_process_pids_are_every_non_shell_foreground_process ... FAILED
+test scheduler::tests::composer_wake_matches_a_fingerprint_among_several_foreground_processes ... FAILED
+test store::wake_tests::composer_choice_over_wake_targets_is_the_unique_fingerprint_pid_match ... FAILED
+
+failures:
+
+---- host::native::tests::foreground_process_pids_are_every_non_shell_foreground_process stdout ----
+
+thread 'host::native::tests::foreground_process_pids_are_every_non_shell_foreground_process' (52311294) panicked at src/host/native.rs:6085:9:
+assertion `left == right` failed
+  left: []
+ right: [20, 21]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- scheduler::tests::composer_wake_matches_a_fingerprint_among_several_foreground_processes stdout ----
+
+thread 'scheduler::tests::composer_wake_matches_a_fingerprint_among_several_foreground_processes' (52311295) panicked at src/scheduler/../../tests/scheduler/dispatch.rs:5096:9:
+assertion `left == right` failed: one target
+  left: Refused(Unsafe)
+ right: Submitted
+
+---- store::wake_tests::composer_choice_over_wake_targets_is_the_unique_fingerprint_pid_match stdout ----
+
+thread 'store::wake_tests::composer_choice_over_wake_targets_is_the_unique_fingerprint_pid_match' (52311297) panicked at src/store/../../tests/store/wake.rs:2309:5:
+assertion `left == right` failed: a fingerprint among several foreground pids
+  left: None
+ right: Some("a")
+
+
+failures:
+    host::native::tests::foreground_process_pids_are_every_non_shell_foreground_process
+    scheduler::tests::composer_wake_matches_a_fingerprint_among_several_foreground_processes
+    store::wake_tests::composer_choice_over_wake_targets_is_the_unique_fingerprint_pid_match
+
+test result: FAILED. 1 passed; 3 failed; 0 ignored; 0 measured; 4468 filtered out; finished in 0.21s
+
+error: test failed, to rerun pass `--lib`

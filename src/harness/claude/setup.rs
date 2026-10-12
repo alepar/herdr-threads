@@ -3,21 +3,19 @@ use crate::cli::{
     RunError,
     setup::{PermissionPolicy, PromptSuggestionPolicy, SetupEnv, SetupRequest, SetupVerb},
 };
+use crate::harness::claude::prompt_suggestion::{self, SuggestionState};
 use crate::harness::setup::legacy::*;
 use crate::harness::{
     claude,
+    claude::permissions::{ClaudePermissionState, ClaudePermissionStatus, ClaudePermissions},
     claude_mod::{self, ManagedPolicy, ManagedPolicySources},
     context::Harness,
-    permissions::{
-        PermissionConsent,
-        claude_settings::{ClaudePermissionState, ClaudePermissionStatus, ClaudePermissions},
-    },
-    prompt_suggestion::{self, SuggestionState},
+    permissions::PermissionConsent,
     recipe,
     setup::{
-        AllowRuleInspection, AllowRuleOwnership, NativeObservation, SettingsKind, SetupError,
-        inspect_user_settings, inspect_user_settings_for, read_settings_manifest,
-        remove_user_settings, shared_command, shell_command,
+        JsonSetupPlan, NativeObservation, SetupError, allow_rule_json, inspect_user_settings,
+        inspect_user_settings_for, plan_settings, read_settings_manifest, remove_user_settings,
+        shared_command, shell_command,
     },
 };
 use crate::protocol::results::ErrorCode;
@@ -46,6 +44,11 @@ pub(crate) fn prompt_suggestion_advice(settings: &Path) -> String {
     )
 }
 
+/// The hook groups Claude declares, composed into `bytes` (a proposal; nothing is written).
+pub fn plan_claude(bytes: &[u8], hook_argv: &[String]) -> Result<JsonSetupPlan, SetupError> {
+    plan_settings(claude::settings_kind(), bytes, hook_argv)
+}
+
 pub fn claude_config_dir_from(
     config_dir: Option<OsString>,
     home: Option<OsString>,
@@ -58,6 +61,18 @@ pub fn claude_config_dir_from(
     }
 }
 
+/// Claude's user settings file, under its config root.
+pub(crate) fn claude_settings(env: &SetupEnv) -> Result<PathBuf, RunError> {
+    Ok(env
+        .config_root("claude")?
+        .join(claude::SETTINGS_KIND.file_name))
+}
+
+/// Claude's config root, when one resolved.
+fn claude_root(env: &SetupEnv) -> Option<&Path> {
+    env.config_roots.get("claude").map(PathBuf::as_path)
+}
+
 /// Ownership-manifest location for one owned file: private plugin state,
 /// keyed by the file's path, never beside the file.
 pub(crate) fn claude_manifest(env: &SetupEnv, settings: &Path) -> Result<PathBuf, RunError> {
@@ -66,7 +81,7 @@ pub(crate) fn claude_manifest(env: &SetupEnv, settings: &Path) -> Result<PathBuf
 
 /// The user-level Claude installation's file and manifest paths.
 pub fn claude_paths(env: &SetupEnv) -> Result<(PathBuf, PathBuf), RunError> {
-    let settings = env.claude_settings()?;
+    let settings = claude_settings(env)?;
     let manifest = claude_manifest(env, &settings)?;
     Ok((settings, manifest))
 }
@@ -81,7 +96,7 @@ fn hooks_current(env: &SetupEnv, settings: &Path, manifest: &Path) -> bool {
         return false;
     };
     inspect_user_settings_for(
-        SettingsKind::ClaudeUser,
+        crate::harness::claude::settings_kind(),
         settings,
         manifest,
         NativeObservation::Unknown,
@@ -94,7 +109,7 @@ fn hooks_current(env: &SetupEnv, settings: &Path, manifest: &Path) -> bool {
 }
 
 pub(crate) fn claude_install(request: &SetupRequest, env: &SetupEnv) -> Result<Value, RunError> {
-    let settings = env.claude_settings()?;
+    let settings = claude_settings(env)?;
     env.hook_argv(Harness::Claude)?;
     let (observed, _) = observe(request, env).map_err(refuse_executable)?;
     prepare_state(env)?;
@@ -120,8 +135,12 @@ pub(crate) fn claude_install(request: &SetupRequest, env: &SetupEnv) -> Result<V
         component.apply(PermissionConsent::Undecided)
     };
     if let Err(error) = &permissions
-        && crate::harness::setup::recorded_hook_permission(&settings, &manifest)
-            .map_or(true, |record| record.is_some())
+        && crate::harness::setup::recorded_hook_permission(
+            claude::settings_kind(),
+            &settings,
+            &manifest,
+        )
+        .map_or(true, |record| record.is_some())
     {
         return Err(permission_error(error.clone(), env, &settings));
     }
@@ -140,14 +159,14 @@ pub(crate) fn claude_install(request: &SetupRequest, env: &SetupEnv) -> Result<V
     let mut mod_done = false;
     let result = (|| -> Result<Value, RunError> {
         let (installed, already, adopted) = install_settings(
-            SettingsKind::ClaudeUser,
+            crate::harness::claude::settings_kind(),
             request.verb,
             env,
             &mut file,
             &mut warnings,
         )?;
         let allow_rule = inspect_user_settings(
-            SettingsKind::ClaudeUser,
+            crate::harness::claude::settings_kind(),
             &settings,
             &manifest,
             NativeObservation::Unknown,
@@ -173,9 +192,9 @@ pub(crate) fn claude_install(request: &SetupRequest, env: &SetupEnv) -> Result<V
             "command": command,
             "commands": super::super::setup::commands_json(&installed.owned),
             "events": installed.owned.iter().map(|entry| entry.event.clone()).collect::<Vec<_>>(),
-            "allow_rule": allow_rule_json(allow_rule.as_ref()),
+            "allow_rule": allow_rule_json(claude::settings_kind(), allow_rule.as_ref()),
             "permissions": permissions,
-            "harness_version": observation_json(&Ok((observed, None))),
+            "harness_version": observation_json::<()>(&Ok((observed, None))),
             "prompt_suggestions": prompt_suggestions,
             "mod": delivery_mod,
             "observed": "unknown",
@@ -313,7 +332,7 @@ fn permission_step(
 
 /// The permission component as doctor reports it; best effort.
 pub(crate) fn permission_status_json(env: &SetupEnv) -> Value {
-    let Ok(settings) = env.claude_settings() else {
+    let Ok(settings) = claude_settings(env) else {
         return json!({"state": "unreadable"});
     };
     match permission_component(env, &settings).map(|c| c.status()) {
@@ -324,7 +343,7 @@ pub(crate) fn permission_status_json(env: &SetupEnv) -> Value {
 
 /// Whether the permission grant is installed (the installer's permissions component).
 pub(crate) fn permissions_granted(env: &SetupEnv) -> Result<bool, RunError> {
-    let settings = env.claude_settings()?;
+    let settings = claude_settings(env)?;
     permission_component(env, &settings)?
         .status()
         .map(|status| status.state == ClaudePermissionState::Installed && status.complete)
@@ -371,7 +390,7 @@ pub fn settle_permissions<R: io::BufRead + ?Sized, W: Write + ?Sized>(
     write!(out, "{}", permission_question("claude"))?;
     out.flush()?;
     let yes = permission_answer(input)?;
-    let settings = env.claude_settings()?;
+    let settings = claude_settings(env)?;
     if yes {
         let status = permission_component(env, &settings)?
             .apply(PermissionConsent::Granted)
@@ -387,31 +406,32 @@ pub fn settle_permissions<R: io::BufRead + ?Sized, W: Write + ?Sized>(
     Ok(())
 }
 
-/// Report form of the recorded allow rule; `null` when no manifest is recorded.
-pub fn allow_rule_json(allow_rule: Option<&AllowRuleInspection>) -> Value {
-    match allow_rule {
-        None => Value::Null,
-        Some(rule) => {
-            let mut report = json!({
-                "rule": rule.rule,
-                "ownership": match rule.ownership {
-                    AllowRuleOwnership::Owned => "owned",
-                    AllowRuleOwnership::PreExisting => "pre_existing",
-                    AllowRuleOwnership::Superseded => "superseded",
-                },
-                "present": rule.present,
-            });
-            if rule.ownership == AllowRuleOwnership::Superseded {
-                report["note"] = json!(format!(
-                    "recorded with the retired rule `{}`; re-run `herdr-threads setup claude` to \
-                     replace it with `{}`",
-                    claude::CALLER_CONTEXT_ALLOW_RULE,
-                    rule.rule
-                ));
+/// The one-line summary `setup`/`unsetup` with no harness print for Claude's
+/// prompt suggestions; `None` when there is nothing to say (the advice is a
+/// warning).
+pub(crate) fn prompt_suggestion_line(value: &Value) -> Option<String> {
+    let setting = claude::PROMPT_SUGGESTION_SETTING;
+    Some(match value {
+        Value::String(outcome) => match outcome.as_str() {
+            "reverted" => format!("prompt suggestions: reverted `{setting}` (setup had set it)"),
+            "left_changed" => {
+                format!(
+                    "prompt suggestions: `{setting}` was changed by hand since setup; left as is"
+                )
             }
-            report
-        }
-    }
+            _ => return None,
+        },
+        Value::Object(_) => match value["action"].as_str()? {
+            "disabled" => format!("prompt suggestions: disabled (`{setting}: false`)"),
+            "already_disabled" => "prompt suggestions: already disabled".to_owned(),
+            "kept" => format!(
+                "prompt suggestions: kept ({}); Claude pokes skip a pane that shows one",
+                crate::cli::setup::scalar(&value["state"])
+            ),
+            _ => return None,
+        },
+        _ => return None,
+    })
 }
 
 /// Where setup records that it set Claude's prompt-suggestion key.
@@ -503,7 +523,7 @@ pub fn settle_prompt_suggestions<R: io::BufRead + ?Sized, W: Write + ?Sized>(
     if report["prompt_suggestions"]["action"] != "advised" {
         return Ok(());
     }
-    let settings = env.claude_settings()?;
+    let settings = claude_settings(env)?;
     writeln!(out, "{PROMPT_SUGGESTION_EXPLANATION}")?;
     write!(out, "Disable prompt suggestions? [y/N] ")?;
     out.flush()?;
@@ -530,7 +550,7 @@ pub fn settle_prompt_suggestions<R: io::BufRead + ?Sized, W: Write + ?Sized>(
 
 pub(crate) fn claude_remove(env: &SetupEnv) -> Result<Value, RunError> {
     let (settings, manifest) = claude_paths(env)?;
-    let kind = SettingsKind::ClaudeUser;
+    let kind = crate::harness::claude::settings_kind();
     // The mod edit first, then the prompt suggestion, then the hooks: each
     // later step can still restore the file byte for byte (install order is
     // the reverse).
@@ -593,9 +613,9 @@ pub(crate) fn claude_remove(env: &SetupEnv) -> Result<Value, RunError> {
 
 fn claude_status(
     env: &SetupEnv,
-    observation: Result<(Observed, Option<crate::harness::operational::CodexContract>), String>,
+    observation: Result<(Observed, Option<()>), String>,
 ) -> Result<Value, RunError> {
-    let settings = env.claude_settings()?;
+    let settings = claude_settings(env)?;
     let mut report = json!({
         "action": "status",
         "harness": "claude",
@@ -605,7 +625,12 @@ fn claude_status(
         "recipes": recipe::describe(claude::RECIPES),
         "harness_version": observation_json(&observation),
     });
-    settings_status(SettingsKind::ClaudeUser, env, &settings, &mut report)?;
+    settings_status(
+        crate::harness::claude::settings_kind(),
+        env,
+        &settings,
+        &mut report,
+    )?;
     if env.state_dir().is_ok() {
         report["permissions"] = match permission_component(env, &settings)?.status() {
             Ok(status) => permissions_json(env, &settings, &status),
@@ -671,7 +696,8 @@ pub(crate) fn setup(
     } else {
         PromptSuggestionPolicy::Ask
     };
-    legacy_adapter_setup(Harness::Claude, request, claude_install, policy)
+    let hooks_only = request.options.get(HOOKS_ONLY_OPTION) == Some(&true);
+    legacy_adapter_setup(Harness::Claude, request, claude_install, policy, hooks_only)
 }
 pub(crate) fn status(
     request: &crate::harness::adapter::StatusRequest,
@@ -700,14 +726,14 @@ pub(crate) fn unsetup(
 pub(crate) fn observe(
     request: &SetupRequest,
     env: &SetupEnv,
-) -> Result<(Observed, Option<crate::harness::operational::CodexContract>), String> {
+) -> Result<(Observed, Option<()>), String> {
     observe_with_cache(request, env, None)
 }
 pub(crate) fn observe_with_cache(
     request: &SetupRequest,
     env: &SetupEnv,
     _codex_cache: Option<&Path>,
-) -> Result<(Observed, Option<crate::harness::operational::CodexContract>), String> {
+) -> Result<(Observed, Option<()>), String> {
     observe_bounded(
         request,
         env,
@@ -723,7 +749,7 @@ fn observe_bounded(
     _codex_cache: Option<&Path>,
     timeout: Duration,
     cancellation: &crate::protocol::time::Cancellation,
-) -> Result<(Observed, Option<crate::harness::operational::CodexContract>), String> {
+) -> Result<(Observed, Option<()>), String> {
     if timeout.is_zero() || cancellation.is_cancelled() {
         return Err("native status observation budget exhausted or cancelled".into());
     }
@@ -907,7 +933,7 @@ fn mod_install_step(
     } else {
         Vec::new()
     };
-    let sources = ManagedPolicySources::platform(env.claude_config_dir.as_deref());
+    let sources = ManagedPolicySources::platform(claude_root(env));
     // The mod launches `watch` exactly the way the hooks run.
     let launch = claude_mod::launch_prefix(&env.hook_argv(Harness::Claude)?).map_err(error)?;
     let outcome = claude_mod::install(&claude_mod::InstallInput {
@@ -976,7 +1002,7 @@ fn mod_status(env: &SetupEnv, settings: &Path) -> Value {
         .ok()
         .and_then(|argv| claude_mod::launch_prefix(&argv).ok());
     let inspection = claude_mod::inspect(settings, &manifest, state, expected_launch.as_deref());
-    let policy = ManagedPolicySources::platform(env.claude_config_dir.as_deref()).check();
+    let policy = ManagedPolicySources::platform(claude_root(env)).check();
     let mut report = json!({
         "installed": inspection.installed(),
         "dir": claude_mod::mod_dir(state).display().to_string(),
@@ -1065,7 +1091,7 @@ fn claude_version_gate(
     let Ok((observed, _)) = observe(request, env) else {
         return (None, None, Some("no claude executable found"));
     };
-    let Ok(stdout) = crate::harness::codex::version_output_cancellable(
+    let Ok(stdout) = crate::harness::process::version_output_cancellable(
         &observed.binary,
         CLAUDE_VERSION_TIMEOUT,
         &crate::protocol::time::Cancellation::default(),

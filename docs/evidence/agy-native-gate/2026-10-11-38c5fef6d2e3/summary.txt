@@ -1,0 +1,16 @@
+allow-rewrite PASS (43.74s)
+boot         PASS (12.12s)
+clear        PASS (14.14s)
+delivery     PASS (59.75s)
+downgrade    PASS (60.3s)
+enroll       PASS (12.87s)
+handoff      PASS (26.69s)
+launch       PASS (11.3s)
+permission   PASS (18.59s)
+resume       PASS (22.52s)
+setup        PASS (3.06s)
+subagent     PASS (13.59s)
+unsetup      PASS (2.84s)
+wake         PASS (213.09s)
+leak check: clean
+report: docs/evidence/agy-native-gate/2026-10-11-38c5fef6d2e3/report.json

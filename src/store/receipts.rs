@@ -1,14 +1,23 @@
 //! Receipt settlement and availability transitions.
 
 use crate::{
+    delivery::settle::{self, LazyFact, ModeFact, ReceiptFact, SettleFacts, SettlePlan},
+    harness::adapter::DeliveryMechanism,
     ports::TimeBasis,
     protocol::{
-        authority::{COOPERATIVE_MOD_DELIVERY_PROVENANCE, Harness, MutationPermit, ObligationRef},
+        authority::{
+            COOPERATIVE_HOOK_DELIVERY_PROVENANCE, COOPERATIVE_MOD_DELIVERY_PROVENANCE, CallerClaim,
+            Harness, MutationPermit, ObligationRef,
+        },
         commands::{Ack, AckModDelivered},
-        ids::{MessageId, SeatId, ThreadId},
+        delivery::{
+            DeliveryConfirm, DeliveryConfirmItem, DeliveryConfirmOutcome, DeliveryConfirmReason,
+            DeliveryConfirmReport,
+        },
+        ids::{BindingId, MessageId, OperationId, SeatId, ThreadId},
         results::{AckResult, ApiError, CommandResult, ErrorCode},
         time::UtcMillis,
-        watch::{ModAckItem, ModAckOutcome, ModAckReason, ModAckReport, WATCH_BODY_LIMIT_BYTES},
+        watch::{ModAckItem, ModAckOutcome, ModAckReason, ModAckReport},
     },
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
@@ -53,24 +62,15 @@ pub fn ack_mod_delivered_payload(request: &AckModDelivered) -> Value {
     json!({"kind":"ack_mod_delivered","via":request.via,"messages":request.messages,"claim":request.claim})
 }
 
-/// What the deciding transaction will do with one requested id.
-enum ModAckPlan {
-    Settle,
-    Complete,
-    Done(ModAckOutcome, Option<ModAckReason>),
-}
-
-fn refuse(reason: ModAckReason) -> ModAckPlan {
-    ModAckPlan::Done(ModAckOutcome::RefusedTerminal, Some(reason))
-}
-
-/// Per-id classification against the stored rows (spec D6); never errors per id.
-fn plan_mod_ack(
+/// Reads the stored facts of one requested id (spec D6) and lets the pure
+/// [`settle::plan`] decide. Never errors per id.
+fn plan_delivery_ack(
     tx: &Transaction<'_>,
     instance: &str,
     seat: &SeatId,
+    binding: Option<&BindingId>,
     id: &MessageId,
-) -> Result<ModAckPlan, ApiError> {
+) -> Result<SettlePlan, ApiError> {
     let row: Option<(String, i64)> = tx
         .query_row(
             "SELECT kind,length(CAST(coalesce(body,'') AS BLOB)) FROM messages WHERE id=?1 AND instance_id=?2",
@@ -79,46 +79,55 @@ fn plan_mod_ack(
         )
         .optional()
         .map_err(store_error)?;
-    let Some((kind, body_len)) = row else {
-        return Ok(refuse(ModAckReason::Unknown));
-    };
-    if kind != "ordinary" {
-        return Ok(refuse(ModAckReason::NotAddressed));
+    let message = row.map(|(kind, body_len)| (kind == "ordinary", body_len as usize));
+    // A non-ordinary id is refused before its mode or receipt is read.
+    if !message.is_some_and(|(ordinary, _)| ordinary) {
+        return Ok(settle::plan(SettleFacts {
+            message,
+            mode: ModeFact::Receipt(None),
+        }));
     }
-    let over_limit = body_len as usize > WATCH_BODY_LIMIT_BYTES;
-    if super::lazy_delivery::recorded_mode(tx, instance, id)?
+    let mode = if super::lazy_delivery::recorded_mode(tx, instance, id)?
         == Some(crate::protocol::commands::DeliveryMode::Lazy)
     {
-        return Ok(
-            match super::lazy_delivery::lazy_completion_state(tx, instance, seat, id)? {
-                super::lazy_delivery::LazyCompletion::NotAddressed => {
-                    refuse(ModAckReason::NotAddressed)
-                }
-                _ if over_limit => refuse(ModAckReason::Truncated),
-                super::lazy_delivery::LazyCompletion::Completed => {
-                    ModAckPlan::Done(ModAckOutcome::AlreadySettled, None)
-                }
-                super::lazy_delivery::LazyCompletion::Pending => ModAckPlan::Complete,
+        ModeFact::Lazy(
+            match super::lazy_delivery::lazy_completion_state(tx, instance, seat, binding, id)? {
+                super::lazy_delivery::LazyCompletion::NotAddressed => LazyFact::NotAddressed,
+                super::lazy_delivery::LazyCompletion::Completed => LazyFact::Completed,
+                super::lazy_delivery::LazyCompletion::Pending => LazyFact::Pending,
             },
-        );
-    }
-    let receipt = effective::effective_receipt(tx, id.as_str(), seat.as_str())?;
-    Ok(match receipt.map(|receipt| receipt.state) {
-        None
-        | Some(EffectiveReceiptState::NotRequired | EffectiveReceiptState::RecipientRetired) => {
-            refuse(ModAckReason::NotAddressed)
-        }
-        Some(_) if over_limit => refuse(ModAckReason::Truncated),
-        Some(EffectiveReceiptState::Acknowledged) => {
-            ModAckPlan::Done(ModAckOutcome::AlreadySettled, None)
-        }
-        Some(EffectiveReceiptState::Pending) => ModAckPlan::Settle,
-    })
+        )
+    } else {
+        ModeFact::Receipt(
+            effective::effective_receipt(tx, id.as_str(), seat.as_str())?.map(|receipt| {
+                match receipt.state {
+                    EffectiveReceiptState::Pending => ReceiptFact::Pending,
+                    EffectiveReceiptState::Acknowledged => ReceiptFact::Acknowledged,
+                    EffectiveReceiptState::RecipientRetired => ReceiptFact::RecipientRetired,
+                    EffectiveReceiptState::NotRequired => ReceiptFact::NotRequired,
+                }
+            }),
+        )
+    };
+    Ok(settle::plan(SettleFacts { message, mode }))
+}
+
+/// One delivery settlement request, whatever mechanism carried the items
+/// (delivery-policy DP3). `provenance` is the A3 constant of the harness's
+/// delivery policy; `via` names the delivery path.
+pub struct AckPolicyDelivered<'a> {
+    pub mechanism: DeliveryMechanism,
+    pub provenance: &'static str,
+    pub via: &'static str,
+    pub messages: &'a [MessageId],
+    pub operation: &'a OperationId,
+    pub claim: &'a CallerClaim,
+    pub digest: [u8; 32],
 }
 
 /// Spec D6: settle the mod-delivered ids of the seat one by one. Ordinary
 /// pending receipts settle like `ack_displayed` with the receipt's
-/// `action_provenance` set to `cooperative_mod_delivery` (the binding's
+/// `action_provenance` set to the policy's provenance (the binding's
 /// `cooperative_top_level` provenance stays in the observation); lazy rows
 /// complete as displayed. Every id gets a result; a refusal leaves it pending.
 pub fn ack_mod_delivered(
@@ -126,6 +135,100 @@ pub fn ack_mod_delivered(
     conn: &mut Connection,
     budget: &crate::protocol::time::CallBudget,
     request: &AckModDelivered,
+    permit: &mut MutationPermit,
+) -> Result<CommandResult, ApiError> {
+    let digest = schema::canonical_digest(&ack_mod_delivered_payload(request))?;
+    ack_policy_delivered(
+        context,
+        conn,
+        budget,
+        AckPolicyDelivered {
+            mechanism: DeliveryMechanism::PushChannel,
+            provenance: crate::harness::registry::builtins()
+                .delivery_policy(request.claim.harness.as_str())
+                .filter(|policy| policy.mechanism() == DeliveryMechanism::PushChannel)
+                .map_or(COOPERATIVE_MOD_DELIVERY_PROVENANCE, |policy| {
+                    policy.provenance()
+                }),
+            via: request.via.as_str(),
+            messages: &request.messages,
+            operation: &request.operation,
+            claim: &request.claim,
+            digest,
+        },
+        permit,
+    )
+}
+
+pub fn delivery_confirm_payload(request: &DeliveryConfirm) -> Value {
+    json!({"kind":"delivery_confirm","messages":request.ids,"claim":request.claim})
+}
+
+/// Delivery-policy DP6: settle the ids a hook-pull harness found in its
+/// session transcript, one by one, under `cooperative_hook_delivery`. The
+/// service has already checked the ids against its offered ledger; the store
+/// decides each id against A2 again exactly as `ack_mod_delivered` does.
+pub fn delivery_confirm(
+    context: &StoreContext,
+    conn: &mut Connection,
+    budget: &crate::protocol::time::CallBudget,
+    request: &DeliveryConfirm,
+    permit: &mut MutationPermit,
+) -> Result<CommandResult, ApiError> {
+    let digest = schema::canonical_digest(&delivery_confirm_payload(request))?;
+    let result = ack_policy_delivered(
+        context,
+        conn,
+        budget,
+        AckPolicyDelivered {
+            mechanism: DeliveryMechanism::HookPull,
+            provenance: COOPERATIVE_HOOK_DELIVERY_PROVENANCE,
+            via: "transcript",
+            messages: &request.ids,
+            operation: &request.operation,
+            claim: &request.claim,
+            digest,
+        },
+        permit,
+    )?;
+    let CommandResult::ModDeliveryAcked(report) = result else {
+        return Err(api_error(
+            ErrorCode::StoreCorrupt,
+            "delivery settlement returned another result",
+        ));
+    };
+    Ok(CommandResult::DeliveryConfirmed(DeliveryConfirmReport {
+        results: report
+            .results
+            .into_iter()
+            .map(|item| DeliveryConfirmItem {
+                id: item.id,
+                result: match item.result {
+                    ModAckOutcome::Settled => DeliveryConfirmOutcome::Settled,
+                    ModAckOutcome::AlreadySettled => DeliveryConfirmOutcome::AlreadySettled,
+                    ModAckOutcome::RefusedTerminal => DeliveryConfirmOutcome::RefusedTerminal,
+                    ModAckOutcome::StaleGeneration => DeliveryConfirmOutcome::StaleGeneration,
+                    ModAckOutcome::Retryable => DeliveryConfirmOutcome::Retryable,
+                },
+                reason: item.reason.map(|reason| match reason {
+                    ModAckReason::Unknown => DeliveryConfirmReason::Unknown,
+                    ModAckReason::NotAddressed => DeliveryConfirmReason::NotAddressed,
+                    ModAckReason::Truncated => DeliveryConfirmReason::Truncated,
+                    ModAckReason::NoLiveChannel => DeliveryConfirmReason::NoHookPull,
+                    ModAckReason::Busy | ModAckReason::Unreachable => DeliveryConfirmReason::Busy,
+                }),
+            })
+            .collect(),
+    }))
+}
+
+/// The store's settlement entry point (delivery-policy DP3): the claim must be
+/// a top-level claim of a harness whose adapter declares `mechanism`.
+pub fn ack_policy_delivered(
+    context: &StoreContext,
+    conn: &mut Connection,
+    budget: &crate::protocol::time::CallBudget,
+    request: AckPolicyDelivered<'_>,
     permit: &mut MutationPermit,
 ) -> Result<CommandResult, ApiError> {
     if request.messages.is_empty() || request.messages.len() > 100 {
@@ -141,15 +244,15 @@ pub fn ack_mod_delivered(
             "duplicate message in mod delivery ACK batch",
         ));
     }
-    if request.claim.harness != Harness::Claude
-        || request.claim.role != crate::protocol::authority::CallerRole::TopLevel
+    if request.claim.role != crate::protocol::authority::CallerRole::TopLevel
+        || !crate::delivery::declares(request.claim.harness.as_str(), request.mechanism)
     {
         return Err(api_error(
             ErrorCode::InvalidRequest,
-            "mod delivery ACK requires a top-level Claude claim",
+            "delivery ACK requires a top-level claim of a harness with this delivery policy",
         ));
     }
-    let digest = schema::canonical_digest(&ack_mod_delivered_payload(request))?;
+    let digest = request.digest;
     let cooperative = permit.cooperative_metadata();
     let seat = request.claim.seat.clone();
     let instance = request.claim.instance.clone();
@@ -180,47 +283,69 @@ pub fn ack_mod_delivered(
                 tx,
                 decision,
                 permit,
-                &request.claim,
+                request.claim,
                 &seat,
-                &request.operation,
+                request.operation,
                 &ObligationRef::CheckIn(seat.clone()),
                 &digest,
             )?;
+            let binding = super::bindings::match_claim(
+                tx,
+                &super::bindings::BindingKey::from_claim(request.claim),
+            )?
+            .map(|b| b.binding_id);
             let mut plans = Vec::with_capacity(request.messages.len());
-            for id in &request.messages {
-                plans.push(plan_mod_ack(tx, &instance, &seat, id)?);
+            for id in request.messages {
+                plans.push(plan_delivery_ack(
+                    tx,
+                    &instance,
+                    &seat,
+                    binding.as_ref(),
+                    id,
+                )?);
             }
-            let settle: Vec<MessageId> = request
+            let settle_ids: Vec<MessageId> = request
                 .messages
                 .iter()
                 .zip(&plans)
-                .filter(|(_, plan)| matches!(plan, ModAckPlan::Settle))
+                .filter(|(_, plan)| matches!(plan, SettlePlan::Settle))
                 .map(|(id, _)| id.clone())
                 .collect();
             let mut observation: Value =
                 serde_json::from_str(&actor.observation(decision.utc.0))
                     .map_err(|_| api_error(ErrorCode::StoreCorrupt, "ACK observation malformed"))?;
-            observation["action_provenance"] = json!(COOPERATIVE_MOD_DELIVERY_PROVENANCE);
+            observation["action_provenance"] = json!(request.provenance);
             observation["via"] = json!(request.via);
             settle_pending(
                 tx,
                 decision,
                 &seat,
-                &request.operation,
-                &settle,
+                request.operation,
+                &settle_ids,
                 &observation.to_string(),
                 actor.binding_generation,
+                &actor.binding_id,
                 "ack_mod",
             )?;
+            // One display, one cursor walk per thread: lazy rows this display completes, plus
+            // the ordinary messages it showed whole (settled now, or already settled elsewhere).
+            // A refused id was never displayed and never advances the cursor.
+            let mut complete_ids = Vec::new();
+            let mut shown_ids = settle_ids;
             let mut results = Vec::with_capacity(plans.len());
             for (id, plan) in request.messages.iter().zip(plans) {
                 let (result, reason) = match plan {
-                    ModAckPlan::Settle => (ModAckOutcome::Settled, None),
-                    ModAckPlan::Complete => {
-                        super::lazy_delivery::complete_addressed(tx, &instance, &seat, id)?;
+                    SettlePlan::Settle => (ModAckOutcome::Settled, None),
+                    SettlePlan::Complete => {
+                        complete_ids.push(id.clone());
                         (ModAckOutcome::Settled, None)
                     }
-                    ModAckPlan::Done(result, reason) => (result, reason),
+                    SettlePlan::Done(result, reason) => {
+                        if result == ModAckOutcome::AlreadySettled {
+                            shown_ids.push(id.clone());
+                        }
+                        (result, reason)
+                    }
                 };
                 results.push(ModAckItem {
                     id: id.clone(),
@@ -228,6 +353,14 @@ pub fn ack_mod_delivered(
                     reason,
                 });
             }
+            super::lazy_delivery::complete_displayed_for_binding(
+                tx,
+                &instance,
+                &seat,
+                binding.as_ref(),
+                &complete_ids,
+                &shown_ids,
+            )?;
             failpoint!("ack.before_commit", context.failpoint_scope());
             Ok(CommandResult::ModDeliveryAcked(ModAckReport { results }))
         },
@@ -299,13 +432,13 @@ fn ack_impl(
                     ));
                 }
                 let exact: bool = tx.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id AND b.generation=s.generation WHERE s.id=?1 AND b.generation=?2 AND b.harness=?3 AND b.native_session=?4 AND b.execution_id=?5 AND b.target_id=?6 AND b.ended_at IS NULL AND b.observation_provenance='cooperative_top_level')",
+                    "SELECT EXISTS(SELECT 1 FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id AND b.generation=s.generation WHERE s.id=?1 AND b.generation=?2 AND b.harness=?3 AND b.native_session=?4 AND b.execution_id=?5 AND b.target_id=?6 AND b.ended_at IS NULL AND b.role='top_level' AND b.agent_id='')",
                     params![seat.as_str(),i64::try_from(request.claim.binding_generation).map_err(|_| api_error(ErrorCode::CallerUnverified,"binding generation exceeds storage range"))?,request.claim.harness.as_str(),request.claim.native_session.as_str(),request.claim.execution.as_str(),request.claim.target.as_str()],|r|r.get(0)
                 ).map_err(store_error)?;
                 if !exact {
                     return Err(api_error(
                         ErrorCode::CallerUnverified,
-                        "display ACK requires the exact cooperative agent binding",
+                        "display ACK requires a connected top-level agent binding of the seat for this exact session",
                     ));
                 }
             }
@@ -349,6 +482,17 @@ fn ack_impl(
                 &ObligationRef::CheckIn(seat.clone()),
                 &digest,
             )?;
+            // Any connected top-level binding of the seat may settle (spec §2 ACK). A
+            // fingerprinted call has already reconnected its binding in the resolver when it was
+            // disconnected by a process exit or migration; a disconnected binding that this call
+            // could not reconnect (no fingerprint, or superseded, ended or retired) is refused
+            // like a stale-context ACK.
+            if !actor.binding_connected {
+                return Err(api_error(
+                    ErrorCode::CallerUnverified,
+                    "a disconnected binding reconnects only on a fingerprinted call after a process exit or migration, not after a supersede or end event",
+                ));
+            }
             let mut newly = Vec::new();
             let mut prior = Vec::new();
             for id in &request.messages {
@@ -378,6 +522,7 @@ fn ack_impl(
                 &newly,
                 &observation,
                 actor.binding_generation,
+                &actor.binding_id,
                 "ack",
             )?;
             failpoint!("ack.before_commit", context.failpoint_scope());
@@ -405,6 +550,7 @@ fn settle_pending(
     newly: &[MessageId],
     observation: &str,
     binding_generation: u64,
+    binding: &BindingId,
     event_prefix: &str,
 ) -> Result<(), ApiError> {
     let mut by_thread: BTreeMap<ThreadId, Vec<MessageId>> = BTreeMap::new();
@@ -450,8 +596,8 @@ fn settle_pending(
             )
             .map_err(store_error)?;
         if manifest {
-            tx.execute("INSERT INTO receipt_state(message_id,seat_id,state,available_at,deadline_at,ack_actor_seat_id,ack_generation,ack_observation,acked_at) VALUES (?1,?2,'acked',?3,?4,?2,?5,?6,?7) ON CONFLICT(message_id,seat_id) DO UPDATE SET state='acked',deadline_at=CASE WHEN ?8 THEN COALESCE(receipt_state.deadline_at,excluded.deadline_at) ELSE receipt_state.deadline_at END,ack_actor_seat_id=excluded.ack_actor_seat_id,ack_generation=excluded.ack_generation,ack_observation=excluded.ack_observation,acked_at=excluded.acked_at WHERE receipt_state.state='pending'",
-                params![id.as_str(),seat.as_str(),receipt.available_at,receipt.deadline_at,binding_generation as i64,observation,decision.utc.0,receipt.state==EffectiveReceiptState::Pending]).map_err(store_error)?;
+            tx.execute("INSERT INTO receipt_state(message_id,seat_id,state,available_at,deadline_at,ack_actor_seat_id,ack_generation,ack_observation,acked_at,ack_binding_id) VALUES (?1,?2,'acked',?3,?4,?2,?5,?6,?7,?9) ON CONFLICT(message_id,seat_id) DO UPDATE SET state='acked',deadline_at=CASE WHEN ?8 THEN COALESCE(receipt_state.deadline_at,excluded.deadline_at) ELSE receipt_state.deadline_at END,ack_actor_seat_id=excluded.ack_actor_seat_id,ack_generation=excluded.ack_generation,ack_observation=excluded.ack_observation,acked_at=excluded.acked_at,ack_binding_id=excluded.ack_binding_id WHERE receipt_state.state='pending'",
+                params![id.as_str(),seat.as_str(),receipt.available_at,receipt.deadline_at,binding_generation as i64,observation,decision.utc.0,receipt.state==EffectiveReceiptState::Pending,binding.as_str()]).map_err(store_error)?;
         } else {
             // Persist the original projected clock before changing its state.
             // Catch-up's extended deadline is separate; waivers gain no clock.
@@ -460,8 +606,8 @@ fn settle_pending(
             } else {
                 None
             };
-            tx.execute("UPDATE receipts SET state='acked',deadline_at=COALESCE(deadline_at,?6),ack_actor_seat_id=?1,ack_generation=?2,ack_observation=?3,acked_at=?4 WHERE message_id=?5 AND seat_id=?1 AND state='pending'",
-                params![seat.as_str(),binding_generation as i64,observation,decision.utc.0,id.as_str(),pending_deadline]).map_err(store_error)?;
+            tx.execute("UPDATE receipts SET state='acked',deadline_at=COALESCE(deadline_at,?6),ack_actor_seat_id=?1,ack_generation=?2,ack_observation=?3,acked_at=?4,ack_binding_id=?7 WHERE message_id=?5 AND seat_id=?1 AND state='pending'",
+                params![seat.as_str(),binding_generation as i64,observation,decision.utc.0,id.as_str(),pending_deadline,binding.as_str()]).map_err(store_error)?;
         }
     }
     for thread in by_thread.keys() {
@@ -755,7 +901,7 @@ pub fn effective_deadline_for(
     };
     let extension: Option<i64> = conn
         .query_row(
-            "SELECT extension_until FROM catch_up WHERE seat_id=?1 AND thread_id=?2",
+            "SELECT MAX(extension_until) FROM catch_up WHERE seat_id=?1 AND thread_id=?2",
             params![seat, thread],
             |r| r.get(0),
         )
@@ -775,14 +921,14 @@ fn extension_end(base: UtcMillis, add_ms: u64) -> i64 {
 /// the lifecycle skips it on re-entry after a stall with no block stored since.
 pub fn extension_on_entry(
     tx: &Transaction<'_>,
-    seat: &SeatId,
+    binding: &BindingId,
     thread: &ThreadId,
     entered_at: UtcMillis,
     p99_ms: u64,
 ) -> Result<(), ApiError> {
     tx.execute(
-        "UPDATE catch_up SET extension_until=MAX(COALESCE(extension_until,0),?3) WHERE seat_id=?1 AND thread_id=?2",
-        params![seat.as_str(), thread.as_str(), extension_end(entered_at, p99_ms)],
+        "UPDATE catch_up SET extension_until=MAX(COALESCE(extension_until,0),?3) WHERE binding_id=?1 AND thread_id=?2",
+        params![binding.as_str(), thread.as_str(), extension_end(entered_at, p99_ms)],
     )
     .map_err(store_error)?;
     Ok(())
@@ -806,15 +952,15 @@ pub fn extension_on_progress(
 /// Exit: the grace window after the row ends is set (spec §7), not raised.
 pub fn extension_on_exit(
     tx: &Transaction<'_>,
-    seat: &SeatId,
+    binding: &BindingId,
     thread: &ThreadId,
     now: UtcMillis,
     exit_grace_ms: u64,
 ) -> Result<(), ApiError> {
     tx.execute(
-        "UPDATE catch_up SET extension_until=?3 WHERE seat_id=?1 AND thread_id=?2",
+        "UPDATE catch_up SET extension_until=?3 WHERE binding_id=?1 AND thread_id=?2",
         params![
-            seat.as_str(),
+            binding.as_str(),
             thread.as_str(),
             extension_end(now, exit_grace_ms)
         ],

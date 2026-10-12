@@ -39,6 +39,15 @@ pub enum CommandResult {
     InboxBatchV2(Page<InboxBatchV2Item>),
     MessageDeliveryModes(Vec<MessageDeliveryMode>),
     InboxDeliveryCompleted(Vec<MessageId>),
+    /// The messages the caller binding's cursors now cover (`AdvanceCursors`).
+    CursorsAdvanced(Vec<MessageId>),
+    /// A harness lifecycle event was applied to the caller's bindings (`BindingEvent`); `changed`
+    /// is how many bindings it enrolled or disconnected (zero for a replayed or unknown one).
+    BindingEventRecorded {
+        changed: u32,
+    },
+    /// A seat's `wake_on` preference (read, or the outcome of a set).
+    WakeOn(WakeOnState),
     Warnings(Page<WarningRef>),
     ActiveWarnings(Page<WarningRef>),
     Thread(ThreadDetails),
@@ -76,6 +85,7 @@ pub enum CommandResult {
     CachedCheckInPage(crate::harness::cache::CachedCheckInPage),
     Handoff(crate::protocol::handoff::HandoffResult),
     ThreadCreated(ThreadId),
+    DirectThreadEnsured(DirectThreadEnsured),
     Invitation(InvitationId),
     AlreadyJoined(AlreadyJoined),
     Joined(ThreadId),
@@ -83,8 +93,16 @@ pub enum CommandResult {
     Rejected(InvitationRejection),
     RequiredAccepted(RequiredMembership),
     MessageSent(MessageId),
+    AutomaticBootstrap(Box<crate::protocol::handoff::AutomaticBootstrapResult>),
+    AutomaticBootstrapReserved(Box<crate::protocol::handoff::AutomaticBootstrapReserved>),
     Acknowledged(AckResult),
     ModDeliveryAcked(crate::protocol::watch::ModAckReport),
+    DeliveryPulled(crate::protocol::delivery::DeliveryPullReply),
+    DeliveryPulledV2(crate::protocol::delivery::DeliveryPullReplyV2),
+    DeliveryPresentationConfirmedV2(
+        crate::protocol::delivery::DeliveryPresentationConfirmationReplyV2,
+    ),
+    DeliveryConfirmed(crate::protocol::delivery::DeliveryConfirmReport),
     Left(ThreadId),
     TopicChanged(ThreadId),
     ThreadNameChanged(ThreadId),
@@ -102,6 +120,72 @@ pub enum CommandResult {
     BootstrapRecovered(Box<crate::protocol::handoff::BootstrapRecoveryResult>),
     LinkedBootstrapCompleted(Box<crate::protocol::handoff::CompletedBootstrapResult>),
     HandoffDelivery(crate::protocol::handoff::DeliveryResult),
+}
+
+/// Canonical selection at Ensure time; replay never reinterprets the episode.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DirectThreadEnsured {
+    pub thread: ThreadId,
+    pub recipient: SeatId,
+    pub outcome: DirectThreadEnsureOutcome,
+    pub invitation: Option<DirectThreadInvitation>,
+}
+impl DirectThreadEnsured {
+    pub(crate) fn admission_witness(thread: ThreadId, recipient: SeatId) -> Self {
+        Self {
+            thread,
+            recipient,
+            outcome: DirectThreadEnsureOutcome::ExistingPending,
+            invitation: Some(DirectThreadInvitation {
+                id: InvitationId::new("\\".repeat(128)),
+                episode: u64::MAX,
+                confirmation: crate::protocol::commands::InvitationConfirmation::RequireAck,
+                effective_deadline_at: Some(UtcMillis(i64::MIN)),
+                inviter: Some(SeatId::new("\\".repeat(128))),
+            }),
+        }
+    }
+    pub(crate) fn validate(&self) -> Result<(), &'static str> {
+        use crate::protocol::commands::InvitationConfirmation;
+        match (&self.outcome, &self.invitation) {
+            (DirectThreadEnsureOutcome::AlreadyJoined, None) => Ok(()),
+            (
+                DirectThreadEnsureOutcome::Created | DirectThreadEnsureOutcome::ExistingPending,
+                Some(invitation),
+            ) if invitation.episode > 0
+                && match invitation.confirmation {
+                    InvitationConfirmation::Lazy => invitation.effective_deadline_at.is_none(),
+                    InvitationConfirmation::RequireAck => {
+                        invitation.effective_deadline_at.is_some()
+                    }
+                } =>
+            {
+                Ok(())
+            }
+            _ => Err("invalid direct invitation selection"),
+        }
+    }
+    /// Surrounding delivery output already identifies the selected pair.
+    pub(crate) fn presentation(&self) -> serde_json::Value {
+        serde_json::json!({"outcome":self.outcome,"invitation":self.invitation})
+    }
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DirectThreadEnsureOutcome {
+    Created,
+    ExistingPending,
+    AlreadyJoined,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DirectThreadInvitation {
+    pub id: InvitationId,
+    pub episode: u64,
+    pub confirmation: crate::protocol::commands::InvitationConfirmation,
+    pub effective_deadline_at: Option<UtcMillis>,
+    pub inviter: Option<SeatId>,
 }
 
 /// Retained recipient decision; reason is untrusted peer data.
@@ -331,6 +415,16 @@ pub enum ErrorCode {
     /// sandbox that does not allow that Unix socket. Restarting the daemon
     /// cannot fix it; the sandbox must allow the stable socket pathname.
     TransportDenied,
+    /// An agent call without a harness session id (ht-54r.3): the daemon cannot key a binding.
+    SessionClaimRequired,
+    /// An agent call without a liveness fingerprint (ht-54r.3, enforced from ht-54r.5).
+    LivenessFingerprintRequired,
+    /// A subagent claim attempted an accountable command (ht-54r.20): subagent bindings are
+    /// read-only. Stable; the refusal is cooperative, on the recognized claim.
+    SubagentReadOnly,
+    /// Client-local, never sent by a daemon: the CLI runs under a `codex app-server
+    /// --managed-daemon` process, which has no pane to attribute the call to.
+    ManagedDaemonRefused,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -914,6 +1008,27 @@ pub struct SeatSummary {
     pub generation: u64,
     pub created_at: UtcMillis,
     pub retired_at: Option<UtcMillis>,
+    /// Presence: the seat has an open connected binding (or a live human pane).
+    #[serde(default)]
+    pub active: bool,
+    /// Open bindings in ordinal order.
+    #[serde(default)]
+    pub bindings: Vec<BindingPresence>,
+    /// Availability slot, filled by the liveness worker; absent until then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub availability: Option<String>,
+}
+/// One open binding as shown in presence listings; session ids are not presentation data.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BindingPresence {
+    pub harness: String,
+    /// `top_level` or `subagent`.
+    pub role: String,
+    pub connected: bool,
+    /// Subagent id; absent for top-level bindings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -990,9 +1105,9 @@ pub struct RepairHistory {
     pub continuity_diagnostic: Option<String>,
 }
 /// The outcome of one `RecordManagedLaunch` (TRUST-POLICY A3
-/// `managed_launch`): `recorded` when this decision opened the seat's
-/// unregistered `managed_launch` binding, otherwise the seat already had an
-/// open binding, left unchanged and described here.
+/// `managed_launch`): `recorded` when this decision opened a placeholder
+/// `managed_launch` binding (always, since ht-54r.4; an older daemon instead
+/// left an existing open binding unchanged and described it here).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ManagedLaunchRecord {
@@ -1009,6 +1124,10 @@ pub struct ManagedLaunchRecord {
 pub struct ContinuityReattachment {
     pub seat: SeatId,
     pub binding_generation: u64,
+    /// The gap report when the reattached binding's unread backlog exceeded one page and its
+    /// cursors were fast-forwarded in the deciding transaction (spec §2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fast_forward: Option<FastForward>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1092,9 +1211,16 @@ pub enum InboxBatchItem {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum InboxBatchV2Item {
+    /// First-contact stats of a session the daemon has not enrolled yet (ht-54r.8): only the
+    /// first page of such a read carries it, as its first item. Presentation only.
+    FirstContact(FirstContact),
     Invitation {
         thread: ThreadId,
         topic_data: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        goal_data: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        topic_revision: Option<u64>,
         invitation: InvitationId,
         /// Frozen modern policy; absent for historical invitation payloads.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1142,6 +1268,11 @@ pub enum InboxBatchV2Item {
         body_start: u64,
         body_end: u64,
         body_len: u64,
+        /// The reading seat's `wake_on` is `all` (delivery-policy DP8): a
+        /// push-channel consumer promotes this row to a `message` line.
+        /// Absent (false) for a default seat and from an older daemon.
+        #[serde(default, skip_serializing_if = "is_false")]
+        wakes: bool,
     },
     Warning {
         thread: ThreadId,
@@ -1163,6 +1294,16 @@ pub enum InboxBatchV2Item {
 pub struct MessageDeliveryMode {
     pub message: MessageId,
     pub delivery_mode: crate::protocol::commands::DeliveryMode,
+}
+
+/// A seat's `wake_on` preference. `changed` is true only when a set altered the
+/// stored value; a read, or a set to the value already stored, reports false.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WakeOnState {
+    pub seat: SeatId,
+    pub wake_on: crate::protocol::commands::WakeOn,
+    pub changed: bool,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -1398,6 +1539,15 @@ pub struct Participant {
     pub retirement_cutover: Option<UtcMillis>,
     pub cleanup_state: Option<CleanupState>,
     pub accepted_invitation: Option<InvitationAcceptance>,
+    /// Presence: the seat has an open connected binding (or a live human pane).
+    #[serde(default)]
+    pub active: bool,
+    /// Open bindings in ordinal order.
+    #[serde(default)]
+    pub bindings: Vec<BindingPresence>,
+    /// Availability slot, filled by the liveness worker; absent until then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub availability: Option<String>,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1494,6 +1644,7 @@ pub struct LocalIntent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IntentKind {
+    DirectSend,
     Handoff,
     ResolveSeat,
     CheckIn,
@@ -1613,6 +1764,59 @@ pub struct CheckInResult {
     #[serde(default, skip_serializing_if = "NoticeOffer::is_empty")]
     pub notices: NoticeOffer,
     pub inbox: Page<InboxItem>,
+    /// Per-thread history before the cursors of a binding this check-in enrolled (spec §2
+    /// First-contact stats). Shown once: only the check-in that creates the binding carries it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_contact: Option<FirstContact>,
+    /// The gap a resumed or reconnected binding was fast-forwarded over (spec §2 Fast-forward).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fast_forward: Option<FastForward>,
+}
+
+/// One joined thread's history, counted over a range of its messages (first-contact stats: up to
+/// the binding's cursor; fast-forward: the gap the cursor jumped over).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ThreadHistory {
+    pub thread: ThreadId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Messages in the range.
+    pub earlier: u64,
+    /// Of those, human-authored, relaying a person, or carrying a recorded user intent.
+    pub from_people: u64,
+    /// Open request and question items of the thread's summary ledger.
+    pub open_requests: u64,
+    /// The newest message in the range.
+    pub last_at: UtcMillis,
+}
+
+/// First-contact stats: at most eight threads, most recent activity first, and how many more.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FirstContact {
+    pub threads: Vec<ThreadHistory>,
+    pub more: u64,
+}
+
+/// One thread a fast-forward skipped over: its gap counts and its last message.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FastForwardThread {
+    pub history: ThreadHistory,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_message: Option<MessageSummary>,
+}
+
+/// A fast-forward: the binding's cursors jumped to the thread heads past a backlog larger than
+/// one ordinary inbox page. Pending ACK obligations are not part of it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FastForward {
+    /// Messages skipped over, all threads.
+    pub skipped: u64,
+    pub threads: Vec<FastForwardThread>,
+    pub more: u64,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1717,6 +1921,10 @@ impl ErrorCode {
         ErrorCode::MembershipRequired,
         ErrorCode::StaleRequirementAcceptance,
         ErrorCode::TransportDenied,
+        ErrorCode::SessionClaimRequired,
+        ErrorCode::LivenessFingerprintRequired,
+        ErrorCode::SubagentReadOnly,
+        ErrorCode::ManagedDaemonRefused,
     ];
 
     /// The failure class this code defaults to, or `None` for codes that
@@ -1764,6 +1972,10 @@ impl ErrorCode {
             ErrorCode::MembershipRequired => None,
             ErrorCode::StaleRequirementAcceptance => None,
             ErrorCode::TransportDenied => Some(ErrorClass::Unavailable),
+            ErrorCode::SessionClaimRequired => None,
+            ErrorCode::LivenessFingerprintRequired => None,
+            ErrorCode::SubagentReadOnly => None,
+            ErrorCode::ManagedDaemonRefused => None,
             // The daemon restarted between the caller's view and the request
             // (B5, protocol 2): retry against the new boot.
             ErrorCode::DaemonBootChanged => Some(ErrorClass::Transient),
@@ -1837,6 +2049,10 @@ api_error_constructors! {
     required_invitation_needs_managed_thread => RequiredInvitationNeedsManagedThread,
     membership_required => MembershipRequired, stale_requirement_acceptance => StaleRequirementAcceptance,
     transport_denied => TransportDenied, daemon_boot_changed => DaemonBootChanged,
+    session_claim_required => SessionClaimRequired,
+    liveness_fingerprint_required => LivenessFingerprintRequired,
+    subagent_read_only => SubagentReadOnly,
+    managed_daemon_refused => ManagedDaemonRefused,
 }
 
 #[cfg(test)]

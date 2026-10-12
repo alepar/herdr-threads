@@ -1,0 +1,3 @@
+# pid ppid pgid tpgid stat comm args  (shell 43250 and its descendants)
+43250 42757 43250 43259 SNs  -zsh             -zsh
+43259 43250 43259 43259 SN+  /Users/alepar/.l /Users/alepar/.local/bin/codex --no-daemon

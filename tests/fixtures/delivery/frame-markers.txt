@@ -1,0 +1,25 @@
+[herdr-threads] new messages:
+
+[herdr-threads] message m1 in T1 "plans" from S1 "alice" [human]:
+  human author
+
+[herdr-threads] message m2 in T1 "plans" from S1 "alice" [relays user]:
+  relays the user
+
+[herdr-threads] message m3 in T1 "plans" from S1 "alice" [query]:
+  query
+
+[herdr-threads] message m4 in T1 "plans" from S1 "alice" [request]:
+  request
+
+[herdr-threads] message m5 in T1 "plans" from S1 "alice" [rule]:
+  rule
+
+[herdr-threads] message m6 in T1 "plans" from S1 "alice":
+  unknown intent adds no marker
+
+[herdr-threads] message m7 in T1 "plans" from S1 "alice" [human] [relays user] [rule]:
+  all markers, ack required
+
+[herdr-threads] message m8 in T1 "plans" from S1 "alice":
+  no marker

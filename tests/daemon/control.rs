@@ -160,8 +160,14 @@ fn retirement_control(
             inputs.coherent_enumeration = CapabilityState::Supported;
             inputs.safe_prompt = CapabilityState::Supported;
             inputs.receipt_registration = CapabilityState::Supported;
-            inputs.codex = crate::daemon::health::HarnessStatus::Supported("native".into());
-            inputs.claude = crate::daemon::health::HarnessStatus::Supported("native".into());
+            inputs.set_harness(
+                "codex",
+                crate::daemon::health::HarnessStatus::Supported("native".into()),
+            );
+            inputs.set_harness(
+                "claude",
+                crate::daemon::health::HarnessStatus::Supported("native".into()),
+            );
             inputs
         },
         RetirementDomain(store.clone(), instance.to_owned()),
@@ -776,8 +782,7 @@ fn production_health_builder_pins_every_elected_field() {
         receipt_registration,
         scheduler,
         last_scheduler_tick_at,
-        codex,
-        claude,
+        harnesses,
         retirement,
         settings: got_settings,
         last_reconciliation_at,
@@ -787,9 +792,7 @@ fn production_health_builder_pins_every_elected_field() {
         degraded_lanes,
         transitions_refused,
         harness_version_lines,
-        additional_harnesses,
     } = health(&budget);
-    assert!(additional_harnesses.is_empty());
     // The version lines come from the production wiring (`run_elected`), not
     // from the provider.
     assert!(harness_version_lines.is_empty());
@@ -815,8 +818,21 @@ fn production_health_builder_pins_every_elected_field() {
     assert_eq!(last_scheduler_tick_at, None);
     // No harness observation was published into this provider's slot:
     // Unknown, never asserted cooperative or supported.
-    assert_eq!(codex, crate::daemon::health::HarnessStatus::Unknown);
-    assert_eq!(claude, crate::daemon::health::HarnessStatus::Unknown);
+    // Legacy-contract harnesses are always present, in registry order; an
+    // unobserved optional harness has no row.
+    assert_eq!(
+        harnesses,
+        vec![
+            (
+                "claude".to_owned(),
+                crate::daemon::health::HarnessStatus::Unknown
+            ),
+            (
+                "codex".to_owned(),
+                crate::daemon::health::HarnessStatus::Unknown
+            ),
+        ]
+    );
     assert_eq!(
         retirement,
         RetirementHealth {
@@ -903,8 +919,10 @@ fn missing_harness_support_and_retirement_error_degrade_health_without_counting_
     inputs.host = ComponentStatus::Ready;
     inputs.scheduler = ComponentStatus::Ready;
     inputs.current_execution = CapabilityState::Unsupported;
-    inputs.codex =
-        crate::daemon::health::HarnessStatus::Refused("current execution unavailable".into());
+    inputs.set_harness(
+        "codex",
+        crate::daemon::health::HarnessStatus::Refused("current execution unavailable".into()),
+    );
     inputs.retirement = RetirementHealth {
         pending: true,
         degraded: true,
@@ -936,8 +954,14 @@ fn health_bounds_large_ascii_unicode_and_escaped_details_before_wire_encoding() 
     inputs.schema = ComponentStatus::Unavailable("界".repeat(1_000_000));
     inputs.host = ComponentStatus::Degraded("\n".repeat(3_000_000));
     inputs.host_version = Some("界".repeat(1_000_000));
-    inputs.codex = crate::daemon::health::HarnessStatus::Refused("B".repeat(4_000_000));
-    inputs.claude = crate::daemon::health::HarnessStatus::NotInstalled("C".repeat(4_000_000));
+    inputs.set_harness(
+        "codex",
+        crate::daemon::health::HarnessStatus::Refused("B".repeat(4_000_000)),
+    );
+    inputs.set_harness(
+        "claude",
+        crate::daemon::health::HarnessStatus::NotInstalled("C".repeat(4_000_000)),
+    );
     let health = inputs.assemble();
     assert_eq!(health.state, HealthState::Degraded);
     assert_eq!(
@@ -1006,10 +1030,13 @@ fn schema_matched_codex_admission_adds_no_health_line_and_the_provider_forwards_
                 schemas sha256:86858f2456c999030224a92d8dfb535183fe0edf8601690d8941978fadbb066d; \
                 binary sha256 16593cc2f422d5f3";
     let mut inputs = HealthInputs::unknown(Uuid::new_v4(), Uuid::new_v4());
-    inputs.codex = HarnessStatus::Cooperative {
-        detail: line.into(),
-        live_unverified: true,
-    };
+    inputs.set_harness(
+        "codex",
+        HarnessStatus::Cooperative {
+            detail: line.into(),
+            live_unverified: true,
+        },
+    );
     let health = inputs.assemble();
     assert_eq!(health.harness.codex, HarnessState::Cooperative);
     assert!(
@@ -1023,10 +1050,13 @@ fn schema_matched_codex_admission_adds_no_health_line_and_the_provider_forwards_
         health.notes
     );
     let mut inputs = HealthInputs::unknown(Uuid::new_v4(), Uuid::new_v4());
-    inputs.codex = HarnessStatus::Cooperative {
-        detail: "x".repeat(10_000),
-        live_unverified: true,
-    };
+    inputs.set_harness(
+        "codex",
+        HarnessStatus::Cooperative {
+            detail: "x".repeat(10_000),
+            live_unverified: true,
+        },
+    );
     let health = inputs.assemble();
     assert!(health.limitations.iter().all(|s| s.len() <= 256));
     assert!(health.validate().is_ok());
@@ -1062,7 +1092,10 @@ fn schema_matched_codex_admission_adds_no_health_line_and_the_provider_forwards_
         deadline: MonoInstant(u64::MAX / 2),
         cancellation: Cancellation::default(),
     };
-    assert_eq!(provider(&budget).codex, HarnessStatus::Unknown);
+    assert_eq!(
+        provider(&budget).harness("codex"),
+        Some(&HarnessStatus::Unknown)
+    );
     let observed = HarnessStatus::Cooperative {
         detail: line.into(),
         live_unverified: true,
@@ -1081,10 +1114,10 @@ fn schema_matched_codex_admission_adds_no_health_line_and_the_provider_forwards_
             ..Default::default()
         },
     );
-    assert_eq!(provider(&budget).codex, observed);
+    assert_eq!(provider(&budget).harness("codex"), Some(&observed));
     assert_eq!(
-        provider(&budget).claude,
-        HarnessStatus::NotInstalled("absent".into())
+        provider(&budget).harness("claude"),
+        Some(&HarnessStatus::NotInstalled("absent".into()))
     );
     let _ = fs::remove_file(path);
 }
@@ -1124,8 +1157,14 @@ fn control_service_routes_stop_and_health_without_native_authority() {
             health.coherent_enumeration = CapabilityState::Supported;
             health.safe_prompt = CapabilityState::Supported;
             health.receipt_registration = CapabilityState::Supported;
-            health.codex = crate::daemon::health::HarnessStatus::Supported("native".into());
-            health.claude = crate::daemon::health::HarnessStatus::Supported("native".into());
+            health.set_harness(
+                "codex",
+                crate::daemon::health::HarnessStatus::Supported("native".into()),
+            );
+            health.set_harness(
+                "claude",
+                crate::daemon::health::HarnessStatus::Supported("native".into()),
+            );
             health
         },
         FakeService,
@@ -1368,8 +1407,14 @@ fn startup_binding_evidence_lacking_degrades_otherwise_healthy_health() {
         inputs.coherent_enumeration = CapabilityState::Supported;
         inputs.safe_prompt = CapabilityState::Supported;
         inputs.receipt_registration = CapabilityState::Supported;
-        inputs.codex = crate::daemon::health::HarnessStatus::Supported("native".into());
-        inputs.claude = crate::daemon::health::HarnessStatus::Supported("native".into());
+        inputs.set_harness(
+            "codex",
+            crate::daemon::health::HarnessStatus::Supported("native".into()),
+        );
+        inputs.set_harness(
+            "claude",
+            crate::daemon::health::HarnessStatus::Supported("native".into()),
+        );
         inputs
     };
     let report = |backfilled, still_lacking| crate::ports::BindingEvidenceStartup {
@@ -1437,8 +1482,14 @@ fn unresolved_seats_are_counted_named_and_degrade_otherwise_healthy_health() {
         inputs.coherent_enumeration = CapabilityState::Supported;
         inputs.safe_prompt = CapabilityState::Supported;
         inputs.receipt_registration = CapabilityState::Supported;
-        inputs.codex = crate::daemon::health::HarnessStatus::Supported("native".into());
-        inputs.claude = crate::daemon::health::HarnessStatus::Supported("native".into());
+        inputs.set_harness(
+            "codex",
+            crate::daemon::health::HarnessStatus::Supported("native".into()),
+        );
+        inputs.set_harness(
+            "claude",
+            crate::daemon::health::HarnessStatus::Supported("native".into()),
+        );
         inputs
     };
     let unknown = healthy().assemble();
@@ -1489,7 +1540,10 @@ fn unresolved_seats_are_counted_named_and_degrade_otherwise_healthy_health() {
     long.schema = ComponentStatus::Degraded("s".repeat(300));
     long.host = ComponentStatus::Unavailable("h".repeat(300));
     long.scheduler = ComponentStatus::Degraded("w".repeat(300));
-    long.codex = crate::daemon::health::HarnessStatus::Refused("n".repeat(300));
+    long.set_harness(
+        "codex",
+        crate::daemon::health::HarnessStatus::Refused("n".repeat(300)),
+    );
     long.retirement = RetirementHealth {
         pending: true,
         degraded: true,
@@ -1543,14 +1597,20 @@ fn cooperative_inputs() -> HealthInputs {
     inputs.coherent_enumeration = CapabilityState::Supported;
     inputs.safe_prompt = CapabilityState::Supported;
     inputs.receipt_registration = CapabilityState::Unsupported;
-    inputs.claude = HarnessStatus::Cooperative {
-        detail: "claude 2.1.286: listed: recipe claude-hooks-2.1.283".into(),
-        live_unverified: false,
-    };
-    inputs.codex = HarnessStatus::Cooperative {
-        detail: "codex 0.159.3: schema-matched, live-unverified: recipe codex-hooks-v1".into(),
-        live_unverified: true,
-    };
+    inputs.set_harness(
+        "claude",
+        HarnessStatus::Cooperative {
+            detail: "claude 2.1.286: listed: recipe claude-hooks-2.1.283".into(),
+            live_unverified: false,
+        },
+    );
+    inputs.set_harness(
+        "codex",
+        HarnessStatus::Cooperative {
+            detail: "codex 0.159.3: schema-matched, live-unverified: recipe codex-hooks-v1".into(),
+            live_unverified: true,
+        },
+    );
     inputs.unresolved = Some(crate::ports::UnresolvedSeatSummary::default());
     inputs
 }
@@ -1593,7 +1653,10 @@ fn cooperative_health_degrades_only_on_real_problems() {
     use crate::daemon::health::{HarnessStatus, NO_WAKE_LINE};
     use crate::protocol::results::HarnessState;
     let mut inputs = cooperative_inputs();
-    inputs.codex = HarnessStatus::NotInstalled("no executable `codex` on the daemon's PATH".into());
+    inputs.set_harness(
+        "codex",
+        HarnessStatus::NotInstalled("no executable `codex` on the daemon's PATH".into()),
+    );
     let health = inputs.assemble();
     assert_eq!(health.state, HealthState::Healthy, "{health:?}");
     assert_eq!(health.harness.codex, HarnessState::Unsupported);
@@ -1615,11 +1678,16 @@ fn cooperative_health_degrades_only_on_real_problems() {
         );
     };
     degraded(
-        &|inputs| inputs.claude = HarnessStatus::Refused("claude 2.1.288: no recipe".into()),
+        &|inputs| {
+            inputs.set_harness(
+                "claude",
+                HarnessStatus::Refused("claude 2.1.288: no recipe".into()),
+            )
+        },
         "harness claude unsupported: claude 2.1.288",
     );
     degraded(
-        &|inputs| inputs.codex = HarnessStatus::Unknown,
+        &|inputs| inputs.set_harness("codex", HarnessStatus::Unknown),
         "harness codex unknown",
     );
     degraded(

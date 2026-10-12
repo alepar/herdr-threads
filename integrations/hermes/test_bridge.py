@@ -346,12 +346,128 @@ class BridgeTests(unittest.TestCase):
         self.assertEqual(observation["timeout_seconds"], 30.0)
         self.assertGreaterEqual(observation["age_seconds"], 0)
         self.assertLessEqual(observation["age_seconds"], 5)
-        self.assertEqual(request["role_association"], {"role":"top", "provenance":"explicit_parent", "session_id":"session-Ω", "turn_id":"turn-1"})
+        self.assertEqual(request["role_association"], {"role":"top", "provenance":"explicit_parent", "session_id":"session-Ω", "turn_id":"turn-1", "enrollment_witness":"cli_platform"})
         self.request("post_tool_call", self.callbacks["tool"])
         tool = self.requests()[-1]["request"]
-        self.assertEqual(tool["role_association"], {"role":"top", "provenance":"qualified_pre_llm_cache", "session_id":"session-Ω", "turn_id":"turn-1"})
+        self.assertEqual(tool["role_association"], {"role":"top", "provenance":"qualified_pre_llm_cache", "session_id":"session-Ω", "turn_id":"turn-1", "enrollment_witness":None})
         self.assertEqual(tool["startup_capture"], capture)
         self.assertEqual(self.version_reads, 1)
+
+    def test_enrollment_witness_envelope_per_platform(self):
+        self.load()
+        keys = {"role", "provenance", "session_id", "turn_id", "enrollment_witness"}
+        for index, (platform, expected) in enumerate((("cli", "cli_platform"), ("", None), (None, None))):
+            turn = {**self.callbacks["qualified"], "turn_id": f"turn-{index}"}
+            if platform is None:
+                del turn["platform"]
+            else:
+                turn["platform"] = platform
+            self.assertIsNotNone(self.request("pre_llm_call", turn))
+            association = self.requests()[-1]["request"]["role_association"]
+            self.assertEqual(set(association), keys)
+            self.assertEqual(association["enrollment_witness"], expected, platform)
+            self.request("post_tool_call", {**self.callbacks["tool"], "turn_id": f"turn-{index}"})
+            tool = self.requests()[-1]["request"]
+            self.assertEqual(tool["callback"], "post_tool_call")
+            self.assertEqual(set(tool["role_association"]), keys)
+            self.assertIsNone(tool["role_association"]["enrollment_witness"])
+        def start(payload):
+            before = len(self.requests())
+            self.request("on_session_start", payload)
+            sent = self.requests()
+            return sent[-1]["request"] if len(sent) > before else None
+        self.assertEqual(start({"session_id": "start-cli", "platform": "cli", "model": "m"})["role_association"],
+                         {"role": "top", "provenance": "cli_session_start", "session_id": "start-cli",
+                          "turn_id": None, "enrollment_witness": "cli_platform"})
+        self.assertIsNone(start({"session_id": "start-empty", "platform": "", "model": "m"})["role_association"])
+        self.assertIsNone(start({"session_id": "start-none", "model": "m"})["role_association"])
+        self.assertIsNone(start({"session_id": "start-sub", "platform": "subagent", "model": "m"}),
+                          "subagent session start is not forwarded")
+        self.request("on_session_reset", self.callbacks["reset"])
+        reset = self.requests()[-1]["request"]
+        self.assertEqual(reset["callback"], "on_session_reset")
+        self.assertIsNone(reset["role_association"])
+        self.assertNotIn("PRIVATE", json.dumps(self.requests()))
+
+    def test_envelopes_match_rust_fixture(self):
+        # The Rust strict parser is pinned to the same file
+        # (`bridge_emitted_enrollment_envelopes_parse_and_decode`).
+        fixture = json.loads((SOURCE.parents[2] / "tests/fixtures/hermes/enrollment-envelopes.json").read_text())
+        cb = self.callbacks
+        qualified = {**cb["qualified"], "session_id": "fixture-session"}
+        drives = {
+            "cli_start": ("on_session_start", {"session_id": "fixture-session", "platform": "cli", "model": "m"}),
+            "empty_platform_start": ("on_session_start", {"session_id": "fixture-session", "platform": "", "model": "m"}),
+            "top_turn_cli": ("pre_llm_call", {**qualified, "turn_id": "fixture-turn", "platform": "cli"}),
+            "top_turn_empty_platform": ("pre_llm_call", {**qualified, "turn_id": "fixture-turn-2", "platform": ""}),
+            "post_tool": ("post_tool_call", {**cb["tool"], "session_id": "fixture-session", "turn_id": "fixture-turn"}),
+            "reset": ("on_session_reset", {**cb["reset"], "session_id": "fixture-session"}),
+            "session_finalize": ("on_session_finalize", {"session_id": "fixture-session", "platform": "cli"}),
+            "subagent_start": ("subagent_start", {"parent_session_id": "fixture-session",
+                                                  "child_session_id": "fixture-child", "child_role": "leaf"}),
+            "subagent_stop": ("subagent_stop", {"parent_session_id": "fixture-session",
+                                                "child_session_id": "fixture-child", "child_status": "completed"}),
+        }
+        self.assertEqual(set(fixture), set(drives))
+        self.load()
+        for row, (callback, payload) in drives.items():
+            before = len(self.requests())
+            self.request(callback, payload)
+            sent = self.requests()
+            self.assertEqual(len(sent), before + 1, row)
+            emitted, pinned = sent[-1]["request"], fixture[row]
+            for key in ("callback", "platform", "role_association", "session_id", "parent_session_id", "shape"):
+                self.assertEqual(emitted[key], pinned[key], f"{row}.{key}")
+
+    def test_end_event_callbacks_forward_session_and_child_ids_and_per_turn_end_is_not_forwarded(self):
+        self.load()
+        for name in ("on_session_finalize", "subagent_start", "subagent_stop"):
+            self.assertTrue(callable(self.ctx.hooks[name]), name)
+        # The teardown of a CLI session: the session id, no parent, no association.
+        before = len(self.requests())
+        self.assertIsNone(self.request("on_session_finalize", {"session_id": "top-1", "platform": "cli"}))
+        sent = self.requests()
+        self.assertEqual(len(sent), before + 1, "on_session_finalize must reach the child")
+        envelope = sent[-1]["request"]
+        self.assertEqual((envelope["callback"], envelope["session_id"], envelope["parent_session_id"]),
+                         ("on_session_finalize", "top-1", None))
+        self.assertIsNone(envelope["role_association"])
+        self.assertEqual(envelope["bridge_schema_contract_id"], self.callbacks["bridge_schema_contract_id"])
+        # A gateway session teardown is not a CLI session end: nothing is forwarded.
+        self.assertIsNone(self.request("on_session_finalize", {"session_id": "top-2", "platform": "telegram"}))
+        self.assertEqual(len(self.requests()), before + 1)
+        # Delegate children: the child is the event's session, the parent its parent_session_id,
+        # whichever of `child_session_id` / `session_id` Hermes names the child with.
+        for callback in ("subagent_start", "subagent_stop"):
+            for child_kwargs in ({"child_session_id": "child-1"}, {"session_id": "child-1", "platform": "subagent"}):
+                before = len(self.requests())
+                payload = {"parent_session_id": "top-1", "child_role": "leaf", "task_id": "t",
+                           "telemetry_schema_version": "hermes.observer.v1", **child_kwargs}
+                self.assertIsNone(self.request(callback, payload))
+                sent = self.requests()
+                self.assertEqual(len(sent), before + 1, f"{callback} {child_kwargs}")
+                envelope = sent[-1]["request"]
+                self.assertEqual((envelope["callback"], envelope["session_id"], envelope["parent_session_id"]),
+                                 (callback, "child-1", "top-1"))
+                self.assertIsNone(envelope["role_association"])
+                self.assertIsNone(envelope["platform"], "a delegate's platform is not an envelope fact")
+                self.assertNotIn("PRIVATE", json.dumps(envelope))
+        # Without a parent, or with the child as its own parent, a delegate event is refused.
+        before = len(self.requests())
+        for payload in ({"child_session_id": "child-1"}, {"child_session_id": "child-1", "parent_session_id": ""},
+                        {"child_session_id": "same", "parent_session_id": "same"},
+                        {"parent_session_id": "top-1"}):
+            self.assertIsNone(self.request("subagent_start", payload))
+        self.assertEqual(len(self.requests()), before)
+
+    def test_on_session_end_stays_a_per_turn_callback_that_is_never_forwarded(self):
+        # The bridge does not register `on_session_end`, and the registered end events are exactly
+        # the teardown and delegate callbacks.
+        self.load()
+        self.assertNotIn("on_session_end", self.ctx.hooks)
+        self.assertEqual(set(self.module.HOOKS) - {"pre_llm_call", "post_tool_call", "on_session_start", "on_session_reset"},
+                         {"on_session_finalize", "subagent_start", "subagent_stop"})
+        self.assertFalse(hasattr(self.ctx.hooks["pre_llm_call"].__self__, "on_session_end"))
 
     def requests(self):
         path = self.state / "requests"
@@ -372,7 +488,10 @@ class BridgeTests(unittest.TestCase):
     def test_bridge_callback_privacy_role_cache_deadlines_and_owned_child_reaping(self):
         self.load()
         self.assertEqual(set(self.ctx.hooks), {"pre_tool_call", "pre_llm_call", "post_tool_call",
-                                              "on_session_start", "on_session_reset"})
+                                              "on_session_start", "on_session_reset",
+                                              "on_session_finalize", "subagent_start", "subagent_stop"})
+        # `on_session_end` fires after every turn: it is never a registered end event.
+        self.assertNotIn("on_session_end", self.ctx.hooks)
         self.assertEqual(self.request(), {"context": "bounded cooperative context"})
         captured = self.requests()[0]
         self.assertEqual(captured["argv"], ["--state-dir", str(self.state), "--host-endpoint", self.settings["host_endpoint"], "hook", "hermes"])
@@ -412,7 +531,6 @@ class BridgeTests(unittest.TestCase):
         child = self.request(payload=self.callbacks["child"])
         self.assertIn("never check in", child["context"])
         self.assertIn("forbidden to subagents", child["context"])
-        self.assertEqual(self.request(payload={**self.callbacks["child"], "platform": "cli"}), child)
         self.assertIsNone(self.request(payload={**self.callbacks["child"], "parent_session_id": ""}))
         subagent = {**self.callbacks["tool"], "platform": "subagent", "parent_session_id": "session-Ω"}
         for callback in ("post_tool_call", "on_session_start"):
@@ -422,6 +540,23 @@ class BridgeTests(unittest.TestCase):
         self.assertIsNone(self.request(payload={**self.callbacks["qualified"], "platform": "gateway"}))
         self.assertEqual(self.requests(), [])
         self.assertEqual(self.request(payload={**self.callbacks["qualified"], "platform": ""}), {"context": "bounded cooperative context"})
+
+    def test_pre_llm_call_forwards_parent_session_id_and_platform(self):
+        self.load()
+        # A compression or /branch successor: platform cli with a parent session is a
+        # top-level turn (not the delegate child restriction) whose parent rides the envelope.
+        payload = {**self.callbacks["qualified"], "parent_session_id": "session-parent"}
+        self.assertEqual(self.request(payload=payload), {"context": "bounded cooperative context"})
+        request = self.requests()[-1]["request"]
+        self.assertEqual(request["parent_session_id"], "session-parent")
+        self.assertEqual(request["platform"], "cli")
+        self.assertEqual(request["role_association"]["role"], "top")
+        self.assertEqual(request["role_association"]["enrollment_witness"], "cli_platform")
+        # A native delegate child (platform subagent) is answered locally and never forwarded.
+        before = len(self.requests())
+        child = self.request(payload=self.callbacks["child"])
+        self.assertIn("forbidden to subagents", child["context"])
+        self.assertEqual(len(self.requests()), before)
 
     def test_observer_cache_exact_key_expiry_capacity_busy_and_reset(self):
         self.load()

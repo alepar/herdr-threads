@@ -1,0 +1,56 @@
+# src state: tip with reverse-applied src diffs of: patch:/tmp/sp-ede3b852/ht-54r.90/rev79.diff
+ M src/ports.rs
+ M src/service/delivery_pull.rs
+ M src/service/dispatch.rs
+ M src/service/liveness.rs
+ M src/store/bindings.rs
+ M src/store/mod.rs
+ M src/store/seats.rs
+# command: cargo test --locked --all-features --lib -- a_plain_call_binding_with_a_live_channel a_plain_call_enrolled_hook_pull watch_register_accepts_a_plain plain_call_enrollment_never
+
+running 5 tests
+test store::bindings::tests::liveness::plain_call_enrollment_never_supersedes_a_same_process_binding ... FAILED
+test store::bindings::tests::exclusivity::a_plain_call_enrollment_never_adopts_the_placeholder ... ok
+test service::mod_channels::tests::domain::watch_register_accepts_a_plain_call_enrolled_binding ... FAILED
+test service::dispatch::mod_ack_dispatch_tests::a_plain_call_binding_with_a_live_channel_mod_acks_and_keeps_its_provenance ... FAILED
+test service::delivery_pull::tests::a_plain_call_enrolled_hook_pull_binding_is_served ... FAILED
+
+failures:
+
+---- store::bindings::tests::liveness::plain_call_enrollment_never_supersedes_a_same_process_binding stdout ----
+
+thread 'store::bindings::tests::liveness::plain_call_enrollment_never_supersedes_a_same_process_binding' (52301188) panicked at src/store/../../tests/store/bindings.rs:1709:9:
+assertion `left == right` failed
+  left: Disconnected
+ right: Connected
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- service::mod_channels::tests::domain::watch_register_accepts_a_plain_call_enrolled_binding stdout ----
+
+thread 'service::mod_channels::tests::domain::watch_register_accepts_a_plain_call_enrolled_binding' (52301186) panicked at src/service/../../tests/service/mod_channels.rs:1128:36:
+called `Result::unwrap()` on an `Err` value: NoBinding
+
+---- service::dispatch::mod_ack_dispatch_tests::a_plain_call_binding_with_a_live_channel_mod_acks_and_keeps_its_provenance stdout ----
+
+thread 'service::dispatch::mod_ack_dispatch_tests::a_plain_call_binding_with_a_live_channel_mod_acks_and_keeps_its_provenance' (52301185) panicked at src/service/../../tests/service/mod_ack_dispatch.rs:292:5:
+assertion `left == right` failed
+  left: "cooperative_top_level"
+ right: "cooperative_env_session"
+
+---- service::delivery_pull::tests::a_plain_call_enrolled_hook_pull_binding_is_served stdout ----
+
+thread 'service::delivery_pull::tests::a_plain_call_enrolled_hook_pull_binding_is_served' (52301184) panicked at src/service/../../tests/service/delivery_pull.rs:558:5:
+assertion `left == right` failed
+  left: "cooperative_top_level"
+ right: "cooperative_env_session"
+
+
+failures:
+    service::delivery_pull::tests::a_plain_call_enrolled_hook_pull_binding_is_served
+    service::dispatch::mod_ack_dispatch_tests::a_plain_call_binding_with_a_live_channel_mod_acks_and_keeps_its_provenance
+    service::mod_channels::tests::domain::watch_register_accepts_a_plain_call_enrolled_binding
+    store::bindings::tests::liveness::plain_call_enrollment_never_supersedes_a_same_process_binding
+
+test result: FAILED. 1 passed; 4 failed; 0 ignored; 0 measured; 4464 filtered out; finished in 0.31s
+
+error: test failed, to rerun pass `--lib`

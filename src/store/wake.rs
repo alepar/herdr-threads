@@ -9,11 +9,14 @@ use crate::{
     ports::{
         LogicalAttentionFrontier, LogicalPublicationKey, PokeDue, PokeReceipt, PokeReservation,
         PriorLadder, RefusalCause, ReservedWakeAuthority, WakeAttentionWitness, WakeCandidate,
-        WakeOutcome, WakeRecoveryOutcome, WakeRecoveryRequest, WakeReservation,
+        WakeOutcome, WakeRecoveryOutcome, WakeRecoveryRequest, WakeReservation, WakeTarget,
         WarningOfferFrontier,
     },
     protocol::{
-        ids::{ExecutionId, HostBootId, HostTargetId, SeatId, TerminalId, WakeAttemptId},
+        commands::WakeOn,
+        ids::{
+            BindingId, ExecutionId, HostBootId, HostTargetId, SeatId, TerminalId, WakeAttemptId,
+        },
         results::{ApiError, ErrorCode},
         summary::SummarySettings,
         time::{CallBudget, MonoInstant, UtcMillis},
@@ -25,7 +28,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 /// and advance `attention_version` so the dispatcher re-derives the seat's
 /// wake reasons. Catch-up release (ht-1ip.6) calls it in the row-end
 /// transaction.
-pub fn note_new_attention(tx: &rusqlite::Transaction<'_>, seat: &SeatId) -> Result<(), ApiError> {
+pub fn note_new_attention(tx: &rusqlite::Connection, seat: &SeatId) -> Result<(), ApiError> {
     tx.execute(
         "INSERT INTO wake_work(seat_id,reason_bits,attention_version) VALUES (?1,1,1) ON CONFLICT(seat_id) DO UPDATE SET reason_bits=reason_bits|1,attention_version=attention_version+1",
         [seat.as_str()],
@@ -76,8 +79,10 @@ pub fn load_candidate(
                 && target_generation == o.structural_generation
         });
     type BindingColumns = Option<(i64, i64, String, String, String, i64, Option<i64>)>;
+    // The binding a seat-level reader follows (newest open top-level, connected first): a seat
+    // holds several open bindings, so "the open binding" is chosen, never left to row order.
     let binding:BindingColumns=db.query_row(
-        "SELECT generation,target_generation,target_id,execution_id,host_boot,host_epoch,registered_at FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL",
+        &format!("SELECT generation,target_generation,target_id,execution_id,host_boot,host_epoch,registered_at FROM occupant_bindings WHERE binding_id=({})",super::attention::SEAT_NOTICE_BINDING_SQL),
         [seat.as_str()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).optional().map_err(store_error)?;
     let current_binding = binding.filter(
         |(bound_generation, bound_target, bound_target_id, _, bound_boot, bound_epoch, _)| {
@@ -114,9 +119,10 @@ pub fn load_candidate(
         Option<i64>,
         Option<i64>,
         Option<i64>,
+        Option<i64>,
     );
-    let wake:Option<WakeRow>=db.query_row("SELECT reason_bits,attention_version,checkpoint_version,retry_step,reservation_id,reservation_boot,last_reservation_id,last_reservation_boot,minimum_delay_ms,effective_delay_ms,last_outcome,last_reserved_at_utc,last_invitation_seq,last_invitation_offset,last_receipt_seq,last_receipt_offset,last_warning_seq,last_warning_offset FROM wake_work WHERE seat_id=?1",
-        [seat.as_str()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?,r.get(9)?,r.get(10)?,r.get(11)?,r.get(12)?,r.get(13)?,r.get(14)?,r.get(15)?,r.get(16)?,r.get(17)?))).optional().map_err(store_error)?;
+    let wake:Option<WakeRow>=db.query_row("SELECT reason_bits,attention_version,checkpoint_version,retry_step,reservation_id,reservation_boot,last_reservation_id,last_reservation_boot,minimum_delay_ms,effective_delay_ms,last_outcome,last_reserved_at_utc,last_invitation_seq,last_invitation_offset,last_receipt_seq,last_receipt_offset,last_warning_seq,last_warning_offset,last_lazy_ordinal FROM wake_work WHERE seat_id=?1",
+        [seat.as_str()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?,r.get(9)?,r.get(10)?,r.get(11)?,r.get(12)?,r.get(13)?,r.get(14)?,r.get(15)?,r.get(16)?,r.get(17)?,r.get(18)?))).optional().map_err(store_error)?;
     let (
         reason_bits,
         attention_version,
@@ -136,8 +142,10 @@ pub fn load_candidate(
         last_receipt_offset,
         last_warning_seq,
         last_warning_offset,
+        last_lazy_ordinal,
     ) = wake.unwrap_or((
         0, 0, 0, 0, None, None, None, None, 0, 0, None, None, None, None, None, None, None, None,
+        None,
     ));
     let last_key = |seq: Option<i64>,
                     offset: Option<i64>|
@@ -160,9 +168,12 @@ pub fn load_candidate(
         invitation: last_key(last_invitation_seq, last_invitation_offset)?,
         addressed_receipt: last_key(last_receipt_seq, last_receipt_offset)?,
         actionable_warning: last_key(last_warning_seq, last_warning_offset)?,
+        lazy: last_lazy_ordinal,
     };
-    let offer:Option<(i64,String,i64)>=db.query_row("SELECT binding_generation,execution_id,offered_through_seq FROM warning_offer WHERE seat_id=?1",
-        [seat.as_str()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(store_error)?;
+    // The offer frontier of the candidate's own binding, else of the seat's newest open then
+    // newest overall binding that holds one (it then names another occupant and covers nothing).
+    let offer:Option<(i64,String,i64)>=db.query_row("SELECT b.generation,b.execution_id,o.offered_through_seq FROM warning_offer o JOIN occupant_bindings b ON b.binding_id=o.binding_id WHERE o.seat_id=?1 ORDER BY (b.generation=?2 AND b.execution_id=?3) DESC,(b.ended_at IS NULL) DESC,b.ordinal DESC LIMIT 1",
+        params![seat.as_str(),binding_generation.map_or(-1,|g|g as i64),binding_execution.as_ref().map_or("",|e|e.as_str())],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(store_error)?;
     let mut warning_offer = offer
         .map(|(generation, execution, seq)| {
             Ok(WarningOfferFrontier {
@@ -212,6 +223,13 @@ pub fn load_candidate(
         open != 0,
         attention.frontier,
     );
+    let targets = wake_targets(
+        db,
+        seat,
+        attention.has_pending_invitation
+            || attention.has_pending_receipt
+            || attention.latest_warning_seq.is_some(),
+    )?;
     Ok(WakeCandidate {
         seat: seat.clone(),
         attention_witness: Some(witness),
@@ -221,6 +239,7 @@ pub fn load_candidate(
         binding_execution,
         target: target.map(HostTargetId::new),
         reason_bits: nonnegative(reason_bits)?,
+        targets,
         has_pending_invitation: attention.has_pending_invitation,
         has_pending_receipt: attention.has_pending_receipt,
         actionable_warning_generation: if attention.latest_warning_seq.is_some() {
@@ -244,6 +263,96 @@ pub fn load_candidate(
         last_outcome,
         last_reserved_at_utc: last_reserved_at_utc.map(UtcMillis),
     })
+}
+
+/// The connected top-level non-human bindings of `seat` a wake may reach (spec §3 Wake): those
+/// with unread mail per `read_cursors::has_unread`, or all of them while the seat itself holds
+/// attention (invitations, receipts, warnings), which any binding can act on. Subagents,
+/// disconnected, ended and human bindings are never targets. One indexed query per seat; the
+/// per-binding unread probe only runs for a seat with no seat-level attention.
+pub fn wake_targets(
+    db: &Connection,
+    seat: &SeatId,
+    seat_attention: bool,
+) -> Result<Vec<WakeTarget>, ApiError> {
+    Ok(wake_target_rows(db, seat, seat_attention)?
+        .into_iter()
+        .map(|row| row.target)
+        .collect())
+}
+
+struct TargetRow {
+    target: WakeTarget,
+    generation: i64,
+    target_generation: i64,
+    target_id: String,
+    terminal: Option<String>,
+    incarnation: Option<String>,
+    registered: bool,
+}
+
+fn wake_target_rows(
+    db: &Connection,
+    seat: &SeatId,
+    seat_attention: bool,
+) -> Result<Vec<TargetRow>, ApiError> {
+    let mut statement = db
+        .prepare_cached(
+            "SELECT binding_id,harness,liveness_pid,generation,target_generation,target_id,terminal_id,incarnation,registered_at IS NOT NULL \
+             FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL AND liveness='connected' \
+             AND role='top_level' AND harness<>'human' ORDER BY ordinal",
+        )
+        .map_err(store_error)?;
+    let rows = statement
+        .query_map([seat.as_str()], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, Option<i64>>(2)?,
+                r.get::<_, i64>(3)?,
+                r.get::<_, i64>(4)?,
+                r.get::<_, String>(5)?,
+                r.get::<_, Option<String>>(6)?,
+                r.get::<_, Option<String>>(7)?,
+                r.get::<_, bool>(8)?,
+            ))
+        })
+        .map_err(store_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(store_error)?;
+    let corrupt = |_| api_error(ErrorCode::StoreCorrupt, "invalid binding row");
+    let mut targets = Vec::with_capacity(rows.len());
+    for (
+        binding,
+        harness,
+        pid,
+        generation,
+        target_generation,
+        target_id,
+        terminal,
+        incarnation,
+        registered,
+    ) in rows
+    {
+        let binding = BindingId::parse(binding).map_err(corrupt)?;
+        if !seat_attention && !super::read_cursors::has_unread(db, &binding)? {
+            continue;
+        }
+        targets.push(TargetRow {
+            target: WakeTarget {
+                binding,
+                harness,
+                fingerprint_pid: pid.and_then(|pid| u32::try_from(pid).ok()),
+            },
+            generation,
+            target_generation,
+            target_id,
+            terminal,
+            incarnation,
+            registered,
+        });
+    }
+    Ok(targets)
 }
 
 /// SQL true when an open binding on `seat_expr` belongs to a person (`me init`):
@@ -279,6 +388,7 @@ fn current_authority(
     target_generation: u64,
     boot: &HostBootId,
     epoch: u64,
+    seat_attention: bool,
 ) -> Result<Option<ReservedWakeAuthority>, ApiError> {
     // A person's pane identity (`me init`) is never prompted: its mail waits
     // for the person to read and ACK it by hand.
@@ -313,6 +423,7 @@ fn current_authority(
             generation,
             target_generation,
             &observation,
+            seat_attention,
         );
     };
     if observation.occupancy != "occupied"
@@ -322,8 +433,10 @@ fn current_authority(
         return Ok(None);
     }
     type BindingColumns = Option<(i64, i64, String, String, String, i64, Option<i64>)>;
+    // The binding a seat-level reader follows (newest open top-level, connected first): a seat
+    // holds several open bindings, so "the open binding" is chosen, never left to row order.
     let binding:BindingColumns=db.query_row(
-        "SELECT generation,target_generation,target_id,execution_id,host_boot,host_epoch,registered_at FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL",
+        &format!("SELECT generation,target_generation,target_id,execution_id,host_boot,host_epoch,registered_at FROM occupant_bindings WHERE binding_id=({})",super::attention::SEAT_NOTICE_BINDING_SQL),
         [seat.as_str()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).optional().map_err(store_error)?;
     if let Some((
         bound_generation,
@@ -360,11 +473,13 @@ fn current_authority(
 /// Unknown current execution never blocks structural identity. The effective
 /// observation names a terminal in a verified server incarnation with no
 /// positive evidence of an empty shell, an active turn, blocked UI or human
-/// input; the seat's open binding is required (none: no authority) and is the
+/// input. The seat needs at least one open, connected, top-level, non-human
+/// binding (none: no authority; TRUST-POLICY A4) whose placement is the
 /// seat's current generation on this target and names that same terminal and
-/// incarnation. Whether the
-/// occupant is a recognized idle harness (never a shell or unknown harness)
-/// is the host adapter's recheck immediately before prompting.
+/// incarnation; the matching bindings that have something to read are the
+/// wake's targets, and no target means no wake. Whether the occupant is a
+/// recognized idle harness (never a shell or unknown harness) is the host
+/// adapter's recheck immediately before prompting.
 fn cooperative_authority(
     db: &Connection,
     seat: &SeatId,
@@ -372,6 +487,7 @@ fn cooperative_authority(
     generation: u64,
     target_generation: u64,
     observation: &effective::EffectiveObservation,
+    seat_attention: bool,
 ) -> Result<Option<ReservedWakeAuthority>, ApiError> {
     if observation.occupancy == "empty_shell"
         || matches!(
@@ -388,49 +504,30 @@ fn cooperative_authority(
     ) else {
         return Ok(None);
     };
-    type BindingColumns = Option<(
-        i64,
-        i64,
-        String,
-        Option<String>,
-        Option<String>,
-        Option<i64>,
-        String,
-    )>;
-    let binding: BindingColumns = db.query_row(
-        "SELECT generation,target_generation,target_id,terminal_id,incarnation,registered_at,harness FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL",
-        [seat.as_str()],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)),
-    ).optional().map_err(store_error)?;
-    let (binding_generation, harness) = match binding {
-        Some((
-            bound_generation,
-            bound_target,
-            bound_target_id,
-            bound_terminal,
-            bound_incarnation,
-            registered_at,
-            bound_harness,
-        )) => {
-            if nonnegative(bound_generation)? != generation
-                || nonnegative(bound_target)? != target_generation
-                || bound_target_id != target.as_str()
-                || bound_terminal.as_deref() != Some(terminal.as_str())
-                || bound_incarnation.as_deref() != Some(incarnation.as_str())
-            {
-                return Ok(None);
-            }
-            (registered_at.map(|_| generation), Some(bound_harness))
-        }
-        // The seat's open binding is required (TRUST-POLICY A4): no binding,
-        // no cooperative wake authority.
-        None => return Ok(None),
+    let placed: Vec<TargetRow> = wake_target_rows(db, seat, seat_attention)?
+        .into_iter()
+        .filter(|row| {
+            u64::try_from(row.generation) == Ok(generation)
+                && u64::try_from(row.target_generation) == Ok(target_generation)
+                && row.target_id == target.as_str()
+                && row.terminal.as_deref() == Some(terminal.as_str())
+                && row.incarnation.as_deref() == Some(incarnation.as_str())
+        })
+        .collect();
+    let Some(first) = placed.first() else {
+        return Ok(None);
     };
+    let binding_generation = placed
+        .iter()
+        .any(|row| row.registered)
+        .then_some(generation);
+    let harness = Some(first.target.harness.clone());
     Ok(Some(ReservedWakeAuthority::Cooperative {
         terminal: TerminalId::new(terminal.clone()),
         incarnation: incarnation.clone(),
         binding_generation,
         harness,
+        targets: placed.into_iter().map(|row| row.target).collect(),
     }))
 }
 
@@ -447,9 +544,19 @@ fn reason_labels(candidate: &WakeCandidate) -> Vec<String> {
     {
         reasons.push("actionable_warning".into());
     }
+    if candidate.has_unreserved_lazy() {
+        reasons.push("lazy".into());
+    }
     reasons
 }
 
+/// The wake reservation stays per seat on purpose (ht-54r.13): `wake_work` is the seat's
+/// reservation unit and its `binding_generation` is compared with `seats.generation`, which since
+/// V32 is the mapping generation (bumped only by rebind, unresolve and retire), so a new binding
+/// enrolling never voids a reserved wake. The per-binding decisions (which bindings are
+/// targets, which are woken through their mod channel, which one the composer types to) are made
+/// when the reserved wake is delivered, from `ReservedWakeAuthority::Cooperative::targets`. Do not
+/// add a per-binding wake table.
 pub fn reserve(
     context: &StoreContext,
     db: &mut Connection,
@@ -474,6 +581,12 @@ pub fn reserve(
             params![candidate.seat.as_str(),instance],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).optional().map_err(store_error)?;
         let Some((decision_seq,episode,open,generation,target,target_generation,boot))=row else {return Ok(None)};
         if !witness.valid_for(candidate,instance,nonnegative(decision_seq)?,nonnegative(episode)?,open!=0) {return Ok(None)}
+        // The lazy frontier is not covered by the decision sequence: re-read it
+        // (and `wake_on`) so a reservation never rests on a moved frontier.
+        let current_lazy=match super::seats::wake_on(tx,&candidate.seat)? {
+            WakeOn::All=>super::lazy_delivery::wake_frontier(tx,candidate.seat.as_str())?,
+            WakeOn::Nudge=>None};
+        if current_lazy!=witness.frontier().lazy {return Ok(None)}
         let attention=EffectiveSeatAttention {has_pending_invitation:witness.pending_invitation,
             has_pending_receipt:witness.pending_receipt,latest_warning_seq:witness.latest_warning_seq.map(|seq|i64::try_from(seq).map_err(|_|api_error(ErrorCode::StoreCorrupt,"warning sequence overflow"))).transpose()?,frontier:witness.frontier()};
         let current=load_candidate(tx,instance,&candidate.seat,&attention,decision_seq)?;
@@ -489,7 +602,8 @@ pub fn reserve(
         let Some(target)=target.map(HostTargetId::new) else {return Ok(None)};
         let boot=HostBootId::new(boot);
         let host_epoch:i64=tx.query_row("SELECT host_epoch FROM host_instances WHERE id=?1",[instance],|r|r.get(0)).map_err(store_error)?;
-        let Some(authority)=current_authority(tx,instance,&candidate.seat,&target,nonnegative(generation)?,nonnegative(target_generation)?,&boot,nonnegative(host_epoch)?)? else {return Ok(None)};
+        let seat_attention=current.has_pending_invitation||current.has_pending_receipt||current.actionable_warning_seq.is_some();
+        let Some(authority)=current_authority(tx,instance,&candidate.seat,&target,nonnegative(generation)?,nonnegative(target_generation)?,&boot,nonnegative(host_epoch)?,seat_attention)? else {return Ok(None)};
         Ok(Some((target,boot,nonnegative(host_epoch)?,nonnegative(target_generation)?,authority,current)))
     },|tx,at,prepared|{
         let Some((target,host_boot,host_epoch,target_generation,authority,current))=prepared else {return Ok(None)};
@@ -510,8 +624,8 @@ pub fn reserve(
         let (receipt_seq,receipt_offset)=sql_key(frontier.addressed_receipt)?;
         let (warning_seq,warning_offset)=sql_key(frontier.actionable_warning)?;
         let binding_generation=match &authority {ReservedWakeAuthority::Registered {binding_generation,..}|ReservedWakeAuthority::Cooperative {binding_generation:Some(binding_generation),..}=>Some(i64::try_from(*binding_generation).map_err(|_|api_error(ErrorCode::StoreCorrupt,"binding generation overflow"))?),_=>None};
-        tx.execute("INSERT INTO wake_work(seat_id,reason_bits,binding_generation,retry_step,reservation_id,reservation_boot,reserved_at_utc,minimum_delay_ms,effective_delay_ms,last_reservation_id,last_reservation_boot,last_reserved_at_utc,last_invitation_seq,last_invitation_offset,last_receipt_seq,last_receipt_offset,last_warning_seq,last_warning_offset) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?5,?6,?7,?10,?11,?12,?13,?14,?15) ON CONFLICT(seat_id) DO UPDATE SET binding_generation=excluded.binding_generation,retry_step=excluded.retry_step,reservation_id=excluded.reservation_id,reservation_boot=excluded.reservation_boot,reserved_at_utc=excluded.reserved_at_utc,minimum_delay_ms=excluded.minimum_delay_ms,effective_delay_ms=excluded.effective_delay_ms,last_reservation_id=excluded.last_reservation_id,last_reservation_boot=excluded.last_reservation_boot,last_reserved_at_utc=excluded.last_reserved_at_utc,last_invitation_seq=excluded.last_invitation_seq,last_invitation_offset=excluded.last_invitation_offset,last_receipt_seq=excluded.last_receipt_seq,last_receipt_offset=excluded.last_receipt_offset,last_warning_seq=excluded.last_warning_seq,last_warning_offset=excluded.last_warning_offset",
-            params![candidate.seat.as_str(),i64::try_from(current.reason_bits).map_err(|_|api_error(ErrorCode::StoreCorrupt,"wake reason overflow"))?,binding_generation,i64::from(step),attempt.as_str(),daemon_boot.to_string(),at.utc.0,i64::try_from(minimum).map_err(|_|api_error(ErrorCode::InvalidRequest,"wake minimum overflow"))?,i64::try_from(delay).map_err(|_|api_error(ErrorCode::InvalidRequest,"wake delay overflow"))?,invitation_seq,invitation_offset,receipt_seq,receipt_offset,warning_seq,warning_offset]).map_err(store_error)?;
+        tx.execute("INSERT INTO wake_work(seat_id,reason_bits,binding_generation,retry_step,reservation_id,reservation_boot,reserved_at_utc,minimum_delay_ms,effective_delay_ms,last_reservation_id,last_reservation_boot,last_reserved_at_utc,last_invitation_seq,last_invitation_offset,last_receipt_seq,last_receipt_offset,last_warning_seq,last_warning_offset,last_lazy_ordinal) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?5,?6,?7,?10,?11,?12,?13,?14,?15,?16) ON CONFLICT(seat_id) DO UPDATE SET binding_generation=excluded.binding_generation,retry_step=excluded.retry_step,reservation_id=excluded.reservation_id,reservation_boot=excluded.reservation_boot,reserved_at_utc=excluded.reserved_at_utc,minimum_delay_ms=excluded.minimum_delay_ms,effective_delay_ms=excluded.effective_delay_ms,last_reservation_id=excluded.last_reservation_id,last_reservation_boot=excluded.last_reservation_boot,last_reserved_at_utc=excluded.last_reserved_at_utc,last_invitation_seq=excluded.last_invitation_seq,last_invitation_offset=excluded.last_invitation_offset,last_receipt_seq=excluded.last_receipt_seq,last_receipt_offset=excluded.last_receipt_offset,last_warning_seq=excluded.last_warning_seq,last_warning_offset=excluded.last_warning_offset,last_lazy_ordinal=excluded.last_lazy_ordinal",
+            params![candidate.seat.as_str(),i64::try_from(current.reason_bits).map_err(|_|api_error(ErrorCode::StoreCorrupt,"wake reason overflow"))?,binding_generation,i64::from(step),attempt.as_str(),daemon_boot.to_string(),at.utc.0,i64::try_from(minimum).map_err(|_|api_error(ErrorCode::InvalidRequest,"wake minimum overflow"))?,i64::try_from(delay).map_err(|_|api_error(ErrorCode::InvalidRequest,"wake delay overflow"))?,invitation_seq,invitation_offset,receipt_seq,receipt_offset,warning_seq,warning_offset,frontier.lazy]).map_err(store_error)?;
         Ok(Some(WakeReservation {attempt,daemon_boot,seat:candidate.seat.clone(),reasons:reason_labels(&current),
             retained_effective_delay_ms:delay,lease_until:at.monotonic,retained_minimum_delay_ms:minimum,reserved_at_utc:at.utc,
             host_boot,host_epoch,target,target_generation,attention_witness:witness.clone(),authority}))
@@ -576,8 +690,10 @@ pub fn validate_reservation(
         frontier: reservation.attention_witness.frontier(),
     };
     let candidate = load_candidate(db, instance, &reservation.seat, &attention, seq)?;
+    // The reservation just wrote its lazy frontier, so a lazy-only reservation
+    // is no longer "unreserved" here: pending lazy rows still count.
     if !candidate.continuity_resolved
-        || !candidate.has_actionable_work()
+        || !(candidate.has_actionable_work() || candidate.pending_lazy().is_some())
         || candidate.reservation_id.as_ref() != Some(&reservation.attempt)
         || candidate
             .reservation_boot
@@ -598,8 +714,15 @@ pub fn validate_reservation(
         reservation.target_generation,
         &reservation.host_boot,
         reservation.host_epoch,
+        candidate.has_pending_invitation
+            || candidate.has_pending_receipt
+            || candidate.actionable_warning_seq.is_some(),
     )?;
-    Ok(current.as_ref() == Some(&reservation.authority))
+    // The target list is the frozen delivery plan: a binding reading its mail since the
+    // reservation does not void it (the scope, not the list, is the fence).
+    Ok(current
+        .as_ref()
+        .is_some_and(|current| current.same_scope(&reservation.authority)))
 }
 
 /// Settles one reservation. For `Refused` with a `refused_restore`, the same
@@ -680,7 +803,7 @@ pub fn complete_with_pokes(
                 let (invitation_seq,invitation_offset)=key(prior.last_reserved_frontier.invitation)?;
                 let (receipt_seq,receipt_offset)=key(prior.last_reserved_frontier.addressed_receipt)?;
                 let (warning_seq,warning_offset)=key(prior.last_reserved_frontier.actionable_warning)?;
-                tx.execute("UPDATE wake_work SET reservation_id=NULL,reservation_boot=NULL,completed_at_utc=?1,last_outcome=?2,retry_step=?6,minimum_delay_ms=?7,effective_delay_ms=?8,last_reservation_id=?9,last_reservation_boot=?10,last_reserved_at_utc=?11,last_invitation_seq=?12,last_invitation_offset=?13,last_receipt_seq=?14,last_receipt_offset=?15,last_warning_seq=?16,last_warning_offset=?17 WHERE seat_id=?3 AND reservation_id=?4 AND reservation_boot=?5",
+                tx.execute("UPDATE wake_work SET reservation_id=NULL,reservation_boot=NULL,completed_at_utc=?1,last_outcome=?2,retry_step=?6,minimum_delay_ms=?7,effective_delay_ms=?8,last_reservation_id=?9,last_reservation_boot=?10,last_reserved_at_utc=?11,last_invitation_seq=?12,last_invitation_offset=?13,last_receipt_seq=?14,last_receipt_offset=?15,last_warning_seq=?16,last_warning_offset=?17,last_lazy_ordinal=?18 WHERE seat_id=?3 AND reservation_id=?4 AND reservation_boot=?5",
                     params![at.utc.0,disposition,seat,attempt.as_str(),daemon_boot,
                         i64::from(prior.retry_step),
                         i64::try_from(prior.minimum_delay_ms).map_err(|_|api_error(ErrorCode::InvalidRequest,"wake minimum overflow"))?,
@@ -688,7 +811,7 @@ pub fn complete_with_pokes(
                         prior.last_reservation_id.as_ref().map(|id|id.as_str().to_owned()),
                         prior.last_reservation_boot.as_ref().map(|boot|boot.as_str().to_owned()),
                         prior.last_reserved_at_utc.map(|at|at.0),
-                        invitation_seq,invitation_offset,receipt_seq,receipt_offset,warning_seq,warning_offset]).map_err(store_error)?
+                        invitation_seq,invitation_offset,receipt_seq,receipt_offset,warning_seq,warning_offset,prior.last_reserved_frontier.lazy]).map_err(store_error)?
             }
         };
         if changed==1 && disposition=="submitted" {
@@ -736,7 +859,8 @@ pub fn reserve_poke(
         let current=load_candidate(tx,instance,seat,&attention,decision_seq)?;
         if current.effectively_retired || !current.continuity_resolved || current.reservation_id.is_some() {return Ok(None)}
         let boot=HostBootId::new(boot);
-        let Some(authority)=current_authority(tx,instance,seat,&target,nonnegative(generation)?,nonnegative(target_generation)?,&boot,nonnegative(host_epoch)?)? else {return Ok(None)};
+        // A due receipt is seat-level attention: every connected top-level binding can act on it.
+        let Some(authority)=current_authority(tx,instance,seat,&target,nonnegative(generation)?,nonnegative(target_generation)?,&boot,nonnegative(host_epoch)?,true)? else {return Ok(None)};
         let witness=WakeAttentionWitness::from_complete(instance.into(),seat.clone(),nonnegative(decision_seq)?,false,true,None,nonnegative(episode)?,open!=0,LogicalAttentionFrontier::default());
         Ok(Some((target,boot,nonnegative(host_epoch)?,nonnegative(target_generation)?,authority,current,witness,receipts)))
     },|tx,at,prepared|{
@@ -932,6 +1056,12 @@ pub fn batch_window(
                 first = Some(first.map_or(at, |prior| prior.min(at)));
                 urgent |= super::receipts::effective_deadline(tx, &receipt)?.is_some_and(|at| at <= now);
             }
+        }
+        // A `wake_on: all` seat's oldest pending lazy row batches like an
+        // ordinary receipt (DP8).
+        if scan.attention.frontier.lazy.is_some()
+            && let Some(at) = super::lazy_delivery::oldest_pending_at(tx, candidate.seat.as_str())? {
+            first = Some(first.map_or(at, |prior| prior.min(at)));
         }
         let existing: Option<i64> = tx.query_row("SELECT deadline_at FROM wake_batches WHERE seat_id=?1",
             [candidate.seat.as_str()], |r| r.get(0)).optional().map_err(store_error)?;

@@ -1,4 +1,4 @@
-//! Hidden `watch` and `watch ack` subcommands: the Claude mod's delivery child.
+//! Hidden `watch` and `watch ack` subcommands: a push-channel mod's delivery child.
 //! The contract (argv, env, exit codes, JSON lines) is in
 //! [`crate::protocol::watch`]; this file is the CLI behaviour (spec D3, D4, D6).
 //!
@@ -11,28 +11,32 @@ use super::{
     LazyConnection, RunError, cooperative_budget, derive_caller, published_endpoint, seat_contexts,
 };
 use crate::{
+    delivery::{
+        Assembler, DeliveryKind, DrainEvent, DrainPagesError, MAX_DRAIN_PAGES, PAGE_MAX_BYTES,
+        PAGE_MAX_ITEMS, PageError, PageSource, Stop, drain_pages, read_truncated_hint,
+    },
     harness::{bridge, context::Harness},
     ports::LocalClient,
     protocol::{
         authority::CallerClaim,
-        capabilities::MOD_WATCH,
+        capabilities::{
+            BINDING_CURSORS, DELIVERY_PRESENTATION_V2, MOD_WATCH, MOD_WATCH_PRESENTATION_V2,
+        },
         commands::{AckModDelivered, Command, InboxQuery},
         ids::{MessageId, NativeSessionId, OperationId, SeatId},
-        pagination::PageRequest,
+        pagination::{Page, PageRequest},
         results::{ApiError, CommandResult, ErrorCode, InboxBatchV2Item},
         time::{CallBudget, Clock},
         watch::{
-            ModAckItem, ModAckOutcome, ModAckReason, ModDeliveryVia, WATCH_BODY_LIMIT_BYTES,
-            WATCH_EXIT_ERROR, WATCH_EXIT_STREAM_ENDED, WATCH_PAGE_MAX_BYTES, WATCH_PAGE_MAX_ITEMS,
-            WatchAttention, WatchAttentionCleared, WatchFrame, WatchItem, WatchLine, WatchMessage,
-            WatchOutcome, WatchReply, WatchRequest as WireWatch, WatchStatus, WatchStatusReason,
-            WatchStatusState, WatchWireRequest, truncation_marker_for,
+            ModAckItem, ModAckOutcome, ModAckReason, ModDeliveryVia, WATCH_EXIT_ERROR,
+            WATCH_EXIT_STREAM_ENDED, WatchAttention, WatchAttentionCleared, WatchFrame, WatchItem,
+            WatchLine, WatchOutcome, WatchReply, WatchRequest as WireWatch, WatchStatus,
+            WatchStatusReason, WatchStatusState, WatchWireRequest,
         },
         wire::{PROTOCOL_VERSION, WireResponse},
     },
 };
 use std::{
-    collections::{HashMap, HashSet},
     io::{self, Read, Write},
     os::unix::net::UnixStream,
     path::{Path, PathBuf},
@@ -44,10 +48,6 @@ use std::{
 const STREAM_READ_TIMEOUT: Duration = Duration::from_secs(1);
 /// Budget for the registration round trip.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
-/// Newest ids kept in the truncation hint file.
-const HINT_MAX_LINES: usize = 1024;
-/// Upper bound on pages followed in one drain (a cursor loop guard).
-const MAX_DRAIN_PAGES: usize = 4096;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WatchRequest {
@@ -62,31 +62,25 @@ pub struct WatchAckRequest {
     pub messages: Vec<MessageId>,
 }
 
-/// Process-wide emit bookkeeping: the status counter, ids already streamed by
-/// this process, and the truncation hint file.
+/// Process-wide emit bookkeeping: the status counter and the delivery
+/// assembler (ids already streamed by this process, the attention state, the
+/// truncation hint file and the marker's command prefix).
 #[derive(Debug, Default)]
 pub(crate) struct EmitState {
     next_status: u64,
-    emitted: HashSet<String>,
-    /// An attention line was printed (or would have been, at an already
-    /// printed version) and not yet retracted.
-    attention_shown: bool,
-    hint_path: Option<PathBuf>,
-    /// Invocation the truncation marker's commands start with
-    /// (`hook::cli_prefix`); empty means bare `herdr-threads`.
-    command_prefix: Vec<String>,
+    assembler: Assembler,
 }
 
 impl EmitState {
     fn new(hint_path: Option<PathBuf>) -> Self {
         Self {
-            hint_path,
+            assembler: Assembler::new(hint_path),
             ..Self::default()
         }
     }
 
     fn with_command_prefix(mut self, prefix: Vec<String>) -> Self {
-        self.command_prefix = prefix;
+        self.assembler = self.assembler.with_command_prefix(prefix);
         self
     }
 }
@@ -278,6 +272,7 @@ fn open_watch(
     socket: &Path,
     instance: uuid::Uuid,
     claim: CallerClaim,
+    presentation_v2: bool,
 ) -> Result<(WatchReply, SocketConn), OpenError> {
     let mut stream = UnixStream::connect(socket).map_err(|_| OpenError::Unavailable)?;
     let request_id = uuid::Uuid::new_v4().to_string();
@@ -286,7 +281,10 @@ fn open_watch(
         request_id: request_id.clone(),
         expected_instance: instance.to_string(),
         expected_boot: None,
-        watch: WireWatch { claim },
+        watch: WireWatch {
+            claim,
+            presentation_v2,
+        },
     };
     let body = serde_json::to_vec(&request).map_err(|_| OpenError::Other)?;
     stream
@@ -341,9 +339,13 @@ pub(crate) struct WatchSession<'a> {
     pub hint_path: Option<PathBuf>,
 }
 
-/// What the `mod.watch_v1` capability probe learned.
+/// What discovery learned about Watch registration and its presentation mode.
 enum Probe {
-    Supported,
+    Supported {
+        presentation: bool,
+        /// The daemon serves per-binding unread streams (`inbox.binding_cursors_v1`).
+        cursors: bool,
+    },
     /// The daemon answered, and it has no such feature.
     Unsupported,
     /// The call itself failed (busy, timeout, booting daemon, transport loss): the daemon
@@ -357,7 +359,14 @@ fn probe_mod_watch(client: &dyn LocalClient, budget: &CallBudget) -> Probe {
     match client.call_definitive(Command::Capabilities, budget) {
         Ok(Ok(CommandResult::Capabilities(list))) => {
             if list.capabilities.iter().any(|c| c == MOD_WATCH) {
-                Probe::Supported
+                let supports = |name: &str| list.capabilities.iter().any(|c| c == name);
+                let cursors = supports(BINDING_CURSORS);
+                Probe::Supported {
+                    presentation: supports(DELIVERY_PRESENTATION_V2)
+                        && supports(MOD_WATCH_PRESENTATION_V2)
+                        && cursors,
+                    cursors,
+                }
             } else {
                 Probe::Unsupported
             }
@@ -390,13 +399,24 @@ fn run_session_marked(
     mut alive: impl FnMut() -> bool,
 ) -> i32 {
     let mut state = EmitState::new(session.hint_path.clone()).with_command_prefix(command_prefix);
-    match probe_mod_watch(session.client, &cooperative_budget(session.clock)) {
-        Probe::Supported => {}
-        Probe::Unsupported => return refuse(&mut state, out, WatchStatusReason::Unsupported),
-        Probe::Failed => return refuse(&mut state, out, WatchStatusReason::DaemonUnavailable),
-    }
+    let (presentation, cursors) =
+        match probe_mod_watch(session.client, &cooperative_budget(session.clock)) {
+            Probe::Supported {
+                presentation,
+                cursors,
+            } => (presentation, cursors),
+            Probe::Unsupported => return refuse(&mut state, out, WatchStatusReason::Unsupported),
+            Probe::Failed => return refuse(&mut state, out, WatchStatusReason::DaemonUnavailable),
+        };
+    // The historical fallback reads this binding's stream only after negotiation.
+    let reader = cursors.then(|| session.claim.clone());
     let seat = session.claim.seat.clone();
-    let (reply, mut conn) = match open_watch(session.socket, session.instance, session.claim) {
+    let (reply, mut conn) = match open_watch(
+        session.socket,
+        session.instance,
+        session.claim.clone(),
+        presentation,
+    ) {
         Ok(opened) => opened,
         Err(OpenError::Unavailable) => {
             return refuse(&mut state, out, WatchStatusReason::DaemonUnavailable);
@@ -410,11 +430,33 @@ fn run_session_marked(
         WatchOutcome::Refused(refusal) => {
             refuse(&mut state, out, WatchStatusReason::from(refusal.reason))
         }
+        WatchOutcome::Accepted(accepted)
+            if presentation
+                && accepted
+                    .presentation_lease
+                    .as_deref()
+                    .is_some_and(crate::protocol::delivery::valid_presentation_token) =>
+        {
+            watch_presentation_loop(
+                &mut conn,
+                session.client,
+                session.clock,
+                &session.claim,
+                accepted
+                    .presentation_lease
+                    .as_deref()
+                    .expect("checked lease"),
+                &mut state,
+                out,
+                &mut alive,
+            )
+        }
         WatchOutcome::Accepted(accepted) => watch_loop(
             &mut conn,
             session.client,
             session.clock,
             &seat,
+            reader.as_ref(),
             accepted.attention_version,
             &mut state,
             out,
@@ -431,6 +473,7 @@ fn watch_loop(
     client: &dyn LocalClient,
     clock: &dyn Clock,
     seat: &SeatId,
+    claim: Option<&CallerClaim>,
     accepted_version: u64,
     state: &mut EmitState,
     out: &mut dyn Write,
@@ -471,7 +514,7 @@ fn watch_loop(
     ));
     let mut version = accepted_version;
     loop {
-        match drain(client, clock, seat, version, state, out) {
+        match drain(client, clock, seat, claim, version, state, out) {
             Ok(()) => {}
             Err(DrainError::Out) => return 0,
             Err(DrainError::Api | DrainError::Protocol) => {
@@ -510,9 +553,239 @@ fn watch_loop(
     }
 }
 
-/// Text assembled so far for one multi-chunk body.
-struct Partial {
-    body: String,
+/// Capability-and-owner admitted V2 stream. Canonical outbox state owns retry;
+/// only a successfully flushed captured page may be explicitly confirmed.
+#[allow(clippy::too_many_arguments)]
+fn watch_presentation_loop(
+    conn: &mut dyn WatchConn,
+    client: &dyn LocalClient,
+    clock: &dyn Clock,
+    claim: &CallerClaim,
+    lease: &str,
+    state: &mut EmitState,
+    out: &mut dyn Write,
+    alive: &mut dyn FnMut() -> bool,
+) -> i32 {
+    use crate::{
+        delivery::presentation::{self, PresentationRenderProfile},
+        protocol::delivery::{
+            DeliveryPresentationConfirmV2, DeliveryPresentationConfirmationV2, DeliveryPullReplyV2,
+            DeliveryPullV2, PresentationConsumer, PresentationRenderRequest,
+            PresentationRenderSelection,
+        },
+    };
+    let closing =
+        |state: &mut EmitState, out: &mut dyn Write, reason: WatchStatusReason, exit: i32| {
+            if emit_status(
+                state,
+                out,
+                WatchStatus {
+                    state: WatchStatusState::Closing,
+                    reason: Some(reason),
+                    exit: Some(exit),
+                },
+            )
+            .is_err()
+            {
+                0
+            } else {
+                exit
+            }
+        };
+    if emit_status(
+        state,
+        out,
+        WatchStatus {
+            state: WatchStatusState::Connected,
+            reason: None,
+            exit: None,
+        },
+    )
+    .is_err()
+    {
+        return 0;
+    }
+    let mut continuation = false;
+    loop {
+        if !alive() {
+            return 0;
+        }
+        // A Close, owner replacement, EOF or parent cancellation wins before
+        // another bounded continuation quantum. Attention needs no local hint.
+        if continuation {
+            loop {
+                match conn.next_frame(Duration::from_millis(1)) {
+                    Ok(Some(WatchFrame::Attention { .. })) => {}
+                    Ok(Some(WatchFrame::Close { reason })) => {
+                        return closing(state, out, reason.into(), reason.exit_code());
+                    }
+                    Ok(None) => {
+                        return closing(
+                            state,
+                            out,
+                            WatchStatusReason::StreamEnded,
+                            WATCH_EXIT_STREAM_ENDED,
+                        );
+                    }
+                    Err(e)
+                        if matches!(
+                            e.kind(),
+                            io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+                        ) =>
+                    {
+                        break;
+                    }
+                    Err(_) => {
+                        return closing(state, out, WatchStatusReason::Error, WATCH_EXIT_ERROR);
+                    }
+                }
+            }
+        }
+        let result = client.call(
+            Command::DeliveryPullV2(DeliveryPullV2 {
+                claim: claim.clone(),
+                consumer: PresentationConsumer::Watch,
+                render: PresentationRenderRequest::WatchJsonLinesV1,
+                presentation_lease: Some(lease.into()),
+                marker_prefix: state.assembler.command_prefix.clone(),
+            }),
+            &cooperative_budget(clock),
+        );
+        let more = match result {
+            Ok(CommandResult::DeliveryPulledV2(DeliveryPullReplyV2::Unchanged { .. })) => false,
+            Ok(CommandResult::DeliveryPulledV2(DeliveryPullReplyV2::Page(page))) => {
+                if page.render != PresentationRenderSelection::WatchJsonLinesV1
+                    || !page.text.is_empty()
+                    || !presentation::valid_items(&page.items)
+                    || page.emitted_controls != presentation::emitted_controls(&page.items)
+                    || crate::protocol::delivery::validate_control_stamps(&page.emitted_controls)
+                        .is_err()
+                    || page
+                        .presentation_token
+                        .as_deref()
+                        .is_some_and(|v| !crate::protocol::delivery::valid_presentation_token(v))
+                    || (!page.emitted_controls.is_empty() && page.presentation_token.is_none())
+                {
+                    return closing(state, out, WatchStatusReason::Error, WATCH_EXIT_ERROR);
+                }
+                let Ok((_, size)) = presentation::measure(
+                    &PresentationRenderProfile::WatchJsonLinesV1,
+                    &page.items,
+                ) else {
+                    return closing(state, out, WatchStatusReason::Error, WATCH_EXIT_ERROR);
+                };
+                if size != page.output_bytes as usize {
+                    return closing(state, out, WatchStatusReason::Error, WATCH_EXIT_ERROR);
+                }
+                let mut bytes = Vec::with_capacity(size);
+                for line in presentation::presentation_watch_lines(&page.items) {
+                    if serde_json::to_writer(&mut bytes, &line).is_err() {
+                        return closing(state, out, WatchStatusReason::Error, WATCH_EXIT_ERROR);
+                    }
+                    bytes.push(b'\n');
+                }
+                if bytes.len() != size {
+                    return closing(state, out, WatchStatusReason::Error, WATCH_EXIT_ERROR);
+                }
+                if !bytes.is_empty() && (out.write_all(&bytes).is_err() || out.flush().is_err()) {
+                    return 0;
+                }
+                if let Some(token) = page.presentation_token {
+                    let result = client.call(
+                        Command::DeliveryPresentationConfirmV2(DeliveryPresentationConfirmV2 {
+                            claim: claim.clone(),
+                            consumer: PresentationConsumer::Watch,
+                            token,
+                            presentation_lease: Some(lease.into()),
+                            emitted_controls: page.emitted_controls.clone(),
+                        }),
+                        &cooperative_budget(clock),
+                    );
+                    match result {
+                        Ok(CommandResult::DeliveryPresentationConfirmedV2(reply))
+                            if reply.validate_for(&page.emitted_controls).is_ok()
+                                && matches!(
+                                    reply.status,
+                                    DeliveryPresentationConfirmationV2::Confirmed
+                                        | DeliveryPresentationConfirmationV2::AlreadyConfirmed
+                                ) => {}
+                        _ => {
+                            return closing(state, out, WatchStatusReason::Error, WATCH_EXIT_ERROR);
+                        }
+                    }
+                }
+                // Local truncation hints are success bookkeeping only, never
+                // canonical confirmation or message ACK authority.
+                for id in &page.truncated {
+                    record_truncated(state, id.as_str());
+                }
+                page.more
+            }
+            _ => return closing(state, out, WatchStatusReason::Error, WATCH_EXIT_ERROR),
+        };
+        if more {
+            continuation = true;
+            continue;
+        }
+        continuation = false;
+        loop {
+            if !alive() {
+                return 0;
+            }
+            match conn.next_frame(STREAM_READ_TIMEOUT) {
+                Ok(Some(WatchFrame::Attention { .. })) => break,
+                Ok(Some(WatchFrame::Close { reason })) => {
+                    return closing(state, out, reason.into(), reason.exit_code());
+                }
+                Ok(None) => {
+                    return closing(
+                        state,
+                        out,
+                        WatchStatusReason::StreamEnded,
+                        WATCH_EXIT_STREAM_ENDED,
+                    );
+                }
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+                    ) => {}
+                Err(_) => return closing(state, out, WatchStatusReason::Error, WATCH_EXIT_ERROR),
+            }
+        }
+    }
+}
+
+/// Pages `InboxBatchV2` for the seat through the daemon.
+struct ClientPageSource<'a> {
+    client: &'a dyn LocalClient,
+    clock: &'a dyn Clock,
+    seat: &'a SeatId,
+    claim: Option<&'a CallerClaim>,
+}
+
+impl PageSource for ClientPageSource<'_> {
+    fn page(&mut self, cursor: Option<String>) -> Result<Page<InboxBatchV2Item>, PageError> {
+        let result = self
+            .client
+            .call(
+                Command::InboxBatchV2(InboxQuery {
+                    claim: self.claim.cloned(),
+                    seat: Some(self.seat.clone()),
+                    page: PageRequest {
+                        cursor,
+                        limit: PAGE_MAX_ITEMS as u16,
+                        max_bytes: PAGE_MAX_BYTES as u32,
+                    },
+                }),
+                &cooperative_budget(self.clock),
+            )
+            .map_err(|_: ApiError| PageError::Api)?;
+        match result {
+            CommandResult::InboxBatchV2(page) => Ok(page),
+            _ => Err(PageError::Protocol),
+        }
+    }
 }
 
 /// Page `InboxBatchV2` for the seat until exhausted and print one line per
@@ -523,303 +796,73 @@ pub(crate) fn drain(
     client: &dyn LocalClient,
     clock: &dyn Clock,
     seat: &SeatId,
+    claim: Option<&CallerClaim>,
     frame_version: u64,
     state: &mut EmitState,
     out: &mut dyn Write,
 ) -> Result<(), DrainError> {
-    let mut cursor: Option<String> = None;
-    let mut partial: HashMap<String, Partial> = HashMap::new();
-    let mut saw_attention = false;
-    for _ in 0..MAX_DRAIN_PAGES {
-        let result = client.call(
-            Command::InboxBatchV2(InboxQuery {
-                seat: Some(seat.clone()),
-                page: PageRequest {
-                    cursor: cursor.take(),
-                    limit: WATCH_PAGE_MAX_ITEMS as u16,
-                    max_bytes: WATCH_PAGE_MAX_BYTES as u32,
-                },
-            }),
-            &cooperative_budget(clock),
-        )?;
-        let CommandResult::InboxBatchV2(page) = result else {
-            return Err(DrainError::Protocol);
-        };
-        for item in page.items {
-            match item {
-                InboxBatchV2Item::Invitation {
-                    confirmation: Some(crate::protocol::commands::InvitationConfirmation::Lazy),
-                    ..
-                } => {}
-                InboxBatchV2Item::Invitation { .. }
-                | InboxBatchV2Item::Warning {
-                    informational: false,
-                    ..
-                } => {
-                    saw_attention = true;
+    let mut source = ClientPageSource {
+        client,
+        clock,
+        seat,
+        claim,
+    };
+    let attention_text =
+        crate::protocol::watch::attention_marker_for(&state.assembler.command_prefix);
+    drain_pages(
+        &mut source,
+        &mut state.assembler,
+        frame_version,
+        MAX_DRAIN_PAGES,
+        |event| {
+            let line = match event {
+                DrainEvent::Item(item) => {
+                    let id = item.id.as_str().to_owned();
+                    WatchLine::new(
+                        id,
+                        match item.kind {
+                            DeliveryKind::Lazy => WatchItem::Lazy(item.message),
+                            DeliveryKind::Message => WatchItem::Message(item.message),
+                        },
+                    )
                 }
-                // An informational notice (the daemon judged it does not wake
-                // this seat) reaches the seat at its next check-in; it raises
-                // no mod attention.
-                InboxBatchV2Item::Warning {
-                    informational: true,
-                    ..
-                } => {}
-                InboxBatchV2Item::Message {
-                    thread,
-                    topic_data,
-                    message,
-                    sender,
-                    author_role,
-                    relays_user,
-                    user_intent,
-                    body,
-                    body_start,
-                    body_end,
-                    body_len,
-                    ack_candidate,
-                    ..
-                } => emit_chunk(
-                    state,
-                    out,
-                    &mut partial,
-                    Chunk {
-                        lazy: false,
-                        ack_required: ack_candidate.is_some(),
-                        thread,
-                        topic: topic_data,
-                        message,
-                        sender,
-                        author_role,
-                        relays_user,
-                        user_intent,
-                        body,
-                        body_start,
-                        body_end,
-                        body_len,
-                    },
-                )?,
-                InboxBatchV2Item::LazyMessage {
-                    thread,
-                    topic_data,
-                    message,
-                    sender,
-                    author_role,
-                    relays_user,
-                    user_intent,
-                    body,
-                    body_start,
-                    body_end,
-                    body_len,
-                    ..
-                } => emit_chunk(
-                    state,
-                    out,
-                    &mut partial,
-                    Chunk {
-                        lazy: true,
-                        ack_required: false,
-                        thread,
-                        topic: topic_data,
-                        message,
-                        sender,
-                        author_role,
-                        relays_user,
-                        user_intent,
-                        body,
-                        body_start,
-                        body_end,
-                        body_len,
-                    },
-                )?,
-            }
-        }
-        match page.next_cursor {
-            Some(next) => cursor = Some(next),
-            None => {
-                if saw_attention {
-                    let id = format!("attention:{frame_version}");
-                    if state.emitted.insert(id.clone()) {
-                        write_line(
-                            out,
-                            &WatchLine::new(
-                                id,
-                                WatchItem::Attention(WatchAttention {
-                                    attention_version: frame_version,
-                                    text: crate::notification::policy::MARKER.to_owned(),
-                                }),
-                            ),
-                        )?;
-                    }
-                    state.attention_shown = true;
-                } else if state.attention_shown {
-                    // Everything the last attention line pointed at was settled
-                    // elsewhere (an accepted invitation, notices a check-in
-                    // offered): retract it (ht-j16.33).
-                    write_line(
-                        out,
-                        &WatchLine::new(
-                            format!("attention_cleared:{frame_version}"),
-                            WatchItem::AttentionCleared(WatchAttentionCleared {
-                                attention_version: frame_version,
-                            }),
-                        ),
-                    )?;
-                    state.attention_shown = false;
-                    state.emitted.retain(|id| !id.starts_with("attention:"));
-                }
-                return Ok(());
-            }
-        }
-    }
-    Err(DrainError::Protocol)
-}
-
-struct Chunk {
-    lazy: bool,
-    ack_required: bool,
-    thread: crate::protocol::ids::ThreadId,
-    topic: String,
-    message: MessageId,
-    sender: Option<SeatId>,
-    author_role: Option<crate::protocol::summary::AuthorRole>,
-    relays_user: bool,
-    user_intent: Option<crate::protocol::summary::UserIntent>,
-    body: String,
-    body_start: u64,
-    body_end: u64,
-    body_len: u64,
-}
-
-/// Add one body chunk; print the line once the first
-/// `WATCH_BODY_LIMIT_BYTES` bytes or the whole body are assembled.
-fn emit_chunk(
-    state: &mut EmitState,
-    out: &mut dyn Write,
-    partial: &mut HashMap<String, Partial>,
-    chunk: Chunk,
-) -> Result<(), DrainError> {
-    let id = chunk.message.as_str().to_owned();
-    if state.emitted.contains(&id) {
-        return Ok(());
-    }
-    let entry = partial.entry(id.clone()).or_insert_with(|| Partial {
-        body: String::new(),
-    });
-    if chunk.body_start == 0 {
-        entry.body.clear();
-    }
-    if chunk.body_start != entry.body.len() as u64 {
-        partial.remove(&id);
-        return Err(DrainError::Protocol);
-    }
-    entry.body.push_str(&chunk.body);
-    let whole = chunk.body_end >= chunk.body_len;
-    if !whole && entry.body.len() < WATCH_BODY_LIMIT_BYTES {
-        return Ok(());
-    }
-    let assembled = partial.remove(&id).map(|p| p.body).unwrap_or_default();
-    let truncated = chunk.body_len > WATCH_BODY_LIMIT_BYTES as u64;
-    let body = if truncated {
-        let mut cut = WATCH_BODY_LIMIT_BYTES.min(assembled.len());
-        while !assembled.is_char_boundary(cut) {
-            cut -= 1;
-        }
-        record_truncated(state, &id);
-        format!(
-            "{}{}",
-            &assembled[..cut],
-            truncation_marker_for(&state.command_prefix, &chunk.message, chunk.lazy)
-        )
-    } else {
-        assembled
-    };
-    let sender_name = Some(
-        chunk
-            .sender
-            .as_ref()
-            .map_or_else(|| "service".to_owned(), |seat| seat.as_str().to_owned()),
-    );
-    let message = WatchMessage {
-        thread: chunk.thread,
-        thread_name: watch_label(&chunk.topic),
-        sender: chunk.sender,
-        sender_name,
-        author_role: chunk.author_role,
-        relays_user: chunk.relays_user,
-        user_intent: chunk.user_intent,
-        body,
-        body_len: chunk.body_len,
-        truncated,
-        ack_required: chunk.ack_required,
-    };
-    let item = if chunk.lazy {
-        WatchItem::Lazy(message)
-    } else {
-        WatchItem::Message(message)
-    };
-    state.emitted.insert(id.clone());
-    write_line(out, &WatchLine::new(id, item))?;
-    Ok(())
-}
-
-/// Most chars of a name on a mod header line.
-const WATCH_LABEL_MAX_CHARS: usize = 120;
-
-/// A user-controlled name for one header line (spec D4): every control
-/// character and Unicode line or paragraph separator becomes a space, the
-/// ends are trimmed, and it is cut to `WATCH_LABEL_MAX_CHARS` chars plus `…`.
-/// `None` when nothing is left.
-fn watch_label(text: &str) -> Option<String> {
-    let flat: String = text
-        .chars()
-        .map(|c| {
-            if c.is_control() || matches!(c, '\u{2028}' | '\u{2029}') {
-                ' '
-            } else {
-                c
-            }
-        })
-        .collect();
-    let flat = flat.trim();
-    if flat.is_empty() {
-        return None;
-    }
-    let mut out: String = flat.chars().take(WATCH_LABEL_MAX_CHARS).collect();
-    if flat.chars().count() > WATCH_LABEL_MAX_CHARS {
-        out.push('…');
-    }
-    Some(out)
+                DrainEvent::Invitation(item) => WatchLine::new(
+                    format!("invitation:{}", item.id.as_str()),
+                    WatchItem::Invitation(item.content),
+                ),
+                DrainEvent::Attention { version } => WatchLine::new(
+                    format!("attention:{version}"),
+                    WatchItem::Attention(WatchAttention {
+                        presentation_epoch: None,
+                        attention_version: version,
+                        text: attention_text.clone(),
+                    }),
+                ),
+                DrainEvent::AttentionCleared { version } => WatchLine::new(
+                    format!("attention_cleared:{version}"),
+                    WatchItem::AttentionCleared(WatchAttentionCleared {
+                        presentation_epoch: None,
+                        attention_version: version,
+                    }),
+                ),
+                DrainEvent::Exhausted => return Ok(Stop::Continue),
+            };
+            write_line(out, &line).map(|()| Stop::Continue)
+        },
+    )
+    .map_err(|error| match error {
+        DrainPagesError::Page(PageError::Api) => DrainError::Api,
+        DrainPagesError::Page(PageError::Protocol)
+        | DrainPagesError::Assemble(_)
+        | DrainPagesError::TooManyPages => DrainError::Protocol,
+        DrainPagesError::Sink(_) => DrainError::Out,
+    })
 }
 
 /// Hint only: remember that this seat was shown a cut body for `id`, so
 /// `watch ack` can refuse it locally. The daemon decides truncation itself.
 fn record_truncated(state: &EmitState, id: &str) {
-    let Some(path) = &state.hint_path else {
-        return;
-    };
-    let mut lines: Vec<String> = std::fs::read_to_string(path)
-        .map(|text| text.lines().map(str::to_owned).collect())
-        .unwrap_or_default();
-    if lines.iter().any(|line| line == id) {
-        return;
-    }
-    lines.push(id.to_owned());
-    if lines.len() > HINT_MAX_LINES {
-        lines.drain(..lines.len() - HINT_MAX_LINES);
-    }
-    let mut text = lines.join("\n");
-    text.push('\n');
-    let temp = path.with_extension("ids.tmp");
-    if std::fs::write(&temp, text).is_ok() {
-        let _ = std::fs::rename(&temp, path);
-    }
-}
-
-fn read_truncated_hint(path: Option<&Path>) -> HashSet<String> {
-    path.and_then(|path| std::fs::read_to_string(path).ok())
-        .map(|text| text.lines().map(str::to_owned).collect())
-        .unwrap_or_default()
+    crate::delivery::assemble::record_truncated(state.assembler.truncation_hint.as_deref(), id);
 }
 
 /// `<instance dir>/contexts/watch-truncated-<seat>.ids`
@@ -937,7 +980,7 @@ fn run_ack_lines(
 enum CallerFailure {
     Daemon,
     NoBinding,
-    NotClaude,
+    NoPushChannel,
     Other,
 }
 
@@ -946,13 +989,63 @@ impl CallerFailure {
         match self {
             Self::Daemon => WatchStatusReason::DaemonUnavailable,
             Self::NoBinding => WatchStatusReason::NoBinding,
-            Self::NotClaude => WatchStatusReason::NotClaude,
+            Self::NoPushChannel => WatchStatusReason::NO_PUSH_CHANNEL,
             Self::Other => WatchStatusReason::Error,
         }
     }
 }
 
-/// Pane (or `--cooperative-*`) to seat to the seat's recorded Claude context,
+/// The watch child's caller. The mod passes the session it serves as `--session` (spec D3), so
+/// the harness's session variable is not needed: an ancestor of a push-channel harness with the
+/// variable unset is that session, fingerprinted by its own process.
+fn watch_origin(
+    parsed: &super::commands::ParsedCli,
+    session: &str,
+) -> Option<super::caller::CallerOrigin> {
+    use super::caller::CallerOrigin;
+    use crate::{
+        harness::caller_env::{self, EnvClaim, EnvInputs, EnvRefusal},
+        protocol::authority::{COOPERATIVE_ENV_SESSION_PROVENANCE, CallerRole},
+    };
+    let origin = super::caller::derive(parsed);
+    let Some(CallerOrigin::Refused(EnvRefusal::MissingSession { harness, .. })) = &origin else {
+        return origin;
+    };
+    let harness: &'static str = harness;
+    if !crate::delivery::declares(
+        harness,
+        crate::harness::adapter::DeliveryMechanism::PushChannel,
+    ) {
+        return origin;
+    }
+    let Ok(agent) = crate::harness::registry::builtins().agent(harness) else {
+        return origin;
+    };
+    let env = |name: &str| std::env::var(name).ok();
+    let inputs = EnvInputs {
+        env: &env,
+        self_pid: std::process::id(),
+        agent_id: None,
+        processes: &crate::host::process_table::HostProcessTable,
+    };
+    match (
+        caller_env::harness_fingerprint(&inputs, harness),
+        NativeSessionId::parse(session.to_owned()),
+    ) {
+        (Ok(fingerprint), Ok(native_session)) => CallerOrigin::Agent(EnvClaim {
+            harness: crate::protocol::authority::Harness::Agent(agent),
+            native_session,
+            agent_id: None,
+            role: CallerRole::TopLevel,
+            fingerprint,
+            provenance: COOPERATIVE_ENV_SESSION_PROVENANCE,
+        })
+        .into(),
+        _ => origin,
+    }
+}
+
+/// Pane (or `--cooperative-*`) to seat to the seat's recorded harness context,
 /// as a claim whose native session is the `--session` value (spec D3).
 fn locate_claim<C, F>(
     parsed: &mut super::commands::ParsedCli,
@@ -967,7 +1060,9 @@ where
     C: LocalClient,
     F: Fn() -> Result<(uuid::Uuid, C), RunError>,
 {
-    let (instance, _) = connection.get().map_err(|_| CallerFailure::Daemon)?;
+    let (instance, client) = connection.get().map_err(|_| CallerFailure::Daemon)?;
+    let origin = watch_origin(parsed, session);
+    let _origin = super::caller::ActiveGuard::enter(origin.clone());
     let selection = match derive_caller(parsed, caller_pane, context, paths, connection, clock) {
         Ok(Some(selection)) => selection,
         Ok(None) => return Err(CallerFailure::NoBinding),
@@ -981,19 +1076,62 @@ where
         }
         Err(_) => return Err(CallerFailure::Other),
     };
+    if let Some(super::caller::CallerOrigin::Agent(env)) = origin {
+        // The mod's watch child runs under the session's harness: its claim is the environment's
+        // (the fingerprint is the harness process's), with the `--session` the mod passed.
+        if !crate::delivery::declares(
+            env.harness.as_str(),
+            crate::harness::adapter::DeliveryMechanism::PushChannel,
+        ) {
+            return Err(CallerFailure::NoPushChannel);
+        }
+        let generation = super::seat_generation(client, &parsed.output, &selection, clock.as_ref())
+            .map_err(|_| CallerFailure::NoBinding)?;
+        let current = super::caller::agent_context(
+            &env,
+            *instance,
+            &selection.seat,
+            &selection.target,
+            generation,
+        );
+        let claim = bridge::caller_claim(&current).map_err(|_| CallerFailure::NoBinding)?;
+        let claim = own_session_claim(claim, session, Some(env.fingerprint))?;
+        return Ok((claim, selection.seat, *instance));
+    }
     let contexts =
         seat_contexts(paths, *instance, &selection.seat).map_err(|_| CallerFailure::Other)?;
     let current = contexts
         .current()
         .map_err(|_| CallerFailure::Other)?
         .ok_or(CallerFailure::NoBinding)?;
-    if current.harness != Harness::Claude {
-        return Err(CallerFailure::NotClaude);
+    if !crate::delivery::declares(
+        current.harness.occupant().as_str(),
+        crate::harness::adapter::DeliveryMechanism::PushChannel,
+    ) {
+        return Err(CallerFailure::NoPushChannel);
     }
-    let mut claim = bridge::caller_claim(&current).map_err(|_| CallerFailure::NoBinding)?;
+    let claim = bridge::caller_claim(&current).map_err(|_| CallerFailure::NoBinding)?;
+    let claim = own_session_claim(claim, session, None)?;
+    Ok((claim, selection.seat, *instance))
+}
+
+/// The watch child's claim names the binding of the session it serves (spec §3 Wake): the
+/// top-level Claude binding keyed by the seat and the `--session` the mod passed. A seat holds a
+/// binding per session, so the registration must carry this session and never an agent id; the
+/// daemon resolves it to that binding and holds the channel there.
+fn own_session_claim(
+    mut claim: CallerClaim,
+    session: &str,
+    liveness: Option<crate::protocol::authority::LivenessFingerprint>,
+) -> Result<CallerClaim, CallerFailure> {
     claim.native_session =
         NativeSessionId::parse(session.to_owned()).map_err(|_| CallerFailure::Other)?;
-    Ok((claim, selection.seat, *instance))
+    claim.role = crate::protocol::authority::CallerRole::TopLevel;
+    claim.agent_id = None;
+    if liveness.is_some() {
+        claim.liveness = liveness;
+    }
+    Ok(claim)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1110,7 +1248,9 @@ where
 }
 
 #[cfg(test)]
-use crate::protocol::watch::truncation_marker;
+use crate::protocol::watch::{WatchMessage, truncation_marker};
+#[cfg(test)]
+use std::collections::HashSet;
 
 #[cfg(test)]
 #[path = "../../tests/cli/watch.rs"]

@@ -133,8 +133,10 @@ impl World {
         serde_json::from_slice(&output.stdout).unwrap()
     }
     fn hook(&self, harness: &str, pane: &str, payload: &Value) -> Value {
-        let mut child = self
-            .command()
+        let mut command = self.command();
+        // A hook runs under its harness (the test process stands in for it).
+        herdr_threads::test_support::isolation::as_agent(&mut command, harness, "hook-session");
+        let mut child = command
             .args(self.routed(&["hook", harness]))
             .env("HERDR_ENV", "1")
             .env("HERDR_PANE_ID", pane)
@@ -199,7 +201,17 @@ impl World {
         .into()
     }
     fn binding(&self) -> (String, i64, String, String, String) {
-        self.db().query_row("SELECT seat_id,generation,native_session,execution_id,observation_provenance FROM occupant_bindings WHERE harness='hermes' AND ended_at IS NULL", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).unwrap()
+        self.db().query_row("SELECT seat_id,generation,native_session,execution_id,observation_provenance FROM occupant_bindings WHERE harness='hermes' AND ended_at IS NULL AND liveness='connected' ORDER BY ordinal DESC LIMIT 1", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).unwrap()
+    }
+    /// Open Hermes rows in ordinal order: (native_session, liveness, disconnect_reason, generation).
+    fn hermes_bindings(&self) -> Vec<(String, String, Option<String>, i64)> {
+        let db = self.db();
+        let mut statement = db.prepare("SELECT native_session,liveness,disconnect_reason,generation FROM occupant_bindings WHERE harness='hermes' AND ended_at IS NULL ORDER BY ordinal").unwrap();
+        statement
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
     }
 }
 impl Drop for World {
@@ -488,7 +500,7 @@ fn harness_adapter_end_to_end_wiring_uses_registry_values_across_boundaries() {
             .iter()
             .map(|a| a["id"].as_str().unwrap())
             .collect::<Vec<_>>(),
-        ["claude", "codex", "hermes", "synthetic_fourth"]
+        ["claude", "codex", "hermes", "agy", "synthetic_fourth"]
     );
     let binary = w.fourth.join("ht-synthetic-fourth");
     w.json(&[
@@ -618,9 +630,23 @@ fn harness_adapter_end_to_end_wiring_uses_registry_values_across_boundaries() {
     assert_eq!(cleared["lifecycle_ack"]["mode"], "clear");
     let updated = w.binding();
     assert_eq!(updated.0, initial.0);
-    assert!(updated.1 > initial.1);
-    assert_ne!(updated.3, initial.3);
+    assert_eq!(
+        updated.1, initial.1,
+        "a /new adds a binding; the mapping generation does not rotate (spec §1 seats.generation)"
+    );
     assert!(updated.2.contains("net-new"));
+    assert_ne!(
+        updated.3, initial.3,
+        "the new session has its own execution"
+    );
+    // Same stand-in process, so the old binding is superseded (spec §3 Same-PID supersede).
+    let open = w.hermes_bindings();
+    assert_eq!(open.len(), 2, "{open:?}");
+    assert!(open[0].0.contains("net-session"), "{open:?}");
+    assert_eq!(open[0].1, "disconnected", "{open:?}");
+    assert_eq!(open[0].2.as_deref(), Some("superseded"), "{open:?}");
+    assert!(open[1].0.contains("net-new"), "{open:?}");
+    assert_eq!(open[1].1, "connected", "{open:?}");
     drop(proxy);
     let doctor = w.json(&["doctor", "--harness", "synthetic_fourth"]);
     assert_eq!(

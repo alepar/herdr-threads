@@ -189,6 +189,9 @@ impl IsolatedHerdr {
                 cmd.env_remove(key);
             }
         }
+        // The harness above the test runner (a developer's own agent session) is not this
+        // child's caller: its environment markers go and its ancestry ends at the test process.
+        crate::test_support::isolation::scrub_env(&mut cmd);
         cmd.envs(self.env());
         // Owner tag and owner pid: a daemon started through this command
         // exits with the test process (ht-p03.131).

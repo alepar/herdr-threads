@@ -51,6 +51,22 @@ fn namespace(selected: &RuntimeContext, instance: uuid::Uuid) -> HandoffNamespac
         host_endpoint: selected.host_endpoint.clone(),
     }
 }
+fn recovery_origin_host_matches(
+    semantic: &SemanticMutation,
+    selected: &RuntimeContext,
+) -> Result<(), RunError> {
+    let frozen = semantic
+        .namespace()
+        .ok_or_else(|| super::invalid_request("recovery lacks frozen namespace"))?;
+    if frozen.state_dir.as_os_str() != selected.state_dir.as_os_str()
+        || frozen.host_endpoint.as_os_str() != selected.host_endpoint.as_os_str()
+    {
+        return Err(super::invalid_request(
+            "recovery selected namespace differs from original",
+        ));
+    }
+    Ok(())
+}
 fn require_capability<C: LocalClient + ?Sized>(
     client: &C,
     clock: &dyn Clock,
@@ -68,6 +84,31 @@ fn require_capability<C: LocalClient + ?Sized>(
         )),
     }
 }
+pub(crate) fn require_automatic_capability<C: LocalClient + ?Sized>(
+    client: &C,
+    clock: &dyn Clock,
+) -> Result<(), RunError> {
+    match client.call(Command::Capabilities, &super::cooperative_budget(clock))? {
+        CommandResult::Capabilities(c)
+            if c.capabilities
+                .iter()
+                .any(|v| v == crate::protocol::capabilities::AUTOMATIC_HANDOFF_V1) =>
+        {
+            Ok(())
+        }
+        _ => Err(super::unsupported(
+            "daemon lacks automatic handoff capability",
+        )),
+    }
+}
+pub(crate) fn automatic_before_topology<C: LocalClient + ?Sized, T>(
+    client: &C,
+    clock: &dyn Clock,
+    topology: impl FnOnce() -> Result<T, RunError>,
+) -> Result<T, RunError> {
+    require_automatic_capability(client, clock)?;
+    topology()
+}
 fn original_kind(semantic: &SemanticMutation) -> &SemanticMutation {
     match semantic {
         SemanticMutation::Frozen { mutation, .. } => mutation,
@@ -77,7 +118,10 @@ fn original_kind(semantic: &SemanticMutation) -> &SemanticMutation {
 pub(crate) fn is_compound(semantic: &SemanticMutation) -> bool {
     matches!(
         original_kind(semantic),
-        SemanticMutation::HandoffBootstrap(_) | SemanticMutation::HandoffDelivery(_)
+        SemanticMutation::HandoffBootstrap(_)
+            | SemanticMutation::HandoffDelivery(_)
+            | SemanticMutation::AutomaticDelivery(_)
+            | SemanticMutation::AutomaticBootstrap(_)
     )
 }
 fn agent_claim(claim: &CallerClaim) -> Result<(), RunError> {
@@ -105,6 +149,20 @@ pub(crate) fn try_completed<C: LocalClient + ?Sized>(
     clock: &dyn Clock,
     writer: &mut dyn Write,
 ) -> Result<bool, RunError> {
+    let ns = namespace(selected, instance);
+    try_completed_with_namespace(parsed, journal, &ns, client, clock, writer)
+}
+
+/// The same historical dispatcher called by the public retry wrapper. Keeping
+/// the selected namespace explicit lets fake-port tests use their real store.
+pub(crate) fn try_completed_with_namespace<C: LocalClient + ?Sized>(
+    parsed: &ParsedCli,
+    journal: &Journal,
+    ns: &HandoffNamespace,
+    client: &C,
+    clock: &dyn Clock,
+    writer: &mut dyn Write,
+) -> Result<bool, RunError> {
     let mut sink = ForwardWriter(writer);
     let writer = &mut sink;
     let CliAction::Retry(recovery) = &parsed.action else {
@@ -112,14 +170,68 @@ pub(crate) fn try_completed<C: LocalClient + ?Sized>(
     };
     let original = super::retry::load_original_for_actor(journal, recovery.as_str())?;
     let reference = &original.header.reference;
-    let ns = namespace(selected, instance);
     match original_kind(&original.semantic) {
+        SemanticMutation::AutomaticDelivery(_) | SemanticMutation::AutomaticHandoff(_) => {
+            super::handoff_delivery::require_automatic_capability(client, clock)?;
+            let super::journal::SemanticMutation::Frozen { claim, mutation } = &original.semantic
+            else {
+                return Err(super::invalid_request(
+                    "automatic retry lacks frozen caller",
+                ));
+            };
+            let automatic = match mutation.as_ref() {
+                SemanticMutation::AutomaticDelivery(plan) => {
+                    AutomaticOriginal::Delivery(plan.clone())
+                }
+                SemanticMutation::AutomaticHandoff(plan) => {
+                    AutomaticOriginal::Handoff(plan.clone())
+                }
+                _ => unreachable!(),
+            };
+            let mut envelope = super::handoff_delivery::automatic_envelope(claim, automatic)?;
+            envelope.action = AutomaticDeliveryAction::Status;
+            match client.call(
+                Command::AutomaticHandoffDelivery(Box::new(envelope)),
+                &super::cooperative_budget(clock),
+            ) {
+                Ok(CommandResult::Handoff(current)) if current.state == HandoffState::Completed => {
+                    super::handoff_delivery::retry_automatic_to_writer(
+                        journal,
+                        reference,
+                        parsed.actor,
+                        ns,
+                        client,
+                        None,
+                        clock,
+                        &parsed.output,
+                        writer,
+                    )?;
+                    Ok(true)
+                }
+                Ok(CommandResult::Handoff(_)) => Ok(false),
+                Err(e) if e.code == ErrorCode::NotFound => Ok(false),
+                Err(e) => Err(e.into()),
+                _ => Err(super::invalid_request("unexpected automatic status")),
+            }
+        }
+        SemanticMutation::AutomaticBootstrap(_) => {
+            require_automatic_capability(client, clock)?;
+            super::topology_handoff::try_completed_automatic(
+                journal,
+                reference,
+                ns,
+                client,
+                clock,
+                &parsed.output,
+                writer,
+            )
+        }
         SemanticMutation::HandoffBootstrap(_) => {
             require_capability(client, clock)?;
             super::topology_handoff::try_completed(
                 journal,
                 reference,
-                &ns,
+                ns,
                 client,
                 clock,
                 &parsed.output,
@@ -135,7 +247,7 @@ pub(crate) fn try_completed<C: LocalClient + ?Sized>(
                         journal,
                         reference,
                         parsed.actor,
-                        &ns,
+                        ns,
                         &guarded,
                         clock,
                         &parsed.output,
@@ -167,6 +279,80 @@ fn continuation_failure_phase(observed: Option<BootstrapState>) -> Option<&'stat
     }
 }
 
+/// The parsed new-tab arm shared by the public runtime and fake-port route.
+/// Its capability check precedes topology, preflight and journal publication.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn try_run_automatic_new_with_ports(
+    parsed: &ParsedCli,
+    claim: &CallerClaim,
+    journal: &Journal,
+    namespace: &HandoffNamespace,
+    client: &dyn LocalClient,
+    native: &dyn crate::ports::CreateTabPort,
+    launcher: &mut dyn super::handoff::HandoffLauncher,
+    clock: &dyn Clock,
+    invocation_cwd: &std::path::Path,
+    options: Option<std::ffi::OsString>,
+    topology: &mut dyn FnMut() -> Result<crate::host::observation::HostTopology, RunError>,
+    preflight: &mut dyn FnMut(
+        &AutomaticBootstrapIdentity,
+    )
+        -> Result<crate::host::continuity::LocalEndpointWitness, RunError>,
+    output: &OutputSpec,
+    writer: &mut dyn Write,
+) -> Result<bool, RunError> {
+    let CliAction::TopologyHandoff(request) = &parsed.action else {
+        return Ok(false);
+    };
+    if !request.automatic || request.existing {
+        return Ok(false);
+    }
+    agent_claim(claim)?;
+    super::handoff_delivery::require_policy_capabilities(client, clock, request.policy.as_ref())?;
+    let topology = automatic_before_topology(client, clock, topology)?;
+    let identity = super::topology_handoff::prepare_automatic(
+        request,
+        super::topology_handoff::Preparation {
+            claim,
+            namespace,
+            topology: &topology,
+            invocation_cwd,
+            options,
+            client,
+            clock,
+        },
+    )?;
+    identity
+        .validate_local_admission(journal.root())
+        .map_err(super::invalid_request)?;
+    let witness = preflight(&identity)?;
+    let context = HostCallContext {
+        budget: super::cooperative_budget(clock),
+        expected_boot: None,
+        expected_epoch: None,
+    };
+    let reference =
+        super::topology_handoff::publish_automatic(journal, &identity, clock.utc_now().0)?;
+    let mut writer = ForwardWriter(writer);
+    super::retry::run_automatic_bootstrap_retry_to_writer(
+        journal,
+        &reference,
+        parsed.actor,
+        namespace,
+        client,
+        native,
+        launcher,
+        clock,
+        super::topology_handoff::BootstrapSubmissionInputs {
+            witness: &witness,
+            context: &context,
+        },
+        output,
+        &mut writer,
+    )?;
+    Ok(true)
+}
+
 pub(crate) fn run(
     parsed: ParsedCli,
     claim: CallerClaim,
@@ -181,14 +367,115 @@ pub(crate) fn run(
     let (instance, _, client) = super::connect(paths, &clock)?;
     let ns = namespace(&selected, instance);
     agent_claim(&claim)?;
-    require_capability(&client, clock.as_ref())?;
+    if !matches!(&parsed.action, CliAction::TopologyHandoff(request) if request.automatic && !request.existing)
+    {
+        require_capability(&client, clock.as_ref())?;
+    }
     let host = NativeCli::new(selected.host_endpoint.clone(), clock.clone());
     let mut output = parsed.output.clone();
     output.context.state_dir = Some(selected.state_dir.to_string_lossy().into_owned());
     output.context.host = Some(selected.host_endpoint.to_string_lossy().into_owned());
     let reference = match &parsed.action {
+        CliAction::TopologyHandoff(request) if request.automatic && !request.existing => {
+            let cwd = std::env::current_dir()?;
+            let registry = crate::harness::registry::builtins();
+            let harness = request
+                .kind
+                .as_deref()
+                .and_then(|kind| crate::harness::launch::bootstrap_target(registry, kind))
+                .ok_or_else(|| super::invalid_request("invalid bootstrap harness"))?;
+            let options =
+                super::launch::native_options_env(registry, harness)?.and_then(std::env::var_os);
+            let mut env = super::setup::SetupEnv::from_process(&output)?;
+            env.state_dir = Some(selected.state_dir.clone());
+            env.host_endpoint = Some(selected.host_endpoint.clone());
+            let seats =
+                super::launch::DaemonSeatResolver::new(&client, journal, instance, clock.as_ref());
+            let shell = super::launch::SystemShellProbe::from_process();
+            let mut launcher = super::handoff::NativeLauncher {
+                registry,
+                parts: super::launch::LaunchParts {
+                    env: &env,
+                    host: &host,
+                    seats: &seats,
+                    handoff: &client,
+                    clock: clock.as_ref(),
+                    record_dir: Some(&paths.instance_dir),
+                    shell_probe: &shell,
+                },
+            };
+            let handled = try_run_automatic_new_with_ports(
+                &parsed,
+                &claim,
+                journal,
+                &ns,
+                &client,
+                &host,
+                &mut launcher,
+                clock.as_ref(),
+                &cwd,
+                options,
+                &mut || Ok(host.topology(&super::cooperative_budget(clock.as_ref()))?),
+                &mut |identity| {
+                    let effective =
+                        super::topology_handoff::preflight_automatic_launch_request(identity)?;
+                    let expected = crate::harness::launch::compose_native_argv(
+                        identity.plan.payload.launch.harness,
+                        effective.argv.clone(),
+                        vec![],
+                    )?;
+                    let input = super::launch::prepare_native_input_with_registry(
+                        registry,
+                        &effective,
+                        &super::launch::LaunchParts {
+                            env: &env,
+                            host: &host,
+                            seats: &seats,
+                            handoff: &client,
+                            clock: clock.as_ref(),
+                            record_dir: Some(&paths.instance_dir),
+                            shell_probe: &shell,
+                        },
+                    )?;
+                    if input.argv != expected {
+                        return Err(super::invalid_request(
+                            "selected native input differs from frozen automatic startup contract",
+                        ));
+                    }
+                    let context = HostCallContext {
+                        budget: super::cooperative_budget(clock.as_ref()),
+                        expected_boot: None,
+                        expected_epoch: None,
+                    };
+                    Ok(host
+                        .observe_bootstrap_target(&claim.target, &context)?
+                        .witness()
+                        .clone())
+                },
+                &output,
+                writer,
+            )?;
+            debug_assert!(handled);
+            return Ok(());
+        }
         CliAction::TopologyHandoff(request) if request.existing => {
             let topology = host.topology(&super::cooperative_budget(clock.as_ref()))?;
+            if request.automatic {
+                return super::handoff_delivery::run_automatic_existing(
+                    request,
+                    super::handoff_delivery::Preparation {
+                        claim: &claim,
+                        namespace: &ns,
+                        topology: &topology,
+                        client: &client,
+                        clock: clock.as_ref(),
+                    },
+                    journal,
+                    parsed.actor,
+                    &output,
+                    writer,
+                );
+            }
             let plan = super::handoff_delivery::prepare(
                 request,
                 super::handoff_delivery::Preparation {
@@ -239,10 +526,12 @@ pub(crate) fn run(
             let topology = host.topology(&super::cooperative_budget(clock.as_ref()))?;
             let cwd = std::env::current_dir()?;
             let registry = crate::harness::registry::builtins();
-            let harness = match request.kind.as_deref() {
-                Some("codex") => crate::harness::context::Harness::Codex,
-                Some("claude") => crate::harness::context::Harness::Claude,
-                _ => return Err(super::invalid_request("invalid bootstrap harness")),
+            let Some(harness) = request
+                .kind
+                .as_deref()
+                .and_then(|kind| crate::harness::launch::bootstrap_target(registry, kind))
+            else {
+                return Err(super::invalid_request("invalid bootstrap harness"));
             };
             let options =
                 super::launch::native_options_env(registry, harness)?.and_then(std::env::var_os);
@@ -330,6 +619,79 @@ pub(crate) fn run(
                 ));
             }
 
+            if let SemanticMutation::AutomaticBootstrap(_) = original_kind(&original.semantic) {
+                require_automatic_capability(&client, clock.as_ref())?;
+                let identity = super::topology_handoff::automatic_bootstrap_identity(&original)?;
+                let current = match client.call(
+                    Command::AutomaticBootstrap(Box::new(AutomaticBootstrapMutation {
+                        identity: identity.clone(),
+                        action: AutomaticBootstrapAction::Status,
+                    })),
+                    &super::cooperative_budget(clock.as_ref()),
+                ) {
+                    Ok(CommandResult::AutomaticBootstrap(value)) => Some(*value),
+                    Err(e) if e.code == ErrorCode::Conflict => None,
+                    Err(e) => return Err(e.into()),
+                    _ => {
+                        return Err(super::invalid_request(
+                            "unexpected automatic bootstrap status",
+                        ));
+                    }
+                };
+                let context = HostCallContext {
+                    budget: super::cooperative_budget(clock.as_ref()),
+                    expected_boot: None,
+                    expected_epoch: None,
+                };
+                let witness = match current.as_ref().and_then(|v| v.creation.as_ref()) {
+                    Some(created) => created.witness.clone(),
+                    None => host
+                        .observe_bootstrap_target(&claim.target, &context)?
+                        .witness()
+                        .clone(),
+                };
+                let mut env = super::setup::SetupEnv::from_process(&output)?;
+                env.state_dir = Some(selected.state_dir.clone());
+                env.host_endpoint = Some(selected.host_endpoint.clone());
+                let registry = crate::harness::registry::builtins();
+                let seats = super::launch::DaemonSeatResolver::new(
+                    &client,
+                    journal,
+                    instance,
+                    clock.as_ref(),
+                );
+                let shell = super::launch::SystemShellProbe::from_process();
+                let mut launcher = super::handoff::NativeLauncher {
+                    registry,
+                    parts: super::launch::LaunchParts {
+                        env: &env,
+                        host: &host,
+                        seats: &seats,
+                        handoff: &client,
+                        clock: clock.as_ref(),
+                        record_dir: Some(&paths.instance_dir),
+                        shell_probe: &shell,
+                    },
+                };
+                super::retry::run_automatic_bootstrap_retry_to_writer(
+                    journal,
+                    &original.header.reference,
+                    parsed.actor,
+                    &ns,
+                    &client,
+                    &host,
+                    &mut launcher,
+                    clock.as_ref(),
+                    super::topology_handoff::BootstrapSubmissionInputs {
+                        witness: &witness,
+                        context: &context,
+                    },
+                    &output,
+                    writer,
+                )?;
+                return Ok(());
+            }
+
             if let SemanticMutation::HandoffDelivery(_) = original_kind(&original.semantic) {
                 let guarded = FrozenDeliveryClient::new(&client, &original)?;
                 super::retry::run_delivery_retry_to_writer(
@@ -338,6 +700,21 @@ pub(crate) fn run(
                     parsed.actor,
                     &ns,
                     &guarded,
+                    clock.as_ref(),
+                    &output,
+                    writer,
+                )?;
+                return Ok(());
+            }
+            if let SemanticMutation::AutomaticDelivery(_) = original_kind(&original.semantic) {
+                super::handoff_delivery::require_automatic_capability(&client, clock.as_ref())?;
+                super::handoff_delivery::retry_automatic_to_writer(
+                    journal,
+                    &original.header.reference,
+                    parsed.actor,
+                    &ns,
+                    &client,
+                    None,
                     clock.as_ref(),
                     &output,
                     writer,
@@ -529,6 +906,50 @@ pub(crate) fn run_operator(
         return Ok(false);
     }
     let journal = Journal::open(paths.instance_dir.join("intents"))?;
+    let mut automatic_connect = || -> Result<(HandoffNamespace, Box<dyn LocalClient>), RunError> {
+        let (instance, _, client) = super::connect(paths, clock)?;
+        Ok((namespace(selected, instance), Box::new(client)))
+    };
+    let mut automatic_observe =
+        |target: &crate::protocol::ids::HostTargetId,
+         saved_request: Option<&crate::ports::CreateTabRequest>| {
+            let host = NativeCli::new(selected.host_endpoint.clone(), clock.clone());
+            let context = HostCallContext {
+                budget: super::cooperative_budget(clock.as_ref()),
+                expected_boot: None,
+                expected_epoch: None,
+            };
+            let pane = host.observe_bootstrap_target(target, &context)?;
+            let observation = pane.observation();
+            Ok((
+                crate::ports::CreatedTab {
+                    correlation: saved_request.map(|v| v.correlation.clone()).unwrap_or_else(
+                        || crate::protocol::ids::HostCallId::new(uuid::Uuid::new_v4().to_string()),
+                    ),
+                    workspace: pane.workspace().clone(),
+                    tab: pane.tab().clone(),
+                    root_pane: observation.target.clone(),
+                    terminal: observation
+                        .terminal
+                        .clone()
+                        .ok_or_else(|| super::invalid_request("recovery pane lacks terminal"))?,
+                    host_incarnation: observation.host_boot.clone(),
+                    witness: pane.witness().clone(),
+                },
+                observation.call_id.clone(),
+            ))
+        };
+    if try_run_automatic_operator_with_ports(
+        parsed,
+        selected,
+        &journal,
+        clock.as_ref(),
+        writer,
+        &mut automatic_connect,
+        &mut automatic_observe,
+    )? {
+        return Ok(true);
+    }
     let original = match &parsed.action {
         CliAction::TopologyRecover(_) => None,
         CliAction::Retry(recovery) => {
@@ -536,6 +957,7 @@ pub(crate) fn run_operator(
             if !matches!(
                 original.semantic,
                 SemanticMutation::OperatorRecoverBootstrap(_)
+                    | SemanticMutation::OperatorRecoverAutomaticBootstrap(_)
             ) {
                 return Ok(false);
             }
@@ -667,6 +1089,242 @@ pub(crate) fn run_operator(
         writer,
     )?;
     Ok(true)
+}
+
+/// V2 recovery selection shares the public operator dispatch path. Historical
+/// actor and selected-host checks happen before opening the transport.
+type AutomaticCreatedObservation =
+    Result<(crate::ports::CreatedTab, crate::protocol::ids::HostCallId), RunError>;
+type AutomaticCreatedObserver<'a> = dyn FnMut(
+        &crate::protocol::ids::HostTargetId,
+        Option<&crate::ports::CreateTabRequest>,
+    ) -> AutomaticCreatedObservation
+    + 'a;
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn try_run_automatic_operator_with_ports<'a>(
+    parsed: &ParsedCli,
+    selected: &RuntimeContext,
+    journal: &Journal,
+    clock: &dyn Clock,
+    writer: &mut dyn Write,
+    connect: &mut dyn FnMut() -> Result<(HandoffNamespace, Box<dyn LocalClient + 'a>), RunError>,
+    observe_created: &mut AutomaticCreatedObserver<'_>,
+) -> Result<bool, RunError> {
+    let automatic = match &parsed.action {
+        CliAction::TopologyRecover(request) => {
+            let source =
+                super::retry::load_original_for_actor(journal, request.reference.as_str())?;
+            if super::journal::classify_original_actor(&source.header.scope, &source.semantic)?
+                != OriginalActor::Agent
+            {
+                return Err(super::invalid_request(
+                    "recovery needs original agent bootstrap",
+                ));
+            }
+            let automatic = matches!(
+                original_kind(&source.semantic),
+                SemanticMutation::AutomaticBootstrap(_)
+            );
+            if automatic {
+                recovery_origin_host_matches(&source.semantic, selected)?;
+            }
+            automatic
+        }
+        CliAction::Retry(recovery) => {
+            let original = super::retry::load_original_for_actor(journal, recovery.as_str())?;
+            let automatic = matches!(
+                original.semantic,
+                SemanticMutation::OperatorRecoverAutomaticBootstrap(_)
+            );
+            if automatic {
+                recovery_origin_host_matches(&original.semantic, selected)?;
+            }
+            automatic
+        }
+        _ => false,
+    };
+    if !automatic {
+        return Ok(false);
+    }
+    if parsed.actor != InvocationActor::Human {
+        return Err(super::invalid_request(
+            "recovery requires immediate human namespace",
+        ));
+    }
+    let (ns, client) = connect()?;
+    super::topology_recover::automatic::require_capability(client.as_ref(), clock)?;
+    let mut writer = ForwardWriter(writer);
+    if matches!(parsed.action, CliAction::Retry(_)) {
+        run_automatic_operator_retry_parsed(
+            parsed,
+            journal,
+            &ns,
+            client.as_ref(),
+            clock,
+            &mut writer,
+        )?;
+    } else {
+        run_automatic_operator_parsed(
+            parsed,
+            journal,
+            &ns,
+            client.as_ref(),
+            clock,
+            &mut writer,
+            observe_created,
+        )?;
+    }
+    Ok(true)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_automatic_operator_parsed<C: LocalClient + ?Sized, W: Write>(
+    parsed: &ParsedCli,
+    journal: &Journal,
+    namespace: &HandoffNamespace,
+    client: &C,
+    clock: &dyn Clock,
+    writer: &mut W,
+    observe_created: impl FnOnce(
+        &crate::protocol::ids::HostTargetId,
+        Option<&crate::ports::CreateTabRequest>,
+    ) -> Result<
+        (crate::ports::CreatedTab, crate::protocol::ids::HostCallId),
+        RunError,
+    >,
+) -> Result<(), RunError> {
+    let CliAction::TopologyRecover(request) = &parsed.action else {
+        return Err(super::invalid_request("not a parsed recovery assertion"));
+    };
+    if parsed.actor != InvocationActor::Human {
+        return Err(super::invalid_request(
+            "recovery requires immediate human namespace",
+        ));
+    }
+    let source = super::retry::load_original_for_actor(journal, request.reference.as_str())?;
+    if super::journal::classify_original_actor(&source.header.scope, &source.semantic)?
+        != OriginalActor::Agent
+    {
+        return Err(super::invalid_request(
+            "recovery needs original agent bootstrap",
+        ));
+    }
+    let identity = super::topology_handoff::automatic_bootstrap_identity(&source)?;
+    let original_ns = &identity.plan.payload.handoff.namespace;
+    if original_ns.instance != namespace.instance
+        || original_ns.state_dir.as_os_str() != namespace.state_dir.as_os_str()
+        || original_ns.host_endpoint.as_os_str() != namespace.host_endpoint.as_os_str()
+    {
+        return Err(super::invalid_request(
+            "automatic recovery namespace differs from original",
+        ));
+    }
+    super::topology_recover::automatic::require_capability(client, clock)?;
+    let lock = super::handoff::lock(journal, &source.header.reference)?;
+    let CommandResult::AutomaticBootstrap(status) = client.call(
+        Command::AutomaticBootstrap(Box::new(AutomaticBootstrapMutation {
+            identity: identity.clone(),
+            action: AutomaticBootstrapAction::Status,
+        })),
+        &super::cooperative_budget(clock),
+    )?
+    else {
+        return Err(super::invalid_request(
+            "unexpected automatic recovery status",
+        ));
+    };
+    if status.identity != identity
+        || status.attempt != request.attempt
+        || matches!(
+            status.state,
+            BootstrapState::Completed | BootstrapState::Cancelled
+        )
+    {
+        return Err(super::invalid_request(
+            "automatic recovery inspected attempt is unavailable",
+        ));
+    }
+    let disposition = match &request.disposition {
+        super::topology_recover::Assertion::CreatedPane(target) => {
+            let saved_request = super::topology_handoff::saved_automatic_native_request(
+                journal,
+                &source.header.reference,
+                &identity,
+            )?;
+            let (evidence, structural_reference) = observe_created(target, saved_request.as_ref())?;
+            AutomaticBootstrapRecoveryDisposition::CreatedPane {
+                evidence: Box::new(evidence),
+                structural_reference,
+            }
+        }
+        super::topology_recover::Assertion::NotCreated => {
+            super::topology_recover::automatic::not_created()
+        }
+        super::topology_recover::Assertion::Cancelled { reason } => {
+            super::topology_recover::automatic::cancelled(reason.clone(), &status)
+        }
+    };
+    let plan = super::topology_recover::automatic::prepare(
+        journal,
+        request,
+        disposition,
+        unsafe { libc::geteuid() },
+        namespace,
+        &status,
+    )?;
+    let reference = super::topology_recover::automatic::publish_under_guard(
+        journal,
+        &plan,
+        namespace,
+        clock.utc_now().0,
+        &lock,
+    )?;
+    super::topology_recover::automatic::retry_under_guard(
+        journal,
+        &reference,
+        namespace,
+        client,
+        clock,
+        &parsed.output,
+        writer,
+        &lock,
+    )?;
+    Ok(())
+}
+
+pub(crate) fn run_automatic_operator_retry_parsed<C: LocalClient + ?Sized, W: Write>(
+    parsed: &ParsedCli,
+    journal: &Journal,
+    namespace: &HandoffNamespace,
+    client: &C,
+    clock: &dyn Clock,
+    writer: &mut W,
+) -> Result<(), RunError> {
+    let CliAction::Retry(recovery) = &parsed.action else {
+        return Err(super::invalid_request("not a parsed operator retry"));
+    };
+    if parsed.actor != InvocationActor::Human {
+        return Err(super::invalid_request(
+            "recovery requires immediate human namespace",
+        ));
+    }
+    let original = super::retry::load_original_for_actor(journal, recovery.as_str())?;
+    if !matches!(
+        original.semantic,
+        SemanticMutation::OperatorRecoverAutomaticBootstrap(_)
+    ) {
+        return Err(super::invalid_request("not an automatic operator decision"));
+    }
+    super::topology_recover::automatic::retry_to_writer(
+        journal,
+        &original.header.reference,
+        namespace,
+        client,
+        clock,
+        &parsed.output,
+        writer,
+    )?;
+    Ok(())
 }
 
 #[cfg(test)]

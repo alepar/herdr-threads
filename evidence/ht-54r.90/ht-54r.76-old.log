@@ -1,0 +1,61 @@
+# src state: tip with reverse-applied src diffs of: c609ae89
+ M src/store/lazy_delivery.rs
+ M src/store/receipts.rs
+# command: cargo test --locked --all-features --lib -- mod_ack_of_ordinary_and_lazy mod_ack_of_only_the_lazy truncated_ordinary_next already_settled_ordinary_still hook_pull_confirm_of_ordinary_and_lazy
+
+running 5 tests
+test store::receipts::mod_ack_tests::truncated_ordinary_next_to_a_lazy_row_does_not_let_the_cursor_pass ... FAILED
+test store::receipts::mod_ack_tests::already_settled_ordinary_still_advances_a_second_bindings_cursor ... FAILED
+test store::receipts::mod_ack_tests::mod_ack_of_ordinary_and_lazy_advances_the_cursor_past_both ... FAILED
+test store::receipts::mod_ack_tests::mod_ack_of_only_the_lazy_row_stops_before_an_unshown_ordinary_message ... FAILED
+test service::delivery_pull::lazy_hook_pull_tests::hook_pull_confirm_of_ordinary_and_lazy_advances_the_cursor_and_does_not_reoffer ... FAILED
+
+failures:
+
+---- store::receipts::mod_ack_tests::truncated_ordinary_next_to_a_lazy_row_does_not_let_the_cursor_pass stdout ----
+
+thread 'store::receipts::mod_ack_tests::truncated_ordinary_next_to_a_lazy_row_does_not_let_the_cursor_pass' (52261720) panicked at src/store/../../tests/store/mod_ack.rs:626:5:
+assertion `left == right` failed: the cursor ends at ok1, before the truncated big
+  left: 0
+ right: 1
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- store::receipts::mod_ack_tests::already_settled_ordinary_still_advances_a_second_bindings_cursor stdout ----
+
+thread 'store::receipts::mod_ack_tests::already_settled_ordinary_still_advances_a_second_bindings_cursor' (52261717) panicked at src/store/../../tests/store/mod_ack.rs:587:5:
+assertion `left == right` failed
+  left: 0
+ right: 2
+
+---- store::receipts::mod_ack_tests::mod_ack_of_ordinary_and_lazy_advances_the_cursor_past_both stdout ----
+
+thread 'store::receipts::mod_ack_tests::mod_ack_of_ordinary_and_lazy_advances_the_cursor_past_both' (52261719) panicked at src/store/../../tests/store/mod_ack.rs:525:5:
+assertion `left == right` failed: passes the ordinary and the lazy row
+  left: 0
+ right: 3
+
+---- store::receipts::mod_ack_tests::mod_ack_of_only_the_lazy_row_stops_before_an_unshown_ordinary_message stdout ----
+
+thread 'store::receipts::mod_ack_tests::mod_ack_of_only_the_lazy_row_stops_before_an_unshown_ordinary_message' (52261718) panicked at src/store/../../tests/store/mod_ack.rs:561:5:
+assertion `left == right` failed: the cursor ends at o5, the last message before the unshown o6
+  left: 0
+ right: 1
+
+---- service::delivery_pull::lazy_hook_pull_tests::hook_pull_confirm_of_ordinary_and_lazy_advances_the_cursor_and_does_not_reoffer stdout ----
+
+thread 'service::delivery_pull::lazy_hook_pull_tests::hook_pull_confirm_of_ordinary_and_lazy_advances_the_cursor_and_does_not_reoffer' (52261716) panicked at src/service/../../tests/service/lazy_hook_pull.rs:399:5:
+assertion `left == right` failed
+  left: Some(0)
+ right: Some(5)
+
+
+failures:
+    service::delivery_pull::lazy_hook_pull_tests::hook_pull_confirm_of_ordinary_and_lazy_advances_the_cursor_and_does_not_reoffer
+    store::receipts::mod_ack_tests::already_settled_ordinary_still_advances_a_second_bindings_cursor
+    store::receipts::mod_ack_tests::mod_ack_of_only_the_lazy_row_stops_before_an_unshown_ordinary_message
+    store::receipts::mod_ack_tests::mod_ack_of_ordinary_and_lazy_advances_the_cursor_past_both
+    store::receipts::mod_ack_tests::truncated_ordinary_next_to_a_lazy_row_does_not_let_the_cursor_pass
+
+test result: FAILED. 0 passed; 5 failed; 0 ignored; 0 measured; 4464 filtered out; finished in 0.21s
+
+error: test failed, to rerun pass `--lib`

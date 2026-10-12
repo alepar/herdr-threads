@@ -132,6 +132,8 @@ impl Fx {
             native_session: NativeSessionId::new(format!("n{seat}")),
             execution: ExecutionId::new(format!("e{seat}")),
             target: HostTargetId::new(format!("pane-{seat}")),
+            agent_id: None,
+            liveness: Some(crate::protocol::authority::LivenessFingerprint::TEST),
         }
     }
 
@@ -475,8 +477,8 @@ fn frontier_is_the_active_rows_f() {
     fx.add_plain(10);
     fx.db
         .execute(
-            "INSERT INTO catch_up(seat_id,thread_id,frontier_seq,binding_generation,execution_id,entered_at,state) \
-             VALUES ('a','t',7,1,'ea',0,'active')",
+            "INSERT INTO catch_up(binding_id,seat_id,thread_id,frontier_seq,entered_at,state) \
+             SELECT binding_id,'a','t',7,0,'active' FROM occupant_bindings WHERE seat_id='a'",
             [],
         )
         .unwrap();
@@ -611,7 +613,7 @@ fn stale_claim_gets_work_without_entry() {
     let mut fx = Fx::new();
     fx.add_plain(10);
     let mut claim = fx.claim("a", CallerRole::TopLevel);
-    claim.binding_generation = 99;
+    claim.native_session = NativeSessionId::new("another-session");
     match fx.summary_for(claim).unwrap() {
         SummaryOutcome::Work(work) => assert_eq!(work.jobs.len(), 3),
         other => panic!("expected Work, got {other:?}"),
@@ -620,17 +622,56 @@ fn stale_claim_gets_work_without_entry() {
 }
 
 #[test]
-fn current_binding_is_generation_and_execution() {
+fn current_binding_is_the_session_key() {
     let fx = Fx::new();
     let thread = ThreadId::new(T);
     let claim = fx.claim("a", CallerRole::TopLevel);
-    assert!(check_caller(&fx.db, "i", &claim, &thread).unwrap().current);
-    let mut stale = claim.clone();
-    stale.execution = ExecutionId::new("other-execution");
-    assert!(!check_caller(&fx.db, "i", &stale, &thread).unwrap().current);
-    let mut old = claim;
-    old.binding_generation = 2;
-    assert!(!check_caller(&fx.db, "i", &old, &thread).unwrap().current);
+    let current = check_caller(&fx.db, "i", &claim, &thread).unwrap();
+    assert!(current.current);
+    assert!(current.binding.is_some());
+    // Another session names no open binding.
+    let mut other_session = claim.clone();
+    other_session.native_session = NativeSessionId::new("other-session");
+    assert!(
+        !check_caller(&fx.db, "i", &other_session, &thread)
+            .unwrap()
+            .current
+    );
+    // A summary worker (a subagent of the session) acts for its session's top-level binding
+    // (ht-54r.21): the catch-up row is that binding's.
+    let mut subagent = claim.clone();
+    subagent.role = CallerRole::Subagent;
+    subagent.agent_id = Some(crate::protocol::ids::AgentId::new("agent-1"));
+    assert_eq!(
+        check_caller(&fx.db, "i", &subagent, &thread)
+            .unwrap()
+            .binding,
+        current.binding
+    );
+    // The seat's mapping generation and the binding's execution still fence the claim
+    // (ht-54r.21): a claim from before a rebind, or of another execution, names no binding.
+    let mut other_execution = claim.clone();
+    other_execution.execution = ExecutionId::new("other-execution");
+    assert!(
+        !check_caller(&fx.db, "i", &other_execution, &thread)
+            .unwrap()
+            .current
+    );
+    let mut old_generation = claim.clone();
+    old_generation.binding_generation = 2;
+    assert!(
+        !check_caller(&fx.db, "i", &old_generation, &thread)
+            .unwrap()
+            .current
+    );
+    // An ended binding is no binding.
+    fx.db
+        .execute(
+            "UPDATE occupant_bindings SET ended_at=1 WHERE seat_id='a'",
+            [],
+        )
+        .unwrap();
+    assert!(!check_caller(&fx.db, "i", &claim, &thread).unwrap().current);
 }
 
 // ---- Step 3: fetch, lapse, expiry ----
@@ -2332,8 +2373,11 @@ fn user_intent_snapshot_lease_reset_and_fences() {
         )
         .unwrap();
     for sql in [
-        "UPDATE occupant_bindings SET generation=2 WHERE seat_id='a'",
+        // ht-54r.21: a binding's own generation is informational; the seat was rebound.
+        "UPDATE seats SET generation=2 WHERE id='a'",
         "UPDATE occupant_bindings SET execution_id='changed' WHERE seat_id='a'",
+        "UPDATE occupant_bindings SET native_session='changed' WHERE seat_id='a'",
+        "UPDATE occupant_bindings SET ended_at=1 WHERE seat_id='a'",
     ] {
         fx.db.execute(sql, []).unwrap();
         assert_eq!(
@@ -2346,9 +2390,12 @@ fn user_intent_snapshot_lease_reset_and_fences() {
         );
         fx.db
             .execute(
-                "UPDATE occupant_bindings SET generation=1,execution_id='ea' WHERE seat_id='a'",
+                "UPDATE occupant_bindings SET execution_id='ea',native_session='na',ended_at=NULL WHERE seat_id='a'",
                 [],
             )
+            .unwrap();
+        fx.db
+            .execute("UPDATE seats SET generation=1 WHERE id='a'", [])
             .unwrap();
     }
     fx.settings.chunk_bytes += 1;
@@ -2392,7 +2439,7 @@ fn user_intent_snapshot_lease_reset_and_fences() {
     assert_eq!(fx.submit("b", &new, valid("retry".into())).unwrap(), stored);
     fx.db
         .execute(
-            "UPDATE occupant_bindings SET execution_id='changed' WHERE seat_id='b'",
+            "UPDATE occupant_bindings SET native_session='changed' WHERE seat_id='b'",
             [],
         )
         .unwrap();
@@ -2404,7 +2451,7 @@ fn user_intent_snapshot_lease_reset_and_fences() {
     );
     fx.db
         .execute(
-            "UPDATE occupant_bindings SET execution_id='eb' WHERE seat_id='b'",
+            "UPDATE occupant_bindings SET native_session='nb' WHERE seat_id='b'",
             [],
         )
         .unwrap();

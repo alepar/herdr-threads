@@ -319,6 +319,16 @@ fn service_send_writes_programmatic_ordinary_row() {
             None
         )
     );
+    // A programmatic send has no acting binding (spec §2).
+    assert_eq!(
+        db.query_row(
+            "SELECT sender_binding_id FROM messages WHERE id=?1",
+            [id.as_str()],
+            |r| r.get::<_, Option<String>>(0)
+        )
+        .unwrap(),
+        None
+    );
     assert_eq!(sent.author, f.author);
     assert_eq!(sent.recipient_count, 2);
     assert_eq!(
@@ -551,8 +561,11 @@ fn reads_and_notify_create_no_acks() {
         native_session: NativeSessionId::new("n"),
         execution: ExecutionId::new(history::fixture_execution("s1")),
         target: HostTargetId::new("s1"),
+        agent_id: None,
+        liveness: Some(crate::protocol::authority::LivenessFingerprint::TEST),
     };
     let check_in = CheckIn {
+        lineage_parent: None,
         mode: CheckInMode::Current,
         claim: claim.clone(),
         operation: OperationId::new("check-in"),

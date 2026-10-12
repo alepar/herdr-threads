@@ -8,8 +8,9 @@
 //! (`Command::Capabilities`, `Command::HookParseFailure`, or a `full_bodies`
 //! field under its deny_unknown_fields) and forwards the rest unchanged.
 //! "Old CLI" frames are frozen under `tests/fixtures/old_wire/`; they are
-//! protocol 1, five protocols behind this protocol-6 build (B5 moved to 2, thread
-//! summaries to 3, thread names to 4, recorded intent to 5, and handoff fences to 6), so they exercise the decodable skew reply.
+//! protocol 1, six protocols behind this protocol-7 build (B5 moved to 2, thread
+//! summaries to 3, thread names to 4, recorded intent to 5, handoff fences to 6, and session-keyed
+//! binding claims to 7), so they exercise the decodable skew reply.
 
 use super::sweep::{FakeHost, Scratch, pane};
 use herdr_threads::test_support::spawn::SpawnOwned;
@@ -236,6 +237,11 @@ impl Plugin {
     fn raw(&self, agent: Option<(&str, &str, &str)>, args: &[&str]) -> Output {
         let mut command = self.command();
         if let Some((seat, target, harness)) = agent {
+            herdr_threads::test_support::isolation::as_agent(
+                &mut command,
+                harness,
+                &format!("wire-{}", seat),
+            );
             command.args([
                 "--cooperative-seat",
                 seat,
@@ -437,8 +443,8 @@ fn skewed_protocol_version_still_yields_the_stop_then_ensure_report() {
     let mut skewed = published.clone();
     skewed["software_version"] = json!(software);
     // Immediate previous relay wire contract against the fenced-handoff CLI.
-    const OLD_PROTOCOL: u16 = 5;
-    assert_eq!(PROTOCOL_VERSION, 6);
+    const OLD_PROTOCOL: u16 = 6;
+    assert_eq!(PROTOCOL_VERSION, 7);
     assert_eq!(OLD_PROTOCOL, PROTOCOL_VERSION - 1);
     skewed["protocol_version"] = json!(OLD_PROTOCOL);
     write_private(
@@ -497,7 +503,7 @@ fn skewed_protocol_version_still_yields_the_stop_then_ensure_report() {
 }
 
 /// Kills: a protocol-1 CLI (the frozen pre-B5 frames, four protocols behind
-/// this protocol-6 daemon) that gets a closed socket or a reply
+/// this protocol-7 daemon) that gets a closed socket or a reply
 /// it cannot decode (a key outside its deny_unknown_fields types) instead of
 /// the decodable skew error naming the stop-then-ensure remedy; and a skewed
 /// request that reaches the service.
@@ -587,6 +593,7 @@ fn hook_parse_failure_under_optimistic_sends_no_report_to_an_old_daemon() {
             .arg("--host-endpoint")
             .arg(&world.plugin.host)
             .args(["hook", "claude"])
+            .env("HT_TEST_HARNESS", "claude")
             .env("HERDR_ENV", "1")
             .env("HERDR_PANE_ID", "w1:p1")
             .env("HERDR_SOCKET_PATH", &world.plugin.host)

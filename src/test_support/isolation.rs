@@ -2,7 +2,7 @@
 //! state root, a scrubbed environment for spawned binaries, a short socket
 //! base (P37) and a per-test SQLite cost counter.
 use std::{
-    ffi::OsStr,
+    ffi::{OsStr, OsString},
     path::{Path, PathBuf},
     process::Command,
     sync::atomic::{AtomicU64, Ordering},
@@ -111,6 +111,125 @@ pub fn scrub_env(command: &mut Command) -> &mut Command {
     scrub_inherited(command, std::env::vars_os().map(|(key, _)| key));
     crate::test_support::spawn::tag(command);
     command
+}
+
+/// Make `command` an agent of `harness` ("claude" | "codex" | "hermes") running session
+/// `session`, for tests that drive the binary with `--cooperative-*` flags: the spawning test
+/// process stands in for the harness process (fingerprint included) and the harness's own session
+/// variable carries `session`. Real process ancestry is `harness_shim`'s job.
+pub fn as_agent<'a>(command: &'a mut Command, harness: &str, session: &str) -> &'a mut Command {
+    let variable = match harness {
+        "claude" => "CLAUDE_CODE_SESSION_ID",
+        "codex" => "CODEX_SESSION_ID",
+        "hermes" => "HERMES_SESSION_ID",
+        // A registered adapter's declared caller shape names its session variable.
+        other => crate::harness::registry::builtins()
+            .registrations()
+            .iter()
+            .find(|registration| registration.metadata().id == other)
+            .and_then(|registration| registration.caller_env())
+            .map_or("HERMES_SESSION_ID", |shape| shape.session_var),
+    };
+    let stand_in = stand_in_process(harness, session).to_string();
+    // Claude exports its own pid, and a claim prefers it: it names the stand-in too, never the
+    // developer's real Claude session the test runner may sit under.
+    command
+        .env("CLAUDE_PID", &stand_in)
+        .env("HT_TEST_HARNESS", harness)
+        .env("HT_TEST_HARNESS_PID", &stand_in)
+        .env(variable, session)
+}
+
+/// The liveness fingerprint of the stand-in process of `session` (see [`as_agent`]): a live
+/// process of its own, so the liveness worker keeps its binding connected.
+pub fn stand_in_fingerprint(
+    harness: &str,
+    session: &str,
+) -> crate::protocol::authority::LivenessFingerprint {
+    use crate::ports::ProcessInfo;
+    let record = crate::host::process_table::HostProcessTable
+        .process(stand_in_process(harness, session))
+        .expect("the stand-in process is in the process table");
+    crate::protocol::authority::LivenessFingerprint::of(&record)
+}
+
+/// The pid of a long-lived process standing in for the harness process of `session`, started on
+/// first use and shared by every command of that session in this test process. Two sessions are
+/// two processes, as in a real run (a shared fingerprint would make one supersede the other).
+/// It is owned (`spawn_owned`): the reaper stops it once the test process is gone.
+fn stand_in_process(harness: &str, session: &str) -> u32 {
+    use crate::test_support::spawn::{OwnedChild, SpawnOwned};
+    use std::{collections::HashMap, process::Stdio, sync::Mutex};
+    static STAND_INS: Mutex<Option<HashMap<String, OwnedChild>>> = Mutex::new(None);
+    let mut stand_ins = STAND_INS.lock().unwrap_or_else(|e| e.into_inner());
+    stand_ins
+        .get_or_insert_with(HashMap::new)
+        .entry(format!("{harness}/{session}"))
+        .or_insert_with(|| {
+            Command::new("/bin/sleep")
+                .arg("86400")
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn_owned()
+                .expect("start a stand-in harness process")
+        })
+        .id()
+}
+
+/// The ambient agent-harness environment a test child must not inherit (ht-54r.95), derived
+/// from the registry: the exact names (every adapter's `agent_env_markers`, plus each caller
+/// shape's `session_var` and `pid_var`) and the prefixes (each `session_var` up to and including
+/// its first `_`), which cover role-witness inputs no declaration lists.
+pub fn ambient_harness_vars() -> (Vec<&'static str>, Vec<String>) {
+    let registry = crate::harness::registry::builtins();
+    let mut names: Vec<&'static str> = registry.env_markers().map(|marker| marker.name).collect();
+    let mut prefixes: Vec<String> = Vec::new();
+    for (_, shape) in registry.caller_shapes() {
+        names.push(shape.session_var);
+        names.extend(shape.pid_var);
+        if let Some(end) = shape.session_var.find('_') {
+            prefixes.push(shape.session_var[..=end].to_owned());
+        }
+    }
+    names.sort_unstable();
+    names.dedup();
+    prefixes.sort();
+    prefixes.dedup();
+    (names, prefixes)
+}
+
+/// Whether `name` is a harness config-dir variable (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`,
+/// `HERMES_HOME`, ...): isolation, not attribution, so the prefix scrub keeps it. Dropping an
+/// inherited isolated config dir would let the child fall back to the real user config.
+fn is_config_dir_var(name: &str) -> bool {
+    name.ends_with("_HOME") || name.ends_with("_CONFIG_DIR")
+}
+
+/// `env_remove` every ambient harness variable of `inherited` that `command` does not already
+/// set or remove explicitly (an explicit choice wins). Config-dir variables are never removed by
+/// prefix ([`is_config_dir_var`]).
+pub(super) fn remove_ambient_harness_env(
+    command: &mut Command,
+    inherited: impl IntoIterator<Item = OsString>,
+) {
+    let (names, prefixes) = ambient_harness_vars();
+    let explicit: std::collections::HashSet<OsString> =
+        command.get_envs().map(|(key, _)| key.to_owned()).collect();
+    for name in names {
+        if !explicit.contains(OsStr::new(name)) {
+            command.env_remove(name);
+        }
+    }
+    for key in inherited {
+        let lossy = key.to_string_lossy();
+        if !explicit.contains(&key)
+            && !is_config_dir_var(&lossy)
+            && prefixes.iter().any(|prefix| lossy.starts_with(prefix))
+        {
+            command.env_remove(&key);
+        }
+    }
 }
 
 /// The removal half of [`scrub_env`] over an explicit list of inherited
@@ -351,5 +470,93 @@ mod tests {
             assert!(a.join().unwrap().iter().all(|u| *u == solo_small));
             assert!(b.join().unwrap().iter().all(|u| *u == solo_large));
         });
+    }
+
+    #[test]
+    fn ambient_harness_vars_cover_every_declared_marker_session_and_pid_var() {
+        let (names, prefixes) = ambient_harness_vars();
+        let registry = crate::harness::registry::builtins();
+        assert!(registry.env_markers().count() > 0);
+        for marker in registry.env_markers() {
+            assert!(names.contains(&marker.name), "marker {}", marker.name);
+        }
+        let mut shapes = 0;
+        for (id, shape) in registry.caller_shapes() {
+            shapes += 1;
+            assert!(names.contains(&shape.session_var), "{id} session_var");
+            if let Some(pid_var) = shape.pid_var {
+                assert!(names.contains(&pid_var), "{id} pid_var");
+            }
+            let first = &shape.session_var[..=shape.session_var.find('_').unwrap()];
+            assert!(prefixes.iter().any(|p| p == first), "{id} prefix {first}");
+        }
+        assert!(shapes >= 3);
+        let mut sorted = names.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted, names, "sorted and deduplicated");
+    }
+
+    #[test]
+    fn tag_removes_ambient_harness_env_unless_set_explicitly() {
+        let mut cmd = Command::new("/usr/bin/env");
+        cmd.env("CLAUDE_CODE_SESSION_ID", "explicit");
+        remove_ambient_harness_env(
+            &mut cmd,
+            [
+                "CODEX_THREAD_ID",
+                "CODEX_HOME",
+                "CLAUDE_CONFIG_DIR",
+                "HERMES_HOME",
+                "HERMES_X",
+                "ANTIGRAVITY_AGENT",
+                "CLAUDECODE",
+                "PATH",
+                "HOME",
+            ]
+            .map(OsString::from),
+        );
+        let envs: std::collections::HashMap<_, _> = cmd
+            .get_envs()
+            .map(|(k, v)| (k.to_str().unwrap().to_owned(), v.map(|v| v.to_owned())))
+            .collect();
+        for removed in [
+            "CODEX_THREAD_ID",
+            "HERMES_X",
+            "ANTIGRAVITY_AGENT",
+            "CLAUDECODE",
+            "CLAUDE_PID",
+            "CODEX_SESSION_ID",
+            "HERMES_SESSION_ID",
+            "ANTIGRAVITY_CONVERSATION_ID",
+        ] {
+            assert_eq!(envs.get(removed), Some(&None), "{removed} removed");
+        }
+        assert_eq!(
+            envs.get("CLAUDE_CODE_SESSION_ID"),
+            Some(&Some(OsString::from("explicit")))
+        );
+        assert!(!envs.contains_key("PATH") && !envs.contains_key("HOME"));
+        // Config-dir variables are isolation, not attribution: an inherited isolated config dir
+        // must reach the child, never be dropped so it falls back to the real user config.
+        for kept in ["CODEX_HOME", "CLAUDE_CONFIG_DIR", "HERMES_HOME"] {
+            assert!(!envs.contains_key(kept), "{kept} kept");
+        }
+    }
+
+    #[test]
+    fn tag_sets_the_ancestry_floor_unless_set_explicitly() {
+        let floor = |cmd: &Command| {
+            cmd.get_envs()
+                .find(|(k, _)| *k == "HT_TEST_ANCESTRY_FLOOR_PID")
+                .map(|(_, v)| v.map(|v| v.to_string_lossy().into_owned()))
+        };
+        let mut plain = Command::new("/usr/bin/true");
+        crate::test_support::spawn::tag(&mut plain);
+        assert_eq!(floor(&plain), Some(Some(std::process::id().to_string())));
+        let mut explicit = Command::new("/usr/bin/true");
+        explicit.env("HT_TEST_ANCESTRY_FLOOR_PID", "1");
+        crate::test_support::spawn::tag(&mut explicit);
+        assert_eq!(floor(&explicit), Some(Some("1".to_owned())));
     }
 }

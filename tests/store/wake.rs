@@ -682,6 +682,67 @@ fn unresolved_recovery_hold_blocks_candidate_continuity_even_with_fresh_target()
     let _ = std::fs::remove_file(path);
 }
 
+/// A seat holds several open bindings (ht-54r.3). The wake candidate's current binding is the
+/// one a seat-level reader follows (`SEAT_NOTICE_BINDING_SQL`): the newest open top-level
+/// binding, a connected one first; never a subagent, never whichever row SQLite returns first.
+#[test]
+fn candidate_binding_is_the_newest_connected_top_level_binding() {
+    let path = std::env::temp_dir().join(format!("herdr-wake-{}.db", uuid::Uuid::new_v4()));
+    let context = StoreContext::new(path.clone(), Arc::new(WakeClock));
+    let db = context.open_writer().unwrap();
+    db.execute_batch("\
+        INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('i',0,'host',1,1);\
+        INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s','i','resolved','native','pane',1,1,0);\
+    ").unwrap();
+    let bind = |id: &str, session: &str, execution: &str, extra: &str, values: &str| {
+        db.execute(&format!("INSERT INTO occupant_bindings(binding_id,seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation{extra}) VALUES ('{id}','s',1,1,'pane','host',1,'claude','{session}','{execution}','cooperative_top_level',0,0,'term-pane','inc'{values})"),[]).unwrap();
+    };
+    bind("b-old", "s-old", "e-old", "", "");
+    bind("b-new", "s-new", "e-new", "", "");
+    bind(
+        "b-gone",
+        "s-gone",
+        "e-gone",
+        ",liveness,disconnected_at,disconnect_reason",
+        ",'disconnected',0,'exited'",
+    );
+    bind(
+        "b-child",
+        "s-new",
+        "e-child",
+        ",role,parent_binding,agent_id",
+        ",'subagent','b-new','a1'",
+    );
+    for (binding, seq) in [("b-old", 3), ("b-new", 7)] {
+        db.execute(
+            "INSERT INTO warning_offer(binding_id,seat_id,offered_through_seq) VALUES (?1,'s',?2)",
+            params![binding, seq],
+        )
+        .unwrap();
+    }
+    let attention = effective::EffectiveSeatAttention {
+        has_pending_invitation: true,
+        has_pending_receipt: false,
+        latest_warning_seq: None,
+        frontier: Default::default(),
+    };
+    let candidate = wake::load_candidate(&db, "i", &SeatId::new("s"), &attention, 1).unwrap();
+    assert_eq!(candidate.binding_generation, Some(1));
+    assert_eq!(
+        candidate.binding_execution,
+        Some(crate::protocol::ids::ExecutionId::new("e-new"))
+    );
+    let offer = candidate
+        .warning_offer
+        .expect("the current binding's offer");
+    assert_eq!(
+        (offer.execution, offer.offered_through_seq),
+        (crate::protocol::ids::ExecutionId::new("e-new"), 7)
+    );
+    drop(db);
+    let _ = std::fs::remove_file(path);
+}
+
 /// Cooperative native policy (D2 reasoning): a resolved seat whose effective
 /// observation has no verified execution but a terminal in a verified server
 /// incarnation gets a structural Cooperative reservation, registered or not.
@@ -740,6 +801,7 @@ fn unverified_execution_gets_structural_cooperative_reservation() {
         assert_eq!(
             reservation.authority,
             ReservedWakeAuthority::Cooperative {
+                targets: vec![sole_target(&store, "claude")],
                 terminal: crate::protocol::ids::TerminalId::new("term-pane"),
                 incarnation: "inc".into(),
                 binding_generation: registered.then_some(1),
@@ -1012,6 +1074,7 @@ fn prior_ladder() -> crate::ports::PriorLadder {
             }),
             addressed_receipt: None,
             actionable_warning: None,
+            lazy: None,
         },
     }
 }
@@ -1657,6 +1720,52 @@ fn human_bound_seat_with_agent_in_pane_gets_no_wake_authority() {
     let _ = std::fs::remove_file(path);
 }
 
+/// ht-54r.4: the exclusion keys on "the seat holds an open human binding", not on the seat's
+/// latest binding. A person's seat that also holds a later, disconnected agent binding is still
+/// never woken; once the person's binding is ended it is not human-held.
+/// Kills: a wake exclusion read from the newest binding row.
+#[test]
+fn human_bound_seat_with_a_later_disconnected_agent_binding_gets_no_wake() {
+    let (store, path) = bound_seat_store("human");
+    let db = store.context.open_writer().unwrap();
+    db.execute(
+        "INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation,liveness,disconnected_at,disconnect_reason) VALUES ('s',1,1,'pane','host',0,'codex','dead-session','dead-exec','cooperative_top_level',0,0,'term-pane','inc','disconnected',1,'liveness_process_exit')",
+        [],
+    )
+    .unwrap();
+    let held = |db: &rusqlite::Connection| -> bool {
+        db.query_row(
+            &format!("SELECT {}", crate::store::wake::human_bound_sql("?1")),
+            ["s"],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    assert!(held(&db));
+    for candidate in &StorePort::wake_candidates(&store, PageRequest::default(), &budget())
+        .unwrap()
+        .items
+    {
+        assert!(
+            StorePort::reserve_wake(&store, candidate, &budget())
+                .unwrap()
+                .is_none()
+        );
+    }
+    db.execute(
+        "UPDATE occupant_bindings SET ended_at=5 WHERE harness='human'",
+        [],
+    )
+    .unwrap();
+    assert!(
+        !held(&db),
+        "an ended human binding no longer holds the seat"
+    );
+    drop(db);
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
 /// TRUST-POLICY A3 `managed_launch` (ht-5n6): a seat whose agent was launched
 /// without a prompt and never checked in (Codex 0.159.3 runs no SessionStart
 /// before its first turn) still gets the lost-prompt idle-recovery wake: the
@@ -1692,6 +1801,10 @@ fn managed_launch_binding_reserves_a_cooperative_wake() {
             incarnation: "inc".into(),
             host_boot: crate::protocol::ids::HostBootId::new("host"),
             target_generation: 1,
+            fingerprint: crate::protocol::authority::LivenessFingerprint {
+                pid: 4242,
+                start: 1,
+            },
         },
         &budget(),
     )
@@ -1704,6 +1817,7 @@ fn managed_launch_binding_reserves_a_cooperative_wake() {
     assert_eq!(
         reservation.authority,
         crate::ports::ReservedWakeAuthority::Cooperative {
+            targets: vec![sole_target(&store, "codex")],
             terminal: crate::protocol::ids::TerminalId::new("term-pane"),
             incarnation: "inc".into(),
             binding_generation: None,
@@ -1819,7 +1933,7 @@ fn canonical_batch_cleanup_clears_catch_up_holds_and_release_starts_new_window()
         Some((UtcMillis(30_000), 30_000))
     );
     let db = store.context.open_writer().unwrap();
-    db.execute("INSERT INTO catch_up(seat_id,thread_id,frontier_seq,binding_generation,execution_id,entered_at,state) VALUES ('s','t',0,1,'e',100,'active')",[]).unwrap();
+    db.execute_batch("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) SELECT 's',1,'p','b',0,'codex','catch-up-row','e','cooperative_top_level',0,'tm','inc' WHERE NOT EXISTS(SELECT 1 FROM occupant_bindings WHERE seat_id='s' AND ended_at IS NULL); INSERT INTO catch_up(binding_id,seat_id,thread_id,frontier_seq,entered_at,state) SELECT binding_id,'s','t',0,100,'active' FROM occupant_bindings WHERE seat_id='s'").unwrap();
     drop(db);
     // The restarted process has never tracked this batch in its runtime map.
     drop(store);
@@ -1974,6 +2088,374 @@ fn batch_window_ignores_human_waived_receipts_and_clears_last_required_waiver() 
         0
     );
     drop(db);
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
+/// The one connected binding's wake target, read back from the store.
+fn sole_target(store: &SqliteStore, harness: &str) -> crate::ports::WakeTarget {
+    let (id, pid): (String, Option<i64>) = store
+        .context
+        .open_writer()
+        .unwrap()
+        .query_row(
+            "SELECT binding_id,liveness_pid FROM occupant_bindings",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    crate::ports::WakeTarget {
+        binding: crate::protocol::ids::BindingId::new(id),
+        harness: harness.into(),
+        fingerprint_pid: pid.map(|pid| u32::try_from(pid).unwrap()),
+    }
+}
+
+/// One binding row of the multi-binding fixture.
+struct Row {
+    id: &'static str,
+    harness: &'static str,
+    role: &'static str,
+    connected: bool,
+    pid: Option<i64>,
+}
+const fn row(id: &'static str, harness: &'static str, pid: i64) -> Row {
+    Row {
+        id,
+        harness,
+        role: "top_level",
+        connected: true,
+        pid: Some(pid),
+    }
+}
+
+/// A resolved seat `s` on a fresh target with a pending invitation and the given bindings, all
+/// placed on that target's current generation, terminal and incarnation.
+fn multi_store(rows: &[Row]) -> (SqliteStore, std::path::PathBuf) {
+    let (store, path) = bound_seat_store("claude");
+    let db = store.context.open_writer().unwrap();
+    db.execute("DELETE FROM occupant_bindings", []).unwrap();
+    for (n, r) in rows.iter().enumerate() {
+        db.execute(
+            "INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation,binding_id,role,liveness,disconnected_at,disconnect_reason,liveness_pid,liveness_start) VALUES ('s',1,1,'pane','host',0,?1,?2,'self-reported','cooperative_top_level',0,0,'term-pane','inc',?3,?4,?5,?6,?7,?8,?9)",
+            rusqlite::params![
+                r.harness,
+                format!("session-{n}"),
+                r.id,
+                r.role,
+                if r.connected { "connected" } else { "disconnected" },
+                (!r.connected).then_some(5_i64),
+                (!r.connected).then_some("ended"),
+                r.pid,
+                r.pid.map(|_| 1_i64),
+            ],
+        )
+        .unwrap();
+    }
+    drop(db);
+    (store, path)
+}
+
+fn target_ids(reservation: &crate::ports::WakeReservation) -> Vec<String> {
+    reservation
+        .authority
+        .targets()
+        .iter()
+        .map(|t| t.binding.as_str().to_owned())
+        .collect()
+}
+
+/// Kills: reading "the" open binding (the first row) instead of every connected top-level
+/// binding: both Claude bindings must be targets of the one seat-level reservation.
+#[test]
+fn two_connected_claude_bindings_both_get_mod_wakes() {
+    let (store, path) = multi_store(&[row("a", "claude", 10), row("b", "claude", 20)]);
+    let candidate = StorePort::wake_candidates(&store, PageRequest::default(), &budget())
+        .unwrap()
+        .items
+        .remove(0);
+    let ids: Vec<_> = candidate
+        .targets
+        .iter()
+        .map(|t| t.binding.as_str())
+        .collect();
+    assert_eq!(
+        ids,
+        ["a", "b"],
+        "the candidate names both for the channel pre-check"
+    );
+    let reservation = StorePort::reserve_wake(&store, &candidate, &budget())
+        .unwrap()
+        .expect("reserved");
+    assert_eq!(target_ids(&reservation), ["a", "b"]);
+    assert_eq!(
+        reservation.authority.targets()[1].fingerprint_pid,
+        Some(20),
+        "the fingerprint pid rides along for the composer rule"
+    );
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
+/// Kills: waking subagents (they read through hooks and `inbox`) and human bindings.
+#[test]
+fn subagents_and_humans_are_never_targets() {
+    let (store, path) = multi_store(&[
+        row("top", "claude", 10),
+        Row {
+            role: "subagent",
+            ..row("sub", "claude", 11)
+        },
+    ]);
+    let reservation = {
+        let candidate = StorePort::wake_candidates(&store, PageRequest::default(), &budget())
+            .unwrap()
+            .items
+            .remove(0);
+        StorePort::reserve_wake(&store, &candidate, &budget())
+            .unwrap()
+            .expect("reserved")
+    };
+    assert_eq!(target_ids(&reservation), ["top"]);
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
+/// Kills: a disconnected binding (its process ended; stale placement) counting as a target, and
+/// a seat with only disconnected bindings still being woken.
+#[test]
+fn disconnected_bindings_are_never_woken() {
+    let gone = |id, pid| Row {
+        connected: false,
+        ..row(id, "claude", pid)
+    };
+    let (store, path) = multi_store(&[gone("old", 10), row("live", "claude", 20)]);
+    let candidate = StorePort::wake_candidates(&store, PageRequest::default(), &budget())
+        .unwrap()
+        .items
+        .remove(0);
+    assert_eq!(
+        candidate
+            .targets
+            .iter()
+            .map(|t| t.binding.as_str())
+            .collect::<Vec<_>>(),
+        ["live"]
+    );
+    let reservation = StorePort::reserve_wake(&store, &candidate, &budget())
+        .unwrap()
+        .expect("the live binding is woken");
+    assert_eq!(target_ids(&reservation), ["live"]);
+    drop(store);
+    let _ = std::fs::remove_file(path);
+
+    let (store, path) = multi_store(&[gone("old", 10), gone("older", 20)]);
+    let candidate = StorePort::wake_candidates(&store, PageRequest::default(), &budget())
+        .unwrap()
+        .items
+        .remove(0);
+    assert!(candidate.targets.is_empty());
+    assert!(
+        StorePort::reserve_wake(&store, &candidate, &budget())
+            .unwrap()
+            .is_none(),
+        "no connected top-level binding, no wake authority"
+    );
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
+/// Kills: a binding placed on another terminal or incarnation (a stale pane) being woken
+/// because a sibling matches.
+#[test]
+fn only_bindings_placed_on_the_observed_terminal_are_targets() {
+    let (store, path) = multi_store(&[row("here", "claude", 10), row("moved", "claude", 20)]);
+    store
+        .context
+        .open_writer()
+        .unwrap()
+        .execute(
+            "UPDATE occupant_bindings SET terminal_id='term-other' WHERE binding_id='moved'",
+            [],
+        )
+        .unwrap();
+    let candidate = StorePort::wake_candidates(&store, PageRequest::default(), &budget())
+        .unwrap()
+        .items
+        .remove(0);
+    let reservation = StorePort::reserve_wake(&store, &candidate, &budget())
+        .unwrap()
+        .expect("reserved");
+    assert_eq!(target_ids(&reservation), ["here"]);
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
+/// Kills: waking a person: a human binding on the seat keeps it out of the wake path even when
+/// agent bindings share it.
+#[test]
+fn human_seat_is_never_woken() {
+    let (store, path) = multi_store(&[
+        row("agent", "claude", 10),
+        Row {
+            pid: None,
+            ..row("person", "human", 0)
+        },
+    ]);
+    let candidates = StorePort::wake_candidates(&store, PageRequest::default(), &budget())
+        .unwrap()
+        .items;
+    assert!(
+        candidates.is_empty(),
+        "a seat that holds a human binding is not a wake candidate"
+    );
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
+/// Kills: a composer predicate that guesses (latest touch, first row) instead of requiring
+/// exactly one connected top-level binding whose fingerprint pid is the foreground pid. This is
+/// the production pair: `wake_targets` filters, `ReservedWakeAuthority::composer_choice` decides.
+#[test]
+fn composer_choice_over_wake_targets_is_the_unique_fingerprint_pid_match() {
+    let (store, path) = multi_store(&[
+        row("a", "claude", 10),
+        row("b", "codex", 20),
+        row("dup1", "claude", 30),
+        row("dup2", "claude", 30),
+        Row {
+            role: "subagent",
+            ..row("sub", "claude", 40)
+        },
+        Row {
+            connected: false,
+            ..row("gone", "claude", 50)
+        },
+    ]);
+    let db = store.context.open_writer().unwrap();
+    let seat = SeatId::new("s");
+    let targets = crate::store::wake::wake_targets(&db, &seat, true).unwrap();
+    let authority = crate::ports::ReservedWakeAuthority::Cooperative {
+        terminal: crate::protocol::ids::TerminalId::new("t"),
+        incarnation: "i".into(),
+        binding_generation: None,
+        harness: None,
+        targets,
+    };
+    let found = |pid| match authority.composer_choice(&[pid]) {
+        crate::ports::ComposerChoice::Binding(t) => Some(t.binding.as_str().to_owned()),
+        _ => None,
+    };
+    assert_eq!(found(10).as_deref(), Some("a"));
+    assert_eq!(found(20).as_deref(), Some("b"));
+    assert_eq!(found(30), None, "two bindings share the pid: ambiguous");
+    assert_eq!(found(40), None, "a subagent is never the foreground agent");
+    assert_eq!(
+        found(50),
+        None,
+        "a disconnected binding is never the foreground agent"
+    );
+    assert_eq!(found(99), None);
+    assert_eq!(
+        authority.composer_choice(&[]),
+        crate::ports::ComposerChoice::NoMatch,
+        "no foreground pid, no composer wake"
+    );
+    // The foreground is a set (an npm `codex`: node launcher 20 + native child 21): the unique
+    // fingerprint among its members is the target (ht-54r.89); several, or none, are no match.
+    let found_in = |pids: &[u32]| match authority.composer_choice(pids) {
+        crate::ports::ComposerChoice::Binding(t) => Some(t.binding.as_str().to_owned()),
+        _ => None,
+    };
+    assert_eq!(
+        found_in(&[15, 10]).as_deref(),
+        Some("a"),
+        "a fingerprint among several foreground pids"
+    );
+    assert_eq!(
+        authority.composer_choice(&[10, 20]),
+        crate::ports::ComposerChoice::NoMatch,
+        "two bindings in the set: ambiguous"
+    );
+    assert_eq!(
+        authority.composer_choice(&[15, 99]),
+        crate::ports::ComposerChoice::NoMatch,
+        "no binding in the set"
+    );
+    drop(db);
+    drop(store);
+    let _ = std::fs::remove_file(path);
+
+    // One target is the list of length one: the same unique-match rule, no special arm.
+    let (store, path) = multi_store(&[row("only", "hermes", 30)]);
+    let db = store.context.open_writer().unwrap();
+    let targets = crate::store::wake::wake_targets(&db, &seat, true).unwrap();
+    let single = crate::ports::ReservedWakeAuthority::Cooperative {
+        terminal: crate::protocol::ids::TerminalId::new("t"),
+        incarnation: "i".into(),
+        binding_generation: None,
+        harness: None,
+        targets,
+    };
+    assert!(
+        matches!(single.composer_choice(&[30]), crate::ports::ComposerChoice::Binding(t) if t.binding.as_str() == "only")
+    );
+    assert_eq!(
+        single.composer_choice(&[10]),
+        crate::ports::ComposerChoice::NoMatch
+    );
+    assert_eq!(
+        single.composer_choice(&[]),
+        crate::ports::ComposerChoice::NoMatch
+    );
+    let none = crate::ports::ReservedWakeAuthority::Cooperative {
+        terminal: crate::protocol::ids::TerminalId::new("t"),
+        incarnation: "i".into(),
+        binding_generation: None,
+        harness: None,
+        targets: Vec::new(),
+    };
+    assert_eq!(
+        none.composer_choice(&[]),
+        crate::ports::ComposerChoice::Unspecified,
+        "a reservation naming no targets keeps the legacy single-harness rule"
+    );
+    drop(db);
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
+/// Kills: a per-binding fence. The reserved wake stays valid when a new binding enrolls or one
+/// reads its mail (the target list is a frozen plan), and is voided by a rebind (the seat's
+/// mapping generation moves).
+#[test]
+fn wake_fence_is_the_mapping_generation() {
+    let (store, path) = multi_store(&[row("a", "claude", 10)]);
+    let candidate = StorePort::wake_candidates(&store, PageRequest::default(), &budget())
+        .unwrap()
+        .items
+        .remove(0);
+    let reservation = StorePort::reserve_wake(&store, &candidate, &budget())
+        .unwrap()
+        .expect("reserved");
+    assert!(StorePort::validate_wake_reservation(&store, &reservation, &budget()).unwrap());
+    let db = store.context.open_writer().unwrap();
+    db.execute(
+        "INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation,binding_id,liveness_pid,liveness_start) VALUES ('s',1,1,'pane','host',0,'codex','session-new','self-reported','cooperative_top_level',0,0,'term-pane','inc','new',77,1)",
+        [],
+    )
+    .unwrap();
+    assert!(
+        StorePort::validate_wake_reservation(&store, &reservation, &budget()).unwrap(),
+        "a new binding enrolling does not cancel the reserved wake"
+    );
+    db.execute("UPDATE seats SET generation=2 WHERE id='s'", [])
+        .unwrap();
+    drop(db);
+    assert!(
+        !StorePort::validate_wake_reservation(&store, &reservation, &budget()).unwrap(),
+        "a rebind (new mapping generation) cancels it"
+    );
     drop(store);
     let _ = std::fs::remove_file(path);
 }

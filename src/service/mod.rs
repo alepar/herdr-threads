@@ -1,12 +1,15 @@
 //! Domain service composition: configuration, dispatch and workers.
 pub mod archival;
 pub mod config;
+pub mod delivery_presentation;
+pub mod delivery_pull;
 pub mod dispatch;
 pub mod fair_writer;
 pub mod host_evidence;
 pub mod host_reachability;
 pub mod kicks;
 pub mod live_gate;
+pub mod liveness;
 pub mod mod_channels;
 pub mod pacer;
 pub mod workers;

@@ -64,15 +64,25 @@ const V25: &str = include_str!("../../migrations/0025_warning_notice_delivery.sq
 const V26: &str = include_str!("../../migrations/0026_lazy_message_delivery.sql");
 const V27: &str = include_str!("../../migrations/0027_harness_adapters.sql");
 const V28: &str = include_str!("../../migrations/0028_handoff_topology.sql");
-const V29: &str = include_str!("../../migrations/0029_invitation_confirmation.sql");
+const V29: &str = include_str!("../../migrations/0029_direct_threads.sql");
+const V30: &str = include_str!("../../migrations/0030_automatic_handoff.sql");
+const V31: &str = include_str!("../../migrations/0031_seat_wake_on.sql");
+const V32: &str = include_str!("../../migrations/0032_session_bindings.sql");
+const V33: &str = include_str!("../../migrations/0033_archival_scan_scope.sql");
+const V34: &str = include_str!("../../migrations/0034_binding_delivery_state.sql");
+const V35: &str = include_str!("../../migrations/0035_binding_attention_frontiers.sql");
+const V36: &str = include_str!("../../migrations/0036_invitation_confirmation.sql");
 
-const V30: &str = include_str!("../../migrations/0030_receipt_send_time.sql");
-const V31: &str = include_str!("../../migrations/0031_handoff_body_bounds.sql");
-const V32: &str = include_str!("../../migrations/0032_receipt_deadline_backfill.sql");
-const V33: &str = include_str!("../../migrations/0033_invitation_lifecycle.sql");
-const V34: &str = include_str!("../../migrations/0034_invitation_warning_origin.sql");
-const V35: &str = include_str!("../../migrations/0035_receipt_warning_origins.sql");
-pub(crate) const LATEST_VERSION: i64 = 35;
+const V37: &str = include_str!("../../migrations/0037_receipt_send_time.sql");
+const V38: &str = include_str!("../../migrations/0038_handoff_body_bounds.sql");
+const V39: &str = include_str!("../../migrations/0039_receipt_deadline_backfill.sql");
+const V40: &str = include_str!("../../migrations/0040_invitation_lifecycle.sql");
+const V41: &str = include_str!("../../migrations/0041_invitation_warning_origin.sql");
+const V42: &str = include_str!("../../migrations/0042_receipt_warning_origins.sql");
+const V43: &str = include_str!("../../migrations/0043_automatic_handoff_body_bounds.sql");
+const V44: &str = include_str!("../../migrations/0044_invitation_presentation.sql");
+const V45: &str = include_str!("../../migrations/0045_presentation_relevance.sql");
+pub(crate) const LATEST_VERSION: i64 = 45;
 
 /// Decode only persisted results, after the caller's digest has matched. Live
 /// protocol responses still require disposition. Missing original context
@@ -123,8 +133,13 @@ fn decode_stored_result(json: &str) -> Result<CommandResult, ApiError> {
     })
 }
 
-/// The migration clock is sampled only when legacy preparations need fresh grace.
+/// The migration clock is sampled only for legacy preparation grace or migrated binding disconnection.
 pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<(), ApiError> {
+    // The clock is sampled at most once; later reads reuse the first sample.
+    let mut source = Some(now);
+    let mut sampled: Option<UtcMillis> = None;
+    let mut now =
+        move || *sampled.get_or_insert_with(|| (source.take().expect("clock sampled once"))());
     check_integrity(conn)?;
     let version: i64 = conn
         .pragma_query_value(None, "user_version", |r| r.get(0))
@@ -175,7 +190,13 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
                 .and_then(|_| conn.execute_batch(V27))
                 .and_then(|_| conn.execute_batch(V28))
                 .and_then(|_| conn.execute_batch(V29))
-                .and_then(|_| conn.pragma_update(None, "user_version", 29));
+                .and_then(|_| conn.execute_batch(V30))
+                .and_then(|_| conn.execute_batch(V31))
+                .and_then(|_| conn.execute_batch(V32))
+                .and_then(|_| conn.execute_batch(V33))
+                .and_then(|_| conn.execute_batch(V34))
+                .and_then(|_| conn.execute_batch(V35))
+                .and_then(|_| conn.pragma_update(None, "user_version", 35));
             match result {
                 Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
                 Err(error) => {
@@ -415,7 +436,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             verify_existing(conn)
         }
         17 => verify_existing(conn),
-        18..=35 => verify_existing(conn),
+        18..=LATEST_VERSION => verify_existing(conn),
         _ => Err(api_error(
             ErrorCode::IncompatibleSchema,
             format!("unsupported schema version {version}"),
@@ -583,7 +604,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             }
         }
     }
-    if version <= 30 {
+    if version <= 37 {
         verify_existing_v28(conn)?;
     } else {
         verify_handoff_body_bounds_schema(conn)?;
@@ -607,19 +628,96 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
         }
     }
     verify_existing_v29(conn)?;
-    if version <= 29 {
-        migrate_receipts_v29_to_v30(conn)?;
-    }
-    verify_receipt_send_time_schema(conn)?;
-    if version <= 30 {
-        migrate_handoff_v30_to_v31(conn)?;
-    }
-    verify_handoff_body_bounds_schema(conn)?;
-    if version <= 31 {
+    if (1..=29).contains(&version) {
         conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
         let result = conn
-            .execute_batch(V32)
-            .and_then(|_| conn.pragma_update(None, "user_version", 32));
+            .execute_batch(V30)
+            .map_err(store_error)
+            .and_then(|_| verify_existing_v30(conn))
+            .and_then(|_| {
+                conn.pragma_update(None, "user_version", 30)
+                    .map_err(store_error)
+            });
+        match result {
+            Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(error);
+            }
+        }
+    }
+    if version <= 42 {
+        verify_existing_v30(conn)?;
+    } else {
+        verify_automatic_body_bounds_schema(conn)?;
+    }
+    if (1..=30).contains(&version) {
+        conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
+        let result = conn
+            .execute_batch(V31)
+            .map_err(store_error)
+            .and_then(|_| verify_existing_v31(conn))
+            .and_then(|_| {
+                conn.pragma_update(None, "user_version", 31)
+                    .map_err(store_error)
+            });
+        match result {
+            Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(error);
+            }
+        }
+    }
+    verify_existing_v31(conn)?;
+    if (1..=31).contains(&version) {
+        migrate_v31_to_v32(conn, now())?;
+    }
+    verify_existing_v32(conn)?;
+    if (1..=32).contains(&version) {
+        migrate_v32_to_v33(conn)?;
+    }
+    verify_existing_v33(conn)?;
+    if (1..=33).contains(&version) {
+        migrate_v33_to_v34(conn)?;
+    }
+    verify_existing_v34(conn)?;
+    if (1..=34).contains(&version) {
+        migrate_v34_to_v35(conn)?;
+    }
+    verify_existing_v35(conn)?;
+    if version <= 35 {
+        conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
+        let result = conn
+            .execute_batch(V36)
+            .map_err(store_error)
+            .and_then(|_| verify_invitation_confirmation_schema(conn))
+            .and_then(|_| {
+                conn.pragma_update(None, "user_version", 36)
+                    .map_err(store_error)
+            });
+        match result {
+            Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(error);
+            }
+        }
+    }
+    verify_invitation_confirmation_schema(conn)?;
+    if version <= 36 {
+        migrate_receipts_v36_to_v37(conn)?;
+    }
+    verify_receipt_send_time_schema(conn)?;
+    if version <= 37 {
+        migrate_handoff_v37_to_v38(conn)?;
+    }
+    verify_handoff_body_bounds_schema(conn)?;
+    if version <= 38 {
+        conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
+        let result = conn
+            .execute_batch(V39)
+            .and_then(|_| conn.pragma_update(None, "user_version", 39));
         match result {
             Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
             Err(error) => {
@@ -629,14 +727,14 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
         }
     }
     verify_receipt_deadline_backfill_schema(conn)?;
-    if version <= 32 {
+    if version <= 39 {
         conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
         let result = conn
-            .execute_batch(V33)
+            .execute_batch(V40)
             .map_err(store_error)
             .and_then(|_| verify_invitation_lifecycle_schema(conn))
             .and_then(|_| {
-                conn.pragma_update(None, "user_version", 33)
+                conn.pragma_update(None, "user_version", 40)
                     .map_err(store_error)
             });
         match result {
@@ -648,14 +746,14 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
         }
     }
     verify_invitation_lifecycle_schema(conn)?;
-    if version <= 33 {
+    if version <= 40 {
         conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
         let result = conn
-            .execute_batch(V34)
+            .execute_batch(V41)
             .map_err(store_error)
             .and_then(|_| verify_invitation_warning_origin_schema(conn))
             .and_then(|_| {
-                conn.pragma_update(None, "user_version", 34)
+                conn.pragma_update(None, "user_version", 41)
                     .map_err(store_error)
             });
         match result {
@@ -667,14 +765,14 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
         }
     }
     verify_invitation_warning_origin_schema(conn)?;
-    if version <= 34 {
+    if version <= 41 {
         conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
         let result = conn
-            .execute_batch(V35)
+            .execute_batch(V42)
             .map_err(store_error)
             .and_then(|_| verify_receipt_warning_origins_schema(conn))
             .and_then(|_| {
-                conn.pragma_update(None, "user_version", 35)
+                conn.pragma_update(None, "user_version", 42)
                     .map_err(store_error)
             });
         match result {
@@ -685,307 +783,430 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             }
         }
     }
-    verify_receipt_warning_origins_schema(conn)
+    verify_receipt_warning_origins_schema(conn)?;
+    if version <= 42 {
+        migrate_automatic_v42_to_v43(conn)?;
+    }
+    verify_automatic_body_bounds_schema(conn)?;
+    if version <= 43 {
+        conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
+        let result = conn
+            .execute_batch(V44)
+            .map_err(store_error)
+            .and_then(|_| verify_invitation_presentation_schema(conn, false))
+            .and_then(|_| {
+                conn.pragma_update(None, "user_version", 44)
+                    .map_err(store_error)
+            });
+        match result {
+            Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(error);
+            }
+        }
+    }
+    verify_invitation_presentation_schema(conn, version >= 45)?;
+    if version <= 44 {
+        conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
+        let result = conn
+            .execute_batch(V45)
+            .map_err(store_error)
+            .and_then(|_| verify_presentation_relevance_schema(conn))
+            .and_then(|_| {
+                conn.pragma_update(None, "user_version", 45)
+                    .map_err(store_error)
+            });
+        match result {
+            Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(error);
+            }
+        }
+    }
+    verify_invitation_presentation_schema(conn, true)?;
+    verify_presentation_relevance_schema(conn)
 }
 
-fn verify_receipt_warning_origins_schema(conn: &Connection) -> Result<(), ApiError> {
-    // SQLite itself parses the immutable DDL, including compound trigger
-    // bodies. Compare every created object, rather than splitting on semicolons.
-    let expected = Connection::open_in_memory().map_err(store_error)?;
-    // A schema-only reference needs parent names for trigger creation; no data
-    // is copied and foreign keys remain off in this isolated parser connection.
-    expected.execute_batch("CREATE TABLE receipts(ordinal INTEGER PRIMARY KEY,message_id,seat_id,warning_message_id,state,ack_required,deadline_at); CREATE TABLE receipt_state(message_id,seat_id,warning_message_id); CREATE TABLE warning_conditions(condition_kind,clear_warning_id,open_warning_id,cleared_seq);").map_err(store_error)?;
-    // Population statements require the canonical parent schema. Parse only
-    // CREATE objects, retaining whole trigger bodies.
-    let mut sql = String::new();
-    for line in V35.lines() {
-        if sql.is_empty() && !line.trim_start().starts_with("CREATE ") {
-            continue;
-        }
-        sql.push_str(line);
-        sql.push('\n');
-        let complete = if sql.starts_with("CREATE TRIGGER ") {
-            line.trim_end().ends_with("END;")
-        } else {
-            line.trim_end().ends_with(';')
-        };
-        if complete {
-            expected.execute_batch(&sql).map_err(store_error)?;
-            sql.clear();
+/// V35 (ht-54r.9): the warning offer and notice frontiers move from one row per seat to one row
+/// per binding. One transaction.
+fn migrate_v34_to_v35(conn: &Connection) -> Result<(), ApiError> {
+    conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
+    let result = conn
+        .execute_batch(V35)
+        .map_err(store_error)
+        .and_then(|_| verify_existing_v35(conn))
+        .and_then(|_| {
+            conn.pragma_update(None, "user_version", 35)
+                .map_err(store_error)
+        });
+    match result {
+        Ok(()) => conn.execute_batch("COMMIT").map_err(store_error),
+        Err(error) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(error)
         }
     }
-    let mut stmt=expected.prepare("SELECT type,name,sql FROM sqlite_master WHERE name NOT IN ('receipts','receipt_state','warning_conditions') AND name NOT LIKE 'sqlite_%' ORDER BY name").map_err(store_error)?;
-    let objects = stmt
-        .query_map([], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-            ))
-        })
-        .map_err(store_error)?;
-    for object in objects {
-        let (kind, name, sql) = object.map_err(store_error)?;
-        let actual: Option<String> = conn
-            .query_row(
-                "SELECT sql FROM sqlite_master WHERE type=?1 AND name=?2",
-                params![kind, name],
-                |r| r.get(0),
-            )
-            .optional()
-            .map_err(store_error)?;
-        if actual.as_deref() != Some(sql.as_str()) {
-            return Err(api_error(
-                ErrorCode::IncompatibleSchema,
-                format!("missing or altered receipt warning origin {name}"),
-            ));
-        }
-    }
-    Ok(())
 }
 
-fn verify_invitation_warning_origin_schema(conn: &Connection) -> Result<(), ApiError> {
-    let table: String = conn
-        .query_row(
-            "SELECT sql FROM sqlite_master WHERE type='table' AND name='warning_conditions'",
-            [],
-            |r| r.get(0),
-        )
-        .map_err(store_error)?;
-    for column in [
-        "invitation_originator_instance_id TEXT REFERENCES host_instances(id)",
-        "invitation_originator_seat_id TEXT REFERENCES seats(id)",
-    ] {
-        if !table.contains(column) {
-            return Err(api_error(
-                ErrorCode::IncompatibleSchema,
-                "missing invitation warning origin column",
-            ));
-        }
-    }
-    let index = V34
-        .split("CREATE INDEX ")
-        .nth(1)
-        .unwrap()
-        .split(';')
-        .next()
-        .unwrap();
-    let trigger = V34
-        .split("CREATE TRIGGER ")
-        .nth(1)
-        .unwrap()
-        .trim()
-        .trim_end_matches(';');
-    for (kind, sql) in [
-        ("index", format!("CREATE INDEX {index}")),
-        ("trigger", format!("CREATE TRIGGER {trigger}")),
-    ] {
-        let name = sql.split_whitespace().nth(2).unwrap();
-        let actual: Option<String> = conn
-            .query_row(
-                "SELECT sql FROM sqlite_master WHERE type=?1 AND name=?2",
-                params![kind, name],
-                |r| r.get(0),
-            )
-            .optional()
-            .map_err(store_error)?;
-        if actual.as_deref().map(str::trim) != Some(sql.trim()) {
-            return Err(api_error(
-                ErrorCode::IncompatibleSchema,
-                format!("missing or altered invitation warning origin {kind} {name}"),
-            ));
-        }
-    }
-    Ok(())
+/// Objects V35 creates or rebuilds, audited exactly as written (see `V32_AUDITED`).
+const V35_AUDITED: [(&str, &str, &str); 4] = [
+    ("table", "warning_offer_v35", "warning_offer"),
+    ("index", "warning_offer_seat", "warning_offer_seat"),
+    ("table", "digest_notice_offer_v35", "digest_notice_offer"),
+    (
+        "index",
+        "digest_notice_offer_seat",
+        "digest_notice_offer_seat",
+    ),
+];
+
+fn verify_existing_v35(conn: &Connection) -> Result<(), ApiError> {
+    audit_rebuilt_objects(conn, V35, &V35_AUDITED, "binding attention frontier")
 }
 
-fn verify_invitation_lifecycle_schema(conn: &Connection) -> Result<(), ApiError> {
+/// V33 (ht-54r.15): archival scan scope. Narrows the mutation-revision triggers so the revision
+/// moves only for membership, member-liveness and seat-lifecycle changes.
+fn migrate_v32_to_v33(conn: &Connection) -> Result<(), ApiError> {
+    conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
+    let result = conn
+        .execute_batch(V33)
+        .map_err(store_error)
+        .and_then(|_| verify_existing_v33(conn))
+        .and_then(|_| {
+            conn.pragma_update(None, "user_version", 33)
+                .map_err(store_error)
+        });
+    match result {
+        Ok(()) => conn.execute_batch("COMMIT").map_err(store_error),
+        Err(error) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(error)
+        }
+    }
+}
+
+/// V23 triggers that V33 drops or replaces. From schema version 33 the V33 text owns them, so
+/// `verify_existing_v23` skips them and `verify_existing_v33` audits them byte for byte.
+const V33_SUPERSEDED_V23_TRIGGERS: [&str; 5] = [
+    "archival_fence_seats_insert",
+    "archival_fence_seats_update",
+    "archival_fence_memberships_update",
+    "archival_fence_occupant_bindings_insert",
+    "archival_fence_occupant_bindings_update",
+];
+
+/// Audits every object V33 creates exactly as written, and that each trigger it only drops is
+/// absent.
+fn verify_existing_v33(conn: &Connection) -> Result<(), ApiError> {
     let ddl = V33
         .lines()
-        .filter(|line| !line.trim_start().starts_with("--"))
+        .filter(|line| !line.trim_start().starts_with("--") && !line.starts_with("DROP "))
         .collect::<Vec<_>>()
         .join("\n");
-    for statement in ddl.split(';').map(str::trim).filter(|sql| !sql.is_empty()) {
-        let name = statement.split_whitespace().nth(2).unwrap_or_default();
-        let actual: Option<String> = conn
+    let normalize = |sql: &str| sql.trim().trim_end_matches(';').trim().to_owned();
+    let mut created = Vec::new();
+    for object in ddl.trim().split("\nCREATE ") {
+        let sql = if object.starts_with("CREATE ") {
+            object.to_owned()
+        } else {
+            format!("CREATE {object}")
+        };
+        let name = sql.split_whitespace().nth(2).unwrap_or_default().to_owned();
+        let installed: Option<String> = conn
             .query_row(
-                "SELECT sql FROM sqlite_master WHERE type='index' AND name=?1",
+                "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?1",
+                [&name],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(store_error)?;
+        if installed.as_deref().map(normalize) != Some(normalize(&sql)) {
+            return Err(api_error(
+                ErrorCode::IncompatibleSchema,
+                format!("missing or altered archival scan scope trigger {name}"),
+            ));
+        }
+        created.push(name);
+    }
+    for name in V33_SUPERSEDED_V23_TRIGGERS {
+        let present: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='trigger' AND name=?1)",
                 [name],
                 |r| r.get(0),
             )
-            .optional()
             .map_err(store_error)?;
-        if actual.as_deref().map(str::trim) != Some(statement) {
+        if present != created.iter().any(|c| c == name) {
             return Err(api_error(
                 ErrorCode::IncompatibleSchema,
-                format!("missing or altered invitation lifecycle index {name}"),
+                format!("unexpected archival scan scope trigger state for {name}"),
             ));
         }
     }
     Ok(())
 }
 
-fn verify_receipt_deadline_backfill_schema(conn: &Connection) -> Result<(), ApiError> {
-    let expected = V32
-        .lines()
-        .filter(|line| !line.trim_start().starts_with("--"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let expected = expected.split(';').next().unwrap().trim();
-    let actual: Option<String> = conn
+/// V34 (ht-54r.22): lazy display state onto binding cursors (legacy pending carry-over) and
+/// catch-up rows keyed by binding. One transaction.
+fn migrate_v33_to_v34(conn: &Connection) -> Result<(), ApiError> {
+    conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
+    let result = conn
+        .execute_batch(V34)
+        .map_err(store_error)
+        .and_then(|_| verify_existing_v34(conn))
+        .and_then(|_| {
+            conn.pragma_update(None, "user_version", 34)
+                .map_err(store_error)
+        });
+    match result {
+        Ok(()) => conn.execute_batch("COMMIT").map_err(store_error),
+        Err(error) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(error)
+        }
+    }
+}
+
+/// Objects V34 creates or rebuilds, audited exactly as written (see `V32_AUDITED`).
+const V34_AUDITED: [(&str, &str, &str); 6] = [
+    ("table", "catch_up_v34", "catch_up"),
+    (
+        "index",
+        "catch_up_extension_until",
+        "catch_up_extension_until",
+    ),
+    ("index", "catch_up_thread_active", "catch_up_thread_active"),
+    ("index", "catch_up_seat", "catch_up_seat"),
+    ("index", "lazy_recipients_legacy", "lazy_recipients_legacy"),
+    (
+        "index",
+        "lazy_recipients_seat_ordinal",
+        "lazy_recipients_seat_ordinal",
+    ),
+];
+
+fn verify_existing_v34(conn: &Connection) -> Result<(), ApiError> {
+    audit_rebuilt_objects(conn, V34, &V34_AUDITED, "binding delivery state")?;
+    let column_ok: bool = conn
         .query_row(
-            "SELECT sql FROM sqlite_master WHERE type='table' AND name='receipt_deadline_backfill'",
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('lazy_recipients') WHERE name='legacy_pending' AND type='INTEGER' AND \"notnull\"=1 AND dflt_value='0')",
             [],
             |r| r.get(0),
         )
-        .optional()
         .map_err(store_error)?;
-    if actual
-        .as_deref()
-        .map(|sql| sql.split_whitespace().collect::<String>())
-        != Some(expected.split_whitespace().collect::<String>())
+    let table_sql: String = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='lazy_recipients'",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    if !column_ok
+        || !table_sql
+            .contains("legacy_pending INTEGER NOT NULL DEFAULT 0 CHECK(legacy_pending IN (0,1))")
     {
         return Err(api_error(
             ErrorCode::IncompatibleSchema,
-            "missing or altered receipt deadline backfill table",
+            "missing or altered lazy_recipients.legacy_pending",
         ));
     }
-    let marker: bool = conn
+    // The rebuilt catch_up must not be a stale V32-era shape.
+    let shaped: bool = conn
         .query_row(
-            "SELECT EXISTS(SELECT 1 FROM receipt_deadline_backfill WHERE singleton=1)",
+            "SELECT NOT EXISTS(SELECT 1 FROM pragma_table_info('catch_up') WHERE name IN ('binding_generation','execution_id'))",
             [],
             |r| r.get(0),
         )
         .map_err(store_error)?;
-    if !marker {
+    if !shaped {
         return Err(api_error(
             ErrorCode::IncompatibleSchema,
-            "missing receipt deadline backfill cursor",
+            "catch_up still carries binding generation columns",
         ));
+    }
+    Ok(())
+}
+
+/// V32 (ht-54r): session-keyed bindings. The SQL rebuild runs in one transaction; the
+/// upgrade time is the disconnected_at of each open migrated binding (archival grace).
+fn migrate_v31_to_v32(conn: &Connection, now: UtcMillis) -> Result<(), ApiError> {
+    conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
+    let result = conn
+        .execute_batch(V32)
+        .map_err(store_error)
+        .and_then(|_| {
+            conn.execute(
+                "UPDATE occupant_bindings SET disconnected_at=?1 WHERE migrated=1 AND ended_at IS NULL",
+                [now.0],
+            )
+            .map(|_| ())
+            .map_err(store_error)
+        })
+        .and_then(|_| verify_existing_v32(conn))
+        .and_then(|_| {
+            conn.pragma_update(None, "user_version", 32)
+                .map_err(store_error)
+        });
+    match result {
+        Ok(()) => conn.execute_batch("COMMIT").map_err(store_error),
+        Err(error) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(error)
+        }
+    }
+}
+
+/// Objects V32 creates or rebuilds, audited exactly as written: (kind, name as written in V32,
+/// name as installed). The rebuilt table is installed under its final name, which SQLite's
+/// RENAME writes quoted.
+const V32_AUDITED: [(&str, &str, &str); 7] = [
+    ("table", "occupant_bindings_v32", "occupant_bindings"),
+    (
+        "index",
+        "occupant_bindings_session_key",
+        "occupant_bindings_session_key",
+    ),
+    ("index", "occupant_bindings_open", "occupant_bindings_open"),
+    (
+        "index",
+        "occupant_bindings_history",
+        "occupant_bindings_history",
+    ),
+    (
+        "index",
+        "occupant_bindings_execution",
+        "occupant_bindings_execution",
+    ),
+    ("table", "binding_cursors", "binding_cursors"),
+    ("index", "binding_cursors_thread", "binding_cursors_thread"),
+];
+
+/// Compare each object `audited` lists against its statement in `source`, exactly as written.
+fn audit_rebuilt_objects(
+    conn: &Connection,
+    source: &str,
+    audited: &[(&str, &str, &str)],
+    what: &str,
+) -> Result<(), ApiError> {
+    let normalize = |sql: &str| sql.trim().trim_end_matches(';').trim().to_owned();
+    for (kind, written, installed) in audited.iter().copied() {
+        let headers: &[String] = &if kind == "table" {
+            vec![format!("CREATE TABLE {written} ")]
+        } else {
+            vec![
+                format!("CREATE INDEX {written} "),
+                format!("CREATE UNIQUE INDEX {written} "),
+            ]
+        };
+        let start = headers
+            .iter()
+            .find_map(|header| source.find(header.as_str()))
+            .expect("audited object present");
+        let end = start + source[start..].find(';').expect("statement terminator");
+        let mut expected = source[start..end].to_owned();
+        if written != installed {
+            expected = expected.replacen(written, &format!("\"{installed}\""), 1);
+        }
+        let actual: Option<String> = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type=?1 AND name=?2",
+                params![kind, installed],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(store_error)?;
+        if actual.as_deref().map(normalize) != Some(normalize(&expected)) {
+            return Err(api_error(
+                ErrorCode::IncompatibleSchema,
+                format!("missing or altered {what} {kind} {installed}"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn verify_existing_v32(conn: &Connection) -> Result<(), ApiError> {
+    audit_rebuilt_objects(conn, V32, &V32_AUDITED, "session binding")?;
+    for (table, column) in [
+        ("receipts", "ack_binding_id"),
+        ("receipt_state", "ack_binding_id"),
+        ("messages", "sender_binding_id"),
+    ] {
+        let present: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info(?1) WHERE name=?2 AND type='TEXT')",
+                params![table, column],
+                |r| r.get(0),
+            )
+            .map_err(store_error)?;
+        if !present {
+            return Err(api_error(
+                ErrorCode::IncompatibleSchema,
+                format!("missing session binding column {table}.{column}"),
+            ));
+        }
     }
     Ok(())
 }
 
 fn verify_existing_v29(conn: &Connection) -> Result<(), ApiError> {
-    let table: String = conn
-        .query_row(
-            "SELECT sql FROM sqlite_master WHERE type='table' AND name='invitations'",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(store_error)?;
-    for column in [
-        "confirmation TEXT CHECK(confirmation IN ('lazy','require_ack'))",
-        "inviter_seat_id TEXT REFERENCES seats(id)",
-    ] {
-        if !table.contains(column) {
-            return Err(api_error(
-                ErrorCode::IncompatibleSchema,
-                "invalid invitation confirmation column",
-            ));
-        }
-    }
-    for statement in V29.split("\n\n").filter(|sql| sql.starts_with("CREATE ")) {
-        let expected = statement.trim().trim_end_matches(';');
-        let mut words = expected.split_whitespace().skip(1);
-        let kind = words.next().unwrap_or_default().to_ascii_lowercase();
-        let name = words.next().unwrap_or_default();
-        let actual: Option<String> = conn
-            .query_row(
-                "SELECT sql FROM sqlite_master WHERE type=?1 AND name=?2",
-                params![kind, name],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(store_error)?;
-        if actual.as_deref().map(str::trim) != Some(expected) {
-            return Err(api_error(
-                ErrorCode::IncompatibleSchema,
-                format!("missing or altered invitation confirmation {kind} {name}"),
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn migrate_receipts_v29_to_v30(conn: &Connection) -> Result<(), ApiError> {
-    if !conn.is_autocommit() {
-        return Err(api_error(
-            ErrorCode::IncompatibleSchema,
-            "receipt upgrade requires autocommit",
-        ));
-    }
-    let foreign_keys: bool = conn
-        .pragma_query_value(None, "foreign_keys", |r| r.get(0))
-        .map_err(store_error)?;
-    conn.pragma_update(None, "foreign_keys", false)
-        .map_err(store_error)?;
-    let result = (|| {
-        conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
-        conn.execute_batch(V30).map_err(store_error)?;
-        verify_receipt_send_time_schema(conn)?;
-        let violation: bool = conn
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM pragma_foreign_key_check)",
-                [],
-                |r| r.get(0),
-            )
-            .map_err(store_error)?;
-        if violation {
-            return Err(api_error(
-                ErrorCode::IncompatibleSchema,
-                "receipt upgrade foreign key violation",
-            ));
-        }
-        conn.pragma_update(None, "user_version", 30)
-            .map_err(store_error)?;
-        conn.execute_batch("COMMIT").map_err(store_error)
-    })();
-    if result.is_err() {
-        let _ = conn.execute_batch("ROLLBACK");
-    }
-    let restored = conn
-        .pragma_update(None, "foreign_keys", foreign_keys)
-        .map_err(store_error);
-    result.and(restored)
-}
-
-/// The marker and constraint upgrade commit together before capabilities are served.
-/// Existing instance sequences are captured once; later instances have cutoff zero.
-fn verify_receipt_send_time_schema(conn: &Connection) -> Result<(), ApiError> {
-    let ddl = V30
+    let expected = V29
         .lines()
         .filter(|line| !line.trim_start().starts_with("--"))
         .collect::<Vec<_>>()
         .join("\n");
-    for statement in ddl
-        .split("\n\n")
-        .map(str::trim)
-        .filter(|s| s.starts_with("CREATE ") && !s.starts_with("CREATE TEMP "))
-    {
-        let sql = statement.trim_end_matches(';');
-        let words = sql.split_whitespace().collect::<Vec<_>>();
-        let kind = words[1].to_ascii_lowercase();
-        let name = words[2];
-        let actual: Option<String> = conn
+    let actual: Option<String> = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='direct_threads'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(store_error)?;
+    if actual.as_deref().map(str::trim) != Some(expected.trim().trim_end_matches(';')) {
+        return Err(api_error(
+            ErrorCode::IncompatibleSchema,
+            "missing or altered direct pair registry",
+        ));
+    }
+    Ok(())
+}
+
+/// The two DP8 columns: type, nullability and default are part of the contract
+/// (a fresh seat reads `nudge`; the lazy frontier starts absent).
+fn verify_existing_v31(conn: &Connection) -> Result<(), ApiError> {
+    for (table, column, kind, not_null, default) in [
+        ("seats", "wake_on", "TEXT", true, Some("'nudge'")),
+        ("wake_work", "last_lazy_ordinal", "INTEGER", false, None),
+    ] {
+        let found: Option<(String, bool, Option<String>)> = conn
             .query_row(
-                "SELECT sql FROM sqlite_master WHERE type=?1 AND name=?2",
-                params![kind, name],
-                |r| r.get(0),
+                &format!("SELECT type,\"notnull\",dflt_value FROM pragma_table_info('{table}') WHERE name=?1"),
+                [column],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .optional()
             .map_err(store_error)?;
-        if actual.as_deref().map(str::trim) != Some(sql) {
+        if found != Some((kind.to_owned(), not_null, default.map(str::to_owned))) {
             return Err(api_error(
                 ErrorCode::IncompatibleSchema,
-                format!("missing or altered receipt send-time {kind} {name}"),
+                format!("missing or altered wake_on column {table}.{column}"),
             ));
         }
     }
     Ok(())
 }
 
+/// The schema version stamped in the database (`PRAGMA user_version`).
+fn schema_version(conn: &Connection) -> Result<i64, ApiError> {
+    conn.pragma_query_value(None, "user_version", |r| r.get(0))
+        .map_err(store_error)
+}
+
 fn verify_existing_v26(conn: &Connection) -> Result<(), ApiError> {
+    let v34 = schema_version(conn)? >= 34;
     // Compare every lazy object, including trigger bodies with embedded semicolons.
     let ddl = V26
         .lines()
@@ -1001,6 +1222,18 @@ fn verify_existing_v26(conn: &Connection) -> Result<(), ApiError> {
         let words = sql.split_whitespace().collect::<Vec<_>>();
         let kind = words[1].to_ascii_lowercase();
         let name = words[2];
+        // V34 appends one column to lazy_recipients; SQLite stores it right after `state`.
+        let appended;
+        let sql = if kind == "table" && name == "lazy_recipients" && v34 {
+            appended = sql.replacen(
+                "CHECK(state IN ('pending','displayed'))",
+                "CHECK(state IN ('pending','displayed')), legacy_pending INTEGER NOT NULL DEFAULT 0 CHECK(legacy_pending IN (0,1))",
+                1,
+            );
+            appended.as_str()
+        } else {
+            sql
+        };
         let actual: Option<String> = conn
             .query_row(
                 "SELECT sql FROM sqlite_master WHERE type=?1 AND name=?2",
@@ -1073,6 +1306,8 @@ fn verify_existing_v23(conn: &Connection) -> Result<(), ApiError> {
     // Preserve quoted literals and predicate bytes: case/whitespace folding
     // inside a SQL string can silently turn a guard into a different condition.
     let normalize = |sql: &str| sql.trim().trim_end_matches(';').trim().to_owned();
+    // From V33 the scan-scope triggers are owned and audited by `verify_existing_v33`.
+    let v33 = schema_version(conn)? >= 33;
     for object in ddl.trim().split("\nCREATE ") {
         let sql = if object.starts_with("CREATE ") {
             object.to_owned()
@@ -1082,6 +1317,9 @@ fn verify_existing_v23(conn: &Connection) -> Result<(), ApiError> {
         let mut words = sql.split_whitespace().skip(1);
         let kind = words.next().unwrap_or_default().to_ascii_lowercase();
         let name = words.next().unwrap_or_default();
+        if v33 && kind == "trigger" && V33_SUPERSEDED_V23_TRIGGERS.contains(&name) {
+            continue;
+        }
         let installed: Option<String> = conn
             .query_row(
                 "SELECT sql FROM sqlite_master WHERE type=?1 AND name=?2",
@@ -1228,6 +1466,14 @@ fn verify_existing_v27(conn: &Connection) -> Result<(), ApiError> {
             .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
             .collect();
         if name == "harness_binding_sequence_v22" {
+            continue;
+        }
+        // V32 rebuilds occupant_bindings and replaces its current-binding index; its own
+        // audit (`verify_existing_v32`) owns them. The history and execution indexes are
+        // recreated identically and stay audited here.
+        if schema_version(conn)? >= 32
+            && (name == "occupant_bindings_v22" || name == "occupant_bindings_current")
+        {
             continue;
         }
         let installed_name = name
@@ -1699,7 +1945,13 @@ fn verify_v11_b1(conn: &Connection) -> Result<(), ApiError> {
             ));
         }
     }
+    let v32 = schema_version(conn)? >= 32;
     for name in B1_EXISTING_ACCESS_PATHS {
+        let name = if v32 && name == "occupant_bindings_current" {
+            "occupant_bindings_open"
+        } else {
+            name
+        };
         let present: bool = conn
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='index' AND name=?1)",
@@ -2196,6 +2448,10 @@ fn verify_existing_v8(conn: &Connection) -> Result<(), ApiError> {
             .next()
             .filter(|name| !name.is_empty())
             .ok_or_else(|| api_error(ErrorCode::IncompatibleSchema, "invalid digest DDL"))?;
+        // V35 rebuilds the notice frontier per binding; its own audit owns it from then on.
+        if name == "digest_notice_offer" && schema_version(conn)? >= 35 {
+            continue;
+        }
         let installed: Option<String> = conn
             .query_row(
                 "SELECT sql FROM sqlite_master WHERE type=?1 AND name=?2",
@@ -2770,6 +3026,12 @@ fn verify_existing_v1(conn: &Connection) -> Result<(), ApiError> {
         "warning_offer",
         "work_jobs",
     ];
+    // V32 replaces the one-open-binding-per-seat index with the non-unique access path.
+    let current_binding_index = if schema_version(conn)? >= 32 {
+        "occupant_bindings_open"
+    } else {
+        "occupant_bindings_current"
+    };
     let required_indexes = [
         "allocation_decisions_target",
         "snapshot_generations_status",
@@ -2780,7 +3042,7 @@ fn verify_existing_v1(conn: &Connection) -> Result<(), ApiError> {
         "seats_instance_ordinal",
         "seats_instance_state_ordinal",
         "seats_unresolved_generation",
-        "occupant_bindings_current",
+        current_binding_index,
         "occupant_bindings_history",
         "allocation_decisions_seat_history",
         "threads_instance_ordinal",
@@ -3105,7 +3367,9 @@ pub fn bump_lifecycle_revision(tx: &Transaction<'_>, instance: &str) -> Result<(
 /// and structural generation. A raw `observed_targets` row from an earlier
 /// epoch never decides availability on its own: after a host outage the
 /// published reconfirmation snapshot advances the epoch while such rows keep
-/// the old one. Returns the binding's observation provenance when available.
+/// the old one. A binding counts only while connected (liveness; ht-54r.23): a seat is
+/// available while any open, connected, registered binding is confirmed. Returns the binding's
+/// observation provenance when available.
 /// Recipient staging and unavailability-episode opening must both use this.
 pub fn effective_registered_availability(
     db: &Connection,
@@ -3118,7 +3382,7 @@ pub fn effective_registered_availability(
             "SELECT s.instance_id, s.target_id, s.target_generation, h.host_boot, h.host_epoch, b.observation_provenance \
              FROM seats s JOIN host_instances h ON h.id=s.instance_id JOIN occupant_bindings b ON b.seat_id=s.id \
              WHERE s.id=?1 AND s.state='resolved' AND s.target_id IS NOT NULL \
-               AND b.ended_at IS NULL AND b.registered_at IS NOT NULL AND b.target_id=s.target_id \
+               AND b.ended_at IS NULL AND b.liveness='connected' AND b.registered_at IS NOT NULL AND b.target_id=s.target_id \
                AND b.generation=s.generation AND b.target_generation=s.target_generation \
                AND b.host_boot=h.host_boot AND b.host_epoch=h.host_epoch \
                AND (?2 IS NULL OR h.id=?2) LIMIT 1",
@@ -3156,14 +3420,16 @@ pub fn carry_pending(db: &Connection, seat: &str, instance: &str) -> Result<bool
          WHERE s.id=?1 AND h.id=?2 AND s.state='resolved' \
            AND (h.reconciled_boot IS NOT h.recovery_boot OR h.reconciled_epoch IS NOT h.recovery_epoch) \
            AND b.ended_at IS NULL AND b.registered_at IS NOT NULL \
-           AND b.observation_provenance IN (?3,?4) \
+           AND b.observation_provenance IN (?3,?4,?5,?6) \
            AND b.host_boot=h.host_boot AND b.host_epoch<h.host_epoch \
            AND b.incarnation IS NOT NULL AND b.incarnation=s.structural_incarnation)",
         params![
             seat,
             instance,
             CARRIED_BINDING_PROVENANCES[0],
-            CARRIED_BINDING_PROVENANCES[1]
+            CARRIED_BINDING_PROVENANCES[1],
+            CARRIED_BINDING_PROVENANCES[2],
+            CARRIED_BINDING_PROVENANCES[3]
         ],
         |r| r.get(0),
     )
@@ -3174,7 +3440,7 @@ pub fn carry_pending(db: &Connection, seat: &str, instance: &str) -> Result<bool
 /// verified availability without visiting every seat; the first affected
 /// deciding writer reconciles this marker. Repeated sightings of the same open
 /// outage reuse the numeric episode, so warning keys stay stable.
-pub fn ensure_unavailability_episode(tx: &Transaction<'_>, seat: &SeatId) -> Result<u64, ApiError> {
+pub fn ensure_unavailability_episode(tx: &Connection, seat: &SeatId) -> Result<u64, ApiError> {
     let (state, open, episode): (String, i64, i64) = tx
         .query_row(
             "SELECT state, unavailability_open, unavailability_episode FROM seats WHERE id=?1",
@@ -3491,19 +3757,19 @@ fn append_event_once_at_seq(
     Ok((id, true))
 }
 
-/// Spec §1: the author role a seat's open binding gives its messages at decision
-/// time. A `human` harness reads as `human`, any other harness as `agent`; no
-/// open binding records NULL (read as agent).
+/// Spec §1: the author role a seat's open bindings give its messages at decision time. A seat
+/// holds many bindings (ht-54r.3). It reads `human` when a `human` binding is open (a person and
+/// an agent never share a seat, TRUST-POLICY A4); otherwise `agent` while any binding is open;
+/// no open binding records NULL (read as agent).
 pub fn open_binding_role(tx: &Connection, seat: &SeatId) -> Result<Option<&'static str>, ApiError> {
-    let harness: Option<String> = tx
+    let (open, human): (bool, bool) = tx
         .query_row(
-            "SELECT harness FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL",
+            "SELECT COUNT(*)>0, COALESCE(MAX(harness='human'),0) FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL",
             [seat.as_str()],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )
-        .optional()
         .map_err(store_error)?;
-    Ok(harness.map(|h| if h == "human" { "human" } else { "agent" }))
+    Ok(open.then_some(if human { "human" } else { "agent" }))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -4344,7 +4610,7 @@ fn verify_existing_v24(conn: &Connection) -> Result<(), ApiError> {
     Ok(())
 }
 
-fn migrate_handoff_v30_to_v31(conn: &Connection) -> Result<(), ApiError> {
+fn migrate_handoff_v37_to_v38(conn: &Connection) -> Result<(), ApiError> {
     // SQLite ignores foreign_keys changes inside a transaction. Disable it
     // before BEGIN so rebuilding the cyclic parent/recovery tables cannot
     // delete child rows; verify the complete graph before committing.
@@ -4361,7 +4627,7 @@ fn migrate_handoff_v30_to_v31(conn: &Connection) -> Result<(), ApiError> {
         .map_err(store_error)?;
     let migrate = (|| {
         conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
-        conn.execute_batch(V31).map_err(store_error)?;
+        conn.execute_batch(V38).map_err(store_error)?;
         verify_handoff_body_bounds_schema(conn)?;
         let violation: Option<String> = conn
             .query_row("PRAGMA foreign_key_check", [], |r| r.get(0))
@@ -4373,7 +4639,49 @@ fn migrate_handoff_v30_to_v31(conn: &Connection) -> Result<(), ApiError> {
                 "handoff bounds migration found a foreign-key violation",
             ));
         }
-        conn.pragma_update(None, "user_version", 31)
+        conn.pragma_update(None, "user_version", 38)
+            .map_err(store_error)?;
+        conn.execute_batch("COMMIT").map_err(store_error)
+    })();
+    if migrate.is_err() && !conn.is_autocommit() {
+        let _ = conn.execute_batch("ROLLBACK");
+    }
+    let restore = conn
+        .pragma_update(None, "foreign_keys", foreign_keys)
+        .map_err(store_error);
+    migrate.and(restore)
+}
+
+fn migrate_automatic_v42_to_v43(conn: &Connection) -> Result<(), ApiError> {
+    // SQLite ignores foreign_keys changes inside a transaction. Disable it
+    // before BEGIN so rebuilding the cyclic parent/recovery tables cannot
+    // delete child rows; verify the complete graph before committing.
+    if !conn.is_autocommit() {
+        return Err(api_error(
+            ErrorCode::IncompatibleSchema,
+            "automatic handoff bounds migration requires an idle connection",
+        ));
+    }
+    let foreign_keys: bool = conn
+        .pragma_query_value(None, "foreign_keys", |r| r.get(0))
+        .map_err(store_error)?;
+    conn.pragma_update(None, "foreign_keys", false)
+        .map_err(store_error)?;
+    let migrate = (|| {
+        conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
+        conn.execute_batch(V43).map_err(store_error)?;
+        verify_automatic_body_bounds_schema(conn)?;
+        let violation: Option<String> = conn
+            .query_row("PRAGMA foreign_key_check", [], |r| r.get(0))
+            .optional()
+            .map_err(store_error)?;
+        if violation.is_some() {
+            return Err(api_error(
+                ErrorCode::StoreCorrupt,
+                "automatic handoff bounds migration found a foreign-key violation",
+            ));
+        }
+        conn.pragma_update(None, "user_version", 43)
             .map_err(store_error)?;
         conn.execute_batch("COMMIT").map_err(store_error)
     })();
@@ -4387,7 +4695,7 @@ fn migrate_handoff_v30_to_v31(conn: &Connection) -> Result<(), ApiError> {
 }
 
 fn verify_existing_v28(conn: &Connection) -> Result<(), ApiError> {
-    verify_bootstrap_ddl(conn, V28)
+    verify_ddl(conn, V28, "bootstrap topology")
 }
 fn verify_handoff_body_bounds_schema(conn: &Connection) -> Result<(), ApiError> {
     let ddl = V28
@@ -4399,9 +4707,28 @@ fn verify_handoff_body_bounds_schema(conn: &Connection) -> Result<(), ApiError> 
             "length(result_json)<=262144",
             "length(result_json)<=1048576",
         );
-    verify_bootstrap_ddl(conn, &ddl)
+    verify_ddl(conn, &ddl, "bootstrap topology")
 }
-fn verify_bootstrap_ddl(conn: &Connection, source: &str) -> Result<(), ApiError> {
+fn verify_automatic_body_bounds_schema(conn: &Connection) -> Result<(), ApiError> {
+    let ddl = V30
+        .replace(
+            "length(original_json)<=131072",
+            "length(original_json)<=524288",
+        )
+        .replace(
+            "length(attachment_json)<=131072",
+            "length(attachment_json)<=524288",
+        )
+        .replace(
+            "length(result_json)<=262144",
+            "length(result_json)<=2097152",
+        );
+    verify_ddl(conn, &ddl, "automatic handoff")
+}
+fn verify_existing_v30(conn: &Connection) -> Result<(), ApiError> {
+    verify_ddl(conn, V30, "automatic handoff")
+}
+fn verify_ddl(conn: &Connection, source: &str, label: &str) -> Result<(), ApiError> {
     let ddl = source
         .lines()
         .filter(|line| !line.trim_start().starts_with("--"))
@@ -4431,7 +4758,424 @@ fn verify_bootstrap_ddl(conn: &Connection, source: &str) -> Result<(), ApiError>
         if installed.as_deref().map(normalize) != Some(normalize(&sql)) {
             return Err(api_error(
                 ErrorCode::IncompatibleSchema,
-                format!("missing or altered bootstrap topology {kind} {name}"),
+                format!("missing or altered {label} {kind} {name}"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn verify_presentation_relevance_schema(conn: &Connection) -> Result<(), ApiError> {
+    let expected = Connection::open_in_memory().map_err(store_error)?;
+    // Only DDL dependency stubs: no retained content or historical migration
+    // replay is needed to reconstruct the exact new catalog objects.
+    expected.execute_batch("CREATE TABLE digest_pending_invitations(seat_id TEXT,invitation_id TEXT,ordinal INTEGER); CREATE TABLE invitations(id TEXT,seat_id TEXT,confirmation TEXT); CREATE TABLE requirement_episodes(invitation_id TEXT,state TEXT); CREATE TABLE warning_conditions(affected_seat_id TEXT,ordinal INTEGER,clear_warning_id TEXT); CREATE TABLE membership_intervals(thread_id TEXT,seat_id TEXT,ordinal INTEGER); CREATE TABLE prepared_unavailable_warnings(warning_id TEXT,ordinal INTEGER); CREATE TABLE seats(id TEXT); CREATE TABLE invitation_presentation_consumers(binding_id TEXT,seat_id TEXT,consumer TEXT);").map_err(store_error)?;
+    let mut dependencies = std::collections::BTreeSet::from([
+        "digest_pending_invitations",
+        "invitations",
+        "requirement_episodes",
+        "warning_conditions",
+        "membership_intervals",
+        "prepared_unavailable_warnings",
+        "seats",
+        "invitation_presentation_consumers",
+    ]);
+    for line in V45
+        .lines()
+        .filter(|line| line.starts_with("CREATE TRIGGER "))
+    {
+        let table = line
+            .rsplit_once(" ON ")
+            .ok_or_else(|| {
+                api_error(
+                    ErrorCode::IncompatibleSchema,
+                    "invalid relevance trigger dependency",
+                )
+            })?
+            .1
+            .trim();
+        if dependencies.insert(table) {
+            expected
+                .execute_batch(&format!("CREATE TABLE {table}(id TEXT)"))
+                .map_err(store_error)?;
+        }
+    }
+    expected.execute_batch(V45).map_err(store_error)?;
+    let mut statement = expected
+        .prepare("SELECT type,name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'")
+        .map_err(store_error)?;
+    for row in statement
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(store_error)?
+    {
+        let (kind, name, sql) = row.map_err(store_error)?;
+        if dependencies.contains(name.as_str()) {
+            continue;
+        }
+        let installed: Option<String> = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type=?1 AND name=?2",
+                params![kind, name],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(store_error)?;
+        if installed.as_deref() != Some(sql.as_str()) {
+            return Err(api_error(
+                ErrorCode::IncompatibleSchema,
+                format!("missing or altered presentation relevance {kind} {name}"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn verify_invitation_presentation_schema(conn: &Connection, revised: bool) -> Result<(), ApiError> {
+    let expected = Connection::open_in_memory().map_err(store_error)?;
+    expected.execute_batch("CREATE TABLE invitations(id TEXT); CREATE TABLE digest_pending_invitations(seat_id TEXT,thread_id TEXT,ordinal INTEGER); CREATE TABLE threads(id TEXT,instance_id TEXT); CREATE TABLE host_instances(id TEXT);").map_err(store_error)?;
+    expected.execute_batch(V44).map_err(store_error)?;
+    if revised {
+        // Reconstruct the final catalog using the exact released-in-this-change
+        // ALTER statements. Keep the pre45 check exact during the upgrade.
+        for statement in V45
+            .lines()
+            .filter(|line| line.starts_with("ALTER TABLE invitation_presentation_consumers "))
+        {
+            expected.execute_batch(statement).map_err(store_error)?;
+        }
+    }
+    let mut objects=expected.prepare("SELECT type,name,sql FROM sqlite_master WHERE name NOT IN ('invitations','digest_pending_invitations','threads','host_instances') AND name NOT LIKE 'sqlite_%'").map_err(store_error)?;
+    for row in objects
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(store_error)?
+    {
+        let (kind, name, sql) = row.map_err(store_error)?;
+        let actual: Option<String> = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type=?1 AND name=?2",
+                params![kind, name],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(store_error)?;
+        if actual.as_deref() != Some(sql.as_str()) {
+            return Err(api_error(
+                ErrorCode::IncompatibleSchema,
+                format!("incompatible invitation presentation object {name}"),
+            ));
+        }
+    }
+    let column:Option<(String,i64,Option<String>)>=conn.query_row("SELECT type,\"notnull\",dflt_value FROM pragma_table_info('invitations') WHERE name='command_context_epoch'",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(store_error)?;
+    if column != Some(("INTEGER".into(), 1, Some("0".into()))) {
+        return Err(api_error(
+            ErrorCode::IncompatibleSchema,
+            "invalid invitation command epoch column",
+        ));
+    }
+    Ok(())
+}
+
+fn verify_receipt_warning_origins_schema(conn: &Connection) -> Result<(), ApiError> {
+    // SQLite itself parses the immutable DDL, including compound trigger
+    // bodies. Compare every created object, rather than splitting on semicolons.
+    let expected = Connection::open_in_memory().map_err(store_error)?;
+    // A schema-only reference needs parent names for trigger creation; no data
+    // is copied and foreign keys remain off in this isolated parser connection.
+    expected.execute_batch("CREATE TABLE receipts(ordinal INTEGER PRIMARY KEY,message_id,seat_id,warning_message_id,state,ack_required,deadline_at); CREATE TABLE receipt_state(message_id,seat_id,warning_message_id); CREATE TABLE warning_conditions(condition_kind,clear_warning_id,open_warning_id,cleared_seq);").map_err(store_error)?;
+    // Population statements require the canonical parent schema. Parse only
+    // CREATE objects, retaining whole trigger bodies.
+    let mut sql = String::new();
+    for line in V42.lines() {
+        if sql.is_empty() && !line.trim_start().starts_with("CREATE ") {
+            continue;
+        }
+        sql.push_str(line);
+        sql.push('\n');
+        let complete = if sql.starts_with("CREATE TRIGGER ") {
+            line.trim_end().ends_with("END;")
+        } else {
+            line.trim_end().ends_with(';')
+        };
+        if complete {
+            expected.execute_batch(&sql).map_err(store_error)?;
+            sql.clear();
+        }
+    }
+    let mut stmt=expected.prepare("SELECT type,name,sql FROM sqlite_master WHERE name NOT IN ('receipts','receipt_state','warning_conditions') AND name NOT LIKE 'sqlite_%' ORDER BY name").map_err(store_error)?;
+    let objects = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(store_error)?;
+    for object in objects {
+        let (kind, name, sql) = object.map_err(store_error)?;
+        let actual: Option<String> = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type=?1 AND name=?2",
+                params![kind, name],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(store_error)?;
+        if actual.as_deref() != Some(sql.as_str()) {
+            return Err(api_error(
+                ErrorCode::IncompatibleSchema,
+                format!("missing or altered receipt warning origin {name}"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn verify_invitation_warning_origin_schema(conn: &Connection) -> Result<(), ApiError> {
+    let table: String = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='warning_conditions'",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    for column in [
+        "invitation_originator_instance_id TEXT REFERENCES host_instances(id)",
+        "invitation_originator_seat_id TEXT REFERENCES seats(id)",
+    ] {
+        if !table.contains(column) {
+            return Err(api_error(
+                ErrorCode::IncompatibleSchema,
+                "missing invitation warning origin column",
+            ));
+        }
+    }
+    let index = V41
+        .split("CREATE INDEX ")
+        .nth(1)
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap();
+    let trigger = V41
+        .split("CREATE TRIGGER ")
+        .nth(1)
+        .unwrap()
+        .trim()
+        .trim_end_matches(';');
+    for (kind, sql) in [
+        ("index", format!("CREATE INDEX {index}")),
+        ("trigger", format!("CREATE TRIGGER {trigger}")),
+    ] {
+        let name = sql.split_whitespace().nth(2).unwrap();
+        let actual: Option<String> = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type=?1 AND name=?2",
+                params![kind, name],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(store_error)?;
+        if actual.as_deref().map(str::trim) != Some(sql.trim()) {
+            return Err(api_error(
+                ErrorCode::IncompatibleSchema,
+                format!("missing or altered invitation warning origin {kind} {name}"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn verify_invitation_lifecycle_schema(conn: &Connection) -> Result<(), ApiError> {
+    let ddl = V40
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("--"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    for statement in ddl.split(';').map(str::trim).filter(|sql| !sql.is_empty()) {
+        let name = statement.split_whitespace().nth(2).unwrap_or_default();
+        let actual: Option<String> = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='index' AND name=?1",
+                [name],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(store_error)?;
+        if actual.as_deref().map(str::trim) != Some(statement) {
+            return Err(api_error(
+                ErrorCode::IncompatibleSchema,
+                format!("missing or altered invitation lifecycle index {name}"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn verify_receipt_deadline_backfill_schema(conn: &Connection) -> Result<(), ApiError> {
+    let expected = V39
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("--"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let expected = expected.split(';').next().unwrap().trim();
+    let actual: Option<String> = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='receipt_deadline_backfill'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(store_error)?;
+    if actual
+        .as_deref()
+        .map(|sql| sql.split_whitespace().collect::<String>())
+        != Some(expected.split_whitespace().collect::<String>())
+    {
+        return Err(api_error(
+            ErrorCode::IncompatibleSchema,
+            "missing or altered receipt deadline backfill table",
+        ));
+    }
+    let marker: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM receipt_deadline_backfill WHERE singleton=1)",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    if !marker {
+        return Err(api_error(
+            ErrorCode::IncompatibleSchema,
+            "missing receipt deadline backfill cursor",
+        ));
+    }
+    Ok(())
+}
+
+fn verify_invitation_confirmation_schema(conn: &Connection) -> Result<(), ApiError> {
+    let table: String = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='invitations'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(store_error)?;
+    for column in [
+        "confirmation TEXT CHECK(confirmation IN ('lazy','require_ack'))",
+        "inviter_seat_id TEXT REFERENCES seats(id)",
+    ] {
+        if !table.contains(column) {
+            return Err(api_error(
+                ErrorCode::IncompatibleSchema,
+                "invalid invitation confirmation column",
+            ));
+        }
+    }
+    for statement in V36.split("\n\n").filter(|sql| sql.starts_with("CREATE ")) {
+        let expected = statement.trim().trim_end_matches(';');
+        let mut words = expected.split_whitespace().skip(1);
+        let kind = words.next().unwrap_or_default().to_ascii_lowercase();
+        let name = words.next().unwrap_or_default();
+        let actual: Option<String> = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type=?1 AND name=?2",
+                params![kind, name],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(store_error)?;
+        if actual.as_deref().map(str::trim) != Some(expected) {
+            return Err(api_error(
+                ErrorCode::IncompatibleSchema,
+                format!("missing or altered invitation confirmation {kind} {name}"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn migrate_receipts_v36_to_v37(conn: &Connection) -> Result<(), ApiError> {
+    if !conn.is_autocommit() {
+        return Err(api_error(
+            ErrorCode::IncompatibleSchema,
+            "receipt upgrade requires autocommit",
+        ));
+    }
+    let foreign_keys: bool = conn
+        .pragma_query_value(None, "foreign_keys", |r| r.get(0))
+        .map_err(store_error)?;
+    conn.pragma_update(None, "foreign_keys", false)
+        .map_err(store_error)?;
+    let result = (|| {
+        conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
+        conn.execute_batch(V37).map_err(store_error)?;
+        verify_receipt_send_time_schema(conn)?;
+        let violation: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_foreign_key_check)",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(store_error)?;
+        if violation {
+            return Err(api_error(
+                ErrorCode::IncompatibleSchema,
+                "receipt upgrade foreign key violation",
+            ));
+        }
+        conn.pragma_update(None, "user_version", 37)
+            .map_err(store_error)?;
+        conn.execute_batch("COMMIT").map_err(store_error)
+    })();
+    if result.is_err() {
+        let _ = conn.execute_batch("ROLLBACK");
+    }
+    let restored = conn
+        .pragma_update(None, "foreign_keys", foreign_keys)
+        .map_err(store_error);
+    result.and(restored)
+}
+
+fn verify_receipt_send_time_schema(conn: &Connection) -> Result<(), ApiError> {
+    let ddl = V37
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("--"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    for statement in ddl
+        .split("\n\n")
+        .map(str::trim)
+        .filter(|s| s.starts_with("CREATE ") && !s.starts_with("CREATE TEMP "))
+    {
+        let sql = statement.trim_end_matches(';');
+        let words = sql.split_whitespace().collect::<Vec<_>>();
+        let kind = words[1].to_ascii_lowercase();
+        let name = words[2];
+        let actual: Option<String> = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type=?1 AND name=?2",
+                params![kind, name],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(store_error)?;
+        if actual.as_deref().map(str::trim) != Some(sql) {
+            return Err(api_error(
+                ErrorCode::IncompatibleSchema,
+                format!("missing or altered receipt send-time {kind} {name}"),
             ));
         }
     }

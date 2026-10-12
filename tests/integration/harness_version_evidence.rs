@@ -360,6 +360,8 @@ impl Rig {
             args.extend(["--event", event]);
         }
         let mut command = self.command(&args, &[]);
+        // A hook runs under its harness (the test process stands in for it).
+        herdr_threads::test_support::isolation::as_agent(&mut command, "claude", "hook-session");
         if !scaled {
             command.env_remove(herdr_threads::protocol::time::TEST_TIMEOUT_SCALE_ENV);
         }

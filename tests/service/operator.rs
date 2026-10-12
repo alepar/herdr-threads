@@ -249,15 +249,25 @@ impl Fixture {
                 &budget,
             )
             .unwrap();
-        host.store
-            .stage_snapshot_targets(
-                &stage.id,
-                0,
-                &captured.targets,
-                DurableWorkAdmission::new(16).unwrap(),
-                &budget,
-            )
-            .unwrap();
+        // A writer turn stages only a prefix when its 5 ms quantum runs out
+        // (a loaded machine): stage the rest in the following turns, as
+        // `reconcile` does, or the seal sees an incomplete target set.
+        let admission_limit = DurableWorkAdmission::new(16).unwrap();
+        let mut staged = 0usize;
+        while staged < captured.targets.len() {
+            let progress = host
+                .store
+                .stage_snapshot_targets(
+                    &stage.id,
+                    staged as u64,
+                    &captured.targets[staged..],
+                    admission_limit,
+                    &budget,
+                )
+                .unwrap();
+            assert!(progress.visited > 0, "snapshot staging must advance");
+            staged += usize::from(progress.visited);
+        }
         host.store.seal_snapshot_stage(&stage.id, &budget).unwrap();
         host.store
             .publish_snapshot_stage(&stage.id, &budget)
@@ -578,6 +588,14 @@ fn cli_operator_and_pane_derived_agent_forms_drive_the_elected_service() {
     };
     let run = |pane: Option<&str>, args: &[&str]| -> Result<serde_json::Value, RunError> {
         let mut out = Vec::new();
+        // An agent-namespace call acts as its harness session (decision 15); a person's keeps
+        // the pane-context path.
+        let _agent = (args.first() != Some(&"human")).then(|| {
+            crate::agent_caller(
+                "claude",
+                &format!("operator-session-{}", session_pane(pane, args)),
+            )
+        });
         run_in_pane(base(args), pane, &mut out)?;
         Ok(serde_json::from_slice(&out).unwrap())
     };
@@ -916,6 +934,14 @@ fn cli_pane_derivation_covers_retry_and_seat_default_reads() {
     };
     let run = |pane: Option<&str>, args: &[&str]| -> Result<serde_json::Value, RunError> {
         let mut out = Vec::new();
+        // An agent-namespace call acts as its harness session (decision 15); a person's keeps
+        // the pane-context path.
+        let _agent = (args.first() != Some(&"human")).then(|| {
+            crate::agent_caller(
+                "claude",
+                &format!("operator-session-{}", session_pane(pane, args)),
+            )
+        });
         run_in_pane(base(args), pane, &mut out)?;
         Ok(serde_json::from_slice(&out).unwrap())
     };
@@ -979,6 +1005,7 @@ fn cli_pane_derivation_covers_retry_and_seat_default_reads() {
 
     // A pane-derived send whose output is lost stays journaled.
     let mut lost = LostOutput;
+    let _agent = crate::agent_caller("claude", "operator-session");
     assert!(
         run_in_pane(
             base(&[
@@ -1223,4 +1250,14 @@ fn elected_operator_replace_over_ipc() {
             ("operator_rebind".to_owned(), label)
         ]
     );
+}
+
+/// The pane a test call acts from: its `--cooperative-target`, else the invoking pane. Each pane
+/// is its own harness session (and process), so seats do not supersede each other.
+fn session_pane<'a>(pane: Option<&'a str>, args: &[&'a str]) -> &'a str {
+    args.windows(2)
+        .find(|pair| pair[0] == "--cooperative-target")
+        .map(|pair| pair[1])
+        .or(pane)
+        .unwrap_or("")
 }

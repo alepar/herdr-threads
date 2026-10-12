@@ -1150,7 +1150,7 @@ fn compact_inbox_pending_participants_and_check_in_carry_no_json() {
     );
     assert_eq!(
         participants,
-        "participants\nseat-a invited self required invitation=inv-1 requirement=req-1 revision=3\n"
+        "participants\nseat-a invited inactive self required invitation=inv-1 requirement=req-1 revision=3\n"
     );
     let check_in = compact_text(serde_json::json!({"kind":"checked_in","data":{
         "context_disposition":"current",
@@ -1163,6 +1163,47 @@ fn compact_inbox_pending_participants_and_check_in_carry_no_json() {
         check_in,
         "checked_in seat-a claude top_level generation=2 current offered_through=31\ninbox:\nt-1 receipts=2 warnings=1000+\nt-2 invitations=1 required\n  accept-required: herdr-threads accept-required t-2 --invitation inv-1 --requirement req-1 --revision 3\nwarnings: 0 pending\n"
     );
+}
+
+#[test]
+fn compact_participants_mark_active_and_inactive_members() {
+    let participant = |seat: &str, is_self: bool, active: bool, physical: &str| {
+        let mut p = serde_json::json!({"seat":seat,"episode":1,"joined":true,"retired":false,
+        "physical_state":physical,"effective_state":"joined","joined_at":null,"left_at":null,
+        "retirement_cutover":null,"cleanup_state":null,"accepted_invitation":null,
+        "active":active,
+        "bindings":if active {
+            serde_json::json!([{"harness":"claude","role":"top_level","connected":true}])
+        } else {
+            serde_json::json!([])
+        }});
+        if is_self {
+            p["self"] = serde_json::json!(true);
+        }
+        p
+    };
+    let items = serde_json::json!([
+        participant("seat-a", true, true, "joined"),
+        participant("seat-b", false, false, "joined"),
+        participant("seat-c", false, true, "left"),
+        participant("seat-d", false, false, "left"),
+    ]);
+    let page = serde_json::json!({"items":items,"next_cursor":null,"next_argv":null,"high_water_ordinal":1,
+        "scope_revision":null,"has_more":false,"stop_reason":"complete","consistency":"bounded_live"});
+    let rows = "seat-a joined active self\nseat-b joined inactive\n\
+                seat-c joined(physical:left) active\nseat-d joined(physical:left) inactive\n";
+    assert_eq!(
+        compact_text(serde_json::json!({"kind":"participants","data":page.clone()})),
+        format!("participants\n{rows}")
+    );
+    let shown = compact_text(serde_json::json!({"kind":"thread","data":{
+        "summary":{"thread":"t-1","topic_data":"topic","topic_omitted":false,"topic_detail_argv":null,
+            "archived":false,"orphaned":false,"message_count":1,"created_at":0,"ordinary_count":1,
+            "system_count":0,"joined_count":2},
+        "goal_data":"goal","created_at":0,"participant_count":4,"participants":page,
+        "pending_receipt_count":0,"pending_receipts_argv":["herdr-threads","pending-receipts","--thread","t-1"]
+    }}));
+    assert!(shown.contains(&format!("participants:\n{rows}")), "{shown}");
 }
 
 #[test]

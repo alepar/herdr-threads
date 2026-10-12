@@ -1,0 +1,5 @@
+# a child that agy gave a presence lock, listed under the conversation the pane is bound to
+presence/534e47d6-64b3-4fd6-bd7f-446ceec4d86c.lock
+presence/5781d6c5-188b-42a5-8f8c-e8b0da366322.lock
+brain/534e47d6-64b3-4fd6-bd7f-446ceec4d86c/.system_generated/subagents/5781d6c5-188b-42a5-8f8c-e8b0da366322.json
+brain/5781d6c5-188b-42a5-8f8c-e8b0da366322/.system_generated/logs/transcript_full.jsonl

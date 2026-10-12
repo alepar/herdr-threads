@@ -1,0 +1,4 @@
+# pid ppid pgid tpgid stat comm args  (shell 44313 and its descendants)
+44313 42757 44313 44462 SNs  -zsh             -zsh
+44462 44313 44462 44462 SN+  node node /tmp/sp-ede3b852/ht-54r.89/npm/prefix/bin/codex --no-daemon
+44490 44462 44462 44462 SN+  /private/tmp/sp- /private/tmp/sp-ede3b852/ht-54r.89/npm/prefix/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex --no-daemon

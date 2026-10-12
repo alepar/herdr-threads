@@ -1,0 +1,10 @@
+# src state: tip with reverse-applied src diffs of: (none; tip)
+# command: cargo test --locked --all-features --lib -- single_target_composer_wake_requires a_launch_placeholder_target_matches composer_choice_over_wake_targets
+
+running 3 tests
+test scheduler::tests::a_launch_placeholder_target_matches_the_started_process ... ok
+test scheduler::tests::single_target_composer_wake_requires_the_foreground_match ... ok
+test store::wake_tests::composer_choice_over_wake_targets_is_the_unique_fingerprint_pid_match ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 4466 filtered out; finished in 0.29s
+

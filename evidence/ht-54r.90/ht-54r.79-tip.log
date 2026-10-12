@@ -1,0 +1,12 @@
+# src state: tip with reverse-applied src diffs of: (none; tip)
+# command: cargo test --locked --all-features --lib -- a_plain_call_binding_with_a_live_channel a_plain_call_enrolled_hook_pull watch_register_accepts_a_plain plain_call_enrollment_never
+
+running 5 tests
+test store::bindings::tests::liveness::plain_call_enrollment_never_supersedes_a_same_process_binding ... ok
+test store::bindings::tests::exclusivity::a_plain_call_enrollment_never_adopts_the_placeholder ... ok
+test service::mod_channels::tests::domain::watch_register_accepts_a_plain_call_enrolled_binding ... ok
+test service::delivery_pull::tests::a_plain_call_enrolled_hook_pull_binding_is_served ... ok
+test service::dispatch::mod_ack_dispatch_tests::a_plain_call_binding_with_a_live_channel_mod_acks_and_keeps_its_provenance ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 4464 filtered out; finished in 0.21s
+

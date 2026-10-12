@@ -560,6 +560,16 @@ fn line_for(harness: &str, version: &str, derived: &state::Derived) -> String {
     }
 }
 
+/// The adapter's per-version note of the harness-state report, if it has one.
+fn history_note(harness: &str) -> Option<&'static str> {
+    crate::harness::registry::builtins()
+        .registrations()
+        .iter()
+        .find(|r| r.metadata().id == harness)
+        .map(|r| r.text().version_history_note)
+        .filter(|note| !note.is_empty())
+}
+
 fn harness_report(
     harness: &'static str,
     rows: &[EvidenceRow],
@@ -599,11 +609,9 @@ fn harness_report(
             line: line_for(harness, &verdict.version, &verdict.derived),
             notes: {
                 let mut notes = verdict.derived.doctor_notes.clone();
-                notes.push(if harness == "claude" {
-                    "runtime metadata source: newest runtime-written Claude transcript entry (optional)"
-                } else {
-                    "historical attributed metadata; rollout creator does not identify the current runtime"
-                }.into());
+                if let Some(note) = history_note(harness) {
+                    notes.push(note.into());
+                }
                 notes
             },
             issue_url: state::issue_url(&verdict.derived.state),

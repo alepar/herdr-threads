@@ -1,0 +1,1 @@
+{"id":"cli:pane:process_info","result":{"process_info":{"foreground_process_group_id":43259,"foreground_processes":[{"argv":["/Users/alepar/.local/bin/codex","--no-daemon"],"argv0":"codex","cmdline":"/Users/alepar/.local/bin/codex --no-daemon","cwd":"/private/tmp/ih.oHO4go/home","name":"codex","pid":43259}],"pane_id":"w2:p1","shell_pid":43250},"type":"pane_process_info"}}

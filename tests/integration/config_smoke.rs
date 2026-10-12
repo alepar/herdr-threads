@@ -214,8 +214,10 @@ impl SyntheticDaemon {
     fn hook(&self, pane: &str, harness: &str, payload: &serde_json::Value) -> serde_json::Value {
         use herdr_threads::test_support::spawn::SpawnOwned;
         use std::io::Write;
-        let mut child = self
-            .command()
+        let mut command = self.command();
+        // A hook runs under its harness (the test process stands in for it).
+        herdr_threads::test_support::isolation::as_agent(&mut command, harness, "hook-session");
+        let mut child = command
             .args(["hook", harness])
             .env("HERDR_ENV", "1")
             .env("HERDR_PANE_ID", pane)

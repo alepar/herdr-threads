@@ -1,0 +1,9 @@
+r1 [Should-fix] .config/nextest.toml:101
+r1 [Should-fix] docs/superpowers/runs/2026-10-09-hermes-global-enrollment/run.md:27
+r1 [Nit] tests/cli/hook.rs:8260
+r1 [Nit] docs/compatibility/README.md:40
+r1 [Must-fix] src/harness/adapter.rs:326
+r1 [Must-fix] untested: smoke tests return early without isolated Herdr (tests/integration/hermes_enrollment_smoke.rs)
+r1 [Must-fix] untested: operator seat retire then re-enrollment
+r1 [Must-fix] untested: setup-status text stale hint absent when bridge current
+r1 [Must-fix] untested: no full-suite run, lint or leak check on the branch

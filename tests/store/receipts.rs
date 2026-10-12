@@ -5,7 +5,7 @@ use crate::protocol::{
     time::{Clock, MonoInstant, UtcMillis},
 };
 use crate::store::{attention, connection::StoreContext, messages, receipts};
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use std::{
     path::PathBuf,
     sync::{
@@ -66,6 +66,7 @@ fn send_request(explicit: Vec<&str>) -> SendMessage {
         delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
         thread: ThreadId::new("t"),
         body: "hello".into(),
+        direct_recipient: None,
         invited_recipients: explicit.into_iter().map(SeatId::new).collect(),
         deadline_millis: None,
         operation: OperationId::new("op"),
@@ -78,6 +79,8 @@ fn send_request(explicit: Vec<&str>) -> SendMessage {
             native_session: NativeSessionId::new("n"),
             execution: ExecutionId::new("00000000-0000-4000-8000-0000000000aa"),
             target: HostTargetId::new("pa"),
+            agent_id: None,
+            liveness: Some(crate::protocol::authority::LivenessFingerprint::TEST),
         },
         relays_user: false,
         user_intent: None,
@@ -346,6 +349,8 @@ fn ack_request(ids: Vec<MessageId>) -> Ack {
             native_session: NativeSessionId::new("nb"),
             execution: ExecutionId::new("00000000-0000-4000-8000-0000000000bb"),
             target: HostTargetId::new("pb"),
+            agent_id: None,
+            liveness: Some(crate::protocol::authority::LivenessFingerprint::TEST),
         },
     }
 }
@@ -2989,10 +2994,27 @@ fn catch_up_row(
         ("ended", Some("ready"), Some(10))
     };
     conn.execute(
-        "INSERT INTO catch_up(seat_id,thread_id,frontier_seq,binding_generation,execution_id,entered_at,extension_until,state,end_reason,ended_at) VALUES (?1,?2,0,1,'e',0,?3,?4,?5,?6)",
+        "INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) SELECT ?1,1,'p','b',0,'codex','catch-up-row','e','cooperative_top_level',0,'tm','inc' WHERE NOT EXISTS(SELECT 1 FROM occupant_bindings WHERE seat_id=?1)",
+        params![seat],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO catch_up(binding_id,seat_id,thread_id,frontier_seq,entered_at,extension_until,state,end_reason,ended_at) SELECT binding_id,?1,?2,0,0,?3,?4,?5,?6 FROM occupant_bindings WHERE seat_id=?1 ORDER BY ordinal DESC LIMIT 1",
         params![seat, thread, extension_until, state, reason, ended],
     )
     .unwrap();
+}
+
+fn binding_id(conn: &Connection, seat: &str) -> crate::protocol::ids::BindingId {
+    crate::protocol::ids::BindingId::parse(
+        conn.query_row(
+            "SELECT binding_id FROM occupant_bindings WHERE seat_id=?1 ORDER BY ordinal DESC LIMIT 1",
+            [seat],
+            |r| r.get::<_, String>(0),
+        )
+        .unwrap(),
+    )
+    .unwrap()
 }
 
 fn extension_of(conn: &Connection, seat: &str, thread: &str) -> Option<i64> {
@@ -3087,7 +3109,7 @@ fn entry_sets_entry_plus_p99_never_lowering() {
     let tx = conn.transaction().unwrap();
     receipts::extension_on_entry(
         &tx,
-        &SeatId::new("b"),
+        &binding_id(&tx, "b"),
         &ThreadId::new("t"),
         UtcMillis(100),
         90,
@@ -3101,7 +3123,7 @@ fn entry_sets_entry_plus_p99_never_lowering() {
     let tx = conn.transaction().unwrap();
     receipts::extension_on_entry(
         &tx,
-        &SeatId::new("b"),
+        &binding_id(&tx, "b"),
         &ThreadId::new("t"),
         UtcMillis(100),
         90,
@@ -3136,7 +3158,7 @@ fn exit_sets_now_plus_grace() {
     let tx = conn.transaction().unwrap();
     receipts::extension_on_exit(
         &tx,
-        &SeatId::new("b"),
+        &binding_id(&tx, "b"),
         &ThreadId::new("t"),
         UtcMillis(300),
         60,
@@ -3264,17 +3286,24 @@ fn warning_fires_on_the_frozen_deadline_after_stall_and_reentry() {
     let (context, mut conn, clock) = setup();
     legacy_receipt(&conn, "ml", "t", 1, 200_000);
     let (seat, thread) = (SeatId::new("b"), ThreadId::new("t"));
-    let execution = ExecutionId::new("00000000-0000-4000-8000-0000000000bb");
+    let binding = crate::protocol::ids::BindingId::parse(
+        conn.query_row(
+            "SELECT binding_id FROM occupant_bindings WHERE seat_id='b'",
+            [],
+            |r| r.get::<_, String>(0),
+        )
+        .unwrap(),
+    )
+    .unwrap();
     let enter = |conn: &mut Connection, now: i64| {
         let tx = conn.transaction().unwrap();
         catch_up::enter_or_keep(
             &tx,
             &catch_up::CatchUpEntry {
+                binding: &binding,
                 seat: &seat,
                 thread: &thread,
                 frontier_seq: 1,
-                binding_generation: 1,
-                execution: &execution,
                 now: UtcMillis(now),
             },
             &SummarySettings::default(),
@@ -3566,8 +3595,10 @@ fn ack_after_frozen_deadline_during_extension_records_no_late_warning() {
 // noncooperative or unknown canonical binding. Refusal leaves history open.
 #[test]
 fn adapter_display_ack_rechecks_exact_binding_and_cooperative_provenance() {
+    // A disconnected binding is not here: a fingerprinted display ACK reconnects it (ht-54r.81;
+    // see `display_ack_reconnects_a_disconnected_plain_call_enrolled_binding`).
     for change in [
-        "observation_provenance='verified'",
+        "role='subagent',agent_id='x'",
         "harness='future_agent'",
         "native_session='different'",
         "execution_id='different'",
@@ -3692,6 +3723,18 @@ fn receipt_discovery_lends_empty_sparse_half_to_physical_snapshot() {
     );
 }
 
+fn discovery_sender_binding(db: &Connection, seat: &str) -> crate::protocol::ids::BindingId {
+    let session = match seat {
+        "a" => "n",
+        "b" => "nb",
+        _ => panic!("not a discovery sender"),
+    };
+    crate::protocol::ids::BindingId::new(db.query_row(
+        "SELECT binding_id FROM occupant_bindings WHERE seat_id=?1 AND harness='codex' AND native_session=?2 AND agent_id=''",
+        params![seat,session], |r|r.get::<_,String>(0)
+    ).unwrap())
+}
+
 #[test]
 fn receipt_discovery_coalesced_origins_survive_offers_departure_and_partial_ack() {
     let (context, mut db, clock) = setup();
@@ -3773,8 +3816,9 @@ fn receipt_discovery_coalesced_origins_survive_offers_departure_and_partial_ack(
             .map(|r| r.notice)
             .collect();
         let tx = db.transaction().unwrap();
-        attention::settle_carried_notices(&tx, seat, 1, execution, &carried).unwrap();
-        tx.execute("INSERT INTO warning_offer(seat_id,binding_generation,execution_id,offered_through_seq) SELECT ?1,1,?2,decision_seq FROM host_instances WHERE id='i'",params![seat,execution]).unwrap();
+        let binding = crate::protocol::ids::BindingId::new(tx.query_row("SELECT binding_id FROM occupant_bindings WHERE seat_id=?1 AND execution_id=?2 AND ended_at IS NULL",params![seat,execution],|r|r.get::<_,String>(0)).unwrap());
+        attention::settle_carried_notices(&tx, seat, &binding, &carried).unwrap();
+        tx.execute("INSERT INTO warning_offer(binding_id,seat_id,offered_through_seq) SELECT ?1,?2,decision_seq FROM host_instances WHERE id='i'",params![binding.as_str(),seat]).unwrap();
         tx.commit().unwrap();
     }
     assert_eq!(
@@ -3827,11 +3871,16 @@ fn receipt_discovery_coalesced_origins_survive_offers_departure_and_partial_ack(
             });
         assert!(candidate.has_actionable_work());
         assert_eq!(
-            crate::store::seats::mod_seat_view(&db, "i", &SeatId::new(seat))
-                .unwrap()
-                .unwrap()
-                .fingerprint
-                .other_pending,
+            crate::store::seats::mod_binding_view(
+                &db,
+                "i",
+                &SeatId::new(seat),
+                crate::ports::ModBindingRef::Id(&discovery_sender_binding(&db, seat))
+            )
+            .unwrap()
+            .unwrap()
+            .fingerprint
+            .other_pending,
             1
         );
         let refreshed =
@@ -3987,9 +4036,14 @@ fn receipt_discovery_coalesced_origins_survive_offers_departure_and_partial_ack(
                 remaining > 0,
                 "actual upstream discovery after ACK{n}: {seat}"
             );
-            let view = crate::store::seats::mod_seat_view(&db, "i", &SeatId::new(seat))
-                .unwrap()
-                .unwrap();
+            let view = crate::store::seats::mod_binding_view(
+                &db,
+                "i",
+                &SeatId::new(seat),
+                crate::ports::ModBindingRef::Id(&discovery_sender_binding(&db, seat)),
+            )
+            .unwrap()
+            .unwrap();
             assert_eq!(
                 view.fingerprint.other_pending,
                 u64::from(remaining > 0),
@@ -4182,7 +4236,7 @@ fn receipt_discovery_global_extension_keeps_original_clock_and_restart_finds_lap
     let (port, db) = receipt_discovery_driver_fixture(false, 1, 0);
     db.execute("UPDATE receipts SET deadline_at=500", [])
         .unwrap();
-    db.execute("INSERT INTO catch_up(seat_id,thread_id,frontier_seq,binding_generation,execution_id,entered_at,extension_until,state) VALUES ('b','t',0,1,'00000000-0000-4000-8000-0000000000bb',0,5000,'active')",[]).unwrap();
+    db.execute("INSERT INTO catch_up(binding_id,seat_id,thread_id,frontier_seq,entered_at,extension_until,state) SELECT binding_id,'b','t',0,0,5000,'active' FROM occupant_bindings WHERE seat_id='b' AND native_session='nb' AND ended_at IS NULL",[]).unwrap();
     let budget = crate::protocol::time::CallBudget {
         deadline: MonoInstant(u64::MAX),
         cancellation: Default::default(),
@@ -4474,7 +4528,7 @@ fn receipt_discovery_sparse_episodes_survive_source_rowid_reuse_and_snapshot_res
 
 #[test]
 fn receipt_discovery_populated34_upgrade_rolls_back_and_reopens_with_bounded_bootstrap() {
-    let (context, mut db, _) = receipt_discovery_historical(34);
+    let (context, mut db, _) = receipt_discovery_historical(37);
     for n in 0..125 {
         db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,author_kind,actor_seat_id,body,decision_at,decision_seq) VALUES (?1,'i','t',?2,'ordinary',NULL,?3,'x',0,?2)",params![format!("historical-{n}"),n+1,if n==1{"b"}else{"a"}]).unwrap();
         db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES (?1,'t','b','pending',1,0,5000)",[format!("historical-{n}")]).unwrap();
@@ -4509,7 +4563,7 @@ fn receipt_discovery_populated34_upgrade_rolls_back_and_reopens_with_bounded_boo
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        34
+        37
     );
     assert_eq!(
         db.query_row(
@@ -4651,7 +4705,7 @@ fn receipt_discovery_populated34_upgrade_rolls_back_and_reopens_with_bounded_boo
         reopened
             .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        35
+        39
     );
 }
 
@@ -4671,7 +4725,7 @@ fn discovery_manifest(
 
 #[test]
 fn receipt_discovery_four_historical_streams_charge_every_visit_and_reset_once() {
-    let (context, db, clock) = receipt_discovery_historical(31);
+    let (context, db, clock) = receipt_discovery_historical(34);
     for n in 0..50 {
         discovery_receipt(&db, &format!("four-{n}"), n + 1, 5000);
         discovery_manifest(
@@ -4691,7 +4745,7 @@ fn receipt_discovery_four_historical_streams_charge_every_visit_and_reset_once()
             .map(|p| p.unwrap().path())
             .collect::<Vec<_>>();
     migrations.sort();
-    for (n, path) in migrations.into_iter().enumerate().skip(31).take(3) {
+    for (n, path) in migrations.into_iter().enumerate().skip(34).take(3) {
         db.execute_batch(&std::fs::read_to_string(path).unwrap())
             .unwrap();
         db.pragma_update(None, "user_version", (n + 1) as i64)
@@ -4808,7 +4862,7 @@ fn receipt_discovery_four_historical_streams_charge_every_visit_and_reset_once()
 
 #[test]
 fn receipt_discovery_upgrade_combined_reset_warning_and_cursors_roll_back_together() {
-    let (context, mut db, _) = receipt_discovery_historical(34);
+    let (context, mut db, _) = receipt_discovery_historical(37);
     discovery_receipt(&db, "rollback-source", 1, 500);
     db.execute("INSERT INTO receipt_state(message_id,seat_id,state,ack_required,deadline_at) VALUES ('rollback-source','c','pending',1,5000)",[]).unwrap();
     db.execute("UPDATE threads SET next_sequence=2 WHERE id='t'", [])
@@ -4891,7 +4945,7 @@ fn receipt_discovery_upgrade_combined_reset_warning_and_cursors_roll_back_togeth
 
 #[test]
 fn receipt_discovery_terminal_upgrade_counts_rows_and_catalog_rejects_missing_projection() {
-    let (context, mut db, _) = receipt_discovery_historical(34);
+    let (context, mut db, _) = receipt_discovery_historical(37);
     for n in 0..125 {
         discovery_receipt(&db, &format!("terminal-{n}"), n + 1, 500);
         db.execute("INSERT INTO receipt_state(message_id,seat_id,state,ack_required,deadline_at) VALUES (?1,'c','acked',0,500)",[format!("terminal-{n}")]).unwrap();
@@ -5134,4 +5188,340 @@ fn receipt_origin_actual_ordinary_send_with_null_native_author_notifies_sender()
         .unwrap(),
         1
     );
+}
+
+mod binding_attribution {
+    use super::*;
+    use crate::protocol::results::{CommandResult, ErrorCode};
+
+    const B2_EXECUTION: &str = "00000000-0000-4000-8000-0000000000b2";
+
+    fn budget() -> crate::protocol::time::CallBudget {
+        crate::protocol::time::CallBudget {
+            deadline: MonoInstant(u64::MAX),
+            cancellation: Default::default(),
+        }
+    }
+
+    /// Seat `b` gets a second connected top-level binding (session `nb2`); returns
+    /// (first binding id, second binding id).
+    fn two_bindings_on_b(conn: &Connection) -> (String, String) {
+        conn.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES ('b',1,'pb','b',1,1,'codex','nb2',?1,'cooperative_top_level',0,'term-pb','inc')", [B2_EXECUTION]).unwrap();
+        let id = |session: &str| -> String {
+            conn.query_row(
+                "SELECT binding_id FROM occupant_bindings WHERE seat_id='b' AND native_session=?1",
+                [session],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        (id("nb"), id("nb2"))
+    }
+
+    fn publish_to_b(context: &StoreContext, conn: &mut Connection, operation: &str) -> MessageId {
+        let mut request = send_request(vec![]);
+        request.operation = OperationId::new(operation);
+        match send_prepared(
+            context,
+            conn,
+            &request,
+            &mut permit(&request),
+            messages::MessageLimits::default(),
+        )
+        .unwrap()
+        {
+            CommandResult::MessageSent(id) => id,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    fn claim_of(session: &str, execution: &str) -> CallerClaim {
+        let mut claim = ack_request(vec![]).claim;
+        claim.native_session = NativeSessionId::new(session);
+        claim.execution = ExecutionId::new(execution);
+        claim
+    }
+
+    fn ack_as(
+        context: &StoreContext,
+        conn: &mut Connection,
+        claim: CallerClaim,
+        ids: Vec<MessageId>,
+        operation: &str,
+        displayed: bool,
+    ) -> Result<CommandResult, crate::protocol::results::ApiError> {
+        let mut request = ack_request(ids);
+        request.claim = claim;
+        request.operation = OperationId::new(operation);
+        if displayed {
+            let digest =
+                crate::store::schema::canonical_digest(&receipts::ack_displayed_payload(&request))
+                    .unwrap();
+            let mut permit = cooperative_permit(
+                &request.claim,
+                &request.operation,
+                ObligationRef::CheckIn(request.claim.seat.clone()),
+                digest,
+                (1, 0),
+            );
+            receipts::ack_displayed(context, conn, &budget(), &request, &mut permit)
+        } else {
+            receipts::ack(
+                context,
+                conn,
+                &budget(),
+                &request,
+                &mut ack_permit(&request),
+            )
+        }
+    }
+
+    fn ack_binding(conn: &Connection, message: &MessageId) -> Option<String> {
+        conn.query_row(
+            "SELECT ack_binding_id FROM receipt_state WHERE message_id=?1 AND seat_id='b'",
+            [message.as_str()],
+            |r| r.get(0),
+        )
+        .optional()
+        .unwrap()
+        .flatten()
+    }
+
+    #[test]
+    fn two_top_level_bindings_may_display_ack_settled_once() {
+        let (context, mut conn, _) = setup();
+        let (first, second) = two_bindings_on_b(&conn);
+        let id = publish_to_b(&context, &mut conn, "send-1");
+        let a = claim_of("nb", "00000000-0000-4000-8000-0000000000bb");
+        let b = claim_of("nb2", B2_EXECUTION);
+        let CommandResult::Acknowledged(settled) =
+            ack_as(&context, &mut conn, a, vec![id.clone()], "ack-a", true).unwrap()
+        else {
+            panic!("wrong result")
+        };
+        assert_eq!(settled.acknowledged, vec![id.clone()]);
+        assert_eq!(ack_binding(&conn, &id), Some(first.clone()));
+        let acked_at: i64 = conn
+            .query_row(
+                "SELECT acked_at FROM receipt_state WHERE message_id=?1 AND seat_id='b'",
+                [id.as_str()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let CommandResult::Acknowledged(again) =
+            ack_as(&context, &mut conn, b, vec![id.clone()], "ack-b", true).unwrap()
+        else {
+            panic!("wrong result")
+        };
+        assert!(again.acknowledged.is_empty());
+        assert_eq!(again.already_acknowledged, vec![id.clone()]);
+        assert_eq!(
+            ack_binding(&conn, &id),
+            Some(first),
+            "the first settler stays"
+        );
+        assert_ne!(ack_binding(&conn, &id), Some(second));
+        let after: i64 = conn
+            .query_row(
+                "SELECT acked_at FROM receipt_state WHERE message_id=?1 AND seat_id='b'",
+                [id.as_str()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(after, acked_at, "settled once: no second transition");
+    }
+
+    #[test]
+    fn explicit_ack_records_the_acting_binding() {
+        let (context, mut conn, _) = setup();
+        let (_first, second) = two_bindings_on_b(&conn);
+        let id = publish_to_b(&context, &mut conn, "send-1");
+        let b = claim_of("nb2", B2_EXECUTION);
+        ack_as(&context, &mut conn, b, vec![id.clone()], "ack-b", false).unwrap();
+        assert_eq!(ack_binding(&conn, &id), Some(second));
+        let generation: i64 = conn
+            .query_row(
+                "SELECT ack_generation FROM receipt_state WHERE message_id=?1 AND seat_id='b'",
+                [id.as_str()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(generation, 1, "ack_generation keeps its historical meaning");
+    }
+
+    #[test]
+    fn disconnected_binding_ack_reconnects_and_settles() {
+        let (context, mut conn, _) = setup();
+        let (_first, second) = two_bindings_on_b(&conn);
+        conn.execute("UPDATE occupant_bindings SET liveness='disconnected',disconnected_at=5,disconnect_reason='liveness_process_exit' WHERE native_session='nb2'", []).unwrap();
+        let id = publish_to_b(&context, &mut conn, "send-1");
+        // The sender's call fingerprinted its binding with the ACK's own fingerprint; a connected
+        // lifecycle-claimed binding of the instance on that fingerprint would keep the process
+        // (ht-54r.87), so the sender runs in another process.
+        conn.execute(
+            "UPDATE occupant_bindings SET liveness_pid=2000 WHERE native_session='n'",
+            [],
+        )
+        .unwrap();
+        // `claim_of` carries a liveness fingerprint, so the ACK reconnects the binding first.
+        let b = claim_of("nb2", B2_EXECUTION);
+        ack_as(&context, &mut conn, b, vec![id.clone()], "ack-b", false).unwrap();
+        assert_eq!(
+            crate::store::effective::effective_receipt(&conn, id.as_str(), "b")
+                .unwrap()
+                .unwrap()
+                .state,
+            crate::store::effective::EffectiveReceiptState::Acknowledged
+        );
+        assert_eq!(ack_binding(&conn, &id), Some(second));
+        let liveness: String = conn
+            .query_row(
+                "SELECT liveness FROM occupant_bindings WHERE native_session='nb2'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(liveness, "connected");
+    }
+
+    #[test]
+    fn fingerprintless_ack_of_a_disconnected_binding_is_refused() {
+        let (context, mut conn, _) = setup();
+        let (_first, _second) = two_bindings_on_b(&conn);
+        conn.execute("UPDATE occupant_bindings SET liveness='disconnected',disconnected_at=5,disconnect_reason='liveness_process_exit' WHERE native_session='nb2'", []).unwrap();
+        let id = publish_to_b(&context, &mut conn, "send-1");
+        let mut b = claim_of("nb2", B2_EXECUTION);
+        b.liveness = None;
+        let error = ack_as(&context, &mut conn, b, vec![id.clone()], "ack-b", false).unwrap_err();
+        assert_eq!(error.code, ErrorCode::CallerUnverified);
+        // The refusal names the reason this fix introduced: only a fingerprinted call reconnects
+        // the binding. The previous blanket "context changed" refusal of
+        // every disconnected binding would not say so.
+        assert!(
+            error.detail.contains("fingerprinted call"),
+            "{}",
+            error.detail
+        );
+        assert_eq!(
+            crate::store::effective::effective_receipt(&conn, id.as_str(), "b")
+                .unwrap()
+                .unwrap()
+                .state,
+            crate::store::effective::EffectiveReceiptState::Pending
+        );
+        assert_eq!(ack_binding(&conn, &id), None);
+    }
+}
+
+/// Runs a display ACK of message `displayed` (addressed to seat `b`) through the store.
+fn display_ack_for_b(
+    context: &StoreContext,
+    conn: &mut Connection,
+) -> Result<crate::protocol::results::CommandResult, crate::protocol::results::ApiError> {
+    display_ack_for_b_with(
+        context,
+        conn,
+        Some(crate::protocol::authority::LivenessFingerprint::TEST),
+    )
+}
+
+fn display_ack_for_b_with(
+    context: &StoreContext,
+    conn: &mut Connection,
+    liveness: Option<crate::protocol::authority::LivenessFingerprint>,
+) -> Result<crate::protocol::results::CommandResult, crate::protocol::results::ApiError> {
+    conn.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_at,decision_seq) VALUES ('displayed','i','t',1,'ordinary','a','read body',0,2)", []).unwrap();
+    conn.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('displayed','t','b','pending',300000)", []).unwrap();
+    conn.execute("UPDATE threads SET next_sequence=2 WHERE id='t'", [])
+        .unwrap();
+    conn.execute("UPDATE host_instances SET decision_seq=2 WHERE id='i'", [])
+        .unwrap();
+    let mut request = ack_request(vec![MessageId::new("displayed")]);
+    request.claim.liveness = liveness;
+    let digest =
+        crate::store::schema::canonical_digest(&receipts::ack_displayed_payload(&request)).unwrap();
+    let mut grant = cooperative_permit(
+        &request.claim,
+        &request.operation,
+        ObligationRef::CheckIn(SeatId::new("b")),
+        digest,
+        (1, 0),
+    );
+    receipts::ack_displayed(
+        context,
+        conn,
+        &crate::protocol::time::CallBudget {
+            deadline: MonoInstant(u64::MAX),
+            cancellation: Default::default(),
+        },
+        &request,
+        &mut grant,
+    )
+}
+fn receipt_state_b(conn: &Connection) -> String {
+    conn.query_row(
+        "SELECT state FROM receipts WHERE message_id='displayed' AND seat_id='b'",
+        [],
+        |r| r.get(0),
+    )
+    .unwrap()
+}
+
+#[test]
+fn display_ack_settles_for_a_plain_call_enrolled_binding() {
+    let (context, mut conn, _) = setup();
+    conn.execute("UPDATE occupant_bindings SET observation_provenance='cooperative_env_session',liveness='connected',registered_at=0 WHERE seat_id='b'", []).unwrap();
+    display_ack_for_b(&context, &mut conn).unwrap();
+    assert_eq!(receipt_state_b(&conn), "acked");
+    let observation: String = conn
+        .query_row(
+            "SELECT ack_observation FROM receipts WHERE message_id='displayed' AND seat_id='b'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let observation: serde_json::Value = serde_json::from_str(&observation).unwrap();
+    assert_eq!(observation["provenance"], "cooperative_top_level");
+}
+
+#[test]
+fn display_ack_reconnects_a_disconnected_plain_call_enrolled_binding() {
+    let (context, mut conn, _) = setup();
+    conn.execute("UPDATE occupant_bindings SET observation_provenance='cooperative_env_session',liveness='disconnected',disconnected_at=1,disconnect_reason='liveness_process_exit',registered_at=0 WHERE seat_id='b'", []).unwrap();
+    display_ack_for_b(&context, &mut conn).unwrap();
+    assert_eq!(receipt_state_b(&conn), "acked");
+    let liveness: String = conn
+        .query_row(
+            "SELECT liveness FROM occupant_bindings WHERE seat_id='b'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(liveness, "connected");
+}
+
+#[test]
+fn fingerprintless_display_ack_of_a_disconnected_binding_is_refused() {
+    let (context, mut conn, _) = setup();
+    conn.execute("UPDATE occupant_bindings SET observation_provenance='cooperative_env_session',liveness='disconnected',disconnected_at=1,registered_at=0 WHERE seat_id='b'", []).unwrap();
+    let error = display_ack_for_b_with(&context, &mut conn, None).unwrap_err();
+    assert_eq!(
+        error.code,
+        crate::protocol::results::ErrorCode::CallerUnverified
+    );
+    // The reason this fix introduced, not the former blanket refusal of every disconnected binding.
+    assert!(
+        error.detail.contains("fingerprinted call"),
+        "{}",
+        error.detail
+    );
+    assert_eq!(receipt_state_b(&conn), "pending");
+}
+
+#[test]
+fn display_ack_settles_for_a_readopted_migrated_binding() {
+    let (context, mut conn, _) = setup();
+    conn.execute("UPDATE occupant_bindings SET observation_provenance='cooperative_env_session',migrated=1,liveness='connected',registered_at=0 WHERE seat_id='b'", []).unwrap();
+    display_ack_for_b(&context, &mut conn).unwrap();
+    assert_eq!(receipt_state_b(&conn), "acked");
 }

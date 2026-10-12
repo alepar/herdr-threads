@@ -737,7 +737,7 @@ fn current_offer_suppresses_projection_wake_but_successor_gets_attention() {
         UPDATE host_instances SET decision_seq=10 WHERE id='i';\
         INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_decision_seq,created_at,frozen_duration_ms,deadline_at) VALUES('v','t','s1',1,'pending',1,0,300,300);\
         INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at) VALUES('s1',1,'target','boot',1,'codex','native','old','verified',0,1);\
-        INSERT INTO warning_offer(seat_id,binding_generation,execution_id,offered_through_seq) VALUES('s1',1,'old',10);\
+        INSERT INTO warning_offer(binding_id,seat_id,offered_through_seq) SELECT binding_id,'s1',10 FROM occupant_bindings WHERE seat_id='s1' AND execution_id='old';\
         INSERT INTO messages(instance_id,id,thread_id,sequence,kind,event_key,event_json,decision_at,decision_seq,event_offset) VALUES('i','w1','t',1,'warn','w1','{}',10,10,0),('i','w2','t',2,'warn','w2','{}',10,10,1);\
         INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,affected_seat_id,condition_kind,condition_id,phase) VALUES('w1',10,'t',0,'s1','invitation','v','affected'),('w2',10,'t',0,'s1','invitation','v','affected');\
         INSERT INTO work_jobs(id,kind,subject_id,high_water) VALUES('j1','warning_attribution','w1',0),('j2','warning_attribution','w2',0);\
@@ -878,4 +878,47 @@ fn unavailable_send_materializes_due_deadline_without_availability() {
     assert_eq!(times, (None, Some(1300)));
     let due: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM receipt_state INDEXED BY receipt_state_required_due WHERE state='pending' AND ack_required=1 AND warning_message_id IS NULL AND deadline_at<=1300)",[],|r|r.get(0)).unwrap();
     assert!(due);
+}
+
+/// Every monotonic read is 10 ms after the previous one: a thread stalled
+/// (preempted, or a slow job load) for longer than the 5 ms work quantum
+/// between the quantum's start and its first unit.
+struct StallClock(AtomicU64);
+impl Clock for StallClock {
+    fn utc_now(&self) -> UtcMillis {
+        UtcMillis(999_999)
+    }
+    fn monotonic_now(&self) -> MonoInstant {
+        MonoInstant(self.0.fetch_add(10, Ordering::SeqCst))
+    }
+}
+
+/// A stall before the first unit does not turn a call with call budget left
+/// into a zero-unit `DeadlineExceeded` (a lane failure Health reports for the
+/// job's 5 s retry): the quantum admits one unit, then yields.
+/// Kills: a quantum check that runs before any unit has been done.
+#[test]
+fn stall_before_first_unit_still_does_one_unit_within_call_budget() {
+    let mut db = fixture();
+    db.execute_batch("\
+        INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES('t','s1',1,2),('t','s2',1,3);\
+        INSERT INTO messages(instance_id,id,thread_id,sequence,kind,event_key,event_json,decision_at,decision_seq) VALUES('i','w','t',1,'warn','w','{}',10,10);\
+        INSERT INTO warning_jobs(warning_id,event_seq,thread_id,interval_high_water,condition_kind,condition_id) VALUES('w',10,'t',2,'invitation','missing');\
+        INSERT INTO work_jobs(id,kind,subject_id,high_water) VALUES('j','warning_attribution','w',2);\
+    ").unwrap();
+    let clock = StallClock(AtomicU64::new(0));
+    let p = advance_work(
+        &mut db,
+        "j",
+        WorkAdmission::new(16).unwrap(),
+        &budget(),
+        &clock,
+    )
+    .unwrap();
+    assert_eq!(p.processed_this_turn, 1);
+    assert_eq!(p.completed_units, 1);
+    assert_eq!(p.next_position, 1);
+    assert!(p.has_more);
+    assert_eq!(p.last_error, None);
+    assert_eq!(count(&db, "warning_recipients"), 1);
 }

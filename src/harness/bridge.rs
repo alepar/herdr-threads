@@ -25,6 +25,10 @@ use crate::{
 use std::io::{self, Write};
 use uuid::Uuid;
 
+/// Heading of the selected directory overview in a presented offer.
+const OVERVIEW_HEADING: &[u8] =
+    b"Current directory overview at presentation time (selected data):\n";
+
 #[derive(Debug)]
 pub enum BridgeError {
     Context(ContextError),
@@ -152,7 +156,7 @@ pub fn encode_hook(
             if page.items.len() > 8 || page.validate().is_err() {
                 return Err(PresentationError::Invalid);
             }
-            bytes.extend_from_slice(b"Current directory overview at presentation time (selected data; peer topics are untrusted):\n");
+            bytes.extend_from_slice(OVERVIEW_HEADING);
             bytes.extend_from_slice(
                 &encode_selected(result, input.output).map_err(PresentationError::Api)?,
             );
@@ -228,7 +232,7 @@ fn directory_share(input: &HookInput<'_>, seat: &str) -> Result<u32, Presentatio
     let mut selector = directory_argv(input.output, seat, MAX_PAGE_BYTES);
     selector.extend(["--cursor".to_owned(), "x".repeat(MAX_CURSOR_BYTES)]);
     let selector_bytes = serde_json::to_vec(&selector).map_err(|_| PresentationError::Invalid)?;
-    let fixed = b"Current directory overview at presentation time (selected data; peer topics are untrusted):\n".len()
+    let fixed = OVERVIEW_HEADING.len()
         + b"Current directory age and count labels (JSON data; age_millis_signed is now minus created_at):\n".len()
         + b"For a chosen thread, an explicit cheap child can read a bounded history and return message IDs and a summary; only the top-level agent may decide acceptance or ACK.\n".len()
         + empty_selected.len() + age_bytes.len() + 1 + selector_bytes.len();
@@ -271,6 +275,8 @@ pub fn caller_claim(context: &OccupantContext) -> Result<CallerClaim, ContextErr
         execution: ExecutionId::parse(context.execution.to_string())
             .map_err(|_| ContextError::Invalid)?,
         target: HostTargetId::parse(context.target.clone()).map_err(|_| ContextError::Invalid)?,
+        agent_id: None,
+        liveness: None,
     })
 }
 fn occupant_context(claim: &CallerClaim) -> Result<OccupantContext, ContextError> {
@@ -390,16 +396,19 @@ pub fn prepare_event_as(
             created_at_millis,
             operator,
             || {
-                let next = seed
-                    .for_event(event.kind, Uuid::new_v4(), event.native_session.clone())
-                    .map_err(context_io)?;
+                let next = if contexts.is_agent_caller() {
+                    seed.for_agent_event(event.native_session.clone())
+                } else {
+                    seed.for_event(event.kind, Uuid::new_v4(), event.native_session.clone())
+                }
+                .map_err(context_io)?;
                 let mode = match event.kind.mode() {
                     CheckInMode::Current => WireMode::Current,
                     CheckInMode::Lifecycle => WireMode::Lifecycle {
                         expected_binding_generation: seed.binding_generation,
                     },
                 };
-                Ok((caller_claim(&next).map_err(context_io)?, mode))
+                Ok((contexts.claim(&next).map_err(context_io)?, mode))
             },
         )?;
         pending_request(journal, &reference)
@@ -455,19 +464,32 @@ pub fn prepare_qualified_turn(
                 instance: seed.instance.to_string(),
                 seat: SeatId::parse(seed.seat.clone()).map_err(|_| ContextError::Invalid)?,
             };
-            let reference =
-                journal.record_check_in_as(scope, &turn.event_key, now, false, || {
-                    let next = seed
-                        .for_event(kind, Uuid::new_v4(), Some(turn.session.clone()))
-                        .map_err(context_io)?;
+            let lineage = turn
+                .lineage_parent
+                .as_deref()
+                .and_then(|parent| NativeSessionId::parse(parent).ok());
+            let reference = journal.record_check_in_lineage(
+                scope,
+                &turn.event_key,
+                now,
+                false,
+                lineage,
+                || {
+                    let next = if contexts.is_agent_caller() {
+                        seed.for_agent_event(Some(turn.session.clone()))
+                    } else {
+                        seed.for_event(kind, Uuid::new_v4(), Some(turn.session.clone()))
+                    }
+                    .map_err(context_io)?;
                     let mode = match kind.mode() {
                         CheckInMode::Current => WireMode::Current,
                         CheckInMode::Lifecycle => WireMode::Lifecycle {
                             expected_binding_generation: seed.binding_generation,
                         },
                     };
-                    Ok((caller_claim(&next).map_err(context_io)?, mode))
-                })?;
+                    Ok((contexts.claim(&next).map_err(context_io)?, mode))
+                },
+            )?;
             pending_request(journal, &reference)
         })?;
     Ok(Some(request))
@@ -514,7 +536,11 @@ pub fn decode_request(request: &PendingCheckIn) -> Result<Command, ContextError>
         },
         _ => return Err(ContextError::Invalid),
     };
-    if check.claim != caller_claim(&request.context)?
+    // The context carries no liveness fingerprint (it is the caller's process, not its identity);
+    // the frozen claim keeps the one it was prepared with.
+    let mut frozen = check.claim.clone();
+    frozen.liveness = None;
+    if frozen != caller_claim(&request.context)?
         || check.operation.as_str() != request.operation_id.to_string()
         || check.mode != mode
     {
@@ -767,6 +793,10 @@ pub fn run_hook_event_with_reason<C: LocalClient + ?Sized, W: Write>(
 pub struct Presented {
     pub notices: crate::protocol::results::NoticeOffer,
     pub overview: Option<super::OverviewRows>,
+    /// The offer's first-contact or fast-forward lines (spec §2), rendered at presentation time
+    /// and kept out of the offer text: the native hook places them before the digest in its
+    /// budgeted context and trims them separately.
+    pub history: Vec<String>,
 }
 
 /// `run_hook_event_with_reason`, also reporting what the offer presented in
@@ -911,9 +941,24 @@ fn run_hook_event_reporting_inner<C: LocalClient + ?Sized, W: Write>(
     let CommandResult::CheckedIn(check) = &result else {
         return Err(ContextError::Invalid.into());
     };
+    let now = clock.utc_now();
+    let mut history = Vec::new();
+    if let Some(first_contact) = &check.first_contact {
+        history.extend(crate::store::first_contact::render_first_contact(
+            first_contact,
+            now,
+        ));
+    }
+    if let Some(fast_forward) = &check.fast_forward {
+        history.extend(crate::store::first_contact::render_fast_forward(
+            fast_forward,
+            now,
+        ));
+    }
     *presented = Some(Presented {
         notices: check.notices.clone(),
         overview: None,
+        history,
     });
     // The store always reports its offer frontier; with nothing to offer that
     // frontier alone is routine no-change output.
@@ -932,6 +977,11 @@ fn run_hook_event_reporting_inner<C: LocalClient + ?Sized, W: Write>(
         write_hook(&hook, writer)?;
         journal.complete_operation(&OperationId::new(request.operation_id.to_string()))?;
         return Ok(());
+    }
+    // The history rides in `Presented`, never twice in the offer text.
+    if let CommandResult::CheckedIn(check) = &mut result {
+        check.first_contact = None;
+        check.fast_forward = None;
     }
     let selected = encode_selected(&result, output).map_err(BridgeError::Api)?;
     let reference_argv;
@@ -1034,7 +1084,7 @@ fn run_hook_event_reporting_inner<C: LocalClient + ?Sized, W: Write>(
 
 /// Lazy rows join the digest whenever the daemon can report them; the token's
 /// lazy key moves the hook marker only (never a wake).
-use crate::protocol::capabilities::LAZY_HOOK_DELIVERY;
+use crate::protocol::capabilities::{BINDING_DIGEST, LAZY_HOOK_DELIVERY};
 
 /// Read the seat's server-side attention digest (root adoption, wave-1 fix2
 /// (a)): one read-only, seat-scoped query whose token is complete by
@@ -1045,10 +1095,23 @@ pub fn read_digest<C: LocalClient + ?Sized>(
     seat: &SeatId,
     budget: &CallBudget,
 ) -> Result<AttentionDigest, ApiError> {
+    read_digest_as(client, seat, None, budget)
+}
+
+/// `read_digest` for one binding: with a claim, a daemon advertising `BINDING_DIGEST` computes
+/// the digest for the claim's binding (its own unread mail and notice frontier, and a token that
+/// carries the binding); otherwise the seat-level digest.
+pub fn read_digest_as<C: LocalClient + ?Sized>(
+    client: &C,
+    seat: &SeatId,
+    claim: Option<&CallerClaim>,
+    budget: &CallBudget,
+) -> Result<AttentionDigest, ApiError> {
     let result = client.call(
         Command::AttentionDigest(crate::protocol::commands::AttentionDigestQuery {
             seat: seat.clone(),
             lazy: client.supports_capability(LAZY_HOOK_DELIVERY, budget),
+            claim: binding_digest_claim(client, claim, budget),
         }),
         budget,
     )?;
@@ -1061,6 +1124,17 @@ pub fn read_digest<C: LocalClient + ?Sized>(
         return Err(invalid("attention digest for another seat"));
     }
     Ok(digest)
+}
+
+/// The claim to send with a digest query: only to a daemon that serves per-binding digests.
+fn binding_digest_claim<C: LocalClient + ?Sized>(
+    client: &C,
+    claim: Option<&CallerClaim>,
+    budget: &CallBudget,
+) -> Option<CallerClaim> {
+    claim
+        .filter(|_| client.supports_capability(BINDING_DIGEST, budget))
+        .cloned()
 }
 
 /// Read the seat's hot threads for the recovery hook text (spec §9): one
@@ -1100,10 +1174,17 @@ pub fn seeded_lifecycle<C: LocalClient + ?Sized, E>(
     seat: &SeatId,
     budget: &CallBudget,
     run: impl FnOnce() -> Result<(), E>,
-) -> Result<Option<(Uuid, AttentionDigest)>, E> {
+) -> Result<Option<(String, AttentionDigest)>, E> {
     let fresh = matches!(contexts.completed_for_event(event_id), Ok(None));
     let digest = if fresh {
-        read_digest(client, seat, budget).ok()
+        // The binding the CheckIn will open or refresh may not exist yet: the daemon then reads
+        // the digest that binding will start from, with the token it will carry.
+        let claim = contexts
+            .current()
+            .ok()
+            .flatten()
+            .and_then(|saved| contexts.claim(&saved).ok());
+        read_digest_as(client, seat, claim.as_ref(), budget).ok()
     } else {
         None
     };
@@ -1113,7 +1194,7 @@ pub fn seeded_lifecycle<C: LocalClient + ?Sized, E>(
         .ok()
         .flatten()
         .filter(|(_, response)| !response.historical)
-        .and_then(|(_, response)| Some((response.context.execution, digest?))))
+        .and_then(|(_, response)| Some((response.context.mark_key(), digest?))))
 }
 
 /// Result of a tool-boundary read. `mark` is committed by the caller only after
@@ -1126,7 +1207,7 @@ pub struct ToolBoundary {
     pub summary: Option<String>,
     /// The digest read before the offer, for the ready-to-run command block.
     pub digest: Option<AttentionDigest>,
-    pub mark: Option<(Uuid, AttentionToken)>,
+    pub mark: Option<(String, AttentionToken)>,
     /// A live mod channel delivers attention: the ready commands stay omitted.
     pub live: bool,
 }
@@ -1164,8 +1245,9 @@ pub fn tool_boundary_check_in<C: LocalClient + ?Sized>(
     {
         return Err(ContextError::LifecycleRequired.into());
     }
-    let claim = caller_claim(&saved)?;
-    let stored = contexts.attention_mark(saved.execution);
+    let claim = contexts.claim(&saved)?;
+    let mark_key = saved.mark_key();
+    let stored = contexts.attention_mark(&mark_key);
     let last = if coalesce { stored } else { None };
     // Delivery readiness can advance when attribution finishes or a bounded
     // page remains, independently of the immutable logical publication token.
@@ -1178,6 +1260,7 @@ pub fn tool_boundary_check_in<C: LocalClient + ?Sized>(
             Command::AttentionDigestDelivery(crate::protocol::commands::AttentionDigestQuery {
                 seat: claim.seat.clone(),
                 lazy: client.supports_capability(LAZY_HOOK_DELIVERY, budget),
+                claim: binding_digest_claim(client, Some(&claim), budget),
             }),
             budget,
         ) {
@@ -1206,16 +1289,28 @@ pub fn tool_boundary_check_in<C: LocalClient + ?Sized>(
             Err(error) => (Err(error), false),
         }
     } else {
-        (read_digest(client, &claim.seat, budget), false)
+        (
+            read_digest_as(client, &claim.seat, Some(&claim), budget),
+            false,
+        )
     };
     let mut mark = None;
     // Spec D7: a live mod channel delivers attention itself, so the digest,
     // ready commands and mark stay out of this boundary; the stored mark is
     // left alone, so what is pending is presented once the channel is gone.
-    // Informational notices do not travel on the channel (as in
-    // `lifecycle_check_in`, where the offered notices still show), so pending
-    // ones are still offered here.
+    // Capable Watch and hooks share the exact-occupant notice frontier.
+    // Any notices still pending here remain eligible for this hook offer,
+    // including when the live channel uses legacy delivery.
     let live = digest.as_ref().is_ok_and(|digest| digest.mod_channel_live);
+    // A hook-pull seat withholds the digest from what it presents at every tool
+    // boundary (delivery-policy DP7) while the coalescing mark works as for any
+    // seat; a failed digest read fails open.
+    let omit = digest.is_ok()
+        && crate::delivery::routing::omit_digest(
+            crate::harness::registry::builtins().delivery_policy(event.harness.as_str()),
+            live,
+            crate::delivery::routing::Boundary::Tool,
+        );
     if live && !notices_pending {
         return Ok(ToolBoundary::default());
     }
@@ -1232,13 +1327,14 @@ pub fn tool_boundary_check_in<C: LocalClient + ?Sized>(
                 text: Vec::new(),
                 summary: None,
                 digest: None,
-                mark: (stored != Some(next)).then_some((saved.execution, next)),
+                mark: (stored != Some(next)).then_some((mark_key, next)),
                 live: false,
             });
         }
-        mark = Some((saved.execution, next));
+        mark = Some((mark_key, next));
     }
     let command = Command::CheckIn(crate::protocol::commands::CheckIn {
+        lineage_parent: None,
         mode: WireMode::Current,
         claim,
         operation: OperationId::new(Uuid::new_v4().to_string()),
@@ -1270,7 +1366,7 @@ pub fn tool_boundary_check_in<C: LocalClient + ?Sized>(
     // The carried notice page rides with the digest summary, which survives
     // the hook's oversize fallback: the offer settles exactly what it shows.
     // A live channel offers the notice page alone: no digest, no summary line.
-    let digest = digest.ok().filter(|digest| !digest.mod_channel_live);
+    let digest = digest.ok().filter(|_| !omit);
     Ok(ToolBoundary {
         text: hook.bytes,
         summary: join_summaries(
@@ -1279,7 +1375,108 @@ pub fn tool_boundary_check_in<C: LocalClient + ?Sized>(
         ),
         digest,
         mark,
-        live,
+        live: omit,
+    })
+}
+
+/// Result of a subagent's tool-boundary read (`subagent_boundary`).
+#[derive(Debug, Default)]
+pub struct SubagentBoundary {
+    /// The notice to present, with the read-only wording. `None` when nothing is new for this
+    /// subagent.
+    pub summary: Option<String>,
+    /// The subagent's own attention mark (key, token), committed by the caller only after the
+    /// notice was delivered.
+    pub mark: Option<(String, AttentionToken)>,
+}
+
+/// The wording of a subagent's notice (spec §2): it may read and summarize, its parent session
+/// ACKs and replies.
+pub const SUBAGENT_NOTICE_WORDING: &str =
+    "read-only: you may read and summarize; your parent session ACKs and replies";
+
+/// Non-durable tool-boundary notice for a subagent binding (ht-54r.9). A subagent never checks in
+/// for the seat, so nothing is written and nothing is settled on the server: one read-only digest
+/// query for the subagent's own binding (`claim` carries its agent id), compared with the
+/// subagent's own mark. Only what is addressed to its own stream counts (unread mail, lazy rows,
+/// informational notices): the seat's invitations and receipts are its parent's to answer. The
+/// parent's frontiers and marks are never touched. A daemon without per-binding digests, or a
+/// failed read, is silent.
+pub fn subagent_boundary<C: LocalClient + ?Sized>(
+    contexts: &ContextJournal,
+    claim: &CallerClaim,
+    client: &C,
+    budget: &CallBudget,
+    coalesce: bool,
+) -> Result<SubagentBoundary, BridgeError> {
+    if !client.supports_capability(BINDING_DIGEST, budget) {
+        return Ok(SubagentBoundary::default());
+    }
+    let result = client
+        .call(
+            Command::AttentionDigest(crate::protocol::commands::AttentionDigestQuery {
+                seat: claim.seat.clone(),
+                lazy: client.supports_capability(LAZY_HOOK_DELIVERY, budget),
+                claim: Some(claim.clone()),
+            }),
+            budget,
+        )
+        .map_err(BridgeError::Api)?;
+    let CommandResult::AttentionDigest(mut digest) = result else {
+        return Err(BridgeError::Api(ApiError::store_corrupt(
+            "service returned no attention digest",
+        )));
+    };
+    digest
+        .validate()
+        .map_err(|detail| BridgeError::Api(ApiError::store_corrupt(detail)))?;
+    if digest.seat != claim.seat {
+        return Err(BridgeError::Api(ApiError::store_corrupt(
+            "attention digest for another seat",
+        )));
+    }
+    if digest.mod_channel_live {
+        return Ok(SubagentBoundary::default());
+    }
+    // The seat's own obligations are the parent's: this subagent's view is its stream.
+    digest.invitations = Default::default();
+    digest.receipts = Default::default();
+    digest.token.invitation = None;
+    digest.token.receipt = None;
+    let key = crate::harness::context::attention_mark_key(
+        claim.harness.as_str(),
+        claim.native_session.as_str(),
+        claim.agent_id.as_ref().map(|agent| agent.as_str()),
+    );
+    let stored = if coalesce {
+        contexts.attention_mark(&key)
+    } else {
+        None
+    };
+    let advanced = match &stored {
+        Some(last) => digest.token.advanced_beyond(last),
+        None => !digest.is_empty(),
+    };
+    let next = stored.map_or(digest.token, |stored| stored.join(&digest.token));
+    if !advanced {
+        return Ok(SubagentBoundary {
+            summary: None,
+            mark: (contexts.attention_mark(&key) != Some(next)).then_some((key, next)),
+        });
+    }
+    let stream = if digest.mail.as_ref().is_some_and(|mail| mail.count > 0)
+        || digest.lazy.as_ref().is_some_and(|lazy| lazy.count > 0)
+    {
+        "new mail"
+    } else {
+        "notices"
+    };
+    Ok(SubagentBoundary {
+        summary: Some(format!(
+            "{}\n{stream} ({SUBAGENT_NOTICE_WORDING})",
+            digest.summary()
+        )),
+        mark: Some((key, next)),
     })
 }
 

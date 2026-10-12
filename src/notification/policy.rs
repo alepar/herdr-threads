@@ -12,6 +12,11 @@ use crate::protocol::{
 };
 
 pub const MARKER: &str = "herdr-threads: attention pending; run herdr-threads inbox";
+/// The content-free wake prompt of a harness whose turn-start hook or channel injects the pending
+/// items itself (R18): no message content and no instruction.
+pub const WAKE_UP: &str = "herdr-threads: wake up";
+/// Every text a wake may type; submission verification reads either one held in the composer as unsubmitted.
+pub const WAKE_TEXTS: [&str; 2] = [MARKER, WAKE_UP];
 /// A durable UTC deadline gets one monotonic projection per process. A clock
 /// rollback on restart adds at most one configured batching interval.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,7 +77,13 @@ impl<'a> AttentionSnapshot<'a> {
             warnings: candidate.actionable_warning_seq.is_some()
                 && !candidate.warning_offered_for_current_occupant(),
         };
-        (selected.invites || selected.ordinary || selected.warnings).then_some(selected)
+        // A `wake_on: all` seat's unreserved lazy row is eligible work on its
+        // own (DP8); it selects no prompt class, so the rest stays as is.
+        (selected.invites
+            || selected.ordinary
+            || selected.warnings
+            || candidate.has_unreserved_lazy())
+        .then_some(selected)
     }
 }
 
@@ -372,10 +383,7 @@ pub fn poke_eligibility(
     }
     match observation.ui {
         HostUiState::Idle => PokeDecision::Submit,
-        HostUiState::ActiveTurn if caps.poke_during_turn == NativeSupport::Supported => {
-            PokeDecision::Submit
-        }
-        HostUiState::ActiveTurn => PokeDecision::Skip("active turn without poke_during_turn"),
+        HostUiState::ActiveTurn => PokeDecision::Skip("active turn"),
         HostUiState::HumanInput if caps.composer_stash == NativeSupport::Supported => {
             PokeDecision::Stash
         }

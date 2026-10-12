@@ -2,6 +2,7 @@
 pub mod attention_oracle;
 pub mod counting_client;
 pub mod failpoints;
+pub mod harness_shim;
 pub mod history;
 #[cfg(feature = "test-support")]
 pub mod isolated_herdr;
@@ -68,6 +69,7 @@ pub mod synthetic_fourth {
     pub static ADAPTER: Fourth = Fourth;
     pub struct Fourth;
     static METADATA: AdapterMetadata = AdapterMetadata {
+        agent_env_markers: &[],
         id: ID,
         display_label: "Synthetic fourth (test-support only)",
         context_spelling: "SyntheticFourth",
@@ -217,10 +219,39 @@ pub mod synthetic_fourth {
                 "enabled": installed, "observed": "unknown", "runtime": null}),
         })
     }
+    /// Declares the hook-pull delivery policy so daemon and routing tests have a
+    /// non-Claude pull harness: `(HookPull, cooperative_hook_delivery, Native)`.
+    struct FourthDelivery;
+    impl DeliveryPolicy for FourthDelivery {
+        fn mechanism(&self) -> DeliveryMechanism {
+            DeliveryMechanism::HookPull
+        }
+        fn provenance(&self) -> &'static str {
+            crate::protocol::authority::COOPERATIVE_HOOK_DELIVERY_PROVENANCE
+        }
+        fn idle_wake(&self) -> IdleWake {
+            IdleWake::Native
+        }
+    }
+    static DELIVERY: FourthDelivery = FourthDelivery;
     impl HarnessAdapter for Fourth {
+        fn presentation_codec(
+            &self,
+            selector: u8,
+        ) -> Option<crate::harness::adapter::PresentationCodec> {
+            (selector == 0).then_some(
+                crate::harness::adapter::PresentationCodec::JsonStringEnvelope {
+                    prefix: "",
+                    suffix: "",
+                },
+            )
+        }
         type Admission = ();
         fn metadata(&self) -> &'static AdapterMetadata {
             &METADATA
+        }
+        fn delivery_policy(&self) -> Option<&dyn DeliveryPolicy> {
+            Some(&DELIVERY)
         }
         fn contracts(&self) -> &'static [ContractDescriptor] {
             DOMAINS
@@ -348,6 +379,7 @@ pub mod synthetic_fourth {
                 event_id: payload.event_id,
                 intent,
                 metadata: EventMetadata {
+                    enrollment_witness: None,
                     skill_pointer: false,
                     callback_deadline: None,
                     context_source: payload.event.clone(),
@@ -355,6 +387,7 @@ pub mod synthetic_fourth {
                     domain: ContractDomain::Native,
                     native_event: payload.event,
                     shape_fields: vec![],
+                    agent_id: None,
                 },
                 delivery: if observer {
                     DeliveryEligibility::ObserverOnly
@@ -364,6 +397,7 @@ pub mod synthetic_fourth {
                 runtime: RuntimeAttribution::Unavailable {
                     diagnostic: "synthetic_runtime_unavailable".into(),
                 },
+                binding_event: None,
             })
         }
         fn encode(
@@ -463,7 +497,7 @@ pub mod synthetic_fourth {
         fn resolve_scope(
             &self,
             request: &LaunchRequest,
-            _: &dyn crate::harness::launch::CodexShellProbe,
+            _: &dyn crate::harness::launch::PaneShellProbe,
             _: &CallBudget,
         ) -> Result<LaunchScope, crate::protocol::results::ApiError> {
             let root = root(&request.environment).map_err(|error| {
@@ -479,13 +513,31 @@ pub mod synthetic_fourth {
             &self,
             argv: &[String],
         ) -> Result<(), crate::protocol::results::ApiError> {
-            if argv.iter().any(|word| word != "synthetic-prompt") {
+            // The fixture's one native prompt word, or the generated handoff bootstrap
+            // prompt a bootstrap plan appends to the caller arguments.
+            if argv.iter().any(|word| {
+                word != "synthetic-prompt"
+                    && !word.starts_with("Expected handoff command routing (JSON data): ")
+            }) {
                 Err(crate::protocol::results::ApiError::invalid_request(
                     "synthetic fourth: unsupported argv",
                 ))
             } else {
                 Ok(())
             }
+        }
+        fn prepare_startup_input(
+            &self,
+            caller: &[String],
+            _: &crate::harness::adapter::StartupInputSpec,
+        ) -> Result<
+            Option<crate::harness::adapter::StartupInputTemplate>,
+            crate::protocol::results::ApiError,
+        > {
+            self.validate_native_argv(caller)?;
+            Ok(Some(
+                crate::harness::adapter::StartupInputTemplate::positional(caller.len()),
+            ))
         }
         fn compose_argv(
             &self,
@@ -501,7 +553,7 @@ pub mod synthetic_fourth {
             scope: &LaunchScope,
             _: &crate::harness::registry::AdmittedHandle,
             status: &LocalSetupStatus,
-            _: &dyn crate::harness::launch::CodexShellProbe,
+            _: &dyn crate::harness::launch::PaneShellProbe,
             _: &CallBudget,
         ) -> Result<LaunchPreparation, crate::protocol::results::ApiError> {
             Ok(LaunchPreparation {

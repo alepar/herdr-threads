@@ -26,7 +26,7 @@ use crate::{
         workers::{
             WorkerStatus, admission_handle, start_admission_observer, start_deadline_worker,
             start_mod_channel_worker, start_observation_worker, start_retention_worker,
-            start_wake_worker,
+            start_wake_worker_with_liveness,
         },
     },
     store::{SqliteStore, connection::StoreContext},
@@ -252,20 +252,22 @@ impl ElectedHealth {
         inputs.transitions_refused = self.host.status.transitions_refused();
         inputs.last_scheduler_tick_at = self.workers.first().and_then(|status| status.last_tick());
         if let Ok(observed) = self.host.harnesses.lock() {
-            inputs.claude = observed.status("claude");
-            inputs.codex = observed.status("codex");
-            // Only observed additional harnesses report: an optional harness
-            // the observer has not reached yet is not an unknown core harness.
-            inputs.additional_harnesses = crate::harness::registry::builtins()
+            // A harness with a legacy contract always reports (`Unknown` until
+            // observed); any other only once observed: an optional harness the
+            // observer has not reached yet is not an unknown core harness.
+            inputs.harnesses = crate::harness::registry::builtins()
                 .registrations()
                 .iter()
-                .map(|r| r.metadata().id)
-                .filter(|id| !matches!(*id, "claude" | "codex"))
-                .filter_map(|id| {
-                    observed
-                        .entries
-                        .get(id)
-                        .map(|entry| (id.into(), entry.status.clone()))
+                .filter_map(|r| {
+                    let id = r.metadata().id;
+                    if r.legacy_contract_id().is_some() {
+                        Some((id.to_owned(), observed.status(id)))
+                    } else {
+                        observed
+                            .entries
+                            .get(id)
+                            .map(|entry| (id.to_owned(), entry.status.clone()))
+                    }
                 })
                 .collect();
         }
@@ -451,11 +453,11 @@ impl HarnessStatus {
             HarnessStatus::Cooperative {
                 live_unverified: true,
                 ..
-            } => crate::harness::codex::SCHEMA_MATCHED_LABEL,
+            } => crate::harness::recipe::SCHEMA_MATCHED_LABEL,
             HarnessStatus::ContractDeclared { .. } => "contract_declared",
             HarnessStatus::Cooperative { .. } => "listed",
             HarnessStatus::Supported(_) => "listed",
-            HarnessStatus::Optimistic(_) => crate::harness::codex::OPTIMISTIC_LABEL,
+            HarnessStatus::Optimistic(_) => crate::harness::recipe::OPTIMISTIC_LABEL,
         }
     }
 
@@ -1407,6 +1409,7 @@ where
                     },
                     mod_delivery,
                 )
+                .with_connection_cap(config.watch_connection_cap())
                 .with_log({
                     let log = Arc::clone(&rate_limited_log);
                     Arc::new(move |line: &str| log.write_line(line))
@@ -1414,10 +1417,19 @@ where
             );
             kicks.set_mod_observer(mod_registry.observer());
             let mod_channels: Arc<dyn crate::ports::ModChannels> = mod_registry.clone();
+            let delivery_pull =
+                Arc::new(crate::service::delivery_pull::DeliveryPullState::default());
             let wake_pacer = register_lane(Lane::Wakes);
             reachability.attach_wake_pacer(Arc::clone(&wake_pacer));
             factory_probe.attach_reachability(&reachability);
-            workers.push(start_wake_worker(
+            // Binding liveness (spec §3, decision 9): the host process table backs both the
+            // periodic re-check thread and the re-check before each wake decision.
+            let liveness = Arc::new(crate::service::liveness::LivenessWorker::new(
+                Arc::clone(&store) as Arc<dyn crate::ports::StorePort>,
+                Arc::clone(&writer),
+                Arc::new(crate::host::process_table::HostProcessTable),
+            ));
+            workers.push(start_wake_worker_with_liveness(
                 Arc::clone(&store),
                 Arc::clone(&writer),
                 Arc::clone(&host),
@@ -1430,6 +1442,21 @@ where
                 Arc::new(ObservedPokeCapabilities::new(Arc::clone(&harnesses))),
                 Arc::clone(&reachability),
                 Arc::clone(&mod_channels),
+                Arc::clone(&delivery_pull) as Arc<dyn crate::ports::HookPullOutlook>,
+                Some(Arc::clone(&liveness)),
+            )?);
+            workers.push(crate::service::liveness::start_liveness_worker(
+                liveness,
+                Arc::new(Pacer::new(
+                    "liveness",
+                    Arc::clone(&factory_clock),
+                    factory_stop.clone(),
+                )),
+                factory_stop.clone(),
+                {
+                    let log = Arc::clone(&rate_limited_log);
+                    Arc::new(move |line: &str| log.write_line(line))
+                },
             )?);
             let observation_pacer = Arc::new(Pacer::new(
                 Lane::Observation.name(),
@@ -1492,7 +1519,7 @@ where
             let observer_store = Arc::clone(&store);
             let reobserver = AdmissionReobserver::new(
                 std::env::var_os("PATH"),
-                crate::harness::codex::VERSION_TIMEOUT,
+                crate::harness::process::VERSION_TIMEOUT,
                 {
                     let log = Arc::clone(&rate_limited_log);
                     Arc::new(move |line: &str| log.write_line(line))
@@ -1519,10 +1546,15 @@ where
                             observer_store.as_ref(),
                             observer_manifest.as_ref(),
                             &observer_manifest.current(),
-                            &[
-                                ("claude", observed.detected_version("claude")),
-                                ("codex", observed.detected_version("codex")),
-                            ],
+                            &crate::harness::registry::builtins()
+                                .registrations()
+                                .iter()
+                                .filter(|r| r.legacy_contract_id().is_some())
+                                .map(|r| {
+                                    let id = r.metadata().id;
+                                    (id, observed.detected_version(id))
+                                })
+                                .collect::<Vec<_>>(),
                             budget,
                         );
                         Ok(observed)
@@ -1595,7 +1627,8 @@ where
             )
             .with_operator_owner(crate::daemon::paths::effective_uid())
             .with_cooperative_owner(crate::daemon::paths::effective_uid(), writer)
-            .with_mod_channels(Arc::clone(&mod_channels));
+            .with_mod_channels(Arc::clone(&mod_channels))
+            .with_delivery_pull(Arc::clone(&delivery_pull));
             if let Some((state_dir, host_endpoint, observer)) = &bootstrap {
                 domain = domain
                     .with_bootstrap_runtime(
@@ -1874,8 +1907,7 @@ mod poke_capability_source_tests {
         assert_eq!(
             crate::harness::recipe::poke_capabilities(Harness::Claude, Some("2.1.287")),
             PokeCapabilities {
-                composer_stash: NativeSupport::Supported,
-                poke_during_turn: NativeSupport::Supported
+                composer_stash: NativeSupport::Supported
             }
         );
     }
@@ -2051,6 +2083,7 @@ pub(crate) mod health_v2_observer_tests {
     ) -> &'static CountingAdapter {
         Box::leak(Box::new(CountingAdapter {
             metadata: Box::leak(Box::new(AdapterMetadata {
+                agent_env_markers: &[],
                 id,
                 display_label: id,
                 context_spelling: id,
@@ -2212,9 +2245,9 @@ pub(crate) mod health_v2_observer_tests {
             crate::daemon::health::COOPERATIVE_WAKE_LINE
         );
         let expected = if cfg!(feature = "test-support") {
-            "wake cooperative: prompts only Herdr's detected idle/done claude, codex, hermes or synthetic_fourth agent in the seat's terminal, rechecked immediately before submission; native execution and composer contents are unverified"
+            "wake cooperative: prompts only Herdr's detected idle/done claude, codex, hermes, agy or synthetic_fourth agent in the seat's terminal, rechecked immediately before submission; native execution and composer contents are unverified"
         } else {
-            "wake cooperative: prompts only Herdr's detected idle/done claude, codex or hermes agent in the seat's terminal, rechecked immediately before submission; native execution and composer contents are unverified"
+            "wake cooperative: prompts only Herdr's detected idle/done claude, codex, hermes or agy agent in the seat's terminal, rechecked immediately before submission; native execution and composer contents are unverified"
         };
         assert_eq!(
             crate::daemon::health::cooperative_wake_line_for(builtins),

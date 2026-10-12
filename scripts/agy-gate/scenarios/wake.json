@@ -1,0 +1,33 @@
+{
+  "format": "agy-fake-gemini/1",
+  "name": "wake",
+  "aux_text": "Gate wake title",
+  "default": {"text": "WAKE-UNEXPECTED"},
+  "vars": {"cwd": "/unset", "thread": "/unset"},
+  "steps": [
+    {"label": "warm", "match": {"contains": ["WAKE-WARM"]}, "reply": {"text": "WAKE-WARM-OK"}},
+    {"label": "wake-join", "match": {"contains": ["wake up"], "not_contains": ["WAKE-N1"]},
+     "reply": {"call": "run_command",
+               "args": {"CommandLine": "herdr-threads accept {var.thread}", "Cwd": "{var.cwd}",
+                        "WaitMsBeforeAsync": 1000, "toolAction": "gate", "toolSummary": "gate"}}},
+    {"label": "wake-join-done", "match": {"contains": ["wake up"], "not_contains": ["WAKE-N1"]},
+     "reply": {"text": "WAKE-JOIN-OK"}},
+    {"label": "a-ack", "match": {"contains": ["WAKE-N1"]},
+     "reply": {"call": "run_command",
+               "args": {"CommandLine": "herdr-threads ack {frame.id}", "Cwd": "{var.cwd}",
+                        "WaitMsBeforeAsync": 1000, "toolAction": "gate", "toolSummary": "gate"}}},
+    {"label": "a-done", "match": {"contains": ["WAKE-N1"]}, "reply": {"text": "WAKE-A-DONE"}},
+    {"label": "c-busy", "match": {"contains": ["WAKE-BUSY-C"]}, "delay_ms": 9000,
+     "reply": {"call": "run_command",
+               "args": {"CommandLine": "herdr-threads wake-on", "Cwd": "{var.cwd}",
+                        "WaitMsBeforeAsync": 1000, "toolAction": "gate", "toolSummary": "gate"}}},
+    {"label": "c-after", "match": {"contains": ["WAKE-BUSY-C"]}, "reply": {"text": "WAKE-C-DONE"}},
+    {"label": "d-draft", "match": {"contains": ["WAKE-DRAFT"]}, "reply": {"text": "WAKE-D-DONE"}},
+    {"label": "e-set", "match": {"contains": ["WAKE-SETON"]},
+     "reply": {"call": "run_command",
+               "args": {"CommandLine": "herdr-threads wake-on all", "Cwd": "{var.cwd}",
+                        "WaitMsBeforeAsync": 1000, "toolAction": "gate", "toolSummary": "gate"}}},
+    {"label": "e-done", "match": {"contains": ["WAKE-SETON"]}, "reply": {"text": "WAKE-E-SET"}},
+    {"label": "e-wake", "match": {"contains": ["WAKE-Z2"]}, "reply": {"text": "WAKE-E-WOKEN"}}
+  ]
+}

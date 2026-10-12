@@ -1361,6 +1361,8 @@ fn claim(seat: &str) -> CallerClaim {
         native_session: NativeSessionId::new("n"),
         execution: ExecutionId::new("00000000-0000-4000-8000-000000000001"),
         target: HostTargetId::new(seat),
+        agent_id: None,
+        liveness: Some(crate::protocol::authority::LivenessFingerprint::TEST),
     }
 }
 fn permit(
@@ -1568,6 +1570,7 @@ fn required_then_independent_ordinary_acceptance_keeps_one_join_interval() {
     };
     assert!(threads.items.iter().any(|item| item.thread == thread));
     let inbox = crate::protocol::commands::Command::Inbox(crate::protocol::commands::InboxQuery {
+        claim: None,
         seat: Some(SeatId::new("s2")),
         page: Default::default(),
     });
@@ -2302,11 +2305,11 @@ fn managed_required_upgrade_preserves_deadline_and_demands_native_revision() {
 }
 
 #[test]
-fn managed_release_preserves_upgraded_ordinary_invitation_and_its_deadline() {
+fn managed_required_reattach_preserves_upgraded_ordinary_invitation_and_history() {
     use crate::ports::ServiceAuthorityGate;
     use crate::protocol::service::*;
     use sha2::Digest;
-    let (context, mut conn, _, _) = fixture(100);
+    let (context, mut conn, path, clock) = bound_fixture(100);
     let budget = crate::protocol::time::CallBudget {
         deadline: MonoInstant(1000),
         cancellation: Default::default(),
@@ -2373,7 +2376,7 @@ fn managed_release_preserves_upgraded_ordinary_invitation_and_its_deadline() {
         ServiceOperation::ReleaseRequirement(ReleaseRequirement {
             thread: thread.clone(),
             seat: SeatId::new("s2"),
-            requirement: requirement.requirement,
+            requirement: requirement.requirement.clone(),
             operation: OperationId::new("release-upgrade"),
         }),
     );
@@ -2408,10 +2411,273 @@ fn managed_release_preserves_upgraded_ordinary_invitation_and_its_deadline() {
         .unwrap(),
         0
     );
+    // Capture every stored column, including timing, acceptance and provenance.
+    let snapshot = |conn: &Connection, table: &str, id: &str| {
+        conn.query_row(&format!("SELECT * FROM {table} WHERE id=?1"), [id], |row| {
+            (0..row.as_ref().column_count())
+                .map(|index| row.get::<_, rusqlite::types::Value>(index))
+                .collect::<rusqlite::Result<Vec<_>>>()
+        })
+        .unwrap()
+    };
+    let original_invitation = snapshot(&conn, "invitations", ordinary.invitation.as_str());
+    let released_requirement = snapshot(
+        &conn,
+        "requirement_episodes",
+        requirement.requirement.as_str(),
+    );
+    clock.0.store(200, Ordering::SeqCst);
+    let replacement_op = ServiceOperation::Invite(ServiceInvite {
+        thread: thread.clone(),
+        seat: SeatId::new("s2"),
+        constraint: InvitationConstraint::Required,
+        deadline_millis: Some(7000),
+        operation: OperationId::new("required-reattach"),
+    });
+    let ServiceResult::Invitation(replacement) = operate(&mut conn, replacement_op.clone()) else {
+        panic!("replacement requirement expected")
+    };
+    let replacement_requirement = replacement.requirement.as_ref().unwrap();
+    assert_ne!(replacement.invitation, ordinary.invitation);
+    assert_ne!(replacement_requirement.requirement, requirement.requirement);
+    assert_eq!(replacement_requirement.state, RequirementState::Pending);
+    assert_eq!(replacement_requirement.accepted_by, None);
+    assert_eq!(replacement_requirement.accepted_at, None);
+    assert_eq!(
+        conn.query_row(
+            "SELECT episode,created_at,frozen_duration_ms,deadline_at FROM invitations WHERE id=?1",
+            [replacement.invitation.as_str()],
+            |r| Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, i64>(3)?
+            )),
+        )
+        .unwrap(),
+        (2, 200, 7000, 7200)
+    );
+    assert_eq!(
+        operate(&mut conn, replacement_op.clone()),
+        ServiceResult::Invitation(replacement.clone())
+    );
+    let mut repeat = replacement_op.clone();
+    if let ServiceOperation::Invite(v) = &mut repeat {
+        v.operation = OperationId::new("required-reattach-noop");
+        v.deadline_millis = Some(99000);
+    }
+    assert_eq!(
+        operate(&mut conn, repeat),
+        ServiceResult::Invitation(replacement.clone())
+    );
+    // Ordinary requests must still select the independent original invitation.
+    assert_eq!(
+        operate(
+            &mut conn,
+            ServiceOperation::Invite(ServiceInvite {
+                thread: thread.clone(),
+                seat: SeatId::new("s2"),
+                constraint: InvitationConstraint::Ordinary,
+                deadline_millis: Some(10000),
+                operation: OperationId::new("ordinary-during-replacement"),
+            })
+        ),
+        ServiceResult::Invitation(ordinary.clone())
+    );
+    let stale = AcceptRequired {
+        thread: thread.clone(),
+        invitation: ordinary.invitation.clone(),
+        requirement: requirement.requirement.clone(),
+        expected_revision: requirement.revision,
+        operation: OperationId::new("stale-first-requirement"),
+        claim: claim("s2"),
+    };
+    let error = accept_required(
+        &context,
+        &mut conn,
+        &budget,
+        &stale,
+        permit(
+            "s2",
+            "stale-first-requirement",
+            ObligationRef::Invitation(stale.invitation.clone()),
+            cooperative_payload_hash("accept_required", &stale).unwrap(),
+            200,
+        ),
+    )
+    .unwrap_err();
+    assert_eq!(error.code, ErrorCode::StaleRequirementAcceptance);
+    // Releasing the fresh requirement cancels only its own invitation.
+    operate(
+        &mut conn,
+        ServiceOperation::ReleaseRequirement(ReleaseRequirement {
+            thread: thread.clone(),
+            seat: SeatId::new("s2"),
+            requirement: replacement_requirement.requirement.clone(),
+            operation: OperationId::new("release-replacement"),
+        }),
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM invitation_cancellations WHERE invitation_id=?1",
+            [replacement.invitation.as_str()],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        snapshot(&conn, "invitations", ordinary.invitation.as_str()),
+        original_invitation
+    );
+    assert_eq!(
+        snapshot(
+            &conn,
+            "requirement_episodes",
+            requirement.requirement.as_str()
+        ),
+        released_requirement
+    );
+    assert_eq!(
+        operate(&mut conn, replacement_op),
+        ServiceResult::Invitation(replacement)
+    );
+    assert!(
+        crate::store::service_substrate::current_requirement(&conn, &thread, &SeatId::new("s2"))
+            .unwrap()
+            .is_none()
+    );
     assert_eq!(
         operate(&mut conn, ordinary_op),
-        ServiceResult::Invitation(ordinary)
+        ServiceResult::Invitation(ordinary.clone())
     );
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM requirement_episodes WHERE thread_id=?1",
+            [thread.as_str()],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        2
+    );
+    // Another attach must also get a fresh episode and remain explicitly acceptable.
+    let ServiceResult::Invitation(third) = operate(
+        &mut conn,
+        ServiceOperation::Invite(ServiceInvite {
+            thread: thread.clone(),
+            seat: SeatId::new("s2"),
+            constraint: InvitationConstraint::Required,
+            deadline_millis: Some(3000),
+            operation: OperationId::new("required-third"),
+        }),
+    ) else {
+        panic!("third requirement expected")
+    };
+    assert_ne!(third.invitation, ordinary.invitation);
+    let third_requirement = third.requirement.unwrap();
+    let accept = AcceptRequired {
+        thread: thread.clone(),
+        invitation: third.invitation.clone(),
+        requirement: third_requirement.requirement,
+        expected_revision: third_requirement.revision,
+        operation: OperationId::new("accept-third"),
+        claim: claim("s2"),
+    };
+    let CommandResult::RequiredAccepted(accepted) = accept_required(
+        &context,
+        &mut conn,
+        &budget,
+        &accept,
+        permit(
+            "s2",
+            "accept-third",
+            ObligationRef::Invitation(third.invitation),
+            cooperative_payload_hash("accept_required", &accept).unwrap(),
+            200,
+        ),
+    )
+    .unwrap() else {
+        panic!("explicit required acceptance expected")
+    };
+    assert_eq!(accepted.state, RequirementState::Accepted);
+    assert_eq!(accepted.accepted_by, Some(SeatId::new("s2")));
+    assert_eq!(accepted.accepted_at, Some(UtcMillis(200)));
+    let observation: String = conn
+        .query_row(
+            "SELECT accepted_observation FROM requirement_episodes WHERE id=?1",
+            [accepted.requirement.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let observation: serde_json::Value = serde_json::from_str(&observation).unwrap();
+    assert_eq!(observation["provenance"], "cooperative_top_level");
+    assert_eq!(
+        snapshot(&conn, "invitations", ordinary.invitation.as_str()),
+        original_invitation
+    );
+    assert_eq!(
+        snapshot(
+            &conn,
+            "requirement_episodes",
+            requirement.requirement.as_str()
+        ),
+        released_requirement
+    );
+    let interval: (i64, i64) = conn.query_row(
+        "SELECT episode,joined_seq FROM membership_intervals WHERE thread_id=?1 AND seat_id='s2' AND left_seq IS NULL",
+        [thread.as_str()], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+    let ordinary_accept = Accept {
+        thread: thread.clone(),
+        operation: OperationId::new("accept-preserved-ordinary"),
+        claim: claim("s2"),
+    };
+    let request = crate::store::cooperative_permit_request(
+        &crate::protocol::commands::PermitMutation::Accept(ordinary_accept.clone()),
+    )
+    .unwrap();
+    let ordinary_permit =
+        crate::store::seats::issue_cooperative_permit(&context, &conn, "i", request, &budget)
+            .unwrap();
+    assert_eq!(
+        crate::store::control::accept(
+            &context,
+            &mut conn,
+            &budget,
+            &ordinary_accept,
+            ordinary_permit
+        )
+        .unwrap(),
+        CommandResult::Accepted(ordinary.invitation.clone().into())
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT state FROM invitations WHERE id=?1",
+            [ordinary.invitation.as_str()],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
+        "accepted"
+    );
+    assert_eq!(conn.query_row("SELECT episode,joined_seq FROM membership_intervals WHERE thread_id=?1 AND seat_id='s2' AND left_seq IS NULL",
+        [thread.as_str()], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))).unwrap(), interval);
+    let inbox = crate::protocol::commands::Command::Inbox(crate::protocol::commands::InboxQuery {
+        seat: Some(SeatId::new("s2")),
+        page: Default::default(),
+        claim: None,
+    });
+    let CommandResult::Inbox(page) =
+        crate::store::queries::query(&context, "i", &inbox, &budget).unwrap()
+    else {
+        panic!("inbox expected")
+    };
+    assert!(
+        page.items
+            .iter()
+            .filter(|item| item.thread == thread)
+            .all(|item| item.invitations == 0)
+    );
+    drop(conn);
+    let _ = std::fs::remove_file(path);
 }
 
 #[test]
@@ -4856,7 +5122,7 @@ fn retirement_rejects_exhausted_binding_generation_before_fence() {
 }
 
 #[test]
-fn registration_rejects_exhausted_binding_generation_without_anchor() {
+fn registration_ignores_an_exhausted_binding_history_generation_and_rolls_back_without_anchor() {
     use crate::{
         protocol::commands::{CheckIn, CheckInMode},
         store::seats,
@@ -4864,6 +5130,7 @@ fn registration_rejects_exhausted_binding_generation_without_anchor() {
     let (context, mut conn, path, _) = fixture(100);
     conn.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES ('s2',?1,'s2','b',1,1,'codex','old','old','cooperative_top_level',0,'term-'||'s2','inc')",[i64::MAX]).unwrap();
     let command = CheckIn {
+        lineage_parent: None,
         mode: CheckInMode::Lifecycle {
             expected_binding_generation: 1,
         },
@@ -4888,10 +5155,18 @@ fn registration_rejects_exhausted_binding_generation_without_anchor() {
             deadline: crate::protocol::time::MonoInstant(u64::MAX),
             cancellation: Default::default(),
         },
-        |_tx, _seat, _seq| panic!("offer must not run after exhausted generation"),
+        // ht-54r.3: a check-in no longer computes a next generation, so a binding history at the
+        // maximum is not an error and the offer is reached. Failing it rolls everything back.
+        |_tx, _seat, _seq, _history, _binding| {
+            Err(crate::protocol::results::ApiError::new(
+                ErrorCode::Conflict,
+                "offer reached",
+            ))
+        },
     )
     .unwrap_err();
-    assert_eq!(error.code, ErrorCode::SequenceExhausted);
+    assert_eq!(error.code, ErrorCode::Conflict);
+    assert_eq!(error.detail, "offer reached");
     assert_eq!(
         conn.query_row(
             "SELECT count(*) FROM seat_availability WHERE seat_id='s2'",
@@ -6864,6 +7139,7 @@ fn registration_requires_and_records_reconfirmation_evidence() {
     };
     let (context, mut conn, path, _) = fixture(100);
     let command = CheckIn {
+        lineage_parent: None,
         mode: CheckInMode::Lifecycle {
             expected_binding_generation: 1,
         },
@@ -6888,7 +7164,11 @@ fn registration_requires_and_records_reconfirmation_evidence() {
             consistency: crate::protocol::pagination::Consistency::BoundedLive,
         }
     }
-    let offer = |_tx: &rusqlite::Transaction<'_>, seat: &SeatId, seq: u64| {
+    let offer = |_tx: &rusqlite::Transaction<'_>,
+                 seat: &SeatId,
+                 seq: u64,
+                 _history: crate::store::first_contact::OfferHistory,
+                 _binding: &crate::protocol::ids::BindingId| {
         Ok(crate::protocol::results::CheckInResult {
             context_disposition: crate::protocol::results::CheckInContextDisposition::Current,
             context: claim(seat.as_str()),
@@ -6899,6 +7179,8 @@ fn registration_requires_and_records_reconfirmation_evidence() {
             warnings: empty(),
             inbox: empty(),
             notices: crate::protocol::results::NoticeOffer::default(),
+            first_contact: None,
+            fast_forward: None,
         })
     };
     conn.execute("UPDATE observed_targets SET terminal_id=NULL,incarnation=NULL,incarnation_source_kind=NULL,connection_epoch=NULL WHERE target_id='s2'", []).unwrap();
@@ -6973,6 +7255,8 @@ fn accountable_observation_has_one_shape_and_legacy_rows_read_back_in_it() {
         binding_generation: 2,
         observed_at_utc: UtcMillis(10),
         provenance: "cooperative_top_level",
+        binding_id: crate::protocol::ids::BindingId::new("b-1"),
+        binding_connected: true,
     };
     let written = actor.observation(11);
     let value: serde_json::Value = serde_json::from_str(&written).unwrap();
@@ -8002,6 +8286,10 @@ fn c1_command(
         source: "resume".into(),
         operation: OperationId::new(operation),
         execution: ExecutionId::new(format!("exec-{operation}")),
+        liveness: Some(crate::protocol::authority::LivenessFingerprint {
+            pid: 4242,
+            start: 7,
+        }),
     }
 }
 
@@ -8086,6 +8374,7 @@ fn continuity_reattaches_unique_session_match_on_held_target() {
         CommandResult::ContinuityReattached(crate::protocol::results::ContinuityReattachment {
             seat: SeatId::new("s1"),
             binding_generation: 2,
+            fast_forward: None,
         })
     );
     let seat: (String, Option<String>, i64) = conn
@@ -8326,7 +8615,7 @@ fn continuity_never_matches_retired_sentinel_human_or_empty_sessions() {
     c1_unresolved_seat(&conn, "s-sentinel", "claude", "plugin_context:abc");
     c1_unresolved_seat(&conn, "s-human", "human", "sess-h");
     c1_unresolved_seat(&conn, "s-empty", "claude", "");
-    // A different harness with the same id, and a superseded (not latest) binding.
+    // A different harness with the same id, and a superseded (not newest) binding.
     c1_unresolved_seat(&conn, "s-codex", "codex", "sess-c");
     c1_unresolved_seat(&conn, "s-old", "claude", "sess-old");
     c1_bind(&conn, "s-old", 2, "claude", "sess-new");
@@ -8346,12 +8635,374 @@ fn continuity_never_matches_retired_sentinel_human_or_empty_sessions() {
         ask("claude", "sess-c").is_empty(),
         "other harness's session"
     );
-    assert!(ask("claude", "sess-old").is_empty(), "superseded binding");
+    // ht-54r.78: a superseded (not newest) top-level binding still matches.
+    assert_eq!(
+        ask("claude", "sess-old"),
+        vec!["s-old"],
+        "superseded binding"
+    );
     // Controls: the live matches are found, so the empties above are real.
     assert_eq!(ask("codex", "sess-c"), vec!["s-codex"]);
     assert_eq!(ask("claude", "sess-new"), vec!["s-old"]);
     assert_eq!(ask("claude", "sess-1"), vec!["s1"]);
     drop(tx);
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+/// A binding row the way the real unresolve leaves it: ended `seat_unresolved`.
+fn c1_unresolved_binding(conn: &Connection, seat: &str, generation: i64, session: &str) -> String {
+    c1_bind(conn, seat, generation, "claude", session);
+    conn.execute(
+        "UPDATE occupant_bindings SET liveness='disconnected',disconnected_at=50,disconnect_reason='seat_unresolved',role='top_level',agent_id='' WHERE seat_id=?1 AND generation=?2 AND native_session=?3",
+        rusqlite::params![seat, generation, session],
+    )
+    .unwrap();
+    conn.query_row(
+        "SELECT binding_id FROM occupant_bindings WHERE seat_id=?1 AND generation=?2 AND native_session=?3",
+        rusqlite::params![seat, generation, session],
+        |r| r.get(0),
+    )
+    .unwrap()
+}
+
+/// Thread `ct` of `messages` ordinary messages receivable by `s1`, which has joined it.
+fn c1_history(conn: &Connection, messages: i64) {
+    c1_history_body(conn, messages, "'body'");
+}
+
+/// [`c1_history`] with every message body the SQL expression `body` (messages are immutable).
+fn c1_history_body(conn: &Connection, messages: i64, body: &str) {
+    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('ct','i','topic','goal',0,0)", []).unwrap();
+    conn.execute(
+        "INSERT INTO memberships(thread_id,seat_id,state) VALUES ('ct','s1','joined')",
+        [],
+    )
+    .unwrap();
+    for n in 1..=messages {
+        conn.execute_batch(&format!(
+            "INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i','cm{n}','ct',{n},'ordinary',{body},{n},{n});
+             INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES ('cp{n}','i','actor','cm{n}',zeroblob(32),'ct',0,0,0,0,0,0,1,'sealed');
+             INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES ('cp{n}','ct','s1',1,300,1);
+             INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('cp{n}','cm{n}','i','ct',{n},{n},{n},0,1,0);"
+        ))
+        .unwrap();
+    }
+}
+
+fn c1_set_cursor(conn: &Connection, binding: &str, seq: i64) {
+    conn.execute(
+        "INSERT OR REPLACE INTO binding_cursors(binding_id,thread_id,seq) VALUES (?1,'ct',?2)",
+        rusqlite::params![binding, seq],
+    )
+    .unwrap();
+}
+
+#[test]
+fn continuity_reattach_reopens_the_sessions_binding_with_its_cursors() {
+    use crate::store::read_cursors;
+    let (context, mut conn, path) = c1_fixture();
+    conn.execute("DELETE FROM occupant_bindings WHERE seat_id='s1'", [])
+        .unwrap();
+    let ended = c1_unresolved_binding(&conn, "s1", 1, "sess-1");
+    c1_history(&conn, 5);
+    c1_set_cursor(&conn, &ended, 5);
+    let rows_before: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM occupant_bindings WHERE seat_id='s1' AND native_session='sess-1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let CommandResult::ContinuityReattached(reply) = c1_decide(
+        &context,
+        &mut conn,
+        &c1_command("held-pane", "sess-1", "c1-reopen"),
+        "match",
+    )
+    .unwrap() else {
+        panic!("not reattached")
+    };
+    assert_eq!(reply.seat, SeatId::new("s1"));
+    let (open, ended_at, liveness, pid, start, rows): (String, Option<i64>, String, i64, i64, i64) = conn
+        .query_row(
+            "SELECT binding_id,ended_at,liveness,liveness_pid,liveness_start,(SELECT count(*) FROM occupant_bindings WHERE seat_id='s1' AND native_session='sess-1') FROM occupant_bindings WHERE seat_id='s1' AND native_session='sess-1' AND ended_at IS NULL",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+        )
+        .unwrap();
+    assert_eq!(open, ended, "the session's own row is reopened");
+    assert_eq!(ended_at, None);
+    assert_eq!(liveness, "connected");
+    assert_eq!((pid, start), (4242, 7));
+    assert_eq!(rows, rows_before, "no new row");
+    let id = BindingId::new(ended);
+    assert_eq!(
+        read_cursors::cursor_for(&conn, &id, &ThreadId::new("ct")).unwrap(),
+        Some(5)
+    );
+    assert!(!read_cursors::has_unread(&conn, &id).unwrap());
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+/// `s1` unresolved with the session's `seat_unresolved` row, 6 long messages of thread `ct`
+/// (about 4000 bytes each) and the reopenable row's cursor at `cursor`.
+fn c1_past_one_page(cursor: i64, long: bool) -> (StoreContext, Connection, PathBuf, String) {
+    let (context, conn, path) = c1_fixture();
+    conn.execute("DELETE FROM occupant_bindings WHERE seat_id='s1'", [])
+        .unwrap();
+    let ended = c1_unresolved_binding(&conn, "s1", 1, "sess-1");
+    if long {
+        c1_history_body(&conn, 6, "hex(zeroblob(2000))");
+    } else {
+        c1_history(&conn, 5);
+    }
+    c1_set_cursor(&conn, &ended, cursor);
+    (context, conn, path, ended)
+}
+
+#[test]
+fn continuity_reattach_past_one_page_fast_forwards_the_reopened_binding() {
+    use crate::store::read_cursors;
+    let (context, mut conn, path, ended) = c1_past_one_page(1, true);
+    let receipts_before: (i64, i64) = conn
+        .query_row(
+            "SELECT (SELECT count(*) FROM receipts),(SELECT count(*) FROM prepared_recipients)",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    let CommandResult::ContinuityReattached(reply) = c1_decide(
+        &context,
+        &mut conn,
+        &c1_command("held-pane", "sess-1", "c1-ff"),
+        "match",
+    )
+    .unwrap() else {
+        panic!("not reattached")
+    };
+    let ff = reply
+        .fast_forward
+        .expect("a backlog past one page is fast-forwarded");
+    assert_eq!(ff.skipped, 5);
+    assert_eq!(ff.threads.len(), 1);
+    assert_eq!(ff.threads[0].history.thread, ThreadId::new("ct"));
+    assert_eq!(ff.threads[0].history.earlier, 5);
+    assert_eq!(
+        ff.threads[0].last_message.as_ref().map(|m| m.sequence),
+        Some(6)
+    );
+    let id = BindingId::new(ended.clone());
+    assert_eq!(
+        read_cursors::cursor_for(&conn, &id, &ThreadId::new("ct")).unwrap(),
+        Some(6)
+    );
+    let open: String = conn
+        .query_row(
+            "SELECT binding_id FROM occupant_bindings WHERE seat_id='s1' AND ended_at IS NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(open, ended, "the reopened row is the one fast-forwarded");
+    let receipts_after: (i64, i64) = conn
+        .query_row(
+            "SELECT (SELECT count(*) FROM receipts),(SELECT count(*) FROM prepared_recipients)",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(receipts_after, receipts_before, "no obligation is settled");
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn continuity_reattach_within_one_page_does_not_fast_forward() {
+    use crate::store::read_cursors;
+    let (context, mut conn, path, ended) = c1_past_one_page(2, false);
+    let CommandResult::ContinuityReattached(reply) = c1_decide(
+        &context,
+        &mut conn,
+        &c1_command("held-pane", "sess-1", "c1-noff"),
+        "match",
+    )
+    .unwrap() else {
+        panic!("not reattached")
+    };
+    assert_eq!(reply.fast_forward, None);
+    assert_eq!(
+        read_cursors::cursor_for(&conn, &BindingId::new(ended), &ThreadId::new("ct")).unwrap(),
+        Some(2)
+    );
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn continuity_replay_returns_the_recorded_fast_forward() {
+    use crate::store::read_cursors;
+    let (context, mut conn, path, ended) = c1_past_one_page(1, true);
+    let command = c1_command("held-pane", "sess-1", "c1-ff-replay");
+    let first = c1_decide(&context, &mut conn, &command, "match").unwrap();
+    let CommandResult::ContinuityReattached(reply) = &first else {
+        panic!("not reattached")
+    };
+    assert!(reply.fast_forward.is_some());
+    let again = c1_decide(&context, &mut conn, &command, "match").unwrap();
+    assert_eq!(again, first, "the replay carries the gap report");
+    let replayed =
+        crate::store::seats::replay_continuity(&context, "i", &command, &b5_budget()).unwrap();
+    assert_eq!(replayed, Some(first));
+    assert_eq!(
+        read_cursors::cursor_for(&conn, &BindingId::new(ended), &ThreadId::new("ct")).unwrap(),
+        Some(6)
+    );
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn continuity_prefers_the_seat_where_the_session_was_live_at_unresolve() {
+    for reason in ["liveness_process_exit", "superseded", "liveness_end_event"] {
+        let (context, mut conn, path) = c1_fixture();
+        conn.execute("DELETE FROM occupant_bindings WHERE seat_id='s1'", [])
+            .unwrap();
+        c1_unresolved_binding(&conn, "s1", 1, "sess-1");
+        c1_unresolved_seat(&conn, "s3", "claude", "sess-1");
+        conn.execute(
+            "UPDATE occupant_bindings SET liveness='disconnected',disconnect_reason=?1,role='top_level',agent_id='' WHERE seat_id='s3'",
+            [reason],
+        )
+        .unwrap();
+        let tx = conn.transaction().unwrap();
+        let candidates =
+            crate::store::seats::continuity_candidates(&tx, "i", "claude", "sess-1").unwrap();
+        drop(tx);
+        assert_eq!(candidates, vec![SeatId::new("s1")], "{reason}");
+        let CommandResult::ContinuityReattached(reply) = c1_decide(
+            &context,
+            &mut conn,
+            &c1_command("held-pane", "sess-1", "c1-prefer"),
+            "match",
+        )
+        .unwrap() else {
+            panic!("not reattached")
+        };
+        assert_eq!(reply.seat, SeatId::new("s1"), "{reason}");
+        let s3: String = conn
+            .query_row("SELECT state FROM seats WHERE id='s3'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(s3, "unresolved", "{reason}");
+        drop(conn);
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+#[test]
+fn continuity_still_refuses_two_seats_where_the_session_was_live() {
+    use crate::protocol::results::ErrorCode;
+    let (context, mut conn, path) = c1_fixture();
+    b5_set_marker_to_recovery(&conn);
+    conn.execute("DELETE FROM occupant_bindings WHERE seat_id='s1'", [])
+        .unwrap();
+    c1_unresolved_binding(&conn, "s1", 1, "sess-1");
+    c1_unresolved_seat(&conn, "s3", "claude", "sess-1");
+    conn.execute(
+        "UPDATE occupant_bindings SET liveness='disconnected',disconnect_reason='seat_unresolved',role='top_level',agent_id='' WHERE seat_id='s3'",
+        [],
+    )
+    .unwrap();
+    let refused = c1_decide(
+        &context,
+        &mut conn,
+        &c1_command("held-pane", "sess-1", "c1-two-live"),
+        "match",
+    )
+    .unwrap_err();
+    assert_eq!(refused.code, ErrorCode::Conflict);
+    let states: Vec<String> = conn
+        .prepare("SELECT state FROM seats WHERE id IN ('s1','s3') ORDER BY id")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(states, ["unresolved", "unresolved"]);
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn continuity_reattach_matches_when_a_later_binding_enrolled_after_the_main_session() {
+    let (context, mut conn, path) = c1_fixture();
+    conn.execute("DELETE FROM occupant_bindings WHERE seat_id='s1'", [])
+        .unwrap();
+    let main = c1_unresolved_binding(&conn, "s1", 1, "sess-1");
+    let oneshot = c1_unresolved_binding(&conn, "s1", 1, "sess-z");
+    let CommandResult::ContinuityReattached(reply) = c1_decide(
+        &context,
+        &mut conn,
+        &c1_command("held-pane", "sess-1", "c1-later"),
+        "match",
+    )
+    .unwrap() else {
+        panic!("not reattached")
+    };
+    assert_eq!(reply.seat, SeatId::new("s1"));
+    let ended_of = |id: &str| -> Option<i64> {
+        conn.query_row(
+            "SELECT ended_at FROM occupant_bindings WHERE binding_id=?1",
+            [id],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    assert_eq!(ended_of(&main), None, "the main row is reopened");
+    assert!(ended_of(&oneshot).is_some(), "the one-shot stays ended");
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn continuity_reattach_without_a_reopenable_row_enrolls_at_the_seat_read_position() {
+    use crate::store::read_cursors;
+    let (context, mut conn, path) = c1_fixture();
+    conn.execute("DELETE FROM occupant_bindings WHERE seat_id='s1'", [])
+        .unwrap();
+    let died = c1_unresolved_binding(&conn, "s1", 1, "sess-1");
+    conn.execute(
+        "UPDATE occupant_bindings SET disconnect_reason='liveness_process_exit' WHERE binding_id=?1",
+        [&died],
+    )
+    .unwrap();
+    c1_history(&conn, 5);
+    c1_set_cursor(&conn, &died, 5);
+    let CommandResult::ContinuityReattached(_) = c1_decide(
+        &context,
+        &mut conn,
+        &c1_command("held-pane", "sess-1", "c1-fresh-row"),
+        "match",
+    )
+    .unwrap() else {
+        panic!("not reattached")
+    };
+    let fresh: String = conn
+        .query_row(
+            "SELECT binding_id FROM occupant_bindings WHERE seat_id='s1' AND ended_at IS NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_ne!(fresh, died, "a dead-process row is never reopened");
+    let id = BindingId::new(fresh);
+    assert_eq!(
+        read_cursors::cursor_for(&conn, &id, &ThreadId::new("ct")).unwrap(),
+        Some(5),
+        "the new binding starts at the seat's furthest-read point"
+    );
+    assert!(!read_cursors::has_unread(&conn, &id).unwrap());
     drop(conn);
     let _ = std::fs::remove_file(path);
 }
@@ -8503,6 +9154,185 @@ fn continuity_replay_returns_recorded_seat_and_generation() {
         .unwrap(),
         None
     );
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn continuity_successor_records_the_resume_fingerprint() {
+    let (context, mut conn, path) = c1_fixture();
+    let command = c1_command("held-pane", "sess-1", "c1-fp");
+    c1_decide(&context, &mut conn, &command, "match").unwrap();
+    let row: (String, Option<i64>, Option<i64>) = conn
+        .query_row(
+            "SELECT liveness,liveness_pid,liveness_start FROM occupant_bindings WHERE seat_id='s1' AND ended_at IS NULL",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(row, ("connected".into(), Some(4242), Some(7)));
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn continuity_successor_survives_a_liveness_pass_before_its_first_touch() {
+    use crate::ports::{ProcessInfo, ProcessRecord};
+    struct Table(Option<(u32, u64)>);
+    impl ProcessInfo for Table {
+        fn process(&self, pid: u32) -> Option<ProcessRecord> {
+            self.0
+                .filter(|(p, _)| *p == pid)
+                .map(|(pid, start)| ProcessRecord {
+                    pid,
+                    parent: None,
+                    start,
+                    argv: Vec::new(),
+                })
+        }
+    }
+    let (context, mut conn, path) = c1_fixture();
+    // The reattach of the last unresolved seat lifts the holds, as production's does.
+    b5_set_marker_to_recovery(&conn);
+    let command = c1_command("held-pane", "sess-1", "c1-liveness");
+    c1_decide(&context, &mut conn, &command, "match").unwrap();
+    assert_eq!(
+        b5_hold_state(&conn),
+        (0, 0),
+        "the instance is no longer held"
+    );
+    let seat_state: String = conn
+        .query_row("SELECT state FROM seats WHERE id='s1'", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(seat_state, "resolved");
+    // No touch and no further check-in: the pass lands between the reattach and the first touch.
+    let candidates = crate::store::bindings::liveness_candidates(&conn, None).unwrap();
+    let successor = candidates
+        .iter()
+        .find(|c| c.binding.seat.as_str() == "s1")
+        .unwrap_or_else(|| panic!("the successor is a candidate of the pass: {candidates:?}"));
+    assert_eq!(
+        successor.binding.fingerprint,
+        Some(crate::protocol::authority::LivenessFingerprint {
+            pid: 4242,
+            start: 7
+        }),
+        "the successor carries the resume's fingerprint (ht-54r.70)"
+    );
+    let state = |conn: &Connection| -> (String, Option<String>) {
+        conn.query_row(
+            "SELECT liveness,disconnect_reason FROM occupant_bindings WHERE seat_id='s1' AND ended_at IS NULL",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap()
+    };
+    let now = crate::protocol::time::UtcMillis(1_000);
+    let alive = Table(Some((4242, 7)));
+    let decisions = crate::service::liveness::classify(&candidates, &alive);
+    assert!(decisions.is_empty(), "{decisions:?}");
+    let tx = conn.transaction().unwrap();
+    crate::store::bindings::apply_liveness(&tx, &decisions, now).unwrap();
+    tx.commit().unwrap();
+    assert_eq!(state(&conn).0, "connected");
+    // The fingerprint is really judged: the same pass over an empty table disconnects it.
+    let decisions = crate::service::liveness::classify(&candidates, &Table(None));
+    assert_eq!(decisions.len(), 1, "{decisions:?}");
+    let tx = conn.transaction().unwrap();
+    crate::store::bindings::apply_liveness(&tx, &decisions, now).unwrap();
+    tx.commit().unwrap();
+    assert_eq!(
+        state(&conn),
+        ("disconnected".into(), Some("liveness_process_exit".into()))
+    );
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn continuity_successor_is_not_judged_while_its_instance_is_held() {
+    let (context, mut conn, path) = c1_fixture();
+    b5_set_marker_to_recovery(&conn);
+    c1_unresolved_seat(&conn, "s3", "claude", "sess-3");
+    c1_decide(
+        &context,
+        &mut conn,
+        &c1_command("held-pane", "sess-1", "c1-held"),
+        "match",
+    )
+    .unwrap();
+    assert_eq!(b5_hold_state(&conn), (1, 0));
+    let candidates = crate::store::bindings::liveness_candidates(&conn, None).unwrap();
+    assert!(
+        candidates.iter().all(|c| c.binding.seat.as_str() != "s1"),
+        "a held instance is never judged: {candidates:?}"
+    );
+    let binding: String = conn
+        .query_row(
+            "SELECT binding_id FROM occupant_bindings WHERE seat_id='s1' AND ended_at IS NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let decision = crate::store::bindings::LivenessDecision {
+        binding: crate::protocol::ids::BindingId::new(binding),
+        fingerprint: Some(crate::protocol::authority::LivenessFingerprint {
+            pid: 4242,
+            start: 7,
+        }),
+        reason: crate::store::bindings::DisconnectReason::ProcessExit,
+    };
+    let tx = conn.transaction().unwrap();
+    let changed = crate::store::bindings::apply_liveness(
+        &tx,
+        &[decision],
+        crate::protocol::time::UtcMillis(1_000),
+    )
+    .unwrap();
+    tx.commit().unwrap();
+    assert_eq!(changed, 0, "apply_liveness re-reads the candidates");
+    let liveness: String = conn
+        .query_row(
+            "SELECT liveness FROM occupant_bindings WHERE seat_id='s1' AND ended_at IS NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(liveness, "connected");
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn continuity_without_fingerprint_is_refused_and_changes_nothing() {
+    let (context, mut conn, path) = c1_fixture();
+    let mut command = c1_command("held-pane", "sess-1", "c1-nofp");
+    command.liveness = None;
+    let error = c1_decide(&context, &mut conn, &command, "match").unwrap_err();
+    assert_eq!(
+        error.code,
+        crate::protocol::results::ErrorCode::LivenessFingerprintRequired
+    );
+    let state: String = conn
+        .query_row("SELECT state FROM seats WHERE id='s1'", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(state, "unresolved");
+    let bindings: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM occupant_bindings WHERE seat_id='s1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(bindings, 1, "no successor binding");
+    let decisions: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM allocation_decisions WHERE kind='cooperative_continuity'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(decisions, 0);
     drop(conn);
     let _ = std::fs::remove_file(path);
 }
@@ -9080,6 +9910,7 @@ fn invitation_rejection_delivers_reason_once_as_a_thread_warning() {
         &crate::protocol::commands::Command::InboxBatch(crate::protocol::commands::InboxQuery {
             seat: Some(SeatId::new("s1")),
             page: Default::default(),
+            claim: None,
         }),
         &budget,
     )
@@ -9156,14 +9987,20 @@ fn invitation_rejection_delivers_reason_once_as_a_thread_warning() {
     let tx = conn.transaction().unwrap();
     let page = crate::store::attention::notice_offer_page(&tx, "s1", 16).unwrap();
     assert_eq!(page.len(), 1);
-    let execution: String = tx
+    let binding: String = tx
         .query_row(
-            "SELECT execution_id FROM occupant_bindings WHERE seat_id='s1' AND ended_at IS NULL",
+            "SELECT binding_id FROM occupant_bindings WHERE seat_id='s1' AND ended_at IS NULL",
             [],
             |r| r.get(0),
         )
         .unwrap();
-    crate::store::attention::settle_offered_notices(&tx, "s1", 1, &execution, &page).unwrap();
+    crate::store::attention::settle_offered_notices(
+        &tx,
+        "s1",
+        &crate::protocol::ids::BindingId::new(binding),
+        &page,
+    )
+    .unwrap();
     tx.commit().unwrap();
     assert!(
         pending(&conn).is_empty(),
@@ -9277,7 +10114,7 @@ fn invitation_rejection_projection_retry_and_late_offer_keep_exact_delivery() {
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .unwrap();
-    conn.execute("INSERT INTO warning_offer(seat_id,binding_generation,execution_id,offered_through_seq) SELECT seat_id,generation,execution_id,?1 FROM occupant_bindings WHERE seat_id='s1'", [seq+100]).unwrap();
+    conn.execute("INSERT INTO warning_offer(binding_id,seat_id,offered_through_seq) SELECT binding_id,seat_id,?1 FROM occupant_bindings WHERE seat_id='s1' AND ended_at IS NULL", [seq+100]).unwrap();
     conn.execute_batch("CREATE TEMP TRIGGER reject_projection_failure BEFORE INSERT ON digest_programmatic_warnings BEGIN SELECT RAISE(ABORT,'injected rejection projection failure'); END;").unwrap();
     let budget = crate::protocol::time::CallBudget {
         deadline: MonoInstant(u64::MAX),
@@ -9428,14 +10265,20 @@ fn invitation_rejection_frozen_members_and_binding_scoped_prefix() {
     let page = crate::store::attention::notice_offer_page(&conn, "s2", 1).unwrap();
     assert_eq!(page.len(), 1);
     assert_eq!(page[0].notice.warning.as_str(), id);
-    let execution: String = conn
+    let binding: String = conn
         .query_row(
-            "SELECT execution_id FROM occupant_bindings WHERE seat_id='s2' AND ended_at IS NULL",
+            "SELECT binding_id FROM occupant_bindings WHERE seat_id='s2' AND ended_at IS NULL",
             [],
             |r| r.get(0),
         )
         .unwrap();
-    crate::store::attention::settle_offered_notices(&conn, "s2", 1, &execution, &page).unwrap();
+    crate::store::attention::settle_offered_notices(
+        &conn,
+        "s2",
+        &crate::protocol::ids::BindingId::new(binding),
+        &page,
+    )
+    .unwrap();
     assert_eq!(
         crate::store::attention::informational_notice_pending(&conn, "s2", &id).unwrap(),
         Some(false)
@@ -9444,10 +10287,12 @@ fn invitation_rejection_frozen_members_and_binding_scoped_prefix() {
         crate::store::attention::informational_notice_pending(&conn, "s2", &second_id).unwrap(),
         Some(true)
     );
-    // A stale predecessor frontier does not cover the current occupant.
-    conn.execute(
-        "UPDATE digest_notice_offer SET execution_id='predecessor' WHERE seat_id='s2'",
-        [],
+    // A stale predecessor frontier does not cover the current occupant (session-keyed bindings:
+    // the frontier row belongs to an ended predecessor binding of the seat).
+    conn.execute_batch(
+        "INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,ended_at,terminal_id,incarnation,liveness,disconnected_at,disconnect_reason) \
+         SELECT seat_id,generation,target_id,host_boot,host_epoch,harness,'predecessor-session','predecessor',observation_provenance,observed_at,1,terminal_id,incarnation,'disconnected',1,'superseded' FROM occupant_bindings WHERE seat_id='s2' AND ended_at IS NULL;
+         UPDATE digest_notice_offer SET binding_id=(SELECT binding_id FROM occupant_bindings WHERE execution_id='predecessor') WHERE seat_id='s2';",
     )
     .unwrap();
     assert_eq!(
@@ -10036,6 +10881,184 @@ fn invitation_rejection_human_retains_declared_human_provenance() {
 #[path = "topology_attachment_guard.rs"]
 mod topology_attachment;
 
+// ---- ht-54r.14: retirement under multiple bindings ----
+
+/// Seat `s2` with three open bindings on the one terminal: two connected, one already
+/// disconnected (`end_event`), each with a cursor row on thread `t`.
+fn multi_binding_retirement_fixture() -> (StoreContext, Connection, PathBuf, Arc<FixedClock>) {
+    let (context, conn, path, clock) = fixture(100);
+    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t','i','topic','goal',0,0)", []).unwrap();
+    for (id, session, live) in [
+        ("b1", "sess-1", true),
+        ("b2", "sess-2", true),
+        ("b3", "sess-3", false),
+    ] {
+        conn.execute("INSERT INTO occupant_bindings(binding_id,seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES (?1,'s2',1,'s2','b',1,1,'codex',?2,'00000000-0000-4000-8000-000000000001','verified_current_target',0,'term-s2','inc')", rusqlite::params![id,session]).unwrap();
+        if !live {
+            conn.execute("UPDATE occupant_bindings SET liveness='disconnected',disconnected_at=50,disconnect_reason='liveness_end_event' WHERE binding_id=?1", [id]).unwrap();
+        }
+        conn.execute(
+            "INSERT INTO binding_cursors(binding_id,thread_id,seq) VALUES (?1,'t',?2)",
+            rusqlite::params![id, if id == "b1" { 3 } else { 1 }],
+        )
+        .unwrap();
+    }
+    (context, conn, path, clock)
+}
+
+fn retire_s2(context: &StoreContext, conn: &mut Connection) -> crate::ports::RetirementJob {
+    use crate::ports::ClosureEvidence;
+    begin_retirement(
+        context,
+        conn,
+        SeatId::new("s2"),
+        ClosureEvidence {
+            host_boot: HostBootId::new("b"),
+            epoch: 1,
+            target: HostTargetId::new("s2"),
+            generation: 1,
+        },
+    )
+    .unwrap()
+}
+
+#[test]
+fn retirement_disconnects_and_ends_every_binding() {
+    let (context, mut conn, path, _) = multi_binding_retirement_fixture();
+    retire_s2(&context, &mut conn);
+    let rows: Vec<(String, Option<i64>, String, Option<String>)> = conn
+        .prepare("SELECT binding_id,ended_at,liveness,disconnect_reason FROM occupant_bindings WHERE seat_id='s2' ORDER BY ordinal")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(
+        rows,
+        vec![
+            (
+                "b1".into(),
+                Some(100),
+                "disconnected".into(),
+                Some("seat_retired".into())
+            ),
+            (
+                "b2".into(),
+                Some(100),
+                "disconnected".into(),
+                Some("seat_retired".into())
+            ),
+            (
+                "b3".into(),
+                Some(100),
+                "disconnected".into(),
+                Some("liveness_end_event".into())
+            ),
+        ]
+    );
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn retirement_keeps_seat_record_and_cursor_rows() {
+    let (context, mut conn, path, _) = multi_binding_retirement_fixture();
+    retire_s2(&context, &mut conn);
+    let seat: (String, i64) = conn
+        .query_row(
+            "SELECT state,retired_at FROM seats WHERE id='s2'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(seat, ("retired".into(), 100));
+    let cursors: Vec<(String, i64)> = conn
+        .prepare(
+            "SELECT binding_id,seq FROM binding_cursors WHERE thread_id='t' ORDER BY binding_id",
+        )
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(
+        cursors,
+        vec![("b1".into(), 3), ("b2".into(), 1), ("b3".into(), 1)]
+    );
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn retirement_with_two_bindings_retires_memberships_settles_receipts_closes_invitations() {
+    use crate::{
+        ports::WorkAdmission,
+        protocol::time::{CallBudget, Cancellation},
+    };
+    let (context, mut conn, path, clock) = multi_binding_retirement_fixture();
+    conn.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('u','i','topic','goal',0,0)", []).unwrap();
+    conn.execute(
+        "INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES ('t','s2','joined',0)",
+        [],
+    )
+    .unwrap();
+    conn.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('t','s2',1,1)", []).unwrap();
+    conn.execute(
+        "INSERT INTO memberships(thread_id,seat_id,state) VALUES ('u','s2','invited')",
+        [],
+    )
+    .unwrap();
+    conn.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,frozen_duration_ms,deadline_at,created_decision_seq) VALUES ('inv','u','s2',1,'pending',0,90,90,1)", []).unwrap();
+    conn.execute("INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i','m1','t',1,'ordinary','body',0,2)", []).unwrap();
+    conn.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES ('m1','t','s2','pending',90,0,90)", []).unwrap();
+    conn.execute("UPDATE threads SET next_sequence=5 WHERE id='t'", [])
+        .unwrap();
+    conn.execute("UPDATE host_instances SET decision_seq=30 WHERE id='i'", [])
+        .unwrap();
+    let job = retire_s2(&context, &mut conn);
+    clock.0.store(200, Ordering::SeqCst);
+    let budget = CallBudget {
+        deadline: MonoInstant(1000),
+        cancellation: Cancellation::default(),
+    };
+    for _ in 0..8 {
+        if advance_retirement(
+            &context,
+            &mut conn,
+            job.id.clone(),
+            WorkAdmission::Background,
+            &budget,
+        )
+        .unwrap()
+        .complete
+        {
+            break;
+        }
+    }
+    let count = |sql: &str| conn.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap();
+    assert_eq!(
+        count("SELECT count(*) FROM memberships WHERE seat_id='s2' AND state='joined'"),
+        0
+    );
+    assert_eq!(
+        count("SELECT count(*) FROM receipts WHERE message_id='m1' AND state='recipient_retired'"),
+        1
+    );
+    assert_eq!(
+        count("SELECT count(*) FROM invitations WHERE id='inv' AND state='recipient_retired'"),
+        1
+    );
+    assert_eq!(
+        count("SELECT count(*) FROM occupant_bindings WHERE seat_id='s2' AND ended_at IS NULL"),
+        0
+    );
+    assert_eq!(count("SELECT count(*) FROM binding_cursors"), 3);
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[path = "direct_threads.rs"]
+mod direct_threads;
 #[test]
 fn directory_name_mutations_stale_filtered_cursors_but_replay_and_noop_do_not() {
     use crate::{
@@ -10553,6 +11576,7 @@ fn invitation_confirmation_registration_never_settles_or_restarts_and_late_accep
                 mode: CheckInMode::Current,
                 claim: claim("s2"),
                 operation: OperationId::new("registration-not-acceptance"),
+                lineage_parent: None,
             };
             let hash = crate::store::schema::canonical_digest(
                 &crate::store::seats::check_in_payload(&checkin),
@@ -10571,7 +11595,7 @@ fn invitation_confirmation_registration_never_settles_or_restarts_and_late_accep
                     100,
                 ),
                 &budget,
-                |_, seat, seq| {
+                |_, seat, seq, history, _binding| {
                     Ok(CheckInResult {
                         context_disposition: CheckInContextDisposition::Current,
                         context: claim(seat.as_str()),
@@ -10582,6 +11606,8 @@ fn invitation_confirmation_registration_never_settles_or_restarts_and_late_accep
                         warnings: empty(),
                         inbox: empty(),
                         notices: NoticeOffer::default(),
+                        first_contact: history.first_contact,
+                        fast_forward: history.fast_forward,
                     })
                 },
             )
@@ -10881,25 +11907,19 @@ fn invitation_origin_wake_after_notice_offer(mod_path: bool, discovery_path: boo
             "discovery must not depend on attribution backlog"
         );
     }
-    let carried: Vec<_> = attention::notice_offer_page(&conn, "s1", 10)
+    let origin_binding = invitation_policy_binding(&conn, "s1");
+    let carried: Vec<_> = attention::notice_offer_page_for(&conn, "s1", &origin_binding, 10)
         .unwrap()
         .into_iter()
         .map(|row| row.notice)
         .collect();
     assert_eq!(carried.len(), 1);
     let tx = conn.transaction().unwrap();
-    tx.execute("INSERT INTO warning_offer(seat_id,binding_generation,execution_id,offered_through_seq) SELECT 's1',1,'00000000-0000-4000-8000-000000000001',decision_seq FROM host_instances WHERE id='i'", []).unwrap();
-    attention::settle_carried_notices(
-        &tx,
-        "s1",
-        1,
-        "00000000-0000-4000-8000-000000000001",
-        &carried,
-    )
-    .unwrap();
+    tx.execute("INSERT INTO warning_offer(binding_id,seat_id,offered_through_seq) SELECT ?1,'s1',decision_seq FROM host_instances WHERE id='i'", [origin_binding.as_str()]).unwrap();
+    attention::settle_carried_notices(&tx, "s1", &origin_binding, &carried).unwrap();
     tx.commit().unwrap();
     assert!(
-        attention::notice_offer_page(&conn, "s1", 10)
+        attention::notice_offer_page_for(&conn, "s1", &origin_binding, 10)
             .unwrap()
             .is_empty(),
         "committed informational offer must stay settled"
@@ -10930,9 +11950,15 @@ fn invitation_origin_wake_after_notice_offer(mod_path: bool, discovery_path: boo
         );
     }
     if mod_path {
-        let view = crate::store::seats::mod_seat_view(&conn, "i", &origin)
-            .unwrap()
-            .unwrap();
+        let view = crate::store::seats::mod_binding_view(
+            &conn,
+            "i",
+            &origin,
+            crate::ports::ModBindingRef::Id(&origin_binding),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(view.binding.as_ref().unwrap().binding_id, origin_binding);
         assert_eq!(
             view.fingerprint.other_pending, 1,
             "mod retains original inviter open condition after notice offer"
@@ -11002,11 +12028,16 @@ fn invitation_origin_wake_after_notice_offer(mod_path: bool, discovery_path: boo
         "late explicit acceptance clears native condition attention"
     );
     assert_eq!(
-        crate::store::seats::mod_seat_view(&conn, "i", &origin)
-            .unwrap()
-            .unwrap()
-            .fingerprint
-            .other_pending,
+        crate::store::seats::mod_binding_view(
+            &conn,
+            "i",
+            &origin,
+            crate::ports::ModBindingRef::Id(&origin_binding)
+        )
+        .unwrap()
+        .unwrap()
+        .fingerprint
+        .other_pending,
         0,
         "clear is passive for mod attention"
     );
@@ -11022,7 +12053,7 @@ fn invitation_origin_wake_after_notice_offer(mod_path: bool, discovery_path: boo
             "passive clear cannot keep the original inviter in native discovery"
         );
     }
-    let clears = attention::notice_offer_page(&conn, "s1", 10).unwrap();
+    let clears = attention::notice_offer_page_for(&conn, "s1", &origin_binding, 10).unwrap();
     assert_eq!(
         clears.len(),
         1,
@@ -11201,11 +12232,480 @@ fn assert_no_lazy_overdue_effects(conn: &Connection, invitation: &InvitationId) 
             .is_none()
     );
     assert_eq!(
-        crate::store::seats::mod_seat_view(conn, "i", &SeatId::new("s1"))
-            .unwrap()
-            .unwrap()
-            .fingerprint
-            .other_pending,
+        crate::store::seats::mod_binding_view(
+            conn,
+            "i",
+            &SeatId::new("s1"),
+            crate::ports::ModBindingRef::Id(&invitation_policy_binding(conn, "s1"))
+        )
+        .unwrap()
+        .unwrap()
+        .fingerprint
+        .other_pending,
         0
     );
+}
+
+#[test]
+fn same_invitation_requirement_attach_release_replacement_has_distinct_context_epochs() {
+    use crate::ports::ServiceAuthorityGate;
+    use crate::protocol::service::*;
+    use sha2::Digest;
+    let (context, mut conn, path, _) = bound_fixture(100);
+    let budget = crate::protocol::time::CallBudget {
+        deadline: MonoInstant(1000),
+        cancellation: Default::default(),
+    };
+    let author = ServiceAuthorId::new(format!("graph:{:x}", sha2::Sha256::digest(b"i")));
+    let gate = GraphGate(author.clone());
+    let connection = gate.register("i", "boot", author).unwrap();
+    let operate = |conn: &mut Connection, operation: ServiceOperation| {
+        crate::store::service_controls::operate(
+            &context,
+            conn,
+            "i",
+            operation,
+            &connection,
+            &gate,
+            &budget,
+            None,
+        )
+        .unwrap()
+    };
+    let thread = ThreadId::new("context-epoch-thread");
+    operate(
+        &mut conn,
+        ServiceOperation::EnsureThread(EnsureManagedThread {
+            thread: thread.clone(),
+            topic: "topic".into(),
+            goal: "goal".into(),
+            operation: OperationId::new("context-epoch-ensure"),
+        }),
+    );
+    let ServiceResult::Invitation(ordinary) = operate(
+        &mut conn,
+        ServiceOperation::Invite(ServiceInvite {
+            thread: thread.clone(),
+            seat: SeatId::new("s2"),
+            constraint: InvitationConstraint::Ordinary,
+            deadline_millis: Some(500),
+            operation: OperationId::new("context-epoch-ordinary"),
+        }),
+    ) else {
+        panic!("ordinary invitation missing")
+    };
+    let state = |conn: &Connection| -> (i64, i64, i64) {
+        let prepared = conn.prepare("SELECT i.command_context_epoch,coalesce(c.context_revision,0),coalesce(c.last_change_seq,0) FROM invitations i LEFT JOIN invitation_context_latest c ON c.thread_id=i.thread_id WHERE i.id=?1");
+        assert!(
+            prepared.is_ok(),
+            "same-ID command mutations need canonical epoch/projection: {:?}",
+            prepared.as_ref().err()
+        );
+        prepared
+            .unwrap()
+            .query_row([ordinary.invitation.as_str()], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .unwrap()
+    };
+    let initial = state(&conn);
+    let attach = ServiceInvite {
+        thread: thread.clone(),
+        seat: SeatId::new("s2"),
+        constraint: InvitationConstraint::Required,
+        deadline_millis: Some(500),
+        operation: OperationId::new("context-epoch-attach"),
+    };
+    let ServiceResult::Invitation(required) =
+        operate(&mut conn, ServiceOperation::Invite(attach.clone()))
+    else {
+        panic!("required invitation missing")
+    };
+    assert_eq!(
+        required.invitation, ordinary.invitation,
+        "timed ordinary pending offer is reused"
+    );
+    let attached = state(&conn);
+    assert!(attached.0 > initial.0 && attached.1 > initial.1 && attached.2 > initial.2);
+    operate(&mut conn, ServiceOperation::Invite(attach));
+    assert_eq!(
+        state(&conn),
+        attached,
+        "exact replay is not a context mutation"
+    );
+    let initial_requirement = required.requirement.as_ref().unwrap().requirement.clone();
+    operate(
+        &mut conn,
+        ServiceOperation::ReleaseRequirement(ReleaseRequirement {
+            thread: thread.clone(),
+            seat: SeatId::new("s2"),
+            requirement: initial_requirement.clone(),
+            operation: OperationId::new("context-epoch-release"),
+        }),
+    );
+    let released = state(&conn);
+    assert!(
+        released.0 > attached.0 && released.1 > attached.1 && released.2 > attached.2,
+        "None->required->None must not reuse a presentation key"
+    );
+    // Main preserves the lifetime requirement link; replacement receives a
+    // fresh invitation while the shared thread context advances once.
+    let snapshot = |conn: &Connection, table: &str, id: &str| {
+        conn.query_row(&format!("SELECT * FROM {table} WHERE id=?1"), [id], |row| {
+            (0..row.as_ref().column_count())
+                .map(|index| row.get::<_, rusqlite::types::Value>(index))
+                .collect::<rusqlite::Result<Vec<_>>>()
+        })
+        .unwrap()
+    };
+    let original_invitation = snapshot(&conn, "invitations", ordinary.invitation.as_str());
+    let original_requirement =
+        snapshot(&conn, "requirement_episodes", initial_requirement.as_str());
+    let replacement_op = ServiceOperation::Invite(ServiceInvite {
+        thread: thread.clone(),
+        seat: SeatId::new("s2"),
+        constraint: InvitationConstraint::Required,
+        deadline_millis: Some(500),
+        operation: OperationId::new("context-epoch-replacement"),
+    });
+    let ServiceResult::Invitation(replacement) = operate(&mut conn, replacement_op.clone()) else {
+        panic!("replacement requirement expected")
+    };
+    let replacement_requirement = replacement.requirement.as_ref().unwrap();
+    assert_ne!(replacement.invitation, ordinary.invitation);
+    assert_ne!(replacement_requirement.requirement, initial_requirement);
+    assert_eq!(replacement_requirement.invitation, replacement.invitation);
+    assert_eq!(replacement_requirement.state, RequirementState::Pending);
+    assert_eq!(replacement_requirement.accepted_by, None);
+    assert_eq!(replacement_requirement.accepted_at, None);
+    let fresh: (i64, i64, i64, i64, i64) = conn.query_row(
+        "SELECT episode,created_at,frozen_duration_ms,deadline_at,command_context_epoch FROM invitations WHERE id=?1",
+        [replacement.invitation.as_str()],
+        |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?)),
+    ).unwrap();
+    assert_eq!((fresh.0, fresh.1, fresh.2, fresh.3), (2, 100, 500, 600));
+    assert!(fresh.4 > 0, "the fresh invitation owns its command epoch");
+    assert_eq!(
+        snapshot(&conn, "invitations", ordinary.invitation.as_str()),
+        original_invitation
+    );
+    assert_eq!(
+        snapshot(&conn, "requirement_episodes", initial_requirement.as_str()),
+        original_requirement
+    );
+    let replaced = state(&conn);
+    assert_eq!(
+        replaced.0, released.0,
+        "the old invitation command stays ordinary"
+    );
+    assert_eq!(
+        replaced.1,
+        released.1 + 1,
+        "one fresh command publication advances shared context once"
+    );
+    assert!(replaced.2 > released.2);
+    let replacement_invitation = snapshot(&conn, "invitations", replacement.invitation.as_str());
+    let replacement_row = snapshot(
+        &conn,
+        "requirement_episodes",
+        replacement_requirement.requirement.as_str(),
+    );
+    assert_eq!(
+        operate(&mut conn, replacement_op.clone()),
+        ServiceResult::Invitation(replacement.clone())
+    );
+    let mut effective_noop = replacement_op;
+    if let ServiceOperation::Invite(invite) = &mut effective_noop {
+        invite.operation = OperationId::new("context-epoch-effective-noop");
+        invite.deadline_millis = Some(99_000);
+    }
+    assert_eq!(
+        operate(&mut conn, effective_noop),
+        ServiceResult::Invitation(replacement.clone())
+    );
+    assert_eq!(
+        state(&conn),
+        replaced,
+        "replay and effective no-op do not publish context"
+    );
+    assert_eq!(
+        snapshot(&conn, "invitations", ordinary.invitation.as_str()),
+        original_invitation
+    );
+    assert_eq!(
+        snapshot(&conn, "requirement_episodes", initial_requirement.as_str()),
+        original_requirement
+    );
+    assert_eq!(
+        snapshot(&conn, "invitations", replacement.invitation.as_str()),
+        replacement_invitation
+    );
+    assert_eq!(
+        snapshot(
+            &conn,
+            "requirement_episodes",
+            replacement_requirement.requirement.as_str()
+        ),
+        replacement_row
+    );
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn service_requirement_uses_an_independent_episode_without_mutating_native_lazy_invitation() {
+    use crate::ports::ServiceAuthorityGate;
+    use crate::protocol::{
+        commands::{InvitationConfirmation, Join},
+        service::*,
+    };
+    use sha2::Digest;
+    let (context, mut conn, path, _) = bound_fixture(100);
+    let budget = crate::protocol::time::CallBudget {
+        deadline: MonoInstant(1000),
+        cancellation: Default::default(),
+    };
+    let author = ServiceAuthorId::new(format!("graph:{:x}", sha2::Sha256::digest(b"i")));
+    let gate = GraphGate(author.clone());
+    let connection = gate.register("i", "boot", author).unwrap();
+    let operate = |conn: &mut Connection, operation: ServiceOperation| {
+        crate::store::service_controls::operate(
+            &context,
+            conn,
+            "i",
+            operation,
+            &connection,
+            &gate,
+            &budget,
+            None,
+        )
+        .unwrap()
+    };
+    let thread = ThreadId::new("independent-lazy-required");
+    operate(
+        &mut conn,
+        ServiceOperation::EnsureThread(EnsureManagedThread {
+            thread: thread.clone(),
+            topic: "topic".into(),
+            goal: "goal".into(),
+            operation: OperationId::new("independent-lazy-ensure"),
+        }),
+    );
+    let joined = Join {
+        thread: thread.clone(),
+        operation: OperationId::new("independent-lazy-join"),
+        claim: claim("s1"),
+    };
+    let hash = cooperative_payload_hash("join", &joined).unwrap();
+    join(
+        &context,
+        &mut conn,
+        &budget,
+        &joined,
+        permit(
+            "s1",
+            "independent-lazy-join",
+            ObligationRef::Control(thread.clone()),
+            hash,
+            100,
+        ),
+    )
+    .unwrap();
+    let invitation = Invite {
+        thread: thread.clone(),
+        seat: SeatId::new("s2"),
+        confirmation: Some(InvitationConfirmation::Lazy),
+        deadline_millis: None,
+        operation: OperationId::new("independent-lazy-invite"),
+        claim: claim("s1"),
+    };
+    let hash = cooperative_payload_hash("invite", &invitation).unwrap();
+    let CommandResult::Invitation(lazy) = invite(
+        &context,
+        &mut conn,
+        &budget,
+        &invitation,
+        permit(
+            "s1",
+            "independent-lazy-invite",
+            ObligationRef::Control(thread.clone()),
+            hash,
+            100,
+        ),
+        None,
+    )
+    .unwrap() else {
+        panic!("native Lazy missing")
+    };
+    let frozen = |conn: &Connection| {
+        conn.query_row("SELECT confirmation,deadline_at,inviter_seat_id,command_context_epoch FROM invitations WHERE id=?1",[lazy.as_str()],|r|Ok((r.get::<_,String>(0)?,r.get::<_,i64>(1)?,r.get::<_,String>(2)?,r.get::<_,i64>(3)?))).unwrap()
+    };
+    let before = frozen(&conn);
+    assert_eq!(before.0, "lazy");
+    assert_eq!(before.2, "s1");
+    let required_request = ServiceInvite {
+        thread: thread.clone(),
+        seat: SeatId::new("s2"),
+        constraint: InvitationConstraint::Required,
+        deadline_millis: Some(500),
+        operation: OperationId::new("independent-required-invite"),
+    };
+    let ServiceResult::Invitation(required) = operate(
+        &mut conn,
+        ServiceOperation::Invite(required_request.clone()),
+    ) else {
+        panic!("required missing")
+    };
+    assert_ne!(
+        required.invitation, lazy,
+        "required consent gets its own timed episode"
+    );
+    assert_eq!(
+        frozen(&conn),
+        before,
+        "Lazy policy/deadline/origin/command stay frozen"
+    );
+    let requirement = required.requirement.unwrap();
+    let epoch: i64 = conn
+        .query_row(
+            "SELECT command_context_epoch FROM invitations WHERE id=?1",
+            [required.invitation.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(epoch > 0);
+    operate(&mut conn, ServiceOperation::Invite(required_request));
+    assert_eq!(
+        conn.query_row(
+            "SELECT command_context_epoch FROM invitations WHERE id=?1",
+            [required.invitation.as_str()],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        epoch
+    );
+    operate(
+        &mut conn,
+        ServiceOperation::ReleaseRequirement(ReleaseRequirement {
+            thread,
+            seat: SeatId::new("s2"),
+            requirement: requirement.requirement,
+            operation: OperationId::new("independent-required-release"),
+        }),
+    );
+    assert_eq!(frozen(&conn), before);
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM digest_pending_invitations WHERE invitation_id=?1",
+            [lazy.as_str()],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        conn.query_row(
+            "SELECT count(*) FROM digest_pending_invitations WHERE invitation_id=?1",
+            [required.invitation.as_str()],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    drop(conn);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn invitation_command_epoch_corruption_and_exhaustion_roll_back_required_attach() {
+    use crate::{ports::ServiceAuthorityGate, protocol::service::*};
+    use sha2::Digest;
+    for (epoch, expected) in [
+        (-1, ErrorCode::StoreCorrupt),
+        (i64::MAX, ErrorCode::SequenceExhausted),
+    ] {
+        let (context, mut conn, path, _) = bound_fixture(100);
+        let budget = crate::protocol::time::CallBudget {
+            deadline: MonoInstant(1000),
+            cancellation: Default::default(),
+        };
+        let author = ServiceAuthorId::new(format!("graph:{:x}", sha2::Sha256::digest(b"i")));
+        let gate = GraphGate(author.clone());
+        let connection = gate.register("i", "boot", author).unwrap();
+        let operate = |conn: &mut Connection, operation| {
+            crate::store::service_controls::operate(
+                &context,
+                conn,
+                "i",
+                operation,
+                &connection,
+                &gate,
+                &budget,
+                None,
+            )
+        };
+        let thread = ThreadId::new("guarded-epoch-thread");
+        operate(
+            &mut conn,
+            ServiceOperation::EnsureThread(EnsureManagedThread {
+                thread: thread.clone(),
+                topic: "topic".into(),
+                goal: "goal".into(),
+                operation: OperationId::new("guarded-epoch-ensure"),
+            }),
+        )
+        .unwrap();
+        let ServiceResult::Invitation(ordinary) = operate(
+            &mut conn,
+            ServiceOperation::Invite(ServiceInvite {
+                thread: thread.clone(),
+                seat: SeatId::new("s2"),
+                constraint: InvitationConstraint::Ordinary,
+                deadline_millis: Some(500),
+                operation: OperationId::new("guarded-epoch-ordinary"),
+            }),
+        )
+        .unwrap() else {
+            panic!("ordinary invitation")
+        };
+        conn.execute(
+            "UPDATE invitations SET command_context_epoch=?1 WHERE id=?2",
+            params![epoch, ordinary.invitation.as_str()],
+        )
+        .unwrap();
+        let snapshot = |db: &Connection| {
+            db.query_row("SELECT json_object('epoch',i.command_context_epoch,'deadline',i.deadline_at,'confirmation',i.confirmation,'requirements',(SELECT count(*) FROM requirement_episodes WHERE invitation_id=i.id),'context',(SELECT json_array(context_revision,last_change_seq) FROM invitation_context_latest WHERE thread_id=i.thread_id)) FROM invitations i WHERE i.id=?1",[ordinary.invitation.as_str()],|r|r.get::<_,String>(0)).unwrap()
+        };
+        let before = snapshot(&conn);
+        let error = operate(
+            &mut conn,
+            ServiceOperation::Invite(ServiceInvite {
+                thread,
+                seat: SeatId::new("s2"),
+                constraint: InvitationConstraint::Required,
+                deadline_millis: Some(500),
+                operation: OperationId::new("guarded-epoch-required"),
+            }),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, expected, "epoch={epoch}: {error:?}");
+        assert_eq!(
+            snapshot(&conn),
+            before,
+            "failed canonical attach is atomic and never resets ordinary deadline"
+        );
+        drop(conn);
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+fn invitation_policy_binding(conn: &Connection, seat: &str) -> BindingId {
+    let claim = claim(seat);
+    crate::store::bindings::match_claim(
+        conn,
+        &crate::store::bindings::BindingKey::from_claim(&claim),
+    )
+    .unwrap()
+    .expect("invitation policy fixture has this exact open binding")
+    .binding_id
 }

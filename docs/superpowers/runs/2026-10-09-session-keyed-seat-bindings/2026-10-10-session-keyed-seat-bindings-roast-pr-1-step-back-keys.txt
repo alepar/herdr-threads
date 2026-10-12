@@ -1,0 +1,20 @@
+r1 [Should-fix] src/store/queries.rs:6514
+r1 [Should-fix] src/store/receipts.rs:315
+r1 [Should-fix] src/store/seats.rs:4480
+r1 [Should-fix] src/cli/mod.rs:2797
+r1 [Should-fix] src/store/lazy_delivery.rs:287
+r1 [Should-fix] src/store/read_cursors.rs:197
+r1 [Nit] src/harness/claude_rewrite.rs:14; src/cli/commands.rs:1760
+r1 [Nit] src/store/lazy_delivery.rs:46
+r1 [Nit] src/store/bindings.rs:665
+r1 [FYI] src/store/schema.rs:592; src/store/schema.rs:423; docs/operations.md:230
+r1 [Nit] TRUST-POLICY.md:312
+r1 [Must-fix] src/store/queries.rs inbox lazy source per binding (F1)
+r1 [Must-fix] bead ht-6v2
+r1 [Must-fix] src/store/receipts.rs display-ACK for cooperative_env_session (F3)
+r1 [Must-fix] 12 deterministic test failures on the run tip
+r1 [Must-fix] bead ht-ozo
+r1 [Must-fix] untested: ht-54r.19 configuration smoke not merged
+r1 [Must-fix] untested: ht-54r.25 integration sweep not run
+r1 [Must-fix] src/harness/caller_env.rs CODEX_THREAD_ID malformed silent downgrade
+r1 [Must-fix] src/store/liveness worker leaves fingerprint-less connected bindings

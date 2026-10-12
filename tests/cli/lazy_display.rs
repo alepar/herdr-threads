@@ -35,6 +35,8 @@ impl Fixture {
                 native_session: NativeSessionId::new("native"),
                 execution: ExecutionId::new("exec"),
                 target: HostTargetId::new("pane"),
+                agent_id: None,
+                liveness: None,
             },
         }
     }
@@ -72,6 +74,7 @@ fn page(start: u64, end: u64) -> CommandResult {
             body: "abcdefghij"[start as usize..end as usize].into(),
             body_start: start,
             body_end: end,
+            wakes: false,
             body_len: 10,
         }],
         next_cursor: None,
@@ -419,6 +422,8 @@ fn lazy_display_default_text_routes_v2_settles_complete_body() {
             native_session: NativeSessionId::new("native"),
             execution: ExecutionId::new(uuid::Uuid::from_u128(2).to_string()),
             target: HostTargetId::new("pane"),
+            agent_id: None,
+            liveness: None,
         }
     );
 }
@@ -765,6 +770,7 @@ fn test_cursor_after(after: u64) -> String {
         lazy_high_water_ordinal: 100,
         publication_decision_high_water: 4,
         body: None,
+        unread: None,
         attention: SeatAttentionCursorState {
             invitation_after_seq: 0,
             invitation_after_ordinal: 0,
@@ -805,6 +811,8 @@ fn continuation_mixed_sources_preserve_invocation() {
         InboxBatchV2Item::Invitation {
             thread: ThreadId::new("invite-thread"),
             topic_data: "invite".into(),
+            goal_data: None,
+            topic_revision: None,
             invitation: InvitationId::new("invitation"),
             confirmation: None,
             deadline_at: None,

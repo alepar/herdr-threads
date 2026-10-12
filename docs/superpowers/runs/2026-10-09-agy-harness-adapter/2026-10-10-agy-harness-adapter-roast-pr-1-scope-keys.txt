@@ -1,0 +1,24 @@
+[Should-fix] src/store/lazy_delivery.rs:249
+[Should-fix] src/service/delivery_pull.rs:294
+[Nit] src/delivery/ledger.rs:137
+[Nit] src/delivery/ledger.rs:96
+[Nit] src/harness/agy/delivery.rs:873; src/harness/agy/delivery.rs:880
+[Nit] src/harness/agy/delivery.rs:647; src/harness/agy/delivery.rs:644
+[Nit] src/harness/agy/delivery.rs:830
+[Nit] src/cli/hook.rs:2960
+[Nit] scripts/agy-sandbox/fetch-agy:124
+[Nit] src/cli/hook.rs:2878
+[Nit] src/cli/topology_handoff.rs:192
+[Nit] src/service/delivery_pull.rs:384
+[Nit] src/harness/agy/delivery.rs:842
+[Nit] src/harness/agy/decode.rs:98
+[Nit] scripts/agy-relay/budget.py:71
+[Nit] src/harness/agy/plugin.rs:60
+[Nit] src/protocol/delivery.rs:1; src/protocol/delivery.rs:3
+[Nit] src/harness/agy/delivery.rs:325
+[Nit] src/harness/agy/delivery.rs:909; tests/harness/agy_delivery.rs:794
+[Nit] TRUST-POLICY.md:211
+[FYI] src/store/schema.rs:411; src/store/schema.rs:409
+[FYI] src/harness/agy/setup.rs:379
+[FYI] src/service/delivery_pull.rs:297
+[FYI] src/service/delivery_pull.rs:176

@@ -3,27 +3,68 @@ use crate::lazy_config_smoke::{Proxy, World};
 use herdr_threads::{
     cli::journal::{IntentScope, Journal, SemanticMutation},
     daemon::ownership::read_existing_namespace,
-    harness::context::ContextJournal,
     protocol::{authority::CallerClaim, ids::MessageId},
     test_support::spawn,
 };
-use sha2::{Digest, Sha256};
 use std::{path::PathBuf, process::Output, sync::atomic::Ordering, time::Duration};
 
+/// The claim the seat's occupant makes: its open binding's identity (an agent saves no context).
 fn claim(w: &World, who: usize) -> CallerClaim {
+    use herdr_threads::protocol::{
+        authority::{CallerRole, Harness, LivenessFingerprint},
+        ids::*,
+    };
     let paths = w.paths();
     let instance = read_existing_namespace(&paths).unwrap().unwrap();
-    let contexts = ContextJournal::open(
-        &paths
-            .instance_dir
-            .join("contexts")
-            .join(format!("{:x}", Sha256::digest(w.seats[who].as_bytes()))),
-        instance,
-        &w.seats[who],
-        Duration::from_secs(1),
-    )
-    .unwrap();
-    herdr_threads::harness::bridge::caller_claim(&contexts.current().unwrap().unwrap()).unwrap()
+    #[allow(clippy::type_complexity)]
+    let (generation, harness, session, execution, target, pid, start): (
+        i64,
+        String,
+        String,
+        String,
+        String,
+        Option<i64>,
+        Option<i64>,
+    ) = w
+        .db()
+        .query_row(
+            "SELECT generation,harness,native_session,execution_id,target_id,liveness_pid,liveness_start FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL",
+            [&w.seats[who]],
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                ))
+            },
+        )
+        .unwrap();
+    CallerClaim {
+        instance: instance.to_string(),
+        seat: SeatId::new(w.seats[who].clone()),
+        binding_generation: generation as u64,
+        role: CallerRole::TopLevel,
+        harness: match harness.as_str() {
+            "human" => Harness::Human,
+            other => Harness::Agent(
+                herdr_threads::harness::registry::builtins()
+                    .agent(other)
+                    .unwrap(),
+            ),
+        },
+        native_session: NativeSessionId::new(session),
+        execution: ExecutionId::new(execution),
+        target: HostTargetId::new(target),
+        agent_id: None,
+        liveness: pid.zip(start).map(|(pid, start)| LivenessFingerprint {
+            pid: pid as u32,
+            start: start as u64,
+        }),
+    }
 }
 
 fn execute(w: &World, ambient: Option<&World>, who: usize, argv: &[String]) -> Output {
@@ -37,6 +78,14 @@ fn execute(w: &World, ambient: Option<&World>, who: usize, argv: &[String]) -> O
         .env("HERDR_THREADS_OFFLINE", "1")
         .env("NO_COLOR", "1")
         .env("HERDR_PANE_ID", format!("w1:p{}", who + 1));
+    // The seats are agents (decision 15): an agent-namespace call runs as its harness session.
+    if argv.get(1).map(String::as_str) != Some("human") {
+        herdr_threads::test_support::isolation::as_agent(
+            &mut command,
+            "codex",
+            &format!("lazy-session-{who}"),
+        );
+    }
     if let Some(ambient) = ambient {
         let paths = ambient.paths();
         command
@@ -51,6 +100,32 @@ fn execute(w: &World, ambient: Option<&World>, who: usize, argv: &[String]) -> O
             .env_remove("HERDR_SOCKET_PATH");
     }
     command.output().unwrap()
+}
+
+/// Waits until every `send_attention` projection job of `w` has completed: the
+/// daemon projects receipt rows in 5 ms work quanta, so under load the rows for a
+/// two-recipient send can land after `send` returns (seen on a hosted Linux runner
+/// as `QueryReturnedNoRows` in [`receipt`]).
+fn wait_for_send_projection(w: &World) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let open: i64 = w
+            .db()
+            .query_row(
+                "SELECT count(*) FROM work_jobs WHERE kind='send_attention' AND status<>'complete'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        if open == 0 {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "send_attention projection still open after 30 s ({open} job(s))"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 
 fn receipt(w: &World, message: &str, who: usize) -> String {
@@ -87,6 +162,8 @@ fn recovery_case(human: bool, second_record_failure: bool, remove_ambient: bool)
         let ordinary_a = a.send("original ordinary body", &["--require-ack", &a.seats[1]]);
         let lazy_b = b.send("unrelated passive body", &[]);
         let ordinary_b = b.send("unrelated ordinary body", &["--require-ack", &b.seats[1]]);
+        wait_for_send_projection(&a);
+        wait_for_send_projection(&b);
         let journal_a = Journal::open(a.paths().instance_dir.join("intents")).unwrap();
         if second_record_failure {
             std::fs::write(

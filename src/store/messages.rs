@@ -72,6 +72,9 @@ impl Default for MessageLimits {
 pub fn send_payload(request: &SendMessage) -> Value {
     let mut payload = json!({"kind":"send_message","thread":request.thread,"body":request.body,
         "invited_recipients":request.invited_recipients,"deadline_millis":request.deadline_millis,"claim":request.claim});
+    if let Some(recipient) = &request.direct_recipient {
+        payload["direct_recipient"] = json!(recipient);
+    }
     if !request.delivery_mode.is_ordinary() {
         payload["delivery_mode"] = json!(request.delivery_mode);
     }
@@ -107,6 +110,31 @@ pub fn prepare_send_step(
     admission: DurableWorkAdmission,
 ) -> Result<SendPreparationProgress, ApiError> {
     prepare_send_step_impl(context, conn, request, limits, budget, admission, None)
+}
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn prepare_automatic_send_step(
+    context: &StoreContext,
+    conn: &mut Connection,
+    request: &crate::protocol::handoff::AutomaticDeliveryMutation,
+    limits: MessageLimits,
+    budget: &CallBudget,
+    admission: DurableWorkAdmission,
+) -> Result<SendPreparationProgress, ApiError> {
+    let crate::protocol::handoff::AutomaticDeliveryAction::Send(send) = &request.action else {
+        return Err(ApiError::invalid_request("not automatic Send"));
+    };
+    let requirement = crate::protocol::authority::HandoffRequirement::AutomaticDelivery(Box::new(
+        request.clone(),
+    ));
+    prepare_send_step_impl(
+        context,
+        conn,
+        send,
+        limits,
+        budget,
+        admission,
+        Some(&requirement),
+    )
 }
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn prepare_delivery_send_step(
@@ -218,7 +246,7 @@ fn prepare_send_step_impl(
             delivery,
             crate::protocol::authority::HandoffRequirement::Delivery(_)
         ) {
-            super::seats::cooperative_mapping(&tx, &request.claim, None)?;
+            super::seats::cooperative_bound_mapping(&tx, &request.claim, None)?;
         }
         super::handoff::validate_handoff_requirement(&tx, delivery, false)?;
     }
@@ -242,6 +270,10 @@ fn prepare_send_step_impl(
             format!("thread {} not found", request.thread.as_str()),
         )
     })?;
+    super::control::validate_pair_send(&tx, request)?;
+    if request.direct_recipient.is_some() {
+        super::seats::cooperative_mapping(&tx, &request.claim, None)?;
+    }
     if archived {
         return Err(api_error(ErrorCode::Archived, "thread is archived"));
     }
@@ -388,6 +420,7 @@ fn prepare_send_step_impl(
     let explicit: Vec<_> = request
         .invited_recipients
         .iter()
+        .chain(request.direct_recipient.iter())
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
@@ -637,6 +670,10 @@ pub(super) fn stage_recipient(
         )
         .map_err(store_error)?;
     if lazy {
+        let already: bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM lazy_recipients WHERE preparation_id=?1 AND seat_id=?2)",params![prep_id,recipient],|r|r.get(0)).map_err(store_error)?;
+        if already {
+            return Ok(());
+        }
         let message =
             MessageId::new(send_message_id_for_preparation(prep_id).ok_or_else(|| {
                 api_error(ErrorCode::StoreCorrupt, "invalid send preparation ID")
@@ -721,6 +758,8 @@ pub(super) enum PublicationAuthor<'a> {
     Native {
         seat: &'a SeatId,
         observation: &'a str,
+        /// The acting binding, recorded as `messages.sender_binding_id` (spec §2).
+        binding: &'a crate::protocol::ids::BindingId,
         relays_user: bool,
         user_intent: Option<crate::protocol::summary::UserIntent>,
     },
@@ -739,7 +778,9 @@ pub(super) struct Publication {
 
 /// Inserts the message, its manifest and ordinary-only `send_attention` job for the sealed
 /// preparation `(scope, key, digest)`. The caller proved authority and revision
-/// currency; this touches a constant number of rows regardless of audience size.
+/// currency; this touches a constant number of rows regardless of audience size,
+/// except that a lazy send writes one `wake_work` row per `wake_on: all`
+/// recipient (set-based; `nudge` recipients cost no write).
 // Allowed: one deciding insert: transaction, instant, replay identity and author.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn insert_publication(
@@ -812,10 +853,11 @@ pub(super) fn insert_publication(
         PublicationAuthor::Native {
             seat,
             observation,
+            binding,
             relays_user,
             user_intent,
         } => {
-            tx.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,native_observation,body,decision_at,decision_seq,author_role,relays_user,user_intent,delivery_mode) VALUES (?1,?2,?3,?4,'ordinary',?5,?6,?7,?8,?9,?10,?11,?12,?13)",params![id.as_str(),instance,thread.as_str(),base,seat.as_str(),observation,body,utc,decision_seq as i64,author_role,relays_user as i64,user_intent.map(crate::protocol::summary::UserIntent::as_str),mode]).map_err(store_error)?;
+            tx.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,native_observation,body,decision_at,decision_seq,author_role,relays_user,user_intent,delivery_mode,sender_binding_id) VALUES (?1,?2,?3,?4,'ordinary',?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",params![id.as_str(),instance,thread.as_str(),base,seat.as_str(),observation,body,utc,decision_seq as i64,author_role,relays_user as i64,user_intent.map(crate::protocol::summary::UserIntent::as_str),mode,binding.as_str()]).map_err(store_error)?;
         }
         PublicationAuthor::Programmatic(author) => {
             tx.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_label,body,decision_at,decision_seq,author_kind,author_service_id,author_role) VALUES (?1,?2,?3,?4,'ordinary','herdr-graph',?5,?6,?7,'programmatic',?8,'service')",params![id.as_str(),instance,thread.as_str(),base,body,utc,decision_seq as i64,author.as_str()]).map_err(store_error)?;
@@ -856,6 +898,9 @@ pub(super) fn insert_publication(
     )
     .map_err(store_error)?;
     }
+    if mode == "lazy" {
+        super::lazy_delivery::note_published(tx, &prep_id)?;
+    }
     Ok(Publication {
         message: id,
         sequence: base,
@@ -893,6 +938,16 @@ pub fn publish_send(
         request.operation.as_str(),
         digest,
         |tx| {
+            super::control::validate_pair_send(tx, request)?;
+            if let Some((a, b)) = super::control::direct_pair(tx, &request.thread)? {
+                let extra: bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM prepared_recipients p JOIN send_preparations s ON s.id=p.preparation_id WHERE s.operation_scope=?1 AND s.operation_key=?2 AND p.seat_id NOT IN (?3,?4)) OR EXISTS(SELECT 1 FROM lazy_recipients p JOIN send_preparations s ON s.id=p.preparation_id WHERE s.operation_scope=?1 AND s.operation_key=?2 AND p.seat_id NOT IN (?3,?4))",params![scope,request.operation.as_str(),a.as_str(),b.as_str()],|r|r.get(0)).map_err(store_error)?;
+                if extra {
+                    return Err(api_error(
+                        ErrorCode::StoreCorrupt,
+                        "prepared audience outside automatic pair",
+                    ));
+                }
+            }
             type CurrentColumns =
                 Option<(String, String, i64, i64, i64, i64, i64, i64, i64, String)>;
             let current:CurrentColumns = tx.query_row(
@@ -968,6 +1023,7 @@ pub fn publish_send(
                 PublicationAuthor::Native {
                     seat: &seat,
                     observation: &observation,
+                    binding: &actor.binding_id,
                     relays_user: request.relays_user,
                     user_intent: request.user_intent,
                 },

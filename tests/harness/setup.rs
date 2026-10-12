@@ -1,3 +1,8 @@
+use crate::harness::claude::setup::plan_claude;
+use crate::harness::codex::setup::{
+    codex_session_manifest, inspect_codex_session, plan_codex_for_contract, plan_codex_for_version,
+    uninstall_codex, verify_codex_base,
+};
 use crate::harness::setup::*;
 use serde_json::{Value, json};
 use sha2::Digest;
@@ -13,7 +18,13 @@ fn install_claude_user(
     argv: &[String],
     base: &[u8],
 ) -> Result<OwnershipManifest, SetupError> {
-    install_user_settings(SettingsKind::ClaudeUser, config, manifest, argv, base)
+    install_user_settings(
+        crate::harness::claude::settings_kind(),
+        config,
+        manifest,
+        argv,
+        base,
+    )
 }
 fn install_claude_user_with_fault<F: FnOnce()>(
     config: &std::path::Path,
@@ -24,7 +35,7 @@ fn install_claude_user_with_fault<F: FnOnce()>(
     action: F,
 ) -> Result<OwnershipManifest, SetupError> {
     install_user_settings_with_fault(
-        SettingsKind::ClaudeUser,
+        crate::harness::claude::settings_kind(),
         config,
         manifest,
         argv,
@@ -38,13 +49,18 @@ fn inspect_claude_user(
     manifest: &std::path::Path,
     observed: NativeObservation,
 ) -> Result<HookInspection, SetupError> {
-    inspect_user_settings(SettingsKind::ClaudeUser, config, manifest, observed)
+    inspect_user_settings(
+        crate::harness::claude::settings_kind(),
+        config,
+        manifest,
+        observed,
+    )
 }
 fn remove_claude_user(
     config: &std::path::Path,
     manifest: &std::path::Path,
 ) -> Result<(), SetupError> {
-    remove_user_settings(SettingsKind::ClaudeUser, config, manifest)
+    remove_user_settings(crate::harness::claude::settings_kind(), config, manifest)
 }
 #[test]
 fn claude_composes_preserves_permissions_and_is_idempotent() {
@@ -94,7 +110,7 @@ fn codex_inline_flags_preserve_groups_and_do_not_invent_trust() {
     let plan = plan_codex_for_contract(
         &groups,
         &["/tmp/space 雪/owned".into()],
-        &crate::harness::operational::CodexContract::registered(),
+        &crate::harness::codex::CodexContract::registered(),
     )
     .unwrap();
     assert_eq!(plan.launch_argv[0], "-c");
@@ -108,7 +124,7 @@ fn codex_inline_flags_preserve_groups_and_do_not_invent_trust() {
         plan_codex_for_contract(
             &plan.events,
             &["/tmp/space 雪/owned".into()],
-            &crate::harness::operational::CodexContract::registered()
+            &crate::harness::codex::CodexContract::registered()
         )
         .unwrap()
         .events,
@@ -362,10 +378,13 @@ fn user_install_rejects_any_other_settings_file() {
     fs::create_dir(&dir).unwrap();
     let manifest = dir.join("manifest.json");
     for (kind, name) in [
-        (SettingsKind::ClaudeUser, "settings.local.json"),
-        (SettingsKind::ClaudeUser, "hooks.json"),
-        (SettingsKind::CodexUser, "settings.json"),
-        (SettingsKind::CodexUser, "config.toml"),
+        (
+            crate::harness::claude::settings_kind(),
+            "settings.local.json",
+        ),
+        (crate::harness::claude::settings_kind(), "hooks.json"),
+        (crate::harness::codex::settings_kind(), "settings.json"),
+        (crate::harness::codex::settings_kind(), "config.toml"),
     ] {
         let config = dir.join(name);
         fs::write(&config, b"{}").unwrap();
@@ -396,7 +415,7 @@ fn codex_user_hooks_install_inspect_and_remove_keep_existing_groups() {
         "hook".to_owned(),
         "codex".to_owned(),
     ];
-    let kind = SettingsKind::CodexUser;
+    let kind = crate::harness::codex::settings_kind();
     let installed = install_user_settings(kind, &config, &manifest, &argv, original).unwrap();
     assert!(installed.permission.is_none());
     assert_eq!(installed.scope, "user");
@@ -428,7 +447,7 @@ fn codex_user_hooks_install_inspect_and_remove_keep_existing_groups() {
     // A Claude manifest never inspects a Codex file and vice versa.
     assert_eq!(
         inspect_user_settings(
-            SettingsKind::ClaudeUser,
+            crate::harness::claude::settings_kind(),
             &config,
             &manifest,
             NativeObservation::Unknown
@@ -896,26 +915,16 @@ fn with_command(group: &Value, command: &str) -> Value {
 fn downgrade_to_bash_only(config: &std::path::Path, manifest_path: &std::path::Path) {
     let mut manifest: OwnershipManifest =
         serde_json::from_slice(&fs::read(manifest_path).unwrap()).unwrap();
-    let session = manifest
-        .owned
-        .iter()
-        .find(|entry| entry.event == "SessionStart")
-        .unwrap()
-        .clone();
     let mut settings: Value = serde_json::from_slice(&fs::read(config).unwrap()).unwrap();
-    settings["hooks"]["SessionStart"]
-        .as_array_mut()
-        .unwrap()
-        .retain(|group| group != &session.group);
-    if settings["hooks"]["SessionStart"]
-        .as_array()
-        .unwrap()
-        .is_empty()
-    {
-        settings["hooks"]
-            .as_object_mut()
-            .unwrap()
-            .remove("SessionStart");
+    for entry in manifest.owned.iter().filter(|e| e.event != "PreToolUse") {
+        let groups = settings["hooks"][&entry.event].as_array_mut().unwrap();
+        groups.retain(|group| group != &entry.group);
+        if groups.is_empty() {
+            settings["hooks"]
+                .as_object_mut()
+                .unwrap()
+                .remove(&entry.event);
+        }
     }
     let bytes = serde_json::to_vec(&settings).unwrap();
     fs::write(config, &bytes).unwrap();
@@ -1554,8 +1563,10 @@ fn interrupted_drift_upgrade_resumes_or_removes_from_each_real_boundary() {
             let after: Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
             let original: Value = serde_json::from_slice(original).unwrap();
             let mut expected = original.clone();
-            if after["hooks"]["PreToolUse"] == json!([]) {
-                expected["hooks"]["PreToolUse"] = json!([]);
+            for event in ["PreToolUse", "SubagentStart", "SubagentStop"] {
+                if after["hooks"][event] == json!([]) {
+                    expected["hooks"][event] = json!([]);
+                }
             }
             assert_eq!(after, expected, "{name} {fault:?} resume={resume}");
             assert!(!manifest_path.exists());
@@ -1830,7 +1841,9 @@ fn prepared_install_under_earlier_declaration_converges_on_resetup() {
             now,
             json!({"other":1,"later":"keep","hooks":{
                 "SessionStart":[expected[0].group.clone()],
-                "PreToolUse":[expected[1].group.clone()]
+                "PreToolUse":[expected[1].group.clone()],
+                "SubagentStart":[expected[2].group.clone()],
+                "SubagentStop":[expected[3].group.clone()]
             }}),
             "{name}"
         );
@@ -1873,7 +1886,7 @@ fn prepared_resetup_refuses_second_supersession_of_the_same_event() {
     );
     // The intent was recorded by a binary whose declaration has since changed again.
     let mut manifest = read_manifest_file(&manifest_path);
-    assert_eq!(manifest.superseded.len(), 2);
+    assert_eq!(manifest.superseded.len(), manifest.owned.len());
     for entry in &mut manifest.owned {
         entry.group["hooks"][0]["timeout"] = json!(9);
         entry.fingerprint = group_fingerprint(&entry.group);
@@ -2073,7 +2086,16 @@ fn changed_file_drift_upgrade_keeps_empty_owned_event_arrays_the_recorded_base_h
         let first = install_claude_user(&config, &manifest_path, &argv, original).unwrap();
         let mut owned_events: Vec<&str> = first.owned.iter().map(|o| o.event.as_str()).collect();
         owned_events.sort_unstable();
-        assert_eq!(owned_events, ["PreToolUse", "SessionStart"], "{name}");
+        assert_eq!(
+            owned_events,
+            [
+                "PreToolUse",
+                "SessionStart",
+                "SubagentStart",
+                "SubagentStop"
+            ],
+            "{name}"
+        );
         drift_installation(&config, &manifest_path, &drift);
         let mut v: Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
         v["later"] = json!("keep");
@@ -2188,7 +2210,14 @@ fn hook_setup_records_and_writes_no_permission_rule() {
             inspect_claude_user(&config, &manifest_path, NativeObservation::Unknown).unwrap();
         assert!(status.installed);
         assert_eq!(status.allow_rule, None);
-        assert_eq!(recorded_hook_permission(&config, &manifest_path), Ok(None));
+        assert_eq!(
+            recorded_hook_permission(
+                crate::harness::claude::settings_kind(),
+                &config,
+                &manifest_path
+            ),
+            Ok(None)
+        );
         let settled = fs::read(&config).unwrap();
         install_claude_user(&config, &manifest_path, &argv, original).unwrap();
         assert_eq!(fs::read(&config).unwrap(), settled);
@@ -2220,9 +2249,13 @@ fn historical_rule_is_reported_and_blocks_hook_resetup_until_retired() {
         Err(SetupError::Conflict)
     );
     assert_eq!(fs::read(&config).unwrap(), held);
-    let recorded = recorded_hook_permission(&config, &manifest_path)
-        .unwrap()
-        .unwrap();
+    let recorded = recorded_hook_permission(
+        crate::harness::claude::settings_kind(),
+        &config,
+        &manifest_path,
+    )
+    .unwrap()
+    .unwrap();
     assert_eq!(recorded.owned, vec![RULE.to_owned()]);
     assert!(recorded.created_permissions && recorded.created_allow);
     retire_hook_permission(&manifest_path, &recorded).unwrap();
@@ -2302,7 +2335,11 @@ fn forged_historical_record_is_refused() {
         fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
         let before = fs::read(&config).unwrap();
         assert_eq!(
-            recorded_hook_permission(&config, &manifest_path),
+            recorded_hook_permission(
+                crate::harness::claude::settings_kind(),
+                &config,
+                &manifest_path
+            ),
             Err(SetupError::Conflict)
         );
         assert_eq!(
@@ -2362,7 +2399,16 @@ fn claude_setup_registers_event_per_group() {
     fs::write(&config, b"{}").unwrap();
     let argv = vec!["/x/herdr-threads".into(), "hook".into(), "claude".into()];
     let manifest = install_claude_user(&config, &manifest_path, &argv, b"{}").unwrap();
-    assert_eq!(manifest.owned.len(), 2);
+    let events: Vec<&str> = manifest.owned.iter().map(|e| e.event.as_str()).collect();
+    assert_eq!(
+        events,
+        [
+            "SessionStart",
+            "PreToolUse",
+            "SubagentStart",
+            "SubagentStop"
+        ]
+    );
     for entry in &manifest.owned {
         assert_eq!(
             command_of(entry),
@@ -2384,7 +2430,7 @@ fn codex_setup_registers_event_per_group() {
     fs::write(&config, b"{}").unwrap();
     let argv = vec!["/x/herdr-threads".into(), "hook".into(), "codex".into()];
     let manifest = install_user_settings(
-        SettingsKind::CodexUser,
+        crate::harness::codex::settings_kind(),
         &config,
         &manifest_path,
         &argv,
@@ -2392,7 +2438,16 @@ fn codex_setup_registers_event_per_group() {
     )
     .unwrap();
     let events: Vec<&str> = manifest.owned.iter().map(|e| e.event.as_str()).collect();
-    assert_eq!(events, ["SessionStart", "SubagentStart", "PreToolUse"]);
+    assert_eq!(
+        events,
+        [
+            "SessionStart",
+            "SubagentStart",
+            "PreToolUse",
+            "SubagentStop",
+            "SessionEnd"
+        ]
+    );
     for entry in &manifest.owned {
         assert_eq!(
             command_of(entry),
@@ -2406,7 +2461,7 @@ fn codex_setup_registers_event_per_group() {
 fn codex_session_plan_registers_event_per_group() {
     let argv: Vec<String> = vec!["/x/herdr-threads".into(), "hook".into(), "codex".into()];
     let plan = plan_codex_for_version(&[], &argv, &pinned()).unwrap();
-    assert_eq!(plan.owned.len(), 3);
+    assert_eq!(plan.owned.len(), 5);
     for entry in &plan.owned {
         assert_eq!(
             command_of(entry),
@@ -2415,7 +2470,13 @@ fn codex_session_plan_registers_event_per_group() {
     }
     // The session `-c` overrides carry the evented commands.
     let flags = plan.session_config.join("\n");
-    for event in ["SessionStart", "SubagentStart", "PreToolUse"] {
+    for event in [
+        "SessionStart",
+        "SubagentStart",
+        "PreToolUse",
+        "SubagentStop",
+        "SessionEnd",
+    ] {
         assert!(
             flags.contains(&format!("'hook-event' 'codex' '{event}'")),
             "{event}: {flags}"
@@ -2461,10 +2522,10 @@ fn downgrade_to_legacy_registration(config: &std::path::Path, manifest_path: &st
 #[test]
 fn legacy_install_is_installed_but_flagged() {
     for (kind, harness_word) in [
-        (SettingsKind::ClaudeUser, "claude"),
-        (SettingsKind::CodexUser, "codex"),
+        (crate::harness::claude::settings_kind(), "claude"),
+        (crate::harness::codex::settings_kind(), "codex"),
     ] {
-        let (dir, config, manifest_path) = if kind == SettingsKind::ClaudeUser {
+        let (dir, config, manifest_path) = if kind == crate::harness::claude::settings_kind() {
             claude_scope()
         } else {
             codex_scope()
@@ -2528,13 +2589,17 @@ fn a_mixed_event_registration_is_neither_current_nor_legacy() {
 fn setup_upgrades_legacy_registration() {
     for (kind, harness_word, user_hooks) in [
         (
-            SettingsKind::ClaudeUser,
+            crate::harness::claude::settings_kind(),
             "claude",
             &br#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"user"}]}]},"other":1}"#[..],
         ),
-        (SettingsKind::CodexUser, "codex", &br#"{"other":1}"#[..]),
+        (
+            crate::harness::codex::settings_kind(),
+            "codex",
+            &br#"{"other":1}"#[..],
+        ),
     ] {
-        let (dir, config, manifest_path) = if kind == SettingsKind::ClaudeUser {
+        let (dir, config, manifest_path) = if kind == crate::harness::claude::settings_kind() {
             claude_scope()
         } else {
             codex_scope()
@@ -2605,7 +2670,7 @@ fn adoption_finds_evented_marked_copy() {
     fs::write(&config, b"{}").unwrap();
     let argv: Vec<String> = vec!["/x/herdr-threads".into(), "hook".into(), "codex".into()];
     install_user_settings(
-        SettingsKind::CodexUser,
+        crate::harness::codex::settings_kind(),
         &config,
         &manifest_path,
         &argv,
@@ -2615,9 +2680,10 @@ fn adoption_finds_evented_marked_copy() {
     let installed = seed_uuid_registration(&config, &manifest_path, true);
     // A second CODEX_HOME holding a byte copy of the hooks file (trust travels with it).
     fs::copy(&config, &other_config).unwrap();
-    let adoptable = adoptable_user_settings(SettingsKind::CodexUser, &other_config, &argv)
-        .unwrap()
-        .expect("an exact evented marked copy is adoptable");
+    let adoptable =
+        adoptable_user_settings(crate::harness::codex::settings_kind(), &other_config, &argv)
+            .unwrap()
+            .expect("an exact evented marked copy is adoptable");
     assert_eq!(adoptable.installation_id, installed.installation_id);
     assert_event_per_group(
         &adoptable.owned,
@@ -2629,7 +2695,7 @@ fn adoption_finds_evented_marked_copy() {
     );
     let before = fs::read(&other_config).unwrap();
     let adopted = adopt_user_settings(
-        SettingsKind::CodexUser,
+        crate::harness::codex::settings_kind(),
         &other_config,
         &other_manifest,
         &argv,
@@ -2648,7 +2714,7 @@ fn adoption_finds_evented_marked_copy() {
         .replace(" '--event' 'SessionStart'", "");
     fs::write(&other_config, text).unwrap();
     assert!(
-        adoptable_user_settings(SettingsKind::CodexUser, &other_config, &argv)
+        adoptable_user_settings(crate::harness::codex::settings_kind(), &other_config, &argv)
             .unwrap()
             .is_none()
     );
@@ -2734,6 +2800,459 @@ fn operation_scope_defaults_preserve_legacy_resolution_and_refuse_foreign_genera
             .is_err()
     );
     assert!(!root.exists(), "refusal created a native or state root");
+}
+
+// ------------------------------------------------ extension proof (core-sweep D4, D5, D6)
+
+/// A test-only adapter registered in a test `Registry`: it declares a config root, foreground
+/// advice and an allow-member-only settings kind, and nothing in core names it. The setup
+/// engine, the foreground report and the inspection plumbing reach it through the registry alone.
+mod extension_proof {
+    use crate::cli::setup::{SetupEnv, default_config_roots, foreground};
+    use crate::harness::{
+        adapter::*,
+        registry::{Registration, Registry},
+        setup::{
+            InstallPhase, NativeObservation, OwnedAllowSpec, SettingsKind, SettingsKindSpec,
+            SetupError, inspect_user_settings, install_user_settings, legacy, plan_settings,
+            read_settings_manifest, remove_user_settings,
+        },
+    };
+    use crate::protocol::time::CallBudget;
+    use serde_json::{Value, json};
+    use std::path::{Path, PathBuf};
+
+    const ID: &str = "exttest";
+    const MEMBER: &str = "Bash(exttest *)";
+
+    fn no_groups(_: &str) -> Vec<(&'static str, Value)> {
+        Vec::new()
+    }
+    fn session_group(command: &str) -> Vec<(&'static str, Value)> {
+        vec![(
+            "SessionStart",
+            json!({"hooks": [{"type": "command", "command": command}]}),
+        )]
+    }
+    static MEMBER_KIND: SettingsKindSpec = SettingsKindSpec {
+        harness: ID,
+        file_name: "ext-settings.json",
+        hook_groups: no_groups,
+        owned_allow: Some(OwnedAllowSpec {
+            rule: MEMBER,
+            retired: &[],
+            native_rewrites: true,
+        }),
+        adoption_note: "",
+        legacy_upgrade_warning: "",
+        permission_rules: crate::harness::setup::no_permission_rules,
+    };
+    static HOOK_KIND: SettingsKindSpec = SettingsKindSpec {
+        harness: ID,
+        file_name: "ext-hooks.json",
+        hook_groups: session_group,
+        owned_allow: None,
+        adoption_note: "",
+        legacy_upgrade_warning: "",
+        permission_rules: crate::harness::setup::no_permission_rules,
+    };
+
+    fn inspect_ext(bytes: &[u8], report: &mut Value) -> Result<(), String> {
+        let text = std::str::from_utf8(bytes).map_err(|_| "ext config is not UTF-8".to_owned())?;
+        if text.contains("bad") {
+            return Err("ext config is invalid".into());
+        }
+        report["ext_flag"] = json!(text.contains("on"));
+        if text.contains("on") {
+            report["status"] = json!("configured");
+        }
+        Ok(())
+    }
+    static FOREGROUND: ForegroundAdvice = ForegroundAdvice {
+        settings_file: "ext.toml",
+        advice: "turn the ext flag on",
+        fixed_fields: &[("fixed_field", "always")],
+        inspect: inspect_ext,
+    };
+    static METADATA: AdapterMetadata = AdapterMetadata {
+        id: ID,
+        display_label: "Exttest",
+        context_spelling: "Exttest",
+        context_aliases: &[],
+        executable: ExecutableLookup::Unsupported,
+        host_kinds: &[],
+        setup_scopes: &[SetupScopeKind::ConfigRoot],
+        budget: EventBudgetPolicy {
+            lifecycle_ms: 1000,
+            observer_ms: 1000,
+        },
+        runtime_sources: &[],
+        agent_env_markers: &[],
+    };
+
+    struct Ext {
+        kind: &'static SettingsKindSpec,
+    }
+    impl HarnessAdapter for Ext {
+        type Admission = ();
+        fn metadata(&self) -> &'static AdapterMetadata {
+            &METADATA
+        }
+        fn setup_environment_inputs(&self) -> &'static [&'static str] {
+            &["HT_TEST_ROOT"]
+        }
+        fn default_config_root(&self, environment: &SetupEnvironment) -> Option<PathBuf> {
+            match environment.declared.get("HT_TEST_ROOT") {
+                Some(root) if !root.is_empty() => Some(PathBuf::from(root)),
+                _ => environment
+                    .home
+                    .as_ref()
+                    .map(|home| PathBuf::from(home).join(".testharness")),
+            }
+        }
+        fn settings_kind(&self) -> Option<&'static SettingsKindSpec> {
+            Some(self.kind)
+        }
+        fn foreground_advice(&self) -> Option<&'static ForegroundAdvice> {
+            Some(&FOREGROUND)
+        }
+        fn contracts(&self) -> &'static [ContractDescriptor] {
+            &[]
+        }
+        fn observe_install(&self, _: &InstallEnvironment, _: &CallBudget) -> InstallObservation {
+            unreachable!()
+        }
+        fn admit(&self, _: &AdmissionRequest, _: &CallBudget) -> AdmissionDecision<()> {
+            unreachable!()
+        }
+        fn version_ladder(&self, _: &RuntimeIdentity) -> Ladder {
+            unreachable!()
+        }
+        fn classify(&self, _: &HookInput) -> ContractObservation {
+            unreachable!()
+        }
+        fn decode(&self, _: &(), _: &HookInput) -> Result<DecodedEvent, DecodeFailure> {
+            unreachable!()
+        }
+        fn encode(
+            &self,
+            _: &(),
+            _: &DecodedEvent,
+            _: &NeutralOffer,
+        ) -> Result<EncodedOutput, EncodeFailure> {
+            unreachable!()
+        }
+        fn attribute_runtime(&self, _: &HookInput, _: &CallBudget) -> RuntimeAttribution {
+            unreachable!()
+        }
+        fn setup(&self, _: &SetupRequest, _: &CallBudget) -> Result<SetupOutcome, SetupFailure> {
+            unreachable!()
+        }
+        fn status(&self, _: &StatusRequest, _: &CallBudget) -> SetupStatus {
+            unreachable!()
+        }
+        fn unsetup(
+            &self,
+            _: &UnsetupRequest,
+            _: &CallBudget,
+        ) -> Result<RemovalOutcome, SetupFailure> {
+            unreachable!()
+        }
+    }
+
+    fn registry(kind: &'static SettingsKindSpec) -> &'static Registry {
+        let adapter: &'static Ext = Box::leak(Box::new(Ext { kind }));
+        Box::leak(Box::new(
+            Registry::new(Box::leak(
+                vec![Registration::new(adapter)].into_boxed_slice(),
+            ))
+            .expect("a well-formed extension registers"),
+        ))
+    }
+
+    fn scratch(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("ht-ext-{label}-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn environment(home: Option<&Path>, root: Option<&Path>) -> SetupEnvironment {
+        SetupEnvironment {
+            home: home.map(|home| home.as_os_str().to_owned()),
+            declared: root
+                .map(|root| ("HT_TEST_ROOT".to_owned(), root.as_os_str().to_owned()))
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    fn setup_env(roots: std::collections::BTreeMap<String, PathBuf>, state: &Path) -> SetupEnv {
+        SetupEnv {
+            home: None,
+            declared_environment: Default::default(),
+            executable: PathBuf::from("/x/herdr-threads"),
+            state_dir: Some(state.to_path_buf()),
+            cwd: PathBuf::from("/"),
+            path: None,
+            config_roots: roots,
+            host_endpoint: Some(PathBuf::from("/x/host.sock")),
+            instance_source: Value::Null,
+        }
+    }
+
+    /// Kills: a core that resolves only the roots it names, or lets `HOME` win over the
+    /// adapter's declared variable, or keeps an empty value.
+    #[test]
+    fn a_registered_adapter_contributes_its_config_root() {
+        let registry = registry(&MEMBER_KIND);
+        let home = Path::new("/h");
+        let declared =
+            default_config_roots(registry, &environment(Some(home), Some(Path::new("/r"))));
+        assert_eq!(declared.get(ID), Some(&PathBuf::from("/r")));
+        let fallback = default_config_roots(registry, &environment(Some(home), None));
+        assert_eq!(fallback.get(ID), Some(&PathBuf::from("/h/.testharness")));
+        let empty = default_config_roots(registry, &environment(Some(home), Some(Path::new(""))));
+        assert_eq!(empty.get(ID), Some(&PathBuf::from("/h/.testharness")));
+        assert!(default_config_roots(registry, &environment(None, None)).is_empty());
+        assert_eq!(declared.len(), 1, "only registered adapters have roots");
+    }
+
+    /// Kills: a foreground report that skips the adapter's fixed fields or `user_config`, a
+    /// missing file that is an error, an adapter parse error that leaves `status` untouched, or
+    /// a hard-coded adapter table (this adapter is in no core table).
+    #[test]
+    fn foreground_report_assembles_from_the_adapters_advice() {
+        let registry = registry(&MEMBER_KIND);
+        let dir = scratch("foreground");
+        let env = setup_env([(ID.to_owned(), dir.clone())].into(), &dir);
+        let missing = foreground::inspect_in(registry, ID, &env);
+        assert_eq!(missing["status"], "required");
+        assert_eq!(missing["scope"], "user");
+        assert_eq!(missing["execution"], "unknown");
+        assert_eq!(
+            missing["settings_file"],
+            dir.join("ext.toml").display().to_string()
+        );
+        assert_eq!(missing["advice"], "turn the ext flag on");
+        assert_eq!(missing["modified_by_setup"], false);
+        assert_eq!(missing["fixed_field"], "always");
+        assert_eq!(missing["user_config"], "missing");
+        assert!(missing.get("ext_flag").is_none() && missing.get("inspection_error").is_none());
+
+        std::fs::write(dir.join("ext.toml"), "flag = on").unwrap();
+        let configured = foreground::inspect_in(registry, ID, &env);
+        assert_eq!(configured["status"], "configured");
+        assert_eq!(configured["ext_flag"], true);
+        assert_eq!(configured["user_config"], "read");
+        assert_eq!(configured["fixed_field"], "always");
+
+        std::fs::write(dir.join("ext.toml"), "flag = off").unwrap();
+        let off = foreground::inspect_in(registry, ID, &env);
+        assert_eq!(
+            (off["status"].as_str(), off["ext_flag"].as_bool()),
+            (Some("required"), Some(false))
+        );
+
+        std::fs::write(dir.join("ext.toml"), "bad").unwrap();
+        let bad = foreground::inspect_in(registry, ID, &env);
+        assert_eq!(bad["status"], "unknown");
+        assert_eq!(bad["inspection_error"], "ext config is invalid");
+        assert!(bad.get("user_config").is_none(), "{bad}");
+
+        let rootless = setup_env(Default::default(), &dir);
+        let unknown = foreground::inspect_in(registry, ID, &rootless);
+        assert_eq!(unknown["status"], "unknown");
+        assert_eq!(
+            unknown["inspection_error"],
+            "user config directory is unknown"
+        );
+        assert_eq!(unknown["settings_file"], Value::Null);
+
+        assert_eq!(
+            foreground::inspect_in(registry, "unregistered", &env),
+            Value::Null
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    struct Fixture {
+        dir: PathBuf,
+        kind: SettingsKind,
+        config: PathBuf,
+        manifest: PathBuf,
+        /// The baseline setup read when it first ran: re-running setup passes it again.
+        base: Vec<u8>,
+    }
+    impl Fixture {
+        /// The settings file and manifest exactly where the generic plumbing puts them: under
+        /// the registered adapter's resolved config root and the state directory.
+        fn new(spec: &'static SettingsKindSpec, base: Option<&str>) -> Self {
+            let registry = registry(spec);
+            let dir = scratch("engine");
+            let roots = default_config_roots(registry, &environment(None, Some(&dir.join("root"))));
+            let env = setup_env(roots, &dir.join("state"));
+            let kind = legacy::registered_kind_in(registry, ID).expect("registered kind");
+            let (config, manifest) = legacy::settings_paths(&env, kind).unwrap();
+            assert_eq!(config, dir.join("root").join(spec.file_name));
+            assert_eq!(
+                manifest.parent().unwrap(),
+                dir.join("state").join("setup"),
+                "manifest under the state directory"
+            );
+            std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+            std::fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+            if let Some(base) = base {
+                std::fs::write(&config, base).unwrap();
+            }
+            Self {
+                dir,
+                kind,
+                config,
+                manifest,
+                base: base.unwrap_or_default().as_bytes().to_vec(),
+            }
+        }
+        fn argv() -> Vec<String> {
+            vec!["/x/herdr-threads".to_owned()]
+        }
+        fn install(&self) -> Result<crate::harness::setup::OwnershipManifest, SetupError> {
+            install_user_settings(
+                self.kind,
+                &self.config,
+                &self.manifest,
+                &Self::argv(),
+                &self.base,
+            )
+        }
+        fn installed(&self) -> bool {
+            inspect_user_settings(
+                self.kind,
+                &self.config,
+                &self.manifest,
+                NativeObservation::Unknown,
+            )
+            .unwrap()
+            .installed
+        }
+        fn value(&self) -> Value {
+            serde_json::from_slice(&std::fs::read(&self.config).unwrap()).unwrap()
+        }
+        fn rewrite(&self, value: Value) {
+            std::fs::write(&self.config, serde_json::to_vec(&value).unwrap()).unwrap();
+        }
+    }
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    /// Kills: a member the user already held that is recorded as owned (and removed), an absent
+    /// `permissions.allow` that is not created or not pruned again, a native rewrite that keeps
+    /// the member but reads as not installed, and a rewrite that drops the member but reads as
+    /// installed or is not re-added by the next install.
+    #[test]
+    fn install_status_and_unsetup_run_the_generic_engine_for_a_registered_kind() {
+        // Pre-existing: recorded, untouched, never removed.
+        let base = format!(r#"{{"permissions":{{"allow":["{MEMBER}"]}},"keep":1}}"#);
+        let held = Fixture::new(&MEMBER_KIND, Some(&base));
+        let manifest = held.install().unwrap();
+        assert!(manifest.owned.is_empty() && manifest.phase == InstallPhase::Installed);
+        assert!(
+            manifest
+                .permission
+                .as_ref()
+                .is_some_and(|p| p.pre_existing && p.rule == MEMBER)
+        );
+        assert_eq!(std::fs::read(&held.config).unwrap(), base.as_bytes());
+        assert!(held.installed());
+        remove_user_settings(held.kind, &held.config, &held.manifest).unwrap();
+        assert_eq!(std::fs::read(&held.config).unwrap(), base.as_bytes());
+        assert!(read_settings_manifest(&held.manifest).unwrap().is_none());
+
+        // Array absent: created by install, pruned by unsetup.
+        let absent = Fixture::new(&MEMBER_KIND, Some(r#"{"keep":1}"#));
+        let manifest = absent.install().unwrap();
+        assert!(
+            manifest
+                .permission
+                .as_ref()
+                .is_some_and(|p| !p.pre_existing)
+        );
+        assert_eq!(absent.value()["permissions"]["allow"], json!([MEMBER]));
+        assert!(absent.installed());
+        remove_user_settings(absent.kind, &absent.config, &absent.manifest).unwrap();
+        assert_eq!(absent.value(), json!({"keep": 1}));
+
+        // Native rewrite that keeps the member (keys reordered, a key added): still installed.
+        // A rewrite that drops it reads as not installed; the next install re-adds the member.
+        let rewritten = Fixture::new(&MEMBER_KIND, Some(r#"{"keep":1}"#));
+        rewritten.install().unwrap();
+        rewritten
+            .rewrite(json!({"added": true, "permissions": {"allow": [MEMBER, "Read"]}, "keep": 1}));
+        assert!(
+            rewritten.installed(),
+            "a rewrite keeping the member stays installed"
+        );
+        rewritten.rewrite(json!({"added": true, "keep": 1}));
+        assert!(
+            !rewritten.installed(),
+            "a rewrite dropping the member is not installed"
+        );
+        rewritten.install().unwrap();
+        assert!(rewritten.installed());
+        assert!(
+            rewritten.value()["permissions"]["allow"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|rule| rule == MEMBER)
+        );
+        remove_user_settings(rewritten.kind, &rewritten.config, &rewritten.manifest).unwrap();
+        assert!(
+            !rewritten.value()["permissions"]["allow"]
+                .as_array()
+                .is_some_and(|allow| allow.iter().any(|rule| rule == MEMBER))
+        );
+    }
+
+    /// Kills: `plan_settings` that only knows two adapters' groups, an edited owned group that
+    /// is accepted instead of refused, or a registered hook kind whose install leaves nothing
+    /// to remove.
+    #[test]
+    fn a_registered_hook_kind_plans_installs_and_uninstalls_through_the_generic_paths() {
+        let argv = Fixture::argv();
+        let plan = plan_settings(SettingsKind::new(&HOOK_KIND), b"{}", &argv).unwrap();
+        assert_eq!(plan.owned.len(), 1);
+        assert_eq!(plan.owned[0].event, "SessionStart");
+        let again =
+            plan_settings(SettingsKind::new(&HOOK_KIND), &plan.proposed_bytes, &argv).unwrap();
+        assert_eq!(
+            again.proposed_bytes, plan.proposed_bytes,
+            "composition is idempotent"
+        );
+        let mut edited: Value = serde_json::from_slice(&plan.proposed_bytes).unwrap();
+        edited["hooks"]["SessionStart"][0]["hooks"][0]["timeout"] = json!(1);
+        assert_eq!(
+            plan_settings(
+                SettingsKind::new(&HOOK_KIND),
+                &serde_json::to_vec(&edited).unwrap(),
+                &argv
+            ),
+            Err(SetupError::Conflict)
+        );
+
+        let fixture = Fixture::new(&HOOK_KIND, Some(r#"{"keep":1}"#));
+        let manifest = fixture.install().unwrap();
+        assert_eq!(manifest.owned.len(), 1);
+        assert!(manifest.permission.is_none());
+        assert!(fixture.installed());
+        assert_eq!(fixture.value()["keep"], 1);
+        remove_user_settings(fixture.kind, &fixture.config, &fixture.manifest).unwrap();
+        assert_eq!(fixture.value().get("hooks"), None);
+        assert!(!fixture.installed());
+    }
 }
 
 fn backups(dir: &std::path::Path) -> Vec<(String, Vec<u8>, u32)> {
@@ -2857,8 +3376,8 @@ fn user_config_without_settings_is_still_backed_up() {
 #[test]
 fn stable_owned_reinstall_preserves_identity_positions_and_foreign_groups() {
     for (kind, harness) in [
-        (SettingsKind::ClaudeUser, "claude"),
-        (SettingsKind::CodexUser, "codex"),
+        (crate::harness::claude::settings_kind(), "claude"),
+        (crate::harness::codex::settings_kind(), "codex"),
     ] {
         let dir = std::env::temp_dir().join(format!("ht-task9-{}", uuid::Uuid::new_v4()));
         fs::create_dir(&dir).unwrap();
@@ -2918,8 +3437,8 @@ fn stable_owned_reinstall_preserves_identity_positions_and_foreign_groups() {
 #[test]
 fn stable_foreign_identical_and_owned_drift_are_preserved() {
     for (kind, harness) in [
-        (SettingsKind::ClaudeUser, "claude"),
-        (SettingsKind::CodexUser, "codex"),
+        (crate::harness::claude::settings_kind(), "claude"),
+        (crate::harness::codex::settings_kind(), "codex"),
     ] {
         let dir = std::env::temp_dir().join(format!("ht-task9-{}", uuid::Uuid::new_v4()));
         fs::create_dir(&dir).unwrap();
@@ -3027,7 +3546,10 @@ fn seed_uuid_registration(
 /// recover with the same identity and preserve unrelated groups in their original order.
 #[test]
 fn stable_uuid_and_shared_migration_recovers_and_preserves_order() {
-    for kind in [SettingsKind::ClaudeUser, SettingsKind::CodexUser] {
+    for kind in [
+        crate::harness::claude::settings_kind(),
+        crate::harness::codex::settings_kind(),
+    ] {
         for evented in [false, true] {
             for fault in [
                 InstallFault::None,
@@ -3138,7 +3660,10 @@ fn stable_codex_layer_command_is_identified_without_adoption() {
 
 #[test]
 fn stable_same_event_foreign_route_conflicts_without_config_changes() {
-    for kind in [SettingsKind::ClaudeUser, SettingsKind::CodexUser] {
+    for kind in [
+        crate::harness::claude::settings_kind(),
+        crate::harness::codex::settings_kind(),
+    ] {
         let dir = std::env::temp_dir().join(format!("ht-task9-{}", uuid::Uuid::new_v4()));
         fs::create_dir(&dir).unwrap();
         let config = dir.join(kind.file_name());
@@ -3160,7 +3685,10 @@ fn stable_same_event_foreign_route_conflicts_without_config_changes() {
         assert!(!manifest.exists());
         fs::remove_dir_all(dir).unwrap();
     }
-    for kind in [SettingsKind::ClaudeUser, SettingsKind::CodexUser] {
+    for kind in [
+        crate::harness::claude::settings_kind(),
+        crate::harness::codex::settings_kind(),
+    ] {
         let dir = std::env::temp_dir().join(format!("ht-task9-{}", uuid::Uuid::new_v4()));
         fs::create_dir(&dir).unwrap();
         let config = dir.join(kind.file_name());
@@ -3196,8 +3724,11 @@ fn stable_same_event_foreign_route_conflicts_without_config_changes() {
             state_dir: Some(dir.clone()),
             cwd: dir.clone(),
             path: None,
-            codex_home: Some(dir.clone()),
-            claude_config_dir: Some(dir.clone()),
+            config_roots: [
+                ("codex".into(), dir.clone()),
+                ("claude".into(), dir.clone()),
+            ]
+            .into(),
             host_endpoint: Some(dir.join("host.sock")),
             instance_source: Value::Null,
         };
@@ -3242,22 +3773,37 @@ fn stable_quoted_owner_marker_text_is_not_an_ownership_suffix() {
         "hook".into(),
         "claude".into(),
     ];
-    let first =
-        install_user_settings(SettingsKind::ClaudeUser, &config, &manifest, &argv, b"{}").unwrap();
+    let first = install_user_settings(
+        crate::harness::claude::settings_kind(),
+        &config,
+        &manifest,
+        &argv,
+        b"{}",
+    )
+    .unwrap();
     let bytes = fs::read(&config).unwrap();
-    let again =
-        install_user_settings(SettingsKind::ClaudeUser, &config, &manifest, &argv, b"{}").unwrap();
+    let again = install_user_settings(
+        crate::harness::claude::settings_kind(),
+        &config,
+        &manifest,
+        &argv,
+        b"{}",
+    )
+    .unwrap();
     assert_eq!(again.owned, first.owned);
     assert_eq!(again.installation_id, first.installation_id);
     assert_eq!(fs::read(&config).unwrap(), bytes);
-    remove_user_settings(SettingsKind::ClaudeUser, &config, &manifest).unwrap();
+    remove_user_settings(crate::harness::claude::settings_kind(), &config, &manifest).unwrap();
     assert_eq!(fs::read(&config).unwrap(), b"{}");
     fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
 fn stable_v1_shared_owned_migration_after_intent_recovers() {
-    for kind in [SettingsKind::ClaudeUser, SettingsKind::CodexUser] {
+    for kind in [
+        crate::harness::claude::settings_kind(),
+        crate::harness::codex::settings_kind(),
+    ] {
         let dir = std::env::temp_dir().join(format!("ht-task9-{}", uuid::Uuid::new_v4()));
         fs::create_dir(&dir).unwrap();
         let config = dir.join(kind.file_name());
@@ -3320,8 +3866,7 @@ fn stable_migration_result_is_not_reported_unchanged_and_warns_for_retrust() {
             state_dir: Some(dir.clone()),
             cwd: dir.clone(),
             path: None,
-            codex_home: Some(dir.clone()),
-            claude_config_dir: None,
+            config_roots: [("codex".into(), dir.clone())].into(),
             host_endpoint: Some(dir.join("host.sock")),
             instance_source: Value::Null,
         };
@@ -3330,7 +3875,7 @@ fn stable_migration_result_is_not_reported_unchanged_and_warns_for_retrust() {
             .unwrap();
         fs::write(&config, b"{}").unwrap();
         let mut legacy = install_user_settings(
-            SettingsKind::CodexUser,
+            crate::harness::codex::settings_kind(),
             &config,
             &manifest_path,
             &argv,
@@ -3361,7 +3906,7 @@ fn stable_migration_result_is_not_reported_unchanged_and_warns_for_retrust() {
         let mut file = OwnedFile::new(config.clone(), manifest_path.clone(), b"{}");
         let mut warnings = Vec::new();
         let (migrated, already, adopted_unchanged) = install_settings(
-            SettingsKind::CodexUser,
+            crate::harness::codex::settings_kind(),
             SetupVerb::Install,
             &env,
             &mut file,
@@ -3380,7 +3925,12 @@ fn stable_migration_result_is_not_reported_unchanged_and_warns_for_retrust() {
                 .any(|w| w.contains("rewritten hook commands need")),
             "{warnings:?}"
         );
-        remove_user_settings(SettingsKind::CodexUser, &config, &manifest_path).unwrap();
+        remove_user_settings(
+            crate::harness::codex::settings_kind(),
+            &config,
+            &manifest_path,
+        )
+        .unwrap();
         fs::remove_dir_all(dir).unwrap();
     }
 }

@@ -17,9 +17,19 @@ const NAMES: [&str; 3] = ["__init__.py", "bridge_config.json", "plugin.yaml"];
 const LOCK: &str = ".herdr-threads-operation.lock";
 const LOCK_IDENTITY: &str = ".herdr-threads-operation.identity";
 
+/// The bridge this build installs; an installed digest that differs is an older generation.
+const EMBEDDED_BRIDGE: &[u8] = include_bytes!("../../../integrations/hermes/__init__.py");
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AssetStatus {
+    /// The selected profile, for the re-setup hint.
+    pub profile: String,
     pub installed: bool,
+    /// Whether the installed bridge is this build's bridge; None when not installed.
+    pub bridge_current: Option<bool>,
+    /// `HERMES_REQUIRED_HOOK_EVENTS` callbacks the installed bridge never names; empty when not
+    /// installed.
+    pub bridge_missing_events: Vec<String>,
     pub repairable: bool,
     /// Effective-config enable lists only, never discovered/activated.
     pub configured_enabled: Option<bool>,
@@ -744,6 +754,15 @@ pub fn setup(
     rust: &Path,
     host: &Path,
 ) -> Result<(), SetupError> {
+    setup_with_bridge(o, state, rust, host, EMBEDDED_BRIDGE)
+}
+fn setup_with_bridge(
+    o: &ProfileObservation,
+    state: &Path,
+    rust: &Path,
+    host: &Path,
+    bridge: &[u8],
+) -> Result<(), SetupError> {
     validate_scope(o)?;
     if !valid_path(rust) || !valid_path(host) {
         return Err(SetupError::Invalid);
@@ -779,7 +798,7 @@ pub fn setup(
     let token = uuid::Uuid::new_v4().to_string();
     let config=serde_json::to_vec(&serde_json::json!({"schema_version":1,"rust_executable":rust,"state_root":state,"host_endpoint":host,"bridge_schema_version":1,"installation_token":token})).map_err(|_|SetupError::Invalid)?;
     let contents = [
-        include_bytes!("../../../integrations/hermes/__init__.py").to_vec(),
+        bridge.to_vec(),
         config,
         include_bytes!("../../../integrations/hermes/plugin.yaml").to_vec(),
     ];
@@ -862,6 +881,9 @@ pub fn setup(
 pub fn status(o: &ProfileObservation, state: &Path) -> Result<AssetStatus, SetupError> {
     validate_scope(o)?;
     let mut result = AssetStatus {
+        profile: o.profile.clone(),
+        bridge_current: None,
+        bridge_missing_events: Vec::new(),
         installed: false,
         repairable: false,
         configured_enabled: o.configured_enabled(),
@@ -881,6 +903,14 @@ pub fn status(o: &ProfileObservation, state: &Path) -> Result<AssetStatus, Setup
         result.installed = m.phase == "complete";
         result.repairable = m.phase == "preparing";
         if result.installed {
+            let bridge = m.assets.get("__init__.py").ok_or(SetupError::Conflict)?;
+            result.bridge_current = Some(bridge.digest == fingerprint(EMBEDDED_BRIDGE));
+            let text = String::from_utf8_lossy(&bridge.bytes);
+            result.bridge_missing_events = crate::harness::hermes::REQUIRED_HOOK_EVENTS
+                .iter()
+                .filter(|event| !text.contains(&format!("\"{event}\"")))
+                .map(|event| (*event).to_owned())
+                .collect();
             let settings: LaunchAssetSettings =
                 serde_json::from_slice(&m.assets["bridge_config.json"].bytes)
                     .map_err(|_| SetupError::Conflict)?;
@@ -1099,6 +1129,15 @@ mod tests {
                 &self.root.join("host.socket"),
             )
         }
+        fn install_bridge(&self, bridge: &[u8]) -> Result<(), SetupError> {
+            setup_with_bridge(
+                &self.observation(),
+                &self.state,
+                &self.root.join("rust executable"),
+                &self.root.join("host.socket"),
+                bridge,
+            )
+        }
     }
     impl Drop for Fixture {
         fn drop(&mut self) {
@@ -1112,10 +1151,13 @@ mod tests {
         let f = Fixture::new();
         assert_eq!(f.install(), Ok(()));
         let dir = f.home.join("plugins/herdr-threads");
-        assert_eq!(
-            fs::read(dir.join("__init__.py")).unwrap(),
-            include_bytes!("../../../integrations/hermes/__init__.py")
-        );
+        assert_eq!(fs::read(dir.join("__init__.py")).unwrap(), EMBEDDED_BRIDGE);
+        let installed = fs::read(dir.join("__init__.py")).unwrap();
+        for needle in [&b"enrollment_witness"[..], b"cli_session_start"] {
+            assert!(installed.windows(needle.len()).any(|w| w == needle));
+        }
+        let plugin = fs::read_to_string(dir.join("plugin.yaml")).unwrap();
+        assert!(plugin.contains("provides_hooks") && plugin.contains("on_session_start"));
         let config: serde_json::Value =
             serde_json::from_slice(&fs::read(dir.join("bridge_config.json")).unwrap()).unwrap();
         assert_eq!(config.as_object().unwrap().len(), 6);
@@ -1125,6 +1167,86 @@ mod tests {
         );
         assert_eq!(config["bridge_schema_version"], 1);
         assert!(!f.home.join("config.yaml").exists());
+    }
+    // Kills: a stale-install finding keyed only on the digest (an older bridge that names every
+    // required callback is still stale), one that drops the missing-callback list, and a fix
+    // without the profile.
+    #[test]
+    fn doctor_flags_stale_hermes_bridge() {
+        let f = Fixture::new();
+        let required = crate::harness::hermes::REQUIRED_HOOK_EVENTS;
+        let all_named = required
+            .iter()
+            .map(|event| format!("# \"{event}\"\n"))
+            .collect::<String>();
+        f.install_bridge(
+            &[
+                EMBEDDED_BRIDGE,
+                b"\n# older generation\n",
+                all_named.as_bytes(),
+            ]
+            .concat(),
+        )
+        .unwrap();
+        let s = status(&f.observation(), &f.state).unwrap();
+        assert_eq!(s.bridge_current, Some(false));
+        let finding = crate::harness::hermes::asset_projection(&s)["stale_install"].clone();
+        assert_eq!(finding["harness"], "hermes", "{finding}");
+        assert_eq!(
+            finding["fix"],
+            "herdr-threads setup hermes --profile default"
+        );
+        assert_eq!(
+            finding["missing"],
+            serde_json::json!([]),
+            "digest-only staleness"
+        );
+        // A bridge that never names the subagent callbacks lists them (an install from before
+        // ht-54r.11: the shipped bridge now names every required callback).
+        f.install_bridge(
+            b"# older generation\nHOOKS = (\"pre_llm_call\", \"post_tool_call\", \"on_session_start\", \"on_session_reset\")\n",
+        )
+        .unwrap();
+        let s = status(&f.observation(), &f.state).unwrap();
+        let finding = crate::harness::hermes::asset_projection(&s)["stale_install"].clone();
+        let missing: Vec<&str> = finding["missing"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|event| event.as_str().unwrap())
+            .collect();
+        for event in ["subagent_start", "subagent_stop", "on_session_finalize"] {
+            assert!(missing.contains(&event), "{event} in {missing:?}");
+        }
+        assert!(!missing.contains(&"pre_llm_call"), "{missing:?}");
+        // Not installed: nothing to flag.
+        let g = Fixture::new();
+        let s = status(&g.observation(), &g.state).unwrap();
+        assert!(crate::harness::hermes::asset_projection(&s)["stale_install"].is_null());
+    }
+
+    #[test]
+    fn status_reports_older_bridge_generation_stale_until_resetup() {
+        let f = Fixture::new();
+        assert_eq!(
+            status(&f.observation(), &f.state).unwrap().bridge_current,
+            None
+        );
+        f.install_bridge(&[EMBEDDED_BRIDGE, b"\n# older generation\n"].concat())
+            .unwrap();
+        let s = status(&f.observation(), &f.state).unwrap();
+        assert!(s.installed);
+        assert_eq!(s.bridge_current, Some(false));
+        assert_eq!(s.profile, "default");
+        f.install().unwrap();
+        assert_eq!(
+            status(&f.observation(), &f.state).unwrap().bridge_current,
+            Some(true)
+        );
+        assert_eq!(
+            fs::read(f.home.join("plugins/herdr-threads/__init__.py")).unwrap(),
+            EMBEDDED_BRIDGE
+        );
     }
     #[test]
     fn hermes_owned_assets_share_physical_profile_lock_and_remove_only_locked_generation() {

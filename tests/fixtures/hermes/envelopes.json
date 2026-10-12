@@ -59,7 +59,7 @@
       "type": "absent"
     }
   },
-  "bridge_schema_contract_id": "3f599002572f0efc",
+  "bridge_schema_contract_id": "78669955a7b170ed",
   "startup_capture": {
     "identity_provenance": "startup_captured_identity",
     "api_contract": "initialized_plugin_context_schema1",

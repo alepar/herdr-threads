@@ -70,7 +70,7 @@ class ProbeContract(unittest.TestCase):
 
     def test_probe_result_with_contract_validates(self):
         p = load("probe-sample.json")
-        contract = {"contract_id": "3f860645de4c3363", "release": None,
+        contract = {"contract_id": "b76ddc7501b1db9c", "release": None,
                     "payloads": [{"event": "SessionStart", "kind": "violation", "field": "session_id"},
                                  {"event": None, "kind": "malformed", "field": None}]}
         check({**p, "contract": contract}, "probeResult")

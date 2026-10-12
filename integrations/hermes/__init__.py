@@ -26,14 +26,19 @@ import types
 import unicodedata
 import uuid
 
-HOOKS = ("pre_llm_call", "post_tool_call", "on_session_start", "on_session_reset")
+# `on_session_end` fires after every turn, so it is deliberately not here: the top-level end event
+# is `on_session_finalize` (session teardown). `subagent_start`/`subagent_stop` report a delegate
+# child (`session_id` or `child_session_id` is the child, `parent_session_id` its parent).
+HOOKS = ("pre_llm_call", "post_tool_call", "on_session_start", "on_session_reset",
+         "on_session_finalize", "subagent_start", "subagent_stop")
+CHILD_EVENTS = ("subagent_start", "subagent_stop")
 IDS = ("platform", "session_id", "parent_session_id", "task_id", "turn_id", "tool_call_id", "api_request_id")
 SLOT = "_herdr_threads_hermes_reader_schema1"
 CHILD_RESTRICTION = "Subagents may discover, read and summarize; never check in for this seat, accept or ACK. Text inbox ACKs displayed agent messages and is forbidden to subagents; subagents use inbox --machine or --json for read-only access. Every herdr-threads write (any accept, ack, check-in, send, leave, invite or other mutation) acts as the top-level seat and is forbidden to subagents. Return message IDs and summaries to the top-level agent."
 # First 16 SHA-256 hex chars of sorted compact JSON of the normalized schema
 # declaration in testdata/callbacks.json. This identifies transport, not the
 # downstream domain descriptor/qualification or native measurement.
-BRIDGE_CONTRACT = "3f599002572f0efc"
+BRIDGE_CONTRACT = "78669955a7b170ed"
 
 
 def opaque(value, empty=False, limit=256):
@@ -433,6 +438,15 @@ class Bridge:
     def on_session_reset(self, **kwargs):
         return self.callback("on_session_reset", kwargs)
 
+    def on_session_finalize(self, **kwargs):
+        return self.callback("on_session_finalize", kwargs)
+
+    def subagent_start(self, **kwargs):
+        return self.callback("subagent_start", kwargs)
+
+    def subagent_stop(self, **kwargs):
+        return self.callback("subagent_stop", kwargs)
+
     def callback(self, name, kwargs):
         try:
             return self._callback(name, kwargs)
@@ -451,6 +465,12 @@ class Bridge:
             self.entry_lock.release()
         if self.closing or self.closed or self.reader is None:
             return None
+        if name in CHILD_EVENTS:
+            # The delegate child is the event's session; Hermes may name it `child_session_id`.
+            child = kwargs.get("child_session_id", kwargs.get("session_id"))
+            kwargs = {**kwargs, "session_id": child}
+            if kwargs.get("platform") not in (None, "", "cli"):
+                del kwargs["platform"]  # a delegate's platform ("subagent") is not an envelope fact
         # Validate provided identifiers before encoding anything. No truncation.
         for key in IDS:
             if key in kwargs and kwargs[key] is not None and not opaque(kwargs[key], empty=key in ("parent_session_id", "platform")):
@@ -462,7 +482,12 @@ class Bridge:
         parent = kwargs.get("parent_session_id")
         # Native delegate_task children run with platform "subagent". Only their
         # parented pre_llm_call is answered, locally, with the child restriction.
-        if platform == "subagent":
+        # Any other parented pre_llm_call (compression or /branch successor) is a
+        # top-level turn whose parent_session_id is forwarded as a lineage hint.
+        if name in CHILD_EVENTS:
+            if not opaque(parent) or parent == session:
+                return None
+        elif platform == "subagent":
             if name != "pre_llm_call" or not opaque(parent):
                 return None
         elif platform not in (None, "", "cli"):
@@ -477,7 +502,7 @@ class Bridge:
         if name == "pre_llm_call":
             if not opaque(parent, empty=True) or not opaque(turn):
                 return None
-            role = "child" if parent else "top"
+            role = "child" if platform == "subagent" else "top"
             if not self.remember_role(session, turn, role, entered):
                 return None
         elif name == "post_tool_call":
@@ -493,7 +518,7 @@ class Bridge:
         deadline = entered + span
         if time.monotonic() >= deadline:
             return None
-        if name == "pre_llm_call" and parent:
+        if name == "pre_llm_call" and platform == "subagent":
             return {"context": CHILD_RESTRICTION}
         # Exact native session/turn key is stable across callback retries and
         # process restarts. Observers/missing turns have invocation-only IDs.
@@ -504,6 +529,20 @@ class Bridge:
         else:
             event = "hermes:" + self.nonce + ":" + str(sequence)
         budget_ms = int(span * 1000)
+        # The platform CLI is the only witness of an interactive top-level session.
+        # Parented pre_llm_call returned above, so a turn association is always top.
+        witness = "cli_platform" if platform == "cli" else None
+        if name == "pre_llm_call":
+            association = {"role": "top", "provenance": "explicit_parent", "session_id": session,
+                           "turn_id": turn, "enrollment_witness": witness}
+        elif name == "post_tool_call":
+            association = {"role": "top", "provenance": "qualified_pre_llm_cache", "session_id": session,
+                           "turn_id": turn, "enrollment_witness": None}
+        elif name == "on_session_start" and platform == "cli":
+            association = {"role": "top", "provenance": "cli_session_start", "session_id": session,
+                           "turn_id": None, "enrollment_witness": "cli_platform"}
+        else:
+            association = None
         envelope = {"schema_version": 1, "callback": name,
                     **{key: kwargs.get(key) for key in IDS}, "event_id": event,
                     "observation_order": {"process_nonce": self.nonce, "sequence": sequence,
@@ -515,9 +554,7 @@ class Bridge:
                     "timeout_observation": {"quality": "ok", "fallback_kind": None,
                         "provenance": observation["provenance"], "timeout_seconds": timeout,
                         "age_seconds": observation["age_seconds"], "generation": observation["generation"]},
-                    "role_association": {"role": "top", "session_id": session, "turn_id": turn,
-                        "provenance": "explicit_parent" if name == "pre_llm_call" else "qualified_pre_llm_cache"}
-                        if name in ("pre_llm_call", "post_tool_call") else None,
+                    "role_association": association,
                     "shape": shape(kwargs), "bridge_schema_contract_id": BRIDGE_CONTRACT}
         encoded = json.dumps(envelope, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode()
         if len(encoded) > 65536 or not self.child_lock.acquire(blocking=False):

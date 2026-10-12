@@ -1,6 +1,7 @@
 //! Domain dispatch keeps read work separate from writer and host work.
 
 use crate::{
+    harness::adapter::DeliveryMechanism,
     identity::repair::OrdinaryIdentity,
     ports::{
         BootstrapObserver, BootstrapStorePort, DurableWorkAdmission, HostPort, LocalService,
@@ -8,10 +9,7 @@ use crate::{
         ServiceConnectionAuthority, StorePort,
     },
     protocol::{
-        authority::{
-            COOPERATIVE_TOP_LEVEL_PROVENANCE, CallerClaim, CallerRole, Harness, OperatorActor,
-            PeerIdentity,
-        },
+        authority::{CallerClaim, CallerRole, Harness, OperatorActor, PeerIdentity},
         commands::{AckModDelivered, Command, OperatorCommand, PermitMutation},
         output::OutputSpec,
         results::{ApiError, CommandResult, ErrorCode},
@@ -23,6 +21,50 @@ use crate::{
 };
 use std::sync::Arc;
 
+#[derive(Clone, Copy)]
+enum DeliveryRecheckClass {
+    Ack,
+    ModAck,
+    DeliveryConfirm,
+}
+
+impl DeliveryRecheckClass {
+    fn for_mutation(mutation: &PermitMutation) -> Option<Self> {
+        match mutation {
+            PermitMutation::Ack(_) | PermitMutation::AckDisplayed(_) => Some(Self::Ack),
+            PermitMutation::AckModDelivered(_) => Some(Self::ModAck),
+            PermitMutation::DeliveryConfirm(_) => Some(Self::DeliveryConfirm),
+            _ => None,
+        }
+    }
+
+    fn succeeded(self, result: &CommandResult) -> bool {
+        use crate::protocol::delivery::DeliveryConfirmOutcome;
+        match (self, result) {
+            (Self::Ack, CommandResult::Acknowledged(report)) => {
+                !report.acknowledged.is_empty() || !report.already_acknowledged.is_empty()
+            }
+            (Self::ModAck, CommandResult::ModDeliveryAcked(report)) => {
+                report.results.iter().any(|item| {
+                    matches!(
+                        item.result,
+                        ModAckOutcome::Settled | ModAckOutcome::AlreadySettled
+                    )
+                })
+            }
+            (Self::DeliveryConfirm, CommandResult::DeliveryConfirmed(report)) => {
+                report.results.iter().any(|item| {
+                    matches!(
+                        item.result,
+                        DeliveryConfirmOutcome::Settled | DeliveryConfirmOutcome::AlreadySettled
+                    )
+                })
+            }
+            _ => false,
+        }
+    }
+}
+
 struct BootstrapRuntime {
     canonical: crate::protocol::handoff::HandoffNamespace,
     observer: Arc<dyn BootstrapObserver>,
@@ -30,15 +72,17 @@ struct BootstrapRuntime {
 }
 
 pub struct DomainService {
-    instance: String,
-    store: Arc<dyn StorePort>,
-    clock: Arc<dyn Clock>,
+    pub(super) instance: String,
+    pub(super) store: Arc<dyn StorePort>,
+    pub(super) clock: Arc<dyn Clock>,
     search: BoundedLane,
     current_target: Option<Arc<OrdinaryIdentity>>,
     operator_owner_uid: Option<u32>,
     cooperative_runtime: Option<(u32, Arc<FairWriter>)>,
     bootstrap: Option<BootstrapRuntime>,
     mod_channels: Arc<dyn crate::ports::ModChannels>,
+    pub(super) presentation: super::delivery_presentation::PresentationState,
+    pub(super) delivery_pull: Arc<super::delivery_pull::DeliveryPullState>,
 }
 
 impl DomainService {
@@ -53,7 +97,17 @@ impl DomainService {
             cooperative_runtime: None,
             bootstrap: None,
             mod_channels: Arc::new(crate::ports::NoModChannels),
+            delivery_pull: Default::default(),
+            presentation: Default::default(),
         }
+    }
+    /// Share the offered ledger with the wake lane (the same instance the wake worker reads).
+    pub fn with_delivery_pull(
+        mut self,
+        state: Arc<super::delivery_pull::DeliveryPullState>,
+    ) -> Self {
+        self.delivery_pull = state;
+        self
     }
     /// The shared registry of live mod delivery channels (spec D2).
     pub fn with_mod_channels(mut self, channels: Arc<dyn crate::ports::ModChannels>) -> Self {
@@ -105,6 +159,234 @@ impl DomainService {
     }
     pub(crate) fn bootstrap_available(&self) -> bool {
         self.bootstrap.is_some()
+    }
+
+    pub(crate) fn automatic_available(&self) -> bool {
+        self.bootstrap
+            .as_ref()
+            .is_some_and(|runtime| runtime.store.automatic_available())
+    }
+
+    fn automatic_bootstrap_command(
+        &self,
+        request: &crate::protocol::handoff::AutomaticBootstrapMutation,
+        peer: PeerIdentity,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        use crate::protocol::handoff::AutomaticBootstrapAction;
+        request.validate().map_err(ApiError::invalid_request)?;
+        let runtime = self
+            .bootstrap
+            .as_ref()
+            .ok_or_else(|| ApiError::unsupported("automatic canonical runtime unavailable"))?;
+        crate::store::topology_handoff::automatic::namespace(
+            &runtime.canonical,
+            &request.identity,
+        )?;
+        let (owner, writer) = self
+            .cooperative_runtime
+            .as_ref()
+            .ok_or_else(|| ApiError::unsupported("cooperative runtime unavailable"))?;
+        if peer.effective_uid() != *owner {
+            return Err(error(
+                ErrorCode::Unauthorized,
+                "caller peer does not match elected owner",
+            ));
+        }
+        if let AutomaticBootstrapAction::Recover { disposition, .. } = &request.action {
+            let actor = OperatorActor::from_peer(
+                peer,
+                self.operator_owner_uid
+                    .ok_or_else(|| ApiError::unsupported("operator owner unavailable"))?,
+            )
+            .ok_or_else(|| error(ErrorCode::Unauthorized, "operator peer differs"))?;
+            {
+                let _turn = writer.enter_foreground(budget, self.clock.as_ref())?;
+                if let Some(saved) = runtime.store.automatic_bootstrap_recovery_replay(
+                    &runtime.canonical,
+                    request,
+                    &actor,
+                    budget,
+                )? {
+                    return Ok(saved);
+                }
+            }
+            if let crate::protocol::handoff::AutomaticBootstrapRecoveryDisposition::CreatedPane {
+                evidence,
+                ..
+            } = disposition
+            {
+                let resolving = crate::protocol::commands::ResolveSeat {
+                    target: evidence.root_pane.clone(),
+                    operation: request.identity.plan.payload.keys.resolve.clone(),
+                };
+                return self
+                    .current_target
+                    .as_ref()
+                    .ok_or_else(|| ApiError::unsupported("bootstrap identity unavailable"))?
+                    .with_bootstrap_observation(&*runtime.observer, &resolving, budget, |guard| {
+                        runtime.store.automatic_bootstrap_recover(
+                            &runtime.canonical,
+                            request,
+                            &actor,
+                            Some(guard),
+                            budget,
+                        )
+                    });
+            }
+            let _turn = writer.enter_foreground(budget, self.clock.as_ref())?;
+            return runtime.store.automatic_bootstrap_recover(
+                &runtime.canonical,
+                request,
+                &actor,
+                None,
+                budget,
+            );
+        }
+        if matches!(request.action, AutomaticBootstrapAction::Complete { .. }) {
+            let _turn = writer.enter_foreground(budget, self.clock.as_ref())?;
+            return runtime
+                .store
+                .automatic_bootstrap_complete(&runtime.canonical, request, budget);
+        }
+        if matches!(
+            request.action,
+            AutomaticBootstrapAction::Resolve { .. }
+                | AutomaticBootstrapAction::Attach(_)
+                | AutomaticBootstrapAction::CheckStart
+        ) {
+            let status_request = crate::protocol::handoff::AutomaticBootstrapMutation {
+                identity: request.identity.clone(),
+                action: AutomaticBootstrapAction::Status,
+            };
+            let status = {
+                let _turn = writer.enter_foreground(budget, self.clock.as_ref())?;
+                runtime.store.automatic_bootstrap_query(
+                    &runtime.canonical,
+                    &status_request,
+                    budget,
+                )?
+            };
+            let CommandResult::AutomaticBootstrap(status) = status else {
+                return Err(error(
+                    ErrorCode::StoreCorrupt,
+                    "invalid automatic bootstrap status",
+                ));
+            };
+            let creation = status
+                .creation
+                .ok_or_else(|| error(ErrorCode::Conflict, "automatic creation unavailable"))?;
+            let resolving = crate::protocol::commands::ResolveSeat {
+                target: creation.root_pane,
+                operation: request.identity.plan.payload.keys.resolve.clone(),
+            };
+            return self
+                .current_target
+                .as_ref()
+                .ok_or_else(|| ApiError::unsupported("bootstrap identity unavailable"))?
+                .with_bootstrap_observation(&*runtime.observer, &resolving, budget, |guard| {
+                    if matches!(request.action, AutomaticBootstrapAction::CheckStart) {
+                        return runtime.store.automatic_bootstrap_check_start(
+                            &runtime.canonical,
+                            request,
+                            guard,
+                            budget,
+                        );
+                    }
+                    let inner = PermitMutation::AutomaticBootstrap(Box::new(request.clone()));
+                    let permit = self.store.issue_cooperative_permit(
+                        crate::store::cooperative_permit_request(&inner)?,
+                        budget,
+                    )?;
+                    runtime.store.automatic_bootstrap_mutate(
+                        &runtime.canonical,
+                        request,
+                        permit,
+                        Some(guard),
+                        budget,
+                    )
+                });
+        }
+        let _turn = writer.enter_foreground(budget, self.clock.as_ref())?;
+        if matches!(
+            request.action,
+            AutomaticBootstrapAction::Status | AutomaticBootstrapAction::CheckStart
+        ) {
+            return runtime
+                .store
+                .automatic_bootstrap_query(&runtime.canonical, request, budget);
+        }
+        let inner = PermitMutation::AutomaticBootstrap(Box::new(request.clone()));
+        let permit = self
+            .store
+            .issue_cooperative_permit(crate::store::cooperative_permit_request(&inner)?, budget)?;
+        runtime
+            .store
+            .automatic_bootstrap_mutate(&runtime.canonical, request, permit, None, budget)
+    }
+
+    fn automatic_delivery_command(
+        &self,
+        request: &crate::protocol::handoff::AutomaticDeliveryMutation,
+        peer: PeerIdentity,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        request.validate().map_err(ApiError::invalid_request)?;
+        let runtime = self
+            .bootstrap
+            .as_ref()
+            .ok_or_else(|| ApiError::unsupported("automatic canonical runtime unavailable"))?;
+        crate::store::handoff::automatic::validate_namespace(&runtime.canonical, request)?;
+        let (owner, writer) = self.cooperative_runtime.as_ref().ok_or_else(|| {
+            error(
+                ErrorCode::CallerUnverified,
+                "cooperative runtime unavailable",
+            )
+        })?;
+        if peer.effective_uid() != *owner {
+            return Err(error(
+                ErrorCode::Unauthorized,
+                "caller peer does not match elected owner",
+            ));
+        }
+        if matches!(
+            request.action,
+            crate::protocol::handoff::AutomaticDeliveryAction::Send(_)
+        ) {
+            loop {
+                let progress = {
+                    let _turn = writer.enter_foreground(budget, self.clock.as_ref())?;
+                    runtime.store.automatic_delivery_prepare_send_step(
+                        &runtime.canonical,
+                        request,
+                        DurableWorkAdmission::new(16).map_err(ApiError::invalid_request)?,
+                        budget,
+                    )?
+                };
+                match progress {
+                    SendPreparationProgress::Committed(result) => return Ok(result),
+                    SendPreparationProgress::Ready { .. } => break,
+                    SendPreparationProgress::More { .. } => {}
+                }
+            }
+        }
+        let _turn = writer.enter_foreground(budget, self.clock.as_ref())?;
+        if matches!(
+            request.action,
+            crate::protocol::handoff::AutomaticDeliveryAction::Status
+                | crate::protocol::handoff::AutomaticDeliveryAction::Prepare
+        ) {
+            return runtime
+                .store
+                .automatic_delivery_query(&runtime.canonical, request, budget);
+        }
+        let inner = crate::store::handoff::automatic::inner(request)?;
+        let permit = self
+            .store
+            .issue_cooperative_permit(crate::store::cooperative_permit_request(&inner)?, budget)?;
+        runtime
+            .store
+            .automatic_delivery_mutate(&runtime.canonical, request, permit, budget)
     }
 
     fn delivery_command(
@@ -221,7 +503,7 @@ impl DomainService {
                     claim: identity.claim.clone(),
                     mutation: Box::new(crate::cli::journal::SemanticMutation::HandoffBootstrap(
                         Box::new(crate::cli::journal::BootstrapPlan {
-                            version: 1,
+                            version: identity.payload.plan_version(),
                             payload: identity.payload.clone(),
                         }),
                     )),
@@ -387,7 +669,99 @@ impl DomainService {
             .bootstrap_mutate(&runtime.canonical, mutation, permit, None, budget)
     }
 
-    fn cooperative_mutation(
+    /// A binding's own read position (spec §2): authorised like a cooperative call, but open to
+    /// declared subagents, since it never touches seat state. Decided by the store.
+    fn advance_cursors(
+        &self,
+        request: &crate::protocol::commands::AdvanceCursors,
+        peer: PeerIdentity,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        let (owner_uid, writer) = self.cooperative_runtime.as_ref().ok_or_else(|| {
+            error(
+                ErrorCode::CallerUnverified,
+                "cooperative elected runtime unavailable",
+            )
+        })?;
+        if peer.effective_uid() != *owner_uid {
+            return Err(error(
+                ErrorCode::Unauthorized,
+                "caller peer does not match elected owner",
+            ));
+        }
+        if request.claim.instance != self.instance {
+            return Err(error(
+                ErrorCode::CallerUnverified,
+                "caller instance does not match service",
+            ));
+        }
+        let _turn = writer.enter_foreground(budget, self.clock.as_ref())?;
+        self.store.advance_cursors(request, budget)
+    }
+
+    /// The hook pull's plain touch-or-reconnect of the claim's binding (spec §3), authorised like
+    /// a cooperative call and decided by the store in one write transaction that also reads the
+    /// resulting mod view.
+    pub(super) fn hook_plain_reconnect(
+        &self,
+        claim: &CallerClaim,
+        peer: PeerIdentity,
+        presentation: bool,
+        budget: &CallBudget,
+    ) -> Result<Option<crate::ports::ModSeatView>, ApiError> {
+        let (owner_uid, writer) = self.cooperative_runtime.as_ref().ok_or_else(|| {
+            error(
+                ErrorCode::CallerUnverified,
+                "cooperative elected runtime unavailable",
+            )
+        })?;
+        if peer.effective_uid() != *owner_uid {
+            return Err(error(
+                ErrorCode::Unauthorized,
+                "caller peer does not match elected owner",
+            ));
+        }
+        if claim.instance != self.instance {
+            return Err(error(
+                ErrorCode::CallerUnverified,
+                "caller instance does not match service",
+            ));
+        }
+        let _turn = writer.enter_foreground(budget, self.clock.as_ref())?;
+        self.store.hook_plain_reconnect(claim, presentation, budget)
+    }
+
+    /// A harness lifecycle event about a binding (spec §2, §3): authorised like a cooperative
+    /// call, open to declared subagents, since it changes no seat state. Decided by the store.
+    fn binding_event(
+        &self,
+        request: &crate::protocol::commands::BindingEvent,
+        peer: PeerIdentity,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        let (owner_uid, writer) = self.cooperative_runtime.as_ref().ok_or_else(|| {
+            error(
+                ErrorCode::CallerUnverified,
+                "cooperative elected runtime unavailable",
+            )
+        })?;
+        if peer.effective_uid() != *owner_uid {
+            return Err(error(
+                ErrorCode::Unauthorized,
+                "caller peer does not match elected owner",
+            ));
+        }
+        if request.claim.instance != self.instance {
+            return Err(error(
+                ErrorCode::CallerUnverified,
+                "caller instance does not match service",
+            ));
+        }
+        let _turn = writer.enter_foreground(budget, self.clock.as_ref())?;
+        self.store.binding_event(request, budget)
+    }
+
+    pub(super) fn cooperative_mutation(
         &self,
         mutation: PermitMutation,
         peer: PeerIdentity,
@@ -459,43 +833,60 @@ impl DomainService {
         }
         // Admission precedes the issuer's bounded write. Retain this one turn
         // through the decision; the store rechecks context, budget and permit age.
-        let _turn = writer.enter_foreground(budget, self.clock.as_ref())?;
-        let permit = self.store.issue_cooperative_permit(request, budget)?;
-        let permit = if matches!(
-            mutation,
-            PermitMutation::Invite(_) | PermitMutation::SendMessage(_)
-        ) {
-            if let Some(runtime) = &self.bootstrap {
-                permit.with_bootstrap_child(&runtime.canonical, &mutation)
+        let recheck = DeliveryRecheckClass::for_mutation(&mutation)
+            .map(|class| (class, request.claim.seat.clone()));
+        let result = {
+            let _turn = writer.enter_foreground(budget, self.clock.as_ref())?;
+            let permit = self.store.issue_cooperative_permit(request, budget)?;
+            let permit = if matches!(
+                mutation,
+                PermitMutation::Invite(_) | PermitMutation::SendMessage(_)
+            ) {
+                if let Some(runtime) = &self.bootstrap {
+                    permit.with_bootstrap_child(&runtime.canonical, &mutation)
+                } else {
+                    permit
+                }
             } else {
                 permit
+            };
+            match mutation {
+                PermitMutation::CheckIn(command) => self.store.register_available(
+                    RegisterAvailableRequest {
+                        command,
+                        read,
+                        operator,
+                    },
+                    permit,
+                    budget,
+                ),
+                mutation
+                    if matches!(
+                        mutation,
+                        PermitMutation::BeginHandoff(_) | PermitMutation::CreateThread(_)
+                    ) && self.bootstrap.is_some() =>
+                {
+                    let runtime = self.bootstrap.as_ref().expect("equipped runtime");
+                    runtime.store.bootstrap_mutate(
+                        &runtime.canonical,
+                        mutation,
+                        permit,
+                        None,
+                        budget,
+                    )
+                }
+                mutation => self.store.mutate(mutation, permit, budget),
             }
-        } else {
-            permit
-        };
-        match mutation {
-            PermitMutation::CheckIn(command) => self.store.register_available(
-                RegisterAvailableRequest {
-                    command,
-                    read,
-                    operator,
-                },
-                permit,
-                budget,
-            ),
-            mutation
-                if matches!(
-                    mutation,
-                    PermitMutation::BeginHandoff(_) | PermitMutation::CreateThread(_)
-                ) && self.bootstrap.is_some() =>
-            {
-                let runtime = self.bootstrap.as_ref().expect("equipped runtime");
-                runtime
-                    .store
-                    .bootstrap_mutate(&runtime.canonical, mutation, permit, None, budget)
-            }
-            mutation => self.store.mutate(mutation, permit, budget),
+        }?;
+        // The canonical transaction and foreground writer turn ended above.
+        // Settled also covers Lazy completion; this is only a recheck hint.
+        if let Some((class, seat)) = recheck
+            && class.succeeded(&result)
+        {
+            self.mod_channels
+                .presentation_delivery_may_have_changed(&seat);
         }
+        Ok(result)
     }
     /// Spec D6 pre-decision for `watch ack`: classify the whole batch against
     /// the seat's open binding and the live channel registry, then route the
@@ -526,46 +917,45 @@ impl DomainService {
                     .collect(),
             }))
         };
-        let binding = self.store.mod_ack_binding(&self.instance, &seat, budget)?;
+        let binding = self
+            .store
+            .mod_ack_binding(&self.instance, &request.claim, budget)?;
         let Some(binding) = binding.filter(|binding| {
-            binding.provenance == COOPERATIVE_TOP_LEVEL_PROVENANCE && binding.harness == "claude"
+            binding.connected
+                && binding.harness == request.claim.harness.as_str()
+                && crate::delivery::declares(&binding.harness, DeliveryMechanism::PushChannel)
         }) else {
             // The check-in that opens the binding may not have committed yet.
             return report(ModAckOutcome::Retryable, Some(ModAckReason::NoLiveChannel));
         };
-        let same_session = request.claim.native_session == binding.native_session;
-        let effective = if request.claim.binding_generation == binding.generation && same_session {
+        let Ok(binding_harness) = crate::harness::registry::builtins().agent(&binding.harness)
+        else {
+            return report(ModAckOutcome::Retryable, Some(ModAckReason::NoLiveChannel));
+        };
+        // The binding is the one the claim's key names: the ack settles on behalf of the
+        // channel's binding. The decision is against the canonical binding, never the stale
+        // client claim (a resumed session carries a new generation or execution).
+        let effective = if request.claim.binding_generation == binding.generation {
             request.clone()
-        } else if same_session
-            && binding
-                .previous
-                .as_ref()
-                .is_some_and(|(generation, session)| {
-                    *generation == request.claim.binding_generation
-                        && *session == binding.native_session
-                })
-        {
-            // Resume: the previous generation of the same native session. The
-            // decision is against the canonical current binding, never the
-            // stale client claim.
+        } else {
             AckModDelivered {
                 claim: CallerClaim {
                     instance: self.instance.clone(),
                     seat: seat.clone(),
                     binding_generation: binding.generation,
                     role: CallerRole::TopLevel,
-                    harness: Harness::Claude,
+                    harness: Harness::Agent(binding_harness),
                     native_session: binding.native_session.clone(),
                     execution: binding.execution.clone(),
                     target: binding.target.clone(),
+                    agent_id: None,
+                    liveness: None,
                 },
                 ..request.clone()
             }
-        } else {
-            return report(ModAckOutcome::StaleGeneration, None);
         };
         // A channel in reconnect or rebind grace counts as live.
-        if !self.mod_channels.is_live(&seat, binding.generation) {
+        if !self.mod_channels.is_live(&seat, &binding.binding_id) {
             return report(ModAckOutcome::Retryable, Some(ModAckReason::NoLiveChannel));
         }
         let result = self.cooperative_mutation(
@@ -582,7 +972,7 @@ impl DomainService {
                 .any(|item| item.result.counts_as_mod_ack())
         {
             self.mod_channels
-                .record_ack(&seat, binding.generation, self.clock.utc_now());
+                .record_ack(&seat, &binding.binding_id, self.clock.utc_now());
         }
         Ok(result)
     }
@@ -617,27 +1007,48 @@ impl DomainService {
 }
 
 impl LocalService for DomainService {
-    /// Spec D2: decide a mod watch registration against A2 in one read
-    /// transaction (the seat, its target's recovery hold, its open binding),
-    /// then record the channel with the binding's canonical generation. The
-    /// claim only names the seat and the native session it expects; nothing
-    /// the claim says about the generation is trusted. A store read that
-    /// fails is `busy` (retryable): the CLI retries with backoff.
+    /// Spec D2, §3 Wake: decide a mod watch registration against A2 in one read
+    /// transaction (the seat, its target's recovery hold, the claimed binding), then record the
+    /// channel under that binding. The claim's key (seat, harness, native session, no agent id)
+    /// must resolve to an open, connected, top-level binding of the seat: a subagent claim, an
+    /// unknown session or a disconnected binding holds no channel. Nothing the claim says about
+    /// the generation is trusted. A store read that fails is `busy` (retryable): the CLI retries
+    /// with backoff.
     fn watch_register(
         &self,
         request: &crate::protocol::watch::WatchRequest,
         sink: Arc<dyn crate::ports::ModChannelSink>,
         budget: &CallBudget,
     ) -> Result<(crate::ports::ModChannelId, u64), crate::protocol::watch::WatchRefusalReason> {
-        use crate::protocol::{authority::Harness, watch::WatchRefusalReason as Refusal};
+        use crate::protocol::watch::WatchRefusalReason as Refusal;
         let claim = &request.claim;
-        if claim.harness != Harness::Claude || claim.role != CallerRole::TopLevel {
-            return Err(Refusal::NotClaude);
+        let Some(policy) = crate::harness::registry::builtins()
+            .delivery_policy(claim.harness.as_str())
+            .filter(|policy| policy.mechanism() == DeliveryMechanism::PushChannel)
+        else {
+            return Err(Refusal::NO_PUSH_CHANNEL);
+        };
+        if claim.role != CallerRole::TopLevel || claim.is_subagent() {
+            return Err(Refusal::NO_PUSH_CHANNEL);
         }
-        let view = self
-            .store
-            .mod_seat_view(&claim.seat, budget)
-            .map_err(|_| Refusal::Busy)?;
+        let mode = if request.presentation_v2 {
+            crate::ports::ModChannelMode::PresentationV2
+        } else {
+            crate::ports::ModChannelMode::Legacy
+        };
+        let view = match mode {
+            crate::ports::ModChannelMode::Legacy => self.store.mod_binding_view(
+                &claim.seat,
+                crate::ports::ModBindingRef::Claim(claim),
+                budget,
+            ),
+            crate::ports::ModChannelMode::PresentationV2 => self.store.presentation_seat_view(
+                &claim.seat,
+                crate::ports::ModBindingRef::Claim(claim),
+                budget,
+            ),
+        }
+        .map_err(|_| Refusal::Busy)?;
         let Some(view) = view else {
             return Err(Refusal::Unresolved);
         };
@@ -650,29 +1061,34 @@ impl LocalService for DomainService {
         let Some(binding) = view.binding.as_ref() else {
             return Err(Refusal::NoBinding);
         };
-        if binding.harness != Harness::Claude.as_str() {
-            return Err(Refusal::NotClaude);
+        if !crate::delivery::declares(&binding.harness, DeliveryMechanism::PushChannel) {
+            return Err(Refusal::NO_PUSH_CHANNEL);
         }
-        if binding.provenance != crate::protocol::authority::COOPERATIVE_TOP_LEVEL_PROVENANCE {
+        // Role + liveness + harness, never the observation provenance (ht-54r.79).
+        if !binding.holds_channel() || binding.harness != claim.harness.as_str() {
             return Err(Refusal::NoBinding);
-        }
-        if binding.native_session != claim.native_session.as_str() {
-            return Err(Refusal::SessionMismatch);
         }
         if claim.instance != self.instance {
             return Err(Refusal::SessionMismatch);
         }
         let channel = self.mod_channels.register(
             crate::ports::ModChannelRegistration {
+                mode,
                 seat: claim.seat.clone(),
+                binding: binding.binding_id.clone(),
                 binding_generation: binding.generation,
                 native_session: claim.native_session.clone(),
-                harness: Harness::Claude,
+                harness: claim.harness,
+                idle_wake: policy.idle_wake(),
                 registered_at: self.clock.utc_now(),
             },
             sink,
         )?;
         Ok((channel, view.attention_version))
+    }
+
+    fn watch_presentation_lease(&self, channel: crate::ports::ModChannelId) -> Option<String> {
+        self.mod_channels.presentation_lease(channel)
     }
 
     fn watch_unregister(
@@ -744,12 +1160,30 @@ impl LocalService for DomainService {
             output: output.clone(),
             operation_scope: None,
         };
+        // Subagent bindings are read-only (ht-54r.20). This claim-shape check is only the cheap
+        // early refusal (stable code before `validate()`); the authority is the role on the
+        // binding row the store resolves (`control::require_top_level_binding`, TRUST-POLICY A2).
+        if command
+            .accountable_claim()
+            .is_some_and(crate::protocol::authority::CallerClaim::is_subagent)
+        {
+            return Err(error(
+                ErrorCode::SubagentReadOnly,
+                crate::protocol::authority::SUBAGENT_READ_ONLY_DETAIL,
+            ));
+        }
         if matches!(&command, Command::Search(_)) {
             let _search = self.search.enter(budget, self.clock.as_ref())?;
             return self.store.query(&command, &read, budget);
         }
         match command {
+            Command::AutomaticBootstrap(request) => {
+                self.automatic_bootstrap_command(&request, peer, budget)
+            }
             Command::HandoffDelivery(request) => self.delivery_command(&request, peer, budget),
+            Command::AutomaticHandoffDelivery(request) => {
+                self.automatic_delivery_command(&request, peer, budget)
+            }
             command @ (Command::BeginBootstrap(_)
             | Command::ReserveBootstrapAttempt(_)
             | Command::RecordBootstrapCreated(_)
@@ -768,6 +1202,7 @@ impl LocalService for DomainService {
             | Command::InboxBatch(_)
             | Command::InboxBatchV2(_)
             | Command::MessageDeliveryModes(_)
+            | Command::WakeOn(_)
             | Command::Warnings(_)
             | Command::ActiveWarnings(_)
             | Command::Thread(_)
@@ -784,17 +1219,26 @@ impl LocalService for DomainService {
             | Command::Diagnostics(_)
             | Command::RetirementJobs(_) => self.store.query(&command, &read, budget),
             Command::AttentionDigest(_) | Command::AttentionDigestDelivery(_) => {
-                let seat = match &command {
-                    Command::AttentionDigest(q) | Command::AttentionDigestDelivery(q) => {
-                        q.seat.clone()
-                    }
+                let query = match &command {
+                    Command::AttentionDigest(q) | Command::AttentionDigestDelivery(q) => q,
                     _ => unreachable!("matched above"),
                 };
-                let mut result = self.store.query(&command, &read, budget)?;
-                // Spec D7: any live or grace entry for the seat, which also
-                // covers the rebind grace of the SessionStart check-in that
-                // rotated the generation.
-                let live = self.seat_has_mod_channel(&seat);
+                let seat = query.seat.clone();
+                let claim = query
+                    .claim
+                    .as_ref()
+                    .filter(|claim| claim.harness != crate::protocol::authority::Harness::Human);
+                let (mut result, binding) =
+                    self.store.attention_digest_read(&command, &read, budget)?;
+                // Spec §2 Hook notifications / §3 Wake: the digest flag follows the binding the
+                // digest was read for, so one binding's channel never hides mail from another.
+                // A non-human claim with no binding yet has no channel; no claim (or a human
+                // claim) is the seat-level digest.
+                let live = match (&binding, claim) {
+                    (Some(binding), _) => self.mod_channels.binding_live(&seat, binding),
+                    (None, Some(_)) => false,
+                    (None, None) => self.seat_has_mod_channel(&seat),
+                };
                 match &mut result {
                     CommandResult::AttentionDigest(digest)
                     | CommandResult::AttentionDigestDelivery { digest, .. } => {
@@ -811,10 +1255,15 @@ impl LocalService for DomainService {
             Command::AckModDelivered(request) => {
                 self.ack_mod_delivered(request, peer, budget, read)
             }
+            Command::AdvanceCursors(request) => self.advance_cursors(&request, peer, budget),
+            Command::BindingEvent(request) => self.binding_event(&request, peer, budget),
+            Command::DeliveryPull(pull) => self.delivery_pull(pull, peer, budget, &read),
+            Command::DeliveryConfirm(confirm) => self.delivery_confirm(confirm, peer, budget, read),
             command @ (Command::BeginHandoff(_)
             | Command::CompleteHandoff(_)
             | Command::CheckIn(_)
             | Command::CreateThread(_)
+            | Command::EnsureDirectThread(_)
             | Command::Invite(_)
             | Command::Join(_)
             | Command::Accept(_)
@@ -824,6 +1273,7 @@ impl LocalService for DomainService {
             | Command::Ack(_)
             | Command::AckDisplayed(_)
             | Command::CompleteInboxDelivery(_)
+            | Command::SetWakeOn(_)
             | Command::Leave(_)
             | Command::SetTopic(_)
             | Command::SetThreadName(_)
@@ -973,6 +1423,10 @@ impl LocalService for DomainService {
                 let _turn = writer.enter_foreground(budget, self.clock.as_ref())?;
                 self.store.record_managed_launch(launch, budget)
             }
+            Command::DeliveryPullV2(pull) => self.presentation_pull(&pull, peer, budget),
+            Command::DeliveryPresentationConfirmV2(confirm) => {
+                self.presentation_confirm(&confirm, peer, budget)
+            }
             Command::LocalIntents(_) => Err(error(
                 ErrorCode::Unsupported,
                 "local intents are client-owned",
@@ -995,7 +1449,7 @@ impl LocalService for DomainService {
     }
 }
 
-fn error(code: ErrorCode, detail: &str) -> ApiError {
+pub(super) fn error(code: ErrorCode, detail: &str) -> ApiError {
     ApiError::new(code, detail)
 }
 
@@ -1084,6 +1538,8 @@ mod operator_tests {
             native_session: NativeSessionId::new("n"),
             execution: ExecutionId::new("e"),
             target: HostTargetId::new("p"),
+            agent_id: None,
+            liveness: None,
         };
         let budget = || CallBudget {
             deadline: MonoInstant(clock.monotonic_now().0 + 5000),
@@ -1168,6 +1624,8 @@ mod operator_tests {
                         native_session: NativeSessionId::new("n"),
                         execution: ExecutionId::new("e"),
                         target: HostTargetId::new("p"),
+                        agent_id: None,
+                        liveness: None,
                     },
                 }),
                 PeerIdentity::from_kernel(501),

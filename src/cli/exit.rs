@@ -27,10 +27,17 @@ pub fn api_exit_code(code: &ErrorCode) -> i32 {
         | Cancelled => EXIT_UNAVAILABLE,
         // A sandbox refusing the daemon socket is an environment the build
         // cannot use as configured (status 4), not an unavailable daemon.
-        Unsupported | UnsupportedHarness | MissingHook | CallerUnverified | TransportDenied => {
-            EXIT_UNSUPPORTED
-        }
+        Unsupported
+        | UnsupportedHarness
+        | MissingHook
+        | CallerUnverified
+        | TransportDenied
+        | SessionClaimRequired
+        | LivenessFingerprintRequired
+        | ManagedDaemonRefused => EXIT_UNSUPPORTED,
         UnknownOutcome => EXIT_UNKNOWN_OUTCOME,
+        // A subagent's accountable command is refused like any other authorization failure.
+        Unauthorized | SubagentReadOnly => EXIT_FAILED,
         _ => EXIT_FAILED,
     }
 }

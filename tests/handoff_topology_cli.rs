@@ -40,7 +40,7 @@ use uuid::Uuid;
 
 const BIN: &str = env!("CARGO_BIN_EXE_herdr-threads");
 const WAIT: Duration = Duration::from_secs(15);
-const BODY: &str = "literal '$HOME' \"quoted\" work\n--agent-arg=body stays here";
+pub(super) const BODY: &str = "literal '$HOME' \"quoted\" work\n--agent-arg=body stays here";
 const OPTIONS: &str = "--model 'env model' --config 'note=\"literal $HOME\"' --config repeat=true";
 const FROZEN: &[&str] = &[
     "--model",
@@ -149,7 +149,7 @@ fn finish(mut child: OwnedChild) -> Output {
     });
     child.wait_with_output().unwrap()
 }
-fn successful(out: Output) -> Value {
+pub(super) fn successful(out: Output) -> Value {
     assert!(
         out.status.success(),
         "{}\n{}",
@@ -174,8 +174,8 @@ fn pane(id: &str, agent: Option<&Value>) -> Value {
     value
 }
 #[derive(Default)]
-struct HostState {
-    requests: Vec<Value>,
+pub(super) struct HostState {
+    pub(super) requests: Vec<Value>,
     created: bool,
     agent: Option<Value>,
     lose: Option<&'static str>,
@@ -183,10 +183,10 @@ struct HostState {
     // so the injected failure is a witnessed post-publication read.
     lose_after_publication: Option<(&'static str, PathBuf)>,
     lost_after_publication: Vec<Value>,
-    helpers: Vec<Value>,
+    pub(super) helpers: Vec<Value>,
 }
-struct Host {
-    state: Arc<Mutex<HostState>>,
+pub(super) struct Host {
+    pub(super) state: Arc<Mutex<HostState>>,
     stop: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
     socket: PathBuf,
@@ -257,7 +257,7 @@ impl Host {
                     }
                     "agent.start" => {
                         let kind = request["params"]["kind"].as_str().unwrap();
-                        assert!(matches!(kind, "claude" | "codex"));
+                        assert!(matches!(kind, "claude" | "codex" | "agy"));
                         let argv: Vec<String> =
                             serde_json::from_value(request["params"]["args"].clone()).unwrap();
                         // Native start carries kind+args, not the admitted binary path.
@@ -289,6 +289,12 @@ impl Host {
                         json!({"type":"agent_started","argv":request["params"]["args"],"agent":agent})
                     }
                     "agent.get" => json!({"type":"agent_info","agent":state.agent}),
+                    // The started agent: the one foreground process besides the shell. The
+                    // owned stand-in exits before this read, so the test process stands for it.
+                    "pane.process_info" => json!({"type":"pane_process_info","process_info":{
+                        "pane_id":request["params"]["pane_id"],"shell_pid":1,
+                        "foreground_processes":[{"pid":std::process::id(),"name":"agent","argv0":"agent"}]
+                    }}),
                     other => panic!("unexpected private native request {other}: {request}"),
                 };
                 if state.lose == Some(method) {
@@ -326,7 +332,7 @@ impl Host {
             let _ = writeln!(std::io::stderr(), "owned host panicked during cleanup");
         }
     }
-    fn requests(&self, method: &str) -> Vec<Value> {
+    pub(super) fn requests(&self, method: &str) -> Vec<Value> {
         self.state
             .lock()
             .unwrap()
@@ -350,17 +356,17 @@ struct RecipientIdentity {
     bindings: Vec<IdentityRow>,
 }
 
-struct Fixture {
+pub(super) struct Fixture {
     daemon: OwnedChild,
-    host: Host,
-    iso: TestIsolation,
-    context: RuntimeContext,
+    pub(super) host: Host,
+    pub(super) iso: TestIsolation,
+    pub(super) context: RuntimeContext,
     paths: InstancePaths,
-    instance: Uuid,
+    pub(super) instance: Uuid,
     cli_log: Mutex<Vec<Value>>,
 }
 impl Fixture {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self::with_instance(None)
     }
     fn with_instance(copied: Option<Uuid>) -> Self {
@@ -384,6 +390,7 @@ impl Fixture {
         );
         install_helper(&iso.path("claude"), &script);
         install_helper(&iso.path("codex"), &script);
+        install_helper(&iso.path("agy"), &script);
         install_helper(
             &iso.path("shell"),
             "#!/bin/sh\nprintf '%s\\n' probe >> \"$HT_SMOKE_SHELL_LOG\"\nprintf '%s' HT_PANE_ENV_BEGINHT_PANE_ENV_END\n",
@@ -523,7 +530,10 @@ impl Fixture {
         ] {
             db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,structural_terminal_id,structural_incarnation,structural_host_boot,structural_host_epoch,structural_incarnation_kind,structural_connection_epoch,structural_observation_sequence,created_at) VALUES(?1,?2,'resolved','native',?3,1,1,?4,?5,?5,1,'native_current_target',1,1,0)",params![seat,instance.to_string(),target,terminal,observation.host_boot.as_str()]).unwrap();
         }
-        db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES('sender',1,'w4:p1',?1,1,1,'codex','session',?2,'cooperative_top_level',0,0,'term_1',?1)",params![observation.host_boot.as_str(),execution.to_string()]).unwrap();
+        // A live fingerprint: the liveness worker (decision 9) disconnects a binding without one.
+        let sender_fp =
+            herdr_threads::test_support::isolation::stand_in_fingerprint("codex", "session");
+        db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation,liveness_pid,liveness_start) VALUES('sender',1,'w4:p1',?1,1,1,'codex','session',?2,'cooperative_top_level',0,0,'term_1',?1,?3,?4)",params![observation.host_boot.as_str(),execution.to_string(),i64::from(sender_fp.pid),sender_fp.start as i64]).unwrap();
         let contexts = paths
             .instance_dir
             .join("contexts")
@@ -584,7 +594,7 @@ impl Fixture {
             .stderr(Stdio::piped());
         cmd
     }
-    fn run(&self, args: &[&str], options: &str) -> Output {
+    pub(super) fn run(&self, args: &[&str], options: &str) -> Output {
         self.run_format(args, options, true)
     }
     fn run_format(&self, args: &[&str], options: &str, json: bool) -> Output {
@@ -619,7 +629,7 @@ impl Fixture {
         self.cli_log.lock().unwrap().push(json!({"argv":argv,"pid":pid,"code":out.status.code(),"out":String::from_utf8_lossy(&out.stdout),"err":String::from_utf8_lossy(&out.stderr)}));
         out
     }
-    fn setup(&self, kind: &str) {
+    pub(super) fn setup(&self, kind: &str) {
         let mut cmd = self.iso.command(BIN);
         cmd.arg("human")
             .args(["--json", "--state-dir"])
@@ -636,12 +646,12 @@ impl Fixture {
             .stderr(Stdio::piped());
         successful(self.capture(cmd));
     }
-    fn db(&self) -> Connection {
+    pub(super) fn db(&self) -> Connection {
         let db = Connection::open(&self.paths.database_path).unwrap();
         db.busy_timeout(Duration::from_secs(5)).unwrap();
         db
     }
-    fn count(&self, sql: &str) -> i64 {
+    pub(super) fn count(&self, sql: &str) -> i64 {
         self.db().query_row(sql, [], |r| r.get(0)).unwrap()
     }
     fn recipient_identity(&self) -> RecipientIdentity {
@@ -688,7 +698,7 @@ impl Fixture {
         let header: Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
         format!("local:{}", header["reference"]["ordinal"].as_u64().unwrap())
     }
-    fn effect_counts(&self) -> (usize, usize, i64, i64) {
+    pub(super) fn effect_counts(&self) -> (usize, usize, i64, i64) {
         (
             self.host.requests("tab.create").len(),
             self.host.requests("agent.start").len(),
@@ -696,7 +706,7 @@ impl Fixture {
             self.count("SELECT count(*) FROM messages WHERE kind='ordinary'"),
         )
     }
-    fn assert_work(&self, recipient: &str, thread: &str) {
+    pub(super) fn assert_work(&self, recipient: &str, thread: &str) {
         let db = self.db();
         let body: String = db
             .query_row(
@@ -782,13 +792,17 @@ impl Fixture {
             .unwrap()
     }
     fn peer_binding(&self) {
-        self.db().execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) SELECT 'recipient',1,'w4:p2',host_boot,host_epoch,1,'codex','peer-session',?1,'cooperative_top_level',observed_at,registered_at,'term_2',incarnation FROM occupant_bindings WHERE seat_id='sender'",[Uuid::new_v4().to_string()]).unwrap();
+        let peer_fp =
+            herdr_threads::test_support::isolation::stand_in_fingerprint("codex", "peer-session");
+        self.db().execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation,liveness_pid,liveness_start) SELECT 'recipient',1,'w4:p2',host_boot,host_epoch,1,'codex','peer-session',?1,'cooperative_top_level',observed_at,registered_at,'term_2',incarnation,?2,?3 FROM occupant_bindings WHERE seat_id='sender'",params![Uuid::new_v4().to_string(),i64::from(peer_fp.pid),peer_fp.start as i64]).unwrap();
     }
     // Check in the recipient as a second valid cooperative top-level caller,
     // with the same binding/context shape the fixture seeds for the sender.
     fn check_in_recipient(&self) {
         let execution = Uuid::new_v4();
-        self.db().execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) SELECT 'recipient',1,'w4:p2',host_boot,host_epoch,1,'codex','peer-session',?1,'cooperative_top_level',observed_at,registered_at,'term_2',incarnation FROM occupant_bindings WHERE seat_id='sender'",[execution.to_string()]).unwrap();
+        let peer_fp =
+            herdr_threads::test_support::isolation::stand_in_fingerprint("codex", "peer-session");
+        self.db().execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation,liveness_pid,liveness_start) SELECT 'recipient',1,'w4:p2',host_boot,host_epoch,1,'codex','peer-session',?1,'cooperative_top_level',observed_at,registered_at,'term_2',incarnation,?2,?3 FROM occupant_bindings WHERE seat_id='sender'",params![execution.to_string(),i64::from(peer_fp.pid),peer_fp.start as i64]).unwrap();
         let contexts = self
             .paths
             .instance_dir
@@ -840,7 +854,7 @@ impl Fixture {
         files.sort_by(|a, b| a.0.cmp(&b.0));
         files
     }
-    fn new_thread_args<'a>(&'a self, kind: &'a str, binary: &'a str) -> Vec<&'a str> {
+    pub(super) fn new_thread_args<'a>(&'a self, kind: &'a str, binary: &'a str) -> Vec<&'a str> {
         vec![
             "handoff",
             "--new-tab",
@@ -1703,8 +1717,8 @@ fn final_sdd_public_possible_start_reports_known_committed_work_without_relaunch
         &manual[..3],
         [
             "env",
-            "HERDR_THREADS_CODEX_OPTS=",
-            "HERDR_THREADS_CLAUDE_OPTS="
+            "HERDR_THREADS_CLAUDE_OPTS=",
+            "HERDR_THREADS_CODEX_OPTS="
         ]
     );
     assert!(manual.contains(&"--config=frozen=true".into()));
@@ -1715,7 +1729,7 @@ fn final_sdd_public_possible_start_reports_known_committed_work_without_relaunch
     let text = String::from_utf8(text.stdout).unwrap();
     assert!(text.contains("phase: launch"));
     assert!(text.contains("outcome: possible_start"));
-    assert!(text.contains("manual_launch_after_confirming_no_start_argv: env HERDR_THREADS_CODEX_OPTS= HERDR_THREADS_CLAUDE_OPTS="));
+    assert!(text.contains("manual_launch_after_confirming_no_start_argv: env HERDR_THREADS_CLAUDE_OPTS= HERDR_THREADS_CODEX_OPTS="));
     assert!(text.contains("--config=frozen=true"));
     assert!(text.contains("seat_inspect_argv:"));
     assert!(text.contains("inspect_argv:"));

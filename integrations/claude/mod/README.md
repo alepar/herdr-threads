@@ -46,7 +46,7 @@ One object per line, `schema: 1`; consumers ignore unknown keys.
 
 | `kind` | `id` | notes |
 |---|---|---|
-| `message` | message id | ordinary receipt, `ack_required: true` |
+| `message` | message id | ordinary message; `ack_required: true` while its receipt is pending, `false` when another binding of the seat already settled it. Both are acked: the second answers `already_settled` and only moves this session's read position |
 | `lazy` | message id | `ack_required: false` |
 | `attention` | `attention:<version>` | never acked; re-sent once per version and after each (re)start |
 | `attention_cleared` | `attention_cleared:<version>` | after an attention line, nothing it pointed at is still pending; the mod drops unsent attention items |
@@ -54,7 +54,7 @@ One object per line, `schema: 1`; consumers ignore unknown keys.
 
 Bodies over 8 KiB are cut at a char boundary, followed by the truncation marker, with
 `truncated: true`; the mod never acks a truncated item. Pages hold at most 32 items and 64 KiB.
-All text is untrusted data; a submit never starts with `/`.
+Peer text is framed under one lead line (bodies indented); a submit never starts with `/`.
 
 **Framing.** The fixed header, then one block per item: `[herdr-threads] <kind> <id> in <thread id> "<thread name>" from <sender id> "<sender name>"[ markers]:` and the body. The names are what `watch` supplies (the thread's topic; the sender seat id, or `service`), flattened to one line, quoted, and left out when absent or equal to the id. Markers are `[human]`, `[relays user]`, then `[query]`/`[request]`/`[rule]`, the same fixed text as every other read path. Attention blocks are `[herdr-threads] attention <id>:` and the marker.
 
@@ -70,7 +70,7 @@ ids are retried on the next Attention, after the next registration and every 30 
 does not. On resume the mod may re-ack items delivered under the immediately previous generation
 of the same native session; older ones are `stale_generation` and are re-streamed. A drop starts a
 30 s reconnect grace (same-generation re-registration cancels it); `Close{binding_changed}` starts
-a 30 s seat-level rebind grace. A stalled channel (10 min without ack while an ordinary receipt
+a 30 s rebind grace for that binding (it keeps authorizing its late acks; it does not suppress wakes or the SessionStart digest for the new binding). A stalled channel (10 min without ack while an ordinary receipt
 waits) is closed with `stalled` and refused for 10 minutes. See spec D5-D7.
 
 ## Behaviour
@@ -94,8 +94,12 @@ builds `io` from `$`. Rules (spec D5, D6):
   `turn.start` replaces the open set; a `turn.complete` removes its id and any older one.
 - **Routing.** `message` and `attention` while busy ride the next main `tool.call` result as
   `context`, only when that result is the answered variant (a deny, an error or a subagent call
-  leaves them queued). While idle they go out as one batched `$.prompt.submit`, never awaited
-  in a hook, never while a main turn is open (re-checked right before the call). `lazy` rows
+  leaves them queued). While idle (R18) they are appended as one batched `$.session.append` (hidden
+  rows, no turn), settled by that append (`watch ack --via append`), and then the content-free wake prompt
+  `herdr-threads: wake up` is submitted with `$.prompt.submit`; the turn it starts sees the rows. The
+  append is awaited before the submit, so the order is append, then submit. A denied append submits no wake
+  (items stay queued, ledger `refused` via `append`, 30 s backoff). The submit is never awaited in a hook and
+  never issued while a main turn is open (re-checked right before the call). `lazy` rows
   go to `$.session.append` at once. Each context or append delivery logs one dim `$.ui.log` line
   (`delivered N message(s)`; Claude Code adds the plugin-name prefix).
 - **Attention freshness.** A queued attention item is dropped (ledger `refused`, `attention_cleared`) when
@@ -106,7 +110,7 @@ builds `io` from `$`. Rules (spec D5, D6):
   dialog shows) submits are held until a later
   non-aborted main turn completes, or 120 s pass with no open turn and an empty prompt box
   (this overrides the draft rule). (2) A non-empty prompt box holds a submit up to 120 s. (3) One
-  submit in flight. A `drop` keeps the items while their run is connected, ledgers `refused` and backs off 30 s.
+  append-then-wake in flight. A wake `drop` keeps the pending wake only (the items are already settled), ledgers `refused` with reason `wake_drop:<why>` and backs off 30 s; the wake submit itself ledgers `submit` with no ids and reason `wake`.
 - **Channel loss.** Items are delivered only while the `watch` run that streamed them is
   connected, from its `status connected` line until its `closing`/`refused` line, its exit or a
   `session.end`. Then every queued item not in flight is dropped (ledger `refused`, reason
@@ -120,12 +124,13 @@ builds `io` from `$`. Rules (spec D5, D6):
   forgets the delivery so a re-stream is delivered); `retryable`, a non-zero exit or a missing
   line stay and are retried on every new stream line, after `status connected` and every 30 s
   while connected.
-- **Reload.** Before `$.prompt.submit` the mod writes the batch (`sid`, ids, ackable ids) to `$.state`
-  `turns.submitting` and clears it when the submit resolves. The record says `issued: false` until
-  `$.prompt.submit` has been called. If a main turn starts, a post-abort hold is set, the channel or
-  session changes or the core is disposed during that write, nothing is submitted. The items stay
-  queued (or are dropped with their run), and the record is cleared, except by a disposed core, which
-  leaves it unissued. A core that loads such a record for its
+- **Reload.** After an idle append the mod writes `turns.wake` (`sid`, time) to `$.state` and clears it when
+  the wake submit resolves without `drop`; a main `turn.start` clears it too (any turn sees the appended rows).
+  A successor that loads a `turns.wake` for its own session submits the wake once it is idle, and does not
+  append the items again. If a main turn starts, a post-abort hold is set, the channel or session changes or
+  the core is disposed during the write, no wake is submitted by that core. New idle deliveries no longer
+  write `turns.submitting`; the rest of this paragraph applies only to a record an older mod instance wrote
+  (a reload that upgrades the mod can still find one). A core that loads such a record for its
   session is busy and never re-submits or attaches those ids. A main `turn.start` whose prompt frames
   them, or the `turn.complete` of a turn it never saw start (only for an issued record; an unissued
   one is released, ledger `predecessor_not_issued`), marks them delivered via `submit` (ledger

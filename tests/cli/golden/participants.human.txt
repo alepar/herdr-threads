@@ -1,3 +1,6 @@
+  + seat-b invited (required)
+      claude top_level connected
+      claude subagent connected agent=agent-7
   - seat-a joined since 2026-09-28 08:45Z (you)
-  - seat-b invited (required)
+      claude top_level disconnected
 more: herdr-threads participants t-1 --cursor cursor-1

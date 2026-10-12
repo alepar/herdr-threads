@@ -4,7 +4,9 @@ Status: adopted 2026-10-01; B5 guards implemented (epic `ht-rzi`). Normative for
 attribution, receipt provenance and operator repair. Where an older design document requires adversarial
 proof of who is calling, this policy supersedes it. C5's guard is owned by B4 (`ht-p03.2`) and is the one
 guard still marked **required**. Amended 2026-10-02 for thread summaries and deadline extension (epic ht-1ip), and 2026-10-03 for the
-`managed_launch` binding (ht-5n6), and 2026-10-03 for human receipt waivers.
+`managed_launch` binding (ht-5n6), and 2026-10-03 for human receipt waivers, and 2026-10-10 for cooperative peer-data wording (ht-poh.41). Amended 2026-10-10 for the session-keyed binding vocabulary (ht-54r; implemented
+end to end, swept by ht-54r.25: every provenance value below has a production writer), and 2026-10-11 for absorbing
+the agy adapter into it (agy's conversation id is a harness session variable under `cooperative_env_session`).
 
 ## Abstract
 
@@ -34,7 +36,7 @@ The vision is therefore **cooperative honesty with conservative continuity**:
    it does not guess, merge, or let a newcomer take a seat's place. Losing a seat strands its threads and
    obligations; misattributing one corrupts the record. Both are worse than a short wait for the operator.
 4. **Decide against one view.** Each decision is made by the daemon, inside one transaction, against one
-   canonical picture of the world: the daemon boot the caller addressed, the seat's current binding, and the
+   canonical picture of the world: the daemon boot the caller addressed, the caller's own canonical binding, and the
    effective host observation. Clients and local files are hints.
 5. **Use only evidence that exists.** A transition may depend only on evidence the production host adapter
    actually produces. Heuristics may suggest; they never move a seat or end a binding.
@@ -46,8 +48,13 @@ explicitly, so that a weakness is a documented decision rather than a surprise.
 
 - **Seat**: a durable plugin identity for one role. Threads, invitations and receipts belong to seats.
 - **Target**: a Herdr pane address the seat is currently mapped to. A locator, not an identity.
-- **Binding**: the seat's current occupant record: harness (`claude`, `codex`, `human`), harness session,
-  execution, generation, the daemon boot and host epoch it was recorded under, and its provenance.
+- **Binding**: one occupant record of a seat, keyed by (seat, harness, native session, agent id) with the
+  agent id empty for a top-level session. A seat holds many bindings, each with its own `binding_id`, role
+  (`top_level` or `subagent`, a subagent pointing at its parent binding), execution, the mapping generation,
+  the daemon boot and host epoch it was recorded under, and its provenance. Liveness (connected or
+  disconnected, with a process fingerprint) is a separate property from identity: a disconnected binding is
+  still that session's binding. `seats.generation` is the seat's *mapping* generation, bumped only by rebind,
+  unresolve and retire, never by a check-in.
 - **Herdr boot / incarnation**: one Herdr server process. A Herdr restart is a new incarnation; terminal ids
   and pane addresses from the old one prove nothing about the new one.
 - **Daemon boot**: one herdr-threads daemon process. A daemon restart does not change the Herdr incarnation.
@@ -61,7 +68,7 @@ explicitly, so that a weakness is a documented decision rather than a surprise.
 | Path | Trigger | Recorded as |
 |---|---|---|
 | Structural reconfirm | Same terminal, same Herdr boot and incarnation | automatic, no new provenance |
-| Cooperative continuity | A resumed top-level session (SessionStart source `resume`) whose harness session id uniquely matches an unresolved seat's last binding | `cooperative_continuity` |
+| Cooperative continuity | A resumed top-level session (SessionStart source `resume`) whose harness session id uniquely matches a top-level binding (any of its bindings, not only the latest) of an unresolved seat; when several unresolved seats match, only those on which that session's binding was still open when the seat became unresolved (disconnect reason `seat_unresolved`) count, if there are any | `cooperative_continuity` |
 | Operator decision | `ht human seat rebind`, `ht human seat resolve --new-seat`, `ht human seat retire`, `ht human seat rebind --replace` (each with `--operator`) | `operator:local-user:<uid>` |
 
 Seats are never merged. Pane labels, saved addresses, terminal-id hints and Herdr's agent field may *suggest*
@@ -75,6 +82,15 @@ after the baseline are not held. Holds are durable and survive daemon restart. A
 operator rebind or fresh seat on that target; cooperative continuity on that target (C1); or, instance-wide,
 when no unresolved nonretired seats remain (implemented, nothing left to protect).
 
+**Pane-close retirement (ht-54r.14).** A pane absent from a coherent snapshot of the *same* Herdr
+incarnation retires its seat, however many session bindings the seat holds. The retirement fence disconnects
+every connected binding with reason `seat_retired` through the one `store::bindings::disconnect` transition
+(side-effect hooks run) and ends every open binding; a binding already disconnected keeps its own reason.
+Memberships retire, receipts settle recipient-retired and invitations close, all seat-level. The seat record and
+every `binding_cursors` row persist, for undo and herdr-graph. A new or unknown incarnation never retires: it
+yields unresolved seats under the C2 restore holds above, and each binding ends with reason `seat_unresolved`
+so the same session can reopen it after a rebind.
+
 **Startup enrollment.** Installed Claude/Codex top-level `SessionStart` lifecycle hooks enroll
 `HERDR_PANE_ID` through the same journaled ordinary canonical guarded seat resolver as `launch`.
 It freshly reads the actual target and decides against A2: reuse its resolved seat, or allocate only
@@ -86,7 +102,14 @@ only through ordinary guards; a resume without a usable native session cannot al
 Resolution and check-in retain their separate durable operation journals: concurrent/replayed startup
 and response loss cannot split a pane's role; an uncertain resolution remains explicitly retryable.
 A historical resolution result is revalidated against the current pane mapping before check-in.
-Enrollment itself grants no receipt authority; check-in retains `cooperative_top_level` provenance.
+A Hermes CLI top-level `on_session_start` (platform `cli`, the bridge's `cli_session_start`
+association) enrolls through the same resolver without a check-in or context offer; a qualified
+top-level CLI `pre_llm_call` enrolls the same way only when the pane has no nonretired seat
+(`Unowned`), then checks in in the same callback. Both meet the same guards; a held or unresolved
+pane is refused.
+Enrollment by a plain call records `cooperative_env_session` provenance on the binding. Receipt authority follows
+A5 (a connected top-level binding of the seat, whatever its enrollment provenance); a receipt's own provenance comes
+from the claim (A3), not from the binding's enrollment.
 Subagent callbacks, `PreToolUse` and Current/compact checks never allocate; the exact installed event
 registration must match the native payload before service or journal access.
 
@@ -99,7 +122,7 @@ live seat, the refusal offers exactly two resolutions, each as ready argv:
 
 **C4. Availability ends only on evidence.** A joined seat stays available across a daemon restart when its
 mapping is structurally reconfirmed; the open cooperative or operator binding carries forward to the new host epoch (implemented; a native binding re-registers instead, and a send before the first reconciliation pass assumes the carry rather than warning). A `managed_launch` binding is never availability, so it is not carried; it stays open and unregistered until a check-in replaces it. Availability ends when the mapping becomes
-unresolved, the seat retires, or a check-in replaces the binding.
+unresolved, the seat retires, or the binding disconnects or ends. Availability is derived per binding: a seat is available while any open, connected, registered binding of it is confirmed by the effective observation, so the last connected binding disconnecting (for example on liveness evidence) opens the seat's unavailability episode, and a check-in on a connected binding closes it (a plain-call reconnect outside a check-in leaves the episode open until the binding's next check-in; derived availability follows liveness at once).
 Herdr not answering (a timed-out or refused connection, a read that finishes past its budget) and a
 daemon-side failure to stage a capture are missing evidence, not evidence of change: they write no host
 invalidation, so seats, bindings and the published view stay **frozen** until Herdr answers (implemented,
@@ -146,21 +169,30 @@ transaction, against:
 - the effective host observation (published snapshot or newer current-target read) at the current host boot
   and epoch, never the raw per-target rows.
 
-Client-local state (`contexts/`, `intents/`) only selects what to ask; it never authorizes.
+Client-local state (`contexts/`, `intents/`) only selects what to ask; it never authorizes. Agent claims come
+from the harness environment (`cooperative_env_session`: `CLAUDE_CODE_SESSION_ID`, `CODEX_SESSION_ID`,
+`HERMES_SESSION_ID`, `ANTIGRAVITY_CONVERSATION_ID` for the CLI; the payload's session id for hooks) with the harness process's liveness
+fingerprint; the pane context journal remains a human-seat hint only, and an agent's own pending check-in
+records there are replay machinery, never its identity.
 
 **A3. Provenance values.** Exactly these, each with one meaning:
 
 | Value | Where | Meaning |
 |---|---|---|
 | `cooperative_top_level` | bindings, receipts | The pane's top-level agent claimed the action through its hook-registered check-in. Prompted, not proven: a disobedient child is indistinguishable. |
-| `cooperative_inbox_display` | receipt action observation | The selected top-level agent's text `inbox` command fully wrote and flushed a bounded page before claiming that its listed complete messages were displayed. It is a cooperative output claim, not proof that the model consumed the text. The receipt retains the binding's `cooperative_top_level` provenance separately. JSON, machine, foreign-seat and other read commands do not make this claim. |
-| `cooperative_mod_channel` | mod channel registrations only (process-local) | The pane's top-level Claude session, through the bundled herdr-threads mod's `watch` child, opened a delivery channel for the seat's current binding generation. The daemon decides it against A2 (seat resolved and not held, open `cooperative_top_level` binding with harness `claude`, native session equal to the claim's, no stall cooldown, `mod_delivery` on). It grants nothing but receiving deliveries and making `cooperative_mod_delivery` claims for that binding generation. Never on bindings or receipts. |
-| `cooperative_mod_delivery` | receipt action observation; lazy completion claim | The mod reported that a delivery path's predicate held (spec D6): for an ordinary message, that its full body entered the model's context through the mod (an answered tool result carrying the mod's context, or a `$.prompt.submit` that resolved without `drop`; or, after a plugin reload disposed the instance whose submit was still in flight, a main turn whose prompt carries the mod's frame naming the id, or the completion of the turn that was open when the successor loaded (the engine does not report the disposed instance's submit outcome)); for a lazy row, that it was appended to the transcript (`$.session.append` resolved without `deny`). A cooperative delivery claim, not proof that the model read it. The receipt keeps the binding's `cooperative_top_level` provenance separately. A truncated item never carries it. |
-| `cooperative_hook_context` | lazy completion claim | A top-level standard native hook wrote and flushed output whose context carried the lazy message's complete body, and the adapter reported that the output carries context (A8). Claimed by `CompleteInboxDelivery.via = hook_context`, which is part of the accountable operation's payload digest (as `AckModDelivered` carries the mod claim); no per-row source is stored. Not proof that the harness ingested it or the model read it. A prefix never carries it. |
+| `cooperative_inbox_display` | receipt action observation | The selected top-level agent's text `inbox` command fully wrote and flushed a bounded page before claiming that its listed complete messages were displayed. It is a cooperative output claim, not proof that the model consumed the text. The receipt retains the binding's observation provenance separately. JSON, machine, foreign-seat and other read commands do not make this claim. |
+| `cooperative_mod_channel` | mod channel registrations only (process-local) | The pane's top-level session of a harness whose adapter declares a push delivery channel (today Claude), through that harness's bundled herdr-threads mod's `watch` child, opened a delivery channel for its own binding. Channels are held per binding: every connected top-level binding of such a harness on a seat may hold one, and its deliveries, closes, grace and stall cooldown are that binding's alone. The daemon decides the registration against A2 (seat resolved and not held; the claim's key of seat, a harness that declares a push delivery channel, native session and no agent id names an open, connected, top-level binding of that harness (whatever its observation provenance); no stall cooldown for that binding; `mod_delivery` on). A subagent claim, an unknown session or a disconnected binding holds no channel, and a binding that disconnects or ends loses its channel. It grants nothing but receiving that binding's deliveries and making `cooperative_mod_delivery` claims through that binding. Never on bindings or receipts. |
+| `cooperative_mod_delivery` | receipt action observation; lazy completion claim | The mod reported that a delivery path's predicate held (spec D6): for an ordinary message, that its full body entered the model's context through the mod (an answered tool result carrying the mod's context, or, while idle, a `$.session.append` of its frame that resolved without `deny` (the mod then submits the content-free wake prompt `herdr-threads: wake up`, which carries no item); the `$.prompt.submit` wording applies only to a predecessor record written by an older mod instance: a submit that resolved without `drop`; or, after a plugin reload disposed the instance whose submit was still in flight, a main turn whose prompt carries the mod's frame naming the id, or the completion of the turn that was open when the successor loaded (the engine does not report the disposed instance's submit outcome)); for a lazy row, that it was appended to the transcript (`$.session.append` resolved without `deny`). The ACK is decided against the channel's own binding (the one the claim's key names) and the receipt records that binding as its ACK binding; the seat's receipt still settles once, so a second binding's ACK of the same id is `already_settled`. A cooperative delivery claim, not proof that the model read it. The receipt keeps the binding's observation provenance separately. A truncated item never carries it. |
+| `cooperative_hook_delivery` | receipt action observation; lazy completion claim | The top-level hook of a harness whose adapter declares hook-pull delivery reported that it found the id's frame header at the start of a line of a hook-injected step it decoded from the session's transcript, after a `DeliveryPull` showed the id (spec delivery-policy DP5/DP6). The daemon decides it against A2 and additionally requires that it recorded the id as offered to that binding (the connected top-level binding the claim's key names, at its binding generation) by a `DeliveryPull` (process-local offered ledger). A cooperative delivery claim, not proof that the model read it. The receipt keeps the binding's observation provenance separately. A truncated item never carries it. |
+| `cooperative_hook_context` | lazy completion claim | A top-level standard native hook **of a harness whose adapter declares no hook-pull delivery** wrote and flushed output whose context carried the lazy message's complete body, and the adapter reported that the output carries context (A8). Claimed by `CompleteInboxDelivery.via = hook_context`, which is part of the accountable operation's payload digest (as `AckModDelivered` carries the mod claim); no per-row source is stored. Not proof that the harness ingested it or the model read it. A prefix never carries it. The daemon refuses this claim from a hook-pull binding. |
 | `operator_human` | bindings, receipts | A person declared this pane human with `ht human me init` and acted from it. Best effort: refused where the system sees evidence of an agent (A4). |
 | `cooperative_continuity` | seat rebinds only | The seat was reattached because a resumed harness session id matched (C1). Never on receipts. |
 | `operator:local-user:<uid>` | audit of administrative decisions | The local account made a repair or recovery decision. Never on receipts. |
-| `managed_launch` | bindings only | Herdr's guarded `agent.start` in this pane was observed starting the harness; the agent has not checked in. Never on receipts; authorizes nothing but a wake prompt (an ordinary wake or a soft-deadline poke) to the bound harness. The daemon records it only after the launcher's host-correlated `ObservedStartup` (never on an unconfirmed start), only on a seat with no open binding, decided against the effective observation (A2). Its session and execution are `launch:` placeholders no caller claim can match, it has no `registered_at`, and it establishes no availability. Receipt deadlines start at send time independently of this binding. |
+| `managed_launch` | bindings only | Herdr's guarded `agent.start` in this pane was observed starting the harness; the agent has not checked in. Never on receipts; authorizes nothing but a wake prompt (an ordinary wake or a soft-deadline poke) to the bound harness. The daemon records it only after the launcher's host-correlated `ObservedStartup` (never on an unconfirmed start), on any seat, beside whatever bindings the seat already holds, decided against the effective observation (A2). It carries the liveness fingerprint (pid and start time, from host process info) of the one process Herdr reports in the pane's foreground besides its shell; with none or several observable, nothing is recorded. Its session and execution are `launch:` placeholders no caller claim can match, it has no `registered_at`, it keeps the seat generation, and it establishes no availability. Receipt deadlines start at send time independently of this binding. |
+| `cooperative_env_session` | binding claims | The CLI or a hook took the caller's session id from its harness environment or hook payload (`CLAUDE_CODE_SESSION_ID`; `CODEX_SESSION_ID` with `CODEX_THREAD_ID`; `HERMES_SESSION_ID`; and the session variable a registered adapter declares in its caller shape, today agy's `ANTIGRAVITY_CONVERSATION_ID`), choosing the innermost harness among the caller's ancestors. Cooperative and prompted, not native attestation. Never on receipts. |
+| `cooperative_hook_agent` | binding claims | herdr-threads' own Claude PreToolUse hook inserted `--agent-id=<agent_id>` into a recognized `herdr-threads`/`ht` command, attributing the call to that subagent. Shapes the hook cannot recognize stay attributed to the parent session. Never on receipts. |
+| `liveness_process_exit` | binding disconnections only | The binding's fingerprinted process (pid and start time) no longer exists, or the pid now has a different start time. Structural evidence; it disconnects the binding and never ends it, moves a seat or merges seats. |
+| `liveness_end_event` | binding disconnections only | The harness reported an end event for this session (Codex SessionEnd/SubagentStop, Claude SubagentStop, Hermes `on_session_finalize`/`subagent_stop`; never Hermes `on_session_end`, which fires after every turn). The hook sends a `BindingEvent` for the pane's seat; the daemon disconnects the named binding (a session end also disconnects the subagents attached to it) and never ends it, moves a seat or merges seats. An unknown or already disconnected binding is a no-op. A `BindingEvent` is not an accountable seat write, so a subagent claim may report one; a subagent start enrolls only the subagent binding (the parent first, if needed). |
 | `canonical_binding_composer` | archival sample association only | The daemon associated a fresh registered-parser composer read with an already registered cooperative top-level binding after exact canonical binding, structural, activity and timing validation. The harness/session/execution in the association come from that binding; the host does not attest occupancy or current execution. This value authorizes no seat, binding, membership, receipt or invitation transition. |
 | `daemon_lifecycle` | automatic archive events only | The daemon applied the configured quiet-channel lifecycle policy after complete canonical validation. No actor seat, binding or receipt claim; no membership or continuity change. |
 | `legacy_local_journal_hint` | handoff archival vetoes only | A bounded read-only scan found a pending compound in this instance's intents directory. It can only prevent automatic archival; it authorizes no action and claims no native execution. |
@@ -199,16 +231,146 @@ No send or inbox operation automatically resolves this work, no classified sourc
 model open work, and summary closure never changes receipt state or installs global instructions.
 
 **A4. Binding-kind transitions.**
-- *Human to agent*: a hooked agent's lifecycle check-in replaces a human binding. Allowed.
-- *Agent to agent, same seat*: a lifecycle check-in (startup, `/clear`, resume) replaces the binding. Allowed.
-  A `managed_launch` binding is replaced this way, and only this way: a Current (tool-boundary) check-in never
-  adopts or registers it, and C1 continuity never matches it. A lifecycle check-in prepared one seat
-  generation before the launch was recorded (the launched agent checking in while `launch` reports it) is
-  accepted against that binding (implemented, ht-5n6).
-- *Agent to human*: the daemon refuses a human lifecycle check-in while the open binding is
-  `cooperative_top_level` or `managed_launch`, unless the request is `--operator` (implemented). `ht human me init` additionally refuses
-  when agent evidence is present: one of the three allowlisted environment markers (`CLAUDECODE`,
-  `CODEX_SANDBOX`, `CODEX_SANDBOX_NETWORK_DISABLED`), or Herdr reporting a registered adapter's recognized native host kind in the
+- *Binding transitions (ht-54r.3)*, decided by the daemon against the canonical view (A2):
+  enrollment adds a binding for an unknown (seat, harness, session, agent id) and never ends another one,
+  idempotently per key; a lifecycle check-in reconnects and re-registers the session's own binding in place;
+  a plain call touches its binding and refreshes its fingerprint, and reconnects it only when that binding is
+  open, on a resolved seat, disconnected for `liveness_process_exit` or `migrated`, the call carries a liveness
+  fingerprint and no connected lifecycle-claimed top-level binding (a `managed_launch` placeholder does not
+  count) of the same instance and harness already holds that fingerprint (spec §3). A binding disconnected `superseded`, `liveness_end_event`, `seat_retired`,
+  `seat_unresolved` or `replaced` never reconnects on a plain call: the call is served as that binding
+  (attribution and cursor) and its liveness is unchanged, so a stale caller never flaps it. A plain reconnect records the call's fingerprint and keeps the binding's lifecycle claim
+  time, placement, provenance and cursors; it runs no enroll hook, so it never supersedes, never replaces a
+  placeholder and never fast-forwards; a session unresolved with its seat and seen again after the seat is rebound reopens
+  its own binding (ended only as `seat_unresolved`; cursors kept), while a binding ended any other way is
+  never reopened; a subagent claim attaches a `subagent` binding to its parent (enrolling the parent first
+  when it is unknown), attachment only; a session id seen on another seat gets a new binding on that seat and
+  nothing moves or merges (cross-pane resume). Lineage (copy-before-supersede of a predecessor's cursors) is
+  specified under *Lineage* below (ht-54r.20, ht-54r.17). A person and an agent still never hold a seat
+  together and the first agent lifecycle check-in replaces `managed_launch` (both below, ended as
+  `replaced`, through the enroll-hook registry and the one disconnect transition; ht-54r.4). A plain human call never enrolls a binding. Re-adoption (ht-54r.24) is the plain reconnect of a V32-migrated binding (`migrated`, disconnected for reason `migrated`); it also refreshes the placement and seeds its cursors (`Readopt`), and happens on any agent call whose claim matches its stored session exactly (the key the migration kept), unless a connected lifecycle-claimed binding already holds the call's fingerprint (then the row stays `migrated`); a claim with another session enrolls its own binding and nothing is matched by heuristic.
+- *Binding liveness (ht-54r.10)*: a binding is connected or disconnected. Disconnection never ends a
+  binding, moves a seat or merges seats, and every disconnect (end event, process exit, pane close,
+  supersede, seat retirement or unresolve) goes through the one `store::bindings::disconnect`
+  transition, which records the reason (`liveness_process_exit`, `liveness_end_event`, `seat_retired`,
+  `seat_unresolved`, `superseded`, plus `replaced` and `migrated`) and runs the registered side-effect
+  hooks. A binding (re)connects on enrollment, on a lifecycle check-in, or on a plain call
+  carrying its fingerprint after it was disconnected because its process exited or by migration
+  (re-adoption), unless a connected lifecycle-claimed binding already holds that process. A binding
+  disconnected as superseded, by an end event, by seat retirement or unresolve stays disconnected on a
+  plain call: the call is served as that binding (attribution and cursor), and its liveness is unchanged,
+  so a stale caller never flaps. Same-process supersede: an enrollment by a lifecycle check-in, or a lifecycle check-in, of a
+  top-level binding disconnects every other connected top-level binding of the same instance and harness with the same
+  process fingerprint (pid and start time). This is structural evidence, not a heuristic (a reused pid
+  has a different start time and never matches); the most recent claimer wins, so switching back to an
+  older session in the same process disconnects the one just left. A plain call never supersedes: a
+  binding enrolled by a plain call (provenance `cooperative_env_session`, recorded honestly and never
+  rewritten by a later tool-boundary check-in) never supersedes; in the liveness worker's same-process
+  rule it ranks below every lifecycle-claimed binding of that process (it can lose, never win; this
+  includes a V32-migrated binding re-adopted by a plain call), a `managed_launch` placeholder ranks the
+  same way (it is no session: it can lose, never win), and a group with no lifecycle-claimed session is
+  left as it is, so a delegate child's early CLI call never disconnects its parent and a placeholder never
+  disconnects the session of its process. When `subagent_start`
+  registers a child session, the child's connected top-level plain-call row on that seat is disconnected
+  `superseded` (the registered subagent binding replaces it), so the child is read-only from then on.
+  Subagents never supersede and are never superseded, and a supersede-induced disconnect never triggers
+  fast-forward. A superseded binding never reconnects on a plain call.
+  A lineage successor
+  supersedes its predecessor only after copying its cursors (except the plain-first late link, see
+  *Lineage*). A seat is active while any open binding is
+  connected, or while its open human binding sits on a resolved seat.
+- *Liveness worker (ht-54r.23)*: the daemon re-checks the process fingerprint of every connected,
+  open, non-human binding on a cadence (5 s) and, for the candidate's seat, before each wake decision.
+  A binding whose process no longer exists, whose pid now has another start time, or that is
+  connected with no fingerprint is disconnected `liveness_process_exit` (decision 9: every
+  connected agent binding without a fingerprint is disconnected, migrated or not; the migrated 24 h
+  grace is archival only; human bindings stay exempt). A C1 reattachment is a lifecycle check-in
+  through the general resolver: it reopens the session's own binding when the unresolve ended it (its
+  cursors kept), else enrolls one at the seat's read position, runs the enroll hooks, and records the
+  hook's current fingerprint (a retried intent submits the current one, never the journaled one); a
+  reattachment request without one is refused `liveness_fingerprint_required` (decision 9). Among connected top-level bindings
+  of one instance and harness sharing one fingerprint, the latest lifecycle claim stays connected
+  and the others, plain-call-only bindings and `managed_launch` placeholders included, are disconnected
+  `superseded`; neither of those two kinds ever wins, and a group with no lifecycle-claimed session is
+  left as it is (subagents excluded). Disconnection on liveness evidence
+  is structural evidence, never a heuristic: it goes through the one `store::bindings::disconnect`
+  transition, and the worker never ends a binding, retires, moves or merges a seat. It never judges a
+  human binding (a person has no harness process), and it skips seats that are unresolved or retired
+  and every seat of an instance under a recovery hold, so a Herdr restart never disconnects through the
+  worker: the reconciler's C2 path owns those seats. A verdict is applied only if the binding is still
+  connected with the fingerprint it was judged on. Availability follows liveness per binding (C4).
+- *Refusals*: an agent call without a harness session id (empty, a `launch:` placeholder, and from
+  a `plugin_context:` session), reads included, is refused with `session_claim_required`. An agent
+  call that would enroll, reconnect or reopen a binding without a liveness fingerprint is refused with
+  `liveness_fingerprint_required`. Both rules are enforced: every CLI call and hook of an agent sends its
+  environment's session and fingerprint. The CLI refuses before any daemon call an agent whose session id is
+  unset (`session_claim_required`), whose harness process cannot be fingerprinted
+  (`liveness_fingerprint_required`), or that runs under `codex app-server --managed-daemon`
+  (`managed_daemon_refused`, client-local). A process with no harness ancestor and no harness marker is a
+  person and keeps the pane-context path; a person's shell cannot act through an agent seat.
+- *Subagent read-only* (ht-54r.20, ht-54r.58): the daemon decides read-only from the role on the binding
+  row it resolves (A2), at every accountable entry point: check-in, handoff, create thread, invite, join,
+  accept, reject, send, ACK, display ACK, mod-delivery ACK, completion of an inbox delivery, leave, topic
+  and name changes, archive and reopen. A claim that resolves to a `subagent` binding row (a Hermes
+  registered child whose CLI claim is top-level-shaped, say) is refused `subagent_read_only` in the
+  deciding transaction. A subagent-shaped claim (the declared subagent role, or any agent id) is
+  additionally refused before dispatch: an early refusal with the stable code, never the authority.
+  Subagents read, summarize and advance their own binding's cursor: a subagent's text `inbox` displays
+  its own stream and sends only `AdvanceCursors` (never a display ACK or a delivery completion).
+  Where the subagent has no stream of its own (no recognizable agent id in its environment, or a daemon
+  without per-binding cursors), its text `inbox` is the plain read-only read: it carries no claim, moves
+  no cursor and settles nothing.
+  Client-side role derivation fails closed: a malformed subagent marker (a `CODEX_THREAD_ID` that is not
+  a valid id) is refused, never read as the top-level session. This is cooperative, on the recognized
+  claim: a Claude shape the hook cannot recognize stays attributed to the parent session (the accepted
+  limit from ht-54r.6) and is not refused.
+- *Receipt settlement by a top-level binding* (ht-54r.20): receipt obligations stay per seat. The first
+  connected top-level binding of the seat to ACK or fully display a message settles the obligation, once;
+  the receipt records that binding as `ack_binding_id` (beside the historical `ack_generation`, which is
+  the mapping generation). A later ACK of an already settled obligation, by any binding, succeeds with no
+  change and the first `ack_binding_id` stays. An ACK by a binding disconnected by
+  process exit or migration reconnects it first (a plain call carrying its live fingerprint does) and then
+  settles. A binding disconnected as superseded, ended by a harness end event or retired with its seat is
+  not reconnected by a plain call (only a lifecycle check-in of that session reclaims it), so its ACK is
+  refused as a stale-context ACK (`caller_unverified`), as is a claim without a fingerprint. Each ordinary send records the acting
+  binding as `messages.sender_binding_id`; service-authored sends leave it empty.
+- *Lineage* (ht-54r.20): a successor copies its predecessor's cursors, then supersedes it, only when the
+  predecessor is a top-level binding of the same seat and harness with the same process fingerprint (pid
+  and start time) as the successor's claim; otherwise the hint is ignored and the successor seeds fresh.
+  Only a successor born with the lineage copies cursors; linking an already enrolled successor records
+  `lineage_from` and moves no cursor (it keeps its own read position, so it never passes mail the
+  predecessor displayed after the successor enrolled; main review I2).
+  Hermes transport (ht-54r.17): the hint is the `parent_session_id` of a non-delegate top-level
+  `pre_llm_call` (a compression or `/branch` successor), carried as `CheckIn.lineage_parent`. The daemon
+  resolves it to the open top-level Hermes binding of that session on the claim's seat and verifies it as
+  above; a delegate child (`platform` `subagent`) is answered locally by the bridge and is never lineage,
+  and a successor whose first claim is a plain CLI call enrolls at the seat maximum and is linked by its
+  next `pre_llm_call` without moving its cursors (accepted limit: it inherits the seat maximum, not the
+  predecessor's position). Without a parent in the payload, `/new` and compression alike are
+  a new binding.
+- *Shared seat*: memberships, invitations and receipts belong to the seat, so any binding's join or leave
+  applies to every binding of the seat. Bindings of one seat are not separate participants.
+- *Human to agent* (ht-54r.4): a human-mode seat holds only its human binding. Any agent binding enrolled or
+  reconnected on the seat, and any plain agent call there (a touch included), ends the human binding
+  (disconnect `replaced`, then `ended_at`). Allowed. A resume after that end enrolls a fresh binding: an ended
+  row is never reopened. Human bindings are exempt from the liveness sweep (no process fingerprint; the seat
+  stays human-held until an agent replaces it). Receipt waivers and the wake exclusion key on "the seat holds
+  an open human binding", not on the seat's latest binding.
+- *Agent to agent, same seat*: a lifecycle check-in (startup, `/clear`, resume) adds the session's own binding, or reconnects it; it
+  disconnects another binding only through the same-process rule or lineage (A4). Allowed. A check-in by a different
+  agent harness on the same seat adds its own binding; no client-local context of another harness is retired.
+  A `managed_launch` placeholder is replaced by the first top-level agent binding of the same harness that a
+  lifecycle check-in enrolls or reconnects on the seat, and only by that: other bindings, other harnesses'
+  placeholders and the person's binding are untouched, a Current (tool-boundary) check-in never adopts or
+  registers it, a `launch:` session is never a caller, C1 continuity never matches it, and it never supersedes
+  a session of the same process (it is no session). The launch keeps the seat generation, so no generation
+  allowance exists (ht-54r.4).
+- *Agent to human*: the daemon refuses a human lifecycle check-in while any agent binding of the seat
+  (`cooperative_*` or `managed_launch`) is connected, unless the request is `--operator`; a successful
+  `ht human me init` ends the seat's disconnected agent bindings (`ended_at`), and with `--operator` also the
+  connected ones (disconnect `replaced` first) (implemented, ht-54r.4). `ht human me init` additionally refuses
+  when agent evidence is present: one of the person-guard environment markers registered adapters declare (today `CLAUDECODE`,
+  `CODEX_SANDBOX`, `CODEX_SANDBOX_NETWORK_DISABLED`, `ANTIGRAVITY_AGENT`), or Herdr reporting a registered adapter's recognized native host kind in the
   pane. Registry metadata alone never establishes native recognition, continuity or caller authority.
   Unregistered agent kinds are not evidence, and a failed Herdr read counts as no evidence. `--operator`
   overrides the refusal through a local per-execution mark set only after the daemon accepts the request
@@ -218,17 +380,38 @@ model open work, and summary closure never changes receipt state or installs glo
 - *Wake*: a wake prompt goes only to a native host kind declared by the bound registered adapter
   (implemented). Recognized aliases do not change the binding or merge seats. A missing composer
   provider defers ordinary idle/done wake; soft poke and stash/restore also send no keys.
+  *Per binding* (ht-54r.13): a seat may hold several bindings, and a wake is decided per connected
+  top-level binding. A wake is reserved per seat (the fence is the seat's mapping generation, so a binding
+  enrolling or reading its mail does not void it) and names as targets the open, connected, top-level,
+  non-human bindings placed on the observed terminal that have something to act on (seat-level attention
+  such as an invitation, receipt or warning reaches every one of them; otherwise the binding's own unread
+  mail). Subagent, disconnected, ended and human bindings are never targets, and a seat that holds a human
+  binding is never woken. A target whose mod channel is live and not stalled is woken through that channel
+  and is never also typed to. The composer wake (typing into the pane) goes at most once per seat per wake:
+  only to the one target whose fingerprint pid is among Herdr's pane foreground processes (the non-shell
+  entries of `pane.process_info`; a harness launcher and its native child, and any helper the harness
+  runs in its foreground process group, are all foreground), and with several targets only when Herdr
+  reports the pane idle. Membership is exact pid equality: an ancestor or descendant of a foreground
+  process is not a match. No match, several matches, no fingerprint or no foreground report means no composer wake, with
+  no fallback to the latest claim or touch, even for a seat with one target (nothing is guessed, and the
+  refusal is pre-send so the reminder ladder does not climb). Only a reservation that names no targets
+  (a legacy source) keeps the single-harness rule. A soft poke follows the same targets and rule.
+  Verified 2026-10-11 (`evidence/ht-54r.89/summary.md`, derived fingerprints, no harness logged in): the
+  fingerprint pid is a foreground process for Claude 2.1.296 (live: `CLAUDE_PID` among seven foreground
+  processes), Codex 0.162.1 native and via npm (node launcher plus native child), Hermes v0.21.5 and
+  agy 1.3.3. Unverified: any real binding row, Hermes through `herdr-threads launch`, and a harness
+  running tools. A fingerprint outside the foreground group (an ancestor or descendant) is not
+  matched and was not observed.
 - *Poke*: a soft-deadline poke is the fixed reminder
   `herdr-threads: receipt due in <N>s on <thread-ids>; run herdr-threads inbox` (thread ids only),
   submitted through the wake dispatcher and its limits to the seat's bound native agent of the bound
   harness. It is decided from a fresh observation immediately before the prompt, only when the pane is not
-  focused, the composer is empty, and the agent is idle/done. Working agents are deferred even
-  where a historical recipe declares `poke_during_turn` from captured evidence
-  (`docs/evidence/poke-spike/findings.md`). Existing exact-version recipe declarations remain
+  focused, the composer is empty, and the agent is idle/done. Working agents are
+  always deferred; there is no turn-time poke capability (ht-poh.42). Existing exact-version recipe declarations remain
   historical captured qualification, not operational admission. Ordinary daemon observation resolves
   executables without probing runtime metadata; absent current-runtime qualification declares neither
   capability. Valid contract input, historical version evidence and manifest/release ladders cannot
-  qualify the current runtime or grant compact recovery, composer stash, turn-time poke or native
+  qualify the current runtime or grant compact recovery, composer stash or native
   receipts. Until a separately safe current-runtime qualifier exists, richer behavior remains unavailable.
   It is never sent in an approval or
   question state or an unknown state. A poke carries no authority and changes no receipt state other than
@@ -237,7 +420,9 @@ model open work, and summary closure never changes receipt state or installs glo
   when the poke itself is eligible and needs no stash.
 - *Mod channel*: while a mod channel is live for a seat (from registration until its stream ends, through a
   30 s reconnect grace after a drop, and through a 30 s seat-level rebind grace after `Close{binding_changed}`),
-  no native wake prompt or poke goes to that seat and the Claude check-in results omit the attention digest
+  and only when that adapter's delivery policy says the harness is woken by the channel (`idle_wake: Channel`),
+  no native wake prompt or poke goes to a binding it serves (the question is per binding: a seat's other
+  bindings without a channel are still woken natively) and that harness's check-in results omit the attention digest
   and ready commands; pending attention stays pending and deadlines and hard-deadline warnings keep running,
   reaching the agent through the mod. A grace that expires, or a `Close` for `retired`, `unresolved`,
   `stalled`, `disabled` or `stopping`, removes the channel and kicks the wake lane. *Stall handover*: a
@@ -275,8 +460,7 @@ model open work, and summary closure never changes receipt state or installs glo
   - *Verification is read-only.* A held marker yields an unsubmitted diagnostic/uncertain delivery;
     verification never sends an additional Enter, which could submit newly typed user text.
   - *During a turn.* Unsolicited attention never queues into a reported active turn. The dispatcher
-    refuses ActiveTurn and both native prompt entry points require idle/done, regardless of an old
-    turn-time capability declaration. Pending obligations wait for a later eligible observation.
+    refuses ActiveTurn and both native prompt entry points require idle/done. Pending obligations wait for a later eligible observation.
     Composer emptiness never establishes idle status. These host status observations are sampled
     screen/lifecycle inference, not independent proof of physical turn completion.
   - *Post-send verification.* The read-only check never changes the composer or sends keys.
@@ -287,17 +471,26 @@ model open work, and summary closure never changes receipt state or installs glo
   - *Retry spacing.* A seat whose poke was skipped or failed is re-evaluated no sooner than the wake retry
     spacing afterwards, so an ineligible seat costs one observation per spacing rather than one per tick.
     The spacing is in memory; a restart re-evaluates once.
+- *Hook-pull delivery*: a harness whose adapter declares `HookPull` has no channel and no wake change: the
+  existing native wake applies, and its turn's `PreInvocation` pull delivers. Tool-boundary check-ins of such a
+  seat omit the attention digest and ready commands; its lifecycle check-in keeps them. Pending attention stays
+  pending, and deadlines and hard-deadline warnings keep running.
 
 **A5. Who may do what.**
 
+Delivery and authority gates read the binding's role, liveness and harness, never its observation provenance.
+
 | Action | Who |
 |---|---|
-| ACK, accept, reject an ordinary invitation, send, leave, archive, reopen | the seat's current binding (top-level agent or declared human) |
-| display ACK after text inbox output | the current top-level agent binding, for exact canonical pending agent receipts fully displayed on the page; the daemon decides eligibility again before settlement |
-| open a mod delivery channel (`watch`) | the pane's top-level Claude session through its mod, for the current `cooperative_top_level` binding with the matching native session; recorded as `cooperative_mod_channel`; it grants no other row |
-| mod delivery ACK (`watch ack`) | the current top-level Claude binding with a live channel (grace included) for its binding generation, or, on resume, for ids delivered under the immediately previous generation of the same native session; the daemon decides each id again before settlement and refuses unknown, unaddressed and truncated ids |
+| ACK, accept, reject an ordinary invitation, send, leave, archive, reopen | a connected top-level binding of the seat (top-level agent or declared human); never a subagent binding |
+| advance one's own binding's read cursors (`AdvanceCursors`, a display of its own stream) | any binding of the seat, subagent bindings included; it moves only the caller's own binding cursors and settles nothing |
+| display ACK after text inbox output | any connected top-level agent binding of the seat, for exact canonical pending agent receipts fully displayed on the page; the daemon decides eligibility again before settlement |
+| open a mod delivery channel (`watch`) | the pane's top-level session of a push-channel harness through its mod, for its own connected top-level binding (the claim's native session); several bindings of one seat each hold their own; recorded as `cooperative_mod_channel`; it grants no other row |
+| mod delivery ACK (`watch ack`) | the connected top-level binding of a push-channel harness that holds a live channel (grace included), the one the claim's key names; the daemon decides each id again before settlement and refuses unknown, unaddressed and truncated ids |
+| hook-pull delivery (`DeliveryPull`, `DeliveryConfirm`) | the connected top-level binding of a hook-pull harness that the claim's key (seat, harness, native session) names, from any of its top-level hooks (including `Stop`); settlement only for ids the daemon offered to that binding; the daemon decides each id against A2 again; recorded as `cooperative_hook_delivery` |
+| set `wake_on` (`wake-on [nudge\|all]`) | a connected top-level binding of the seat (cooperative; changes wake eligibility only, never receipts or authority) |
 | check in | the pane's top-level agent (hook) or a human via `ht human me init` |
-| record a launch binding (`managed_launch`) | `launch`, after a host-correlated startup, on a seat with no open binding; it grants no row above |
+| record a launch binding (`managed_launch`) | `launch`, after a host-correlated startup with one observable started process; it grants no row above |
 | rebind, fresh seat, retire, replace, orphan-thread invite | operator |
 | service-authored send, notify, and managed-thread controls (ensure, invite, topic, release, archive, reopen) | the registered service connection |
 | summary, summary job, summary submit | the seat's binding or its children (summary workers), all under the seat's claim: read-mostly; submit only stores a validated block for a live lease issued to the seat |
@@ -306,8 +499,14 @@ model open work, and summary closure never changes receipt state or installs glo
 
 Automatic archival changes only the channel archive flag and appends a seatless lifecycle event. It
 never retires or moves a seat, leaves a membership, settles a receipt or invitation, or releases a
-requirement. Explicit reopen starts fresh grace. Human, unregistered, unresolved, held and uncertain
-joined occupants block automatic cleanup. Pending compound handoffs remain protected indefinitely;
+requirement. Explicit reopen starts fresh grace. A thread archives after one quiet hour. Only an
+active member blocks: a seat with a connected binding (still needing the idle sample, so
+unregistered, held and uncertain occupants block) or a human seat while its pane exists. A member
+whose seat has no connected binding, an unresolved or retired seat, and the pending invitations to
+and obligations owed by such a seat do not block. A binding migrated from a pre-session-keyed
+database counts as active for 24 hours after the upgrade, so an upgrade causes no archival wave. The
+archival scan restarts only on membership, member-liveness (binding connect, disconnect, end) and
+seat-lifecycle changes, not on fingerprint refreshes, cursor advances or other seat writes. Pending compound handoffs remain protected indefinitely;
 completed compound identities are absorbing tombstones. Exact historical completed retry may present
 and clean up its retained local intent, even after archival or binding change, but cannot resume any
 create/invite/send/launch side effect or revive protection. A legacy hint is reconciled only by exact
@@ -315,6 +514,20 @@ immutable compound identity; absence or removal of a local file never completes 
 
 The operator never ACKs, accepts, rejects invitations, sends or advances a checkpoint.
 The service never ACKs, accepts or rejects invitations and is never a receipt recipient.
+
+A service-required attachment may reuse a pending ordinary invitation only if no
+requirement episode has ever referenced it. Once referenced, the invitation remains
+linked to that one immutable requirement, including after release. Reattachment creates
+a fresh requirement-owned invitation with its own timing; it preserves any independent
+ordinary invitation, its timing and attribution, and the released requirement history.
+Releasing the fresh pending requirement cancels only its requirement-owned invitation.
+Every new requirement still needs exact-revision acceptance by the addressed seat;
+reattachment never accepts membership or settles receipts. Exact operation replay returns
+its historical result without reactivating a released requirement. Native ordinary
+acceptance selects the newest pending, noncancelled, nonrejected invitation before any
+accepted historical invitation, consistently at permit preparation and acceptance.
+This lets the seat explicitly settle a preserved ordinary invitation after accepting
+a newer requirement without creating a second join interval.
 
 An ordinary invitation rejection is the addressed seat's explicit, accountable decision about one
 invitation episode, with a nonblank reason of at most 4096 UTF-8 bytes. It retains the actor seat, binding
@@ -339,6 +552,36 @@ memberships retain their timed participation contract: imposing a requirement on
 voluntary invitation creates a fresh timed episode and preserves the old invitation, origin and keyed
 outcome. Releasing that requirement leaves the original Lazy invitation discoverable without a timer.
 Explicit human/operator invitation semantics remain separate and unchanged.
+
+**Automatic pair reservation.** `EnsureDirectThread` resolves one immutable canonical channel for
+exactly the caller and recipient seats, under the caller's ordinary `cooperative_top_level` or
+`operator_human` claim and the A2 deciding transaction. Initial creation joins only the caller and
+creates an ordinary invitation for the recipient; reservation is never acceptance, check-in or ACK.
+All ordinary, operator and service enrollment paths preserve the two-seat participant universe;
+services cannot adopt or own these channels. Invited seats remain reserved even before acceptance.
+Explicit leave, rejection and archival require ordinary join/accept/reinvite/reopen repair, never
+automatic resurrection or replacement. Exact operation replay returns historical selection before
+fresh A2/lifecycle checks; it grants no permission for a new send. Direct markers freeze the exact
+other pair seat independently of ACK requests and are validated at preparation and publication,
+including corrupt participant/audience refusal. Lazy messages retain A8. An absent Ensure creation policy preserves the historical
+initial timed invitation and exact `ThreadCreated` result bytes. Explicit creation policy
+uses a bounded `DirectThreadEnsured` result: canonical thread/recipient, the selection
+outcome (created, existing pending or already joined), and the actual pending
+invitation's ID, episode, confirmation, effective deadline and inviter. This is the
+canonical selection at the original keyed decision; replay never refreshes the
+policy or deadline, and local copies remain hints. Historical NULL confirmation is
+presented as effective RequireAck while preserving its original deadline and NULL
+inviter. A new explicit RequireAck from a Human issuer is refused, matching ordinary
+Invite; existing episodes and historical absent-policy creation remain unchanged.
+The additive `direct_threads.ensure_creation_policy_v1`
+capability admits an explicit frozen initial Lazy or RequireAck policy and optional
+positive duration. Only creation of a new pair applies it; existing pending or joined
+participation keeps its original policy, inviter and deadline, and left/rejected
+participation still requires explicit repair. Modern direct sends and automatic
+handoffs freeze Lazy by default and require this capability before publication or
+canonical/native effects. A requested body ACK has its own send-time deadline and
+cannot accept an invitation or settle participation. Pair identity remains with its channel history;
+there is no seat merge, remapping or generation rollover and no new provenance value.
 
 **Voluntary self-join.** An explicit `join THREAD` enrolls the caller's seat in an active
 thread of its instance under the ordinary A2 deciding transaction and its existing
@@ -431,11 +674,30 @@ recipients. A rejection notice retains its native seat author, exact invitation 
 its audience is the members at the rejection decision plus the rejecting seat, never later members.
 Only the exact native warning backed by the retained rejection record is classified this way.
 Historical info rejection events remain unchanged on replay. Rejection notices are passive for every
-recipient: they create no wake, poke, receipt or ACK obligation. A committed check-in settles only
-the bounded prefix of attributed events it carries to the exact current binding generation and
-execution. A global decision watermark cannot settle uncarried events, including late attribution.
+recipient: they create no wake, poke, receipt or ACK obligation. A committed check-in, or a
+hook-pull harness's `DeliveryPull` page or a capable Watch presentation page, settles only the
+bounded prefix of attributed events it carries to the exact checking-in or pulling binding:
+the notice frontier and warning offer frontier are kept per binding, so another session's
+check-in or lifecycle start neither settles nor resets them, and a binding's digest token names
+that binding. The pull settles before it replies, for the connected top-level binding its claim
+names; nothing is transcript-confirmed and no provenance is recorded. The pull's settle refuses
+unless the carried notices are still exactly that binding's unoffered prefix. Check-in, Hook
+and capable Watch share that binding's exact notice frontier: fresh allocation carries each
+notice once per binding, while bounded recovery may restream the same frozen outbox token.
+The pull's version includes the newest notice pending for that binding, so an unchanged reply
+never hides one; notices never wake. A subagent binding never checks in and settles nothing:
+its hook reads its own binding's digest (unread mail past its own cursor, notices above its
+parent's frontier) and presents it with read-only wording, compared only with its own client-local
+mark (a hint keyed by the binding key, never authority). A caller-bound inbox read decides its
+warning cutoff and informational-notice view against the reading binding's own frontiers
+(a subagent's against its parent's until it has its own), never a sibling's. Seat-level readers
+(wake, receipts, an unbound inbox) follow the seat's newest open top-level binding, a connected
+one first. The mod channel is held per connected top-level binding of a push-channel harness,
+not per seat. A global decision watermark cannot settle uncarried events, including late attribution.
 History and immutable operation results remain readable. A successor occupant gets its own offers;
-response loss can lose an informational offer after commitment, and an explicit operation retry
+response loss can lose an informational offer after commitment, and so can a hook-pull injection
+that the harness accepts but the model never sees (an agy `systemMessage` that silently misses;
+notices are not transcript-confirmed, ht-7jh); an explicit operation retry
 can present the retained result again. Delivery is neither invitation acceptance nor receipt ACK,
 agreement, adoption or task completion. Logical publication tokens stay unchanged by projection;
 an advertised read-only delivery hint lets hooks drain newly attributed and remaining notice pages.
@@ -459,9 +721,11 @@ addresses. Unknown and programmatic authors create no native seat address. Histo
 bootstrap and deadline repair run in bounded transactional turns; durable warning discovery remains
 independent of native wake admission, so composer drafts, active turns and host outages may defer
 key submission indefinitely.
-A clear remains passive, as do transitions about another seat for other observers; they wait for the
-recipient's next check-in offer. Accepted limit: an idle
-member learns of another seat's overdue or cleared obligation only when its pane next checks in. When
+A clear remains passive. Apart from the canonical origin wakes above, transitions about another
+seat remain passive for other observers and wait for the recipient's next check-in offer or
+hook-pull page. Accepted limit: an idle member who is only a passive observer learns of another
+seat's overdue or cleared obligation only when its pane next checks in or, on a hook-pull harness,
+at its next turn-start pull. When
 more than the bounded window of pending warnings or unoffered notices is visible, narrowing cannot rule
 out an older waking notice (such as a service notice), so the wake keeps its unnarrowed answer and the
 offer probe stays conservative: it may still wake, never silently drop one.
@@ -474,28 +738,44 @@ independent of sender role, relay and human intent. A lazy audience is frozen by
 and publication; recipient identity is immutable, and its pending/displayed progress is monotonic.
 Already addressed rows survive leaving, retirement and archival, with no transfer to another seat.
 Unpublished rows are invisible and may be discarded in bounded cleanup; published progress is retained.
-Lazy delivery creates no receipt, deadline, ACK evidence, wake attention, wake, poke or automatic adoption.
+Lazy delivery creates no receipt, deadline, ACK evidence, wake attention, wake, poke or automatic adoption,
+except that a seat with `wake_on: all` is woken (wake eligibility only; still no receipt, digest
+attention or poke).
 
-Only the caller's default text inbox, a standard native hook, or the bundled Claude mod as below, may claim completion after complete contiguous body output has
+Only the caller's default text inbox, a standard native hook, a push-channel mod or a hook-pull harness's hook, as below, may claim completion after complete contiguous body output has
 been written and flushed. The completion handler validates the current top-level or human canonical
 caller (A2) and exact published addressed message IDs in its deciding transaction; declared subagents
 cannot complete delivery. JSON, machine, explicit-seat reads, history, bodies and summaries remain
-read-only. Local display journals are cooperative hints, never authority. Completion is idempotent
+read-only for Lazy completion. A complete successful own text body display may separately advance only
+the calling binding's read cursor, as specified below; it is not Lazy completion or a receipt ACK.
+Local display journals are cooperative hints, never authority. Completion is idempotent
 presentation bookkeeping: it records no ACK actor, receipt provenance, timeline ACK, agreement,
 instruction adoption, task completion or proof of model consumption. Partial output and changed
 bindings cannot manufacture complete display. Frozen completion retries preserve their original full
 caller claim, harness and intent scope through submission and local cleanup. These same-user cooperative
 limits are deliberate; no adversarial execution verification is added.
 
-The bundled Claude mod is a second completion source: it completes lazy rows it appended to the transcript
+A push-channel mod (today the bundled Claude mod) is a second completion source: it completes lazy rows it appended to the transcript
 (`watch ack --via append`), decided by the daemon against A2 under the same checks as the mod delivery ACK
-(A5) and recorded with the `cooperative_mod_delivery` claim "appended to the transcript". Like inbox
+(A5) under the `cooperative_mod_delivery` claim "appended to the transcript" (no per-row source is stored). Like inbox
 completion it is presentation bookkeeping (no ACK actor, adoption or proof of consumption).
+
+A seat that set `wake_on: all` (A5) opts its own lazy rows into push-channel promotion: the daemon marks such a
+row `wakes` in the inbox batch, and the mod delivers it as a `message` line with no ACK to run, marked `wakes`
+on the watch line so the mod still wakes an idle session for it (a `message` line with no ACK and no `wakes` is
+mail another binding already settled: appended, never an idle wake). The daemon still
+creates no receipt, deadline or wake for it. The mod may complete a promoted row delivered via `context` or
+`submit` (`watch ack --via context|submit`); the daemon completes it as a lazy row (a lazy-mode id completes
+regardless of `via`), decided against A2 under the same checks as above. The mod's completion is the
+cooperative claim that the row entered the model's context through the mod (`cooperative_mod_delivery`), carried
+by the request; the daemon stores only the row's `displayed` progress and no per-row source. Like every lazy completion it is presentation bookkeeping: no ACK actor,
+adoption or proof of consumption.
 
 A standard native hook (top-level SessionStart, Bash PreToolUse or qualified turn; never a subagent event)
 is a third completion source. Only a digest the hook explicitly requests (`AttentionDigestQuery.lazy`)
 reports pending lazy rows and a lazy token key, so a lazy arrival moves the hook's change marker; the wake
-frontier, wake candidates, prompts, pokes, deadlines and warnings never read lazy rows. When the hook
+frontier, wake candidates, prompts, pokes, deadlines and warnings never read lazy rows, except that a seat
+with `wake_on: all` is woken for its own lazy rows (wake eligibility only, above). When the hook
 presents (marker advanced, or a lifecycle check-in) and no mod channel is live, it reads one bounded
 read-only v2 inbox page and places only complete items in the bytes its ordinary context leaves under the
 context bound. After its stdout was written and flushed, and the adapter reported that the output carries
@@ -505,6 +785,125 @@ decides it under the same checks as inbox completion (A2). The claim is that the
 context, not that the harness ingested it or the model read it. The hook never ACKs: ACK-required
 messages it shows stay pending, with an exact `ack` command for the agent. It writes no local journal
 record. A failed or unknown completion leaves the rows pending and they are shown again (at least once).
+A hook-pull harness's standard hook never reads an inbox page or makes this claim: its lazy rows complete only
+through `DeliveryConfirm` (`cooperative_hook_delivery`) or the caller's own text inbox; the daemon refuses
+`via: hook_context` from a hook-pull binding. So on a hook-pull harness only `cooperative_hook_delivery`
+applies, never `cooperative_hook_context`.
+
+A hook-pull harness's hook is a fourth completion source: it completes lazy rows whose frame header it found in the
+session's transcript (`DeliveryConfirm`), decided by the daemon against A2, restricted to ids offered to the binding
+generation, under the `cooperative_hook_delivery` claim (no per-row source is stored). Same presentation-bookkeeping limits. It is the only hook path that completes a hook-pull seat's lazy rows.
+
+**Per-binding read position (`AdvanceCursors`, `InboxQuery.claim`).** An inbox read that carries the caller's
+claim is that binding's own stream: the messages of the seat's joined threads past the binding's cursors,
+the narrowly admitted current direct-invitation Lazy stream below, plus the seat's open invitations and
+its still-pending ACK obligations. A display moves only the displaying
+binding's cursors, with the exact message IDs it showed whole. The command is decided in the daemon against
+the canonical view (A2) and resolves the claim to its own binding like any plain cooperative call (it may
+enroll). It is the one write a declared subagent may send, because it changes no seat state: it records no ACK
+actor, creates no receipt, settles no obligation and attributes no action. A cursor never moves backwards,
+never moves past an unshown message the seat can receive, and a read never enrolls. A client that fails to
+send it only causes redisplay (at least once). Only a top-level binding's display ACK settles the seat's
+obligation; other bindings see that message in their own stream marked settled. A full text `body <id>` read
+is such a display (ht-54r F1; a `--json` or `--machine` body read, like a machine inbox read, is read-only and
+moves nothing): when the written chunk reaches the end of the body and the read began at byte 0
+or followed the body's own continuation, the CLI sends that one id in the calling binding's `AdvanceCursors`
+(any role; a subagent moves only its own cursor). So a message delivered truncated, whose mod or hook
+settlement is refused, no longer holds the binding's cursor once it is read whole. A partial read (a chunk
+short of the end, or a read from an explicit offset past 0) moves nothing, and neither the read nor an
+explicit `ack` settles or moves anything else: an `ack` carries no display, and a message the binding read
+whole was already passed by that read. The walk also counts as displayed a message whose seat receipt this
+same binding display-ACKed (`ack_binding_id` is the walking binding and the ACK observation carries
+`action_provenance`, which only display settlements write: text-inbox display, mod or hook-pull delivery),
+so a later message shown whole while the cursor was held behind a truncated one is passed together with it.
+Another binding's ACK and an explicit (non-display) `ack` are never such evidence. Accepted limit: a
+continuation chain begun at an explicit offset counts as whole (the continuation does not record where the
+read began).
+
+**Direct Lazy readers during an invitation.** An exact published Lazy recipient in an immutable
+canonical pair may be read before acceptance in any active invitation episode, not only the first.
+For a binding without its own cursor and an unjoined recipient, admission requires the exact pair
+endpoint/instance, a nonretired seat, current voluntarily invited membership, and its exact pending
+invitation by `(thread,seat,episode)`. Only messages published after that invitation's immutable creation
+decision enter this cursorless stream. Retained `lazy_recipients.state` is not modern binding unread
+authority. Existing own cursors retain their addressed unread stream, including earlier episodes and
+A8-retained work after leave, retirement or archival; the new episode boundary never raises them.
+Joined-reader and frozen legacy-pending rules remain separate and unchanged.
+
+Canonical pair writers make this a bounded current-episode decision. Native, operator and ordinary
+service invitations reuse an active voluntary invitation rather than create parallel active episodes.
+Rejection clears that episode's voluntary invited marker even if raw invited/pending states remain.
+Pairs cannot become service-owned, Required invitations require that ownership, and requirement release
+is the only invitation-cancellation writer. Thus exact current pending invitation plus voluntary invited
+membership excludes canonically rejected/cancelled pair episodes; future writers must preserve this
+implication or revise the predicate and its counted work. This is not a claim about hand-edited stores.
+
+The invitation creation decision is the publication lower bound, not a thread cursor value. When a
+cursorless reader needs a baseline, resolve the invitation's actual timeline event using at most three
+UNIQUE event-key points: `invite:<id>`, `operator_invite:<id>` and `service_invite:<id>:ordinary`.
+Validate instance, thread, kind, source invitation and decision ordering; choose the earliest valid
+thread sequence among these fixed results. A current duplicate Ordinary ServiceInvite returns the
+original invitation without appending another event. Missing or conflicting event authority is an
+error, never a guessed zero/head/timestamp baseline or an invitation-history scan.
+
+An exact currently eligible full display may use this event sequence as a virtual baseline in the
+common cursor walk, through both own `AdvanceCursors` and existing logical Lazy completion entry points.
+Only resulting progress beyond the virtual floor is persisted; an earlier unshown current-episode
+receivable message still blocks progress. Existing cursors start unchanged. A query, partial/failed
+output, machine read, arbitrary message ID or physical V2 presentation confirmation cannot establish
+that baseline. A delayed older-episode display cannot borrow a newer invitation floor. Existing explicit
+published-ID completion authority is preserved with its existing baseline/gap rules where the new
+current-episode baseline is inapplicable. Cursor scope is not evidence that older mail was displayed;
+Lazy completion remains presentation bookkeeping with no ACK, adoption or participation effect.
+
+Accepting this exact active direct invitation preserves every existing own cursor and inserts missing
+open-binding cursors at the event floor, never at the thread head. Capture the floor in the deciding
+transaction before changing membership; acceptance is not display. In the existing open-binding fanout,
+invalidate each affected binding's reader exactly once even if its cursor did not change: joining also
+makes settled addressed ordinary direct messages above the retained baseline newly readable. This
+mixed ordinary/Lazy consequence is intentional because they share a cursor. The helper uses exact
+current binding/seat scope and two fixed Hook/Watch consumer points, increments only matching existing
+private passive-generation/content-version counters, and preserves carry, token, partial body and
+parked progress. No consumer-history scan or sibling substitution is allowed. Checked overflow or any
+failure rolls back invitation, membership/interval, cursor and all tentative private writes together.
+Historical accept replay neither reseeds nor invalidates again. General Join and nonpair acceptance
+retain their head policy; no new binding fanout occurs at publication or reading.
+
+A new binding while the invitation is pending can independently receive that episode's addressed work,
+even if a sibling displayed it. A new binding after acceptance retains normal joined-thread seat-maximum
+or head seeding. These rules do not rewind historical cursors already advanced by prior join or genuine
+display, and do not claim to recover historically skipped bodies. Existing explicit lifecycle
+fast-forward remains the separate accepted Lazy limit described below. No binding-birth heuristic,
+autoaccept, receipt provenance, new schema or deadline is inferred from this reader exception.
+
+For private ordinary presentation only, an intact captured modern Lazy continuation whose current
+reader scope has become inapplicable may retire its exact private body/ordinal instead of blocking
+later episodes. Exact message/instance/Lazy mode, published addressing, captured publication/range,
+canonical binding, and the assembler's matching ID/offset or skip-body state must validate first;
+missing/corrupt authority remains an error. This retirement requires `legacy_pending=0`: modern-scope
+failure alone never discards the independent top-level legacy-pending branch. Public continuation
+remains strict. Advance only that captured Lazy ordinal, clear only its matching body/prefix, and
+charge one existing physical candidate visit plus three scope probes once. Preserve the frozen scan
+version/passive-generation/publication/ordinal capture so that finishing the old scan allows the next
+normal quantum to observe newer publications. Preserve unrelated carry, token, parked state and logical
+offer stamps. Retirement creates no canonical Lazy completion, deletion, receipt, ACK, read cursor,
+acceptance or display evidence; any failure rolls back private progress. Existing private work caps
+remain unchanged, with no history scan, event lookup or new durable state.
+
+**First-contact stats and fast-forward.** Two bounded, informational summaries ride on the response that
+creates or resumes a binding; neither is authority and neither writes a receipt. The lifecycle check-in that
+*enrolls* a binding carries per-thread history counts (at most 8 threads and one count, no summary text), once;
+an inbox read of a session the daemon has not enrolled carries the same counts and enrolls nothing (the CLI's
+following `AdvanceCursors`, possibly empty, enrolls it). A lifecycle check-in that *reconnects or reopens* an
+existing binding whose unread backlog exceeds one ordinary inbox page jumps that binding's own cursors to the
+thread heads and reports the gap per thread. This is the one place a cursor passes unshown mail the seat can
+receive; it is decided in the daemon in the check-in's transaction, never on enrollment, a plain touch, a plain-call reconnect or a
+supersede-induced disconnect (the superseded binding's cursors are untouched until it itself resumes), and it
+moves only the resumed binding's cursors. The seat's still-pending ACK obligations are not cursor-bound: the
+inbox keeps listing them until they are settled, so a fast-forward never hides or settles one, and a subagent
+binding's fast-forward moves only its own cursors. Accepted limit: a binding a plain call reconnected is
+already connected when its own lifecycle resume arrives, so that resume is not a reconnect and does not
+fast-forward. The limit covers only a binding a plain call reconnected after a process exit.
 
 ## Accepted limits
 
@@ -531,7 +930,7 @@ payload from canonical child-key registration, full frozen parent and attachment
 Missing selected context refuses even cached history; unregistered legacy phases
 retain their existing behavior. Completed linked history skips only live guards.
 
-A retained successful version-1 bootstrap launch report (the only plan version) is
+A retained successful version-1 bootstrap launch report is
 validated against frozen V1 composition: the original generated prompt bytes and the
 original Codex/Claude acceptance grammar with empty owned argv, never today's renderer
 or registry. Deciding completion, completed preview, terminal decode and presentation
@@ -545,6 +944,81 @@ Fresh Root preparation and launch still apply today's native admission and geome
 and refuse before effects when today's composer would differ from frozen V1, so a
 future composer change stops new Root launches rather than producing reports that
 completion cannot validate.
+
+Canonical automatic handoff storage retains the full normalized V2 original request,
+including frozen scope, caller, digest, namespace, child keys and any outer launch,
+context and startup template, within 128 KiB for historical absent-policy originals
+and 512 KiB for modern explicitly frozen invitation policy originals. JSON escaping counts;
+a syntactically valid plan can exceed this representation ceiling. Shared request
+validation refuses it before local publication or canonical effects; no fields are
+truncated or omitted to make it fit. Exact historical presentation compares this
+complete immutable original and canonical attachment. This bound creates no new
+provenance, receipt authority or permission from local data.
+
+The additive V2 automatic topology parent retains the full original agent claim,
+scope, namespace, topology, launch, startup template and delivery payload within
+128 KiB for historical absent-policy originals or 512 KiB for modern policy
+originals. Its exact typed attachment is derived from that original and canonical
+creation and ordinary resolution; the corresponding original's capacity applies. V2 has no Invite
+phase or wire key. A registered child cannot fall back to unlinked admission.
+Possible-start checks require fresh sealed canonical creation evidence, original
+claim, exact recipient owner and current pair lifecycle; Send success grants no
+start authority. Exact child-completed/parent-incomplete reconciliation retains
+only the original successful report and absorbing tombstones, even after binding
+or membership changes. It cannot create another message or launch.
+
+V2 recovery uses the authenticated local-account operator lane and an immutable
+inspection digest. Its request and complete retained historical result each fit
+256 KiB for historical absent-policy originals. Modern recovery retains at most
+2 MiB of encoded JSON; escaping and nested copies count. General requests remain
+limited to a framed 1 MiB, including modern recovery requests. Fresh overflow refuses
+atomically. At most one creation/noncreation decision and one subsequent
+cancellation are retained per attempt. Recovery never replaces the original agent
+claim, allocates a seat, proves quiescence or authorizes native submission. An
+unknown attempt cannot become transport-proven not-submitted; an inspected
+noncreation decision starts a distinct attempt while retaining the unknown record.
+Modern automatic public admission checks the aggregate future envelope before local
+publication and the canonical first Begin repeats that check before inserting a
+parent. It derives supported generated startup prompts, frozen template/native argv,
+128-byte escaped opaque identifiers, bounded creation/witness fields, the 4096-byte
+operator reason and every request/result/reservation/recovery/local envelope. Independent
+metadata maxima may therefore be refused even when the body itself is within 65,536
+UTF-8 bytes. No retained identity, body or history is clipped. The framed response
+exception is exactly 2 MiB only for a known AutomaticBootstrap request with a frozen
+modern policy (Some) and its matching result family. Historical absent-policy (None)
+requests retain their preexisting 1 MiB response ceiling, as do every other request,
+response, watch, service and error. The historical 256 KiB canonical recovery-result
+limit is separate: transport does not add a semantic validator for handcrafted
+historical results between 256 KiB and 1 MiB.
+The client chooses its allocation limit from the known request before reading the
+frame body and checks result family plus request/instance/boot and embedded original
+identity correlation.
+
+A modern successful automatic launch canonically retains the explicitly versioned
+`automatic_launch_summary_v1`: truthful started outcome, exact pane/seat/harness and
+composed argv, and a separately named `full_report_digest`. Optional generated
+diagnostics are omitted from this summary. Their exact generated JSON bytes are
+streamed to a private deterministic local artifact after bounded critical started
+progress is synced; the full-report digest hashes those exact bytes, independently
+of the canonical summary digest. The artifact's path, presence marker and hash are
+cooperative local hints, never authority. Critical retry, recovery and completion
+never decode the artifact. A missing, unreadable or unsuccessfully written artifact
+cannot authorize another native submission or invalidate canonical Completed replay.
+A non-Started report uses a distinct bounded local noncompletion observation and
+never becomes a successful canonical completion. Any possible native start keeps the
+existing no-relaunch guard, including IO failure or interruption before summary sync.
+A valid frozen modern original and exact canonical Completed result remain readable
+when child progress and the optional artifact are truly absent. If no real retained
+message ID is available, presentation uses a null message and an explicit unavailable
+marker. It performs no Begin, Ensure, Send, launch or new-capability admission to
+reconstruct one. Existing corrupt or mismatched child records still refuse.
+Historical absent-policy reports, bytes, digests and presentation remain unchanged.
+The generated summary contract covers supported public producers; it is not a
+promise to carry arbitrary externally authored diagnostic JSON through a request.
+
+Live automatic parents protect archival before child registration and on the exact
+selected thread. Completed or cancelled tombstones release only that parent veto;
+replay cannot restore it or cancel a live downstream child fence or journal hint.
 
 Canonical topology storage has encoded-byte ceilings for retained bootstrap envelopes:
 512 KiB for the full frozen identity; 128 KiB for metadata-only creation evidence
@@ -592,17 +1066,57 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   they never grant evidence verification, seat continuity or receipt authority. The filter is in memory
   and starts empty on daemon restart; suppression does not claim durable session history.
 
-- **Global hooks enroll supported top-level Herdr sessions.** A user-level Claude/Codex hook
-  enrolls every supported top-level lifecycle session in its Herdr instance, including sessions
-  started outside `launch`, subject to the ordinary canonical guards above. Outside Herdr it
-  remains silent. No wrapper or global configuration change is made by enrollment. The actual
-  pane environment must come from the user's foreground harness configuration; enrollment
-  cannot infer a different attaching TUI pane or turn a shared-server environment into proof.
-- **Hermes enrolls only through `launch`.** Startup enrollment stays Claude/Codex only. A Hermes
-  session started outside `launch --kind hermes` gets no seat and no context: the bridge's hooks
-  find no resolved seat for the pane, and Herdr does not recognize the bare process as an agent
-  without the guarded launch process hint. Delegated Hermes children are answered locally with the
-  subagent restriction and never reach the daemon.
+- **Global hooks enroll supported top-level Herdr sessions.** A user-level Claude/Codex hook or
+  the agy plugin's hooks enroll every supported top-level lifecycle session in its Herdr
+  instance, including sessions started outside `launch`, subject to the ordinary canonical guards
+  above. Outside Herdr it remains silent. No wrapper or global configuration change is made by
+  enrollment. The actual pane environment must come from the user's foreground harness
+  configuration; enrollment cannot infer a different attaching TUI pane or turn a shared-server
+  environment into proof.
+- **agy's top-level role is read from native runtime artifacts.** The artifacts are the
+  conversation's presence lock and the subagent listings under its candidate parents. A
+  hook-runner rule that is neutral to the harness reads them and fails toward child: a missing or
+  unreadable witness, or one past its budget, makes a child. The resulting role is a cooperative
+  top-level claim (`cooperative_top_level`). It is not payload-declared and not daemon-verified.
+  The daemon decides every enrollment, rotation and reattachment it leads to against A2.
+  A child is answered locally with the subagent restriction and never reaches the daemon. agy
+  fires no session start on resume, so the first turn-start hook of a conversation unknown to
+  the pane context (a client-local hint) carries the resume or clear lifecycle. Only the pane
+  context makes a conversation known; the adapter's per-conversation delivery state never does.
+- **A child with a presence lock is still a child through the listing.** A child conversation
+  that agy does give a presence lock would read as top-level on the lock alone, but the subagent
+  listing still makes it a child. A listing outside the known layout would let such a child
+  rotate the pane's binding.
+- **A `brain/` directory past 65,536 entries, or a check past its budget, reads as a child.** No
+  agy session of that machine enrolls until the directory is pruned. Doctor reports it.
+- **A presence lock that appears after `SessionStart` is recovered one turn later.** The next
+  turn-start re-check reads it. Meanwhile the session may already have seen a child notice,
+  which the top-level check-in explicitly supersedes.
+- **An agy session's own CLI calls name its conversation through its environment.** agy exports
+  `ANTIGRAVITY_CONVERSATION_ID` to the processes it starts; a `herdr-threads` call under an `agy`
+  process is attributed to that conversation's binding (`cooperative_env_session`, A3), and refused
+  with `session_claim_required` when the variable is absent (decision 15), never attributed to the
+  pane. A child conversation's call carries the child's conversation id; when a parent's subagent
+  listing names it, the call is a read-only subagent claim of that parent (native session swapped to the
+  parent's conversation, the child id as agent id, `cooperative_env_session`) and enrolls as a subagent
+  binding of the parent. A conversation with neither a presence lock nor a listing, or whose witnesses
+  cannot be read, is refused `unattributed_session`, never attributed to the parent's top level.
+- **Hermes enrolls through its CLI hooks.** The witness is Hermes's native `platform == "cli"`
+  (cooperative, A1): delegated children run with platform `subagent`: the bridge answers them locally with the subagent
+  restriction, and their `subagent_start` registers the child session as a read-only subagent binding of
+  the parent (`subagent_stop` disconnects it). An
+  empty or missing platform never enrolls. The start callback enrolls without a check-in (Hermes ignores
+  its return value); the first qualified turn checks in. An older installed bridge (no
+  `enrollment_witness`) keeps launch-only behavior until `setup hermes --profile NAME` is re-run. There
+  is no C1 resume continuity: a resumed session checks in as `Startup` in a seated pane, enrolls through
+  the Unowned-turn fallback in an unseated one, and meets the restore hold after a Herdr restart. Wake: a
+  bare macOS Hermes is not process-detected by Herdr, so its seat is not woken while idle; `launch --kind
+  hermes` stays the way to get a wakeable Hermes. CLI side agents (`/background`: platform `cli`, own
+  session, no parent, no native side-agent flag) are indistinguishable from the foreground session: they
+  enroll no new seat, but their turns check in as their own binding of the seat, as on a launch-created seat
+  (follow-on ht-e73). Operator retire: retiring the seat of a running bare Hermes leaves the pane
+  `Unowned`, so its next CLI turn re-enrolls a fresh seat through the ordinary resolver, never the retired
+  one.
 - **Foreground harness execution is user managed.** Hooks and tools must inherit the TUI
   pane's `HERDR_PANE_ID`. A shared harness server started in another pane can instead supply
   its own pane environment; herdr-threads does not recover the attaching TUI pane from
@@ -624,7 +1138,11 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   Foreign broad allowances are preserved and can still cover Human commands. Bare names
   cannot attest later PATH, alias or function resolution. Generated matching and native
   checker evidence never prove a live classifier verdict or installed wrapper support.
-  Setup changes no general shell, network, sandbox or approval-mode setting.
+  Setup changes no general shell, network, sandbox or approval-mode setting. The owned
+  agy allow member `command(herdr-threads)` has no ask counterpart herdr-threads can
+  write, so once granted it also covers person and setup commands; agy's consent
+  question says so, and it is installed only with consent (`--with-permissions` or a
+  yes) or kept from an earlier recorded grant.
 - **Unattributed public reads retain ordinary daemon spelling.** Public read requests
   carry no invocation actor; a Human subject seat or peer label cannot identify the
   requesting viewer. Known current caller/action producers include Human spelling before
@@ -646,7 +1164,8 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   state. Sandbox-writable files are opened without following symlinks (implemented for `allocator.lock`).
 - **Unseen exits.** An agent that exits to its shell stays bound until the next check-in or retirement (C5).
 - **Launch is not check-in.** A successful `launch` means Herdr started the agent, not that it registered.
-  Its only record is a wake-eligible occupant claim (`managed_launch`, A3) on a seat with no open binding: not
+  Its only record is a wake-eligible placeholder binding (`managed_launch`, A3) carrying the started process's
+  fingerprint: not
   a registration, availability, receipt or authority for any accountable action, and replaced by the agent's
   first lifecycle check-in. Forms outside the captured native launch grammar remain refused
   (including `codex resume`).
@@ -670,9 +1189,10 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   provenance (A1–A3, C1); arbitrary environment overrides remain refused. A possibly submitted start
   with an uncertain response remains unknown, without a safe fallback or inferred binding.
 - **A launch binding can outlive its agent.** Like any binding (Unseen exits), a `managed_launch` binding
-  whose agent exits before checking in stays until a check-in replaces it or the seat is unresolved or
-  retired; a later `launch` into the seat then records nothing (the seat already has an open binding) and a
-  wake for it is refused when Herdr's agent kind differs from the recorded harness.
+  whose agent exits before checking in stays until a check-in of its harness replaces it or the seat is unresolved or
+  retired (the liveness sweep disconnects it once its fingerprinted process is gone, without ending it); a later
+  `launch` into the seat records another placeholder, and a wake for it is refused when Herdr's agent kind
+  differs from the recorded harness.
 - **Restore costs operator time.** A genuinely new role in a restored pane waits for an explicit choice when
   cooperative continuity does not apply.
 - **Any invocation of a seat can enter catch-up.** CLI calls cannot tell a seat's top-level agent from its
@@ -738,13 +1258,40 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   the boot time, so the same server then reads as a new incarnation: holds (C2), never a false match.
   Other platforms have no witness: every observation is unverified and host-observed flows refuse.
 - **Mod delivery claims are cooperative.** A same-user process could run `herdr-threads watch ack` and settle
-  receipts as `cooperative_mod_delivery`; the daemon checks the canonical binding, its generation and a live
+  receipts as `cooperative_mod_delivery`; the daemon checks the canonical binding the claim's key names and that binding's live
   channel, not the process.
+- **Hook delivery claims are cooperative.** A same-user process could send `DeliveryConfirm` for ids the daemon
+  offered and settle them as `cooperative_hook_delivery`; the daemon checks the canonical binding, its
+  generation and its offered ledger, not the process.
+- **The offered ledger is process-local.** A daemon restart loses it: a later confirm is `not_offered`, the items
+  stay pending, and the next pull offers them again (at-least-once): a pull is never answered unchanged before the
+  daemon process has read the binding's whole stream (pending plus settled-but-unread), whatever version the hook last saw.
+- **Re-offers are bounded.** An unconfirmed id is shown at most 3 times per binding generation, 60 s apart, to
+  each binding; after that it waits for `inbox`. Each binding has its own offered ledger: at most 256 ids, never
+  evicting one. While it is full, new ids are not shown to that binding by the hook (they stay pending). While a
+  binding a wake would reach holds a parked id, or its ledger is full, that wake names `inbox`.
+- **An unreadable transcript leaves items pending.** A hook-pull hook confirms only ids whose frame header it
+  found at the start of a line in a hook-injected step of a transcript it could read (text in tool output, model
+  output or user input never confirms; malformed records are skipped): a missing, unreadable or unparseable transcript, or one that grew
+  more than 8 MiB past the recorded injection offset, settles nothing (the items stay pending and are offered again
+  within the re-offer bounds, never settled; the hook stops tracking an id once more than 8 MiB of transcript follows its injection offset, so such an id never holds back the confirmation of later frames), and a cancelled or errored turn counts as no evidence about
+  delivery. Absence is a downgrade signal only when the transcript was read in full over two distinct turns of
+  one agent executable identity. The hook trusts the `transcriptPath` its harness payload names (cooperative
+  model; the file is only read, never trusted for authority).
+- **A resume keeps the binding.** A resume re-registers the same session's binding and keeps its offered set; a
+  new session (`/clear`) is a new binding with an empty one, and a rotated binding generation discards it.
+- **A native wake marker names `inbox` only for a harness whose turn start injects nothing.** A hook-pull harness (agy) is
+  woken with the content-free `herdr-threads: wake up` only when its next hook pull would carry something: an id shown
+  less than 60 s ago is not wake work until its re-offer is due, a seat whose next pull would show nothing is not woken,
+  and a binding holding ids parked for `inbox` is woken with the marker that names `inbox`. A woken pull
+  session that also runs `inbox` may display bodies twice; it never settles twice.
 - **Engine-reported idleness is trusted.** The mod takes busy and idle from Claude Code's turn events; the
   post-abort hold bounds the known Esc takeover.
 - **A remote mods kill switch returns seats to native wake.** A mod that never loads looks like no channel.
-- **A reload during an in-flight submit is settled by inference.** The successor treats the turn open at its load
-  as the submitted turn. If that submit produced no turn and the successor sees no turn start for 120 s with an
+- **A reload during an in-flight submit is settled by inference.** It now concerns only a record an older mod instance
+  wrote. An idle delivery is settled by its append; a wake submit that drops is retried, and the pending wake survives a
+  reload in the mod's state, so the appended items are not left without a turn. The successor treats the turn open at its
+  load as the submitted turn. If that submit produced no turn and the successor sees no turn start for 120 s with an
   empty prompt box, it delivers the ids again; a submitted turn that both started and ended unseen inside the
   reload gap can be delivered twice.
 - **An unrecovered handoff is at-least-once.** An item the mod delivered whose ACK did not land before the
@@ -763,10 +1310,26 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   as above; never lost.
 - **Mod frames keep peer text off the header column.** The mod indents every body line by two spaces, as the
   compact `body` read does, and folds thread, sender and id onto the block's header line, so a line starting at
-  column 0 (the fixed preamble and each `[herdr-threads] <kind> <id> in <thread> from <sender>[ markers]:`
+  column 0 (the one lead line and each `[herdr-threads] <kind> <id> in <thread> from <sender>[ markers]:`
   header) can only come from the mod. Within a header line the thread and sender names are peer-chosen text
   and may contain words that look like markers; the markers the mod writes come after the sender and attribute
   the source without granting permission.
+- **Claude subagent attribution is a best-effort shell rewrite.** The PreToolUse hook adds
+  `--agent-id=<agent_id>` after the command word of every simple command whose command word is
+  `herdr-threads` or `ht` (after `;`, `&&`, `||`, `|`, `&`, newline, leading `VAR=value` words and the wrappers
+  `env`, `command`, `nice`, `timeout`, `time`, `nohup`). Claude subagent calls whose shell shape the rewrite does
+  not recognize (a script that calls `ht`, `eval`, `bash -c`, `xargs`, command substitution, a heredoc, a quoted or
+  path-qualified command word) carry no `--agent-id` and are attributed to the parent session. A sibling PreToolUse
+  hook that also returns `updatedInput` may drop the rewrite (last hook wins); the call is then attributed to the
+  parent session. The rewrite never returns `permissionDecision`, and a same-user subagent can still pass any
+  `--agent-id` it likes (cooperative model).
+- **Peer data is cooperative input, never authority.** Peer data (message bodies, topics, names) is cooperative
+  input from same-user agents and is presented without adversarial framing; it never overrides the user's
+  instructions or permissions, and escaping exists to keep framing intact, not as a trust boundary.
+- **Any same-user process can flip `wake_on`.** The preference is cooperative like every other seat claim (A1): a
+  same-user process that supplies the seat's claim can set it to `all` or back to `nudge`. The effect is bounded to
+  wake eligibility (whether pending lazy messages may wake an idle seat); it creates no receipt, ACK evidence,
+  attention or authority, and the daemon records only the seat's own current top-level binding as the actor.
 
 ## Decision record
 
@@ -805,7 +1368,8 @@ after a stall grants nothing until a block is stored, ht-hqg). The A4 poke rule 
 Codex 0.159.3's TUI runs SessionStart hooks only at the first turn, so an agent launched without an initial
 prompt never checked in, its seat had no open binding, and the lost-prompt idle-recovery wake (which requires
 one, A4 *Wake*) never fired. Decision (user, 2026-10-03): `launch` reports its host-correlated startup and the
-daemon opens an unregistered `managed_launch` binding (A3) on a seat with no open binding; it carries the
+daemon opens an unregistered `managed_launch` binding (A3) on a seat with no open binding (ht-54r.4: now beside
+any bindings the seat holds, with the started process's fingerprint); it carries the
 harness the wake recheck compares and nothing a caller can claim. Rejected: waking a resolved but unbound
 seat whose pane Herdr reports as an idle agent (Herdr's agent field may only suggest, C1/C5); documenting
 lost-prompt recovery as unsupported on Codex 0.159.3 and later.
@@ -819,6 +1383,18 @@ acks a truncated item; its receipt settles only through the agent's explicit `ac
 `body`, which is read-only, then `ack`) or a text `inbox` that displays it in full. Rejected: reusing `cooperative_inbox_display` (a different
 action); an explicit agent ACK after mod delivery (keeps the tool-call overhead the goal removes); delivering
 only the marker.
+
+### Hermes global enrollment through its hooks (2026-10-09, ht-4ne)
+
+Decision: enrollment splits from check-in. A witnessed Hermes CLI `on_session_start` enrolls the pane
+(ordinary guarded resolver, daemon ensured, no check-in, empty output); the first qualified turn checks in.
+The witness is the platform (`cli`) and the adapter declares an `EnrollmentPolicy`; a qualified CLI turn in
+an `Unowned` pane enrolls as a fallback on the existing turn path (a dropped start callback or a cold daemon
+recovers on a later turn). No new provenance value: the check-in stays `cooperative_top_level`. Rejected:
+`pre_llm_call`-only enrollment; `on_session_start`-only enrollment; Herdr `pane.agent_session` as trigger or
+witness; treating an empty platform as top-level; waiting for the agy generic witness; a full lifecycle
+check-in at `on_session_start`; an `if harness == hermes` branch in `hook.rs`; a bridge-side foreground lock
+for side agents.
 
 ### Residual trust-edge findings (bucket B5)
 
@@ -942,3 +1518,365 @@ Launch setup status failures/unavailable observations are diagnostic and establi
 owned-hook claim. They do not veto an independently validated native launch. The
 selected binary, native API/profile inputs and fingerprints of configuration actually
 used remain mandatory; incomplete structural observations still refuse submission.
+
+## Bounded invitation presentation (2026-10-11)
+
+Invitation presentation is cooperative FULL OFFER evidence after complete stdout
+write and flush, for both fixed Hook and Watch consumers. It is neither invitation
+acceptance nor a message receipt ACK, transcript proof, or model uptake. A7's
+accepted downstream silent-loss limit still applies. A crash after flush but before
+canonical confirmation can physically replay the same logical allocation.
+
+V2 admission resolves the claim to its own canonical binding under A2: open,
+connected, top-level, matching the adapter/harness and current mapping, with no
+recovery hold. Enrollment provenance is recorded honestly and is not a
+`cooperative_top_level`-only gate. A canonical subagent binding is refused even
+when its incoming claim looks top-level. Watch Pull/Confirm requires the exact
+connected Live channel owner and never reconnects or enrolls a binding. Hook uses
+the same canonical plain-call reconnect decision as ordinary hook delivery:
+only the existing allowed process-exit/migration case with its fingerprint can
+reconnect; superseded/end-event bindings stay disconnected. V2 selects the bounded
+presentation view before and after that decision, not an ordinary digest walk.
+The resolved binding_id passed between service and store is a hint that the store
+rechecks, never caller authority. A per-seat permit may serialize decisions;
+it cannot select a sibling binding or share/replace its durable state.
+
+Canonical progress/outbox rows belong to a resolved `binding_id` and one of two
+fixed consumers, Hook or Watch: at most two durable consumer rows per used binding,
+not per seat. Item bookkeeping is bounded by retained canonical invitation/binding
+pairs times two consumers, plus explicit removed-item cleanup debt. The private
+relevance proof is likewise binding/consumer-owned. Binding history can multiply
+these private rows; there is no seat-count bound or global durable-row cap.
+Stale generation/execution state resets lazily for that binding when visited;
+another binding's turn never resets it. Seat invitations and receipt obligations
+remain shared, while presentation tokens, cursors, carry, controls and notices
+belong to the addressed binding.
+Continued passive calls drain finite cleanup debt; no cleanup progress is promised
+without calls. Context changes coalesce per retained thread: eventual latest context
+requires that thread and relevant render shape to become quiescent; every transient
+revision is not promised. This does not alter invitation/receipt deadline guarantees.
+
+Migration 44 (the former unlanded migration 40) constructs exact ordinal-seek
+indexes over the existing canonical pending-invitation projection. Its index startup cost scales with indexed pending
+rows; it seeds no new projection and rewrites no invitation history. The invitation
+command epoch uses byte-preserving ADD COLUMN with DEFAULT0 and no added CHECK.
+On the actual released STRICT invitation relation, linked SQLite invokes named-table
+quick_check: one-time read validation covers retained invitation rows/types/existing
+CHECK expressions and invitation index pages/bytes, plus catalog/schema work.
+No constant-time, no-row-read or all-retained-table startup guarantee is claimed.
+The earlier outer-VM-only metadata/no-row-validation inference is superseded.
+Deadline processing resumes after healthy migration without deadline resets.
+Canonical readers/writers reject negative epochs and checked increments reject
+exhaustion atomically. New presentation tables enforce their bounded-state constraints.
+
+Private ordinary presentation partial state preserves the inherited 8 KiB body
+limit. Only the current cursor's one incomplete message may be retained; checked
+readers and writers reject multiple entries, invalid message identities, or a
+partial at or above 8192 raw bytes. Its JSON bound is 49415 bytes: at most six
+serialized bytes per raw body byte, twice the128 ASCII-graphic identity bytes,
+and seven object/key/value framing bytes. This private persistence bound does
+not enlarge ordinary display, invitation outbox, final frame, or receipt ACK
+semantics. Corrupt or genuinely oversized records are refused.
+
+
+Private capable-delivery ordinary carry stores at most32 structured <=8KiB presentation bodies with one <=8-argument/4096-byte frozen marker prefix. Its serialized cap is155731 bytes:65536 fetched-page bytes +49146 escaped previous-partial bytes +32*512 metadata +24601 prefix +64 framing. This does not increase model output, canonical body or RPC limits. Marker reconstruction uses only the exact producer-generated suffix and frozen prefix; it is not receipt or identity authority. Checked loads refuse malformed or out-of-contract private records.
+
+
+Ordinary and Lazy publication observation uses a fixed per-binding/fixed-consumer
+cursor over immutable instance publication order. Each admitted pull or passive
+refresh inspects at most100 manifests before recipient filtering, with at most200
+keyed probes and three publication range/head seeks. Each visited manifest first
+probes its exact message key, checking instance, thread, decision sequence and
+ordinary kind while reading immutable delivery mode. A matching message then
+uses one mode-selected recipient point probe by preparation/seat: ordinary reads
+prepared_recipients and matches thread, while Lazy reads lazy_recipients and
+matches message and thread. The canonical manifest supplies the ordinary
+recipient's message association; that recipient relation has no message-id column.
+No effective-receipt read, audience fanout or materialization occurs in this scan.
+This adds100 source visits:
+refresh visits at most160, fresh pull433, plus separately declared indexed probes.
+No publication audience fanout, global output version or native wake is added.
+Initial/rebound consumers may traverse all retained instance publications before
+reaching addressed content. A stable prefix of M rows needs at most ceil(M/100)+2
+successful maintenance quanta; with continuing arrivals, finite predecessor count
+P gives conservative P+2 quanta, followed by existing ordinary output traversal.
+There is no progress guarantee during perpetual admission/storage failure.
+Migration 45 (the former unlanded migration 41) adds four checked default-zero
+private scalar columns; its one-time SQLite validation may inspect each existing
+consumer row per added CHECK (up to 4C row inspections, where C is at most two
+consumer rows per used binding). It does not seed message history/projections or
+reset deadlines. Development stores already stamped with the earlier redesign's
+migration numbers are not claimed to rerun or reinterpret this refinement.
+Existing 155731-byte raw carry, 8KiB ordinary body and final64KiB/RPC bounds
+remain unchanged.
+
+Direct-invitation Lazy reader eligibility adds three exact indexed relation probes per evaluation:
+pair, seat and current invitation, reusing the membership point. It does not seek invitation events in
+the presentation predicate. Lazy due/replay costs at most 14 probes; ordinary remains the maximum 18,
+so due 1803 and carry 579 caps remain unchanged. Known-offer reconciliation reuses the canonical
+message mode/thread/sequence/decision point already read in the same snapshot and removes its duplicate
+message join: first point 1 plus eligibility 9 is at most 10 per key, retaining 256 visits and 2560 probes.
+Exact recipient, manifest message/thread/instance/publication and binding-seat checks remain required;
+client scalars or an uncounted second message lookup cannot substitute for that canonical row.
+Fresh/private Lazy scope checks, including continued-body scope checks, charge three additional probes
+per physically visited candidate, at most 300 across the existing 100-candidate envelope; rejected
+candidates count before filtering. These costs are separate from the unchanged publication-observation
+scan above. Production SQL and actual query plans must establish the exact-key accounting.
+
+Direct acceptance additionally makes N reader-invalidation helper calls within its existing fanout over N open bindings;
+at most 4N indexed relation reads (binding, seat and two consumer points) and 2N exact private
+updates, besides cursor writes. This is fixed work per binding, not constant work for acceptance, and
+is outside presentation caps. Each required cursorless event floor uses only three fixed key points.
+The inherited public Lazy readers may filter many physical rows before LIMIT, seat unread may examine
+multiple connected bindings, and the display walk may cross arbitrarily many nonreceivable messages.
+The episode floor reduces old-history work without making these paths globally bounded; the private
+100-candidate presentation bound is not an end-to-end public-read or completion-mutation guarantee.
+
+A fresh explicit Watch presentation confirmation may record local channel health
+only for an applicable acknowledged Attention and the exact currently Live
+seat/binding_id/generation/native-session/lease owner, checked and written under the same
+registry entry lock. Hook, passive/clear, replay, AlreadyConfirmed and refused
+confirmations do not record or reset that evidence. This timestamp is the
+existing receipt-publication cutoff, not a new stall countdown or receipt ACK.
+The allocator's single-control-per-page invariant makes fresh confirmation
+sufficient to distinguish that first application. Canonical confirmation and
+local registry bookkeeping are not durably atomic: a process crash between them
+may omit health evidence; reconnect/normal operator recovery remains necessary.
+
+Capable presentation relevance uses the union of canonical direct associations
+and prepared representations, including coexistence at the same warning id.
+Positive witnesses use exact current local condition/association authority;
+unrelated canonical mutations must not delay a still-applicable positive witness.
+The global mutation fence is negative-proof invalidation only. Continued unrelated
+writes may keep absence Unknown and delay a clear; they are never recipient output
+or native-wake authority. One bounded advance serves every successful pull/replay;
+explicit confirmation performs no discovery, fallback or revalidation walk.
+Future condition/sweep writers and repairs must preserve the exact successor
+interval chain and invalidate its canonical fence; repairing that chain is not
+an invitation to infer continuity from presentation history or local hints.
+
+Presentation has one current row per binding and fixed Hook/Watch consumer. Its
+outbox contains bounded current nonordinary descriptors, not episode history or
+ordinary-message ACK authority. Topic changes coalesce to eventual latest context
+after updates quiesce; every transient topic revision is not promised. Removal,
+binding changes and output completion use the canonical row/frontier rules.
+An output offer is cooperative physical emission after successful writer flush,
+not evidence that a model read it, accepted an invitation or acknowledged a
+receipt. Exact captured control stamps and bounded applicable acknowledged subsets
+fence local seen/probation updates; stale, foreign, unknown or refused confirmation
+never supplies those effects. Partial retirement preserves original descriptor
+slots until that token's work is complete. Confirmation checks the exact binding,
+consumer, token and captured control masks; a sibling's token is foreign even at
+the same seat and mapping generation. Physical presentation confirmation never
+ACKs a message or advances a binding's read cursor. A sibling binding's ACK cannot
+discard this binding's outbox or still-unread ordinary carry/offers: settled mail
+remains eligible in this binding's own stream, passively, under A8. A sibling's
+settlement alone is not evidence that this binding read it; exact canonical
+addressing, publication and binding-reader checks still decide eligibility.
+
+A pending Hook outbox retains its originally registered codec selection across
+new local System/User preferences. A genuinely removed or drifted codec refuses
+boundedly before allocation/retirement; binding/operator repair may be needed.
+Client hints never select authority or override the immutable canonical token,
+binding, render identity and boot admission. Frame sizing includes the actual
+registered native codec or Watch JSON-line bytes; the final RPC wrapper reserve
+is separate from the 64KiB presentation bound.
+
+
+Capable ordinary delivery parks its existing cursor, carry, partial body and
+captured scan signals byte-for-byte when the 256-offer ledger is full. Due known
+IDs then use exact canonical keys instead of the normal ordinary source: at most
+100 attempts and 32 hydrated candidates per call, charged separately as at most
+1803 keyed relation probes and 100 indexed single-row availability seeks. The
+probe allowance is three setup probes plus 100 attempts at at most 18 probes:
+settled-but-unread ordinary eligibility needs five binding-reader probes beyond
+the prior 13-probe pending-receipt path. Pending ordinary and Lazy branches remain
+bounded by 13 and 11 probes per attempt respectively. This explicitly supersedes
+the former 1303-probe allowance; attempts, hydration and seek counts do not grow.
+Reconciliation separately inspects at most 256 known keys with at most 10 indexed
+probes each: 2560 probes, explicitly replacing the former 1280-probe allowance.
+The additional binding-reader checks keep a sibling's seat-level ACK from
+reclaiming this binding's still-unread offer. Physical discovery433,
+32 blocks/65536 encoded output bytes, sizing352, carry155731 and partial49415
+bounds do not grow. Canonical pending/addressed/publication checks still decide
+eligibility, including this binding's settled-but-unread stream; a missing key
+cannot authorize settlement or an offer-history reset. Physical candidate seeks
+are bounded before canonical filtering, so rejected rows still consume work.
+
+Ordinary carry has its own exact-key revalidation allowance: at most 32 retained
+items, 579 keyed probes (3 setup + 32×18), 32 availability seeks and 32 body
+hydrations. These are separate carry counters, not work hidden inside the
+1803-probe due/replay allowance. A carry quantum performs no normal ordinary-page
+walk. Carry revalidation, logical due, owner replay and a normal ordinary-page
+walk are mutually exclusive ordinary-source modes; their allowances cannot be
+combined to enlarge one mode. Reconciliation and independent bounded passive or
+control work retain their separately declared accounting. These finite allowances
+add no time-budget extension, weaken no cancellation or exact-owner fence, and
+install no progress after refusal or transaction rollback.
+
+A private normal ordinary-page continuation may classify its one captured
+Unread body against the exact binding's display cursor and canonical receipt.
+This separately charges at most 15 keyed probes (five captured-recipient/read
+relations plus ten conservative effective-receipt probes) in
+`ordinary_continuation_key_probes`; existing setup and body hydration remain
+separate. Retirement consumes one of the existing 100 normal candidate visits,
+with no additional source walk, due/replay or carry work. Only positively
+Acknowledged, RecipientRetired or NotRequired receipt authority plus this
+binding's completed cursor may retire that exact captured body. Pending remains
+eligible; missing, mismatched or invalid authority refuses. Captured bounds,
+binding fence and exact partial-byte/skip bookkeeping remain checked, and a
+refusal rolls the private update back. Public inbox cursor validation is
+unchanged; no cursor reset or receipt ACK is implied.
+
+Finite failed-key traversal uses two process-local negative caches (Hook and
+Watch) per retained ledger binding, each at most256 ID/full-offer-stamp pairs,
+scoped to binding_id, execution, ordinary signal, passive publication generation
+and render key. They share the ledger's at-most4096-binding LRU lifetime, with
+at most256 logical offers per binding. Payload per consumer is
+bounded by256*(128 ID bytes + two i64 timestamps + u8 count + bool truncated),
+plus a <=128-byte execution and fixed scope; bounded tree/allocator overhead is
+additional. Successful updates must match the binding_id, ledger incarnation,
+generation and exact current offer stamps. Cache hints never ACK, accept,
+complete lazy display or change offer history, and rollback/refusal installs no
+progress. A different binding, generation rotation, ledger recreation or changed
+scope invalidates the relevant hints; resuming the same binding alone does not
+replace it or reset its offered set. Ordinary continuation uses remaining capacity:
+a completed normal pass at positive capacity is quiet even with missing due
+hints; at zero capacity only unattempted due keys sustain ordinary continuation.
+Independent passive/control/outbox work retains its own continuation.
+
+Accepted render limit: a due ID whose inherited ordinary truncation still cannot
+fit a standalone output is deferred at its unchanged full offer stamp and current
+render/canonical scope, without a logical offer or delivery evidence. A declared
+scope change retries it. Topic-only shortening is not guaranteed to retry until
+such a scope change occurs. This adds no wake timer, delivery guarantee, larger
+output limit or receipt authority.
+
+Accepted normal render limit: at positive post-reconciliation logical capacity,
+a canonically validated normal candidate whose unchanged inherited rendering
+actually exceeds the standalone encoded-output bound on an empty page may be
+deferred for that finite captured normal pass, including a previously unoffered
+ID. An exhausted sizing allowance, nonempty-page failure, invalid authority,
+malformed item or unavailable/drifted codec does not establish this size failure.
+Deferral advances only existing bounded private traversal; it does not change
+the candidate's canonical full body, exact addressing/publication, pending receipt,
+Lazy display state, binding read cursor or any preexisting full logical Offer
+stamp, and allocates no new logical offer. It supplies no ACK, acceptance,
+display, output or presentation-confirmation evidence. Later renderable mail may
+progress in the same capture, and a completed stable pass is quiet once its
+independent work is exhausted. A later independently admitted normal capture
+retries the pending candidate; automatic in-context delivery of its unrenderable
+shape and a new retry wake/timer are not promised. Unknown deferred IDs may remain
+unknown to the model; canonical inbox/history/body inspection remains available.
+No normal per-ID negative cache, body fragment or recovery cursor is introduced;
+existing source, sizing, output, carry, partial and ledger bounds remain unchanged.
+Pre-commit refusal or transaction rollback installs no deferral progress. After a
+successful private commit, response/transport/write/flush loss retains that
+private progress without granting delivery, ACK, display or confirmation authority.
+A caller-visible error with an uncertain commit outcome is not proof of rollback.
+Existing due-cache, owner-replay, capacity parking and downstream-loss limits
+remain unchanged.
+
+
+A newly admitted live Watch owner may physically restream its captured pending
+ordinary offers once per presentation lease, independently of DP5 logical retry
+eligibility. Recovery preserves every full logical Offer stamp, including
+nonzero recorded u8 counts above the three-offer eligibility threshold from
+supported concurrent recording. Canonical exact-key eligibility still decides
+addressing, publication, effective pending receipts, this binding's settled-but-unread
+mail and lazy state. Physical replay is not ACK, read-cursor advancement, lazy
+completion, acceptance, health evidence or native wake outlook; logical due
+continuation excludes only actual logical allocations.
+
+The process-local registry retains at most 64 live-owner worklists globally,
+not per seat or binding, each at most 256 ID/full-stamp pairs plus bounded scope: 256*(128 ID bytes +16 timestamp bytes
++1 count byte +1 truncation byte), a <=128-byte execution, 16-byte incarnation
+and fixed bounded seat/binding_id/generation/native-session/lease bookkeeping;
+bounded tree/allocator overhead is additional. Each live request has one worklist snapshot and the existing bounded logical ledger
+snapshot. The first successful capture is final for that lease even when empty;
+newly arriving offers never refill it. Initialization/progress installs only on
+successful store return; refusal/rollback installs neither. The exact Live lease
+and canonical binding_id, generation, native session and execution fence every
+pull. Grace cannot use replay authority. Replacement starts a fresh pass; ledger incarnation loss abandons remaining work without same-lease refill.
+Removal, disabled/stopped registry and daemon restart discard this local state.
+Successful allocation followed by response/output loss consumes that lease's
+attempt; replacement can recover canonically pending content. Existing downstream
+silent-loss and daemon-restart limits remain unchanged.
+
+Recovery replaces the ordinary source slice: at most 100 exact attempts, 32
+hydrated bodies, 1803 keyed probes (3 + 100×18) and 100 availability seeks.
+Separately bounded reconciliation is 256 known keys/2560 probes. Recovery does
+not also run the 32-item carry revalidation or a normal ordinary-page walk.
+Fresh discovery433, sizing352, 32 blocks/65536 actual encoded bytes, carry155731
+and partial49415 remain unchanged. No normal cursor/carry/partial
+or captured scan tuple advances during replay. Missing or standalone-unrenderable
+keys finish physical attempts without proving settlement or releasing capacity.
+The existing nonordinary outbox must be replayed/confirmed normally before fresh
+ordinary recovery; no Message descriptor enters that outbox. Full stamp and
+incarnation pruning at snapshot/application cannot overwrite newer logical
+history. Recovery leaves current post-store native outlook unchanged, including
+empty, mixed, final and active-recovery outbox/control-only quanta.
+
+
+Canonical reader operations coalesce private presentation invalidation once per
+actually changed binding at their existing transaction boundary. The added
+source-derived envelope per changed operation/binding is one exact BindingId
+lookup statement joining two indexed canonical relations (occupant_bindings and
+seats), two fixed Hook/Watch consumer point reads, and at most two guarded
+consumer updates. No retained binding history or all-consumer scan is added.
+AdvanceCursors coalesces all its thread changes; complete-display coalesces each
+already selected target; first-contact fast-forward coalesces all gaps, including
+gaps beyond its returned-description cap. A historical unbound completion that
+already selects N targets adds N times this envelope; the whole operation has no
+new constant bound. This source accounting is not a measured SQLite VM, elapsed
+time or disk-I/O bound; the physical query controls still require execution.
+
+The exact canonical BindingId owns native session, seat, instance, generation and
+execution; presentation rows have no second native-session field. Only matching
+seat/instance rows whose primary generation/execution or passive-refresh
+generation/execution matches that canonical scope are invalidated. Both-stale or
+foreign rows remain unchanged. The helper updates only checked private passive
+generation and content version counters; it changes no captured scan tuple,
+cursor, carry, partial body, token or logical offer stamp. Zero consumers and
+no-change operations require no private update, including established subagent
+reader use. Counter corruption, exhaustion or later operation failure rolls back
+canonical reader writes and all tentative private updates together. This
+maintenance adds no V2 admission, receipt provenance, ACK, invitation acceptance,
+channel health or native-wake authority.
+
+Successful ordinary-or-Lazy completion may conservatively request a passive
+canonical recheck for the admitted seat's current Live capable channels. The
+registry holds one ephemeral pending bit per entry under its existing global
+64-channel cap; it visits only that seat's currently registered entries, never
+retained presentation rows. Repeated hints coalesce. A retained successful result
+may hint again and establishes no fresh receipt delta; all-refused/error outcomes
+and presentation confirmation do not hint. Registry bookkeeping follows release
+of the canonical writer turn. Hint consumption performs bounded canonical
+delivery work and confers no retry eligibility, offer stamp, reader advancement,
+receipt/acceptance evidence, extra health timestamp or idle-wake permission.
+Existing successful mod ACK health accounting, including AlreadySettled, remains
+separate. Replacement/restart can discard a bit; initial owner drain, ordinary
+canonical eligibility and the existing safety pass retain their own contracts.
+
+Q3 publication observation uses the message-first ordinary/Lazy point SQL above
+without enlarging the 100-manifest/200-probe/three-seek source allowance. The
+production constants are shared with query-plan controls so those controls can
+measure the actual statements, including mixed unrelated prefixes. This source
+accounting is not a measured SQLite VM, elapsed-time or disk-I/O claim; physical
+work still requires execution of those controls. Addressed ordinary publication
+changes only the existing private passive generation/content counters. It does
+not recreate a sibling-settled receipt or change native attention. The subsequent
+canonical pull decides whether content is pending or passive and whether this
+binding's own cursor still needs it.
+
+Watch presentation mode is an explicit per-channel election, advertised by
+mod.watch_presentation_v2 together with the existing generic presentation and
+binding-cursor capabilities. Absent/false election keeps the historical Watch
+wire and aggregate view; only capable Live owners receive presentation leases.
+Worker and direct-producer sends compare their captured channel id and immutable
+mode under the same registry lock as final enqueue and any existing active-push
+health update. A replacement cannot inherit the old owner's frame or health.
+Passive sends and failed enqueue add no health. A closed receiver retains a
+capable owner's recheck bit only while that exact owner remains Live, without an
+immediate retry kick; existing safety passes and reconnect's initial drain retain
+their recovery roles. Enqueue is not socket-flush or model-uptake evidence.

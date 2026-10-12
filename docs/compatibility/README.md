@@ -37,7 +37,10 @@ replacing the previous output. Publication remains a separate coordinator action
 
 Hermes is implemented experimental. Native core-flow evidence on 0.21.5 with a private
 Herdr build is in [native acceptance](../evidence/harness-adapters/native-acceptance/README.md);
-Hermes joins only through `launch --kind hermes`.
+A bare Hermes CLI session in a Herdr pane enrolls through herdr-threads' Hermes hooks (its
+CLI session start, or a top-level turn on an unowned pane) when the selected profile has the
+plugin set up (`setup hermes --profile NAME`) and enabled; `launch --kind hermes` is the other
+path and adds the guarded process hint that makes the seat wakeable.
 `native_callback`/`native_shape_observation` and `bridge_envelope`/`bridge_envelope`
 remain independent domains; `qualified_turn` and `qualified_post_tool` must be
 measured separately for each exact runtime/contract. Native loader gate and timely

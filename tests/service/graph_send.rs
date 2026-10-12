@@ -134,6 +134,11 @@ impl WakeHost {
     }
 }
 impl HostPort for WakeHost {
+    /// The pane's foreground process is the checked-in worker: its claim carries this test
+    /// process's fingerprint, and the composer wake types only to the binding with that pid.
+    fn foreground_pids(&self, _: &HostTargetId, _: &HostCallContext) -> Result<Vec<u32>, ApiError> {
+        Ok(vec![std::process::id()])
+    }
     fn observe_current_target_for_archival(
         &self,
         _: &herdr_threads::protocol::ids::HostTargetId,
@@ -438,11 +443,11 @@ fn user_intent_service_send_stays_unclassified() {
             binding_generation: 0,
             role: CallerRole::TopLevel,
             harness: Harness::Codex,
-            native_session: NativeSessionId::new("plugin_context:worker"),
+            native_session: NativeSessionId::new("session-worker"),
             execution: ExecutionId::new("00000000-0000-4000-8000-000000000211"),
-            target: HostTargetId::new("pane-worker"),
-        };
+            target: HostTargetId::new("pane-worker"), agent_id: None, liveness: Some(herdr_threads::protocol::authority::LivenessFingerprint::current_process()), };
         let CommandResult::CheckedIn(checked) = native(Command::CheckIn(CheckIn {
+            lineage_parent: None,
             mode: CheckInMode::Lifecycle {
                 expected_binding_generation: 0,
             },
@@ -577,6 +582,7 @@ fn user_intent_service_send_stays_unclassified() {
         delivery_mode: herdr_threads::protocol::commands::DeliveryMode::Ordinary,
             thread: thread.clone(),
             body: "DONE".into(),
+            direct_recipient: None,
             invited_recipients: vec![],
             deadline_millis: None,
             operation: OperationId::new("worker-reply"),

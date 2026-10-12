@@ -1,4 +1,4 @@
-//! The Claude mod watch protocol and the mod-side JSON-line contract
+//! The push-channel mod watch protocol and the mod-side JSON-line contract
 //! (spec D2-D4, D6, D7). Everything here is the seam contract of epic ht-j16:
 //! it is inert until ht-j16.2 (registry and transport), ht-j16.3 (ack
 //! decisions), ht-j16.5 (the `watch` child) and ht-j16.6 (the mod) land.
@@ -27,6 +27,9 @@
 //! After an `attention` line, a drain that finds no invitation or warning
 //! prints `attention_cleared`.
 //!
+//! A `message` line with `wakes: true` is a promoted `wake_on: all` lazy row; a `message` line
+//! with `ack_required: false` and no `wakes` is mail another binding already settled.
+//!
 //! Every line carries `schema` (1, [`WATCH_LINE_SCHEMA`]), `id`, `kind`, and
 //! for message and lazy lines `truncated`. Consumers ignore unknown keys.
 //!
@@ -44,8 +47,8 @@
 //! `body`, and the row stays pending until a text `inbox` shows it; nothing
 //! reminds about it.
 //!
-//! The mod frames all message text as untrusted data and never starts a
-//! submit with `/`.
+//! The mod frames all message text so a body can never pass for a header
+//! line, and never starts a submit with `/`.
 
 use super::{
     authority::CallerClaim,
@@ -127,6 +130,43 @@ pub fn truncation_marker_for(prefix: &[String], id: &MessageId, lazy: bool) -> S
     }
 }
 
+/// The attention block's text: the same sentence as
+/// `notification::policy::MARKER`, with the command spelled by `prefix` (the
+/// invocation the agent's shell must use, as for [`truncation_marker_for`]);
+/// empty means bare `herdr-threads`, which gives `MARKER` byte for byte.
+pub fn attention_marker_for(prefix: &[String]) -> String {
+    let program = [MARKER_PROGRAM.to_owned()];
+    let prefix = if prefix.is_empty() {
+        &program[..]
+    } else {
+        prefix
+    };
+    let mut argv = prefix.to_vec();
+    argv.push("inbox".to_owned());
+    format!(
+        "herdr-threads: attention pending; run {}",
+        super::output::format_command_argv(&argv)
+    )
+}
+
+/// The body of a hook-pull `notice` block: an informational warning, shown
+/// once, with no ACK. `prefix` spells the invocation as for
+/// [`attention_marker_for`]. One line.
+pub fn notice_marker_for(prefix: &[String], warning: &MessageId) -> String {
+    let program = [MARKER_PROGRAM.to_owned()];
+    let prefix = if prefix.is_empty() {
+        &program[..]
+    } else {
+        prefix
+    };
+    let mut argv = prefix.to_vec();
+    argv.extend(["body".to_owned(), warning.as_str().to_owned()]);
+    format!(
+        "informational, no ACK; read: {}",
+        super::output::format_command_argv(&argv)
+    )
+}
+
 /// Daemon setting `mod_delivery` (`src/daemon/settings.rs` re-uses it).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -146,6 +186,17 @@ pub enum ModDeliveryVia {
     Submit,
     /// Appended to the transcript (lazy rows).
     Append,
+}
+
+impl ModDeliveryVia {
+    /// The snake_case wire spelling.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Context => "context",
+            Self::Submit => "submit",
+            Self::Append => "append",
+        }
+    }
 }
 
 /// First client frame of a watch connection.
@@ -202,13 +253,21 @@ impl WatchWireRequest {
     }
 }
 
-/// The claim the CLI builds for `HERDR_PANE_ID`, harness `claude`, native
+/// The claim the CLI builds for `HERDR_PANE_ID`, the `--harness` id, native
 /// session from `--session`. The daemon decides registration in one
 /// transaction against A2 (spec D2) and records `cooperative_mod_channel`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WatchRequest {
     pub claim: CallerClaim,
+    /// Explicitly negotiated presentation mode. Absent/false retains the
+    /// historical claim-only registration bytes and legacy channel behavior.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub presentation_v2: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
 }
 
 /// First daemon frame of a watch connection.
@@ -231,6 +290,8 @@ pub enum WatchOutcome {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WatchAccepted {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presentation_lease: Option<String>,
     /// The seat's current attention version at registration.
     pub attention_version: u64,
 }
@@ -264,11 +325,15 @@ pub enum WatchRefusalReason {
     /// Over `MAX_WATCH_CONNECTIONS`.
     Busy,
     Stopping,
+    /// The harness declares no push delivery channel (wire code `not_claude`,
+    /// frozen). Core code names [`Self::NO_PUSH_CHANNEL`].
     NotClaude,
     Disabled,
 }
 
 impl WatchRefusalReason {
+    /// The neutral name of the frozen `not_claude` wire variant.
+    pub const NO_PUSH_CHANNEL: Self = Self::NotClaude;
     /// Exit code of `watch` for this refusal: retryable ones 2, permanent 3.
     pub fn exit_code(self) -> i32 {
         match self {
@@ -317,6 +382,8 @@ pub enum WatchStatusReason {
     Cooldown,
     Busy,
     Stopping,
+    /// The harness declares no push delivery channel (wire code `not_claude`,
+    /// frozen). Core code names [`Self::NO_PUSH_CHANNEL`].
     NotClaude,
     Disabled,
     Replaced,
@@ -332,6 +399,8 @@ pub enum WatchStatusReason {
 }
 
 impl WatchStatusReason {
+    /// The neutral name of the frozen `not_claude` wire variant.
+    pub const NO_PUSH_CHANNEL: Self = Self::NotClaude;
     /// Shared names (`unresolved`, `stopping`, `disabled`) follow the refusal
     /// mapping; a Close's exit comes from [`WatchCloseReason::exit_code`].
     pub fn exit_code(self) -> i32 {
@@ -412,9 +481,27 @@ impl WatchLine {
 pub enum WatchItem {
     Message(WatchMessage),
     Lazy(WatchMessage),
+    Invitation(WatchInvitation),
+    Notice(WatchNotice),
     Attention(WatchAttention),
     AttentionCleared(WatchAttentionCleared),
     Status(WatchStatus),
+}
+
+/// Pending invitation context; display is neither acceptance nor a message ACK.
+/// Older consumers ignore this additive kind and require an upgrade for its content.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WatchInvitation {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command_context_epoch: Option<String>,
+    /// Decimal canonical revision preserves integer precision in JavaScript consumers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topic_revision: Option<String>,
+    pub thread: ThreadId,
+    pub thread_name: Option<String>,
+    pub body: String,
+    pub truncated: bool,
+    pub wakes: bool,
 }
 
 /// A message or lazy row. `body` is the full body, or its first
@@ -438,11 +525,20 @@ pub struct WatchMessage {
     pub body_len: u64,
     pub truncated: bool,
     pub ack_required: bool,
+    /// A lazy row of a `wake_on: all` seat promoted to a `message` line (delivery-policy DP8):
+    /// it wakes an idle session although it has no ACK to run. Absent (false) on every other
+    /// line, so an ordinary message another binding already settled (also `ack_required:
+    /// false`) is told apart. Wire-compatible: added after schema 1 without a bump; an older
+    /// watch child omits it and older mods ignore unknown keys. Never model-visible.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub wakes: bool,
 }
 
 /// `text` is the existing fixed attention marker.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WatchAttention {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presentation_epoch: Option<String>,
     pub attention_version: u64,
     pub text: String,
 }
@@ -451,6 +547,8 @@ pub struct WatchAttention {
 /// pending (ht-j16.33): the mod drops attention items it has not sent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WatchAttentionCleared {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presentation_epoch: Option<String>,
     pub attention_version: u64,
 }
 
@@ -579,3 +677,11 @@ pub struct ModLedgerEntry {
 #[cfg(test)]
 #[path = "../../tests/protocol/watch.rs"]
 mod tests;
+
+/// Passive warning presentation, independent of receipt ACK or condition settlement.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WatchNotice {
+    pub warning: MessageId,
+    pub thread: ThreadId,
+    pub body: String,
+}

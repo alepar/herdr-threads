@@ -638,6 +638,8 @@ fn fixture_claim(seat: &str) -> crate::protocol::authority::CallerClaim {
         native_session: NativeSessionId::new("n"),
         execution: ExecutionId::new("00000000-0000-4000-8000-000000000001"),
         target: HostTargetId::new(seat),
+        agent_id: None,
+        liveness: Some(crate::protocol::authority::LivenessFingerprint::TEST),
     }
 }
 
@@ -688,6 +690,7 @@ fn rerunning_send_attention_producer_does_not_reenqueue() {
         delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
         thread,
         body: "hello".into(),
+        direct_recipient: None,
         invited_recipients: vec![SeatId::new("s2")],
         deadline_millis: None,
         operation: OperationId::new("send"),
@@ -772,6 +775,7 @@ fn rerunning_receipt_timer_producer_does_not_reenqueue() {
     };
     let fx = cooperative_fx("producer-receipt", &["s1"], false);
     let command = CheckIn {
+        lineage_parent: None,
         mode: crate::protocol::commands::CheckInMode::Lifecycle {
             expected_binding_generation: 1,
         },

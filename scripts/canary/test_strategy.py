@@ -206,9 +206,9 @@ class Strategy(unittest.TestCase):
     # Actual discovery descriptors: tier0 observes lifecycle, never the tool milestone.
     def test_legacy_model_off_lifecycle_pass_stays_legacy_pass(self):
         descriptors = [
-            ("claude", "Claude", "3f860645de4c3363", "c4c4b249584b3578",
+            ("claude", "Claude", "b76ddc7501b1db9c", "f527a509c67d2f32",
              "@anthropic-ai/claude-code", "ANTHROPIC_API_KEY"),
-            ("codex", "Codex", "d3b98d74f26f7e2c", "7c86f2da08117f13",
+            ("codex", "Codex", "460af33ca0db709c", "4d5de08e337406e1",
              "@openai/codex", "OPENAI_API_KEY")]
         for name, display, legacy_id, rich_id, package, key in descriptors:
             with self.subTest(harness=name), tempfile.TemporaryDirectory() as d:

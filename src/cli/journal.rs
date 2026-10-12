@@ -76,7 +76,10 @@ pub fn classify_original_actor(
             IntentScope::Native { .. },
             SemanticMutation::Handoff(_)
             | SemanticMutation::HandoffBootstrap(_)
-            | SemanticMutation::HandoffDelivery(_),
+            | SemanticMutation::HandoffDelivery(_)
+            | SemanticMutation::AutomaticDelivery(_)
+            | SemanticMutation::AutomaticHandoff(_)
+            | SemanticMutation::AutomaticBootstrap(_),
         ) => Err(invalid("handoff needs frozen caller")),
         (IntentScope::Native { .. }, _)
         | (IntentScope::Continuity { .. }, SemanticMutation::ContinuityCheckIn { .. })
@@ -109,7 +112,11 @@ pub(crate) fn classify_original_claim(
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SemanticMutation {
+    DirectSend(Box<super::direct_send::Plan>),
     Handoff(Box<super::handoff::HandoffPlan>),
+    AutomaticDelivery(Box<crate::protocol::handoff::AutomaticDeliveryPlan>),
+    AutomaticHandoff(Box<crate::protocol::handoff::AutomaticHandoffPlan>),
+    AutomaticBootstrap(Box<crate::protocol::handoff::AutomaticBootstrapPlan>),
     Frozen {
         claim: CallerClaim,
         mutation: Box<SemanticMutation>,
@@ -122,6 +129,9 @@ pub enum SemanticMutation {
         /// (`me init --operator`); submitted as `Command::OperatorCheckIn`.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         operator: bool,
+        /// Hermes `parent_session_id` hint, frozen with the claim (see `CheckIn::lineage_parent`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lineage_parent: Option<NativeSessionId>,
     },
     ResolveSeat {
         target: HostTargetId,
@@ -136,6 +146,8 @@ pub enum SemanticMutation {
         source: String,
         event_id: String,
         execution: ExecutionId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        liveness: Option<crate::protocol::authority::LivenessFingerprint>,
     },
     CheckIn,
     CreateThread {
@@ -175,6 +187,8 @@ pub enum SemanticMutation {
         user_intent: Option<crate::protocol::summary::UserIntent>,
         thread: ThreadId,
         body: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        direct_recipient: Option<SeatId>,
         invited_recipients: Vec<SeatId>,
         deadline_millis: Option<u64>,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -231,6 +245,8 @@ pub enum SemanticMutation {
     HandoffDelivery(Box<DeliveryPlan>),
     /// Separate local-account decision; nested original agent claim is a reference.
     OperatorRecoverBootstrap(Box<super::topology_recover::RecoveryPlan>),
+    /// Separate durable operator decision for a frozen V2 automatic parent.
+    OperatorRecoverAutomaticBootstrap(Box<super::topology_recover::automatic::RecoveryPlan>),
 }
 
 /// Independent versioned immutable plans; old HandoffPlan stays byte-for-byte.
@@ -249,7 +265,8 @@ pub struct DeliveryPlan {
 }
 impl BootstrapPlan {
     pub fn validate(&self) -> io::Result<()> {
-        if self.version != 1 {
+        // V1 is the frozen Claude/Codex grammar; V2 freezes the adapter's own composition.
+        if !matches!(self.version, 1 | 2) || self.version != self.payload.plan_version() {
             return Err(invalid("unsupported bootstrap plan version"));
         }
         self.payload.validate().map_err(invalid)
@@ -266,10 +283,17 @@ impl DeliveryPlan {
 impl SemanticMutation {
     pub fn namespace(&self) -> Option<&crate::protocol::handoff::HandoffNamespace> {
         match self {
+            Self::DirectSend(p) => Some(&p.namespace),
             Self::HandoffBootstrap(p) => Some(&p.payload.handoff.namespace),
             Self::HandoffDelivery(p) => Some(&p.payload.namespace),
+            Self::AutomaticDelivery(p) => Some(&p.payload.namespace),
+            Self::AutomaticBootstrap(p) => Some(&p.payload.handoff.namespace),
+            Self::AutomaticHandoff(p) => Some(&p.delivery.payload.namespace),
             Self::OperatorRecoverBootstrap(p) => {
                 Some(&p.request.identity.payload.handoff.namespace)
+            }
+            Self::OperatorRecoverAutomaticBootstrap(p) => {
+                Some(&p.request.identity.plan.payload.handoff.namespace)
             }
             Self::Frozen { mutation, .. } => mutation.namespace(),
             _ => None,
@@ -308,6 +332,7 @@ impl SemanticMutation {
     pub fn is_lazy_send(&self) -> bool {
         match self {
             Self::Frozen { mutation, .. } => mutation.is_lazy_send(),
+            Self::DirectSend(p) => p.request.delivery_mode == DeliveryMode::Lazy,
             Self::SendMessage {
                 delivery_mode: DeliveryMode::Lazy,
                 ..
@@ -332,10 +357,15 @@ impl SemanticMutation {
             return Err(invalid("top-level cooperative context required"));
         }
         match self {
+            Self::DirectSend(plan) => plan.validate(),
             Self::Handoff(plan) => plan.validate(),
             Self::HandoffBootstrap(plan) => plan.validate(),
             Self::HandoffDelivery(plan) => plan.validate(),
+            Self::AutomaticDelivery(plan) => plan.validate().map_err(invalid),
+            Self::AutomaticBootstrap(plan) => plan.validate().map_err(invalid),
+            Self::AutomaticHandoff(plan) => plan.validate().map_err(invalid),
             Self::OperatorRecoverBootstrap(plan) => plan.validate(),
+            Self::OperatorRecoverAutomaticBootstrap(plan) => plan.validate(),
             Self::Frozen { mutation, .. } => {
                 if mutation.is_operator()
                     || matches!(
@@ -350,6 +380,9 @@ impl SemanticMutation {
                     return Err(invalid("invalid nested cooperative mutation"));
                 }
                 mutation.validate()?;
+                if let Self::DirectSend(plan) = mutation.as_ref() {
+                    plan.validate_claim(self.frozen_claim().unwrap())?;
+                }
                 if mutation
                     .namespace()
                     .is_some_and(|ns| ns.instance != self.frozen_claim().unwrap().instance)
@@ -363,6 +396,7 @@ impl SemanticMutation {
                 mode,
                 event_id,
                 operator,
+                lineage_parent,
             } => {
                 if event_id.is_empty()
                     || event_id.len() > 1024
@@ -383,6 +417,7 @@ impl SemanticMutation {
                     claim: claim.clone(),
                     mode: *mode,
                     operation: OperationId::new("validation"),
+                    lineage_parent: lineage_parent.clone(),
                 };
                 if *operator {
                     Command::OperatorCheckIn(check)
@@ -399,6 +434,7 @@ impl SemanticMutation {
                 source,
                 event_id,
                 execution,
+                liveness,
             } => {
                 if event_id.is_empty()
                     || event_id.len() > 1024
@@ -413,6 +449,7 @@ impl SemanticMutation {
                     source: source.clone(),
                     operation: OperationId::new("validation"),
                     execution: execution.clone(),
+                    liveness: *liveness,
                 }
                 .validate()
                 .map_err(invalid)
@@ -473,14 +510,19 @@ impl SemanticMutation {
                 | Self::OperatorReplace { .. }
                 | Self::OperatorOrphanInvite { .. }
                 | Self::OperatorRecoverBootstrap(_)
+                | Self::OperatorRecoverAutomaticBootstrap(_)
         )
     }
     pub fn kind(&self) -> IntentKind {
         match self {
-            Self::Handoff(_) => IntentKind::Handoff,
-            Self::HandoffBootstrap(_) => IntentKind::HandoffBootstrap,
+            Self::DirectSend(_) => IntentKind::DirectSend,
+            Self::Handoff(_) | Self::AutomaticHandoff(_) => IntentKind::Handoff,
+            Self::AutomaticDelivery(_) => IntentKind::HandoffDelivery,
+            Self::HandoffBootstrap(_) | Self::AutomaticBootstrap(_) => IntentKind::HandoffBootstrap,
             Self::HandoffDelivery(_) => IntentKind::HandoffDelivery,
-            Self::OperatorRecoverBootstrap(_) => IntentKind::OperatorRecoverBootstrap,
+            Self::OperatorRecoverBootstrap(_) | Self::OperatorRecoverAutomaticBootstrap(_) => {
+                IntentKind::OperatorRecoverBootstrap
+            }
             Self::Frozen { mutation, .. } => mutation.kind(),
             Self::CooperativeCheckIn { .. } => IntentKind::CheckIn,
             Self::ResolveSeat { .. } => IntentKind::ResolveSeat,
@@ -509,6 +551,7 @@ impl SemanticMutation {
     }
     pub fn thread(&self) -> Option<&ThreadId> {
         match self {
+            Self::DirectSend(_) => None,
             Self::Handoff(plan) => plan.request.thread.as_ref(),
             Self::HandoffBootstrap(plan) => plan.payload.handoff.channel.thread(),
             Self::HandoffDelivery(plan) => plan.payload.channel.thread(),
@@ -539,10 +582,17 @@ impl SemanticMutation {
                 .ok_or_else(|| invalid("fresh caller claim required"))
         };
         let command = match self {
+            Self::DirectSend(_) => {
+                return Err(invalid("direct send requires compound coordinator"));
+            }
             Self::Handoff(_) => return Err(invalid("handoff requires compound coordinator")),
-            Self::HandoffBootstrap(_)
+            Self::AutomaticDelivery(_)
+            | Self::AutomaticHandoff(_)
+            | Self::AutomaticBootstrap(_)
+            | Self::HandoffBootstrap(_)
             | Self::HandoffDelivery(_)
-            | Self::OperatorRecoverBootstrap(_) => {
+            | Self::OperatorRecoverBootstrap(_)
+            | Self::OperatorRecoverAutomaticBootstrap(_) => {
                 return Err(invalid("topology contract is inert"));
             }
             Self::Frozen { claim, mutation } => {
@@ -552,12 +602,14 @@ impl SemanticMutation {
                 claim,
                 mode,
                 operator,
+                lineage_parent,
                 ..
             } => {
                 let check = CheckIn {
                     claim: claim.clone(),
                     mode: *mode,
                     operation,
+                    lineage_parent: lineage_parent.clone(),
                 };
                 if *operator {
                     Command::OperatorCheckIn(check)
@@ -575,6 +627,7 @@ impl SemanticMutation {
                 native_session,
                 source,
                 execution,
+                liveness,
                 ..
             } => Command::ContinuityCheckIn(ContinuityCheckIn {
                 target: target.clone(),
@@ -583,8 +636,10 @@ impl SemanticMutation {
                 source: source.clone(),
                 operation,
                 execution: execution.clone(),
+                liveness: *liveness,
             }),
             Self::CheckIn => Command::CheckIn(CheckIn {
+                lineage_parent: None,
                 mode: crate::protocol::commands::CheckInMode::Current,
                 operation,
                 claim: native()?,
@@ -647,6 +702,7 @@ impl SemanticMutation {
                 delivery_mode,
                 thread,
                 body,
+                direct_recipient,
                 invited_recipients,
                 deadline_millis,
                 relays_user,
@@ -655,6 +711,7 @@ impl SemanticMutation {
                 delivery_mode: *delivery_mode,
                 thread: thread.clone(),
                 body: body.clone(),
+                direct_recipient: direct_recipient.clone(),
                 invited_recipients: invited_recipients.clone(),
                 deadline_millis: *deadline_millis,
                 operation,
@@ -792,6 +849,13 @@ pub type PendingPage = Page<LocalIntent>;
 pub(crate) const MAX_DELIVERY_ORIGIN_BYTES: usize = 512 * 1024;
 pub(crate) const MAX_BOOTSTRAP_ORIGIN_BYTES: usize =
     2 * crate::store::topology_handoff::MAX_IDENTITY_BYTES + 4096;
+// The canonical automatic envelope (claim + original) is capped at 512 KiB
+// for modern explicit policy (historical absent policy retains 128 KiB). One
+// envelope covers the nested original and claim, another covers repeated
+// claim/scope fields in the frozen semantic and header. Fixed
+// reference fields and JSON tags use 4 KiB. Reject oversize, never truncate.
+pub(crate) const MAX_AUTOMATIC_ORIGIN_BYTES: usize =
+    2 * crate::protocol::handoff::MAX_AUTOMATIC_ORIGINAL_BYTES + 4096;
 pub struct Journal {
     root: PathBuf,
 }
@@ -882,12 +946,15 @@ impl Journal {
             body_len,
             flushed_through: flushed,
         };
+        // One buffer, one write (as save_progress_at, ffd09598): `to_writer` on the bare file
+        // issues a write(2) per JSON token, which stalled CLI exits under suite load (ht-poh.55).
+        let bytes = serde_json::to_vec(&progress)?;
         let temp = self
             .root
             .join(format!(".display-lazy-{}.tmp", Uuid::new_v4()));
         let result = (|| {
             let mut file = private_new(&temp)?;
-            serde_json::to_writer(&mut file, &progress)?;
+            file.write_all(&bytes)?;
             durable_sync(&file)?;
             fs::rename(&temp, &path)?;
             durable_sync(&File::open(&self.root)?)
@@ -1058,6 +1125,14 @@ impl Journal {
         digest.update(claim.binding_generation.to_be_bytes());
         digest.update((claim.execution.as_str().len() as u64).to_be_bytes());
         digest.update(claim.execution.as_str().as_bytes());
+        // Per binding (session and agent), so two bindings of one seat that share an execution
+        // never share display progress.
+        let session = claim.native_session.as_str();
+        digest.update((session.len() as u64).to_be_bytes());
+        digest.update(session.as_bytes());
+        let agent = claim.agent_id.as_ref().map_or("", |a| a.as_str());
+        digest.update((agent.len() as u64).to_be_bytes());
+        digest.update(agent.as_bytes());
         digest.update(message.as_str().as_bytes());
         self.root
             .join(format!("display-{:x}.progress", digest.finalize()))
@@ -1138,9 +1213,11 @@ impl Journal {
             body_len,
             flushed_through: flushed,
         };
+        // Single buffered write, as in record_lazy_displayed_chunk (ht-poh.55).
+        let bytes = serde_json::to_vec(&progress)?;
         let temp = self.root.join(format!(".display-{}.tmp", Uuid::new_v4()));
         let mut file = private_new(&temp)?;
-        serde_json::to_writer(&mut file, &progress)?;
+        file.write_all(&bytes)?;
         durable_sync(&file)?;
         fs::rename(&temp, &path)?;
         durable_sync(&File::open(&self.root)?)?;
@@ -1229,6 +1306,18 @@ impl Journal {
         operator: bool,
         factory: impl FnOnce() -> io::Result<(CallerClaim, CheckInMode)>,
     ) -> io::Result<IntentRef> {
+        self.record_check_in_lineage(scope, event_id, created_at_millis, operator, None, factory)
+    }
+    /// `record_check_in_as` freezing a lineage hint (Hermes `parent_session_id`) with the claim.
+    pub fn record_check_in_lineage(
+        &self,
+        scope: IntentScope,
+        event_id: &str,
+        created_at_millis: i64,
+        operator: bool,
+        lineage_parent: Option<NativeSessionId>,
+        factory: impl FnOnce() -> io::Result<(CallerClaim, CheckInMode)>,
+    ) -> io::Result<IntentRef> {
         let _lock = self.lock()?;
         for entry in fs::read_dir(&self.root)? {
             let Ok(entry) = entry else { continue };
@@ -1254,6 +1343,7 @@ impl Journal {
             mode,
             event_id: event_id.into(),
             operator,
+            lineage_parent,
         };
         if !scope_matches(&scope, &semantic) {
             return Err(invalid("intent authority scope mismatch"));
@@ -1362,10 +1452,11 @@ impl Journal {
         self.reserve(ordinal)?;
         let path = self.root.join(format!(".intent-{}", Uuid::new_v4()));
         let mut file = private_new(&path)?;
-        file.write_all(&encoded_header)?;
-        file.write_all(b"\n")?;
-        file.write_all(&body)?;
-        file.write_all(b"\n")?;
+        let mut bytes = encoded_header;
+        bytes.push(b'\n');
+        bytes.extend_from_slice(&body);
+        bytes.push(b'\n');
+        file.write_all(&bytes)?;
         durable_sync(&file)?;
         fs::rename(path, self.path(&reference))?;
         // The entry is already visible. A failed durability barrier must not
@@ -1437,6 +1528,58 @@ impl Journal {
             MAX_DELIVERY_ORIGIN_BYTES,
             "delivery",
         )
+    }
+    pub(crate) fn snapshot_automatic_origin(&self, reference: &IntentRef) -> io::Result<Vec<u8>> {
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(self.path(reference))?;
+        if !file.metadata()?.is_file() || file.metadata()?.len() > MAX_AUTOMATIC_ORIGIN_BYTES as u64
+        {
+            return Err(invalid("unsafe or oversized automatic handoff origin"));
+        }
+        let mut bytes = Vec::new();
+        file.take((MAX_AUTOMATIC_ORIGIN_BYTES + 1) as u64)
+            .read_to_end(&mut bytes)?;
+        Self::decode_automatic_origin(reference, &bytes)?;
+        Ok(bytes)
+    }
+    pub(crate) fn decode_automatic_origin(
+        reference: &IntentRef,
+        bytes: &[u8],
+    ) -> io::Result<PendingIntent> {
+        if bytes.len() > MAX_AUTOMATIC_ORIGIN_BYTES
+            || reference.ordinal == 0
+            || Uuid::parse_str(reference.operation.as_str()).is_err()
+        {
+            return Err(invalid("oversized automatic handoff origin"));
+        }
+        let pending = Self::decode_reader(reference, BufReader::new(bytes))?;
+        if !matches!(
+            (&pending.header.kind, &pending.semantic),
+            (IntentKind::HandoffDelivery, SemanticMutation::Frozen { mutation, .. })
+                if matches!(mutation.as_ref(), SemanticMutation::AutomaticDelivery(_))
+        ) && !matches!(
+            (&pending.header.kind, &pending.semantic),
+            (IntentKind::Handoff, SemanticMutation::Frozen { mutation, .. })
+                if matches!(mutation.as_ref(), SemanticMutation::AutomaticHandoff(_))
+        ) {
+            return Err(invalid("retained origin is not automatic handoff"));
+        }
+        let original = std::str::from_utf8(bytes).map_err(invalid)?;
+        let (header, body) = original
+            .split_once('\n')
+            .ok_or_else(|| invalid("missing automatic handoff origin header"))?;
+        if serde_json::from_str::<serde_json::Value>(header)?
+            != serde_json::to_value(&pending.header)?
+            || serde_json::from_str::<serde_json::Value>(body)?
+                != serde_json::to_value(&pending.semantic)?
+        {
+            return Err(invalid(
+                "unexpected retained automatic handoff origin fields",
+            ));
+        }
+        Ok(pending)
     }
     /// Typed bounded bootstrap original; exact historical bytes are retained.
     pub(crate) fn snapshot_bootstrap_origin(&self, reference: &IntentRef) -> io::Result<Vec<u8>> {
@@ -1672,14 +1815,19 @@ impl Journal {
             if header.reference.ordinal != *ordinal {
                 return Err(api(ErrorCode::StoreCorrupt, "intent ordinal mismatch"));
             }
+            let direct = if header.kind == IntentKind::DirectSend {
+                Some(super::direct_send::pending(self, &header.reference).map_err(io_api)?)
+            } else {
+                None
+            };
             let item = LocalIntent {
                 operation: header.reference.operation.clone(),
                 recovery_ref: LocalRecoveryRef::parse(header.reference.recovery_ref())
                     .map_err(|e| api(ErrorCode::StoreCorrupt, e))?,
                 created_at: UtcMillis(header.created_at_millis),
                 kind: header.kind,
-                thread: header.thread,
-                status: IntentStatus::Pending,
+                thread: direct.as_ref().and_then(|v| v.0.clone()).or(header.thread),
+                status: direct.map(|v| v.1).unwrap_or(IntentStatus::Pending),
             };
             let mut candidate = page.clone();
             candidate.items.push(item);
@@ -1792,7 +1940,8 @@ fn scope_matches(scope: &IntentScope, semantic: &SemanticMutation) -> bool {
                 && request.frozen_claim().is_none()
                 && !matches!(
                     request,
-                    SemanticMutation::ResolveSeat { .. }
+                    SemanticMutation::DirectSend(_)
+                        | SemanticMutation::ResolveSeat { .. }
                         | SemanticMutation::ContinuityCheckIn { .. }
                         | SemanticMutation::CompleteInboxDelivery { .. }
                 )
@@ -1800,6 +1949,10 @@ fn scope_matches(scope: &IntentScope, semantic: &SemanticMutation) -> bool {
         (
             IntentScope::Operator { local_user_uid, .. },
             SemanticMutation::OperatorRecoverBootstrap(plan),
+        ) => *local_user_uid == plan.operator_uid,
+        (
+            IntentScope::Operator { local_user_uid, .. },
+            SemanticMutation::OperatorRecoverAutomaticBootstrap(plan),
         ) => *local_user_uid == plan.operator_uid,
         (IntentScope::Operator { .. }, request) => request.is_operator(),
         _ => false,

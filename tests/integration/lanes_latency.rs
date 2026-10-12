@@ -190,6 +190,31 @@ impl Session {
     }
 
     pub(crate) fn cli(&self, caller: Option<&Caller>, args: &[&str]) -> (i32, Value, String) {
+        self.cli_in_process(caller, None, args)
+    }
+
+    /// The pid of the one non-shell foreground process Herdr reports for `pane`.
+    fn foreground_pid(&self, pane: &str) -> u32 {
+        let info = self.herdr_api(&["pane", "process-info", "--pane", pane]);
+        let shell = info["process_info"]["shell_pid"].as_u64();
+        let pids: Vec<u64> = info["process_info"]["foreground_processes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|process| process["pid"].as_u64())
+            .filter(|pid| Some(*pid) != shell)
+            .collect();
+        assert_eq!(pids.len(), 1, "{pane}: one foreground process: {info}");
+        u32::try_from(pids[0]).unwrap()
+    }
+
+    /// [`Self::cli`] for a caller whose harness process is `process` (default: its stand-in).
+    pub(crate) fn cli_in_process(
+        &self,
+        caller: Option<&Caller>,
+        process: Option<u32>,
+        args: &[&str],
+    ) -> (i32, Value, String) {
         let mut command = self.herdr.command(BIN);
         let args = if args.first() == Some(&"human") {
             command.arg("human");
@@ -204,6 +229,16 @@ impl Session {
             .arg("--host-endpoint")
             .arg(self.herdr.socket_path());
         if let Some(caller) = caller {
+            herdr_threads::test_support::isolation::as_agent(
+                &mut command,
+                "claude",
+                &format!("lanes-{}", caller.seat),
+            );
+            if let Some(pid) = process {
+                command
+                    .env("CLAUDE_PID", pid.to_string())
+                    .env("HT_TEST_HARNESS_PID", pid.to_string());
+            }
             command.args([
                 "--cooperative-seat",
                 &caller.seat,
@@ -1042,7 +1077,15 @@ fn herdr_stopped_freezes_wake_lane() {
                 "--operator",
             ],
         );
-        s.ok(Some(caller), &["check-in", "--lifecycle-event", "restored"]);
+        // The seat's harness process is the stand-in agent Herdr now runs in its pane: the
+        // composer wake types only to the binding whose process is the pane's foreground
+        // process (spec §3 Wake).
+        let (code, value, stderr) = s.cli_in_process(
+            Some(caller),
+            Some(s.foreground_pid(&caller.pane)),
+            &["check-in", "--lifecycle-event", "restored"],
+        );
+        assert_eq!(code, 0, "restored check-in failed: {stderr}{value}");
     }
     wait_until(
         "every recipient submitted after the restore",

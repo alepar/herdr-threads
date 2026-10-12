@@ -172,7 +172,7 @@ const INSERTS: &[(&str, &str)] = &[
     ),
     (
         "warning_offer",
-        "INSERT INTO warning_offer(seat_id,binding_generation,execution_id) VALUES ('s1',0,'e')",
+        "INSERT INTO warning_offer(binding_id,seat_id) VALUES ('b1','s1')",
     ),
     (
         "work_jobs",
@@ -224,7 +224,7 @@ const INSERTS: &[(&str, &str)] = &[
     ),
     (
         "catch_up",
-        "INSERT INTO catch_up(seat_id,thread_id,frontier_seq,binding_generation,execution_id,entered_at,state) VALUES ('s1','t',1,0,'e',0,'active')",
+        "INSERT INTO catch_up(binding_id,seat_id,thread_id,frontier_seq,entered_at,state) VALUES ('b1','s1','t',1,0,'active')",
     ),
 ];
 
@@ -266,7 +266,12 @@ fn every_table_is_classified() {
     for name in &mapped {
         assert!(tables.iter().any(|t| t == name), "stale mapped {name}");
     }
-    for table in ["snapshot_generations", "snapshot_targets", "host_instances"] {
+    for table in [
+        "snapshot_generations",
+        "snapshot_targets",
+        "host_instances",
+        "direct_threads",
+    ] {
         assert_eq!(lanes_for_table(table), LaneSet::EMPTY, "{table}");
         assert!(KNOWN_UNMAPPED.contains(&table));
     }

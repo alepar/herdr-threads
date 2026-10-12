@@ -1,0 +1,23 @@
+{
+  "N2": {},
+  "tables": {
+    "receipt_state": [
+      {
+        "ack_actor_seat_id": "sWuXErO41",
+        "ack_binding_id": "a14a9660f622dce38ee8d7dbb5a1d5c4",
+        "ack_generation": 1,
+        "ack_observation": "{\"binding_generation\":1,\"decided_at\":1791741861792,\"execution\":\"8faa1962-46e9-5ecc-820d-c204976d6e13\",\"harness\":\"agy\",\"host_boot\":\"herdr-server:pid=90114:start=1791741818.350075:uid=501\",\"observed_at\":1791741861792,\"provenance\":\"cooperative_top_level\",\"session\":\"421124d4-77b4-4425-b3f5-ff9075c3ae0b\",\"target_generation\":1}",
+        "ack_required": 1,
+        "acked_at": 1791741861792,
+        "available_at": 1791741834061,
+        "deadline_at": 1791742134061,
+        "message_id": "mpzdPLjm6",
+        "retired_at": null,
+        "seat_id": "sWuXErO41",
+        "soft_poked_at": null,
+        "state": "acked",
+        "warning_message_id": null
+      }
+    ]
+  }
+}

@@ -210,9 +210,11 @@ impl Matrix {
             binding_generation: 0,
             role: CallerRole::TopLevel,
             harness: Harness::Codex,
-            native_session: NativeSessionId::new(format!("plugin_context:{seat}")),
+            native_session: NativeSessionId::new(format!("session-{seat}")),
             execution: ExecutionId::new(format!("00000000-0000-4000-8000-{n:012}")),
             target: HostTargetId::new(seat),
+            agent_id: None,
+            liveness: Some(crate::protocol::authority::LivenessFingerprint::TEST),
         };
         self.lifecycle(claim, &format!("checkin-{seat}-{n}"))
     }
@@ -221,6 +223,7 @@ impl Matrix {
     fn check_in_again(&self, claim: &CallerClaim) -> CallerClaim {
         let n = self.executions.fetch_add(1, Ordering::SeqCst);
         self.handle(Command::CheckIn(CheckIn {
+            lineage_parent: None,
             mode: CheckInMode::Current,
             claim: claim.clone(),
             operation: OperationId::new(format!("current-{}-{n}", claim.seat.as_str())),
@@ -244,6 +247,7 @@ impl Matrix {
         claim.binding_generation = current as u64;
         match self
             .handle(Command::CheckIn(CheckIn {
+                lineage_parent: None,
                 mode: CheckInMode::Lifecycle {
                     expected_binding_generation: claim.binding_generation,
                 },
@@ -337,6 +341,7 @@ impl Matrix {
             delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
             thread: thread.clone(),
             body: body.into(),
+            direct_recipient: None,
             invited_recipients: invited.iter().map(|s| SeatId::new(*s)).collect(),
             deadline_millis: None,
             operation: OperationId::new(op),
@@ -1213,8 +1218,12 @@ fn rebind_during_pending_work_invalidates_old_context() {
     let (s, old, thread) = m.pair();
     let sent = m.send(&s, &thread, "hello", &[], "send-1").unwrap();
     let successor = m.check_in("r");
-    assert!(successor.binding_generation > old.binding_generation);
-    let error = m.ack(&old, &[&sent], "ack-old").unwrap_err();
+    // ht-54r.3: the same session re-registers its binding in place and the mapping generation
+    // holds; a context from another mapping generation is what stays fenced.
+    assert_eq!(successor.binding_generation, old.binding_generation);
+    let mut stale = old.clone();
+    stale.binding_generation += 1;
+    let error = m.ack(&stale, &[&sent], "ack-old").unwrap_err();
     assert_eq!(error.code, ErrorCode::CallerUnverified, "{error:?}");
     assert_eq!(m.receipt_state(&sent, "r"), "pending");
     assert_eq!(m.pending("r"), vec![sent.clone()]);
@@ -1827,9 +1836,11 @@ impl Matrix {
                 binding_generation: 0,
                 role: CallerRole::TopLevel,
                 harness: Harness::Codex,
-                native_session: NativeSessionId::new(format!("plugin_context:{pane}")),
+                native_session: NativeSessionId::new(format!("session-{pane}")),
                 execution: ExecutionId::new(execution),
                 target: HostTargetId::new(pane),
+                agent_id: None,
+                liveness: Some(crate::protocol::authority::LivenessFingerprint::TEST),
             };
             claims.push(self.lifecycle(claim, &format!("checkin-{pane}")));
         }
@@ -1930,10 +1941,20 @@ struct CliSeat {
     selection: crate::cli::commands::CooperativeSelection,
 }
 
+/// The in-process CLI has no harness process to fingerprint: the shipped CLI's agent check-ins
+/// carry the test fingerprint on the way in, as a real harness's would carry its own.
+fn fingerprinted(mut command: Command) -> Command {
+    if let Command::CheckIn(check) = &mut command
+        && check.claim.harness != crate::protocol::authority::Harness::Human
+    {
+        check.claim.liveness = Some(crate::protocol::authority::LivenessFingerprint::TEST);
+    }
+    command
+}
 struct MatrixClient<'a>(&'a Matrix);
 impl crate::ports::LocalClient for MatrixClient<'_> {
     fn call(&self, command: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
-        self.0.handle(command)
+        self.0.handle(fingerprinted(command))
     }
     fn call_with_output(
         &self,
@@ -1941,7 +1962,7 @@ impl crate::ports::LocalClient for MatrixClient<'_> {
         _: &crate::protocol::output::OutputSpec,
         _: &CallBudget,
     ) -> Result<CommandResult, ApiError> {
-        self.0.handle(command)
+        self.0.handle(fingerprinted(command))
     }
 }
 
@@ -1974,6 +1995,11 @@ impl Matrix {
     fn cli(&self, seat: &CliSeat, argv: &[&str]) -> Result<Vec<u8>, crate::cli::RunError> {
         let mut full = vec!["herdr-threads"];
         full.extend_from_slice(argv);
+        // A lifecycle check-in names its harness session (decision 15; a `plugin_context:` one is
+        // refused).
+        if argv.contains(&"--lifecycle-event") && !argv.contains(&"--native-session") {
+            full.extend(["--native-session", "matrix-session"]);
+        }
         let parsed = crate::cli::commands::parse_argv(full).unwrap();
         let mut output = Vec::new();
         crate::cli::run_selected(
@@ -2164,7 +2190,8 @@ fn incomplete_capture_and_lost_events_recover_by_snapshot_without_retirement() {
     let r = m.cli_context(&cli);
     assert_eq!(r.seat, pair.r.seat);
     assert_ne!(r.execution, r_before.execution);
-    assert!(r.binding_generation as i64 > invalidated_generation);
+    // The invalidation already bumped the mapping generation; the check-in registers at it.
+    assert_eq!(r.binding_generation as i64, invalidated_generation);
     m.cli(&cli, &["ack", pair.sent.as_str()]).unwrap();
     assert_eq!(m.receipt_state(&pair.sent, pair.r.seat.as_str()), "acked");
     assert_eq!(m.ack_events(r.seat.as_str()), 1);
@@ -2415,9 +2442,11 @@ fn resolved_never_registered_seat_registers_on_first_lifecycle_check_in_after_re
         binding_generation: 0,
         role: CallerRole::TopLevel,
         harness: Harness::Codex,
-        native_session: NativeSessionId::new("plugin_context:pane-u"),
+        native_session: NativeSessionId::new("session-pane-u"),
         execution: ExecutionId::new("00000000-0000-4000-8000-0000000000aa"),
         target: HostTargetId::new("pane-u"),
+        agent_id: None,
+        liveness: Some(crate::protocol::authority::LivenessFingerprint::TEST),
     };
     let cli = m.cli_seat(&u);
     let operator_ops = || {
@@ -2502,8 +2531,8 @@ fn resolved_never_registered_seat_registers_on_first_lifecycle_check_in_after_re
         .unwrap();
     let context = m.cli_context(&cli);
     assert_eq!(context.seat, seat_u);
-    assert_eq!(context.binding_generation as i64, generation_u + 1);
-    assert_eq!(m.seat_generation(&seat_u), generation_u + 1);
+    assert_eq!(context.binding_generation as i64, generation_u);
+    assert_eq!(m.seat_generation(&seat_u), generation_u);
     assert_eq!(
         m.db()
             .query_row(
@@ -2513,7 +2542,7 @@ fn resolved_never_registered_seat_registers_on_first_lifecycle_check_in_after_re
             )
             .unwrap(),
         (
-            generation_u + 1,
+            generation_u,
             Some("term-pane-u".to_string()),
             Some("inc".to_string()),
             true,
@@ -2531,7 +2560,11 @@ fn resolved_never_registered_seat_registers_on_first_lifecycle_check_in_after_re
     assert_eq!(m.seat_states(), "resolved:- resolved:- resolved:-");
     m.cli(&cli, &["check-in", "--lifecycle-event", "hook-u-2"])
         .unwrap();
-    assert!(m.cli_context(&cli).binding_generation as i64 > generation_u + 1);
+    // The second invalidation bumped the mapping generation once; the check-in registers at it.
+    assert_eq!(
+        m.cli_context(&cli).binding_generation as i64,
+        generation_u + 1
+    );
     assert_eq!(operator_ops(), operator_before, "no operator repair");
 }
 
@@ -2588,8 +2621,14 @@ fn startup_evidence_health_recomputes_after_operator_repair_and_reregistration()
         inputs.coherent_enumeration = crate::protocol::results::CapabilityState::Supported;
         inputs.safe_prompt = crate::protocol::results::CapabilityState::Supported;
         inputs.receipt_registration = crate::protocol::results::CapabilityState::Supported;
-        inputs.codex = crate::daemon::health::HarnessStatus::Supported("native".into());
-        inputs.claude = crate::daemon::health::HarnessStatus::Supported("native".into());
+        inputs.set_harness(
+            "codex",
+            crate::daemon::health::HarnessStatus::Supported("native".into()),
+        );
+        inputs.set_harness(
+            "claude",
+            crate::daemon::health::HarnessStatus::Supported("native".into()),
+        );
         inputs.binding_evidence = report;
         inputs.unresolved = Some(Default::default());
         inputs.assemble()
@@ -2659,6 +2698,7 @@ fn failpoints_cannot_be_armed_through_requests_or_foreign_scopes() {
             delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
             thread: thread.clone(),
             body: "hello".into(),
+            direct_recipient: None,
             invited_recipients: vec![],
             deadline_millis: None,
             operation: OperationId::new("wire"),

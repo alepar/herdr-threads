@@ -1,0 +1,4 @@
+sample 1: shell_pid=42799 non_shell_foreground=[42815] started_process_pid(current)=42815
+sample 2: shell_pid=42799 non_shell_foreground=[42815] started_process_pid(current)=42815
+sample 3: shell_pid=42799 non_shell_foreground=[42815] started_process_pid(current)=42815
+candidates (harness-shaped descendants): 42815 /Users/alepar/.local/bin/claude;

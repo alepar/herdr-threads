@@ -1,0 +1,3 @@
+# pid ppid pgid tpgid stat comm args  (shell 56633 and its descendants)
+56633 42757 56633 56651 SNs  -zsh             -zsh
+56651 56633 56651 56651 SN+  /tmp/sp-ede3b852 /tmp/sp-ede3b852/ht-54r.89/agybin/1.3.3/agy

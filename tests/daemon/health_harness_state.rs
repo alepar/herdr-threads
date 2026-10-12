@@ -442,11 +442,17 @@ fn no_health_line_for_working_or_new() {
 fn unlisted_new_version_adds_no_health_line() {
     let version = newer_version();
     let mut inputs = ready_inputs();
-    inputs.claude = claude_status(
-        Some(Ok(version.clone())),
-        crate::protocol::results::CapabilityState::Unsupported,
+    inputs.set_harness(
+        "claude",
+        claude_status(
+            Some(Ok(version.clone())),
+            crate::protocol::results::CapabilityState::Unsupported,
+        ),
     );
-    assert!(matches!(inputs.claude, HarnessStatus::Optimistic(_)));
+    assert!(matches!(
+        inputs.harness("claude"),
+        Some(HarnessStatus::Optimistic(_))
+    ));
     // No evidence at all: the version verdict for the PATH version is
     // doctor-only, so Health has no version line.
     let fx = Fx::new("hhs-unlisted");
@@ -475,11 +481,17 @@ fn unlisted_new_version_adds_no_health_line() {
 #[test]
 fn version_refusal_is_not_a_health_limitation() {
     let mut inputs = ready_inputs();
-    inputs.claude = claude_status(
-        Some(Err(VersionError::Unsupported(below_floor_version()))),
-        crate::protocol::results::CapabilityState::Unsupported,
+    inputs.set_harness(
+        "claude",
+        claude_status(
+            Some(Err(VersionError::Unsupported(below_floor_version()))),
+            crate::protocol::results::CapabilityState::Unsupported,
+        ),
     );
-    assert!(matches!(inputs.claude, HarnessStatus::VersionRefused(_)));
+    assert!(matches!(
+        inputs.harness("claude"),
+        Some(HarnessStatus::VersionRefused(_))
+    ));
     let health = inputs.assemble();
     assert_eq!(
         health.state,
@@ -490,9 +502,12 @@ fn version_refusal_is_not_a_health_limitation() {
     assert!(health.limitations.is_empty(), "{:#?}", health.limitations);
     // An unobservable binary stays a limitation: it blocks the hook.
     let mut inputs = ready_inputs();
-    inputs.claude = claude_status(
-        Some(Err(VersionError::Unavailable)),
-        crate::protocol::results::CapabilityState::Unsupported,
+    inputs.set_harness(
+        "claude",
+        claude_status(
+            Some(Err(VersionError::Unavailable)),
+            crate::protocol::results::CapabilityState::Unsupported,
+        ),
     );
     let health = inputs.assemble();
     assert_eq!(health.state, HealthState::Degraded);
@@ -1079,7 +1094,10 @@ fn health_v2_broken_twenty_first_row_still_degrades_overall_health() {
 #[test]
 fn generic_cached_install_failure_degrades_overall_health_with_bounded_note() {
     let mut inputs = ready_inputs();
-    inputs.additional_harnesses = vec![("fourth".into(), HarnessStatus::Refused("x".repeat(2000)))];
+    inputs.harnesses.extend(vec![(
+        "fourth".into(),
+        HarnessStatus::Refused("x".repeat(2000)),
+    )]);
     let health = inputs.assemble();
     assert_eq!(
         health.state,
@@ -1094,10 +1112,10 @@ fn generic_cached_install_failure_degrades_overall_health_with_bounded_note() {
     );
     health.validate().unwrap();
     let mut inputs = ready_inputs();
-    inputs.additional_harnesses = vec![(
+    inputs.harnesses.extend(vec![(
         "fourth".into(),
         HarnessStatus::NotInstalled("absent".into()),
-    )];
+    )]);
     let health = inputs.assemble();
     assert_eq!(health.state, HealthState::Healthy);
     assert!(
@@ -1411,9 +1429,12 @@ fn health_v2_runtime_rows_are_bounded_newest_then_identity_domain_contract() {
 #[test]
 fn task3_versionless_health_cooperation_does_not_claim_runtime_admission() {
     let mut inputs = ready_inputs();
-    inputs.claude = HarnessStatus::ContractDeclared {
-        detail: "contract_declared; runtime metadata unavailable".into(),
-    };
+    inputs.set_harness(
+        "claude",
+        HarnessStatus::ContractDeclared {
+            detail: "contract_declared; runtime metadata unavailable".into(),
+        },
+    );
     let health = inputs.assemble();
     assert_eq!(
         health.harness.claude,
@@ -1699,9 +1720,11 @@ fn hermes_registry_presence_preserves_healthy_legacy_only_health() {
         let mut inputs = ready_inputs();
         inputs.instance = uuid::Uuid::from_u128(1);
         inputs.boot = uuid::Uuid::from_u128(2);
-        inputs.claude = cached["claude"].status.clone();
-        inputs.codex = cached["codex"].status.clone();
-        inputs.additional_harnesses = vec![("hermes".into(), cached["hermes"].status.clone())];
+        inputs.set_harness("claude", cached["claude"].status.clone());
+        inputs.set_harness("codex", cached["codex"].status.clone());
+        inputs
+            .harnesses
+            .extend(vec![("hermes".into(), cached["hermes"].status.clone())]);
         inputs.harness_version_lines = fx.provider().health_lines(&budget()).unwrap();
         inputs.assemble()
     };
@@ -1795,9 +1818,17 @@ fn hermes_registry_presence_preserves_healthy_legacy_only_health() {
                 && line.contains("qualification unavailable"))
     );
     let mut unqualified_only = ready_inputs();
-    unqualified_only.claude = HarnessStatus::NotInstalled("fixture absent".into());
-    unqualified_only.codex = HarnessStatus::NotInstalled("fixture absent".into());
-    unqualified_only.additional_harnesses = vec![("hermes".into(), observed.status.clone())];
+    unqualified_only.set_harness(
+        "claude",
+        HarnessStatus::NotInstalled("fixture absent".into()),
+    );
+    unqualified_only.set_harness(
+        "codex",
+        HarnessStatus::NotInstalled("fixture absent".into()),
+    );
+    unqualified_only
+        .harnesses
+        .extend(vec![("hermes".into(), observed.status.clone())]);
     let health = unqualified_only.assemble();
     assert_eq!(health.state, HealthState::Healthy);
     assert!(

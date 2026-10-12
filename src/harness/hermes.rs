@@ -7,7 +7,7 @@ use super::{
     contract::{self, EventClass, EventContract, HarnessContract, JsonType, field},
     evidence::{AttributionHolding, EvidenceEvent, EvidenceOrigin},
 };
-use crate::protocol::time::CallBudget;
+use crate::protocol::{commands::BindingEventKind, time::CallBudget};
 use serde::Deserialize;
 use std::{
     collections::BTreeMap,
@@ -15,8 +15,40 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 pub struct HermesAdapter;
-pub const BRIDGE_SCHEMA: &str = "3f599002572f0efc";
+pub const BRIDGE_SCHEMA: &str = "78669955a7b170ed";
+static TEXT: AdapterText = AdapterText {
+    setup_scope:
+        "  hermes  Experimental; natively measured on 0.21.5 with a private Herdr build. Select
+          `setup hermes --profile NAME` (or explicit default when omitted). --profile
+          requires a named harness and is refused for bare multi-harness commands.
+          The captured official resolver selects lexical/physical HERMES_HOME; no
+          profile is created and a sticky active profile is not silently selected.
+          Installs owned plugin.yaml, __init__.py and bridge_config.json under the
+          selected home's plugins/herdr-threads. Enable manually with the printed
+          `hermes --profile NAME plugins enable herdr-threads` command and retain
+          native consent. Installed, configured enabled and native activation are
+          separate. A bare Hermes CLI session in a Herdr pane then joins through these
+          hooks. After upgrading, run setup again so the installed bridge is current;
+          setup-status reports each profile's enablement and whether its bridge is
+          current. Unsetup preserves foreign/modified assets and native YAML/enable
+          selection, reporting residue and manual disable guidance.",
+    launch_notes: "Hermes is experimental, natively
+measured on 0.21.5 with a private Herdr build; a bare Hermes CLI session also
+joins through its hooks; this launch adds the guarded process hint that makes the seat
+wakeable. Its separate startup/profile/API prelaunch observation
+must match the selected executable, owned generation and configured enabled profile.
+Native Hermes -p/--profile NAME after `--` is emitted once (default when omitted);
+--cli and one policy-owned chat token compose the captured interactive grammar.
+Known-arity model/provider options and chat -q/--query are supported in their native
+positions. Resume, TUI/native/oneshot, arbitrary subcommands, plugin suppression and
+approval bypass forms refuse. Launch never enables a plugin or grants native consent.
+The private host must support guarded process hints; a hint or observed launch is
+neither callback activation nor model consumption. Missing Hermes composer support
+permits no in-turn poke or composer stash/restore.",
+    ..AdapterText::NONE
+};
 static METADATA: AdapterMetadata = AdapterMetadata {
+    agent_env_markers: &[],
     id: "hermes",
     display_label: "Hermes",
     context_spelling: "Hermes",
@@ -57,6 +89,23 @@ const EVENTS: &[EvidenceEvent] = &[
     },
     EvidenceEvent {
         native_event: "on_session_reset",
+        milestone: None,
+        always_send: true,
+    },
+    // Session teardown and delegate-child lifecycle (ht-54r.11). `on_session_end` is per turn and
+    // is deliberately not a callback of this bridge.
+    EvidenceEvent {
+        native_event: "on_session_finalize",
+        milestone: None,
+        always_send: true,
+    },
+    EvidenceEvent {
+        native_event: "subagent_start",
+        milestone: None,
+        always_send: true,
+    },
+    EvidenceEvent {
+        native_event: "subagent_stop",
         milestone: None,
         always_send: true,
     },
@@ -122,6 +171,21 @@ macro_rules! events {
                 class: EventClass::Lifecycle,
                 fields: $fields,
             },
+            EventContract {
+                event: "on_session_finalize",
+                class: EventClass::Lifecycle,
+                fields: $fields,
+            },
+            EventContract {
+                event: "subagent_start",
+                class: EventClass::Lifecycle,
+                fields: $fields,
+            },
+            EventContract {
+                event: "subagent_stop",
+                class: EventClass::Lifecycle,
+                fields: $fields,
+            },
         ]
     };
 }
@@ -160,7 +224,7 @@ pub static CONTRACTS: &[ContractDescriptor] = &[
             "qualified_role_session",
             "startup_captured_identity",
             "observed_timeout",
-            "transport_3f599002572f0efc",
+            "transport_78669955a7b170ed",
         ],
         holding: AttributionHolding::Never,
         resumed_unavailable_reason: None,
@@ -195,7 +259,10 @@ struct Association {
     role: String,
     provenance: String,
     session_id: String,
-    turn_id: String,
+    turn_id: Option<String>,
+    /// Absent (an older bridge) decodes exactly as null.
+    #[serde(default)]
+    enrollment_witness: Option<String>,
 }
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -310,6 +377,25 @@ fn now() -> i64 {
 fn fields(v: &serde_json::Value, keys: &[&str]) -> bool {
     v.as_object()
         .is_some_and(|m| m.len() == keys.len() && keys.iter().all(|k| m.contains_key(*k)))
+}
+/// The legacy four association keys, or those plus `enrollment_witness`.
+fn association_keys(v: &serde_json::Value, witness_required: bool) -> bool {
+    let legacy = ["role", "provenance", "session_id", "turn_id"];
+    let full = [
+        "role",
+        "provenance",
+        "session_id",
+        "turn_id",
+        "enrollment_witness",
+    ];
+    fields(v, &full) || (!witness_required && fields(v, &legacy))
+}
+fn witness(a: &Association) -> Result<Option<EnrollmentWitness>, ()> {
+    match a.enrollment_witness.as_deref() {
+        None => Ok(None),
+        Some("cli_platform") => Ok(Some(EnrollmentWitness::CliPlatform)),
+        Some(_) => Err(()),
+    }
 }
 fn parse(input: &HookInput) -> Result<Envelope, DecodeFailure> {
     let invalid = || DecodeFailure::Invalid("invalid Hermes bridge envelope".into());
@@ -520,34 +606,73 @@ fn parse(input: &HookInput) -> Result<Envelope, DecodeFailure> {
     if e.callback == "pre_llm_call" {
         let parent = e.parent_session_id.as_deref().ok_or_else(invalid)?;
         let association = e.role_association.as_ref().ok_or_else(invalid)?;
-        if !fields(
-            &value["role_association"],
-            &["role", "provenance", "session_id", "turn_id"],
-        ) || association.provenance != "explicit_parent"
-            || association.role != if parent.is_empty() { "top" } else { "child" }
+        let turn = association.turn_id.as_deref().ok_or_else(invalid)?;
+        let granted = witness(association).map_err(|()| invalid())?;
+        if !association_keys(&value["role_association"], false)
+            || association.provenance != "explicit_parent"
+            // A parentless turn is top-level. A parented one is a delegate child, or a
+            // compression / branch successor the bridge forwards as top-level with its
+            // parent as the lineage hint (ht-54r.17).
+            || !(association.role == "top"
+                || (association.role == "child" && !parent.is_empty()))
             || Some(&association.session_id) != e.session_id.as_ref()
-            || Some(&association.turn_id) != e.turn_id.as_ref()
-            || !text(&association.turn_id, 256, false)
+            || Some(turn) != e.turn_id.as_deref()
+            || !text(turn, 256, false)
             || e.shape["parent_session_id"].presence != "present"
+            || (granted.is_some()
+                && (association.role != "top" || e.platform.as_deref() != Some("cli")))
         {
             return Err(invalid());
         }
     } else if e.callback == "post_tool_call" {
         let association = e.role_association.as_ref().ok_or_else(invalid)?;
-        if !fields(
-            &value["role_association"],
-            &["role", "provenance", "session_id", "turn_id"],
-        ) || association.role != "top"
+        let turn = association.turn_id.as_deref().ok_or_else(invalid)?;
+        if !association_keys(&value["role_association"], false)
+            || association.role != "top"
             || association.provenance != "qualified_pre_llm_cache"
             || Some(&association.session_id) != e.session_id.as_ref()
-            || Some(&association.turn_id) != e.turn_id.as_ref()
-            || !text(&association.turn_id, 256, false)
+            || Some(turn) != e.turn_id.as_deref()
+            || !text(turn, 256, false)
+            || association.enrollment_witness.is_some()
             || e.shape["parent_session_id"].presence != "missing"
+        {
+            return Err(invalid());
+        }
+    } else if e.callback == "on_session_start" {
+        if let Some(association) = e.role_association.as_ref()
+            && (!association_keys(&value["role_association"], true)
+                || association.provenance != "cli_session_start"
+                || association.role != "top"
+                || Some(&association.session_id) != e.session_id.as_ref()
+                || association.turn_id.is_some()
+                || witness(association) != Ok(Some(EnrollmentWitness::CliPlatform))
+                || e.platform.as_deref() != Some("cli"))
         {
             return Err(invalid());
         }
     } else if e.role_association.is_some() {
         return Err(invalid());
+    }
+    // A delegate child's events are about the child session (`session_id`) and name their parent;
+    // the session teardown names no parent.
+    match e.callback.as_str() {
+        "subagent_start" | "subagent_stop" => {
+            let parent = e.parent_session_id.as_deref().ok_or_else(invalid)?;
+            if parent.is_empty()
+                || Some(parent) == e.session_id.as_deref()
+                || e.shape["parent_session_id"].presence != "present"
+            {
+                return Err(invalid());
+            }
+        }
+        "on_session_finalize"
+            if e.parent_session_id
+                .as_deref()
+                .is_some_and(|p| !p.is_empty()) =>
+        {
+            return Err(invalid());
+        }
+        _ => {}
     }
     if (e.callback == "on_session_reset" && e.reset_reason.as_deref() != Some("new_session"))
         || (e.callback != "on_session_reset" && e.reset_reason.is_some())
@@ -649,14 +774,60 @@ fn observe_executable(
     Ok(None)
 }
 
+/// Hermes bridge callbacks. `on_session_end` fires after every turn and is NOT an end event;
+/// `on_session_finalize` is the session teardown (spec §3).
+pub const REQUIRED_HOOK_EVENTS: &[&str] = &[
+    "pre_llm_call",
+    "post_tool_call",
+    "on_session_start",
+    "on_session_reset",
+    "on_session_finalize",
+    "subagent_start",
+    "subagent_stop",
+];
+
+/// The `.hermes/bin/hermes` launcher execs `python3 -I -c '<script>' "$@"`.
+fn is_hermes_launcher(record: &crate::ports::ProcessRecord) -> bool {
+    let argv0 = record.argv.first().map_or("", String::as_str);
+    let argv0 = argv0.rsplit('/').next().unwrap_or(argv0);
+    argv0.starts_with("python")
+        && record
+            .argv
+            .iter()
+            .any(|a| a.contains("hermes_cli") || a.contains("/.hermes/"))
+}
+
 impl HarnessAdapter for HermesAdapter {
     fn canary_strategy(&self) -> Option<&dyn CanaryStrategy> {
         Some(&HermesCanary)
+    }
+    fn caller_env(&self) -> Option<CallerEnvShape> {
+        Some(CallerEnvShape {
+            process_names: &["hermes"],
+            session_var: "HERMES_SESSION_ID",
+            role: None,
+            process_match: Some(is_hermes_launcher),
+            pid_var: None,
+            paneless: None,
+        })
+    }
+    /// The parent registers a Hermes child session as a subagent binding keyed by the child.
+    fn binding_policy(&self) -> BindingPolicy {
+        BindingPolicy {
+            registered_child_sessions: true,
+            ..BindingPolicy::default()
+        }
+    }
+    fn required_hook_events(&self) -> Vec<&'static str> {
+        REQUIRED_HOOK_EVENTS.to_vec()
     }
 
     type Admission = HermesAdmission;
     fn metadata(&self) -> &'static AdapterMetadata {
         &METADATA
+    }
+    fn text(&self) -> &'static AdapterText {
+        &TEXT
     }
     fn contracts(&self) -> &'static [ContractDescriptor] {
         CONTRACTS
@@ -666,6 +837,9 @@ impl HarnessAdapter for HermesAdapter {
     }
     fn qualified_turn_policy(&self) -> super::context::QualifiedTurnPolicy {
         super::context::QualifiedTurnPolicy::StartupAttach
+    }
+    fn enrollment_policy(&self) -> EnrollmentPolicy {
+        EnrollmentPolicy::WitnessedStartAndUnownedTurn
     }
     fn observe_install(&self, env: &InstallEnvironment, budget: &CallBudget) -> InstallObservation {
         match observe_executable(env, budget) {
@@ -726,11 +900,30 @@ impl HarnessAdapter for HermesAdapter {
         if state.bytes != input.bytes || e != state.envelope {
             return Err(DecodeFailure::RegistrationMismatch);
         }
-        let role = match e.role_association.as_ref().map(|a| a.role.as_str()) {
+        // The turn callbacks carry a role; on_session_start carries one only
+        // with the bridge's `cli_session_start` association (strict parse
+        // guarantees role top, witness cli_platform and platform cli), which
+        // enrolls the pane. Any other on_session_start is an unknown observer.
+        let cli_start = e.callback == "on_session_start"
+            && e.role_association
+                .as_ref()
+                .is_some_and(|a| a.provenance == "cli_session_start");
+        let role = match e
+            .role_association
+            .as_ref()
+            .filter(|_| {
+                cli_start || matches!(e.callback.as_str(), "pre_llm_call" | "post_tool_call")
+            })
+            .map(|a| a.role.as_str())
+        {
             Some("top") => EventRole::TopLevel,
             Some("child") => EventRole::Subagent,
             _ => EventRole::Unknown,
         };
+        let enrollment_witness = e
+            .role_association
+            .as_ref()
+            .and_then(|a| witness(a).ok().flatten());
         let session = e.session_id.clone().unwrap();
         let intent = if e.callback == "pre_llm_call" {
             EventIntent::QualifiedTurn(super::context::QualifiedTurn {
@@ -738,6 +931,12 @@ impl HarnessAdapter for HermesAdapter {
                 event_key: e.event_id.clone(),
                 reset: None,
                 ordering: Some(e.observation_order.generic()),
+                // A parented top-level turn (not a delegate child) is a compression or
+                // /branch successor; the daemon verifies the predecessor.
+                lineage_parent: (role == EventRole::TopLevel)
+                    .then(|| e.parent_session_id.clone())
+                    .flatten()
+                    .filter(|parent| !parent.is_empty()),
             })
         } else if e.callback == "on_session_reset" {
             EventIntent::DeclaredReset(super::context::DeclaredReset {
@@ -745,10 +944,40 @@ impl HarnessAdapter for HermesAdapter {
                 event_key: e.event_id.clone(),
                 ordering: e.observation_order.generic(),
             })
+        } else if cli_start {
+            EventIntent::Enroll
         } else {
             EventIntent::Observer
         };
         let observer = e.callback != "pre_llm_call";
+        // A teardown ends the session's top-level binding; a delegate's start/stop registers and
+        // disconnects the child session as the parent's subagent binding. The claim is always
+        // the top-level session's: the child's own id travels as `child_session`.
+        let (role, binding_event) = match e.callback.as_str() {
+            "on_session_finalize" => (
+                EventRole::TopLevel,
+                Some(BindingEventDecode {
+                    kind: BindingEventKind::SessionEnd,
+                    agent_id: None,
+                    child_session: None,
+                    claim_session: None,
+                }),
+            ),
+            kind @ ("subagent_start" | "subagent_stop") => (
+                EventRole::Subagent,
+                Some(BindingEventDecode {
+                    kind: if kind == "subagent_start" {
+                        BindingEventKind::SubagentStart
+                    } else {
+                        BindingEventKind::SubagentStop
+                    },
+                    agent_id: None,
+                    child_session: Some(session.clone()),
+                    claim_session: e.parent_session_id.clone(),
+                }),
+            ),
+            _ => (role, None),
+        };
         Ok(DecodedEvent {
             harness: super::registry::builtins().agent("hermes").unwrap(),
             role,
@@ -756,6 +985,7 @@ impl HarnessAdapter for HermesAdapter {
             event_id: e.event_id,
             intent,
             metadata: EventMetadata {
+                enrollment_witness,
                 context_source: e.callback.clone(),
                 native_event: e.callback,
                 shape_fields: e.shape.keys().cloned().collect(),
@@ -765,6 +995,7 @@ impl HarnessAdapter for HermesAdapter {
                 skill_pointer: false,
                 capability: super::Capability::ObservedInput,
                 domain: ContractDomain::Bridge,
+                agent_id: None,
             },
             delivery: if observer {
                 DeliveryEligibility::ObserverOnly
@@ -772,6 +1003,7 @@ impl HarnessAdapter for HermesAdapter {
                 DeliveryEligibility::Context
             },
             runtime: RuntimeAttribution::Attributed(e.runtime_identity),
+            binding_event,
         })
     }
     fn encode(
@@ -837,7 +1069,10 @@ impl HarnessAdapter for HermesAdapter {
             return Err("runtime mismatch".into());
         }
         Ok(
-            if e.role_association.as_ref().is_some_and(|a| a.role == "top") {
+            if e.role_association
+                .as_ref()
+                .is_some_and(|a| a.role == "top" && a.provenance != "cli_session_start")
+            {
                 request
                     .descriptor
                     .qualifications
@@ -1006,6 +1241,28 @@ impl HarnessAdapter for HermesAdapter {
             Err(e) => SetupStatus::Failed(e),
         }
     }
+    /// A stale bridge (or one missing required callbacks) is repaired by re-running the owned
+    /// setup; a current or absent bridge keeps the default projection.
+    fn doctor_projection(
+        &self,
+        request: &StatusRequest,
+        _: &serde_json::Value,
+        budget: &CallBudget,
+    ) -> Option<DoctorProjection> {
+        let SetupStatus::Detailed(status) = self.status(request, budget) else {
+            return None;
+        };
+        let stale = status.projection["stale_install"].clone();
+        let detail = stale["detail"].as_str()?.to_owned();
+        Some(DoctorProjection {
+            hooks: status.projection.clone(),
+            status: Some(SetupStatus::Detailed(status)),
+            limitations: vec![detail],
+            manual_repairs: vec![],
+            safe_repairs: vec![LocalRepair::RepairOwned],
+            repair_options: Default::default(),
+        })
+    }
     fn launch_policy(&self) -> Option<&dyn LaunchPolicy> {
         Some(&launch::POLICY)
     }
@@ -1031,7 +1288,28 @@ impl HarnessAdapter for HermesAdapter {
     }
 }
 fn asset_projection(s: &assets::AssetStatus) -> serde_json::Value {
-    serde_json::json!({"installed":s.installed,"configured_enabled":s.configured_enabled,"repairable":s.repairable,"manual_argv":s.manual_argv,"native_acceptance":"unmet"})
+    let mut projection = serde_json::json!({"installed":s.installed,"configured_enabled":s.configured_enabled,"repairable":s.repairable,"manual_argv":s.manual_argv,"native_acceptance":"unmet","bridge_current":s.bridge_current});
+    if s.bridge_current == Some(false) || !s.bridge_missing_events.is_empty() {
+        let fix = format!("herdr-threads setup hermes --profile {}", s.profile);
+        projection["stale_install"] = serde_json::json!({
+            "harness": "hermes",
+            "missing": s.bridge_missing_events,
+            "bridge_current": s.bridge_current,
+            "fix": fix,
+            "detail": format!(
+                "the installed Hermes bridge is stale or lacks required callbacks ({}): re-run `{fix}`",
+                s.bridge_missing_events.join(", ")
+            ),
+        });
+    }
+    if s.bridge_current == Some(false) {
+        projection["stale_bridge"] = serde_json::json!({
+            "reason": "installed Hermes bridge is from an older herdr-threads generation",
+            "setup_argv": ["herdr-threads", "setup", "hermes", "--profile", s.profile],
+            "hint": format!("run `herdr-threads setup hermes --profile {}` to refresh the bridge", s.profile),
+        });
+    }
+    projection
 }
 fn asset_error(e: super::setup::SetupError) -> SetupFailure {
     SetupFailure::Invalid(format!("Hermes owned assets: {e:?}"))
@@ -1203,6 +1481,448 @@ mod adapter_tests {
         )
         .unwrap()
     }
+    fn json(input: &HookInput) -> serde_json::Value {
+        serde_json::from_slice(&input.bytes).unwrap()
+    }
+    fn rebuild(v: &serde_json::Value) -> HookInput {
+        HookInput {
+            bytes: serde_json::to_vec(v).unwrap(),
+            registered_event: None,
+        }
+    }
+    fn set_platform(v: &mut serde_json::Value, platform: Option<&str>) {
+        match platform {
+            Some(p) => {
+                v["platform"] = p.into();
+                v["shape"]["platform"] = serde_json::json!({"presence":"present","type":"string"});
+            }
+            None => {
+                v["platform"] = serde_json::Value::Null;
+                v["shape"]["platform"] = serde_json::json!({"presence":"missing","type":"absent"});
+            }
+        }
+    }
+    fn with_witness(v: &mut serde_json::Value, w: serde_json::Value) {
+        v["role_association"]["enrollment_witness"] = w;
+    }
+    fn start_envelope(platform: Option<&str>, association: serde_json::Value) -> HookInput {
+        let mut v = json(&fixture("on_session_start"));
+        v["turn_id"] = serde_json::Value::Null;
+        v["shape"]["turn_id"] = serde_json::json!({"presence":"missing","type":"absent"});
+        v["parent_session_id"] = serde_json::Value::Null;
+        v["shape"]["parent_session_id"] = serde_json::json!({"presence":"missing","type":"absent"});
+        set_platform(&mut v, platform);
+        v["role_association"] = association;
+        rebuild(&v)
+    }
+    fn cli_start_association() -> serde_json::Value {
+        serde_json::json!({"role":"top","provenance":"cli_session_start",
+            "session_id":"fixture-session","turn_id":null,"enrollment_witness":"cli_platform"})
+    }
+    fn admit_decode(input: &HookInput) -> DecodedEvent {
+        let r = registration();
+        let (_, budget) = timing();
+        let h = r
+            .admit(
+                &AdmissionRequest {
+                    installed: InstallObservation::Unsupported(UnsupportedOperation {
+                        adapter: "hermes",
+                        operation: "PATH",
+                    }),
+                    input: Some(HookInput {
+                        bytes: input.bytes.clone(),
+                        registered_event: None,
+                    }),
+                    runtime_candidate: None,
+                },
+                &budget,
+            )
+            .unwrap();
+        r.decode(&h, input).unwrap()
+    }
+    #[test]
+    fn hermes_policy_is_witnessed_start_and_unowned_turn() {
+        assert_eq!(
+            registration().enrollment_policy(),
+            EnrollmentPolicy::WitnessedStartAndUnownedTurn
+        );
+    }
+    /// The envelopes the real bridge emits per D2a row
+    /// (`integrations/hermes/test_bridge.py::test_envelopes_match_rust_fixture`
+    /// pins the same file from the Python side): strict `parse` accepts every
+    /// one and `decode` gives the D2a outcome.
+    #[test]
+    fn bridge_emitted_enrollment_envelopes_parse_and_decode() {
+        let rows: serde_json::Map<String, serde_json::Value> = serde_json::from_slice(
+            include_bytes!("../../tests/fixtures/hermes/enrollment-envelopes.json"),
+        )
+        .unwrap();
+        assert_eq!(
+            rows.keys().map(String::as_str).collect::<Vec<_>>(),
+            [
+                "cli_start",
+                "empty_platform_start",
+                "post_tool",
+                "reset",
+                "session_finalize",
+                "subagent_start",
+                "subagent_stop",
+                "top_turn_cli",
+                "top_turn_empty_platform"
+            ]
+        );
+        let at = now();
+        for (row, envelope) in &rows {
+            let mut v = envelope.clone();
+            v["started_at"] = at.into();
+            v["deadline_at"] = (at + 1200).into();
+            v["observation_order"]["observed_at_millis"] = at.into();
+            let input = rebuild(&v);
+            assert!(parse(&input).is_ok(), "{row}: strict parse refused");
+            let e = admit_decode(&input);
+            let witness = e.metadata.enrollment_witness;
+            match row.as_str() {
+                "cli_start" => {
+                    assert!(matches!(e.intent, EventIntent::Enroll), "{row}");
+                    assert_eq!(e.role, EventRole::TopLevel, "{row}");
+                    assert_eq!(witness, Some(EnrollmentWitness::CliPlatform), "{row}");
+                }
+                "top_turn_cli" => {
+                    assert!(matches!(e.intent, EventIntent::QualifiedTurn(_)), "{row}");
+                    assert_eq!(e.role, EventRole::TopLevel, "{row}");
+                    assert_eq!(witness, Some(EnrollmentWitness::CliPlatform), "{row}");
+                }
+                "top_turn_empty_platform" => {
+                    assert!(matches!(e.intent, EventIntent::QualifiedTurn(_)), "{row}");
+                    assert_eq!(witness, None, "{row}");
+                }
+                "empty_platform_start" => {
+                    assert!(matches!(e.intent, EventIntent::Observer), "{row}");
+                    assert_eq!(witness, None, "{row}");
+                }
+                "reset" => {
+                    assert!(matches!(e.intent, EventIntent::DeclaredReset(_)), "{row}");
+                    assert_eq!(witness, None, "{row}");
+                }
+                "post_tool" => assert_eq!(witness, None, "{row}"),
+                "session_finalize" => {
+                    assert!(matches!(e.intent, EventIntent::Observer), "{row}");
+                    assert_eq!(e.role, EventRole::TopLevel, "{row}");
+                    assert_eq!(witness, None, "{row}");
+                    assert_eq!(
+                        e.binding_event,
+                        Some(BindingEventDecode {
+                            kind: BindingEventKind::SessionEnd,
+                            agent_id: None,
+                            child_session: None,
+                            claim_session: None,
+                        }),
+                        "{row}"
+                    );
+                }
+                "subagent_start" | "subagent_stop" => {
+                    assert!(matches!(e.intent, EventIntent::Observer), "{row}");
+                    assert_eq!(e.role, EventRole::Subagent, "{row}");
+                    assert_eq!(witness, None, "{row}");
+                    // The child is the event's session; the claim is the parent's.
+                    assert_eq!(e.native_session.as_deref(), Some("fixture-child"), "{row}");
+                    assert_eq!(
+                        e.binding_event,
+                        Some(BindingEventDecode {
+                            kind: if row == "subagent_start" {
+                                BindingEventKind::SubagentStart
+                            } else {
+                                BindingEventKind::SubagentStop
+                            },
+                            agent_id: None,
+                            child_session: Some("fixture-child".into()),
+                            claim_session: Some("fixture-session".into()),
+                        }),
+                        "{row}"
+                    );
+                }
+                other => panic!("unlisted row {other}"),
+            }
+        }
+    }
+    // Kills: a lineage hint dropped from the decoded turn, one taken from a delegate child,
+    // one invented from an empty parent, a parentless child, and a parented top-level turn
+    // still refused or decoded as a child.
+    #[test]
+    fn hermes_pre_llm_call_decodes_parent_session_id_as_lineage_only_for_top_level_turns() {
+        let decode = |parent: &str, role: &str| {
+            let mut v = json(&fixture("pre_llm_call"));
+            v["parent_session_id"] = parent.into();
+            v["role_association"]["role"] = role.into();
+            let input = rebuild(&v);
+            parse(&input).ok()?;
+            let e = admit_decode(&input);
+            let EventIntent::QualifiedTurn(turn) = &e.intent else {
+                panic!("not a qualified turn");
+            };
+            Some((e.role, turn.lineage_parent.clone()))
+        };
+        assert_eq!(
+            decode("parent-session", "top"),
+            Some((EventRole::TopLevel, Some("parent-session".into())))
+        );
+        assert_eq!(decode("", "top"), Some((EventRole::TopLevel, None)));
+        assert_eq!(
+            decode("parent-session", "child"),
+            Some((EventRole::Subagent, None))
+        );
+        assert_eq!(decode("", "child"), None, "a child has a parent");
+    }
+    #[test]
+    fn session_teardown_and_delegate_callbacks_are_end_events_but_per_turn_end_is_not() {
+        let rows: serde_json::Map<String, serde_json::Value> = serde_json::from_slice(
+            include_bytes!("../../tests/fixtures/hermes/enrollment-envelopes.json"),
+        )
+        .unwrap();
+        let at = now();
+        let build = |row: &str, edit: &dyn Fn(&mut serde_json::Value)| {
+            let mut v = rows[row].clone();
+            v["started_at"] = at.into();
+            v["deadline_at"] = (at + 1200).into();
+            v["observation_order"]["observed_at_millis"] = at.into();
+            edit(&mut v);
+            rebuild(&v)
+        };
+        // `on_session_end` fires after every turn: the bridge never forwards it and the strict
+        // parser refuses it, so it can never disconnect a binding.
+        let per_turn = build("session_finalize", &|v| {
+            v["callback"] = "on_session_end".into()
+        });
+        assert!(parse(&per_turn).is_err());
+        // A delegate event without a parent, or whose parent is the child itself, is refused.
+        for parent in [serde_json::Value::Null, "".into(), "fixture-child".into()] {
+            let input = build("subagent_start", &|v| {
+                v["parent_session_id"] = parent.clone()
+            });
+            assert!(parse(&input).is_err(), "parent {parent}");
+        }
+        // The teardown names no parent.
+        let input = build("session_finalize", &|v| {
+            v["parent_session_id"] = "fixture-parent".into();
+            v["shape"]["parent_session_id"] =
+                serde_json::json!({"presence":"present","type":"string"});
+        });
+        assert!(parse(&input).is_err());
+        // None of the three carries a role association (they are bookkeeping, never turns).
+        for row in ["session_finalize", "subagent_start", "subagent_stop"] {
+            let input = build(row, &|v| {
+                v["role_association"] = serde_json::json!({"role":"top","provenance":"explicit_parent",
+                    "session_id":"fixture-child","turn_id":"t","enrollment_witness":null});
+            });
+            assert!(parse(&input).is_err(), "{row}");
+        }
+    }
+    #[test]
+    fn hermes_enrollment_envelope_d2a_rows_round_trip_and_refusals() {
+        use EnrollmentPolicy::{Lifecycle, WitnessedStartAndUnownedTurn as Witnessed};
+        let cli = Some(EnrollmentWitness::CliPlatform);
+        // Row 1: platform CLI session start carries the cli_session_start association.
+        let input = start_envelope(Some("cli"), cli_start_association());
+        assert!(parse(&input).is_ok(), "row 1 parses");
+        let e = admit_decode(&input);
+        assert!(matches!(e.intent, EventIntent::Enroll));
+        assert_eq!(e.role, EventRole::TopLevel);
+        assert!(matches!(e.delivery, DeliveryEligibility::ObserverOnly));
+        assert_eq!(e.metadata.enrollment_witness, cli);
+        assert!(!e.can_check_in());
+        assert_eq!(e.enrollment(Witnessed), Some(EnrollmentKind::SessionStart));
+        assert_eq!(e.enrollment(Lifecycle), None);
+        // Rows 2 and 3: non-cli platform and old bridge start have a null association.
+        for platform in [Some(""), Some("cli")] {
+            let input = start_envelope(platform, serde_json::Value::Null);
+            assert!(parse(&input).is_ok(), "null start parses: {platform:?}");
+            let e = admit_decode(&input);
+            assert!(matches!(e.intent, EventIntent::Observer));
+            assert_eq!(e.metadata.enrollment_witness, None);
+        }
+        // Rows 4 to 6: turn witness.
+        let turn = |platform: &str, w: Option<serde_json::Value>| {
+            let mut v = json(&fixture("pre_llm_call"));
+            set_platform(&mut v, Some(platform));
+            if let Some(w) = w {
+                with_witness(&mut v, w);
+            }
+            rebuild(&v)
+        };
+        let e = admit_decode(&turn("cli", Some("cli_platform".into())));
+        assert!(matches!(e.intent, EventIntent::QualifiedTurn(_)));
+        assert_eq!(e.role, EventRole::TopLevel);
+        assert_eq!(e.metadata.enrollment_witness, cli);
+        assert_eq!(e.enrollment(Witnessed), Some(EnrollmentKind::UnownedTurn));
+        assert_eq!(e.enrollment(Lifecycle), None);
+        let null_case = admit_decode(&turn("", Some(serde_json::Value::Null)));
+        assert!(matches!(null_case.intent, EventIntent::QualifiedTurn(_)));
+        assert_eq!(null_case.metadata.enrollment_witness, None);
+        assert_eq!(null_case.enrollment(Witnessed), None);
+        let legacy = admit_decode(&turn("cli", None));
+        assert!(matches!(legacy.intent, EventIntent::QualifiedTurn(_)));
+        assert_eq!(legacy.role, null_case.role);
+        assert_eq!(legacy.metadata.enrollment_witness, None);
+        assert_eq!(legacy.enrollment(Witnessed), None);
+        // Row 7: post_tool_call, null and legacy.
+        for w in [Some(serde_json::Value::Null), None] {
+            let mut v = json(&fixture("post_tool_call"));
+            if let Some(w) = w {
+                with_witness(&mut v, w);
+            }
+            let e = admit_decode(&rebuild(&v));
+            assert_eq!(e.metadata.enrollment_witness, None);
+        }
+        // Row 8: reset keeps a null association.
+        let e = admit_decode(&fixture("on_session_reset"));
+        assert!(matches!(e.intent, EventIntent::DeclaredReset(_)));
+        // Evidence notes for the new start are byte-identical to a null association.
+        let r = registration();
+        let (_, budget) = timing();
+        let runtime = parse(&input).unwrap().runtime_identity;
+        let req = EvidenceQualificationRequest {
+            input: &input,
+            runtime: &runtime,
+            descriptor: &r.contracts()[0],
+        };
+        assert_eq!(
+            HermesAdapter.evidence_qualifications(&req, &budget),
+            Ok(vec![])
+        );
+
+        // Refusals.
+        let refused = |name: &str, input: HookInput| {
+            assert!(parse(&input).is_err(), "must refuse: {name}");
+        };
+        let mutate = |callback: &str, f: &dyn Fn(&mut serde_json::Value)| {
+            let mut v = json(&fixture(callback));
+            f(&mut v);
+            rebuild(&v)
+        };
+        refused(
+            "a: witness on post_tool_call",
+            mutate("post_tool_call", &|v| {
+                with_witness(v, "cli_platform".into())
+            }),
+        );
+        refused(
+            "b: witness on child turn",
+            mutate("pre_llm_call", &|v| {
+                v["parent_session_id"] = "parent-session".into();
+                v["role_association"]["role"] = "child".into();
+                with_witness(v, "cli_platform".into());
+            }),
+        );
+        refused(
+            "c: witness with non-cli platform",
+            turn("", Some("cli_platform".into())),
+        );
+        refused("d: other string witness", turn("cli", Some("cli".into())));
+        refused("d: non-string witness", turn("cli", Some(true.into())));
+        {
+            let provenance = "cli_session_start";
+            refused(
+                "e: pre_llm_call",
+                mutate("pre_llm_call", &|v| {
+                    v["role_association"]["provenance"] = provenance.into();
+                    v["role_association"]["turn_id"] = serde_json::Value::Null;
+                    with_witness(v, "cli_platform".into());
+                }),
+            );
+            refused(
+                "e: pre_llm_call with turn id",
+                mutate("pre_llm_call", &|v| {
+                    v["role_association"]["provenance"] = provenance.into();
+                    with_witness(v, "cli_platform".into());
+                }),
+            );
+            refused(
+                "e: post_tool_call",
+                mutate("post_tool_call", &|v| {
+                    v["role_association"]["provenance"] = provenance.into();
+                    v["role_association"]["turn_id"] = serde_json::Value::Null;
+                    with_witness(v, "cli_platform".into());
+                }),
+            );
+        }
+        let start = |platform: Option<&str>, f: &dyn Fn(&mut serde_json::Value)| {
+            let mut a = cli_start_association();
+            f(&mut a);
+            start_envelope(platform, a)
+        };
+        refused(
+            "e/j: on_session_reset with association",
+            mutate("on_session_reset", &|v| {
+                v["role_association"] = cli_start_association();
+            }),
+        );
+        refused(
+            "f: null witness",
+            start(Some("cli"), &|a| {
+                a["enrollment_witness"] = serde_json::Value::Null
+            }),
+        );
+        refused(
+            "f: absent witness key",
+            start(Some("cli"), &|a| {
+                a.as_object_mut().unwrap().remove("enrollment_witness");
+            }),
+        );
+        refused(
+            "f: other witness",
+            start(Some("cli"), &|a| a["enrollment_witness"] = "other".into()),
+        );
+        refused(
+            "f: non-null turn_id",
+            start(Some("cli"), &|a| a["turn_id"] = "fixture-turn".into()),
+        );
+        refused(
+            "f: child role",
+            start(Some("cli"), &|a| a["role"] = "child".into()),
+        );
+        refused(
+            "f: foreign session",
+            start(Some("cli"), &|a| a["session_id"] = "other-session".into()),
+        );
+        refused("f: empty platform", start(Some(""), &|_| {}));
+        refused("f: null platform", start(None, &|_| {}));
+        for provenance in ["explicit_parent", "qualified_pre_llm_cache"] {
+            refused(
+                "g: non-start association on on_session_start",
+                start(Some("cli"), &|a| a["provenance"] = provenance.into()),
+            );
+        }
+        refused(
+            "h: witness without cli_session_start",
+            start(Some("cli"), &|a| {
+                a["provenance"] = "explicit_parent".into();
+                a["turn_id"] = "fixture-turn".into();
+            }),
+        );
+        refused(
+            "i: null turn_id with explicit_parent on pre_llm_call",
+            mutate("pre_llm_call", &|v| {
+                v["role_association"]["turn_id"] = serde_json::Value::Null
+            }),
+        );
+        refused(
+            "i: null turn_id with cache provenance on post_tool_call",
+            mutate("post_tool_call", &|v| {
+                v["role_association"]["turn_id"] = serde_json::Value::Null
+            }),
+        );
+        refused(
+            "k: unknown association key on turn",
+            mutate("pre_llm_call", &|v| {
+                with_witness(v, "cli_platform".into());
+                v["role_association"]["x"] = 1.into();
+            }),
+        );
+        refused(
+            "k: unknown association key on start",
+            start(Some("cli"), &|a| a["x"] = 1.into()),
+        );
+    }
     #[test]
     fn hermes_admission_actual_runtime_and_two_domain_milestones_keep_observers_nonconsuming() {
         let r = registration();
@@ -1333,6 +2053,7 @@ mod adapter_tests {
         journal.install_reattached(current.clone()).unwrap();
         let at = now();
         let turn = QualifiedTurn {
+            lineage_parent: None,
             session: "new-session".into(),
             event_key: "new-turn".into(),
             reset: None,
@@ -1514,6 +2235,7 @@ mod adapter_tests {
         order.sequence += 1;
         order.observed_at_millis = now();
         let turn = QualifiedTurn {
+            lineage_parent: None,
             session: "fixture-session".into(),
             event_key: "after-reset".into(),
             reset: None,
@@ -1854,6 +2576,7 @@ mod adapter_tests {
             (3, "rotated", EventKind::Startup),
         ] {
             let turn = QualifiedTurn {
+                lineage_parent: None,
                 session: session.into(),
                 event_key: format!("result-{number}"),
                 reset: None,
@@ -2276,6 +2999,7 @@ mod adapter_tests {
                 .unwrap()
         );
         let turn = QualifiedTurn {
+            lineage_parent: None,
             session: "new".into(),
             event_key: "after-expiry".into(),
             reset: None,
@@ -2839,5 +3563,40 @@ mod companion_boundary_tests {
         assert!(descriptor.model_key_env.is_none());
         assert_eq!(descriptor.artifact_schema_version, 1);
         assert_eq!(descriptor.companion, "scripts/canary/adapters/hermes.py");
+    }
+}
+
+#[cfg(test)]
+mod required_events_tests {
+    use super::REQUIRED_HOOK_EVENTS;
+    use std::collections::BTreeSet;
+
+    /// The callback names the embedded Hermes bridge registers: the names in its `HOOKS` tuple (the
+    /// bridge registers every one through `ctx.register_hook(name, ...)` in a loop).
+    fn hermes_bridge_hooks() -> BTreeSet<String> {
+        let source =
+            String::from_utf8(include_bytes!("../../integrations/hermes/__init__.py").to_vec())
+                .unwrap();
+        let start = source.find("\nHOOKS = (").expect("bridge HOOKS tuple") + "\nHOOKS = (".len();
+        let end = start + source[start..].find(')').expect("bridge HOOKS tuple end");
+        source[start..end]
+            .split(',')
+            .map(|name| name.trim().trim_matches('"'))
+            .filter(|name| !name.is_empty() && !name.starts_with('#'))
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// The bridge registers exactly the required callbacks. `on_session_end` fires every turn, so
+    /// it is never one of them.
+    #[test]
+    fn hermes_bridge_registers_exactly_the_required_callbacks() {
+        let bridge = hermes_bridge_hooks();
+        let required: BTreeSet<String> = REQUIRED_HOOK_EVENTS
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect();
+        assert_eq!(bridge, required);
+        assert!(!required.contains("on_session_end"));
     }
 }

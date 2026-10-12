@@ -1,0 +1,28 @@
+{
+  "triageDead": false,
+  "scoutsDispatched": 8,
+  "scoutsDead": 0,
+  "rawFindings": 2,
+  "dedupedFindings": 1,
+  "beyondCap": 0,
+  "beyondPanelCap": 0,
+  "dedupeDead": false,
+  "panelCount": 1,
+  "spotCount": 0,
+  "promotedCount": 0,
+  "judgeCompletionPct": 100,
+  "scoutNames": [
+    "premortem",
+    "completeness",
+    "yagni",
+    "failure-mode",
+    "feasibility",
+    "domain:distributed-systems",
+    "domain:database-transactions",
+    "domain:protocol-compatibility"
+  ],
+  "capacityNote": "At most 7 active descendants; 8 scout dispatches staggered, all completed. No omitted lenses.",
+  "modelNote": "No Workflow or Claude models available; all stage agents inherited OpenAI model family, fresh contexts and method-differentiated judges.",
+  "formatRetries": 1,
+  "judgeEvidenceFollowups": 1
+}

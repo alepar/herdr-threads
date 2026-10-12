@@ -21,6 +21,10 @@ mod canary_manifest_writer;
 mod channel_archival;
 #[path = "contracts.rs"]
 mod contracts;
+#[path = "golden_surfaces.rs"]
+mod golden_surfaces;
+#[path = "handoff_agy.rs"]
+mod handoff_agy;
 #[path = "store/handoff_fences.rs"]
 mod handoff_fences;
 #[path = "handoff_topology_authority.rs"]
@@ -33,6 +37,8 @@ mod host_adapter;
 mod inbox_continuation_context;
 #[path = "installer_integrations.rs"]
 mod installer_integrations;
+#[path = "store/invitation_content.rs"]
+mod invitation_content;
 #[path = "store/lazy26_prerequisite.rs"]
 mod lazy26_prerequisite;
 #[path = "protocol/lazy_delivery.rs"]
@@ -117,3 +123,6 @@ mod lazy_sweep;
 
 #[path = "cli/readme_commands.rs"]
 mod readme_commands;
+
+#[path = "cli/direct_send.rs"]
+mod direct_send;

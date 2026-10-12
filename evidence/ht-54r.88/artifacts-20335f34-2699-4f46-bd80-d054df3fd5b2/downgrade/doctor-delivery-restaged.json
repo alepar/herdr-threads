@@ -1,0 +1,13 @@
+{
+  "downgrade": {
+    "downgraded_at": 1791742341181,
+    "identity_current": false,
+    "path": "/private/tmp/ih.1UbCqG/agybin/1/agy",
+    "probation": false,
+    "reason": "abort"
+  },
+  "never_confirmed": {
+    "count": 1,
+    "generation": 1
+  }
+}

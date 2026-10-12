@@ -18,12 +18,12 @@ use crate::{
             OperatorActor,
         },
         commands::CheckIn,
-        ids::{ExecutionId, HostBootId, HostTargetId, SeatId, TerminalId, prefix},
+        ids::{BindingId, ExecutionId, HostBootId, HostTargetId, SeatId, TerminalId, prefix},
         results::{ApiError, CheckInResult, CommandResult, ErrorCode},
         time::{CallBudget, UtcMillis},
     },
     store::{
-        catch_up,
+        bindings, catch_up,
         connection::{DecisionInstant, StoreContext, api_error, store_error},
         control,
         effective::{self, EffectiveObservationSource, EffectiveRecoveryDisposition},
@@ -272,7 +272,7 @@ pub fn publish_current_target_observation(
                 params![admission_sequence,admission.instance()],
             ).map_err(store_error)?;
             let current_seat: Option<(String, bool)> = tx.query_row(
-                "SELECT s.id, s.target_generation=?3 AND EXISTS(SELECT 1 FROM occupant_bindings b WHERE b.seat_id=s.id AND b.ended_at IS NULL AND b.registered_at IS NOT NULL AND b.target_id=s.target_id AND b.generation=s.generation AND b.target_generation=s.target_generation AND b.host_boot=?4 AND b.host_epoch=?5) FROM seats s WHERE s.instance_id=?1 AND s.target_id=?2 AND s.state='resolved'",
+                "SELECT s.id, s.target_generation=?3 AND EXISTS(SELECT 1 FROM occupant_bindings b WHERE b.seat_id=s.id AND b.ended_at IS NULL AND b.registered_at IS NOT NULL AND b.target_id=s.target_id AND b.target_generation=s.target_generation AND b.host_boot=?4 AND b.host_epoch=?5) FROM seats s WHERE s.instance_id=?1 AND s.target_id=?2 AND s.state='resolved'",
                 params![admission.instance(),observation.target.as_str(),generation,observation.host_boot.as_str(),host_epoch],
                 |r| Ok((r.get(0)?,r.get(1)?)),
             ).optional().map_err(store_error)?;
@@ -442,7 +442,7 @@ pub fn stage_snapshot_targets(
         {
             return Err(api_error(
                 ErrorCode::StaleHostObservation,
-                "untrusted snapshot target",
+                "uncharacterized snapshot target",
             ));
         }
         checked.push((
@@ -1526,7 +1526,7 @@ fn saved_seat_cas(
     let binding_query = if invalidated {
         "SELECT terminal_id FROM occupant_bindings WHERE seat_id=?1 ORDER BY ordinal DESC LIMIT 1"
     } else {
-        "SELECT terminal_id FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL"
+        "SELECT terminal_id FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL ORDER BY ordinal DESC LIMIT 1"
     };
     let mut terminal: Option<String> = tx
         .query_row(binding_query, [seat.as_str()], |r| r.get(0))
@@ -1698,12 +1698,10 @@ fn mark_seat_unresolved(
     if changed != 1 {
         return Ok(ReconciliationOutcome::Stale);
     }
-    tx.execute(
-        "UPDATE occupant_bindings SET ended_at=?1 WHERE seat_id=?2 AND ended_at IS NULL",
-        params![at.utc.0, seat.as_str()],
-    )
-    .map_err(store_error)?;
-    catch_up::supersede_stale(tx, seat, at.utc)?;
+    // The binding end is honest (disconnect reason `seat_unresolved`), which is what lets the
+    // same session reopen its binding after a rebind (ht-54r.3).
+    bindings::end_open_bindings(tx, seat, bindings::DisconnectReason::SeatUnresolved, at.utc)?;
+    catch_up::supersede_ended_bindings(tx, seat, at.utc)?;
     tx.execute(
         "DELETE FROM warning_offer WHERE seat_id=?1",
         [seat.as_str()],
@@ -1800,7 +1798,7 @@ pub fn mark_unresolved_from_invalidation(
 /// fresh registration writes, closes the seat's open unavailability marker and
 /// re-points pending wake work. Moves nothing for a native binding.
 #[allow(clippy::too_many_arguments)]
-fn carry_binding_forward(
+pub(crate) fn carry_binding_forward(
     tx: &Transaction<'_>,
     instance: &str,
     at: UtcMillis,
@@ -1811,27 +1809,41 @@ fn carry_binding_forward(
     target_generation: i64,
 ) -> Result<bool, ApiError> {
     let changed = tx.execute(
-        "UPDATE occupant_bindings SET host_epoch=?1,target_generation=?2 WHERE seat_id=?3 AND generation=?4 AND ended_at IS NULL AND registered_at IS NOT NULL AND host_boot=?5 AND target_id=?6 AND incarnation=?7 AND observation_provenance IN (?8,?9) AND (host_epoch!=?1 OR target_generation!=?2)",
+        "UPDATE occupant_bindings SET host_epoch=?1,target_generation=?2 WHERE seat_id=?3 AND ended_at IS NULL AND registered_at IS NOT NULL AND host_boot=?4 AND target_id=?5 AND incarnation=?6 AND observation_provenance IN (?7,?8,?9,?10) AND (host_epoch!=?1 OR target_generation!=?2)",
         params![
             checked_host_number(publication.epoch)?,
             target_generation,
             seat.as_str(),
-            checked_host_number(generation)?,
             publication.boot.as_str(),
             target,
             publication.incarnation,
             CARRIED_BINDING_PROVENANCES[0],
-            CARRIED_BINDING_PROVENANCES[1]
+            CARRIED_BINDING_PROVENANCES[1],
+            CARRIED_BINDING_PROVENANCES[2],
+            CARRIED_BINDING_PROVENANCES[3]
         ],
     ).map_err(store_error)?;
-    if changed != 1 {
+    // A seat holds many bindings (ht-54r.3): every open registered carried binding moves, and
+    // the seat's availability anchor is written once, from the most recent of them. The seat
+    // generation is the fence (the caller's compare-and-set); a binding's own is informational.
+    if changed == 0 {
         return Ok(false);
     }
-    let (binding_generation, provenance): (i64, String) = tx
+    let binding_generation = checked_host_number(generation)?;
+    let provenance: String = tx
         .query_row(
-            "SELECT generation,observation_provenance FROM occupant_bindings WHERE seat_id=?1 AND generation=?2 AND ended_at IS NULL",
-            params![seat.as_str(), checked_host_number(generation)?],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            "SELECT observation_provenance FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL AND registered_at IS NOT NULL AND host_boot=?2 AND host_epoch=?3 AND target_id=?4 AND observation_provenance IN (?5,?6,?7,?8) ORDER BY ordinal DESC LIMIT 1",
+            params![
+                seat.as_str(),
+                publication.boot.as_str(),
+                checked_host_number(publication.epoch)?,
+                target,
+                CARRIED_BINDING_PROVENANCES[0],
+                CARRIED_BINDING_PROVENANCES[1],
+                CARRIED_BINDING_PROVENANCES[2],
+                CARRIED_BINDING_PROVENANCES[3]
+            ],
+            |r| r.get(0),
         )
         .map_err(store_error)?;
     let seq = schema::next_decision_seq(tx, instance)?;
@@ -1848,6 +1860,37 @@ fn carry_binding_forward(
     )
     .map_err(store_error)?;
     Ok(true)
+}
+
+/// What reconciliation reads of one open binding's placement.
+struct OpenPlacement {
+    host_boot: String,
+    incarnation: Option<String>,
+    execution: String,
+    terminal: Option<String>,
+    registered: bool,
+}
+
+/// The seat's open bindings' placements, most recent first. A seat holds many (ht-54r.3).
+fn open_binding_placements(
+    tx: &Transaction<'_>,
+    seat: &SeatId,
+) -> Result<Vec<OpenPlacement>, ApiError> {
+    let mut statement = tx
+        .prepare("SELECT host_boot,incarnation,execution_id,terminal_id,registered_at IS NOT NULL FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL ORDER BY ordinal DESC")
+        .map_err(store_error)?;
+    let rows = statement
+        .query_map([seat.as_str()], |r| {
+            Ok(OpenPlacement {
+                host_boot: r.get(0)?,
+                incarnation: r.get(1)?,
+                execution: r.get(2)?,
+                terminal: r.get(3)?,
+                registered: r.get(4)?,
+            })
+        })
+        .map_err(store_error)?;
+    rows.collect::<Result<_, _>>().map_err(store_error)
 }
 
 /// A binding just became available: its availability anchor and the
@@ -2019,14 +2062,12 @@ pub fn apply_reconciliation_transition(
                     if owned {
                         return Ok(None);
                     }
-                    let bound: Option<(String, Option<String>, String)> = tx
-                        .query_row(
-                            "SELECT host_boot,incarnation,execution_id FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL",
-                            [transition.seat.as_str()],
-                            |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)),
-                        )
-                        .optional()
-                        .map_err(store_error)?;
+                    // A seat holds many open bindings (ht-54r.3), all in one pane: the evidence
+                    // is the most recent one's, and a verified execution may be any of theirs.
+                    let open_placements = open_binding_placements(tx, &transition.seat)?;
+                    let bound = open_placements
+                        .first()
+                        .map(|p| (p.host_boot.clone(), p.incarnation.clone(), p.execution.clone()));
                     let structural_matches = structural_continuity_matches(
                         tx, &transition.seat, &publication,
                         transition.expected_target.as_ref(), Some(terminal),
@@ -2037,14 +2078,14 @@ pub fn apply_reconciliation_transition(
                                 && incarnation.as_deref() == Some(&publication.incarnation)
                         })
                     { return Ok(None); }
-                    if let Some((_, _, bound_execution)) = bound.as_ref() {
+                    if bound.is_some() {
                         match observed.verified_execution.as_ref() {
                             // A verified execution must be the bound one: a
                             // different one is a replacement, never a move.
                             Some(execution) => {
                                 if observed.occupancy != StructuralOccupancy::Occupied
                                     || !observed.top_level_occupant
-                                    || execution.as_str() != bound_execution
+                                    || !open_placements.iter().any(|p| p.execution == execution.as_str())
                                 {
                                     return Ok(None);
                                 }
@@ -2056,13 +2097,9 @@ pub fn apply_reconciliation_transition(
                             // the new address. A registered binding whose
                             // occupant the snapshot shows absent is not carried.
                             None => {
-                                let (bound_terminal, registered): (Option<String>, bool) = tx.query_row(
-                                    "SELECT terminal_id,registered_at IS NOT NULL FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL",
-                                    [transition.seat.as_str()],
-                                    |r| Ok((r.get(0)?, r.get(1)?)),
-                                ).map_err(store_error)?;
+                                let registered = open_placements.iter().any(|p| p.registered);
                                 let same_terminal = structural_matches == Some(true)
-                                    || bound_terminal.as_deref() == Some(terminal.as_str());
+                                    || open_placements.iter().any(|p| p.terminal.as_deref() == Some(terminal.as_str()));
                                 if !same_terminal || registered && observed.shows_occupant_absent() {
                                     return Ok(None);
                                 }
@@ -2098,10 +2135,9 @@ pub fn apply_reconciliation_transition(
                         )? {
                             Some(true) => Some((publication.boot.as_str().to_owned(), Some(publication.incarnation.clone()))),
                             Some(false) => return Ok(None),
-                            None => tx.query_row(
-                                "SELECT host_boot,incarnation FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL",
-                                [transition.seat.as_str()], |r| Ok((r.get(0)?,r.get(1)?)),
-                            ).optional().map_err(store_error)?,
+                            None => open_binding_placements(tx, &transition.seat)?
+                                .first()
+                                .map(|p| (p.host_boot.clone(), p.incarnation.clone())),
                         }
                     } else {
                         // Unresolved recovery remains restricted by saved_seat_cas
@@ -2555,7 +2591,7 @@ fn validate_resolution_evidence(
     Ok(())
 }
 
-fn current_resolution_owner(
+pub(crate) fn current_resolution_owner(
     tx: &Transaction<'_>,
     instance: &str,
     guard: &OrdinaryResolutionGuard,
@@ -2688,6 +2724,11 @@ pub fn resolve_seat(
     budget: &CallBudget,
 ) -> Result<OrdinaryResolutionOutcome, ApiError> {
     snapshot_budget(context, budget)?;
+    super::topology_handoff::automatic::guard_raw_resolution(
+        conn,
+        instance,
+        request.operation.as_str(),
+    )?;
     let digest = ordinary_resolution_digest(instance, &request)?;
     if matches!(attempt, OrdinaryResolutionAttempt::ReplayOnly) {
         return context.execute_decision(
@@ -2923,7 +2964,7 @@ fn resolve_bootstrap_seat_impl(
 
 /// Shared unchanged ordinary allocation recipe. The boolean records only this
 /// call's successful new seat insert; it is never inferred on replay.
-fn ordinary_resolution_apply(
+pub(crate) fn ordinary_resolution_apply(
     tx: &Transaction<'_>,
     at: DecisionInstant,
     instance: &str,
@@ -3289,7 +3330,7 @@ fn rebind_unresolved_seat(
         params![at.0, seat.as_str()],
     )
     .map_err(store_error)?;
-    catch_up::supersede_stale(tx, seat, at)?;
+    catch_up::supersede_ended_bindings(tx, seat, at)?;
     tx.execute(
         "DELETE FROM warning_offer WHERE seat_id=?1",
         [seat.as_str()],
@@ -3358,12 +3399,19 @@ fn reconciliation_lags(tx: &Transaction<'_>, instance: &str) -> Result<bool, Api
 }
 
 /// TRUST-POLICY C1 candidates: nonretired unresolved seats of the instance
-/// whose *latest* binding is this harness's session `native_session`.
+/// whose bindings include this harness's session `native_session` (any
+/// top-level row, open or ended, not only the newest: a one-shot or `/clear`
+/// successor enrolled later must not hide the main session, ht-54r.78).
 /// Sentinel (`plugin_context:`), empty and human values never match, and a
-/// latest `managed_launch` binding (no session: the agent never checked in)
-/// makes the seat no candidate (ht-5n6); NULL
-/// never equals anything. Returns at most two (the caller only needs to tell
-/// zero, one and several apart).
+/// `managed_launch` binding (no session: the agent never checked in)
+/// never counts (ht-5n6); NULL
+/// never equals anything. When several seats match, only those on which a
+/// matching row ended `seat_unresolved` count, if there are any: that reason
+/// is written only to a row still connected when its seat became unresolved,
+/// so a row that had already disconnected for another reason is recorded
+/// evidence that the session had left that seat (ht-54r.91). Returns at most
+/// two, in seat-id order (the caller only needs to tell zero, one and
+/// several apart).
 pub(crate) fn continuity_candidates(
     tx: &Transaction<'_>,
     instance: &str,
@@ -3372,16 +3420,23 @@ pub(crate) fn continuity_candidates(
 ) -> Result<Vec<SeatId>, ApiError> {
     let mut statement = tx
         .prepare(
-            "SELECT s.id FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id AND b.ordinal=(SELECT MAX(l.ordinal) FROM occupant_bindings l WHERE l.seat_id=s.id) WHERE s.instance_id=?1 AND s.state='unresolved' AND b.harness=?2 AND b.harness<>'human' AND b.observation_provenance<>'managed_launch' AND b.native_session=?3 AND b.native_session<>'' AND substr(b.native_session,1,15)<>'plugin_context:' ORDER BY s.id LIMIT 2",
+            "SELECT s.id, COALESCE(MAX(b.disconnect_reason IS 'seat_unresolved'),0) FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id WHERE s.instance_id=?1 AND s.state='unresolved' AND b.harness=?2 AND b.harness<>'human' AND b.role='top_level' AND b.agent_id='' AND b.observation_provenance<>'managed_launch' AND b.native_session=?3 AND b.native_session<>'' AND substr(b.native_session,1,15)<>'plugin_context:' GROUP BY s.id ORDER BY s.id",
         )
         .map_err(store_error)?;
-    let rows = statement
+    let rows: Vec<(String, bool)> = statement
         .query_map(params![instance, harness, native_session], |r| {
-            r.get::<_, String>(0)
+            Ok((r.get(0)?, r.get(1)?))
         })
+        .map_err(store_error)?
+        .collect::<Result<_, _>>()
         .map_err(store_error)?;
-    rows.map(|row| row.map(SeatId::new).map_err(store_error))
-        .collect()
+    let live_at_unresolve = rows.iter().any(|(_, live)| *live);
+    Ok(rows
+        .into_iter()
+        .filter(|(_, live)| *live || !live_at_unresolve)
+        .map(|(seat, _)| SeatId::new(seat))
+        .take(2)
+        .collect())
 }
 
 pub fn continuity_digest(
@@ -3450,7 +3505,7 @@ pub fn replay_continuity(
     Ok(Some(result))
 }
 
-/// TRUST-POLICY C1: reattach the one unresolved seat whose last binding holds
+/// TRUST-POLICY C1: reattach the one unresolved seat one of whose bindings holds
 /// the resumed session id onto the (held or unowned) target, in one deciding
 /// transaction that is a complete lifecycle check-in. The match is cooperative
 /// and structural only: Herdr's `agent_session` (`diagnostic`) is recorded,
@@ -3499,6 +3554,15 @@ pub fn decide_continuity(
         command.operation.as_str(),
         digest,
         |tx| {
+            // Decision 9 / spec §3: a lifecycle check-in records its fingerprint. Checked here,
+            // after the recorded-result lookup, so a replay of a committed reattachment is
+            // still answered.
+            if command.liveness.is_none() {
+                return Err(api_error(
+                    ErrorCode::LivenessFingerprintRequired,
+                    "a resumed session's reattachment must carry its liveness fingerprint",
+                ));
+            }
             if !observed_matches(
                 tx,
                 &instance,
@@ -3663,11 +3727,63 @@ pub fn decide_continuity(
                     (terminal.to_owned(), incarnation.to_owned())
                 }
             };
-            tx.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?11,?12,?13)",
-                params![seat.as_str(),new_generation,target.as_str(),expected_boot.as_str(),expected_epoch_sql,expected_generation_sql,
-                    command.harness.as_str(),command.native_session.as_str(),command.execution.as_str(),
-                    crate::protocol::authority::COOPERATIVE_TOP_LEVEL_PROVENANCE,at.utc.0,terminal,incarnation]).map_err(store_error)?;
-            catch_up::supersede_stale(tx, seat, at.utc)?;
+            let fingerprint = command.liveness.ok_or_else(|| {
+                api_error(
+                    ErrorCode::LivenessFingerprintRequired,
+                    "a resumed session's reattachment must carry its liveness fingerprint",
+                )
+            })?;
+            // ht-54r.78: the general resolver. The unresolve ended every binding of the seat, so
+            // it reopens the session's own row ended `seat_unresolved` (cursors kept) or enrolls
+            // one at the seat's read position; both run the enroll hooks.
+            let claim = crate::protocol::authority::CallerClaim {
+                instance: instance.clone(),
+                seat: seat.clone(),
+                binding_generation: u64::try_from(new_generation)
+                    .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative seat generation"))?,
+                role: crate::protocol::authority::CallerRole::TopLevel,
+                harness: command.harness,
+                native_session: command.native_session.clone(),
+                execution: command.execution.clone(),
+                target: target.clone(),
+                agent_id: None,
+                liveness: Some(fingerprint),
+            };
+            let placement = bindings::BindingPlacement {
+                generation: claim.binding_generation,
+                target_generation: expected_generation,
+                target: target.as_str().to_owned(),
+                terminal,
+                incarnation,
+                host_boot: expected_boot.as_str().to_owned(),
+                host_epoch: expected_epoch,
+                execution: command.execution.as_str().to_owned(),
+                provenance: crate::protocol::authority::COOPERATIVE_TOP_LEVEL_PROVENANCE.to_owned(),
+                observed_at: at.utc,
+                registered_at: Some(at.utc),
+            };
+            let resolution = bindings::resolve_claim(
+                tx,
+                &bindings::ResolveRequest {
+                    claim: &claim,
+                    lifecycle: true,
+                    placement: &placement,
+                    lineage: None,
+                },
+                at.utc,
+            )?;
+            // Spec §2: a reopened session's cursors stayed where they were, so a backlog past
+            // one page is fast-forwarded here, as `register_available` does for a reconnect. An
+            // enrolled successor starts at the seat's read position and is not (its first-contact
+            // stats are out of scope).
+            let fast_forward = match &resolution {
+                bindings::Resolution::Reopened(_)
+                | bindings::Resolution::Existing {
+                    reconnected: true, ..
+                } => super::first_contact::fast_forward(tx, &resolution.binding().binding_id)?,
+                _ => None,
+            };
+            catch_up::supersede_ended_bindings(tx, seat, at.utc)?;
             tx.execute("UPDATE wake_work SET binding_generation=?1 WHERE seat_id=?2 AND reservation_id IS NULL",
                 params![new_generation,seat.as_str()]).map_err(store_error)?;
             let seq = schema::next_decision_seq(tx, &instance)?;
@@ -3695,6 +3811,7 @@ pub fn decide_continuity(
                     binding_generation: u64::try_from(new_generation).map_err(|_| {
                         api_error(ErrorCode::StoreCorrupt, "negative seat generation")
                     })?,
+                    fast_forward,
                 },
             ))
         },
@@ -3837,10 +3954,6 @@ pub(crate) struct CooperativeMapping {
     pub revision: u64,
     pub invalidation_revision: u64,
     pub generation: u64,
-    /// The claim's binding generation: `generation`, or one less when a
-    /// lifecycle check-in replaces a `managed_launch` binding recorded after
-    /// it was prepared (ht-5n6).
-    pub claimed_generation: u64,
     /// Terminal and host incarnation from the same verified effective
     /// observation that proved this mapping. A binding written from this
     /// mapping stores them so snapshot reconciliation can later reconfirm it.
@@ -3879,8 +3992,14 @@ pub(crate) fn cooperative_instance(
     instance: &str,
     claim: &crate::protocol::authority::CallerClaim,
 ) -> Result<(), ApiError> {
-    if claim.instance != instance || claim.role != crate::protocol::authority::CallerRole::TopLevel
-    {
+    use crate::protocol::authority::CallerRole;
+    // A subagent claim carries its agent id and resolves to a binding attached to its parent
+    // (ht-54r.3); refusing it a write is `Command::validate`'s and dispatch's job (ht-54r.20).
+    let role_matches = match claim.role {
+        CallerRole::TopLevel => claim.agent_id.is_none(),
+        CallerRole::Subagent => claim.agent_id.is_some(),
+    };
+    if claim.instance != instance || !role_matches {
         return Err(api_error(
             ErrorCode::CallerUnverified,
             "cooperative instance or declared role mismatch",
@@ -3981,24 +4100,9 @@ pub(crate) fn cooperative_mapping(
         Some(crate::protocol::commands::CheckInMode::Lifecycle { .. })
     );
     let claimed = checked_host_number(claim.binding_generation)?;
-    // TRUST-POLICY A4 (ht-5n6): a lifecycle check-in prepared against the
-    // seat generation just before `launch` recorded its `managed_launch`
-    // binding (exactly one generation earlier) still replaces it: the agent
-    // that launch started checked in while launch was reporting it.
-    let behind_launch = lifecycle_mode
-        && claimed.checked_add(1) == Some(generation)
-        && db
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM occupant_bindings WHERE seat_id=?1 AND generation=?2 AND ended_at IS NULL AND observation_provenance=?3)",
-                params![
-                    claim.seat.as_str(),
-                    generation,
-                    crate::protocol::authority::MANAGED_LAUNCH_PROVENANCE
-                ],
-                |r| r.get::<_, bool>(0),
-            )
-            .map_err(store_error)?;
-    if generation != claimed && !behind_launch {
+    // A `managed_launch` placeholder neither bumps the seat generation nor is replaced by a
+    // generation allowance: a launched agent's check-in matches the seat generation like any other.
+    if generation != claimed {
         let code = if lifecycle_mode {
             ErrorCode::Conflict
         } else {
@@ -4031,8 +4135,12 @@ pub(crate) fn cooperative_mapping(
                     "lifecycle expected generation differs from context",
                 ));
             }
-            let used: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM occupant_bindings WHERE seat_id=?1 AND execution_id=?2)",
-                params![claim.seat.as_str(),claim.execution.as_str()], |r|r.get(0)).map_err(store_error)?;
+            // Another session's execution is refused; a session's own lifecycle events share the
+            // one execution its claims carry (its binding's `execution_id`, which its later
+            // claims must match).
+            let agent = claim.agent_id.as_ref().map_or("", |agent| agent.as_str());
+            let used: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM occupant_bindings WHERE seat_id=?1 AND execution_id=?2 AND NOT (harness=?3 AND native_session=?4 AND agent_id=?5))",
+                params![claim.seat.as_str(),claim.execution.as_str(),claim.harness.as_str(),claim.native_session.as_str(),agent], |r|r.get(0)).map_err(store_error)?;
             if used {
                 return Err(api_error(
                     ErrorCode::CallerUnverified,
@@ -4041,26 +4149,13 @@ pub(crate) fn cooperative_mapping(
             }
         }
         _ => {
-            let stored_harness: Option<String> = db.query_row(
-                "SELECT harness FROM occupant_bindings WHERE seat_id=?1 AND generation=?2 AND ended_at IS NULL",
-                params![claim.seat.as_str(),generation],|r|r.get(0)
-            ).optional().map_err(store_error)?;
-            if stored_harness.as_deref().is_some_and(|id| {
-                id != "human" && crate::harness::registry::builtins().agent(id).is_err()
-            }) {
+            // Which binding the claim names is the daemon's resolution inside the deciding
+            // transaction (`decide_cooperative`); there is no single occupant to compare to.
+            let harness = claim.harness.as_str();
+            if harness != "human" && crate::harness::registry::builtins().agent(harness).is_err() {
                 return Err(api_error(
                     ErrorCode::Unsupported,
-                    "stored binding harness has no registered adapter",
-                ));
-            }
-            // A `managed_launch` binding is never a caller's context (A2/A3):
-            // only a lifecycle check-in replaces it.
-            let exact: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM occupant_bindings WHERE seat_id=?1 AND generation=?2 AND target_id=?3 AND harness=?4 AND native_session=?5 AND execution_id=?6 AND ended_at IS NULL AND observation_provenance<>?7)",
-                params![claim.seat.as_str(),generation,claim.target.as_str(),claim.harness.as_str(),claim.native_session.as_str(),claim.execution.as_str(),crate::protocol::authority::MANAGED_LAUNCH_PROVENANCE], |r|r.get(0)).map_err(store_error)?;
-            if !exact {
-                return Err(api_error(
-                    ErrorCode::CallerUnverified,
-                    "cooperative occupant context changed",
+                    "claim harness has no registered adapter",
                 ));
             }
         }
@@ -4071,10 +4166,28 @@ pub(crate) fn cooperative_mapping(
         revision: revision as u64,
         invalidation_revision: invalidation as u64,
         generation: generation as u64,
-        claimed_generation: claimed as u64,
         terminal: observation.as_ref().and_then(|o| o.terminal_id.clone()),
         incarnation: observation.and_then(|o| o.incarnation),
     })
+}
+
+/// [`cooperative_mapping`] plus: the claim's own binding (seat, harness, session, agent id) is
+/// open. For validators that re-check authority a bound session already holds (a handoff, an
+/// observation ticket) and never enroll; a claim resolved by `decide_cooperative` may enroll
+/// instead and uses `cooperative_mapping`.
+pub(crate) fn cooperative_bound_mapping(
+    db: &Connection,
+    claim: &crate::protocol::authority::CallerClaim,
+    mode: Option<crate::protocol::commands::CheckInMode>,
+) -> Result<CooperativeMapping, ApiError> {
+    let mapping = cooperative_mapping(db, claim, mode)?;
+    if super::queries::open_binding_for(db, &bindings::BindingKey::from_claim(claim))?.is_none() {
+        return Err(api_error(
+            ErrorCode::CallerUnverified,
+            "cooperative occupant context changed",
+        ));
+    }
+    Ok(mapping)
 }
 
 /// Parent Begin is canonically retained separately from the legacy child Begin
@@ -4147,14 +4260,10 @@ pub(crate) fn issue_cooperative_permit(
         (0, 0)
     } else {
         if let ObligationRef::AcceptCurrent(thread) = &request.obligation {
-            let invitation:Option<String>=db.query_row("SELECT i.id FROM invitations i WHERE i.thread_id=?1 AND i.seat_id=?2 AND NOT EXISTS (SELECT 1 FROM invitation_cancellations c WHERE c.invitation_id=i.id) ORDER BY i.episode DESC LIMIT 1",
-                params![thread.as_str(),request.claim.seat.as_str()],|r|r.get(0)).optional().map_err(store_error)?;
-            request.obligation =
-                ObligationRef::Invitation(crate::protocol::ids::InvitationId::new(
-                    invitation.ok_or_else(|| {
-                        api_error(ErrorCode::NotFound, "current invitation missing")
-                    })?,
-                ));
+            let invitation =
+                super::control::current_invitation_for_accept(db, thread, &request.claim.seat)?
+                    .ok_or_else(|| api_error(ErrorCode::NotFound, "current invitation missing"))?;
+            request.obligation = ObligationRef::Invitation(invitation);
         }
         let mapping = cooperative_mapping(db, &request.claim, request.check_in_mode)?;
         (mapping.revision, mapping.invalidation_revision)
@@ -4186,6 +4295,28 @@ pub(crate) fn decide_cooperative(
     operation: &crate::protocol::ids::OperationId,
     obligation: &ObligationRef,
     digest: &[u8; 32],
+) -> Result<(CooperativeMapping, bindings::Resolution), ApiError> {
+    let mapping = decide_cooperative_fence(
+        tx, at, instance, permit, claim, mode, operation, obligation, digest,
+    )?;
+    let resolution = resolve_cooperative(tx, at, claim, mode, &mapping)?;
+    Ok((mapping, resolution))
+}
+
+/// The deciding fence of a cooperative call: the mapping against the canonical view (A2) and the
+/// permit it consumes. Resolves no binding; callers that must act between the fence and the
+/// binding write (`register_available`) call this and [`resolve_cooperative`] separately.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn decide_cooperative_fence(
+    tx: &Transaction<'_>,
+    at: DecisionInstant,
+    instance: &str,
+    permit: &mut MutationPermit,
+    claim: &crate::protocol::authority::CallerClaim,
+    mode: Option<crate::protocol::commands::CheckInMode>,
+    operation: &crate::protocol::ids::OperationId,
+    obligation: &ObligationRef,
+    digest: &[u8; 32],
 ) -> Result<CooperativeMapping, ApiError> {
     cooperative_instance(tx, instance, claim)?;
     let mapping = cooperative_mapping(tx, claim, mode)?;
@@ -4195,9 +4326,7 @@ pub(crate) fn decide_cooperative(
         seat: claim.seat.clone(),
         target: claim.target.clone(),
         mapping_revision: mapping.revision,
-        // The claim's own generation: equal to the seat's, or one behind a
-        // `managed_launch` binding the cooperative mapping accepted.
-        binding_generation: mapping.claimed_generation,
+        binding_generation: mapping.generation,
         invalidation_revision: mapping.invalidation_revision,
         known_invalidated: false,
     };
@@ -4213,6 +4342,139 @@ pub(crate) fn decide_cooperative(
     Ok(mapping)
 }
 
+/// The placement a binding written by `claim` records, from the deciding mapping. Reconfirmation
+/// evidence is needed only to write a placement: a plain touch of an open binding writes none, so
+/// a missing observation does not refuse it.
+fn cooperative_placement(
+    tx: &Transaction<'_>,
+    at: DecisionInstant,
+    claim: &crate::protocol::authority::CallerClaim,
+    lifecycle: bool,
+    mapping: &CooperativeMapping,
+) -> Result<bindings::BindingPlacement, ApiError> {
+    let key = bindings::BindingKey::from_claim(claim);
+    let placement = match mapping.reconfirmation_evidence() {
+        Ok((terminal, incarnation)) => (terminal.to_owned(), incarnation.to_owned()),
+        Err(error) => {
+            if lifecycle || super::queries::open_binding_for(tx, &key)?.is_none() {
+                return Err(error);
+            }
+            (String::new(), String::new())
+        }
+    };
+    Ok(bindings::BindingPlacement {
+        generation: mapping.generation,
+        target_generation: mapping.revision,
+        target: claim.target.as_str().to_owned(),
+        terminal: placement.0,
+        incarnation: placement.1,
+        host_boot: mapping.boot.clone(),
+        host_epoch: mapping.epoch,
+        execution: claim.execution.as_str().to_owned(),
+        provenance: claim.harness.cooperative_provenance().to_owned(),
+        observed_at: at.utc,
+        registered_at: Some(at.utc),
+    })
+}
+
+/// Resolve the claim to its own binding (ht-54r.3): enroll, reconnect, reopen, attach or touch.
+/// Never ends another binding.
+pub(crate) fn resolve_cooperative(
+    tx: &Transaction<'_>,
+    at: DecisionInstant,
+    claim: &crate::protocol::authority::CallerClaim,
+    mode: Option<crate::protocol::commands::CheckInMode>,
+    mapping: &CooperativeMapping,
+) -> Result<bindings::Resolution, ApiError> {
+    resolve_cooperative_with_lineage(tx, at, claim, mode, mapping, None)
+}
+
+/// [`resolve_cooperative`] with a lineage predecessor hint (Hermes `parent_session_id`, spec §1
+/// Lineage). The hint names a session; it resolves to the open top-level binding of that session on
+/// the claim's seat and harness, and is honoured only when `bindings::validate_lineage` holds (same
+/// seat, harness, top-level, same process fingerprint). A successor not yet enrolled seeds from the
+/// predecessor (`ResolveRequest.lineage`); one already enrolled (CLI-first, an accepted limit) links
+/// `lineage_from` once and moves no cursor (it keeps its own read position).
+pub(crate) fn resolve_cooperative_with_lineage(
+    tx: &Transaction<'_>,
+    at: DecisionInstant,
+    claim: &crate::protocol::authority::CallerClaim,
+    mode: Option<crate::protocol::commands::CheckInMode>,
+    mapping: &CooperativeMapping,
+    lineage_parent: Option<&crate::protocol::ids::NativeSessionId>,
+) -> Result<bindings::Resolution, ApiError> {
+    let lifecycle = matches!(
+        mode,
+        Some(crate::protocol::commands::CheckInMode::Lifecycle { .. })
+    );
+    let placement = cooperative_placement(tx, at, claim, lifecycle, mapping)?;
+    let predecessor = match lineage_parent {
+        Some(parent) if *parent != claim.native_session && !claim.is_subagent() => {
+            bindings::match_claim(
+                tx,
+                &bindings::BindingKey {
+                    seat: claim.seat.clone(),
+                    harness: claim.harness.as_str().to_owned(),
+                    native_session: parent.clone(),
+                    agent_id: None,
+                },
+            )?
+            .filter(|row| row.role == bindings::BindingRole::TopLevel)
+            .map(|row| row.binding_id)
+        }
+        _ => None,
+    };
+    let resolution = bindings::resolve_claim(
+        tx,
+        &bindings::ResolveRequest {
+            claim,
+            lifecycle,
+            placement: &placement,
+            lineage: predecessor.as_ref(),
+        },
+        at.utc,
+    )?;
+    if let Some(predecessor) = &predecessor
+        && !matches!(resolution, bindings::Resolution::Enrolled { .. })
+    {
+        let successor = resolution.binding();
+        if successor.role == bindings::BindingRole::TopLevel
+            && successor.lineage_from.is_none()
+            && bindings::validate_lineage(tx, claim, predecessor)?
+        {
+            bindings::link_lineage(tx, &successor.binding_id, predecessor)?;
+        }
+    }
+    Ok(resolution)
+}
+
+/// The binding a Hermes delegate child's start event registers (ht-54r.11): the child session as
+/// a subagent binding of the parent's top-level binding (enrolled first if needed), keyed
+/// `(seat, hermes, child, agent_id = child)`. Returns whether the binding was created.
+pub(crate) fn attach_registered_child(
+    tx: &Transaction<'_>,
+    at: DecisionInstant,
+    parent_claim: &crate::protocol::authority::CallerClaim,
+    child: &crate::protocol::ids::NativeSessionId,
+    mapping: &CooperativeMapping,
+) -> Result<bool, ApiError> {
+    let parent = resolve_cooperative(tx, at, parent_claim, None, mapping)?
+        .binding()
+        .clone();
+    let child_claim = bindings::registered_child_claim(parent_claim, child)?;
+    let mut placement = cooperative_placement(tx, at, &child_claim, false, mapping)?;
+    placement.provenance =
+        crate::protocol::authority::COOPERATIVE_ENV_SESSION_PROVENANCE.to_owned();
+    let created = matches!(
+        bindings::attach_subagent(tx, &child_claim, &parent, &placement, at.utc)?,
+        bindings::EnrollOutcome::Enrolled { .. }
+    );
+    // A child CLI call that beat this start event enrolled a stray top-level plain-call row;
+    // the registered subagent row replaces it, whether just created or already there.
+    bindings::supersede_plain_child_row(tx, &child_claim, at.utc)?;
+    Ok(created)
+}
+
 /// A cooperative check-in constructs its bounded offer inside the deciding SQLite
 /// transaction. An offer or encoding failure rolls back the anchor and frontier.
 pub fn register_available(
@@ -4222,7 +4484,13 @@ pub fn register_available(
     operator: Option<&OperatorActor>,
     mut permit: MutationPermit,
     budget: &CallBudget,
-    build_offer: impl FnOnce(&Transaction<'_>, &SeatId, u64) -> Result<CheckInResult, ApiError>,
+    build_offer: impl FnOnce(
+        &Transaction<'_>,
+        &SeatId,
+        u64,
+        super::first_contact::OfferHistory,
+        &BindingId,
+    ) -> Result<CheckInResult, ApiError>,
 ) -> Result<CommandResult, ApiError> {
     let claim = &command.claim;
     let digest = schema::canonical_digest(&check_in_payload(command))?;
@@ -4243,7 +4511,7 @@ pub fn register_available(
         |tx| cooperative_instance(tx, &claim.instance, claim),
         |tx| cooperative_mapping(tx, claim, Some(command.mode)).map(|_| ()),
         |tx, at| {
-            let mapping = decide_cooperative(
+            let mapping = decide_cooperative_fence(
                 tx,
                 at,
                 &claim.instance,
@@ -4256,7 +4524,9 @@ pub fn register_available(
             )?;
             let seat = &claim.seat;
             let (terminal, incarnation) = mapping.reconfirmation_evidence()?;
-            let previously_available:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL AND registered_at IS NOT NULL AND generation=?2 AND host_boot=?3 AND host_epoch=?4 AND target_generation=?5)",
+            // Evaluated before the claim's binding is resolved, so a binding this very call
+            // enrolls does not count. Availability follows liveness: only connected bindings count.
+            let previously_available:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL AND liveness='connected' AND registered_at IS NOT NULL AND generation=?2 AND host_boot=?3 AND host_epoch=?4 AND target_generation=?5)",
                 params![seat.as_str(),mapping.generation as i64,mapping.boot,mapping.epoch as i64,mapping.revision as i64],|r|r.get(0)).map_err(store_error)?;
             if !previously_available {
                 schema::ensure_unavailability_episode(tx, seat)?;
@@ -4265,12 +4535,13 @@ pub fn register_available(
                 command.mode,
                 crate::protocol::commands::CheckInMode::Lifecycle { .. }
             );
+            let human = claim.harness == crate::protocol::authority::Harness::Human;
             if lifecycle
-                && claim.harness == crate::protocol::authority::Harness::Human
-                && let Some(open) = crate::store::queries::open_binding(tx, seat.as_str())?
-                && crate::protocol::authority::AGENT_BINDING_PROVENANCES
-                    .contains(&open.provenance.as_str())
+                && human
                 && operator.is_none()
+                && let Some(open) = bindings::list_connected(tx, seat)?
+                    .into_iter()
+                    .find(|binding| binding.harness != "human")
             {
                 return Err(api_error(
                     ErrorCode::Unauthorized,
@@ -4287,49 +4558,75 @@ pub fn register_available(
                     ),
                 ));
             }
-            let generation = if lifecycle {
-                let maximum:i64=tx.query_row("SELECT MAX(?2,COALESCE(MAX(generation),0)) FROM occupant_bindings WHERE seat_id=?1",
-                    params![seat.as_str(),mapping.generation as i64],|r|r.get(0)).map_err(store_error)?;
-                let next = maximum.checked_add(1).ok_or_else(|| {
-                    api_error(
-                        ErrorCode::SequenceExhausted,
-                        "seat binding generation exhausted",
-                    )
-                })?;
-                let changed = tx
-                    .execute(
-                        "UPDATE seats SET generation=?1 WHERE id=?2 AND generation=?3",
-                        params![next, seat.as_str(), mapping.generation as i64],
-                    )
-                    .map_err(store_error)?;
-                if changed != 1 {
-                    return Err(api_error(
-                        ErrorCode::Conflict,
-                        "lifecycle generation CAS failed",
-                    ));
+            let resolution = resolve_cooperative_with_lineage(
+                tx,
+                at,
+                claim,
+                Some(command.mode),
+                &mapping,
+                command.lineage_parent.as_ref(),
+            )?;
+            // Read-only is decided from the resolved binding's role (a Hermes registered child
+            // resolves to its subagent row); the transaction rolls back on Err.
+            super::control::require_top_level_binding(resolution.binding())?;
+            let binding_id = resolution.binding().binding_id.clone();
+            // Spec §2: a new binding's first response carries its history stats (once: only the
+            // check-in that enrolls it); a resumed or reconnected one whose unread backlog
+            // exceeds one page is fast-forwarded. Never on a plain touch, and never for the
+            // binding another check-in superseded (that binding does not run this path).
+            let first_contact = match &resolution {
+                bindings::Resolution::Enrolled {
+                    first_contact: true,
+                    ..
+                } => Some(super::first_contact::first_contact(tx, seat, &|thread| {
+                    super::read_cursors::cursor_for(tx, &binding_id, thread)
+                        .ok()
+                        .flatten()
+                        .unwrap_or(0)
+                })?),
+                _ => None,
+            }
+            .filter(|fc| !fc.threads.is_empty());
+            let fast_forward = match &resolution {
+                bindings::Resolution::Existing {
+                    reconnected: true, ..
                 }
-                tx.execute("UPDATE occupant_bindings SET ended_at=?1 WHERE seat_id=?2 AND ended_at IS NULL",params![at.utc.0,seat.as_str()]).map_err(store_error)?;
-                tx.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?13,?10,?10,?11,?12)",
-                    params![seat.as_str(),next,claim.target.as_str(),mapping.boot,mapping.epoch as i64,mapping.revision as i64,
-                        claim.harness.as_str(),claim.native_session.as_str(),claim.execution.as_str(),at.utc.0,terminal,incarnation,claim.harness.cooperative_provenance()]).map_err(store_error)?;
-                catch_up::supersede_stale(tx, seat, at.utc)?;
+                | bindings::Resolution::Reopened(_) => {
+                    super::first_contact::fast_forward(tx, &binding_id)?
+                }
+                _ => None,
+            };
+            // The seat's mapping generation: check-ins add and refresh bindings, they never
+            // bump it (only rebind, unresolve and retire do).
+            let generation = mapping.generation as i64;
+            if lifecycle {
+                // TRUST-POLICY A4: a person and an agent never hold a seat together. An agent's
+                // check-in already ended the seat's human binding and any launch placeholder
+                // inside `resolve_cooperative`; a person's ends the seat's agent bindings (the
+                // connected ones only under the operator override, refused above otherwise).
+                if human {
+                    bindings::end_agent_bindings(tx, seat, at.utc)?;
+                }
+                // Only ended bindings' catch-up rows end: another binding's check-in leaves an
+                // open binding's catch-up alone (ht-54r.22).
+                catch_up::supersede_ended_bindings(tx, seat, at.utc)?;
                 if let Some(actor) = operator {
                     tx.execute("INSERT INTO allocation_decisions(instance_id,target_id,seat_id,kind,decided_at,host_boot,epoch,generation,operator_label) VALUES (?1,?2,?3,'operator_human_override',?4,?5,?6,?7,?8)",
                         params![claim.instance,claim.target.as_str(),seat.as_str(),at.utc.0,mapping.boot,mapping.epoch as i64,mapping.revision as i64,actor.audit_label()]).map_err(store_error)?;
                 }
+                // A lifecycle check-in starts this session's offer frontier over; the seat's other
+                // bindings keep theirs (ht-54r.9).
                 tx.execute(
-                    "DELETE FROM warning_offer WHERE seat_id=?1",
-                    [seat.as_str()],
+                    "DELETE FROM warning_offer WHERE binding_id=?1",
+                    [binding_id.as_str()],
                 )
                 .map_err(store_error)?;
-                tx.execute("UPDATE wake_work SET binding_generation=?1 WHERE seat_id=?2 AND reservation_id IS NULL",params![next,seat.as_str()]).map_err(store_error)?;
-                next
             } else {
-                // Restoring availability does not replace the occupant or its generation.
-                tx.execute("UPDATE occupant_bindings SET registered_at=?1,host_boot=?2,host_epoch=?3,target_generation=?4,observation_provenance=?9,terminal_id=?7,incarnation=?8 WHERE seat_id=?5 AND generation=?6 AND ended_at IS NULL",
-                    params![at.utc.0,mapping.boot,mapping.epoch as i64,mapping.revision as i64,seat.as_str(),mapping.generation as i64,terminal,incarnation,claim.harness.cooperative_provenance()]).map_err(store_error)?;
-                mapping.generation as i64
-            };
+                // Restoring availability does not replace the occupant or its generation, and a plain
+                // call never rewrites the recorded observation provenance (ht-54r.79).
+                tx.execute("UPDATE occupant_bindings SET registered_at=?1,host_boot=?2,host_epoch=?3,target_generation=?4,terminal_id=?6,incarnation=?7 WHERE binding_id=?5",
+                    params![at.utc.0,mapping.boot,mapping.epoch as i64,mapping.revision as i64,binding_id.as_str(),terminal,incarnation]).map_err(store_error)?;
+            }
             let seq = schema::next_decision_seq(tx, &claim.instance)?;
             if lifecycle && claim.harness == crate::protocol::authority::Harness::Human {
                 // One durable cutoff waives all still-pending seat obligations
@@ -4366,7 +4663,16 @@ pub fn register_available(
             schema::apply_eligibility_transition(tx, &claim.instance, |_| {
                 Ok(lifecycle || !previously_available)
             })?;
-            let mut offer = build_offer(tx, seat, seq)?;
+            let mut offer = build_offer(
+                tx,
+                seat,
+                seq,
+                super::first_contact::OfferHistory {
+                    first_contact,
+                    fast_forward,
+                },
+                &binding_id,
+            )?;
             if offer.seat != *seat {
                 return Err(api_error(
                     ErrorCode::StoreCorrupt,
@@ -4379,15 +4685,14 @@ pub fn register_available(
                 .inbox
                 .validate()
                 .map_err(|e| api_error(ErrorCode::InvalidBudget, e))?;
-            tx.execute("INSERT INTO warning_offer(seat_id,binding_generation,execution_id,offered_through_seq) VALUES (?1,?2,?3,?4) ON CONFLICT(seat_id) DO UPDATE SET binding_generation=excluded.binding_generation,execution_id=excluded.execution_id,offered_through_seq=MAX(warning_offer.offered_through_seq,excluded.offered_through_seq)",
-                params![seat.as_str(),generation,claim.execution.as_str(),seq as i64]).map_err(store_error)?;
+            tx.execute("INSERT INTO warning_offer(binding_id,seat_id,offered_through_seq) VALUES (?1,?2,?3) ON CONFLICT(binding_id) DO UPDATE SET offered_through_seq=MAX(warning_offer.offered_through_seq,excluded.offered_through_seq)",
+                params![binding_id.as_str(),seat.as_str(),seq as i64]).map_err(store_error)?;
             // Lifecycle and Current offers alike settle only the notices
-            // they carry (wave-2 fix2 root decision (a)).
+            // they carry (wave-2 fix2 root decision (a)), on this binding's own frontier.
             super::attention::settle_carried_notices(
                 tx,
                 seat.as_str(),
-                generation,
-                claim.execution.as_str(),
+                &binding_id,
                 &offer.notices.items,
             )?;
             Ok(CommandResult::CheckedIn(offer))
@@ -4404,13 +4709,14 @@ pub fn register_available(
 /// onto the launch target with no recovery hold, the effective observation
 /// must be current for the instance's host boot and epoch and the seat's
 /// target generation, and the launcher's terminal, Herdr incarnation, boot and
-/// target generation must equal it. A seat that already has an open binding
-/// (an agent or person that checked in, or an earlier launch) is left
-/// unchanged and reported with `recorded: false`. The new binding bumps the
-/// seat generation by exactly one, carries placeholder session and execution
-/// ids no caller claim can match, has no `registered_at` and starts no
+/// target generation must equal it. The placeholder is one more binding next to
+/// any the seat already holds (ht-54r.4): it keeps the seat generation, carries
+/// the started process's liveness fingerprint and placeholder session and
+/// execution ids no caller claim can match, has no `registered_at` and starts no
 /// availability, receipt timer or wake binding generation: it authorizes
-/// nothing but a wake prompt to the bound harness.
+/// nothing but a wake prompt to the bound harness. The launched agent's first
+/// lifecycle check-in replaces only the placeholders of its own harness
+/// (`bindings::launch_placeholder_replace`).
 pub fn record_managed_launch(
     context: &StoreContext,
     conn: &mut Connection,
@@ -4486,72 +4792,92 @@ pub fn record_managed_launch(
             ))
         },
         |tx, at, (generation, seat_target_generation, boot, epoch, terminal, incarnation)| {
-            let open: Option<(i64, String)> = tx
-                .query_row(
-                    "SELECT generation,observation_provenance FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL ORDER BY ordinal DESC LIMIT 1",
-                    [command.seat.as_str()],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
-                )
-                .optional()
-                .map_err(store_error)?;
-            if let Some((bound_generation, provenance)) = open {
-                return Ok(CommandResult::ManagedLaunchRecorded(
-                    crate::protocol::results::ManagedLaunchRecord {
-                        seat: command.seat.clone(),
-                        recorded: false,
-                        binding_generation: u64::try_from(bound_generation).map_err(|_| {
-                            api_error(ErrorCode::StoreCorrupt, "negative binding generation")
-                        })?,
-                        provenance,
-                    },
-                ));
-            }
-            // Exactly one past the seat generation, so a lifecycle check-in
-            // prepared just before this decision is recognized (cooperative
-            // mapping) and still replaces the launch binding.
-            let next = generation.checked_add(1).ok_or_else(|| {
-                api_error(ErrorCode::SequenceExhausted, "seat binding generation exhausted")
-            })?;
-            let taken: bool = tx
-                .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM occupant_bindings WHERE seat_id=?1 AND generation>=?2)",
-                    params![command.seat.as_str(), next],
-                    |r| r.get(0),
-                )
-                .map_err(store_error)?;
-            if taken {
-                return Err(api_error(
-                    ErrorCode::Conflict,
-                    "seat binding history is ahead of the seat generation; the agent's check-in registers it",
-                ));
-            }
-            let changed = tx
-                .execute(
-                    "UPDATE seats SET generation=?1 WHERE id=?2 AND generation=?3",
-                    params![next, command.seat.as_str(), generation],
-                )
-                .map_err(store_error)?;
-            if changed != 1 {
-                return Err(api_error(ErrorCode::Conflict, "managed launch generation CAS failed"));
-            }
-            let placeholder = format!(
+            // The seat may already hold agent bindings, connected or not: the placeholder is one
+            // more binding, keyed by its own `launch:` session, and changes none of them. The seat
+            // generation stays: only the launched agent's own check-in replaces the placeholder.
+            let placeholder = crate::protocol::ids::NativeSessionId::new(format!(
                 "{}{}",
                 crate::protocol::authority::MANAGED_LAUNCH_PLACEHOLDER_PREFIX,
                 uuid::Uuid::new_v4()
-            );
-            tx.execute("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,target_generation,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?8,?9,?10,NULL,?11,?12)",
-                params![command.seat.as_str(),next,command.target.as_str(),boot,epoch,seat_target_generation,
-                    command.harness.as_str(),placeholder,crate::protocol::authority::MANAGED_LAUNCH_PROVENANCE,at.utc.0,terminal,incarnation]).map_err(store_error)?;
+            ));
+            let key = bindings::BindingKey {
+                seat: command.seat.clone(),
+                harness: command.harness.as_str().to_owned(),
+                native_session: placeholder.clone(),
+                agent_id: None,
+            };
+            let placement = bindings::BindingPlacement {
+                generation: u64::try_from(generation).map_err(|_| {
+                    api_error(ErrorCode::StoreCorrupt, "negative seat generation")
+                })?,
+                target_generation: u64::try_from(seat_target_generation).map_err(|_| {
+                    api_error(ErrorCode::StoreCorrupt, "negative target generation")
+                })?,
+                target: command.target.as_str().to_owned(),
+                terminal,
+                incarnation,
+                host_boot: boot,
+                host_epoch: u64::try_from(epoch)
+                    .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative host epoch"))?,
+                execution: placeholder.as_str().to_owned(),
+                provenance: crate::protocol::authority::MANAGED_LAUNCH_PROVENANCE.to_owned(),
+                observed_at: at.utc,
+                registered_at: None,
+            };
+            let outcome = bindings::enroll(
+                tx,
+                &bindings::EnrollRequest {
+                    key: &key,
+                    role: bindings::BindingRole::TopLevel,
+                    parent: None,
+                    lineage: None,
+                    fingerprint: Some(command.fingerprint),
+                    placement: &placement,
+                    trigger: bindings::EnrollTrigger::Lifecycle,
+                },
+                at.utc,
+            )?;
+            let (bindings::EnrollOutcome::Enrolled { binding, .. }
+            | bindings::EnrollOutcome::Existing(binding)) = outcome;
             Ok(CommandResult::ManagedLaunchRecorded(
                 crate::protocol::results::ManagedLaunchRecord {
                     seat: command.seat.clone(),
                     recorded: true,
-                    binding_generation: u64::try_from(next).map_err(|_| {
-                        api_error(ErrorCode::StoreCorrupt, "negative seat generation")
-                    })?,
+                    binding_generation: binding.generation,
                     provenance: crate::protocol::authority::MANAGED_LAUNCH_PROVENANCE.into(),
                 },
             ))
+        },
+    )
+}
+
+/// The hook pull's plain call (spec §3): resolves `claim` with the plain trigger (the same
+/// touch-or-reconnect a CLI `inbox` performs, re-adopting a V32-migrated row with its placement and
+/// cursors) and reads the seat's mod view of the claim's binding, in one write transaction.
+/// Records no operation: a plain touch-or-reconnect is idempotent on its own.
+pub fn hook_plain_reconnect(
+    context: &StoreContext,
+    conn: &mut Connection,
+    instance: &str,
+    claim: &crate::protocol::authority::CallerClaim,
+    presentation: bool,
+) -> Result<Option<crate::ports::ModSeatView>, ApiError> {
+    context.execute_decision(
+        conn,
+        |tx| cooperative_mapping(tx, claim, None),
+        |tx, at, mapping| {
+            resolve_cooperative(tx, at, claim, None, &mapping)?;
+            let view = if presentation {
+                presentation_seat_view
+            } else {
+                mod_binding_view
+            };
+            view(
+                tx,
+                instance,
+                &claim.seat,
+                crate::ports::ModBindingRef::Claim(claim),
+            )
         },
     )
 }
@@ -4560,17 +4886,37 @@ pub fn record_managed_launch(
 /// not a count anyone presents).
 const MOD_LAZY_COUNT_CAP: i64 = 1000;
 
-/// The seat's A2 state for the mod watch channel (spec D2), read-only. Call it
-/// inside the caller's read transaction. `None`: no such seat in `instance`.
-/// The fingerprint is built from the canonical digest (so it moves with every
-/// attention source the digest knows), with warnings narrowed to those that
-/// wake the seat (`attention::wake_warnings`), and the lazy pending set.
-pub fn mod_seat_view(
+/// The seat's A2 state for the mod watch channel (spec D2), read-only, with one of its bindings
+/// (spec §3 Wake). Call it inside the caller's read transaction. `None`: no such seat in
+/// `instance`. The fingerprint is built from the canonical digest (so it moves with every
+/// attention source the digest knows), with warnings narrowed to those that wake the seat
+/// (`attention::wake_warnings`), plus the binding's own unread: ordinary mail past its cursors
+/// and its lazy rows. `binding` is `None` when the reference resolves to no binding of this seat;
+/// an ended or disconnected binding is returned as it is, with no unread.
+pub fn mod_binding_view(
     db: &Connection,
     instance: &str,
     seat: &SeatId,
+    binding: crate::ports::ModBindingRef<'_>,
 ) -> Result<Option<crate::ports::ModSeatView>, ApiError> {
-    use crate::ports::{ModBindingView, ModFingerprint, ModSeatView};
+    mod_seat_view_mode(db, instance, seat, binding, true)
+}
+pub fn presentation_seat_view(
+    db: &Connection,
+    instance: &str,
+    seat: &SeatId,
+    binding: crate::ports::ModBindingRef<'_>,
+) -> Result<Option<crate::ports::ModSeatView>, ApiError> {
+    mod_seat_view_mode(db, instance, seat, binding, false)
+}
+fn mod_seat_view_mode(
+    db: &Connection,
+    instance: &str,
+    seat: &SeatId,
+    binding: crate::ports::ModBindingRef<'_>,
+    legacy_digest: bool,
+) -> Result<Option<crate::ports::ModSeatView>, ApiError> {
+    use crate::ports::{ModBindingRef, ModBindingView, ModFingerprint, ModSeatView};
     let row: Option<(String, Option<String>)> = db
         .query_row(
             "SELECT state,target_id FROM seats WHERE id=?1 AND instance_id=?2",
@@ -4592,26 +4938,24 @@ pub fn mod_seat_view(
             .map_err(store_error)?,
         None => false,
     };
-    let binding: Option<(i64, String, String, String)> = db
-        .query_row(
-            "SELECT generation,observation_provenance,harness,native_session FROM occupant_bindings WHERE seat_id=?1 AND ended_at IS NULL",
-            [seat.as_str()],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-        )
-        .optional()
-        .map_err(store_error)?;
-    let binding = binding
-        .map(|(generation, provenance, harness, native_session)| {
-            Ok(ModBindingView {
-                generation: u64::try_from(generation).map_err(|_| {
-                    api_error(ErrorCode::StoreCorrupt, "negative binding generation")
-                })?,
-                provenance,
-                harness,
-                native_session,
-            })
-        })
-        .transpose()?;
+    let row = match binding {
+        ModBindingRef::Id(id) => super::bindings::get(db, id)?,
+        ModBindingRef::Claim(claim) => {
+            super::bindings::match_claim(db, &super::bindings::BindingKey::from_claim(claim))?
+        }
+    }
+    .filter(|row| &row.seat == seat);
+    let binding = row.map(|row| ModBindingView {
+        generation: row.generation,
+        provenance: row.provenance,
+        harness: row.harness,
+        native_session: row.native_session,
+        top_level: row.role == super::bindings::BindingRole::TopLevel,
+        connected: row.liveness == super::bindings::Liveness::Connected,
+        ended_at: row.ended_at,
+        disconnect_reason: row.disconnect_reason,
+        binding_id: row.binding_id,
+    });
     let attention_version: i64 = db
         .query_row(
             "SELECT attention_version FROM wake_work WHERE seat_id=?1",
@@ -4623,16 +4967,56 @@ pub fn mod_seat_view(
         .unwrap_or(0);
     let attention_version = u64::try_from(attention_version)
         .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative attention version"))?;
+    if !legacy_digest {
+        return Ok(Some(ModSeatView {
+            seat: seat.clone(),
+            retired: state == "retired",
+            continuity_resolved: state == "resolved",
+            state,
+            held,
+            attention_version,
+            fingerprint: ModFingerprint {
+                attention_version,
+                binding_generation: binding.as_ref().map(|b| b.generation),
+                pending_receipts: 0,
+                max_pending_ordinal: 0,
+                lazy_pending: 0,
+                max_lazy_rowid: 0,
+                unread: 0,
+                max_unread_rowid: 0,
+                other_pending: 0,
+            },
+            binding,
+            newest_pending_notice: None,
+            pending_invitation_version: 0,
+        }));
+    }
     let run = super::attention::seat_digest(db, instance, seat, &|| Ok(()))?;
-    let (lazy_pending, max_lazy_rowid): (i64, i64) = db
-        .query_row(
-            // Published rows only: a staged row is invisible to the mod and
-            // its publication (manifest + message) must change the fingerprint.
-            "SELECT count(*),COALESCE(max(ordinal),0) FROM (SELECT r.ordinal FROM lazy_recipients r INDEXED BY lazy_recipients_pending_seat_ordinal JOIN send_manifests sm ON sm.preparation_id=r.preparation_id AND sm.message_id=r.message_id JOIN messages m ON m.id=sm.message_id AND m.delivery_mode='lazy' WHERE r.seat_id=?1 AND r.state='pending' ORDER BY r.ordinal DESC LIMIT ?2)",
-            params![seat.as_str(), MOD_LAZY_COUNT_CAP],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .map_err(store_error)?;
+    // The binding's own unread. Published rows only: a staged row is invisible to the mod and
+    // its publication (manifest + message) must change the fingerprint. An ended or
+    // disconnected binding holds no channel and counts none.
+    let (lazy_pending, max_lazy_rowid, unread, max_unread_rowid) =
+        match binding.as_ref().filter(|held| held.holds_channel()) {
+            Some(held) => {
+                let lazy = super::lazy_delivery::binding_lazy_unread(
+                    db,
+                    &held.binding_id,
+                    MOD_LAZY_COUNT_CAP as usize,
+                )?;
+                let (unread, max_unread_rowid) = super::read_cursors::binding_unread_stats(
+                    db,
+                    &held.binding_id,
+                    MOD_LAZY_COUNT_CAP,
+                )?;
+                (
+                    lazy.len() as u64,
+                    lazy.iter().map(|row| row.ordinal).max().unwrap_or(0),
+                    unread,
+                    max_unread_rowid,
+                )
+            }
+            None => (0, 0, 0, 0),
+        };
     let digest = &run.digest;
     // Only warnings that would wake the seat natively raise mod attention
     // (TRUST-POLICY A7): another seat's overdue transition, and every clear,
@@ -4647,8 +5031,10 @@ pub fn mod_seat_view(
             .token
             .receipt
             .map_or(0, |(seq, _)| i64::try_from(seq).unwrap_or(i64::MAX)),
-        lazy_pending: u64::try_from(lazy_pending).unwrap_or(0),
+        lazy_pending,
         max_lazy_rowid,
+        unread,
+        max_unread_rowid,
         other_pending: super::attention::pending_confirming_invitations(
             db,
             seat.as_str(),
@@ -4659,6 +5045,12 @@ pub fn mod_seat_view(
         .0 + waking_warnings,
         binding_generation: binding.as_ref().map(|b| b.generation),
     };
+    // Notices above the binding's own frontier (spec §2 Hook notifications); the seat view's
+    // when the reference resolved to no binding.
+    let newest_pending_notice = match binding.as_ref() {
+        Some(held) => super::attention::binding_newest_pending_notice(db, &held.binding_id)?,
+        None => super::attention::newest_pending_notice(db, seat.as_str())?,
+    };
     Ok(Some(ModSeatView {
         seat: seat.clone(),
         retired: state == "retired",
@@ -4668,6 +5060,8 @@ pub fn mod_seat_view(
         binding,
         attention_version,
         fingerprint,
+        newest_pending_notice,
+        pending_invitation_version: run.invitations.content_version(),
     }))
 }
 
@@ -4704,14 +5098,18 @@ pub fn mod_stall_oldest(
     Ok(oldest.map(UtcMillis))
 }
 
-fn present_check_in_result(
+pub(crate) fn present_check_in_result(
     tx: &Transaction<'_>,
     mut result: CommandResult,
 ) -> Result<CommandResult, ApiError> {
     if let CommandResult::CheckedIn(offer) = &mut result {
         let claim = &offer.context;
-        let current:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id WHERE s.id=?1 AND s.instance_id=?2 AND s.state!='retired' AND s.target_id=?3 AND s.generation=?4 AND b.generation=s.generation AND b.ended_at IS NULL AND b.target_id=s.target_id AND b.harness=?5 AND b.native_session=?6 AND b.execution_id=?7)",
-            params![claim.seat.as_str(),claim.instance,claim.target.as_str(),claim.binding_generation as i64,claim.harness.as_str(),claim.native_session.as_str(),claim.execution.as_str()],|r|r.get(0)).map_err(store_error)?;
+        // Current: the seat has not been rebound since the claim (`seats.generation`, the
+        // fence) and the claim's own binding, found by key, is open on the seat's target. A
+        // seat holds many bindings, so no binding generation or execution is compared
+        // (ht-54r.3).
+        let current:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id WHERE s.id=?1 AND s.instance_id=?2 AND s.state!='retired' AND s.target_id=?3 AND s.generation=?4 AND b.ended_at IS NULL AND b.target_id=s.target_id AND b.harness=?5 AND b.native_session=?6 AND b.agent_id=?7)",
+            params![claim.seat.as_str(),claim.instance,claim.target.as_str(),claim.binding_generation as i64,claim.harness.as_str(),claim.native_session.as_str(),claim.agent_id.as_ref().map_or("",|a|a.as_str())],|r|r.get(0)).map_err(store_error)?;
         offer.context_disposition = if current {
             crate::protocol::results::CheckInContextDisposition::Current
         } else {
@@ -4720,6 +5118,92 @@ fn present_check_in_result(
     }
     Ok(result)
 }
+
+/// The seat's `wake_on` preference (spec DP8); a fresh seat reads `nudge`.
+pub fn wake_on(
+    db: &Connection,
+    seat: &SeatId,
+) -> Result<crate::protocol::commands::WakeOn, ApiError> {
+    let stored: Option<String> = db
+        .query_row(
+            "SELECT wake_on FROM seats WHERE id=?1",
+            [seat.as_str()],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(store_error)?;
+    let stored = stored.ok_or_else(|| api_error(ErrorCode::NotFound, "seat not found"))?;
+    crate::protocol::commands::WakeOn::parse(&stored)
+        .ok_or_else(|| api_error(ErrorCode::StoreCorrupt, "invalid stored wake_on"))
+}
+
+/// Set the caller seat's `wake_on` (TRUST-POLICY A5): an accountable
+/// cooperative transaction scoped `seat:<id>`, decided against the seat's
+/// current binding. Only a top-level claim may set it. A change re-judges the
+/// seat's wake reasons through `wake::note_new_attention`; setting the stored
+/// value again records nothing. The preference is wake eligibility only: it
+/// creates no receipt, ACK evidence or authority.
+pub fn set_wake_on(
+    context: &StoreContext,
+    conn: &mut Connection,
+    budget: &CallBudget,
+    command: &crate::protocol::commands::SetWakeOn,
+    mut permit: MutationPermit,
+) -> Result<CommandResult, ApiError> {
+    use crate::protocol::authority::CallerRole;
+    if command.claim.role == CallerRole::Subagent {
+        return Err(api_error(
+            ErrorCode::InvalidRequest,
+            "declared subagents cannot set wake_on",
+        ));
+    }
+    let seat = command.claim.seat.clone();
+    let digest = control::cooperative_payload_hash("set_wake_on", command)?;
+    let obligation = ObligationRef::CheckIn(seat.clone());
+    schema::execute_accountable_transaction(
+        context,
+        conn,
+        budget,
+        permit.cooperative_metadata(),
+        &format!("seat:{}", seat.as_str()),
+        command.operation.as_str(),
+        digest,
+        |_| Ok(()),
+        |tx, at| {
+            control::decide_accountable(
+                tx,
+                at,
+                &mut permit,
+                &command.claim,
+                &seat,
+                &command.operation,
+                &obligation,
+                &digest,
+            )?;
+            let previous = wake_on(tx, &seat)?;
+            let changed = previous != command.value;
+            if changed {
+                tx.execute(
+                    "UPDATE seats SET wake_on=?1 WHERE id=?2",
+                    params![command.value.as_str(), seat.as_str()],
+                )
+                .map_err(store_error)?;
+                super::wake::note_new_attention(tx, &seat)?;
+            }
+            Ok(CommandResult::WakeOn(
+                crate::protocol::results::WakeOnState {
+                    seat: seat.clone(),
+                    wake_on: command.value,
+                    changed,
+                },
+            ))
+        },
+    )
+}
+
+#[cfg(test)]
+#[path = "../../tests/store/wake_on.rs"]
+mod wake_on_tests;
 
 #[cfg(test)]
 #[path = "../../tests/store/mod_seat_view.rs"]

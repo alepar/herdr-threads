@@ -1,0 +1,6 @@
+doctor: unavailable
+daemon: not_running
+fix: herdr-threads doctor fix
+hermes local_profile work: installed: true, enabled: true, admitted: unknown, observed: unknown
+rich harness evidence unavailable: the daemon is not reachable
+details: herdr-threads doctor --debug

@@ -313,11 +313,11 @@ fn registered_service_and_native_caller_complete_required_flow_with_exact_replay
         let native = CallerClaim {
             instance: instance.to_string(), seat: SeatId::new("pending"), binding_generation: 0,
             role: CallerRole::TopLevel, harness: Harness::Codex,
-            native_session: NativeSessionId::new("plugin_context:pending"),
+            native_session: NativeSessionId::new("session-pending"),
             execution: ExecutionId::new("00000000-0000-4000-8000-000000000111"),
-            target: HostTargetId::new("pane-pending"),
-        };
+            target: HostTargetId::new("pane-pending"), agent_id: None, liveness: Some(herdr_threads::protocol::authority::LivenessFingerprint::TEST), };
         let checked = std::thread::scope(|scope| scope.spawn(|| ordinary.call(Command::CheckIn(CheckIn {
+            lineage_parent: None,
             mode: CheckInMode::Lifecycle { expected_binding_generation: 0 },
             claim: native, operation: OperationId::new("native-check-in"),
         }), &budget())).join().unwrap()).unwrap();
@@ -330,6 +330,7 @@ fn registered_service_and_native_caller_complete_required_flow_with_exact_replay
         for (key, claim) in [("claim-service-author", service_claim), ("claim-built-in-author", builtin_claim)] {
             let denied = std::thread::scope(|scope| scope.spawn(|| ordinary.call(Command::SendMessage(SendMessage {
         delivery_mode: herdr_threads::protocol::commands::DeliveryMode::Ordinary,
+                direct_recipient: None,
                 thread: thread.clone(), body: "forged authority".into(), invited_recipients: vec![],
                 deadline_millis: None, operation: OperationId::new(key), claim, relays_user: false, user_intent: None,
             }), &budget())).join().unwrap()).unwrap_err();
@@ -371,7 +372,7 @@ fn registered_service_and_native_caller_complete_required_flow_with_exact_replay
         }
         let (_, upgraded) = client.submit(ServiceOperation::Invite(ServiceInvite { thread: thread.clone(), seat: SeatId::new("member-0"), constraint: InvitationConstraint::Required, deadline_millis: Some(300_000), operation: OperationId::new("upgrade-joined") }), &budget()).await.unwrap();
         let ServiceResult::Invitation(upgraded) = upgraded else { panic!("missing joined upgrade"); };
-        let response = std::thread::scope(|scope| scope.spawn(|| ordinary.call(Command::Inbox(InboxQuery { seat: Some(SeatId::new("member-0")), page: PageRequest::default() }), &budget())).join().unwrap()).unwrap();
+        let response = std::thread::scope(|scope| scope.spawn(|| ordinary.call(Command::Inbox(InboxQuery { claim: None, seat: Some(SeatId::new("member-0")), page: PageRequest::default() }), &budget())).join().unwrap()).unwrap();
         let CommandResult::Inbox(inbox) = response else { panic!("missing native inbox"); };
         let row = inbox.items.iter().find(|item| item.thread == thread).expect("joined member pending requirement absent from inbox");
         let pending = row.pending_requirement.as_ref().expect("joined member pending requirement lacks revision");
@@ -393,17 +394,18 @@ fn registered_service_and_native_caller_complete_required_flow_with_exact_replay
         let recipient_claim = CallerClaim {
             instance: instance.to_string(), seat: SeatId::new("member-1"), binding_generation: 1,
             role: CallerRole::TopLevel, harness: Harness::Codex,
-            native_session: NativeSessionId::new("plugin_context:member-1"),
+            native_session: NativeSessionId::new("session-member-1"),
             execution: ExecutionId::new("00000000-0000-4000-8000-000000000112"),
-            target: HostTargetId::new("pane-member-1"),
-        };
+            target: HostTargetId::new("pane-member-1"), agent_id: None, liveness: Some(herdr_threads::protocol::authority::LivenessFingerprint::TEST), };
         let checked_recipient = std::thread::scope(|scope| scope.spawn(|| ordinary.call(Command::CheckIn(CheckIn {
+            lineage_parent: None,
             mode: CheckInMode::Lifecycle { expected_binding_generation: 1 },
             claim: recipient_claim, operation: OperationId::new("recipient-check-in"),
         }), &budget())).join().unwrap()).unwrap();
         let CommandResult::CheckedIn(checked_recipient) = checked_recipient else { panic!("missing recipient check-in") };
         let sent = std::thread::scope(|scope| scope.spawn(|| ordinary.call(Command::SendMessage(SendMessage {
         delivery_mode: herdr_threads::protocol::commands::DeliveryMode::Ordinary,
+            direct_recipient: None,
             thread: thread.clone(), body: "native system mail".into(), invited_recipients: vec![],
             deadline_millis: None, operation: OperationId::new("native-system-send"), claim: native.clone(), relays_user: false, user_intent: None,
         }), &budget())).join().unwrap()).unwrap();

@@ -371,6 +371,8 @@ fn lazy_markers_real_store_preserves_pending_delivery_and_ready_cached_summary()
         native_session: NativeSessionId::new("ns"),
         execution: ExecutionId::new("es"),
         target: HostTargetId::new("pane-s"),
+        agent_id: None,
+        liveness: None,
     };
     let req = SummaryRequest {
         thread: ThreadId::new("t"),
@@ -750,3 +752,6 @@ fn lazy_markers_manifest_warning_history_and_body_render_readonly() {
         "text reads must not mutate canonical state"
     );
 }
+
+#[path = "q5_continuation_public.rs"]
+mod q5_continuation_public;

@@ -187,11 +187,17 @@ fn harness_markers_select_agent_output_even_on_a_tty() {
     assert!(!harness_marked(env(&[])));
     assert!(!harness_marked(env(&[("CLAUDECODE", "")])));
     assert!(!harness_marked(env(&[("TERM", "xterm"), ("HOME", "/h")])));
-    for marker in HARNESS_MARKERS {
+    for marker in [
+        "CLAUDECODE",
+        "CODEX_THREAD_ID",
+        "CODEX_SANDBOX",
+        "CODEX_SANDBOX_NETWORK_DISABLED",
+    ] {
         let set: &'static [(&'static str, &'static str)] =
             Box::leak(vec![(marker, "1")].into_boxed_slice());
         assert!(harness_marked(env(set)), "{marker}");
     }
+    assert!(!harness_marked(env(&[("CODEX_HOME", "/x")])));
 }
 
 #[derive(Default)]
@@ -238,11 +244,7 @@ fn invitation_policy_compact_keeps_lazy_discoverable_and_timed_deadline_honest()
             Some(UtcMillis(7000)),
             "confirmation: acceptance required",
         ),
-        (
-            None,
-            None,
-            "confirmation: acceptance required",
-        ),
+        (None, None, "confirmation: acceptance required"),
     ] {
         let result = CommandResult::InboxBatch(Page {
             items: vec![InboxBatchItem::Invitation {
@@ -309,11 +311,15 @@ fn invitation_policy_lazy_hook_display_remains_recoverable_without_acceptance() 
             native_session: NativeSessionId::new("session"),
             execution: ExecutionId::new("execution"),
             target: HostTargetId::new("w:p"),
+            agent_id: None,
+            liveness: None,
         },
         page: Page {
             items: vec![InboxBatchV2Item::Invitation {
                 thread: ThreadId::new("thread-1"),
                 topic_data: "topic".into(),
+                goal_data: None,
+                topic_revision: None,
                 invitation: InvitationId::new("invitation-1"),
                 confirmation: Some(InvitationConfirmation::Lazy),
                 deadline_at: None,
@@ -327,6 +333,7 @@ fn invitation_policy_lazy_hook_display_remains_recoverable_without_acceptance() 
             stop_reason: StopReason::Complete,
             consistency: Consistency::BoundedLive,
         },
+        cursors: false,
     };
     let (context, completions) =
         crate::cli::hook_inbox::append(String::new(), &offer, &["herdr-threads".into()], 4096);

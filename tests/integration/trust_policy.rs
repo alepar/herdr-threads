@@ -15,7 +15,7 @@ use super::sweep::{Scratch, agent_pane, host_reply, pane};
 use herdr_threads::test_support::spawn::SpawnOwned;
 use herdr_threads::{
     cli::hook::installed_argv,
-    harness::{context::Harness, setup::plan_claude},
+    harness::{claude::setup::plan_claude, context::Harness},
 };
 use serde_json::{Value, json};
 use std::{
@@ -222,6 +222,16 @@ impl Output {
     }
 }
 
+/// The harness session running in `pane`: pane 1 is the real Claude session `SA`, whose hook
+/// registered it; the stand-in agents of the other panes each have a session of their own.
+fn session_of(pane: &str, seat: &str) -> String {
+    if pane == "w1:p1" {
+        "SA".to_owned()
+    } else {
+        format!("trust-{seat}")
+    }
+}
+
 struct World {
     root: PathBuf,
     state: PathBuf,
@@ -231,6 +241,9 @@ struct World {
     /// The reconciliation marker recorded before the latest restart, so a
     /// wait cannot be satisfied by the previous daemon's stale marker.
     stale_marker: std::cell::RefCell<Option<(String, i64)>>,
+    /// Seats whose stand-in caller runs the session their hook registered, so the caller's
+    /// commands reconnect that binding instead of enrolling a second one.
+    sessions: std::cell::RefCell<std::collections::HashMap<String, String>>,
     _scratch: Scratch,
 }
 impl World {
@@ -274,6 +287,7 @@ impl World {
             claude_hooks,
             codex_hook,
             stale_marker: std::cell::RefCell::new(None),
+            sessions: std::cell::RefCell::new(Default::default()),
             _scratch: scratch,
         };
         if let Some(delay) = wake_batch_delay_ms {
@@ -340,6 +354,19 @@ impl World {
             if key.starts_with("CODEX_") {
                 command.env_remove(key);
             }
+        }
+        // A stand-in seat is an agent: it acts as a harness session (decision 15).
+        if let Some(caller) = &caller {
+            herdr_threads::test_support::isolation::as_agent(
+                &mut command,
+                caller.harness,
+                &self
+                    .sessions
+                    .borrow()
+                    .get(caller.seat)
+                    .cloned()
+                    .unwrap_or_else(|| session_of(caller.pane, caller.seat)),
+            );
         }
         command
             .args(args)
@@ -415,7 +442,15 @@ impl World {
                 .as_str()
                 .unwrap_or_else(|| panic!("no installed Claude registration for {event}"))
         };
-        let mut child = Command::new("/bin/sh")
+        let mut shell = Command::new("/bin/sh");
+        // The installed hook runs under its harness (the test process stands in for it).
+        // The hook's process is its harness session's: the session named in the payload.
+        let session = serde_json::from_slice::<Value>(stdin)
+            .ok()
+            .and_then(|payload| payload["session_id"].as_str().map(str::to_owned))
+            .unwrap_or_else(|| "hook-session".to_owned());
+        herdr_threads::test_support::isolation::as_agent(&mut shell, harness, &session);
+        let mut child = shell
             .envs([herdr_threads::daemon::lifecycle::test_owner_env()])
             .arg("-c")
             .arg(command)
@@ -1012,9 +1047,9 @@ fn resume_on_same_pane_id_before_reconciliation_with_daemon_kept_running_reattac
 /// resumed session reattached holds a `cooperative_top_level` binding, so a
 /// person's `me init` over it is refused. Herdr reports no agent in the pane,
 /// so the refusal comes from the reattached seat itself: first from the
-/// private context the resume hook wrote, then, with that client-local hint
-/// deleted (A2: hints never authorize), from the daemon's own check of the
-/// binding. Neither refusal touches the binding; `--operator` overrides.
+/// daemon's own check of the binding (A2: client-local hints never authorize; an
+/// agent saves none). The refusal does not touch the binding; `--operator`
+/// overrides.
 #[test]
 fn me_init_over_reattached_seat_is_refused() {
     let (world, a) = reattached(
@@ -1023,15 +1058,9 @@ fn me_init_over_reattached_seat_is_refused() {
         pane("w1:p1", "term-a2"),
     );
     let before = world.open_binding(&a);
-    let by_context = world.run(Some("w1:p1"), None, &["human", "me", "init"]);
-    let text = by_context.refused("me init over a reattached agent seat");
-    assert!(text.contains("belongs to a Claude agent"), "{text}");
-    assert_eq!(world.open_binding(&a), before);
-
-    // Without the client-local context only the daemon can refuse.
-    fs::remove_dir_all(world.find("contexts").expect("hook context directory")).unwrap();
+    // An agent saves no client-local context, so only the daemon can refuse.
     let by_daemon = world.run(Some("w1:p1"), None, &["human", "me", "init"]);
-    let text = by_daemon.refused("me init with no client context");
+    let text = by_daemon.refused("me init over a reattached agent seat");
     assert!(!text.contains("belongs to a Claude agent"), "{text}");
     assert!(text.contains("never replaces an agent's binding"), "{text}");
     assert_eq!(world.open_binding(&a), before);
@@ -1381,11 +1410,14 @@ fn codex_reattachment_without_herdr_hint_then_wake() {
             world.hook("codex", pane, &session_start("codex", session, "startup"));
         assert_eq!(code, 0, "{stderr}");
     }
-    world.restart_herdr(vec![
-        pane("w1:p1", "term-a2"),
-        pane("w1:p2", "term-b2"),
-        agent_pane("w1:p3", "term-c2", "codex", None),
-    ]);
+    world.restart_herdr(vec![pane("w1:p1", "term-a2"), pane("w1:p2", "term-b2"), {
+        // Herdr's foreground process of the pane is the session's own process: the
+        // composer wake types only to the binding with that fingerprint pid.
+        let mut agent = agent_pane("w1:p3", "term-c2", "codex", None);
+        agent["foreground_pid"] =
+            json!(herdr_threads::test_support::isolation::stand_in_fingerprint("codex", "SY").pid);
+        agent
+    }]);
     world.wait_reconciled();
     for seat in [&x, &y] {
         assert_eq!(world.seat_state(seat), "unresolved");
@@ -1409,6 +1441,14 @@ fn codex_reattachment_without_herdr_hint_then_wake() {
             repairs(&world, seat).last(),
             Some(&("cooperative_continuity".into(), None, Some("absent".into())))
         );
+    }
+    // The seats' commands run the sessions their hooks registered: one binding per seat, so the
+    // composer wake has the one target to match against Herdr's foreground process.
+    for (seat, session) in [(&x, "SX"), (&y, "SY")] {
+        world
+            .sessions
+            .borrow_mut()
+            .insert(seat.clone(), session.to_owned());
     }
     // Both unresolved seats are back: the hold is lifted and a new pane resolves.
     world.wait_for("the baseline hold to lift", |world| {
@@ -1551,10 +1591,14 @@ fn pane_agent_observation_reads_the_same_in_me_init_launch_and_diagnostics() {
     assert!(!absent_me.contains("Herdr reports"), "{absent_me}");
     assert!(absent_launch.contains("missing_hook"), "{absent_launch}");
     // Error: neither guesses. `launch` fails on the read itself; `me init`
-    // treats the failed read as no evidence and is stopped by the agent seat.
+    // treats the failed read as no evidence and is stopped by the daemon's own
+    // check of the agent seat's binding.
     assert!(!error_me.contains("Herdr reports"), "{error_me}");
     assert!(!error_me.contains("scripted read error"), "{error_me}");
-    assert!(error_me.contains("belongs to a Claude agent"), "{error_me}");
+    assert!(
+        error_me.contains("never replaces an agent's binding"),
+        "{error_me}"
+    );
     assert!(
         error_launch.contains("scripted read error"),
         "{error_launch}"

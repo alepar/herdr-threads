@@ -1,0 +1,415 @@
+#!/usr/bin/env bash
+# check-harness-neutral: keep harness names out of the neutral core.
+#
+# Usage: scripts/check-harness-neutral [--root DIR] [--allowlist FILE] [--json] [--suggest]
+#
+#   --root DIR        repository root (default: the parent of this script's directory).
+#                     Every reported path is relative to it and '/'-separated.
+#   --allowlist FILE  default <root>/scripts/harness-neutral-allowlist.txt; a missing file
+#                     is an empty allowlist.
+#   --json            print one JSON object instead of the summary line (violations and
+#                     stale entries still go to stderr):
+#                     {"status":"ok"|"failed","violations":V,"stale":S,"allowlisted":A,
+#                      "allowlisted_by_category":{"to-migrate":a,"frozen-wire":b,
+#                      "history":c,"registration":d},"entries":E,"entries_by_category":{...}}
+#   --suggest         print, sorted and unique, one `<path>:<token> — to-migrate: TODO`
+#                     allowlist line per currently unallowed (path, token) pair; exit 0.
+#                     A bootstrap aid only: the lines must not be committed as printed, because
+#                     any to-migrate entry fails the check (see Allowlist).
+#
+# Exit codes: 0 pass; 1 violations, stale allowlist entries or any to-migrate entry; 2 usage or configuration
+# error (bad flag, malformed/unsorted/duplicate allowlist line, no builtins() rows).
+#
+# Human output: one line per violation, `<path>:<line>: <token>: <source line, trimmed>`;
+# one line per stale entry, `stale allowlist entry: <entry line>`; when the allowlist holds
+# N > 0 to-migrate entries, `to-migrate entries are forbidden: N`; then exactly one summary
+# line, always last on stdout:
+#   check-harness-neutral: <ok|FAILED> — <V> violations, <A> allowlisted (to-migrate a,
+#   frozen-wire b, history c, registration d), <E> entries
+# V and A count occurrences: one per (line, token) pair.
+#
+# What is scanned: every src/**/*.rs file under the root except adapter-owned files, for
+# every id in builtins(): src/harness/<id>.rs, src/harness/<id>/**, src/harness/<id>_*.rs;
+# and src/test_support/** (test-only crate surface). tests/ is outside src/ and never
+# scanned. Builtin ids come from the `Registration::new(&crate::harness::<id>::` rows of
+# src/harness/registry.rs.
+#
+# Harness names: every builtin id, the planned id `agy` (always present, so agy naming
+# leaks into core even before its registry row lands) and its aliases. The alias table
+# below exists because the agy adapter wraps Google Antigravity (whose CLI and config
+# dir are branded `antigravity` / `gemini`), and those spellings leak just as `agy` does.
+#
+# Matching rule: comments are removed and test-only code is skipped (below); each remaining
+# line is split into word tokens (maximal [A-Za-z0-9_] runs; tokens inside string literals
+# count: help text and SQL are sites). A token is split into components on `_` and on case
+# boundaries (before an uppercase letter that follows a lowercase letter or digit, and
+# before the last uppercase of an uppercase run followed by a lowercase letter). A token
+# names a harness when any lower-cased component equals a name: `"claude"`, `Harness::Codex`,
+# `harness_claude`, `ClaudeContract`, `CLAUDE_CONFIG_DIR`, `NotClaude`, `~/.gemini`; not
+# `strategy`, `legacy`, `claudette`, `Agyle`.
+#
+# Lexer (POSIX awk, runs on one-true-awk and gawk/mawk): keeps state across lines: normal,
+# "…" string (\ escapes, b"…"), raw string r#*"…"#*, nested /* */ comment. `//` starts a
+# comment only in the normal state. `'x'`, `'\x'`, `'\u{…}'` are char literals, other `'`
+# are lifetimes. Test-only attributes (`#[cfg(test)]`, `#[cfg(feature = "test-support")]`,
+# `#[cfg(any(test, feature = "test-support"))]`, `#[cfg(all(test…`) arm a skip; attribute
+# and blank lines keep it armed; the next item is skipped whole: through its balanced
+# braces if it opens a brace before a `;` at depth 0, else through that `;`. A `}` that
+# closes an enclosing scope also ends the skip. `#[cfg(not(test))]` does not arm a skip.
+#
+# Allowlist (scripts/harness-neutral-allowlist.txt): `#` lines and blank lines only in a
+# header block before the first entry. Entry: `<path>:<pattern> — <category>: <text>`
+# (separator: space, U+2014, space; the first one after the first `:`), category one of
+# to-migrate, frozen-wire, history, registration; text non-empty. The pattern is a fixed
+# string: a match (path P, line L, token T) is allowed by an entry for P when the pattern
+# occurs in L (comments removed) and contains T. A match is counted once, under the first
+# covering entry in file order. An entry covering no match is stale (exit 1). Entries must
+# be sorted (byte order) and unique, else exit 2 naming the first offending line.
+# Policy: only frozen-wire, history and registration entries may be committed. to-migrate
+# stays a recognised category so a stray entry fails with a clear message (exit 1) instead of
+# a malformed-line error, but any to-migrate entry is a hard failure.
+
+set -euo pipefail
+export LC_ALL=C
+
+# agy aliases (see header): comma-separated `id:alias+alias`.
+ALIASES="agy:antigravity+gemini"
+PLANNED_IDS="agy"
+
+root=""
+allowlist=""
+mode="human"
+while [ $# -gt 0 ]; do
+    case "$1" in
+    --root)
+        [ $# -ge 2 ] || { echo "check-harness-neutral: --root needs a value" >&2; exit 2; }
+        root="$2"; shift 2 ;;
+    --allowlist)
+        [ $# -ge 2 ] || { echo "check-harness-neutral: --allowlist needs a value" >&2; exit 2; }
+        allowlist="$2"; shift 2 ;;
+    --json) mode="json"; shift ;;
+    --suggest) mode="suggest"; shift ;;
+    -h | --help) sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "check-harness-neutral: unknown argument: $1" >&2; exit 2 ;;
+    esac
+done
+[ -n "$root" ] || root="$(cd "$(dirname "$0")/.." && pwd)"
+[ -n "$allowlist" ] || allowlist="$root/scripts/harness-neutral-allowlist.txt"
+
+registry="$root/src/harness/registry.rs"
+ids=""
+if [ -f "$registry" ]; then
+    ids="$(sed -n 's/.*Registration::new(&crate::harness::\([a-z0-9_][a-z0-9_]*\)::.*/\1/p' "$registry" | sort -u | tr '\n' ' ')"
+fi
+if [ -z "$ids" ]; then
+    echo "check-harness-neutral: no builtins() rows found in src/harness/registry.rs" >&2
+    echo "check-harness-neutral: no builtins() rows found in src/harness/registry.rs"
+    exit 2
+fi
+
+names=" "
+for id in $ids $PLANNED_IDS; do
+    case "$names" in *" $id "*) ;; *) names="$names$id " ;; esac
+done
+for pair in $(printf '%s' "$ALIASES" | tr ',' ' '); do
+    for alias in $(printf '%s' "${pair#*:}" | tr '+' ' '); do
+        case "$names" in *" $alias "*) ;; *) names="$names$alias " ;; esac
+    done
+done
+names="${names# }"; names="${names% }"
+
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/check-harness-neutral.XXXXXX")"
+trap 'rm -rf "$tmp"' EXIT
+
+# ---------------------------------------------------------------- allowlist
+cat >"$tmp/validate.awk" <<'AWK'
+function fail(msg) {
+    printf "check-harness-neutral: %s:%d: %s\n", file, NR, msg > "/dev/stderr"
+    bad = 1
+    exit 2
+}
+function trim(s) { sub(/^[ ]+/, "", s); sub(/[ ]+$/, "", s); return s }
+BEGIN {
+    dash = " \342\200\224 "
+    cats = " to-migrate frozen-wire history registration "
+}
+{
+    line = $0
+    if (line ~ /^#/ || line ~ /^[ ]*$/) {
+        if (seen) fail("comment or blank line after the first entry (header block only)")
+        next
+    }
+    seen = 1
+    c = index(line, ":")
+    if (c < 2) fail("entry needs `<path>:<pattern>" dash "<category>: <text>`: " line)
+    path = substr(line, 1, c - 1)
+    rest = substr(line, c + 1)
+    d = index(rest, dash)
+    if (d == 0) fail("entry has no ` \342\200\224 ` separator: " line)
+    pattern = substr(rest, 1, d - 1)
+    if (pattern == "") fail("entry has an empty pattern: " line)
+    after = substr(rest, d + length(dash))
+    k = index(after, ":")
+    if (k == 0) fail("entry has no `<category>: <text>`: " line)
+    cat = substr(after, 1, k - 1)
+    if (index(cats, " " cat " ") == 0 || cat == "") fail("unknown category `" cat "`: " line)
+    text = trim(substr(after, k + 1))
+    if (text == "") fail("entry has an empty text: " line)
+    if (index(pattern, "\t") || index(path, "\t")) fail("entry contains a tab: " line)
+    if (n > 0) {
+        if (line == prev) fail("duplicate entry: " line)
+        if (line < prev) fail("entry out of order (entries must be sorted): " line)
+    }
+    prev = line
+    n++
+    printf "E\t%s\t%s\t%s\t%s\n", path, pattern, cat, line
+}
+AWK
+
+: >"$tmp/entries"
+if [ -f "$allowlist" ]; then
+    awk -v file="$allowlist" -f "$tmp/validate.awk" "$allowlist" >"$tmp/entries" || exit 2
+fi
+
+# ---------------------------------------------------------------- files
+files="$tmp/files"
+(cd "$root" && { [ -d src ] && find src -type f -name '*.rs' || true; } | sort) >"$tmp/all"
+: >"$files"
+while IFS= read -r f; do
+    case "$f" in src/test_support/*) continue ;; esac
+    skip=0
+    for id in $ids; do
+        case "$f" in
+        "src/harness/$id.rs" | "src/harness/$id/"*) skip=1; break ;;
+        "src/harness/${id}_"*.rs)
+            rest="${f#src/harness/}"
+            case "$rest" in */*) ;; *) skip=1; break ;; esac ;;
+        esac
+    done
+    [ "$skip" = 1 ] || printf '%s\n' "$f" >>"$files"
+done <"$tmp/all"
+
+# ---------------------------------------------------------------- lexer
+cat >"$tmp/lex.awk" <<'AWK'
+function isid(c) { return c ~ /[A-Za-z0-9_]/ }
+function trim(s) { sub(/^[ ]+/, "", s); sub(/[ ]+$/, "", s); return s }
+function emit(x) { if (skip != 2) out = out x }
+
+# Does the token name a harness (any component equals a name)?
+function names_harness(tok,    i, n, c, p, comp, b) {
+    if (!match(tolower(tok), namere)) return 0
+    n = length(tok); comp = ""
+    for (i = 1; i <= n; i++) {
+        c = substr(tok, i, 1)
+        if (c == "_") {
+            if (comp != "" && (tolower(comp) in name)) return 1
+            comp = ""
+            continue
+        }
+        b = 0
+        if (comp != "" && c ~ /[A-Z]/) {
+            p = substr(tok, i - 1, 1)
+            if (p ~ /[a-z0-9]/) b = 1
+            else if (p ~ /[A-Z]/ && substr(tok, i + 1, 1) ~ /[a-z]/) b = 1
+        }
+        if (b) {
+            if (tolower(comp) in name) return 1
+            comp = ""
+        }
+        comp = comp c
+    }
+    return (comp != "" && (tolower(comp) in name))
+}
+
+function scan(clean, raw,    rest, tok) {
+    if (!match(tolower(clean), namere)) return
+    split("", seen)
+    rest = clean
+    while (match(rest, /[A-Za-z0-9_]+/)) {
+        tok = substr(rest, RSTART, RLENGTH)
+        rest = substr(rest, RSTART + RLENGTH)
+        if (!(tok in seen) && names_harness(tok)) {
+            seen[tok] = 1
+            printf "R\t%s\t%d\t%s\t%s\t%s\n", FILENAME, FNR, tok, trim(clean), trim(raw)
+        }
+    }
+}
+
+function lex(s,    i, n, c, c2, j, k, h, p) {
+    n = length(s); i = 1; out = ""
+    while (i <= n) {
+        c = substr(s, i, 1)
+        if (mode == 3) {
+            c2 = substr(s, i, 2)
+            if (c2 == "/*") { bd++; i += 2 }
+            else if (c2 == "*/") { bd--; i += 2; if (bd == 0) mode = 0 }
+            else i++
+            continue
+        }
+        if (mode == 1) {
+            if (c == "\\") { emit(substr(s, i, 2)); i += 2 }
+            else { if (c == "\"") mode = 0; emit(c); i++ }
+            continue
+        }
+        if (mode == 2) {
+            if (c == "\"" && substr(s, i + 1, rawh) == hashes) { emit(c hashes); i += 1 + rawh; mode = 0 }
+            else { emit(c); i++ }
+            continue
+        }
+        # normal state
+        if (c == "\"") { mode = 1; emit(c); i++; continue }
+        if ((c == "r" || c == "b") && (i == 1 || !isid(substr(s, i - 1, 1)))) {
+            j = i
+            if (c == "b" && substr(s, i + 1, 1) == "r") j = i + 1
+            if (substr(s, j, 1) == "r") {
+                k = j + 1
+                while (substr(s, k, 1) == "#") k++
+                if (substr(s, k, 1) == "\"") {
+                    rawh = k - j - 1
+                    hashes = substr("##########################", 1, rawh)
+                    mode = 2
+                    emit(substr(s, i, k - i + 1))
+                    i = k + 1
+                    continue
+                }
+            }
+            emit(c); i++
+            continue
+        }
+        if (c == "/") {
+            c2 = substr(s, i + 1, 1)
+            if (c2 == "/") break
+            if (c2 == "*") { mode = 3; bd = 1; emit(" "); i += 2; continue }
+            emit(c); i++
+            continue
+        }
+        if (c == "'") {
+            c2 = substr(s, i + 1, 1)
+            if (c2 == "\\") {
+                k = index(substr(s, i + 3), "'")
+                if (k > 0) { emit(substr(s, i, k + 3)); i += k + 3; continue }
+            } else if (c2 != "'" && c2 != "" && substr(s, i + 2, 1) == "'") {
+                emit(substr(s, i, 3)); i += 3; continue
+            } else if (c2 >= "\200") {
+                k = index(substr(s, i + 2, 4), "'")
+                if (k > 0) { emit(substr(s, i, k + 2)); i += k + 2; continue }
+            }
+            emit(c); i++
+            continue
+        }
+        if (skip == 2) {
+            if (c == "{") { sd++; sbraced = 1 }
+            else if (c == "}") {
+                sd--
+                if (sd < 0) { skip = 0; emit(c) }
+                else if (sd == 0 && sbraced) skip = 0
+                i++
+                continue
+            }
+            else if (c == "(" || c == "[") pd++
+            else if (c == ")" || c == "]") { if (pd > 0) pd-- }
+            else if (c == ";" && sd == 0 && pd == 0 && !sbraced) { skip = 0; i++; continue }
+        }
+        emit(c); i++
+    }
+}
+
+BEGIN {
+    nn = split(names, nm, " ")
+    namere = ""
+    for (i = 1; i <= nn; i++) { name[nm[i]] = 1; namere = namere (i > 1 ? "|" : "") nm[i] }
+}
+FNR == 1 { mode = 0; bd = 0; skip = 0; sd = 0; pd = 0; sbraced = 0; rawh = 0; hashes = "" }
+{
+    line = $0
+    gsub(/\t/, " ", line)
+    t = line
+    if (skip == 1) {
+        # armed: attribute, blank and comment-only lines keep the skip armed
+        sub(/^[ ]+/, "", t)
+        if (t == "" || substr(t, 1, 2) == "//" || substr(t, 1, 2) == "#[") next
+        skip = 2; sd = 0; pd = 0; sbraced = 0
+    } else if (mode == 0 && skip == 0) {
+        if (index(line, "\"") == 0 && index(line, "/*") == 0 && index(line, "#[cfg") == 0 \
+            && !match(tolower(line), namere)) next
+    }
+    startskip = skip
+    lex(line)
+    if (startskip == 0 && mode == 0 && skip == 0) {
+        t = trim(out)
+        if (t == "#[cfg(test)]" || t == "#[cfg(feature = \"test-support\")]" \
+            || t == "#[cfg(any(test, feature = \"test-support\"))]" \
+            || substr(t, 1, 14) == "#[cfg(all(test") { skip = 1; next }
+    }
+    if (out != "") scan(out, line)
+}
+AWK
+
+# ---------------------------------------------------------------- apply
+cat >"$tmp/apply.awk" <<'AWK'
+function cat_count(arr,    s) {
+    return "to-migrate " arr["to-migrate"] ", frozen-wire " arr["frozen-wire"] ", history " arr["history"] ", registration " arr["registration"]
+}
+function json_cats(arr) {
+    return "{\"to-migrate\":" arr["to-migrate"] ",\"frozen-wire\":" arr["frozen-wire"] ",\"history\":" arr["history"] ",\"registration\":" arr["registration"] "}"
+}
+BEGIN {
+    FS = "\t"
+    ncat = split("to-migrate frozen-wire history registration", cats, " ")
+    for (i = 1; i <= ncat; i++) { allowed[cats[i]] = 0; ecount[cats[i]] = 0 }
+    errout = (mode == "json") ? "/dev/stderr" : "/dev/stdout"
+}
+$1 == "E" {
+    ne++
+    epat[ne] = $3; ecat[ne] = $4; eline[ne] = $5
+    byp[$2] = byp[$2] " " ne
+    ecount[$4]++
+    next
+}
+$1 == "R" {
+    path = $2; tok = $4; clean = $5
+    first = ""
+    m = split(byp[path], ids, " ")
+    for (q = 1; q <= m; q++) {
+        id = ids[q]
+        if (index(epat[id], tok) && index(clean, epat[id])) {
+            used[id] = 1
+            if (first == "") first = ecat[id]
+        }
+    }
+    if (first != "") { allowed[first]++; nallowed++ }
+    else {
+        nviol++
+        if (mode == "suggest") print path ":" tok " \342\200\224 to-migrate: TODO"
+        else print path ":" $3 ": " tok ": " $6 > errout
+    }
+}
+END {
+    if (mode == "suggest") exit 0
+    for (id = 1; id <= ne; id++) if (!(id in used)) { nstale++; print "stale allowlist entry: " eline[id] > errout }
+    if (ecount["to-migrate"] > 0) print "to-migrate entries are forbidden: " ecount["to-migrate"] > errout
+    failed = (nviol > 0 || nstale > 0 || ecount["to-migrate"] > 0)
+    if (mode == "json") {
+        printf "{\"status\":\"%s\",\"violations\":%d,\"stale\":%d,\"allowlisted\":%d,\"allowlisted_by_category\":%s,\"entries\":%d,\"entries_by_category\":%s}\n", \
+            (failed ? "failed" : "ok"), nviol, nstale, nallowed, json_cats(allowed), ne, json_cats(ecount)
+    } else {
+        printf "check-harness-neutral: %s \342\200\224 %d violations, %d allowlisted (%s), %d entries\n", \
+            (failed ? "FAILED" : "ok"), nviol, nallowed, cat_count(allowed), ne
+    }
+    exit (failed ? 1 : 0)
+}
+AWK
+
+: >"$tmp/records"
+if [ -s "$files" ]; then
+    # shellcheck disable=SC2046
+    (cd "$root" && awk -v names="$names" -f "$tmp/lex.awk" $(cat "$files")) >"$tmp/records"
+fi
+
+rc=0
+if [ "$mode" = suggest ]; then
+    cat "$tmp/entries" "$tmp/records" | awk -v mode=suggest -f "$tmp/apply.awk" | sort -u
+    exit 0
+fi
+cat "$tmp/entries" "$tmp/records" | awk -v mode="$mode" -f "$tmp/apply.awk" || rc=$?
+exit "$rc"

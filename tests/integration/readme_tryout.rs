@@ -100,6 +100,13 @@ impl GuardedHost {
                         argv.extend(args.iter().cloned());
                         json!({"id":request["id"],"result":{"type":"agent_started","argv":argv,"agent":target}})
                     }
+                } else if request["method"] == "pane.process_info" {
+                    // The started agent: the one foreground process besides the shell. This
+                    // stand-in has no real agent process, so the test process stands for it.
+                    json!({"id":request["id"],"result":{"type":"pane_process_info","process_info":{
+                        "pane_id":request["params"]["pane_id"],"shell_pid":1,
+                        "foreground_processes":[{"pid":std::process::id(),"name":"agent","argv0":"agent"}]
+                    }}})
                 } else {
                     host_reply(&panes, &request)
                 };
@@ -188,6 +195,11 @@ impl World {
             .env("HERDR_PANE_ID", actor.map_or("w1:p1", |(_, pane, _)| pane))
             .env("NO_COLOR", "1");
         if let Some((seat, pane, kind)) = actor {
+            herdr_threads::test_support::isolation::as_agent(
+                &mut cmd,
+                kind,
+                &format!("tryout-{}", seat),
+            );
             cmd.args([
                 "--cooperative-seat",
                 seat,

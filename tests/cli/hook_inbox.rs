@@ -15,6 +15,8 @@ fn claim() -> CallerClaim {
         native_session: NativeSessionId::new("n"),
         execution: ExecutionId::new("00000000-0000-4000-8000-0000000000aa"),
         target: HostTargetId::new("w1:p1"),
+        agent_id: None,
+        liveness: None,
     }
 }
 fn lazy(id: &str, body: &str) -> InboxBatchV2Item {
@@ -32,6 +34,7 @@ fn lazy(id: &str, body: &str) -> InboxBatchV2Item {
         body_start: 0,
         body_end: body.len() as u64,
         body_len: body.len() as u64,
+        wakes: false,
     }
 }
 fn ordinary(id: &str, body: &str, ack: bool) -> InboxBatchV2Item {
@@ -65,6 +68,7 @@ fn page_offer(items: Vec<InboxBatchV2Item>, has_more: bool) -> InboxOffer {
             consistency: Consistency::BoundedLive,
         },
         claim: claim(),
+        cursors: false,
     }
 }
 fn prefix() -> Vec<String> {
@@ -216,4 +220,414 @@ fn quote_dense_page_stays_inside_the_escaped_envelope() {
         vec![MessageId::new("m1")],
         "the dense body is withheld"
     );
+}
+
+// --- Per-binding inbox (ht-54r.7): the claim travels with the read and the cursors move only
+// --- after the page was delivered.
+
+struct StepClock;
+impl Clock for StepClock {
+    fn utc_now(&self) -> crate::protocol::time::UtcMillis {
+        crate::protocol::time::UtcMillis(1)
+    }
+    fn monotonic_now(&self) -> crate::protocol::time::MonoInstant {
+        crate::protocol::time::MonoInstant(1)
+    }
+}
+
+/// A daemon that serves `page` and records every command it receives.
+struct Recording {
+    capabilities: Vec<&'static str>,
+    page: Page<InboxBatchV2Item>,
+    calls: std::sync::Mutex<Vec<Command>>,
+}
+impl Recording {
+    fn new(capabilities: &[&'static str], items: Vec<InboxBatchV2Item>) -> Self {
+        Self {
+            capabilities: capabilities.to_vec(),
+            page: page_offer(items, false).page,
+            calls: Default::default(),
+        }
+    }
+    fn calls(&self) -> Vec<Command> {
+        self.calls.lock().unwrap().clone()
+    }
+}
+impl LocalClient for Recording {
+    fn supports_capability(&self, name: &str, _: &CallBudget) -> bool {
+        self.capabilities.contains(&name)
+    }
+    fn call(&self, command: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
+        self.calls.lock().unwrap().push(command.clone());
+        match command {
+            Command::AdvanceCursors(advance) => {
+                Ok(CommandResult::CursorsAdvanced(advance.displayed))
+            }
+            Command::CompleteInboxDelivery(done) => {
+                Ok(CommandResult::InboxDeliveryCompleted(done.messages))
+            }
+            other => panic!("unexpected call {other:?}"),
+        }
+    }
+    fn call_with_output(
+        &self,
+        command: Command,
+        _: &OutputSpec,
+        _: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        self.calls.lock().unwrap().push(command);
+        Ok(CommandResult::InboxBatchV2(self.page.clone()))
+    }
+}
+const CAPS: &[&str] = &[
+    crate::protocol::capabilities::INBOX_BATCH_V2,
+    crate::protocol::capabilities::LAZY_HOOK_DELIVERY,
+    crate::protocol::capabilities::BINDING_CURSORS,
+];
+fn far_budget() -> CallBudget {
+    CallBudget {
+        deadline: crate::protocol::time::MonoInstant(u64::MAX),
+        cancellation: Default::default(),
+    }
+}
+fn commit(offer: &InboxOffer, lazy: Vec<MessageId>, displayed: Vec<MessageId>) -> LazyCommit {
+    LazyCommit {
+        link: CompletionLink {
+            endpoint: PathBuf::from("/unused"),
+            instance: uuid::Uuid::nil(),
+            boot: None,
+            clock: Arc::new(StepClock),
+        },
+        claim: offer.claim.clone(),
+        messages: lazy,
+        displayed,
+        cursors: offer.cursors,
+        deadline: Instant::now() + std::time::Duration::from_secs(5),
+    }
+}
+
+// Kills: reading the seat's page instead of the binding's (no claim in the query), advancing
+// before the output was delivered or after the lazy completion, ACKing from a hook, and
+// advancing on a daemon without per-binding cursors.
+#[test]
+fn inbox_sends_claim_and_advances_after_full_flush() {
+    let items = vec![lazy("m1", "quiet"), ordinary("m2", "needs receipt", true)];
+    let daemon = Recording::new(CAPS, items);
+    let offer = read_page(&daemon, claim(), &far_budget()).expect("a page");
+    assert!(offer.cursors);
+    let Command::InboxBatchV2(query) = &daemon.calls()[0] else {
+        panic!("first call reads the page")
+    };
+    assert_eq!(
+        query.claim.as_ref(),
+        Some(&claim()),
+        "the read names its binding"
+    );
+    let (_, lazy_ids, displayed) = append_shown(String::new(), &offer, &prefix(), 4096);
+    assert_eq!(displayed, vec![MessageId::new("m1"), MessageId::new("m2")]);
+    // Nothing moved while the hook was still composing its output.
+    assert_eq!(daemon.calls().len(), 1);
+    commit(&offer, lazy_ids, displayed).submit(&daemon).unwrap();
+    let calls = daemon.calls();
+    let Command::AdvanceCursors(advance) = &calls[1] else {
+        panic!("cursors advance first: {calls:?}")
+    };
+    assert_eq!(advance.claim, claim());
+    assert_eq!(
+        advance.displayed,
+        vec![MessageId::new("m1"), MessageId::new("m2")]
+    );
+    assert!(
+        matches!(&calls[2], Command::CompleteInboxDelivery(done) if done.messages == vec![MessageId::new("m1")]),
+        "{calls:?}"
+    );
+    assert_eq!(calls.len(), 3, "a hook never ACKs: {calls:?}");
+
+    // A daemon without per-binding cursors gets the seat read and no cursor command.
+    let old = Recording::new(&CAPS[..2], vec![lazy("m1", "quiet")]);
+    let offer = read_page(&old, claim(), &far_budget()).expect("a page");
+    assert!(!offer.cursors);
+    let Command::InboxBatchV2(query) = &old.calls()[0] else {
+        panic!("read")
+    };
+    assert_eq!(query.claim, None);
+    let (_, lazy_ids, displayed) = append_shown(String::new(), &offer, &prefix(), 4096);
+    commit(&offer, lazy_ids, displayed).submit(&old).unwrap();
+    assert!(
+        !old.calls()
+            .iter()
+            .any(|c| matches!(c, Command::AdvanceCursors(_)))
+    );
+}
+
+// Kills: advancing over a message the output withheld (it would never be shown again).
+#[test]
+fn truncated_page_advances_only_what_was_displayed() {
+    let big = "x".repeat(3000);
+    let offer = page_offer(
+        vec![
+            ordinary("m1", "first", false),
+            ordinary("m2", &big, false),
+            ordinary("m3", "after the big one", false),
+        ],
+        false,
+    );
+    let (context, _, displayed) = append_shown("c".repeat(500), &offer, &prefix(), 3000);
+    assert!(context.len() <= 3000);
+    assert_eq!(
+        displayed,
+        vec![MessageId::new("m1")],
+        "the big message and everything after it stay unread"
+    );
+    let daemon = Recording::new(CAPS, vec![]);
+    let mut offer = offer;
+    offer.cursors = true;
+    commit(&offer, vec![], displayed).submit(&daemon).unwrap();
+    let calls = daemon.calls();
+    assert!(
+        matches!(&calls[..], [Command::AdvanceCursors(a)] if a.displayed == vec![MessageId::new("m1")]),
+        "{calls:?}"
+    );
+}
+
+// Kills: a subagent display ACKing or completing anything (it is refused anyway), and a
+// subagent display that does not move its own cursors.
+#[test]
+fn subagent_inbox_never_sends_ack_displayed() {
+    use crate::cli::lazy_display::{DisplaySelection, settle, write_page};
+    use crate::protocol::output::{ContinuationContext, OutputFormat};
+    let iso = crate::test_support::isolation::TestIsolation::new("subagent-inbox");
+    let journal = crate::cli::journal::Journal::open(iso.path("intents")).unwrap();
+    let spec = OutputSpec {
+        format: OutputFormat::Text,
+        context: ContinuationContext::default(),
+    };
+    let result = CommandResult::InboxBatchV2(
+        page_offer(
+            vec![ordinary("m1", "needs receipt", true), lazy("m2", "quiet")],
+            false,
+        )
+        .page,
+    );
+    let run = |claim: &CallerClaim| {
+        let candidates = write_page(
+            &result,
+            &spec,
+            10_000,
+            &mut Vec::new(),
+            &journal,
+            claim,
+            DisplaySelection::OwnDefaultText,
+        )
+        .unwrap();
+        let sent = std::sync::Mutex::new(Vec::new());
+        let displayed = candidates.displayed.clone();
+        settle(
+            candidates,
+            &journal,
+            1,
+            |command| {
+                sent.lock().unwrap().push(command);
+                Ok(CommandResult::InboxDeliveryCompleted(vec![]))
+            },
+            &spec,
+        )
+        .ok();
+        (displayed, sent.into_inner().unwrap())
+    };
+    let mut child = claim();
+    child.role = CallerRole::Subagent;
+    child.agent_id = Some(crate::protocol::ids::AgentId::new("ag"));
+    let (displayed, sent) = run(&child);
+    assert_eq!(
+        displayed,
+        vec![MessageId::new("m1"), MessageId::new("m2")],
+        "the subagent displayed both"
+    );
+    assert!(sent.is_empty(), "no settlement from a subagent: {sent:?}");
+    // The same page for the top-level parent still settles.
+    let (_, sent) = run(&claim());
+    assert!(
+        sent.iter().any(|c| matches!(c, Command::AckDisplayed(_))),
+        "{sent:?}"
+    );
+}
+
+// --- First-contact stats on the CLI inbox (ht-54r.8).
+
+/// A daemon that has not enrolled the reader's session yet: its first inbox read carries the
+/// history stats, and the `AdvanceCursors` that follows the display enrolls the binding, after
+/// which the page has none.
+struct Unenrolled {
+    enrolled: std::sync::atomic::AtomicBool,
+    calls: std::sync::Mutex<Vec<Command>>,
+}
+impl Unenrolled {
+    fn page(&self) -> CommandResult {
+        let first_contact = crate::protocol::results::FirstContact {
+            threads: vec![crate::protocol::results::ThreadHistory {
+                thread: ThreadId::new("t1"),
+                name: Some("proj".into()),
+                earlier: 7,
+                from_people: 3,
+                open_requests: 1,
+                last_at: crate::protocol::time::UtcMillis(0),
+            }],
+            more: 2,
+        };
+        let items = if self.enrolled.load(std::sync::atomic::Ordering::SeqCst) {
+            vec![]
+        } else {
+            vec![InboxBatchV2Item::FirstContact(first_contact)]
+        };
+        CommandResult::InboxBatchV2(page_offer(items, false).page)
+    }
+}
+impl LocalClient for Unenrolled {
+    fn call(&self, command: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
+        self.calls.lock().unwrap().push(command.clone());
+        match command {
+            Command::Capabilities => Ok(CommandResult::Capabilities(
+                crate::protocol::results::CapabilityList {
+                    capabilities: CAPS.iter().map(|name| (*name).to_owned()).collect(),
+                },
+            )),
+            Command::AdvanceCursors(advance) => {
+                self.enrolled
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok(CommandResult::CursorsAdvanced(advance.displayed))
+            }
+            Command::InboxBatchV2(_) => Ok(self.page()),
+            other => panic!("unexpected call {other:?}"),
+        }
+    }
+    fn call_with_output(
+        &self,
+        command: Command,
+        _: &OutputSpec,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        self.call(command, budget)
+    }
+}
+
+// Kills: first-contact lines missing from the CLI inbox, shown on every call (nothing enrolled
+// the session: the advance after a page with no messages was skipped), or shown to a machine
+// reader that must not enroll.
+#[test]
+fn cli_inbox_prints_first_contact_once() {
+    use crate::harness::context::{
+        ContextJournal, Harness as ContextHarness, OccupantContext, Role, SessionReference,
+    };
+    use crate::protocol::output::{ContinuationContext, OutputFormat};
+    use std::os::unix::fs::DirBuilderExt;
+    struct Root(PathBuf);
+    impl Drop for Root {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let root = Root(PathBuf::from(format!(
+        "{}/fc-{}",
+        crate::test_support::SHORT_TMP,
+        &uuid::Uuid::new_v4().simple().to_string()[..10]
+    )));
+    let private = |name: &str| {
+        let path = root.0.join(name);
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .recursive(true)
+            .create(&path)
+            .unwrap();
+        path
+    };
+    let directory = private("contexts");
+    let context = OccupantContext {
+        format_version: 1,
+        instance: uuid::Uuid::from_u128(1),
+        seat: "seat-1".into(),
+        target: "pane-1".into(),
+        harness: ContextHarness::Codex,
+        binding_generation: 7,
+        execution: uuid::Uuid::from_u128(2),
+        session: SessionReference::Native("fresh-session".into()),
+        role: Role::TopLevel,
+    };
+    let contexts = ContextJournal::open(
+        &directory,
+        context.instance,
+        &context.seat,
+        std::time::Duration::from_secs(1),
+    )
+    .unwrap();
+    contexts.install_reattached(context).unwrap();
+    let journal = crate::cli::journal::Journal::open(private("intents")).unwrap();
+    let text = OutputSpec {
+        format: OutputFormat::Text,
+        context: ContinuationContext::default(),
+    };
+    let query = InboxQuery {
+        seat: None,
+        page: PageRequest::default(),
+        claim: None,
+    };
+    let daemon = Unenrolled {
+        enrolled: Default::default(),
+        calls: Default::default(),
+    };
+    let show = |daemon: &Unenrolled, spec: &OutputSpec| {
+        let mut out = Vec::new();
+        crate::cli::run_display_inbox(
+            &query,
+            spec,
+            &journal,
+            &contexts,
+            daemon,
+            &StepClock,
+            &mut out,
+            crate::harness::context::Role::TopLevel,
+        )
+        .unwrap();
+        String::from_utf8(out).unwrap()
+    };
+    // A machine read shows the history in its data and enrolls nothing.
+    let json = OutputSpec {
+        format: OutputFormat::Json,
+        context: ContinuationContext::default(),
+    };
+    assert!(show(&daemon, &json).contains("\"first_contact\""));
+    assert!(
+        !daemon
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|c| matches!(c, Command::AdvanceCursors(_))),
+        "a read-only view never enrolls"
+    );
+    // The first text read prints the lines once and enrolls the session.
+    let first = show(&daemon, &text);
+    assert_eq!(
+        first
+            .matches("first contact: #proj (t1): 7 earlier messages, 3 from people (1 open requests), last ")
+            .count(),
+        1,
+        "{first}"
+    );
+    assert!(first.contains("— herdr-threads summary t1"), "{first}");
+    assert!(
+        first.contains("first contact: +2 more threads (herdr-threads thread list --joined)"),
+        "{first}"
+    );
+    let advances = daemon
+        .calls
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|c| matches!(c, Command::AdvanceCursors(a) if a.displayed.is_empty()))
+        .count();
+    assert_eq!(advances, 1, "one enrolling advance after the display");
+    // The second read has none.
+    let second = show(&daemon, &text);
+    assert!(!second.contains("first contact"), "{second}");
 }

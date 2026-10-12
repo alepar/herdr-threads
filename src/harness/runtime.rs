@@ -2,6 +2,10 @@
 use super::recipe::Version;
 use serde::{Deserialize, Deserializer, Serialize};
 use sha2::{Digest, Sha256};
+use std::{
+    os::unix::fs::MetadataExt,
+    path::{Path, PathBuf},
+};
 
 pub const MAX_DISTANCE: u64 = u32::MAX as u64;
 
@@ -180,6 +184,44 @@ impl RuntimeIdentity {
     pub fn release(&self) -> Option<&str> {
         self.validate().ok()?;
         self.key.strip_prefix("release:")
+    }
+}
+
+/// Identity of a binary file: canonical path and metadata. It keys the
+/// fingerprint cache, and lets a caller check that the binary it ran is the
+/// binary that was fingerprinted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BinaryIdentity {
+    pub(crate) path: PathBuf,
+    pub(crate) dev: u64,
+    pub(crate) ino: u64,
+    pub(crate) size: u64,
+    pub(crate) mtime_ns: i128,
+    pub(crate) ctime_ns: i128,
+}
+
+impl BinaryIdentity {
+    /// The canonical path the identity names.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// The identity of the file `path` resolves to, if it is a regular file.
+    pub fn observe(path: &Path) -> Option<Self> {
+        let canonical = std::fs::canonicalize(path).ok()?;
+        let meta = std::fs::metadata(&canonical).ok()?;
+        meta.is_file().then(|| Self::of(&canonical, &meta))
+    }
+
+    pub(crate) fn of(path: &Path, meta: &std::fs::Metadata) -> Self {
+        Self {
+            path: path.to_owned(),
+            dev: meta.dev(),
+            ino: meta.ino(),
+            size: meta.len(),
+            mtime_ns: i128::from(meta.mtime()) * 1_000_000_000 + i128::from(meta.mtime_nsec()),
+            ctime_ns: i128::from(meta.ctime()) * 1_000_000_000 + i128::from(meta.ctime_nsec()),
+        }
     }
 }
 

@@ -12,24 +12,20 @@
 //! `harness/` is a 0700 directory the hook creates under an existing, owned
 //! state root; it never creates the state root itself. Everything here is best
 //! effort: a failure leaves the hook on its in-process cache and never blocks.
-use super::codex::{InstalledAdmission, OPTIMISTIC_LABEL, SCHEMA_MATCHED_LABEL};
+use super::codex::InstalledAdmission;
+use super::recipe::{OPTIMISTIC_LABEL, SCHEMA_MATCHED_LABEL};
 use std::{
     io::{self, Write},
     os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
 };
 
-/// Private subdirectory of the state root.
-pub const DIR: &str = "harness";
+pub use super::evidence::{DIR, dir, existing, prepare};
+
 const CACHE_FILE: &str = "codex-schema-cache.json";
 const ADMISSION_FILE: &str = "codex-hook-admission.json";
 /// Stored admission record bound (one evidence line plus a path).
 const MAX_RECORD: u64 = 8 << 10;
-
-/// `<state>/harness`.
-pub fn dir(state_dir: &Path) -> PathBuf {
-    state_dir.join(DIR)
-}
 
 /// `<state>/harness/codex-schema-cache.json`.
 pub fn cache_path(private_dir: &Path) -> PathBuf {
@@ -39,23 +35,6 @@ pub fn cache_path(private_dir: &Path) -> PathBuf {
 /// `<state>/harness/codex-hook-admission.json`.
 pub fn admission_path(private_dir: &Path) -> PathBuf {
     private_dir.join(ADMISSION_FILE)
-}
-
-/// Create (0700) or verify `<state>/harness` under an existing owned state
-/// root. The state root is never created here.
-pub fn prepare(state_dir: &Path) -> io::Result<PathBuf> {
-    crate::daemon::paths::check_owned_state_root(state_dir)?;
-    let private = dir(state_dir);
-    crate::daemon::paths::ensure_private_dir(&private)?;
-    Ok(private)
-}
-
-/// Verify an existing `<state>/harness` without creating anything.
-pub fn existing(state_dir: &Path) -> io::Result<PathBuf> {
-    crate::daemon::paths::check_owned_state_root(state_dir)?;
-    let private = dir(state_dir);
-    crate::daemon::paths::check_private_dir(&private)?;
-    Ok(private)
 }
 
 /// The stored admission evidence of the latest hook observation.

@@ -492,6 +492,7 @@ fn explicit_cooperative_cli_check_in_reaches_elected_service_over_socket() {
         "--lifecycle-event",
         "launch-one",
     ];
+    let _agent = crate::agent_caller("codex", "composition-session");
     let mut wrong_target = args;
     wrong_target[8] = "w1:p2";
     let rejected = herdr_threads::cli::run(wrong_target, &mut Vec::new()).unwrap_err();
@@ -516,7 +517,8 @@ fn explicit_cooperative_cli_check_in_reaches_elected_service_over_socket() {
             r.get(0)
         })
         .unwrap();
-    assert_eq!(generation, 2);
+    // ht-54r.3: a check-in never bumps the seat's mapping generation (it started at 1).
+    assert_eq!(generation, 1);
     let count: i64 = db.query_row("SELECT count(*) FROM occupant_bindings WHERE seat_id='seat' AND ended_at IS NULL AND observation_provenance='cooperative_top_level'", [], |r| r.get(0)).unwrap();
     assert_eq!(count, 1);
     drop(db);
@@ -587,7 +589,7 @@ fn explicit_cooperative_cli_check_in_reaches_elected_service_over_socket() {
     let acknowledged = invoke("recipient", "w1:p2", &["ack", message]);
     assert_eq!(acknowledged["result"]["kind"], "acknowledged");
     let receipt_after_ack: i64 = rusqlite::Connection::open(&paths.database_path).unwrap()
-        .query_row("SELECT count(*) FROM receipt_state WHERE message_id=?1 AND seat_id='recipient' AND state='acked' AND acked_at IS NOT NULL AND ack_generation=2", [message], |r| r.get(0)).unwrap();
+        .query_row("SELECT count(*) FROM receipt_state WHERE message_id=?1 AND seat_id='recipient' AND state='acked' AND acked_at IS NOT NULL AND ack_generation=1", [message], |r| r.get(0)).unwrap();
     assert_eq!(receipt_after_ack, 1);
     let prior: herdr_threads::protocol::authority::CallerClaim =
         serde_json::from_value(recipient_checkin["result"]["data"]["context"].clone()).unwrap();
@@ -598,7 +600,7 @@ fn explicit_cooperative_cli_check_in_reaches_elected_service_over_socket() {
     );
     assert_eq!(
         successor["result"]["data"]["context"]["binding_generation"],
-        3
+        1
     );
     let clock: Arc<dyn Clock> = Arc::new(SystemClock::new());
     let client = LocalSocketClient::new(
@@ -612,7 +614,12 @@ fn explicit_cooperative_cli_check_in_reaches_elected_service_over_socket() {
         Command::Ack(herdr_threads::protocol::commands::Ack {
             messages: vec![herdr_threads::protocol::ids::MessageId::new(message)],
             operation: herdr_threads::protocol::ids::OperationId::new(Uuid::new_v4().to_string()),
-            claim: prior,
+            // The execution is no longer part of a call's identity (ht-54r.3); a claim from a
+            // different mapping generation is what the daemon fences.
+            claim: herdr_threads::protocol::authority::CallerClaim {
+                binding_generation: prior.binding_generation + 1,
+                ..prior.clone()
+            },
         }),
         &CallBudget {
             deadline: MonoInstant(clock.monotonic_now().0 + 5_000),
@@ -654,7 +661,7 @@ fn explicit_cooperative_cli_check_in_reaches_elected_service_over_socket() {
         "--lifecycle-event",
         "lost-offer",
         "--native-session",
-        "native-original",
+        "composition-session",
     ];
     assert!(herdr_threads::cli::run(lost_args, &mut LostOutput).is_err());
     let context_dir = paths
@@ -670,21 +677,22 @@ fn explicit_cooperative_cli_check_in_reaches_elected_service_over_socket() {
         Duration::from_secs(1),
     )
     .unwrap();
-    let predecessor = contexts.current().unwrap().unwrap();
-    assert_eq!(predecessor.binding_generation, 4);
-    let next = predecessor
-        .for_event(
-            herdr_threads::harness::context::EventKind::Restart,
-            Uuid::new_v4(),
-            None,
-        )
-        .unwrap();
-    let next_claim = herdr_threads::harness::bridge::caller_claim(&next).unwrap();
+    // An agent's identity is its harness environment: the CLI saved no context for it.
+    assert!(contexts.current().unwrap().is_none());
+    // Another caller advances the service: a direct lifecycle CheckIn of a different session.
+    let next_claim = herdr_threads::protocol::authority::CallerClaim {
+        native_session: herdr_threads::protocol::ids::NativeSessionId::new("direct-successor"),
+        execution: herdr_threads::protocol::ids::ExecutionId::new(Uuid::new_v4().to_string()),
+        // Its own (live) process: sharing the CLI session's fingerprint would supersede it.
+        liveness: Some(other_live_process_fingerprint()),
+        ..prior.clone()
+    };
     let next_result = herdr_threads::ports::LocalClient::call(
         &client,
         Command::CheckIn(herdr_threads::protocol::commands::CheckIn {
+            lineage_parent: None,
             mode: herdr_threads::protocol::commands::CheckInMode::Lifecycle {
-                expected_binding_generation: 4,
+                expected_binding_generation: 1,
             },
             claim: next_claim,
             operation: herdr_threads::protocol::ids::OperationId::new(Uuid::new_v4().to_string()),
@@ -698,27 +706,29 @@ fn explicit_cooperative_cli_check_in_reaches_elected_service_over_socket() {
     let CommandResult::CheckedIn(next_check) = next_result else {
         panic!("missing successor CheckIn")
     };
-    assert_eq!(next_check.context.binding_generation, 5);
+    assert_eq!(next_check.context.binding_generation, 1);
     let before: (i64, i64, i64) = rusqlite::Connection::open(&paths.database_path).unwrap()
         .query_row("SELECT (SELECT generation FROM seats WHERE id='recipient'),
             (SELECT count(*) FROM operations),
-            (SELECT count(*) FROM occupant_bindings WHERE seat_id='recipient' AND ended_at IS NULL AND generation=5)",
+            (SELECT count(*) FROM occupant_bindings WHERE seat_id='recipient' AND ended_at IS NULL AND generation=1)",
             [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
-    assert_eq!(before.0, 5);
-    assert_eq!(before.2, 1);
+    assert_eq!(before.0, 1);
+    // The CLI's lifecycle events (launch, restart, lost-offer) are one harness session, hence one
+    // binding; the direct successor is a second session on the seat and its own binding.
+    assert_eq!(before.2, 2);
     let omitted_native = lost_args[..17].to_vec();
     let mut changed_native = lost_args;
     changed_native[18] = "native-edited";
-    assert!(herdr_threads::cli::run(omitted_native.clone(), &mut Vec::new()).is_err());
+    // A `--native-session` that is not the calling harness session is a mistake, not an identity.
     assert!(herdr_threads::cli::run(changed_native, &mut Vec::new()).is_err());
     let mut recovered = Vec::new();
     herdr_threads::cli::run(lost_args, &mut recovered).unwrap();
     let recovered: serde_json::Value = serde_json::from_slice(&recovered).unwrap();
     assert_eq!(
         recovered["result"]["data"]["context"]["binding_generation"],
-        4
+        1
     );
-    assert_eq!(contexts.current().unwrap().unwrap(), predecessor);
+    assert!(contexts.current().unwrap().is_none());
     let journal =
         herdr_threads::cli::journal::Journal::open(paths.instance_dir.join("intents")).unwrap();
     assert!(
@@ -738,7 +748,13 @@ fn explicit_cooperative_cli_check_in_reaches_elected_service_over_socket() {
         contexts.request_for_event("lost-offer").unwrap().is_some(),
         "completed context remains cached"
     );
-    assert!(herdr_threads::cli::run(omitted_native, &mut Vec::new()).is_err());
+    // Omitting the flag names the same session (the environment's): an exact replay.
+    let mut omitted = Vec::new();
+    herdr_threads::cli::run(omitted_native, &mut omitted).unwrap();
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&omitted).unwrap(),
+        recovered
+    );
     assert!(herdr_threads::cli::run(changed_native, &mut Vec::new()).is_err());
     let dispatched_before = check_in_dispatches.load(Ordering::SeqCst);
     let mut completed_replay = Vec::new();
@@ -750,17 +766,35 @@ fn explicit_cooperative_cli_check_in_reaches_elected_service_over_socket() {
         dispatched_before,
         "completed replay must not dispatch CheckIn to elected service"
     );
-    assert_eq!(contexts.current().unwrap().unwrap(), predecessor);
-    // A mutation through the stale local context (generation 4 against the
-    // service's 5) stays refused before dispatch.
-    assert!(matches!(herdr_threads::cli::run([
-        "herdr-threads", "--json", "--state-dir", state.to_str().unwrap(),
-        "--host-endpoint", host.to_str().unwrap(), "--cooperative-seat", "recipient",
-        "--cooperative-target", "w1:p2", "--cooperative-harness", "codex",
-        "--cooperative-role", "top-level", "ack", message,
-    ], &mut Vec::new()), Err(herdr_threads::cli::RunError::Api(error)) if error.code == ErrorCode::TargetUnresolved));
+    assert!(contexts.current().unwrap().is_none());
+    // ht-54r.3: the service's mapping generation did not move, so the local context is not
+    // stale (a session's later execution does not fence its earlier one); the mutation is served.
+    assert!(
+        herdr_threads::cli::run(
+            [
+                "herdr-threads",
+                "--json",
+                "--state-dir",
+                state.to_str().unwrap(),
+                "--host-endpoint",
+                host.to_str().unwrap(),
+                "--cooperative-seat",
+                "recipient",
+                "--cooperative-target",
+                "w1:p2",
+                "--cooperative-harness",
+                "codex",
+                "--cooperative-role",
+                "top-level",
+                "ack",
+                message,
+            ],
+            &mut Vec::new()
+        )
+        .is_ok()
+    );
     // Root decision (wave-2 fix1 (b)): a fresh lifecycle event is a
-    // deliberate new registration at the service's current generation (5),
+    // deliberate new registration at the service's current generation (1),
     // not a replay; it passes the context gate and replaces the local
     // context. Kills: the gate refusing it (fix1 S2) and seeding it from the
     // stale local generation 4 (the service would refuse that CAS).
@@ -769,8 +803,8 @@ fn explicit_cooperative_cli_check_in_reaches_elected_service_over_socket() {
     let mut fresh = Vec::new();
     herdr_threads::cli::run(changed, &mut fresh).unwrap();
     let fresh: serde_json::Value = serde_json::from_slice(&fresh).unwrap();
-    assert_eq!(fresh["result"]["data"]["context"]["binding_generation"], 6);
-    assert_eq!(contexts.current().unwrap().unwrap().binding_generation, 6);
+    assert_eq!(fresh["result"]["data"]["context"]["binding_generation"], 1);
+    assert!(contexts.current().unwrap().is_none());
     // A completed socket inspection fences the no-late-effect assertion.
     let _ = herdr_threads::ports::LocalClient::call(
         &client,
@@ -793,11 +827,12 @@ fn explicit_cooperative_cli_check_in_reaches_elected_service_over_socket() {
     let after: (i64, i64, i64) = rusqlite::Connection::open(&paths.database_path).unwrap()
         .query_row("SELECT (SELECT generation FROM seats WHERE id='recipient'),
             (SELECT count(*) FROM operations),
-            (SELECT count(*) FROM occupant_bindings WHERE seat_id='recipient' AND ended_at IS NULL AND generation=5)",
+            (SELECT count(*) FROM occupant_bindings WHERE seat_id='recipient' AND ended_at IS NULL AND generation=1)",
             [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
-    // Exactly the fresh registration took effect: one new operation, the
-    // generation-5 binding replaced by the generation-6 one.
-    assert_eq!(after, (6, before.1 + 1, 0));
+    // The served ack and the fresh registration are the two new operations; the fresh event
+    // carries the same harness session as the lost one, so it re-registers that binding in place
+    // (no new binding) and the mapping generation holds.
+    assert_eq!(after, (1, before.1 + 2, 2));
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -2404,10 +2439,18 @@ fn restart_keeps_registered_seat_available(provenance: &str) {
     };
     {
         // The seat's agent has checked in at the current epoch.
+        let fingerprint =
+            herdr_threads::test_support::isolation::stand_in_fingerprint("claude", "x");
         let db = fixture.db();
         db.execute(
-            "INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) SELECT s.id,s.generation,s.target_generation,s.target_id,h.host_boot,h.host_epoch,'claude','plugin_context:x','exec-x',?2,1,1,s.structural_terminal_id,s.structural_incarnation FROM seats s JOIN host_instances h ON h.id=s.instance_id WHERE s.id=?1",
-            rusqlite::params![seat.as_str(), provenance],
+            "INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation,liveness_pid,liveness_start) SELECT s.id,s.generation,s.target_generation,s.target_id,h.host_boot,h.host_epoch,'claude','plugin_context:x','exec-x',?2,1,1,s.structural_terminal_id,s.structural_incarnation,?3,?4 FROM seats s JOIN host_instances h ON h.id=s.instance_id WHERE s.id=?1",
+            // A live fingerprint: the liveness worker (decision 9) disconnects a binding without one.
+            rusqlite::params![
+                seat.as_str(),
+                provenance,
+                i64::from(fingerprint.pid),
+                fingerprint.start as i64
+            ],
         )
         .unwrap();
         assert_eq!(available(&db).as_deref(), Some(provenance));
@@ -2677,4 +2720,13 @@ fn elected_daemon_reports_startup_binding_evidence_counts_in_health_and_log() {
     assert!(join.daemon.take().unwrap().join().unwrap().unwrap());
     let log = fs::read_to_string(paths.instance_dir.join("daemon.log")).unwrap();
     assert!(log.contains(expected), "{log}");
+}
+
+/// The fingerprint of a live process that is not this one (the test runner's parent).
+fn other_live_process_fingerprint() -> herdr_threads::protocol::authority::LivenessFingerprint {
+    use herdr_threads::ports::ProcessInfo;
+    let record = herdr_threads::host::process_table::HostProcessTable
+        .process(std::os::unix::process::parent_id())
+        .expect("the parent process is in the process table");
+    herdr_threads::protocol::authority::LivenessFingerprint::of(&record)
 }

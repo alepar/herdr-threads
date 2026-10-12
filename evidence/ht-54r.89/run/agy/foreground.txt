@@ -1,0 +1,4 @@
+sample 1: shell_pid=56633 non_shell_foreground=[56651] started_process_pid(current)=56651
+sample 2: shell_pid=56633 non_shell_foreground=[56651] started_process_pid(current)=56651
+sample 3: shell_pid=56633 non_shell_foreground=[56651] started_process_pid(current)=56651
+candidates (harness-shaped descendants): 56651 /tmp/sp-ede3b852/ht-54r.89/agybin/1.3.3/agy;

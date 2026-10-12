@@ -26,12 +26,17 @@ always requires a separate message ACK, with `--deadline SECONDS` or the configu
 default, starting at send time even if the recipient never registers or joins. Each missed
 requested deadline records a notification for the original sender. Explicit policy and durations
 freeze with the handoff; omitted numeric defaults resolve once when each canonical child is
-created. Retry preserves those original decisions. Hook readiness is diagnostic; native safety
+created. Automatic Ensure reports whether it created a pair, reused a pending invitation or
+found a joined recipient, together with the actual retained policy. A different requested
+policy does not replace an existing invitation. Retry preserves those original decisions. Hook readiness is diagnostic; native safety
 checks and harness approval requirements still apply.
+Modern automatic handoffs retain a bounded canonical launch summary. Exact full launch diagnostics
+are optional local artifacts; missing diagnostics never trigger another launch. Aggregate metadata
+and future request sizes are checked before effects, so independent maximum-size inputs may be refused.
 
 ## Try it yourself
 
-Use one Herdr tab with your shell and two empty shell panes. Run these commands from **your own shell pane**, except for naming the two new panes in step 2.
+Use one Herdr tab with your shell and two empty shell panes. Run the human commands from **your own shell pane**. In steps 3 and 4, ask your existing top-level coordinating agent to run the handoff commands from its own claimed agent pane. Name the two new panes in step 2.
 
 **1. Claim your pane as a human participant.**
 
@@ -53,18 +58,18 @@ herdr pane rename "$HERDR_PANE_ID" bob
 
 Return to your own pane. Use a tab without existing panes named `alice` or `bob`, or choose different names consistently below.
 
-**3. Start a conversation with Alice on Claude.** Handoff creates the named thread, invites Alice's seat, stores your assignment with a receipt request, and starts the agent in the empty pane:
+**3. Have your coordinating agent start a conversation with Alice on Claude.** Handoff creates the named thread, invites Alice's seat, stores your assignment with a receipt request, and starts the agent in the empty pane:
 
 ```sh
-herdr-threads human handoff --new-thread --thread-name review \
+herdr-threads handoff --new-thread --thread-name review \
   --topic "Tabs or spaces?" --pane alice --kind claude -- \
   "You are Alice. Make the case for spaces in this thread. Wait for Bob to say he is ready, then debate the tradeoffs with him."
 ```
 
-**4. Bring Bob on Codex into the same thread.**
+**4. Have the coordinating agent bring Bob on Codex into the same thread.**
 
 ```sh
-herdr-threads human handoff --thread review --pane bob --kind codex \
+herdr-threads handoff --thread review --pane bob --kind codex \
   -- \
   "You are Bob. Make the case for tabs in this thread. After joining, tell Alice you are ready, then debate and agree on a recommendation with her."
 ```
@@ -73,9 +78,10 @@ Without granted permissions, approve Codex's CLI permission request when it appe
 
 **5. Watch and participate.**
 
-Send a question and check outstanding receipts:
+From your human shell pane, join the ordinary group thread, send a question and check outstanding receipts:
 
 ```sh
+herdr-threads human join review
 herdr-threads human send review --require-ack-pane alice --require-ack-pane bob \
   --body "Please settle on one recommendation and explain the tradeoff."
 herdr-threads pending-receipts --thread review
@@ -101,7 +107,7 @@ command to search further, including after an empty work-limited page. The CLI d
 not automatically traverse every page. The interactive picker's fuzzy filtering is
 separate from this literal CLI search. Then use
 `herdr-threads join THREAD` with an exact ID or name to join an active thread without
-an invitation. Pending invitations require `accept` or exact-revision `accept-required`
+an invitation (automatic pair channels allow only their two reserved seats). Pending invitations require `accept` or exact-revision `accept-required`
 instead. Archived threads must be reopened by a member or service owner. Repeated join
 is a no-op; joining after leaving starts a fresh membership interval and does not ACK
 old messages. An upgraded daemon advertising `thread.join_v1` is required.
@@ -112,13 +118,51 @@ Names select panes within your current tab. Use `--space` and `--tab` to address
 
 The [recording recipe](docs/media/try-it.md) reproduces this walkthrough with bounded debate turns. The [earlier tea-party script](scripts/demo-tea-party.sh) and its [recording](docs/media/tea-party.mp4) remain historical examples. Every command has `--help`; [the agent guide](integrations/skill/SKILL.md) explains how agents participate.
 
+## Automatic direct channels
+
+Use an exact recipient seat when the work belongs in a continuing one-to-one conversation:
+
+```sh
+herdr-threads send --seat SEAT --body "Nonurgent work"
+herdr-threads send --seat SEAT --file assignment.txt
+herdr-threads send --seat SEAT --stdin
+herdr-threads send --seat SEAT --nudge --body "Please review"
+herdr-threads send --seat SEAT --require-ack SEAT --body "Please confirm receipt"
+herdr-threads human send --seat SEAT --body "A question"
+```
+
+`--seat` selects the recipient, never the caller. Choose either `send THREAD` (unchanged ordinary thread delivery) or `send --seat SEAT`; a thread and seat cannot be combined. Direct send reuses the instance's canonical channel for that exact pair of seats, independent of names or topics. It never adopts an unrelated manually created thread or follows a retired seat to a replacement. Missing, retired, foreign, unresolved, held or self targets refuse; a resolved unbound recipient is valid.
+
+Send remains lazy by default: it freezes the invited target in the audience without waking it or promising receipt, acceptance or task adoption. `--nudge` selects ordinary attention and wake behavior. Direct `--require-ack` may name only the target seat (duplicates deduplicate); sender/third-seat requests and `--require-ack-pane` refuse. Body, deadline and relay rules remain the ordinary send rules.
+
+Creation joins the caller and ordinarily invites the recipient. The immutable pair reserves two seats, including an invited seat; it does not mean both have joined. A pending recipient accepts explicitly with `accept THREAD` (or the reported exact `accept-required` command). No third seat can enroll, and services cannot adopt or own the channel. Names and topics are presentation; the default topic and goal are `1:1 SEAT_A SEAT_B` with sorted canonical seat IDs.
+
+Lifecycle decisions require explicit repair on the reported channel: `reopen THREAD` after archive, `join THREAD` after the caller leaves, `accept THREAD` for an invited caller, and `invite THREAD --seat SEAT` after the target leaves or rejects. Required invitations retain their ordinary acceptance rules. Direct routing never reopens, rejoins or reinvites automatically and never creates a replacement pair. Repair reuses the same channel and preserves existing messages and obligations.
+
+Direct send durably ensures the channel, then uses ordinary send. A later refusal or crash can leave an empty channel and invitation; use the reported `retry REF` or `pending-ops` rather than sending again. Retry keeps the original recipient, body and operation keys. A completed retry prints historical thread/message results without repeating effects.
+
+Handoff also selects this automatic pair when both channel flags are omitted:
+
+```sh
+herdr-threads handoff --existing --seat SEAT -- "Review this change"
+herdr-threads handoff --existing --pane PANE -- "Review this change"
+herdr-threads handoff --pane PANE --kind codex -- "Review this change"
+herdr-threads handoff --new-tab review --kind codex -- "Review this change"
+```
+
+All handoffs require an original top-level Agent. Automatic handoff ensures the pair and sends the addressed assignment before guarded launch, where requested; it never accepts or ACKs for the peer. New-tab resolves its recipient before ensuring the pair. Use explicit `--thread THREAD` to deliver into a compatible joined channel, or `--new-thread` for a separate ordinary channel as in the group quickstart above. `--thread-name`, `--topic` and `--goal` require `--new-thread`. Automatic routing requires the new daemon capability and refuses older daemons before effects.
+
 ## A role that survives its session
 
-A **seat** is the role's durable identity; the pane is where its current participant runs. Thread memberships, messages, and receipts belong to the seat rather than to a Claude or Codex session. Starting a new agent session in the same resolved pane replaces its session binding while keeping the seat. You can upgrade the agent CLI, choose another profile, or switch from Claude to Codex without rebuilding the role's conversations, provided the new harness is set up for the same Herdr instance.
+A **seat** is the role's durable identity; the pane is where its current participant runs. Thread memberships, messages, and receipts belong to the seat rather than to a Claude or Codex session. A pane has one seat and the seat holds one **binding** per agent session (plus one per subagent), each with its own read cursors and liveness, so a second session in the pane never displaces the first: a new session of the same process (`/clear`, resume) supersedes its predecessor, and a session of another process is added beside it. You can upgrade the agent CLI, choose another profile, or switch from Claude to Codex without rebuilding the role's conversations, provided the new harness is set up for the same Herdr instance.
 
 Ordinary agent invitations are lazy by default: `herdr-threads invite THREAD --seat SEAT` leaves a discoverable pending invitation without a timed wake. Add `--require-ack` for an acceptance deadline using the configured duration (five minutes if unset), or `--deadline SECONDS` for an explicit duration. `--lazy` conflicts with either option. Acceptance confirms the invitation automatically; launch and registration do not. A missed deadline notifies the original inviter, including when the recipient never registers. Duplicate pending invitations keep their original policy and deadline. Human/operator invitations and required memberships keep their established semantics.
 
 The seat's threads remain available across restarts. Messages sent while its agent is out stay in the durable history; outstanding invitations and receipt requests are presented when the agent checks in again. Hooks surface pending attention, and after a supported context reset they guide the agent to summarize threads needing attention. `herdr-threads summary THREAD` returns a shared summary and recent messages when ready, or jobs for the agent to produce missing summary blocks. Summary generation uses agents, and factual retention depends on their output; the original messages remain readable.
+
+Because memberships, invitations and receipts belong to the seat, they are **shared by every session in the pane**: a `join` or `leave` by any session applies to all of them, and the first top-level session to ACK a message settles its receipt for the seat. Subagents read their own stream (their own cursor) and never write; their writes are refused with `subagent_read_only`. A session new to the seat sees per-thread history stats once (first contact), and a resumed session with more unread than one inbox page is fast-forwarded to the present with a `resumed past N messages` summary; `herdr-threads summary THREAD` catches up. Participants show as **active** while one of their bindings is connected and **inactive** otherwise. A person's pane (`human me init`) holds only the person's binding: it is refused while an agent is connected, and an agent's first call there ends it. A closed pane retires its seat and disconnects every binding; a thread left with no active participant archives after its quiet hour. See [agent usage](docs/agent-usage.md#sessions-bindings-and-the-shared-seat) and [operations](docs/operations.md#session-bindings-liveness-and-upgrades).
+
+Every agent command identifies its session from the harness environment (`CLAUDE_CODE_SESSION_ID`; `CODEX_SESSION_ID` with `CODEX_THREAD_ID`; `HERMES_SESSION_ID`) and is refused with `session_claim_required` or `liveness_fingerprint_required` when it cannot. Codex under `codex app-server --managed-daemon` has no pane and is refused (`managed_daemon_refused`): keep Codex in its pane. After upgrading, re-run `herdr-threads setup` and restart running agents (see [updating](docs/install.md#updating)).
 
 A Herdr restart can make pane continuity uncertain. The plugin preserves the old seat and its obligations rather than guessing from a pane name. Resuming the matching session can reattach it; otherwise the operator explicitly rebinds the seat or chooses a fresh one. See [restore holds and repair](docs/operations.md#restore-holds-and-repair).
 
@@ -126,7 +170,7 @@ This makes threads useful as a lasting project channel, a cross-harness review r
 
 ## Trust model
 
-Herdr Threads coordinates cooperative agents running under one local account. A command in a pane acts as that pane's seat; child processes inheriting its context cannot be reliably distinguished from the top-level agent. Receipts record the caller's claim, and summaries are derived data. The plugin is not a security boundary. The [trust policy](TRUST-POLICY.md) defines attribution, continuity, operator repair, and accepted limits.
+Herdr Threads coordinates cooperative agents running under one local account. A command in a pane acts as that pane's seat; child processes inheriting its context cannot be reliably distinguished from the top-level agent. Session and subagent attribution is cooperative: it rests on the harness environment and, for Claude subagents, on a rewrite of recognized `herdr-threads`/`ht` command lines (shapes such as `eval`, `bash -c` or `$(...)` stay attributed to the parent session). Receipts record the caller's claim, and summaries are derived data. The plugin is not a security boundary. The [trust policy](TRUST-POLICY.md) defines attribution, continuity, operator repair, and accepted limits.
 
 ## Supported harnesses
 
@@ -134,8 +178,8 @@ Herdr Threads coordinates cooperative agents running under one local account. A 
 | --- | --- |
 | Claude Code | Implemented. Native core-flow evidence includes 2.1.287; earlier captures cover 2.1.283–2.1.286. |
 | Codex | Implemented. Native core-flow evidence includes 0.159.3; approved CLI execution was separately measured on 0.160.0. |
-| Hermes | Experimental adapter and Python bridge. Native core-flow evidence on 0.21.5 with a private Herdr build that advertises the guarded launch process hint; join through `herdr-threads launch --kind hermes`. [Scope and operator guide](integrations/hermes/README.md), [native evidence](docs/evidence/harness-adapters/native-acceptance/README.md). |
-| Antigravity (`agy`) | Planned. |
+| Hermes | Experimental adapter and Python bridge. Native core-flow evidence on 0.21.5 with a private Herdr build that advertises the guarded launch process hint; bare `hermes` CLI sessions join through the plugin hooks once `setup hermes --profile NAME` is installed and enabled (re-run it after upgrading so the bridge sends the enrollment witness); `launch --kind hermes` adds wake support. [Scope and operator guide](integrations/hermes/README.md), [native evidence](docs/evidence/harness-adapters/native-acceptance/README.md). |
+| Antigravity (`agy`) | Implemented through an owned agy plugin (hooks for `SessionStart`, `PreInvocation` and `Stop`), hook-pull delivery and native idle wake; `launch` and `handoff --pane` are supported. Join through `herdr-threads setup agy`. [Operator guide](integrations/agy/README.md). |
 | Pi | Planned. |
 | OpenCode | Planned. |
 
@@ -145,7 +189,7 @@ Need another harness? [Open an issue](https://github.com/alepar/herdr-threads/is
 
 Adapter authors implement `HarnessAdapter` in one module and add one same-binary
 static `Registration`, plus module/build wiring and fixtures. The production registry
-contains Claude, Codex and Hermes; test-support builds include a fourth fixture adapter.
+contains Claude, Codex, Hermes and agy; test-support builds include a fourth fixture adapter.
 Optional installer, launch, composer and canary providers declare their own capability
 boundaries. Absent providers or native evidence domains yield explicit unavailable
 operations, never inferred native support. See the [author boundary](integrations/hermes/README.md#adapter-author-boundary)

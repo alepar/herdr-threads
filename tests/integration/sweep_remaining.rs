@@ -1709,6 +1709,7 @@ fn producer_ordering_control(
         user_intent: None,
         thread: ThreadId::new("t"),
         body: "ordering target".into(),
+        direct_recipient: None,
         invited_recipients: vec![SeatId::new("b")],
         deadline_millis: None,
         relays_user: false,
@@ -1722,6 +1723,8 @@ fn producer_ordering_control(
             harness: Harness::Codex,
             native_session: NativeSessionId::new("session-a"),
             execution: ExecutionId::new("00000000-0000-4000-8000-0000000000a1"),
+            agent_id: None,
+            liveness: Some(herdr_threads::protocol::authority::LivenessFingerprint::TEST),
         },
     };
     while !matches!(

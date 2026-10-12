@@ -1,4 +1,5 @@
 //! Attempt-qualified administrative assertions through guarded canonical execution.
+pub(crate) mod automatic;
 pub const RECOVERY_HELP: &str = "Administrative recovery: ht human [GLOBALS] handoff recover REF --attempt N with exactly one --created-pane EXACT_PANE, --not-created, or --cancel --reason TEXT. Noncreation asserts inspected noncreation and quiescence; cancellation asserts quiescence. Reason must be nonblank and at most 4096 UTF-8 bytes. Recovery never launches or delivers downstream work. Execution requires the guarded daemon capability. Created-pane inspection retains genuine native scope and witness; noncreation and cancellation remain explicit quiescence assertions.";
 use crate::protocol::{
     handoff::BootstrapAttempt,
@@ -55,7 +56,7 @@ impl RecoveryPlan {
         let original = &self.request.identity;
         let semantic = SemanticMutation::freeze(
             SemanticMutation::HandoffBootstrap(Box::new(super::journal::BootstrapPlan {
-                version: 1,
+                version: original.payload.plan_version(),
                 payload: original.payload.clone(),
             })),
             original.claim.clone(),

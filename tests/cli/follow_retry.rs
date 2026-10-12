@@ -435,11 +435,15 @@ impl CompletedRetryFixture {
             harness,
             native_session: NativeSessionId::new("original-session"),
             execution: ExecutionId::new("original-execution"),
+            agent_id: None,
+            liveness: None,
         };
         let plan = HandoffPlan {
             startup_input: None,
+            bootstrap_input: None,
             request: HandoffRequest {
                 policy: None,
+                automatic: false,
                 thread: Some(ThreadId::new("t1")),
                 thread_name: None,
                 topic: None,

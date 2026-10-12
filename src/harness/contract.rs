@@ -18,7 +18,9 @@
 //! `tool_name == "Bash"` filter and the `agent_id`/`agent_type` pairing rule
 //! are never checked here. A payload that satisfies the contract but fails
 //! them is the caller's concern (the parse-failure path), never a violation.
+use super::adapter::VersionSyntax;
 use super::recipe::Version;
+use super::registry::Registry;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -106,15 +108,27 @@ pub const fn field(path: &'static str, ty: JsonType, required: bool) -> FieldSpe
     FieldSpec { path, ty, required }
 }
 
-/// The declared contract for `harness` (`claude` or `codex`).
+/// The declared contract for `harness`, from the builtin registry.
 pub fn contract_for(harness: &str) -> Option<&'static HarnessContract> {
-    let registry = super::registry::builtins();
+    contract_in(super::registry::builtins(), harness)
+}
+
+/// The native-payload contract `harness` declares in `registry`.
+pub fn contract_in(registry: &Registry, harness: &str) -> Option<&'static HarnessContract> {
     let registration = registry.by_id(registry.agent(harness).ok()?).ok()?;
     registration
         .contracts()
         .iter()
         .find(|d| d.origin == super::evidence::EvidenceOrigin::NativePayload)
         .map(|d| d.contract)
+}
+
+/// The version syntax `harness` declares in `registry`.
+fn syntax_in(registry: &Registry, harness: &str) -> Option<&'static VersionSyntax> {
+    registry
+        .by_id(registry.agent(harness).ok()?)
+        .ok()?
+        .version_syntax()
 }
 
 fn json_string(s: &str) -> String {
@@ -258,45 +272,67 @@ pub fn classify(
 }
 
 /// The canonical harness version string, bare `MAJOR.MINOR.PATCH`, from the
-/// raw `--version` output: surrounding whitespace is trimmed, then `claude`
-/// loses an optional ` (Claude Code)` suffix and `codex` an optional
-/// `codex-cli ` prefix. Anything else, including pre-release suffixes
-/// (stable-only, so evidence is never conflated between a pre-release and its
-/// release) and unknown harnesses, is `None`.
+/// raw `--version` output: surrounding whitespace is trimmed, then the
+/// harness's declared [`VersionSyntax`] suffix, then its prefix, are stripped
+/// when present. Anything else, including pre-release suffixes (stable-only,
+/// so evidence is never conflated between a pre-release and its release),
+/// harnesses without a declared syntax and unknown harnesses, is `None`.
 pub fn normalize_version(harness: &str, raw: &str) -> Option<String> {
+    normalize_version_in(super::registry::builtins(), harness, raw)
+}
+
+/// [`normalize_version`] against an explicit registry.
+pub fn normalize_version_in(registry: &Registry, harness: &str, raw: &str) -> Option<String> {
+    let syntax = syntax_in(registry, harness)?;
     let trimmed = raw.trim_matches(|c: char| c.is_ascii_whitespace());
-    let core = match harness {
-        "claude" => trimmed.strip_suffix(" (Claude Code)").unwrap_or(trimmed),
-        "codex" => trimmed.strip_prefix("codex-cli ").unwrap_or(trimmed),
-        _ => return None,
-    };
+    let core = trimmed.strip_suffix(syntax.suffix).unwrap_or(trimmed);
+    let core = core.strip_prefix(syntax.prefix).unwrap_or(core);
     Version::parse(core).map(|v| v.to_string())
 }
 
 /// Version strings the canary and operators can compare against, per harness.
 pub fn normalize_examples(harness: &str) -> &'static [(&'static str, &'static str)] {
-    match harness {
-        "claude" => &[("2.1.286 (Claude Code)", "2.1.286")],
-        "codex" => &[("codex-cli 0.158.0", "0.158.0")],
-        _ => &[],
-    }
+    normalize_examples_in(super::registry::builtins(), harness)
 }
 
-/// `contract-id --json` document: `{claude, codex, normalize}` (or one
-/// harness), keys sorted.
+fn normalize_examples_in(
+    registry: &Registry,
+    harness: &str,
+) -> &'static [(&'static str, &'static str)] {
+    syntax_in(registry, harness).map_or(&[], |syntax| syntax.examples)
+}
+
+/// The ids `contract-id` lists without a selector, in registry order: adapters
+/// with a native-payload contract and a version syntax.
+fn listed_ids(registry: &Registry) -> Vec<&'static str> {
+    registry
+        .registrations()
+        .iter()
+        .map(|r| r.metadata().id)
+        .filter(|id| contract_in(registry, id).is_some() && syntax_in(registry, id).is_some())
+        .collect()
+}
+
+/// `contract-id --json` document: one key per listed harness plus
+/// `normalize` (or one harness), keys sorted.
 pub fn contract_ids_json(harness: Option<&str>) -> Value {
+    contract_ids_json_in(super::registry::builtins(), harness)
+}
+
+/// [`contract_ids_json`] against an explicit registry.
+pub fn contract_ids_json_in(registry: &Registry, harness: Option<&str>) -> Value {
     let names: Vec<&str> = match harness {
         Some(h) => vec![h],
-        None => vec!["claude", "codex"],
+        None => listed_ids(registry),
     };
     let mut doc = serde_json::Map::new();
     let mut normalize = serde_json::Map::new();
     for name in names {
-        let Some(contract) = contract_for(name) else {
+        let Some(contract) = contract_in(registry, name) else {
             continue;
         };
         doc.insert(name.to_owned(), Value::String(contract_id(contract)));
-        let examples: serde_json::Map<String, Value> = normalize_examples(name)
+        let examples: serde_json::Map<String, Value> = normalize_examples_in(registry, name)
             .iter()
             .map(|(raw, v)| ((*raw).to_owned(), Value::String((*v).to_owned())))
             .collect();
@@ -309,17 +345,24 @@ pub fn contract_ids_json(harness: Option<&str>) -> Value {
 /// `contract-id` output: the JSON document (one line), or one `<harness> <id>`
 /// line per harness.
 pub fn render_contract_ids(harness: Option<&str>, json: bool) -> String {
+    render_contract_ids_in(super::registry::builtins(), harness, json)
+}
+
+/// [`render_contract_ids`] against an explicit registry.
+pub fn render_contract_ids_in(registry: &Registry, harness: Option<&str>, json: bool) -> String {
     if json {
-        return format!("{}\n", contract_ids_json(harness));
+        return format!("{}\n", contract_ids_json_in(registry, harness));
     }
-    let names: &[&str] = match harness {
-        Some("claude") => &["claude"],
-        Some("codex") => &["codex"],
-        _ => &["claude", "codex"],
+    let listed = listed_ids(registry);
+    let names: Vec<&str> = match harness {
+        Some(h) if listed.contains(&h) => vec![h],
+        _ => listed,
     };
     names
         .iter()
-        .filter_map(|name| contract_for(name).map(|c| format!("{name} {}\n", contract_id(c))))
+        .filter_map(|name| {
+            contract_in(registry, name).map(|c| format!("{name} {}\n", contract_id(c)))
+        })
         .collect()
 }
 

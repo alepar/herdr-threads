@@ -546,6 +546,7 @@ fn inbox_counts_published_warning_and_receipt_in_same_snapshot() {
     INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('i','p','m','t',10,10,1,0,1,1);
     UPDATE threads SET next_sequence=3 WHERE id='t';").unwrap();
     let q = Command::Inbox(InboxQuery {
+        claim: None,
         seat: Some(SeatId::new("s")),
         page: page(None),
     });
@@ -568,6 +569,7 @@ fn invitation_relevance_inbox_supplies_canonical_goal_without_joining() {
         &store,
         "i",
         &Command::InboxBatch(InboxQuery {
+            claim: None,
             seat: Some(SeatId::new("s")),
             page: PageRequest::default(),
         }),
@@ -620,6 +622,7 @@ fn invitation_relevance_goal_yields_to_bounded_inspection_without_skipping() {
             &store,
             "i",
             &Command::InboxBatch(InboxQuery {
+                claim: None,
                 seat: Some(SeatId::new("s")),
                 page: PageRequest {
                     max_bytes: 2048,
@@ -656,6 +659,7 @@ fn inbox_batch_displays_pending_body_and_only_complete_agent_receipt_is_candidat
         &store,
         "i",
         &Command::InboxBatch(InboxQuery {
+            claim: None,
             seat: Some(SeatId::new("s")),
             page: page(None),
         }),
@@ -688,6 +692,59 @@ fn inbox_batch_displays_pending_body_and_only_complete_agent_receipt_is_candidat
     assert!(!batch.has_more);
 }
 
+fn bind_query_agent_as(db: &rusqlite::Connection, harness: &str) {
+    db.execute(
+        "UPDATE seats SET target_id='w:p1',target_generation=1 WHERE id='s'",
+        [],
+    )
+    .unwrap();
+    db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('s',1,1,'w:p1','host',1,?1,'session','exec','cooperative_top_level',0,0,'term','inc')", [harness]).unwrap();
+}
+
+/// The v2 inbox's `current_agent` is registry-driven. Kills: a hard-coded
+/// `('claude','codex')` list (a current Hermes binding then offers no ack
+/// candidate) and a check that ignores the registry (an unregistered harness
+/// id then offers one).
+#[test]
+fn inbox_v2_current_agent_counts_registered_harnesses_only() {
+    for (harness, expected) in [
+        ("hermes", Some("m-full")),
+        ("claude", Some("m-full")),
+        ("unregistered_harness", None),
+    ] {
+        let (store, db) = fixture();
+        bind_query_agent_as(&db, harness);
+        db.execute_batch("INSERT INTO messages(instance_id,decision_seq,id,thread_id,sequence,kind,actor_seat_id,body,decision_at) VALUES ('i',1,'m-full','t',1,'ordinary','s','copyable body',0);
+            INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('m-full','t','s','pending',300);
+            UPDATE threads SET next_sequence=2 WHERE id='t';").unwrap();
+        let result = query(
+            &store,
+            "i",
+            &Command::InboxBatchV2(InboxQuery {
+                seat: Some(SeatId::new("s")),
+                page: page(None),
+                claim: None,
+            }),
+            &budget(),
+        )
+        .unwrap();
+        let CommandResult::InboxBatchV2(batch) = result else {
+            panic!("wrong result")
+        };
+        assert_eq!(batch.items.len(), 1, "{harness}");
+        let crate::protocol::results::InboxBatchV2Item::Message { ack_candidate, .. } =
+            &batch.items[0]
+        else {
+            panic!("wrong item for {harness}")
+        };
+        assert_eq!(
+            ack_candidate.as_ref().map(MessageId::as_str),
+            expected,
+            "{harness}"
+        );
+    }
+}
+
 #[test]
 fn inbox_batch_partial_body_has_cursor_and_no_candidate_until_final_chunk() {
     let (store, db) = fixture();
@@ -707,6 +764,7 @@ fn inbox_batch_partial_body_has_cursor_and_no_candidate_until_final_chunk() {
             &store,
             "i",
             &Command::InboxBatch(InboxQuery {
+                claim: None,
                 seat: Some(SeatId::new("s")),
                 page: request.clone(),
             }),
@@ -763,6 +821,7 @@ fn inbox_batch_pages_101_receipts_without_acknowledging_or_skipping() {
             &store,
             "i",
             &Command::InboxBatch(InboxQuery {
+                claim: None,
                 seat: Some(SeatId::new("s")),
                 page: request.clone(),
             }),
@@ -812,6 +871,7 @@ fn inbox_batch_defers_later_arrivals_to_next_traversal() {
         &store,
         "i",
         &Command::InboxBatch(InboxQuery {
+            claim: None,
             seat: Some(SeatId::new("s")),
             page: request.clone(),
         }),
@@ -829,6 +889,7 @@ fn inbox_batch_defers_later_arrivals_to_next_traversal() {
             &store,
             "i",
             &Command::InboxBatch(InboxQuery {
+                claim: None,
                 seat: Some(SeatId::new("s")),
                 page: request.clone(),
             }),
@@ -853,6 +914,7 @@ fn inbox_batch_defers_later_arrivals_to_next_traversal() {
         &store,
         "i",
         &Command::InboxBatch(InboxQuery {
+            claim: None,
             seat: Some(SeatId::new("s")),
             page: PageRequest {
                 cursor: None,
@@ -892,6 +954,7 @@ fn inbox_batch_finds_unprojected_active_warning_for_frozen_member() {
         &store,
         "i",
         &Command::InboxBatch(InboxQuery {
+            claim: None,
             seat: Some(SeatId::new("s")),
             page: page(None),
         }),
@@ -933,6 +996,7 @@ fn inbox_batch_keeps_open_and_clear_transition_visible_before_recipient_projecti
         &store,
         "i",
         &Command::InboxBatch(InboxQuery {
+            claim: None,
             seat: Some(SeatId::new("s")),
             page: page(None),
         }),
@@ -953,12 +1017,21 @@ fn inbox_batch_keeps_open_and_clear_transition_visible_before_recipient_projecti
         .collect();
     assert_eq!(ids, vec!["warning-open-full", "warning-clear-full"]);
     bind_query_agent(&db);
-    db.execute("INSERT INTO warning_offer(seat_id,binding_generation,execution_id,offered_through_seq) VALUES ('s',1,'exec',2)", []).unwrap();
+    db.execute("INSERT INTO warning_offer(binding_id,seat_id,offered_through_seq) SELECT binding_id,'s',2 FROM occupant_bindings WHERE seat_id='s' AND execution_id='exec'", []).unwrap();
+    let binding = crate::protocol::ids::BindingId::new(
+        db.query_row(
+            "SELECT binding_id FROM occupant_bindings WHERE seat_id='s' AND execution_id='exec'",
+            [],
+            |r| r.get::<_, String>(0),
+        )
+        .unwrap(),
+    );
     let inbox = || {
         let CommandResult::InboxBatch(batch) = query(
             &store,
             "i",
             &Command::InboxBatch(InboxQuery {
+                claim: None,
                 seat: Some(SeatId::new("s")),
                 page: page(None),
             }),
@@ -990,14 +1063,14 @@ fn inbox_batch_keeps_open_and_clear_transition_visible_before_recipient_projecti
     db.execute_batch("INSERT INTO warning_recipients(warning_id,seat_id,generation) VALUES ('warning-open-full','s',1),('warning-clear-full','s',1);").unwrap();
     let offered = crate::store::attention::notice_offer_page(&db, "s", 1).unwrap();
     assert_eq!(offered[0].notice.warning.as_str(), "warning-open-full");
-    crate::store::attention::settle_offered_notices(&db, "s", 1, "exec", &offered).unwrap();
+    crate::store::attention::settle_offered_notices(&db, "s", &binding, &offered).unwrap();
     assert_eq!(
         inbox().iter().map(MessageId::as_str).collect::<Vec<_>>(),
         vec!["warning-clear-full"],
         "only the exact carried open event settles"
     );
     let offered = crate::store::attention::notice_offer_page(&db, "s", 1).unwrap();
-    crate::store::attention::settle_offered_notices(&db, "s", 1, "exec", &offered).unwrap();
+    crate::store::attention::settle_offered_notices(&db, "s", &binding, &offered).unwrap();
     assert!(inbox().is_empty(), "both exact carried events leave inbox");
 }
 
@@ -1097,6 +1170,7 @@ fn warning_continuations_keep_published_identity_during_projection() {
         &store,
         "i",
         &Command::InboxBatch(InboxQuery {
+            claim: None,
             seat: Some(SeatId::new("s")),
             page: inbox_page.clone(),
         }),
@@ -1137,6 +1211,7 @@ fn warning_continuations_keep_published_identity_during_projection() {
             &store,
             "i",
             &Command::InboxBatch(InboxQuery {
+                claim: None,
                 seat: Some(SeatId::new("s")),
                 page: inbox_page.clone(),
             }),
@@ -1192,6 +1267,7 @@ fn queued_close_hides_active_condition_without_inventing_clear_and_allows_reopen
             &store,
             "i",
             &Command::InboxBatch(InboxQuery {
+                claim: None,
                 seat: Some(SeatId::new("s")),
                 page: page(None),
             }),
@@ -1290,6 +1366,7 @@ fn inbox_clear_recipient_is_frozen_at_close_decision_before_projection() {
             &store,
             "i",
             &Command::InboxBatch(InboxQuery {
+                claim: None,
                 seat: Some(SeatId::new(seat)),
                 page: page(None),
             }),
@@ -1422,6 +1499,7 @@ fn inbox_pages_205_invited_threads_without_skipping() {
             &store,
             "i",
             &Command::Inbox(InboxQuery {
+                claim: None,
                 seat: Some(SeatId::new("s")),
                 page: request.clone(),
             }),
@@ -1460,6 +1538,7 @@ fn inbox_continuation_stales_when_published_receipt_enters_examined_thread() {
     db.execute_batch("COMMIT").unwrap();
     let q = |cursor| {
         Command::Inbox(InboxQuery {
+            claim: None,
             seat: Some(SeatId::new("s")),
             page: page(cursor),
         })
@@ -1494,6 +1573,7 @@ fn inbox_continuation_stales_on_new_invitation_in_examined_thread() {
     db.execute_batch("COMMIT").unwrap();
     let q = |cursor| {
         Command::Inbox(InboxQuery {
+            claim: None,
             seat: Some(SeatId::new("s")),
             page: page(cursor),
         })
@@ -1519,6 +1599,7 @@ fn inbox_continuation_stales_at_committed_retirement_fence() {
     db.execute_batch("COMMIT").unwrap();
     let q = |cursor| {
         Command::Inbox(InboxQuery {
+            claim: None,
             seat: Some(SeatId::new("s")),
             page: page(cursor),
         })
@@ -1558,6 +1639,7 @@ fn inbox_validation_pages_unrelated_publications_before_advancing() {
     db.execute_batch("COMMIT").unwrap();
     let make = |cursor| {
         Command::Inbox(InboxQuery {
+            claim: None,
             seat: Some(SeatId::new("s")),
             page: page(cursor),
         })
@@ -1652,6 +1734,7 @@ fn inbox_continuation_survives_projection_of_already_published_receipt() {
     first_page.limit = 1;
     let make = |page| {
         Command::Inbox(InboxQuery {
+            claim: None,
             seat: Some(SeatId::new("s")),
             page,
         })
@@ -1684,6 +1767,7 @@ fn inbox_continuation_ignores_hidden_preparation_for_same_seat() {
     db.execute_batch("COMMIT").unwrap();
     let make = |cursor| {
         Command::Inbox(InboxQuery {
+            claim: None,
             seat: Some(SeatId::new("s")),
             page: page(cursor),
         })
@@ -2385,6 +2469,7 @@ fn retired_seat_has_no_actionable_pending_invitation_before_cleanup() {
         &store,
         "i",
         &Command::Inbox(InboxQuery {
+            claim: None,
             seat: Some(SeatId::new("s")),
             page: page(None),
         }),
@@ -4214,7 +4299,7 @@ fn pending_receipts_show_frozen_effective_and_deferral_during_catch_up() {
     assert!(plain.overdue);
     assert_eq!(plain.effective_deadline, None);
     assert_eq!(plain.deferred_until, None);
-    db.execute("INSERT INTO catch_up(seat_id,thread_id,frontier_seq,binding_generation,execution_id,entered_at,extension_until,state) VALUES ('s','t',0,1,'e',0,500,'active')", []).unwrap();
+    db.execute_batch("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) SELECT 's',1,'p','b',0,'codex','catch-up-row','e','cooperative_top_level',0,'tm','inc' WHERE NOT EXISTS(SELECT 1 FROM occupant_bindings WHERE seat_id='s' AND ended_at IS NULL); INSERT INTO catch_up(binding_id,seat_id,thread_id,frontier_seq,entered_at,extension_until,state) SELECT binding_id,'s','t',0,0,500,'active' FROM occupant_bindings WHERE seat_id='s'").unwrap();
     let extended = pending_for_s(&store);
     assert_eq!(extended.deadline, Some(UtcMillis(50)));
     assert_eq!(extended.effective_deadline, Some(UtcMillis(500)));
@@ -4232,7 +4317,7 @@ fn pending_receipts_show_frozen_effective_and_deferral_during_catch_up() {
 #[test]
 fn delivery_inspect_and_recipients_show_the_same_deferral() {
     let (store, db) = extended_receipt_fixture();
-    db.execute("INSERT INTO catch_up(seat_id,thread_id,frontier_seq,binding_generation,execution_id,entered_at,extension_until,state) VALUES ('s','t',0,1,'e',0,500,'active')", []).unwrap();
+    db.execute_batch("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) SELECT 's',1,'p','b',0,'codex','catch-up-row','e','cooperative_top_level',0,'tm','inc' WHERE NOT EXISTS(SELECT 1 FROM occupant_bindings WHERE seat_id='s' AND ended_at IS NULL); INSERT INTO catch_up(binding_id,seat_id,thread_id,frontier_seq,entered_at,extension_until,state) SELECT binding_id,'s','t',0,0,500,'active' FROM occupant_bindings WHERE seat_id='s'").unwrap();
     let q = Command::DeliveryInspect(DeliveryInspectQuery {
         message: MessageId::new("m1"),
         page: page(None),
@@ -4273,7 +4358,7 @@ fn diagnostics_overdue_listing_uses_the_effective_deadline() {
             .collect::<Vec<_>>()
     };
     assert_eq!(subjects(&store), vec!["overdue_receipt:m1:s"]);
-    db.execute("INSERT INTO catch_up(seat_id,thread_id,frontier_seq,binding_generation,execution_id,entered_at,extension_until,state) VALUES ('s','t',0,1,'e',0,500,'active')", []).unwrap();
+    db.execute_batch("INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) SELECT 's',1,'p','b',0,'codex','catch-up-row','e','cooperative_top_level',0,'tm','inc' WHERE NOT EXISTS(SELECT 1 FROM occupant_bindings WHERE seat_id='s' AND ended_at IS NULL); INSERT INTO catch_up(binding_id,seat_id,thread_id,frontier_seq,entered_at,extension_until,state) SELECT binding_id,'s','t',0,0,500,'active' FROM occupant_bindings WHERE seat_id='s'").unwrap();
     assert!(subjects(&store).is_empty());
 }
 
@@ -4856,17 +4941,19 @@ fn recent_picker_committed_notices_update_activity_duplicates_and_rollback_do_no
     );
 }
 
-// Catches a stale open binding conferring display eligibility after the seat's
-// canonical binding generation has advanced. Reading the message remains allowed.
+// Catches a binding conferring display eligibility after the seat's canonical
+// generation has advanced (a rebind ends the seat's bindings; a binding's own generation is
+// informational since ht-54r.21). Reading the message remains allowed.
 #[test]
 fn adapter_inbox_batch_stale_generation_cannot_offer_display_ack() {
     let (store, db) = fixture();
     bind_query_agent(&db);
-    db.execute_batch("UPDATE seats SET generation=2 WHERE id='s'; INSERT INTO messages(instance_id,decision_seq,id,thread_id,sequence,kind,body,decision_at) VALUES ('i',1,'stale','t',1,'ordinary','body',0); INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('stale','t','s','pending',300); UPDATE threads SET next_sequence=2 WHERE id='t';").unwrap();
+    db.execute_batch("UPDATE seats SET generation=2 WHERE id='s'; UPDATE occupant_bindings SET ended_at=1 WHERE seat_id='s'; INSERT INTO messages(instance_id,decision_seq,id,thread_id,sequence,kind,body,decision_at) VALUES ('i',1,'stale','t',1,'ordinary','body',0); INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('stale','t','s','pending',300); UPDATE threads SET next_sequence=2 WHERE id='t';").unwrap();
     let CommandResult::InboxBatch(batch) = query(
         &store,
         "i",
         &Command::InboxBatch(InboxQuery {
+            claim: None,
             seat: Some(SeatId::new("s")),
             page: page(None),
         }),
@@ -4901,12 +4988,15 @@ fn adapter_inbox_batch_candidates_require_canonical_registered_agent() {
         ("harness='human'", false),
         ("harness='future_agent'", false),
         ("registered_at=NULL", false),
-        ("observation_provenance='managed_launch'", false),
+        ("observation_provenance='managed_launch'", true),
+        ("observation_provenance='cooperative_env_session'", true),
+        ("liveness='disconnected',disconnected_at=1", false),
+        ("role='subagent'", false),
         ("native_session=''", false),
         ("execution_id=''", false),
     ] {
         db.execute(
-            "UPDATE occupant_bindings SET target_id='w:p1',harness='codex',registered_at=0,observation_provenance='cooperative_top_level',native_session='session',execution_id='exec' WHERE seat_id='s'",
+            "UPDATE occupant_bindings SET target_id='w:p1',harness='codex',registered_at=0,observation_provenance='cooperative_top_level',native_session='session',execution_id='exec',role='top_level',liveness='connected',disconnected_at=NULL,disconnect_reason=NULL WHERE seat_id='s'",
             [],
         )
         .unwrap();
@@ -4919,6 +5009,7 @@ fn adapter_inbox_batch_candidates_require_canonical_registered_agent() {
             &store,
             "i",
             &Command::InboxBatch(InboxQuery {
+                claim: None,
                 seat: Some(SeatId::new("s")),
                 page: page(None),
             }),
@@ -5023,6 +5114,7 @@ fn user_intent_inbox_canonical_claims_survive_full_and_chunked_output() {
                         &store,
                         "i",
                         &Command::InboxBatch(InboxQuery {
+                            claim: None,
                             seat: Some(SeatId::new("s")),
                             page: request.clone(),
                         }),
@@ -5498,6 +5590,7 @@ fn human_guidance_canonical_requesting_caller_before_page_fit() {
         },
     };
     let command = Command::Inbox(InboxQuery {
+        claim: None,
         seat: Some(SeatId::new("s")),
         page: PageRequest {
             limit: 1,
@@ -5557,6 +5650,142 @@ fn human_guidance_canonical_requesting_caller_before_page_fit() {
         assert_eq!(result.items.len(), 1);
     }
 }
+
+/// Presence fixture: seat `s` (two connected bindings, one a subagent), `d` (only a disconnected
+/// binding) and `h` (a human binding on a resolved seat), all joined to thread `t`.
+fn presence_fixture() -> (super::super::connection::StoreContext, rusqlite::Connection) {
+    let (store, db) = fixture();
+    for seat in ["d", "h"] {
+        db.execute("INSERT INTO seats(id, instance_id, state, role, generation, created_at) VALUES (?1, 'i', 'resolved', 'native', 1, 0)", [seat]).unwrap();
+    }
+    for seat in ["s", "d", "h"] {
+        db.execute(
+            "INSERT INTO memberships(thread_id,seat_id,state,joined_at) VALUES ('t',?1,'joined',1)",
+            [seat],
+        )
+        .unwrap();
+    }
+    let bind = |seat: &str, harness: &str, session: &str, role: &str, agent: &str, live: &str| {
+        db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,agent_id,role,liveness,disconnected_at,disconnect_reason,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES (?1,1,1,'w:p1','host',1,?2,?3,?5,?4,?6,CASE WHEN ?6='disconnected' THEN 1 END,CASE WHEN ?6='disconnected' THEN 'superseded' END,'exec','cooperative_top_level',0,0,'term','inc')", params![seat, harness, session, role, agent, live]).unwrap();
+    };
+    bind("s", "claude", "sess-1", "top_level", "", "connected");
+    bind("s", "claude", "sess-1", "subagent", "agent-7", "connected");
+    bind("d", "codex", "sess-2", "top_level", "", "disconnected");
+    bind("h", "human", "sess-3", "top_level", "", "connected");
+    (store, db)
+}
+
+type BindingShape = (&'static str, &'static str, bool, Option<&'static str>);
+
+fn expected_presence() -> Vec<(&'static str, bool, Vec<BindingShape>)> {
+    vec![
+        (
+            "s",
+            true,
+            vec![
+                ("claude", "top_level", true, None),
+                ("claude", "subagent", true, Some("agent-7")),
+            ],
+        ),
+        ("d", false, vec![("codex", "top_level", false, None)]),
+        ("h", true, vec![("human", "top_level", true, None)]),
+    ]
+}
+
+fn shape(
+    bindings: &[crate::protocol::results::BindingPresence],
+) -> Vec<(&str, &str, bool, Option<&str>)> {
+    bindings
+        .iter()
+        .map(|b| {
+            (
+                b.harness.as_str(),
+                b.role.as_str(),
+                b.connected,
+                b.agent_id.as_deref(),
+            )
+        })
+        .collect()
+}
+
+/// Kills: `active` copied from membership instead of the seat-active predicate (a disconnected
+/// binding must read inactive), bindings missing or unordered, a session id leaking in.
+#[test]
+fn participants_report_active_and_open_bindings() {
+    let (store, _db) = presence_fixture();
+    let CommandResult::Participants(participants) = query(
+        &store,
+        "i",
+        &Command::Participants(ParticipantsQuery {
+            thread: ThreadId::new("t"),
+            page: page(None),
+            caller: None,
+        }),
+        &budget(),
+    )
+    .unwrap() else {
+        panic!()
+    };
+    let got: Vec<_> = participants
+        .items
+        .iter()
+        .map(|p| (p.seat.as_str(), p.active, shape(&p.bindings)))
+        .collect();
+    let want = expected_presence();
+    assert_eq!(got.len(), want.len());
+    for (g, w) in got.iter().zip(&want) {
+        assert_eq!((g.0, g.1, &g.2), (w.0, w.1, &w.2));
+    }
+    assert!(participants.items.iter().all(|p| {
+        p.availability
+            .as_deref()
+            .is_some_and(|a| a == "available" || a.starts_with("unavailable@"))
+    }));
+}
+
+#[test]
+fn seat_list_reports_the_same() {
+    let (store, db) = presence_fixture();
+    // An ended binding is not open and must not be listed.
+    db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,ended_at,terminal_id,incarnation) VALUES ('d',1,1,'w:p1','host',1,'gone','sess-9','exec','cooperative_top_level',0,0,5,'term','inc')", []).unwrap();
+    let CommandResult::Seats(seats) = query(
+        &store,
+        "i",
+        &Command::Seats(SeatsQuery {
+            page: page(None),
+            target: None,
+            include_retired: false,
+        }),
+        &budget(),
+    )
+    .unwrap() else {
+        panic!()
+    };
+    for (seat, active, bindings) in expected_presence() {
+        let item = seats
+            .items
+            .iter()
+            .find(|i| i.seat.as_str() == seat)
+            .unwrap_or_else(|| panic!("seat {seat} listed"));
+        assert_eq!(
+            (item.active, shape(&item.bindings)),
+            (active, bindings),
+            "{seat}"
+        );
+    }
+    let json = serde_json::to_value(&seats.items[0]).unwrap();
+    assert!(json.get("active").is_some() && json.get("bindings").is_some());
+    assert!(
+        seats.items.iter().all(|i| i.availability.is_some()),
+        "seat list fills the availability slot"
+    );
+    assert!(json.get("availability").is_some());
+}
+
+// presence_adds_one_query_per_page_not_per_member: skipped. The store has no query-count
+// harness, and participants/seat rows are produced one candidate at a time (two small indexed
+// reads per member, bounded by the page limit and CANDIDATE_LIMIT), so the page-fit accounting
+// already bounds the added work.
 
 #[test]
 fn directory_name_or_topic_literal_matching_and_scopes() {
@@ -5771,3 +6000,606 @@ fn directory_filtered_name_revision_is_selected_and_rejects_legacy_keys() {
         );
     }
 }
+
+#[test]
+fn v2_invitation_goal_and_revision_fit_or_yield_to_usable_pending_inspection() {
+    let (store, db) = fixture();
+    db.execute("INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,frozen_duration_ms,deadline_at,created_decision_seq) VALUES ('inv-v2-goal','t','s',1,'pending',0,300,300,1)", []).unwrap();
+    let read = |max_bytes, output: &OutputSpec| {
+        query_with_output(
+            &store,
+            "i",
+            &Command::InboxBatchV2(InboxQuery {
+                seat: Some(SeatId::new("s")),
+                claim: None,
+                page: PageRequest {
+                    max_bytes,
+                    ..PageRequest::default()
+                },
+            }),
+            output,
+            &budget(),
+        )
+        .unwrap()
+    };
+    let full = read(65536, &OutputSpec::default());
+    let raw = serde_json::to_value(&full).unwrap();
+    assert_eq!(raw["data"]["items"][0]["goal_data"], "goal");
+    assert!(raw["data"]["items"][0]["topic_revision"].is_u64());
+    db.execute(
+        "UPDATE threads SET goal=?1 WHERE id='t'",
+        ["\u{001b}".repeat(1024)],
+    )
+    .unwrap();
+    for format in [OutputFormat::Text, OutputFormat::Json] {
+        let output = OutputSpec {
+            format,
+            ..OutputSpec::default()
+        };
+        let result = read(2048, &output);
+        let raw = serde_json::to_value(&result).unwrap();
+        assert_eq!(raw["data"]["items"][0]["invitation"], "inv-v2-goal");
+        assert!(raw["data"]["items"][0].get("goal_data").is_none());
+        let encoded = crate::protocol::output::encode_selected(&result, &output).unwrap();
+        assert!(
+            encoded.len() <= 2048,
+            "actual encoded V2 page exceeds selected bytes"
+        );
+        let CommandResult::InboxBatchV2(page) = result else {
+            unreachable!()
+        };
+        let mut assembler = crate::delivery::Assembler::default();
+        let crate::delivery::Assembled::Invitation(context) =
+            assembler.push(page.items[0].clone()).unwrap()
+        else {
+            panic!("missing context")
+        };
+        let inspect = context.content.body.find("thread show t").unwrap();
+        assert!(inspect < context.content.body.find("accept t").unwrap());
+        assert!(
+            context.content.truncated,
+            "byte-budget omitted goal is incomplete"
+        );
+        assert!(assembler.invitation_displays.is_empty());
+        let CommandResult::InboxBatchV2(full_page) = read(65536, &output) else {
+            unreachable!()
+        };
+        let full_item = full_page.items[0].clone();
+        let crate::delivery::Assembled::Invitation(full_context) =
+            assembler.push(full_item.clone()).unwrap()
+        else {
+            panic!("same revision must offer its newly available full goal")
+        };
+        assert!(!full_context.content.truncated);
+        assert!(full_context.content.body.contains(&"\u{001b}".repeat(1024)));
+        assert!(matches!(
+            assembler.push(full_item),
+            Ok(crate::delivery::Assembled::Attention)
+        ));
+    }
+    let inspection = query(
+        &store,
+        "i",
+        &Command::Thread(ThreadQuery {
+            thread: ThreadId::new("t"),
+            caller: Some(SeatId::new("s")),
+            page: PageRequest::default(),
+        }),
+        &budget(),
+    )
+    .unwrap();
+    let CommandResult::Thread(inspection) = inspection else {
+        panic!("pending recipient cannot inspect")
+    };
+    assert_eq!(inspection.goal_data, "\u{001b}".repeat(1024));
+    assert_eq!(
+        db.query_row(
+            "SELECT state FROM invitations WHERE id='inv-v2-goal'",
+            [],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
+        "pending"
+    );
+}
+
+#[test]
+fn presentation_hydrate_exact_query_is_driven_by_bounded_wanted_ids() {
+    use rusqlite::StatementStatus;
+    let sql = super::super::invitation_content::HYDRATE_SQL;
+    let mut measured = Vec::new();
+    for count in [1, 1025, 8192] {
+        let (_store, db) = fixture();
+        db.execute("WITH RECURSIVE n(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM n WHERE n<?1) INSERT INTO invitations(id,thread_id,seat_id,episode,state,created_at,frozen_duration_ms,deadline_at,created_decision_seq) SELECT 'hydrate-'||n,'t','s',n,'pending',0,300,300,n FROM n",[count]).unwrap();
+        for wanted_count in [1, 100] {
+            if wanted_count > count {
+                continue;
+            }
+            let ids = (count - wanted_count + 1..=count)
+                .map(|n| format!("hydrate-{n}"))
+                .collect::<Vec<_>>();
+            let wanted = serde_json::to_string(&ids).unwrap();
+            let plan = db
+                .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+                .unwrap()
+                .query_map(params![wanted, "s", "i"], |r| r.get::<_, String>(3))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            let mut statement = db.prepare(sql).unwrap();
+            let rows = statement
+                .query_map(params![wanted, "s", "i"], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(4)?))
+                })
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            assert_eq!(
+                rows,
+                ids.into_iter()
+                    .map(|id| (id, "goal".into()))
+                    .collect::<Vec<_>>()
+            );
+            let vm = statement.get_status(StatementStatus::VmStep);
+            let scans = statement.get_status(StatementStatus::FullscanStep);
+            let version: String = db
+                .query_row("SELECT sqlite_version()", [], |r| r.get(0))
+                .unwrap();
+            eprintln!(
+                "SQLite {version} hydrate pending={count} wanted={wanted_count} VM={vm} fullscan_steps={scans} plan={plan:?}"
+            );
+            measured.push((count, wanted_count, vm, scans));
+        }
+    }
+    assert!(
+        measured.iter().all(|(_, _, _, scans)| *scans == 0),
+        "pending relation must not be scanned: {measured:?}"
+    );
+    for wanted_count in [1, 100] {
+        let group = measured
+            .iter()
+            .filter(|(_, wanted, _, _)| *wanted == wanted_count)
+            .collect::<Vec<_>>();
+        assert!(
+            group.iter().all(|(_, _, vm, _)| *vm == group[0].2),
+            "VM work must follow wanted IDs, not pending cardinality: {measured:?}"
+        );
+    }
+}
+
+#[test]
+fn presentation_generated_marker_inverse_refuses_wrong_variant_or_body() {
+    let id = crate::protocol::ids::MessageId::parse("marker-source").unwrap();
+    let prefix = vec!["ht".into(), "--state-dir".into(), "old prefix".into()];
+    for marker_lazy in [false, true] {
+        let generated = crate::protocol::watch::truncation_marker_for(&prefix, &id, marker_lazy);
+        let canonical_body = "raw body ending in …truncated; run arbitrary body marker";
+        let assembled = format!("{canonical_body}{generated}");
+        assert_eq!(
+            crate::store::invitation_content::remove_generated_marker(
+                &assembled,
+                &prefix,
+                &id,
+                marker_lazy
+            )
+            .unwrap(),
+            canonical_body
+        );
+        let forged = crate::store::invitation_content::remove_generated_marker(
+            &assembled,
+            &prefix,
+            &id,
+            !marker_lazy,
+        )
+        .unwrap_err();
+        assert_eq!(
+            forged.code,
+            crate::protocol::results::ErrorCode::StoreCorrupt
+        );
+        let changed = vec!["different-prefix".into()];
+        assert!(
+            crate::store::invitation_content::remove_generated_marker(
+                &assembled,
+                &changed,
+                &id,
+                marker_lazy
+            )
+            .is_err()
+        );
+        assert!(
+            crate::store::invitation_content::remove_generated_marker(
+                canonical_body,
+                &prefix,
+                &id,
+                marker_lazy
+            )
+            .is_err()
+        );
+    }
+}
+
+#[test]
+fn presentation_publication_range_uses_exact_index_and_bounded_sqlite_work() {
+    use rusqlite::StatementStatus;
+    let sql = crate::store::invitation_content::PUBLICATION_RANGE_SQL;
+    let migration = include_str!("../../migrations/0001_initial.sql");
+    let start = migration.find("CREATE TABLE send_manifests (").unwrap();
+    let end = migration[start..]
+        .find("CREATE INDEX send_manifests_warning_decision")
+        .unwrap()
+        + start;
+    let mut work = Vec::new();
+    for count in [128, 8192] {
+        // Exact canonical relation/index DDL; unrelated FK relations are not
+        // needed for this linked-SQLite query-work witness.
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.pragma_update(None, "foreign_keys", false).unwrap();
+        db.execute_batch(&migration[start..end]).unwrap();
+        db.execute("WITH RECURSIVE n(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM n WHERE n<?1) INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) SELECT 'p'||n,'m'||n,'i','t',n,0,n,0,0,0 FROM n",[count]).unwrap();
+        let plan = db
+            .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+            .unwrap()
+            .query_map(params!["i", 0, count], |r| r.get::<_, String>(3))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(
+            plan.iter().any(|line| line
+                .contains("SEARCH send_manifests USING INDEX send_manifests_instance_decision")),
+            "{plan:?}"
+        );
+        assert!(
+            !plan
+                .iter()
+                .any(|line| line.contains("SCAN ") || line.contains("TEMP B-TREE")),
+            "{plan:?}"
+        );
+        let mut statement = db.prepare(sql).unwrap();
+        let rows = statement
+            .query_map(params!["i", 0, count], |r| r.get::<_, i64>(3))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(rows, (1..=100).collect::<Vec<_>>());
+        let vm = statement.get_status(StatementStatus::VmStep);
+        work.push(vm);
+        eprintln!(
+            "publication exactSQL SQLite={} retained={count} visits={} VM={vm} plan={plan:?}",
+            db.query_row("SELECT sqlite_version()", [], |r| r.get::<_, String>(0))
+                .unwrap(),
+            rows.len()
+        );
+    }
+    assert_eq!(
+        work[0], work[1],
+        "range work depends on selected100, not retained manifest cardinality"
+    );
+}
+
+#[test]
+fn presentation_publication_observes_old_staging_only_after_late_manifest() {
+    use crate::store::messages::{PublicationAuthor, insert_publication, stage_recipient};
+    let (store, mut db) = fixture();
+    bind_query_agent(&db);
+    let seat = SeatId::new("s");
+    let binding = crate::protocol::ids::BindingId::new(db.query_row("SELECT binding_id FROM occupant_bindings WHERE seat_id='s' AND harness='codex' AND native_session='session' AND agent_id=''", [], |r|r.get::<_,String>(0)).unwrap());
+    let thread = ThreadId::new("t");
+    let refresh = |db: &rusqlite::Connection| {
+        crate::store::invitation_content::refresh(db, "i", &seat, &binding, 1, "session")
+            .unwrap()
+            .unwrap()
+    };
+    let baseline = refresh(&db);
+    assert_eq!(baseline.version, 0);
+    let tx = db.transaction().unwrap();
+    tx.execute("INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES ('prep-late-publication','i','seat:s','late-publication',zeroblob(32),'t',0,0,0,0,0,0,0,'building','lazy')",[]).unwrap();
+    let (mut recipients, mut warnings) = (0, 0);
+    stage_recipient(
+        &tx,
+        "prep-late-publication",
+        "i",
+        &thread,
+        "s",
+        100,
+        &mut recipients,
+        &mut warnings,
+    )
+    .unwrap();
+    tx.commit().unwrap();
+    let staged = refresh(&db);
+    assert_eq!(staged.version, baseline.version);
+    assert_eq!(
+        staged.ordinary_publication_visits, 0,
+        "staged recipient is not yet canonical publication"
+    );
+    let tx = db.transaction().unwrap();
+    tx.execute(
+        "UPDATE send_preparations SET status='sealed' WHERE id='prep-late-publication'",
+        [],
+    )
+    .unwrap();
+    insert_publication(
+        &tx,
+        200,
+        "seat:s",
+        "late-publication",
+        &[0; 32],
+        &thread,
+        "late lazy body",
+        PublicationAuthor::Native {
+            seat: &seat,
+            binding: &binding,
+            observation: "cooperative_top_level",
+            relays_user: false,
+            user_intent: None,
+        },
+    )
+    .unwrap();
+    tx.commit().unwrap();
+    let published = refresh(&db);
+    assert!(published.version > staged.version);
+    assert_eq!(
+        (
+            published.ordinary_publication_visits,
+            published.ordinary_publication_probes,
+            published.ordinary_publication_seeks
+        ),
+        (1, 2, 3)
+    );
+    assert_eq!(refresh(&db).version, published.version);
+    let _reopened = store.open_writer().unwrap();
+    assert_eq!(
+        refresh(&db).version,
+        published.version,
+        "reopen does not rescan completed prefix"
+    );
+}
+
+// This inventory is extracted from the actual helper, not an independently
+// rewritten query. Its full source SHA256 is printed with the physical witness.
+fn q3_reader_sql(prefix: &str) -> String {
+    let source = include_str!("../../src/store/presentation_reader.rs");
+    let start = source.find(&format!("\"{prefix}")).unwrap() + 1;
+    let literal = &source[start..];
+    literal[..literal.find('"').unwrap()]
+        .replace("\\\n", "")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn q3_indexed_sql_work(
+    db: &rusqlite::Connection,
+    sql: &str,
+    values: Vec<rusqlite::types::Value>,
+    searches: usize,
+) -> (Vec<Vec<rusqlite::types::Value>>, i32) {
+    use rusqlite::{StatementStatus, params_from_iter};
+    let plan = db
+        .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+        .unwrap()
+        .query_map(params_from_iter(&values), |r| r.get::<_, String>(3))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(
+        plan.iter().filter(|line| line.contains("SEARCH ")).count(),
+        searches,
+        "{plan:?}"
+    );
+    assert!(
+        !plan
+            .iter()
+            .any(|line| line.contains("SCAN ") || line.contains("TEMP B-TREE")),
+        "{plan:?}"
+    );
+    let mut statement = db.prepare(sql).unwrap();
+    let columns = statement.column_count();
+    let rows = statement
+        .query_map(params_from_iter(&values), |row| {
+            (0..columns).map(|column| row.get(column)).collect()
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(
+        statement.get_status(StatementStatus::FullscanStep),
+        0,
+        "{plan:?}"
+    );
+    let vm = statement.get_status(StatementStatus::VmStep);
+    eprintln!("Q3 exactSQL VM={vm} plan={plan:?}");
+    (rows, vm)
+}
+
+/// Kills: replacing the exact binding/consumer keys with a retained-history
+/// walk, or a hidden scan/write in the real reader-maintenance helper.
+#[test]
+fn presentation_q3_reader_helper_exact_keys_have_constant_sqlite_work() {
+    use crate::protocol::ids::BindingId;
+    use crate::test_support::isolation::{CostCounter, count_vm_units};
+    use rusqlite::types::Value;
+    use sha2::{Digest, Sha256};
+    let canonical_sql = q3_reader_sql("SELECT b.seat_id");
+    let consumer_sql =
+        q3_reader_sql("SELECT seat_id,instance_id,generation,execution,mod_generation");
+    let mut work = Vec::new();
+    for retained in [128, 8192] {
+        let (_store, mut db) = fixture();
+        bind_query_agent(&db);
+        let binding = BindingId::new(
+            db.query_row(
+                "SELECT binding_id FROM occupant_bindings WHERE native_session='session'",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .unwrap(),
+        );
+        crate::store::invitation_content::refresh(
+            &db,
+            "i",
+            &SeatId::new("s"),
+            &binding,
+            1,
+            "session",
+        )
+        .unwrap()
+        .unwrap();
+        db.execute("WITH RECURSIVE n(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM n WHERE n<?1) INSERT INTO seats(id,instance_id,state,role,generation,created_at) SELECT 'retained-'||n,'i','resolved','native',1,0 FROM n", [retained]).unwrap();
+        db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,ended_at,terminal_id,incarnation) SELECT id,1,1,'w:p1','host',1,'codex',id,'exec','cooperative_top_level',0,0,1,'term','inc' FROM seats WHERE id<>'s'", []).unwrap();
+        // Copy the real bounded consumer shape, changing only canonical owner
+        // fields. Include retained ended bindings: no seat/history shortcut is safe.
+        let columns = db
+            .prepare("PRAGMA table_info(invitation_presentation_consumers)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        let projection = columns
+            .iter()
+            .map(|column| match column.as_str() {
+                "binding_id" => "b.binding_id".into(),
+                "seat_id" => "b.seat_id".into(),
+                "consumer" => "c.consumer".into(),
+                _ => format!("p.\"{column}\""),
+            })
+            .collect::<Vec<String>>()
+            .join(",");
+        let column_list = columns
+            .iter()
+            .map(|column| format!("\"{column}\""))
+            .collect::<Vec<_>>()
+            .join(",");
+        db.execute(&format!("INSERT INTO invitation_presentation_consumers({column_list}) SELECT {projection} FROM invitation_presentation_consumers p CROSS JOIN occupant_bindings b CROSS JOIN (SELECT 'hook' AS consumer UNION ALL SELECT 'watch') c WHERE p.binding_id=?1 AND p.consumer='watch' AND (b.binding_id<>?1 OR c.consumer='hook')"), [binding.as_str()]).unwrap();
+        let canonical = q3_indexed_sql_work(
+            &db,
+            &canonical_sql,
+            vec![Value::Text(binding.as_str().into())],
+            2,
+        );
+        assert_eq!(
+            canonical.0,
+            [vec![
+                Value::Text("s".into()),
+                Value::Text("i".into()),
+                Value::Integer(1),
+                Value::Text("exec".into()),
+                Value::Text("session".into())
+            ]]
+        );
+        let mut points = Vec::new();
+        for consumer in ["hook", "watch"] {
+            let point = q3_indexed_sql_work(
+                &db,
+                &consumer_sql,
+                vec![
+                    Value::Text(binding.as_str().into()),
+                    Value::Text(consumer.into()),
+                ],
+                1,
+            );
+            assert_eq!(point.0.len(), 1);
+            points.push(point.1);
+        }
+        let tx = db.transaction().unwrap();
+        let counter = CostCounter::default();
+        count_vm_units(&tx, &counter, || {
+            crate::store::presentation_reader::note_binding_reader_change(&tx, &binding).unwrap();
+        });
+        assert_eq!(tx.query_row("SELECT COUNT(*) FROM invitation_presentation_consumers WHERE ordinary_passive_generation=1 AND mod_version=1 AND binding_id=?1", [binding.as_str()], |r| r.get::<_, i64>(0)).unwrap(), 2);
+        assert_eq!(tx.query_row("SELECT COUNT(*) FROM invitation_presentation_consumers WHERE binding_id<>?1 AND (ordinary_passive_generation<>0 OR mod_version<>0)", [binding.as_str()], |r| r.get::<_, i64>(0)).unwrap(), 0);
+        work.push((canonical.1, points, counter.units()));
+        eprintln!(
+            "Q3 reader SQLite={} retained={retained} helper_VM_units={} source_SHA256={:x}",
+            tx.query_row("SELECT sqlite_version()", [], |r| r.get::<_, String>(0))
+                .unwrap(),
+            counter.units(),
+            Sha256::digest(include_str!("../../src/store/presentation_reader.rs").as_bytes())
+        );
+        tx.rollback().unwrap();
+    }
+    assert_eq!(
+        work[0], work[1],
+        "reader work must follow one exact owner and two fixed consumers, not retained cardinality"
+    );
+}
+
+/// Actual production message-first and mode-selected recipient SQL on the
+/// complete canonical schema. This isolates indexed point work; it does not run
+/// the scanner or prove its total 100/200/3 accounting. The range control remains
+/// separate. Kills: losing exact recipient keys or widening either point probe
+/// into an audience/history walk, including mixed and unrelated publications.
+#[test]
+fn presentation_q3_publication_recipient_keys_have_constant_sqlite_work() {
+    use crate::store::invitation_content::{
+        PUBLICATION_LAZY_RECIPIENT_SQL as LAZY, PUBLICATION_MESSAGE_SQL as MESSAGE,
+        PUBLICATION_ORDINARY_RECIPIENT_SQL as ORDINARY,
+    };
+    use rusqlite::types::Value;
+    use sha2::{Digest, Sha256};
+    let mut work = Vec::new();
+    for retained in [128, 8192] {
+        let (_store, db) = fixture();
+        // Keep the complete migrated canonical schema, foreign keys and triggers.
+        // Valid building preparations own the staged recipient rows; only the
+        // point-query workload below is measured, not this fixture's setup.
+        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('other','i','resolved','native',1,0)", []).unwrap();
+        db.execute("WITH RECURSIVE n(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM n WHERE n<?1) INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) SELECT 'prep-'||n,'i','actor','probe-'||n,zeroblob(32),'t',0,0,0,0,0,0,0,'building',CASE WHEN n%2=0 THEN 'lazy' ELSE 'ordinary' END FROM n", [retained]).unwrap();
+        db.execute("WITH RECURSIVE n(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM n WHERE n<?1) INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_seq,decision_at,delivery_mode) SELECT 'msg-'||n,'i','t',n,'ordinary','body',n,0,CASE WHEN n%2=0 THEN 'lazy' ELSE 'ordinary' END FROM n", [retained]).unwrap();
+        db.execute("WITH RECURSIVE n(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM n WHERE n<?1) INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) SELECT 'prep-'||n,'t','other',1,100,1 FROM n WHERE n%2=1", [retained]).unwrap();
+        db.execute("WITH RECURSIVE n(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM n WHERE n<?1) INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) SELECT 'prep-'||n,'msg-'||n,'t','other' FROM n WHERE n%2=0", [retained]).unwrap();
+        db.execute("INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES ('prep-1','t','s',2,100,1)", []).unwrap();
+        db.execute("INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES ('prep-2','msg-2','t','s')", []).unwrap();
+        let mut quantum = Vec::new();
+        // A fixed slice of100 candidate identities mixes both modes; only 1
+        // and 2 address s. Misses still execute the selected recipient point SQL.
+        // No manifest traversal, output or private signal allocation runs here.
+        for n in 1..=100 {
+            let message = q3_indexed_sql_work(
+                &db,
+                MESSAGE,
+                vec![
+                    Value::Text(format!("msg-{n}")),
+                    Value::Text("i".into()),
+                    Value::Text("t".into()),
+                    Value::Integer(n),
+                ],
+                1,
+            );
+            let (sql, expected) = if n % 2 == 0 {
+                (LAZY, "lazy")
+            } else {
+                (ORDINARY, "ordinary")
+            };
+            assert_eq!(message.0, [vec![Value::Text(expected.into())]]);
+            let recipient = q3_indexed_sql_work(
+                &db,
+                sql,
+                vec![Value::Text(format!("prep-{n}")), Value::Text("s".into())],
+                1,
+            );
+            let wanted = match n {
+                1 => vec![vec![Value::Text("t".into())]],
+                2 => vec![vec![Value::Text("msg-2".into()), Value::Text("t".into())]],
+                _ => vec![],
+            };
+            assert_eq!(recipient.0, wanted);
+            quantum.push((message.1, recipient.1));
+        }
+        eprintln!(
+            "Q3 production publication pointSQL SQLite={} retained={retained} mixed100 VM={quantum:?} source_SHA256={:x}",
+            db.query_row("SELECT sqlite_version()", [], |r| r.get::<_, String>(0))
+                .unwrap(),
+            Sha256::digest(include_str!("../../src/store/invitation_content.rs").as_bytes())
+        );
+        work.push(quantum);
+    }
+    assert_eq!(
+        work[0], work[1],
+        "production mode-specific point work must not follow unrelated retained recipients"
+    );
+}
+
+#[path = "query_work_q4.rs"]
+mod query_work_q4;

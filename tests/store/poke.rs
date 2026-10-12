@@ -128,7 +128,7 @@ fn active_catch_up_excludes_the_thread() {
     let now = latest - 40_000;
     assert_eq!(due(&conn, now)[0].receipts.len(), 2);
     conn.execute(
-        "INSERT INTO catch_up(seat_id,thread_id,frontier_seq,binding_generation,execution_id,entered_at,state) VALUES ('rcv','ta',0,1,'e',0,'active')",
+        "INSERT INTO catch_up(binding_id,seat_id,thread_id,frontier_seq,entered_at,state) SELECT binding_id,'rcv','ta',0,0,'active' FROM occupant_bindings WHERE seat_id='rcv'",
         [],
     )
     .unwrap();
@@ -303,6 +303,57 @@ fn bound_store() -> (crate::store::SqliteStore, PathBuf) {
     )
     .unwrap();
     (store, path)
+}
+
+/// Kills: a poke aimed at "the" open binding, a subagent or a disconnected one: the due poke and
+/// its reservation carry exactly the connected top-level bindings, the targets the composer
+/// rule chooses among (spec §3 Wake).
+#[test]
+fn soft_poke_targets_the_composer_rule_binding() {
+    use crate::ports::{ReservedWakeAuthority, StorePort};
+    let (store, path) = bound_store();
+    let db = StoreContext::new(path.clone(), Arc::new(FixedClock))
+        .open_writer()
+        .unwrap();
+    let insert = |id: &str, role: &str, connected: bool, pid: i64| {
+        db.execute(
+            "INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation,binding_id,role,liveness,disconnected_at,disconnect_reason,liveness_pid,liveness_start) VALUES ('s',1,1,'pane','host',0,'claude',?1,'self-reported','cooperative_top_level',0,0,'term-pane','inc',?1,?2,?3,?4,?5,?6,1)",
+            params![
+                id,
+                role,
+                if connected { "connected" } else { "disconnected" },
+                (!connected).then_some(5_i64),
+                (!connected).then_some("ended"),
+                pid
+            ],
+        )
+        .unwrap();
+    };
+    insert("claude-live", "top_level", true, 20);
+    insert("claude-sub", "subagent", true, 30);
+    insert("claude-gone", "top_level", false, 40);
+    drop(db);
+    let due = StorePort::poke_candidates(&store, 16, &budget()).unwrap();
+    let ids = |targets: &[crate::ports::WakeTarget]| -> Vec<String> {
+        targets
+            .iter()
+            .map(|t| format!("{}:{:?}", t.harness, t.fingerprint_pid))
+            .collect()
+    };
+    assert_eq!(
+        ids(&due[0].targets),
+        ["codex:None", "claude:Some(20)"],
+        "connected top-level bindings only"
+    );
+    let reserved = StorePort::reserve_poke(&store, &due[0], &budget())
+        .unwrap()
+        .expect("reserved");
+    let ReservedWakeAuthority::Cooperative { targets, .. } = &reserved.reservation.authority else {
+        panic!("cooperative authority");
+    };
+    assert_eq!(ids(targets), ids(&due[0].targets));
+    drop(store);
+    let _ = std::fs::remove_file(path);
 }
 
 #[test]

@@ -1,0 +1,550 @@
+[
+  {
+    "id": "ht-poh.11",
+    "title": "Integration sweep: agy harness adapter on a harness-neutral core",
+    "issue_type": "task",
+    "description": "Root integration sweep. Verify the goal's main flows end to end on the integrated branch: (1) bare agy enrollment, child vs /clear, resume, startup context; (2) HookPull delivery pull→inject→transcript confirm→settle with cooperative_hook_delivery (CI-run integration test with fixtures); (3) Claude mod PushChannel unchanged (v0.5.0 suites + golden snapshots); (4) wake_on all/nudge across Native and Channel seats; (5) check-harness-neutral strict mode clean; (6) setup/unsetup agy + launch/handoff agy through V2. Add integration tests no per-leaf bead covers; sweep for unwired config values, parameters and interfaces (DeliveryPolicy, local_evidence, hook_step, settings_kind, AdapterText, wake_on); fix small gaps inline, file blockers for big ones. Run scripts/outside-adapter-report against main and attach the interim numbers.\nAccounting (R13): every commit carries an 'Outside-adapter: <none | list>' trailer.\nblocked-by ht-poh.2.8: consumes all leaves (integration sweep)\nblocked-by ht-poh.2.7: consumes all leaves (integration sweep)\nblocked-by ht-poh.9: consumes all leaves (integration sweep)\nblocked-by ht-poh.6.8: consumes all leaves (integration sweep)\nblocked-by ht-poh.6.7: consumes all leaves (integration sweep)\nblocked-by ht-poh.6.6: consumes all leaves (integration sweep)\nblocked-by ht-poh.6.5: consumes all leaves (integration sweep)\nblocked-by ht-poh.6.4: consumes all leaves (integration sweep)\nblocked-by ht-poh.6.3: consumes all leaves (integration sweep)\nblocked-by ht-poh.6.2: consumes all leaves (integration sweep)\nblocked-by ht-poh.6.1: consumes all leaves (integration sweep)\nblocked-by ht-poh.4.8: consumes all leaves (integration sweep)\nblocked-by ht-poh.4.7: consumes all leaves (integration sweep)\nblocked-by ht-poh.4.6: consumes all leaves (integration sweep)\nblocked-by ht-poh.4.5: consumes all leaves (integration sweep)\nblocked-by ht-poh.4.4: consumes all leaves (integration sweep)\nblocked-by ht-poh.4.3: consumes all leaves (integration sweep)\nblocked-by ht-poh.4.2: consumes all leaves (integration sweep)\nblocked-by ht-poh.4.1: consumes all leaves (integration sweep)\nblocked-by ht-poh.8: consumes all leaves (integration sweep)\nblocked-by ht-poh.2.6: consumes all leaves (integration sweep)\nblocked-by ht-poh.2.5: consumes all leaves (integration sweep)\nblocked-by ht-poh.2.4: consumes all leaves (integration sweep)\nblocked-by ht-poh.2.3: consumes all leaves (integration sweep)\nblocked-by ht-poh.2.2: consumes all leaves (integration sweep)\nblocked-by ht-poh.2.1: consumes all leaves (integration sweep)\nblocked-by ht-poh.3.7: consumes all leaves (integration sweep)\nblocked-by ht-poh.3.6: consumes all leaves (integration sweep)\nblocked-by ht-poh.3.5: consumes all leaves (integration sweep)\nblocked-by ht-poh.3.4: consumes all leaves (integration sweep)\nblocked-by ht-poh.3.3: consumes all leaves (integration sweep)\nblocked-by ht-poh.3.2: consumes all leaves (integration sweep)\nblocked-by ht-poh.3.1: consumes all leaves (integration sweep)\nblocked-by ht-poh.7: consumes all leaves (integration sweep)\nblocked-by ht-poh.5: consumes all leaves (integration sweep)\nblocked-by ht-poh.1: consumes all leaves (integration sweep)",
+    "deps": [
+      "ht-poh.3.3",
+      "ht-poh.3.2",
+      "ht-poh.4.2",
+      "ht-poh.6.2",
+      "ht-poh.6.7",
+      "ht-poh.4.8",
+      "ht-poh.7",
+      "ht-poh.9",
+      "ht-poh.6.5",
+      "ht-poh.6.1",
+      "ht-poh.2.7",
+      "ht-poh.2.8",
+      "ht-poh.3.1",
+      "ht-poh.2.5",
+      "ht-poh.2.2",
+      "ht-poh.2.3",
+      "ht-poh.3.6",
+      "ht-poh.5",
+      "ht-poh.2.6",
+      "ht-poh.4.1",
+      "ht-poh",
+      "ht-poh.2.4",
+      "ht-poh.4.4",
+      "ht-poh.6.6",
+      "ht-poh.4.6",
+      "ht-poh.6.8",
+      "ht-poh.6.3",
+      "ht-poh.3.5",
+      "ht-poh.6.4",
+      "ht-poh.3.7",
+      "ht-poh.3.4",
+      "ht-poh.4.7",
+      "ht-poh.4.5",
+      "ht-poh.2.1",
+      "ht-poh.8",
+      "ht-poh.4.3",
+      "ht-poh.1"
+    ]
+  },
+  {
+    "id": "ht-poh.2.8",
+    "title": "Strict neutral check: forbid to-migrate entries",
+    "issue_type": "task",
+    "description": "R8 enforcement after the sweep: scripts/check-harness-neutral fails on any 'to-migrate' allowlist entry (category removed from the format, or made a hard failure), CI asserts zero; permanent entries only. Acceptance: the check passes on the branch with zero to-migrate entries; a test adds a to-migrate entry and sees failure.\nconsumes: allowlist format (ht-poh.1).\nAccounting (R13): every commit carries an 'Outside-adapter: <none | list>' trailer.\nFiles: scripts/check-harness-neutral, scripts/harness-neutral-allowlist.txt, its tests.\nblocked-by ht-poh.2.2: consumes removal of its to-migrate allowlist entries\nblocked-by ht-poh.2.3: consumes removal of its to-migrate allowlist entries\nblocked-by ht-poh.2.4: consumes removal of its to-migrate allowlist entries\nblocked-by ht-poh.2.5: consumes removal of its to-migrate allowlist entries\nblocked-by ht-poh.2.6: consumes removal of its to-migrate allowlist entries\nblocked-by ht-poh.3.3: consumes removal of its to-migrate allowlist entries\nblocked-by ht-poh.3.4: consumes removal of its to-migrate allowlist entries",
+    "deps": [
+      "ht-poh.2",
+      "ht-poh.2.6",
+      "ht-poh.2.3",
+      "ht-poh.3.3",
+      "ht-poh.2.5",
+      "ht-poh.2.2",
+      "ht-poh.2.4",
+      "ht-poh.3.4"
+    ]
+  },
+  {
+    "id": "ht-poh.6.9",
+    "title": "Final-SHA evidence: full native gate + live smoke, commit records",
+    "issue_type": "task",
+    "description": "R12 evidence at the final code SHA. Run scripts/agy-native-gate with every flow, using genuine agy (HT_AGY_BIN) in the isolated world, then scripts/agy-live-smoke --live (budget ≤40 requests / ≤$0.50, enforced by the relay; key read locally only). Commit the records under docs/evidence/agy-native-gate/ and docs/evidence/agy-live-smoke/. Stop every process and run scripts/check-no-leaked-processes. Read-only fallback when the live key or network access is refused: run the gate only, plus agy-live-smoke --dry-run against the fake upstream, and record the live gap verbatim in the evidence README. A failing flow is filed as a blocker with its output.\nFiles: docs/evidence/agy-native-gate/*, docs/evidence/agy-live-smoke/*.\nAccounting (R13): every commit carries an 'Outside-adapter: <none | list>' trailer.\nblocked-by ht-poh.10: consumes Gate: fix loop exited (final code SHA)\nblocked-by ht-poh.6.4: consumes gate flow / runner exercised at the final SHA\nblocked-by ht-poh.6.5: consumes gate flow / runner exercised at the final SHA\nblocked-by ht-poh.6.6: consumes gate flow / runner exercised at the final SHA\nblocked-by ht-poh.6.7: consumes gate flow / runner exercised at the final SHA\nblocked-by ht-poh.6.8: consumes gate flow / runner exercised at the final SHA\nblocked-by ht-poh.9: consumes scripts/outside-adapter-report\nCoverage r2: also run scripts/outside-adapter-report base..final SHA and commit its output to docs/superpowers/runs/2026-10-09-agy-harness-adapter/outside-adapter-report.md (R13 numbers for the final report).\nblocked-by ht-poh.2.8: consumes strict neutral check (zero to-migrate)\nblocked-by ht-poh.11: consumes integrated branch after the integration sweep",
+    "deps": [
+      "ht-poh.11",
+      "ht-poh.6.5",
+      "ht-poh.10",
+      "ht-poh.6.8",
+      "ht-poh.2.8",
+      "ht-poh.6.6",
+      "ht-poh.6",
+      "ht-poh.6.4",
+      "ht-poh.6.7",
+      "ht-poh.9"
+    ]
+  },
+  {
+    "id": "ht-poh.10",
+    "title": "Gate: fix loop exited",
+    "issue_type": "task",
+    "description": "Released by super-auto when the phase-5 code fix loop exits (final code SHA). Holds final-SHA evidence work.",
+    "deps": [
+      "ht-poh"
+    ]
+  },
+  {
+    "id": "ht-poh.2.7",
+    "title": "Golden snapshots of per-harness surfaces before the sweep and re-fit",
+    "issue_type": "task",
+    "description": "Byte-identity guard for R8 and R9. Before any move, capture golden snapshots, via tests that run today's code, for Claude, Codex and Hermes: setup, setup-status and unsetup reports (text and JSON); doctor (text, --debug, --json); launch and handoff reports; hook stdout per event; setup/launch/handoff/me --help text; env-marker detection results; contract-id output; Health JSON with harnesses observed and unobserved. Fixtures under tests/fixtures/golden/, compared byte for byte. Help text may later change only where the core-sweep spec D3 allows; such updates are explicit fixture edits in the moving leaf.\nowns: golden snapshot fixtures for per-harness surfaces.\nFiles: tests/golden_surfaces.rs (combined module), tests/fixtures/golden/**.\nAccounting (R13): every commit carries an 'Outside-adapter: <none | list>' trailer.\nblocked-by ht-poh.7: consumes delivery-contract audit fixes (snapshots capture post-audit behaviour)\nCoverage r2: also snapshot handoff bootstrap argv/plan output for Claude, Codex (and Hermes where launch-capable). Snapshots are taken after ht-poh.7's audit fixes.",
+    "deps": [
+      "ht-poh.2",
+      "ht-poh.7"
+    ]
+  },
+  {
+    "id": "ht-poh.9",
+    "title": "Outside-adapter accounting tool: scripts/outside-adapter-report",
+    "issue_type": "task",
+    "description": "R13. A script that, given base and head SHAs, partitions the diff into src/harness/agy/** (plus the builtins() row) versus everything else. It groups the diff by subepic (by commit trailer 'Outside-adapter:' and bead id in commit subjects) and by category (trait extensions in src/harness/adapter.rs and registry.rs, reworked implementations, callers), and reports the check-harness-neutral counts and the allowlist delta between the two SHAs. Output is markdown suitable for the run report. Tests use a temp git repo fixture. The orchestrator runs it at the final SHA for the report (phase 6).\nowns: outside-adapter report format.\nFiles: scripts/outside-adapter-report, tests/scripts/outside_adapter_report.rs (or a shell test), docs.\nAccounting (R13): every commit carries an 'Outside-adapter: <none | list>' trailer.\nblocked-by ht-poh.1: consumes Outside-adapter trailer format\nconsumes: Outside-adapter trailer format (ht-poh.1).\nMeasurement is authoritative from the diff (path partition); trailers only annotate categories, so a missing trailer cannot hide cost.",
+    "deps": [
+      "ht-poh",
+      "ht-poh.1"
+    ]
+  },
+  {
+    "id": "ht-poh.6.8",
+    "title": "Live smoke runner (`--dry-run` / `--live`) and evidence README",
+    "issue_type": "task",
+    "description": "`RelayBackend` (in its own module), `live_smoke.py` and `scripts/agy-live-smoke` per D11: clean-SHA rule, CI guard, a flow of enroll, then wake, `systemMessage` injection, ACK and reply, a one-prompt fallback, a 10-minute cap, budget abort, leak check, a redacted evidence writer with a `sk-or-` scan. Add `docs/evidence/agy-live-smoke/README.md` and its row in `docs/evidence/README.md`.\nowns: the evidence record format.\nconsumes: the L2 World and `ModelBackend` API; the L3 relay CLI, run-dir files and `fake_upstream`; ht-poh.4.3/4.4 (enroll, install), ht-poh.5 (delivery), ht-poh.4.5 (wake).\n**Acceptance:** `scripts/agy-live-smoke --dry-run` passes end to end with genuine agy and zero spend; offline tests cover argument guards, evidence redaction and summary schema. `--live` is NOT run by this leaf: the orchestrator executes it once at the final SHA and commits the record. Outside-adapter: `scripts/agy-gate/{live_smoke.py,relay_backend.py}`, `scripts/agy-live-smoke`, `docs/evidence/agy-live-smoke/README.md`, `docs/evidence/README.md`.\nFiles: `scripts/agy-gate/{live_smoke.py,relay_backend.py,test_live_smoke.py}`, `scripts/agy-live-smoke`, `docs/evidence/agy-live-smoke/README.md`, `docs/evidence/README.md`\nSpec: 2026-10-09-agy-harness-adapter--test-infra-design.md (L8).\nAccounting (R13): every commit carries an 'Outside-adapter: <none | list>' trailer.\nblocked-by ht-poh.6.2: consumes World/ModelBackend API\nblocked-by ht-poh.6.3: consumes relay CLI and fake upstream\nblocked-by ht-poh.4.3: consumes the behaviour this flow exercises (Witness evidence, lifecycle reading, enrollment, TRUST-POLICY startup text)\nblocked-by ht-poh.4.4: consumes the behaviour this flow exercises (Owned plugin dir, skill, allow entry: setup/status/unsetup)\nblocked-by ht-poh.4.5: consumes the behaviour this flow exercises (Composer policy from model-free TUI captures)\nblocked-by ht-poh.5: consumes the behaviour this flow exercises (agy HookPull delivery: transcript confirm, pull, systemMessage inject, Stop downgrade)\nblocked-by ht-poh.3.4: consumes DeliveryPull/Confirm handlers for the delivery the smoke exercises\nblocked-by ht-poh.3.6: consumes core wake decision for the smoke's idle wake",
+    "deps": [
+      "ht-poh.6.2",
+      "ht-poh.6",
+      "ht-poh.4.4",
+      "ht-poh.3.4",
+      "ht-poh.4.3",
+      "ht-poh.3.6",
+      "ht-poh.5",
+      "ht-poh.6.3",
+      "ht-poh.4.5"
+    ]
+  },
+  {
+    "id": "ht-poh.6.7",
+    "title": "Gate flow: idle wake into the composer",
+    "issue_type": "task",
+    "description": "`flows/wake.py`, D7 row `wake` (a)–(e): wake on an ACK-required message into an empty composer with in-request delivery; no wake for lazy-only, busy (`delay_ms`) or a draft (draft preserved); `wake-on all` set by the model via `run_command` makes lazy wake. A wake is identified as a `<USER_REQUEST>` the gate did not type.\nconsumes: the L2 API (`draft`, `read_detection`); L1 `delay_ms`; ht-poh.4.5 (agy ComposerPolicy), ht-poh.5 (woken-turn delivery), ht-poh.3.4 (pull routing), ht-poh.3.6 (`wake_on: all` in the core wake decision).\n**Acceptance:** the flow passes model-free with zero leaks. Outside-adapter: `scripts/agy-gate/flows/wake.py`, `scripts/agy-gate/scenarios/wake*.json`.\nFiles: `scripts/agy-gate/flows/wake.py`, `scripts/agy-gate/scenarios/wake*.json`\nSpec: 2026-10-09-agy-harness-adapter--test-infra-design.md (L7).\nAccounting (R13): every commit carries an 'Outside-adapter: <none | list>' trailer.\nblocked-by ht-poh.6.2: consumes World/Flow API\nblocked-by ht-poh.6.1: consumes `delay_ms` busy step\nblocked-by ht-poh.4.5: consumes the behaviour this flow exercises (Composer policy from model-free TUI captures)\nblocked-by ht-poh.5: consumes the behaviour this flow exercises (agy HookPull delivery: transcript confirm, pull, systemMessage inject, Stop downgrade)\nblocked-by ht-poh.3.4: consumes the behaviour this flow exercises (HookPull handlers: `DeliveryPull`/`DeliveryConfirm`, offered ledger, pull-seat routing)\nblocked-by ht-poh.3.6: consumes the behaviour this flow exercises (Core wake decision honours `wake_on: all`, plus SKILL section)\nDesign roast r1: idle-wake flow also asserts no wake while a subagent is generating (composer Unreadable).",
+    "deps": [
+      "ht-poh.4.5",
+      "ht-poh.6.2",
+      "ht-poh.5",
+      "ht-poh.6",
+      "ht-poh.3.4",
+      "ht-poh.3.6",
+      "ht-poh.6.1"
+    ]
+  },
+  {
+    "id": "ht-poh.6.6",
+    "title": "Gate flows: delivery with transcript confirm, and the forced downgrade",
+    "issue_type": "task",
+    "description": "`flows/delivery.py` (lazy, ordinary, ACK-required and truncated items; a held inv0 to prove nothing settles before confirm; ACK via `run_command` and the allow entry; transcript evidence). `step_mutator.py` per D3, with a pure `mutate()` unit test. `flows/downgrade.py`: arm, abort, doctor downgrade, `userMessage` delivery and settlement, `restage_agy()` retrying `systemMessage`, byte-identical `hooks.json` restore.\nowns: `step_mutator.py`.\nconsumes: the L2 API (including `restage_agy`); L1 hold/bind/templates; ht-poh.5 (pull/confirm/inject, Stop downgrade keyed on executable identity, doctor downgrade line), ht-poh.3.4 (real DeliveryPull/Confirm handlers and offered ledger), ht-poh.4.7 (doctor surface).\n**Acceptance:** both flows pass model-free with zero leaks; mutator unit tests pass under 3.9. Outside-adapter: `scripts/agy-gate/{step_mutator.py,flows/*,scenarios/*}`.\nFiles: `scripts/agy-gate/{step_mutator.py,test_step_mutator.py,flows/delivery.py,flows/downgrade.py,scenarios/delivery*.json,scenarios/downgrade*.json}`\nSpec: 2026-10-09-agy-harness-adapter--test-infra-design.md (L6).\nAccounting (R13): every commit carries an 'Outside-adapter: <none | list>' trailer.\nblocked-by ht-poh.6.2: consumes World/Flow API, `restage_agy`\nblocked-by ht-poh.6.1: consumes scenario hold/bind\nblocked-by ht-poh.5: consumes the behaviour this flow exercises (agy HookPull delivery: transcript confirm, pull, systemMessage inject, Stop downgrade)\nblocked-by ht-poh.3.4: consumes the behaviour this flow exercises (HookPull handlers: `DeliveryPull`/`DeliveryConfirm`, offered ledger, pull-seat routing)\nblocked-by ht-poh.4.7: consumes the behaviour this flow exercises (Doctor projection and text)\nDesign roast r1: the delivery flow also asserts Stop-time confirmation (item delivered on a turn's last model call is settled at Stop and causes no idle wake) and a silently-ignored-step variant (gate mutator rewrites the step to an unknown key → no Stop error, frame absent → downgrade).",
+    "deps": [
+      "ht-poh.3.4",
+      "ht-poh.4.7",
+      "ht-poh.6.1",
+      "ht-poh.6.2",
+      "ht-poh.5",
+      "ht-poh.6"
+    ]
+  },
+  {
+    "id": "ht-poh.6.5",
+    "title": "Gate flows: enroll, subagent, `/clear`, resume",
+    "issue_type": "task",
+    "description": "Flow modules and scenarios for the D7 rows `enroll`, `subagent` (the `invoke_subagent` shape from research B, with match-routed child and parent steps), `clear` and `resume` (`--conversation A` and `-c`).\nconsumes: the L2 API; L1 matching and templates; ht-poh.4.2 (hook argv, decode/encode), ht-poh.4.3 (witnesses, lifecycle reading, enrollment), ht-poh.4.4 (installed plugin).\n**Acceptance:** the four flows pass model-free with zero leaks, and each asserts binding generation and native session from the read-only DB and injected text from the request log. Outside-adapter: `scripts/agy-gate/flows/*`, `scripts/agy-gate/scenarios/*`.\nFiles: `scripts/agy-gate/flows/{enroll,subagent,clear,resume}.py`, `scripts/agy-gate/scenarios/{enroll,subagent,clear,resume}*.json`\nSpec: 2026-10-09-agy-harness-adapter--test-infra-design.md (L5).\nAccounting (R13): every commit carries an 'Outside-adapter: <none | list>' trailer.\nblocked-by ht-poh.6.2: consumes World/Flow API\nblocked-by ht-poh.6.1: consumes scenario format and match routing\nblocked-by ht-poh.4.2: consumes the behaviour this flow exercises (agy module skeleton, metadata, registration, contract, decode/encode, hook argv)\nblocked-by ht-poh.4.3: consumes the behaviour this flow exercises (Witness evidence, lifecycle reading, enrollment, TRUST-POLICY startup text)\nblocked-by ht-poh.4.4: consumes the behaviour this flow exercises (Owned plugin dir, skill, allow entry: setup/status/unsetup)",
+    "deps": [
+      "ht-poh.4.2",
+      "ht-poh.6",
+      "ht-poh.6.1",
+      "ht-poh.4.3",
+      "ht-poh.4.4",
+      "ht-poh.6.2"
+    ]
+  },
+  {
+    "id": "ht-poh.6.4",
+    "title": "Gate flows: setup, permission, allow-rewrite, unsetup, launch",
+    "issue_type": "task",
+    "description": "Flow modules and scenarios for the D7 rows `setup`, `permission`, `allow-rewrite`, `unsetup` and `launch`, with flow-local DB/CLI queries.\nconsumes: the L2 World/Flow API; L1 scenario format; ht-poh.4.4 (owned plugin, allow member, `setup-status` JSON shape); ht-poh.4.6 (launch policy and refusal text); ht-poh.4.7 (doctor `agy_plugin_disabled`).\n**Acceptance:** `scripts/agy-native-gate --flow setup --flow permission --flow allow-rewrite --flow unsetup --flow launch` passes model-free with zero leaks. Scenario files validate in a unit test. Findings about agy's own behaviour (for example the trust-prompt rewrite) are recorded in the report, not hidden. Outside-adapter: `scripts/agy-gate/flows/*`, `scripts/agy-gate/scenarios/*`.\nFiles: `scripts/agy-gate/flows/{setup,permission,allow_rewrite,unsetup,launch}.py`, `scripts/agy-gate/scenarios/{permission,…}.json`\nSpec: 2026-10-09-agy-harness-adapter--test-infra-design.md (L4).\nAccounting (R13): every commit carries an 'Outside-adapter: <none | list>' trailer.\nblocked-by ht-poh.6.2: consumes World/Flow API\nblocked-by ht-poh.6.1: consumes scenario format\nblocked-by ht-poh.4.4: consumes the behaviour this flow exercises (Owned plugin dir, skill, allow entry: setup/status/unsetup)\nblocked-by ht-poh.4.6: consumes the behaviour this flow exercises (Launch policy and `HERDR_THREADS_AGY_OPTS`)\nblocked-by ht-poh.4.7: consumes the behaviour this flow exercises (Doctor projection and text)\nblocked-by ht-poh.8: consumes bootstrap plan V2 for the handoff --kind agy flow\nblocked-by ht-poh.4.8: consumes agy handoff check and docs\nCoverage r1: also add a handoff flow (handoff --new-tab --kind agy through bootstrap V2) to the gate.",
+    "deps": [
+      "ht-poh.4.8",
+      "ht-poh.8",
+      "ht-poh.4.6",
+      "ht-poh.6",
+      "ht-poh.6.2",
+      "ht-poh.4.4",
+      "ht-poh.6.1",
+      "ht-poh.4.7"
+    ]
+  },
+  {
+    "id": "ht-poh.6.3",
+    "title": "Gemini↔OpenAI relay with enforced budget, plus the OpenAI fake upstream",
+    "issue_type": "task",
+    "description": "`translate.py` (D9: joined system parts, `functionResponse` to `tool` with id pairing, preserved or aliased Gemini ids, fresh unique emitted ids, thought and signature dropping, schema mapping, incremental SSE translation, error mapping, local models/countTokens/aux). `budget.py` and `relay.py` (D10: hard 40/$0.50 ceilings, pre-flight worst case, persist-before-forward, OpenRouter `max_price`, fixed upstream, no redirects or retries, local token, passwd-home `.hermes/.env` key, redaction, CI/darwin guard). `fake_upstream.py` (scripted SSE, `{frame.*}` templates).\nowns: the relay CLI and run-dir files (`port`, `local-token`, `budget.json`, `relay.jsonl`) and the fake upstream script format.\nconsumes: none.\n**Acceptance:** offline tests per the spec's Acceptance relay bullet, with recorded agy bodies (absolute paths scrubbed) as test data; no network or key needed. Pure infra. Outside-adapter: `scripts/agy-relay/*`.\nFiles: `scripts/agy-relay/{translate.py,budget.py,relay.py,fake_upstream.py,test_translate.py,test_relay.py,testdata/}`\nSpec: 2026-10-09-agy-harness-adapter--test-infra-design.md (L3).\nAccounting (R13): every commit carries an 'Outside-adapter: <none | list>' trailer.",
+    "deps": [
+      "ht-poh.6"
+    ]
+  },
+  {
+    "id": "ht-poh.6.2",
+    "title": "Isolated agy world, native gate runner, `boot` flow, `fetch-agy`",
+    "issue_type": "task",
+    "description": "Implement `agyenv.py` per D4/D5/D8: root via `ih_root_new`, seed settings, sandbox profile, binary staging (`cp -c`) and wrapper, `restage_agy`, isolated Herdr via `isolated-herdr.sh`, all-features build and daemon start with owner pid, `ht()`/sender, `spawn_owned` with `g.<pgid>` records, teardown, leak check; `ModelBackend` and `FakeGeminiBackend`. Implement `gate.py`/`observe.py` per D6 (Flow API, glob discovery, report, exit codes 0/1/2/3, CI and platform refusals), `flows/boot.py`, `scripts/agy-native-gate`, `fetch-agy` plus `agy-versions.json`, and `docs/validation/agy-native.md`.\nowns: the `World`/`AgyPane`/`Flow`/`ModelBackend` API and the observation primitives.\nconsumes: L1 server CLI and scenario format.\n**Acceptance:** offline tests (profile and wrapper rendering, manifest sha512 against a local file, flow discovery, refusals); `HT_AGY_BIN=… scripts/agy-native-gate --flow boot` passes with zero leaks. Pure infra: no adapter leaf needed. Outside-adapter: `scripts/agy-sandbox/*`, `scripts/agy-gate/{gate,observe}.py`, `scripts/agy-gate/flows/boot.py`, `scripts/agy-native-gate`, `docs/validation/agy-native.md`.\nFiles: `scripts/agy-sandbox/*`, `scripts/agy-gate/{gate.py,observe.py,flows/boot.py,test_gate.py}`, `scripts/agy-native-gate`, `docs/validation/agy-native.md`\nSpec: 2026-10-09-agy-harness-adapter--test-infra-design.md (L2).\nAccounting (R13): every commit carries an 'Outside-adapter: <none | list>' trailer.\nblocked-by ht-poh.6.1: consumes server CLI and scenario format\nconsumes: agy executable identity definition (ht-poh.5).",
+    "deps": [
+      "ht-poh.6.1",
+      "ht-poh.6"
+    ]
+  },
+  {
+    "id": "ht-poh.6.1",
+    "title": "Fake Gemini server, scenario format `agy-fake-gemini/1`, CI line for offline agy-script tests",
+    "issue_type": "task",
+    "description": "Grow `harness-fake_server.py` into `server.py` plus `scenario.py` per D2: routes, reply kinds, `delay_ms` and chunked SSE, match routing, `{var.*}`/`{frame.*}` templates, request log written on arrival, hot-swap, owner-pid exit, loopback-only bind. Add the D12 CI loop line.\nowns: scenario format `agy-fake-gemini/1`, the `requests.jsonl` schema, and the `system_messages`/`user_requests`/`frames` helpers.\nconsumes: none.\n**Acceptance:** offline tests cover every D2 behaviour and pass under 3.9 and 3.11; CI runs them. Pure infra, no agy needed. Outside-adapter: `scripts/agy-fake-gemini/*`, `.github/workflows/ci.yml` (R12 test infra).\nFiles: `scripts/agy-fake-gemini/{server.py,scenario.py,test_fake_gemini.py,testdata/}`, `.github/workflows/ci.yml`\nSpec: 2026-10-09-agy-harness-adapter--test-infra-design.md (L1).\nAccounting (R13): every commit carries an 'Outside-adapter: <none | list>' trailer.",
+    "deps": [
+      "ht-poh.6"
+    ]
+  },
+  {
+    "id": "ht-poh.4.8",
+    "title": "Docs, README rows, handoff check",
+    "issue_type": "task",
+    "description": "README harness table row and registry sentence (`README.md:114-128`); `integrations/agy/README.md` (operator guide: setup, plugin enable, allow entry, rewrites, `--sandbox` limit, `-c` vs `--conversation`, Herdr coexistence); `docs/install.md` and `docs/agent-usage.md` agy sections. One handoff test: `handoff --kind agy` composes and validates through bootstrap V2, using a fixture or isolated Herdr session.\nowns: agy docs rows.\nconsumes: L3 (setup behaviour to document); L5 (`LaunchPolicy`, `prepare_startup_input`); ht-poh.8 (bootstrap plan V2).\n**Acceptance:** docs name every D7–D10 behaviour; the handoff V2 test passes; `check-harness-neutral` clean. **Outside-adapter:** README.md, docs/, integrations/agy/ (docs only).\nFiles: README.md, docs/install.md, docs/agent-usage.md, integrations/agy/README.md, tests/cli/handoff_agy.rs (or combined module)\nSpec: 2026-10-09-agy-harness-adapter--agy-adapter-design.md (L7).\nAccounting (R13): every commit carries an 'Outside-adapter: <none | list>' trailer.\nblocked-by ht-poh.4.4: consumes setup docs\nblocked-by ht-poh.4.6: consumes launch policy\nblocked-by ht-poh.8: consumes bootstrap V2\nCoverage r2: handoff implementation lives in ht-poh.4.6; this leaf is docs plus the handoff check test.",
+    "deps": [
+      "ht-poh.8",
+      "ht-poh.4",
+      "ht-poh.4.4",
+      "ht-poh.4.6"
+    ]
+  },
+  {
+    "id": "ht-poh.4.7",
+    "title": "Doctor projection and text",
+    "issue_type": "task",
+    "description": "`doctor.rs` per D10: projection from L3 status, witness-health scan (bounded, read-only), sandbox note, limitations, safe/manual repairs, `doctor_text` Debug and Summary.\nowns: agy doctor projection and text.\nconsumes: L3 (`plugin::status()`, status projection); L2b (witness helpers: `AgyRoots` data paths, listing check fn).\n**Acceptance:** doctor JSON and text for healthy, plugin missing, disabled, allow missing, witness-less recent conversations (layout fixture), over-cap brain; summary `fix:` line fires on safe repairs; the ht-poh.5 downgrade line is left as a documented extension point. **Outside-adapter:** none.\nFiles: src/harness/agy/doctor.rs, tests/harness/agy_doctor.rs\nSpec: 2026-10-09-agy-harness-adapter--agy-adapter-design.md (L6).\nAccounting (R13): every commit carries an 'Outside-adapter: <none | list>' trailer.\nblocked-by ht-poh.4.4: consumes status API\nblocked-by ht-poh.4.3: consumes witness helpers\nblocked-by ht-poh.2.4: consumes doctor rendering via doctor_text/doctor_projection\nblocked-by ht-poh.2.3: consumes setup status projection used by doctor\nDesign roast r1: doctor shows 'agy delivery: offered, never confirmed (N in generation G)' (line added by ht-poh.5 with the downgrade line).",
+    "deps": [
+      "ht-poh.2.3",
+      "ht-poh.2.4",
+      "ht-poh.4.4",
+      "ht-poh.4.3",
+      "ht-poh.4"
+    ]
+  },
+  {
+    "id": "ht-poh.4.6",
+    "title": "Launch and handoff policy (agy LaunchPolicy, V2 handoff plan) and HERDR_THREADS_AGY_OPTS",
+    "issue_type": "task",
+    "description": "`AgyLaunch` per D8: flag table from the `agy --help` 1.3.2 fixture (`tests/fixtures/agy/help/agy-1.3.2.txt`), refusals, `-c`/`--conversation` conflict, `native_options_env`, `resolve_scope`, `prepare_launch` gated on plugin installed/current/enabled with an allow-entry warning, `configuration_fingerprint`, `compose_argv`, `prepare_startup_input` (`--prompt-interactive`), `AdapterText.launch_notes`.\nowns: agy `LaunchPolicy`.\nconsumes: L2a (launch stub); L3 (`plugin::status()`, `ConfiguredHook`).\n**Acceptance:** accept/refuse table tests incl. `=` forms and repeats; opts env validated; `launch --kind agy` with a plugin missing or disabled is refused with the setup/enable hint; with the plugin installed the prepared argv equals the validated caller argv; the startup-input template conflicts with `-i`; the help kind and opts lists include agy (pinned help tests updated once). **Outside-adapter:** pinned help/opts-list tests only.\nFiles: src/harness/agy/launch.rs, tests/fixtures/agy/help/, tests/harness/agy_launch.rs\nSpec: 2026-10-09-agy-harness-adapter--agy-adapter-design.md (L5).\nAccounting (R13): every commit carries an 'Outside-adapter: <none | list>' trailer.\nblocked-by ht-poh.4.2: consumes launch stub\nblocked-by ht-poh.4.4: consumes `plugin::status`\nblocked-by ht-poh.2.2: consumes registry-assembled launch/handoff help and opts-env list\nblocked-by ht-poh.8: consumes bootstrap plan V2 (agy handoff produces a V2 plan)\nowns (addendum): agy handoff through bootstrap V2 (retained composition from compose_argv) and prepare_startup_input.\nowns (addendum): tests/fixtures/agy/help/agy-1.3.2.txt (imported from the probe's agy --help capture).",
+    "deps": [
+      "ht-poh.4.4",
+      "ht-poh.4.2",
+      "ht-poh.4",
+      "ht-poh.8",
+      "ht-poh.2.2"
+    ]
+  },
+  {
+    "id": "ht-poh.4.5",
+    "title": "Composer policy from model-free TUI captures",
+    "issue_type": "task",
+    "description": "Capture `agent read --source detection` for agy states (empty, draft, multi-line, busy, permission prompt). Use genuine agy (`HT_AGY_BIN`) against the probe fake Gemini server (scripted delay for busy) in a private isolated named Herdr session (`scripts/lib/isolated-herdr.sh`); no model calls; stop every process. Implement `AgyComposer` (D8: rule-bounded rows, `>` empty, continuation, `validate_rows`, capabilities NONE, clear key and restore from captures).\nowns: agy `ComposerPolicy` and composer fixtures.\nconsumes: L2a (`composer_policy` forwarder and stub file).\n**Acceptance:** every capture reads to the expected `ComposerRead`; unknown and permission-prompt screens are `Unreadable`; capabilities `NONE`; the capture script is recorded under `tests/fixtures/agy/composer/README.md`. **Outside-adapter:** none.\nFiles: src/harness/agy/composer.rs, tests/fixtures/agy/composer/\nSpec: 2026-10-09-agy-harness-adapter--agy-adapter-design.md (L4).\nAccounting (R13): every commit carries an 'Outside-adapter: <none | list>' trailer.\nblocked-by ht-poh.4.2: consumes composer stub/forwarder\nCoverage r2 acceptance: the capture run also records 'herdr agent list' for the agy pane and asserts Herdr reports agent kind 'agy' (host_kinds). Captures use the frozen research probe harness copy; the recipe is recorded in tests/fixtures/agy/composer/README.md.\nDesign roast r1 (parked escalation, herdr #2354): a detection screen showing subagent generation (status line 'Agent(<name>) Generating …') reads Unreadable, so no wake is typed into a busy agy; captures add a 'subagent generating' state (model-free: scripted fake server with a subagent call and a delay).",
+    "deps": [
+      "ht-poh.4.2",
+      "ht-poh.4"
+    ]
+  },
+  {
+    "id": "ht-poh.4.4",
+    "title": "Owned plugin dir, skill, allow entry: setup/status/unsetup",
+    "issue_type": "task",
+    "description": "`plugin.rs` + `setup.rs` per D7: render plugin.json, hooks.json and SKILL.md (`SKILL_MD` + `AGY_SKILL_GUIDANCE`); owned-asset manifest, conflicts, unsetup residue; `config.json` enabled read; `settings_kind` allow-member-only spec driving the shared engine; status projection, diagnostics, repairs, `setup_report_lines`; `AdapterText` setup fragment. Tests use isolated HOME only (never the real `~/.gemini`).\nowns: the plugin layout (consumed by ht-poh.6) and the `plugin::status()` API (consumed by L5, L6).\nconsumes: L2a (`paths::hook_command`, `AgyRoots`, stubs to fill); ht-poh.2.1 (`SettingsKindSpec` allow-member-only engine).\n**Acceptance:** goldens `tests/fixtures/agy/plugin/{plugin.json,hooks.json,SKILL.md}` with placeholders; install, re-setup unchanged, moved-executable re-render, user-edited Conflict, foreign-dir Conflict, unsetup owned-only; enabled/disabled/absent `config.json`; allow entry pre-existing, array-absent, rewritten-by-agy then re-added, removal. **Outside-adapter:** none.\nFiles: src/harness/agy/{plugin,setup}.rs, tests/fixtures/agy/plugin/, tests/harness/agy_setup.rs\nSpec: 2026-10-09-agy-harness-adapter--agy-adapter-design.md (L3).\nAccounting (R13): every commit carries an 'Outside-adapter: <none | list>' trailer.\nblocked-by ht-poh.4.2: consumes paths, argv builder, stubs\nblocked-by ht-poh.2.3: consumes setup engine and setup CLI driven by settings_kind/setup hooks (kind-generic legacy helpers)\nblocked-by ht-poh.3.6: consumes SKILL_MD with the wake-on section (owned by ht-poh.3.6) rendered into the agy skill\nowns (addendum): the setup-status agy JSON shape (plugin{path,installed,current,enabled,version}, allow_entry{file,rule,state}).\nconsumes: SKILL_MD wake-on section (ht-poh.3.6).",
+    "deps": [
+      "ht-poh.4.2",
+      "ht-poh.2.3",
+      "ht-poh.4",
+      "ht-poh.3.6"
+    ]
+  },
+  {
+    "id": "ht-poh.4.3",
+    "title": "Witness evidence, lifecycle reading (startup, /clear, resume via C1), enrollment with startup check-in context, TRUST-POLICY startup text",
+    "issue_type": "task",
+    "description": "`witness.rs`: D5 `local_evidence` (presence lock, the listing over bound parent and bounded glob of 65,536 entries plus deadline, K hint, lifecycle reading) and the `mod.rs` forwarder line. Lands the D9 TRUST-POLICY text and accepted limits in the same commit. Fixture layouts are built in temp HOMEs (`tests/fixtures/agy/layouts/*.txt` manifests: top-level, child listed under bound, child listed under other parent, `/clear`, resume with stale lock, missing lock, over-cap brain).\nowns: agy witness mapping; TRUST startup text and the \"child with presence lock still a child via listing\" limit.\nconsumes: L1 (`local_evidence` trait, `refine`, runner call); L2a (decode, `AgyRoots`, `conversation_state`).\n**Acceptance:** D5 decision table on layouts; through the hook runner with a test daemon — startup enrolls with exact `systemMessage` output, a child leaves the generation unchanged, `/clear` rotates, inv0 resume reattaches by C1, a known conversation runs no glob (counted via a test hook), daemon down prints nothing. **Outside-adapter:** TRUST-POLICY.md.\nFiles: src/harness/agy/{witness,mod}.rs, TRUST-POLICY.md, tests/fixtures/agy/layouts/, tests/harness/agy_witness.rs (or combined module)\nSpec: 2026-10-09-agy-harness-adapter--agy-adapter-design.md (L2b).\nAccounting (R13): every commit carries an 'Outside-adapter: <none | list>' trailer.\nblocked-by ht-poh.4.1: consumes trait + refine + runner call\nblocked-by ht-poh.4.2: consumes module, decode, paths",
+    "deps": [
+      "ht-poh.4.2",
+      "ht-poh.4.1",
+      "ht-poh.4"
+    ]
+  },
+  {
+    "id": "ht-poh.4.2",
+    "title": "agy module skeleton, metadata, registration, contract, decode/encode, hook argv",
+    "issue_type": "task",
+    "description": "D1 skeleton: `mod.rs` with every trait method forwarding to stub submodules (setup/status/unsetup refuse or report not installed; `launch_policy` returns a stub `AgyLaunch` refusing with \"not yet supported\"; `composer_policy` returns `AgyComposer` reading `Unreadable`; `doctor_*`/`settings_kind` stubs return None). Also: D2 metadata and admission (`InjectionStep` with both encodings), `CONTRACT` and argv-discriminator `classify`, D5 decode/encode (role `Unknown`, so silent until L2b), D3 `paths::hook_command` and `AgyRoots`, D6 `paths::conversation_state`, and the `builtins()` row. Fixtures `tests/fixtures/agy/payloads/*.json` copied from the research runs, paths rewritten to `<root>`: SessionStart top/child/after-clear, PreInvocation inv0 fresh, inv0 resume, inv1, Stop `NO_TOOL_CALL`, Stop inject-error.\nowns: the agy module, the hook argv contract (`hook agy --event SessionStart|PreInvocation|Stop`), the conversation-state location, `InjectionStep` encodings.\nconsumes: ht-poh.2.1 (`agent_env_markers`, `AdapterText`, `default_config_root`).\n**Acceptance:** classify Ok/Violation/Malformed per event; decode table; encode bytes byte-locked; argv round-trips through `parse_hook_argv`; registry-pinned tests updated once (rows list, the `adapter.rs` builtin-test arm for `agy`, contract-id output); `hook agy` on any fixture prints nothing. **Outside-adapter:** `registry.rs` builtins row, `harness/mod.rs` decl, pinned test arms in `adapter.rs`/`registry.rs` tests and the contract-id tests.\nFiles: src/harness/agy/{mod,paths,contract,decode,witness,plugin,setup,composer,launch,doctor}.rs (stubs), src/harness/mod.rs, src/harness/registry.rs, tests/fixtures/agy/payloads/\nSpec: 2026-10-09-agy-harness-adapter--agy-adapter-design.md (L2a).\nAccounting (R13): every commit carries an 'Outside-adapter: <none | list>' trailer.\nblocked-by ht-poh.2.1: consumes artifact\nblocked-by ht-poh.1: consumes artifact\nowns (addendum): recorded payload fixtures tests/fixtures/agy/payloads/ imported from the research probe runs.",
+    "deps": [
+      "ht-poh.4",
+      "ht-poh.2.1",
+      "ht-poh.1"
+    ]
+  },
+  {
+    "id": "ht-poh.4.1",
+    "title": "Neutral hook seams: `local_evidence` + witness rule, `hook_step`",
+    "issue_type": "task",
+    "description": "Lands D4 and D6, inert by default. **What it adds:** `Witness`, `RoleWitness::decide`, `LocalEvidence::refine`, `LocalEvidenceRequest`, `HarnessAdapter::local_evidence` (default empty), `HookStep`/`HookStepContext`/`HookStepDaemon` and `HarnessAdapter::hook_step` (default None), with registry forwarders. **Runner:** a `decode_refined` helper at both decode sites (`cli/hook.rs:2596,3229`), so the event bound derives from the refined intent; `pane_context_snapshot` factored out of `record_observer_reset`; the daemon-connection helper factored out of `check_in`; the hook-step branch at `:2862`.\nowns: the neutral witness rule and both seams.\nconsumes: ht-poh.2.1 (adapter.rs, registry.rs and hook.rs as left by the seam); ht-poh.1 check.\n**Acceptance:** unit tests of `decide`/`refine` (never raises Subagent; lifecycle ignored for non-TopLevel and for other kinds); runner tests with a test-local adapter in a test `Registry`, in a new suite (its own `[[test]]` if it runs an in-process daemon, `required-features = [\"test-support\"]`) — `Unknown`+witness becomes TopLevel and checks in, or becomes child with a local restriction; lifecycle upgrade raises the budget; hook step gets the pane claim, state dir and no daemon start; default adapters byte-identical with DP10 suites unchanged; clippy, check-default-features. **Outside-adapter:** `src/harness/adapter.rs`, `src/harness/registry.rs`, `src/cli/hook.rs`, plus the new test file. R13: trait extensions `local_evidence` (planned) and `hook_step` (finding: needed by ht-poh.5, which has no core files).\nFiles: src/harness/adapter.rs, src/harness/registry.rs, src/cli/hook.rs, tests/cli/hook_local_evidence.rs, Cargo.toml (test entry)\nSpec: 2026-10-09-agy-harness-adapter--agy-adapter-design.md (L1).\nAccounting (R13): every commit carries an 'Outside-adapter: <none | list>' trailer.\nblocked-by ht-poh.2.1: consumes artifact\nblocked-by ht-poh.1: consumes artifact\nblocked-by ht-poh.2.6: consumes neutral hook runner (InstalledHarness handle, find_seat) in cli/hook.rs\nDesign roast r1: hook_step runs for top-level Observer events at both PreInvocation and Stop.",
+    "deps": [
+      "ht-poh.1",
+      "ht-poh.2.1",
+      "ht-poh.4",
+      "ht-poh.2.6"
+    ]
+  },
+  {
+    "id": "ht-poh.8",
+    "title": "Bootstrap plan V2: adapter-neutral retained composition for handoff",
+    "issue_type": "task",
+    "description": "Finding from ht-poh.2 D16 (R7, R13): the frozen V1 bootstrap grammar (harness/launch.rs compose_bootstrap_v1_argv ~:266-281; cli/handoff.rs bootstrap_v1::retained_argv_matches ~:1585-1597; store/topology_handoff/attachment.rs:628) admits only Claude and Codex by design. Add a new bootstrap plan version whose retained composition is the adapter's own LaunchPolicy::compose_argv result frozen into the plan, selected for any adapter with a launch policy; V1 stays frozen and allowlisted for Claude/Codex compatibility (old plans still validate). Handoff --pane/--new-tab --kind <any launch-capable adapter> works through V2 (Hermes included). Acceptance: V1 plans byte-identical and still validated; V2 plan round-trip and retained-argv validation tests; handoff with a test-support launch adapter (synthetic_fourth) works end to end in an isolated Herdr test session or fixture; check-harness-neutral clean.\nowns: bootstrap plan V2 format. Outside-adapter: core (records the out-of-adapter cost for R13). Files: src/harness/launch.rs, src/cli/handoff.rs, src/store/topology_handoff/*, src/protocol/handoff.rs, tests/cli/handoff.rs.\nAccounting (R13): every commit carries an 'Outside-adapter: <none | list>' trailer.\nblocked-by ht-poh.2.7: consumes golden snapshot fixtures for per-harness surfaces (byte-identity baseline)\nblocked-by ht-poh.1: consumes check-harness-neutral\nblocked-by ht-poh.2.2: consumes neutral launch/handoff surface (help, opts list, topology kind lookup)",
+    "deps": [
+      "ht-poh.2.2",
+      "ht-poh.1",
+      "ht-poh",
+      "ht-poh.2.7"
+    ]
+  },
+  {
+    "id": "ht-poh.2.6",
+    "title": "Hook runner, contract, attribution and evidence neutral",
+    "issue_type": "task",
+    "description": "D9, D10 and the L6 rows of D15. `InstalledHarness` handle; `CodexWitness` removed from `adapter.rs`, `cli/hook.rs` and the single arm at `cli/launch.rs:865` (explicit hunk exception); `report_parse_failure` uses the legacy predicate; `find_seat` uses the hook's harness; `normalize_version`/contract-id via `version_syntax`; attribution via `transcript_version` with renamed variants and allowlisted reason strings; descriptor-holding checks in `hook_evidence` and `harness_evidence`; neutral evidence gate dir; frozen v1 validation and `versions_document` allowlisted. Keeps the `normalize_version(&str,&str)` and `attribute_native_runtime(&str, ..)` signatures, so it does not touch the adapter files. Acceptance: hook stdout, evidence notes, parse-failure reports and `contract-id` (text and JSON) byte-identical (existing hook, evidence and contract tests); L6 `to-migrate` entries gone.\nconsumes: L1 `version_syntax`/`VersionSyntax`, `transcript_version`/`TranscriptVersionSpec`.\nOutside-adapter: all.\nFiles: src/cli/{hook,hook_evidence}.rs, src/harness/{attribution,contract,admission,adapter,evidence}.rs, src/harness/codex_evidence.rs (dir/prepare moved), src/daemon/harness_evidence.rs, src/protocol/commands.rs (allowlist only), src/cli/launch.rs:865 (one arm), tests/cli/hook*.rs, allowlist\nSpec: 2026-10-09-agy-harness-adapter--core-sweep-design.md (L6).\nAccounting (R13): every commit carries an 'Outside-adapter: <none | list>' trailer.\nblocked-by ht-poh.2.1: consumes `VersionSyntax`, `TranscriptVersionSpec`\nblocked-by ht-poh.2.7: consumes golden snapshot fixtures for per-harness surfaces (byte-identity baseline)",
+    "deps": [
+      "ht-poh.2",
+      "ht-poh.2.1",
+      "ht-poh.2.7"
+    ]
+  },
+  {
+    "id": "ht-poh.2.5",
+    "title": "Daemon, store, app and health neutral",
+    "issue_type": "task",
+    "description": "D11, D12 and the L5 rows of D15. `HealthInputs.harnesses` with the legacy-contract predicate and a single allowlisted v1 projection; registry-driven `trigger_unseen_versions`; `version_history_note`; `json_each` in `queries.rs`; `CLAUDE_NOT_KNOWN_EMPTY` moved; `COOPERATIVE_WAKE_LINE` under `cfg(test)`; `cfg(test)` status helpers relocated if flagged; history and frozen allowlist entries for `schema.rs` and `results.rs`; delete the stale `to-migrate` entries for test-only files. Acceptance: Health JSON and text byte-identical with Claude, Codex and Hermes observed and unobserved (existing health and app tests); a test that a current Hermes binding counts in the inbox `current_agent` query; L5 `to-migrate` entries gone.\nconsumes: L1 `AdapterText.version_history_note`; existing `legacy_contract_id()`.\nOutside-adapter: all.\nFiles: src/app.rs, src/daemon/{health,harness_states}.rs, src/store/{queries,schema,control}.rs, src/protocol/results.rs, src/harness/composer.rs, src/harness/claude/composer.rs, src/host/native.rs (verify only), allowlist\nSpec: 2026-10-09-agy-harness-adapter--core-sweep-design.md (L5).\nAccounting (R13): every commit carries an 'Outside-adapter: <none | list>' trailer.\nblocked-by ht-poh.2.1: consumes `AdapterText`\nblocked-by ht-poh.2.7: consumes golden snapshot fixtures for per-harness surfaces (byte-identity baseline)",
+    "deps": [
+      "ht-poh.2.7",
+      "ht-poh.2",
+      "ht-poh.2.1"
+    ]
+  },
+  {
+    "id": "ht-poh.2.4",
+    "title": "Doctor via adapter projections and text",
+    "issue_type": "task",
+    "description": "D7. Moves the Claude and Codex projection bodies, observed/verdict/path helpers, `cfg(test)` installed helpers and per-harness repair rules into the L1 forwarders `claude/doctor.rs`/`codex/doctor.rs`. Neutral `installed_declared` and `legacy_summary_lines`; `doctor_text`/`doctor_summary_claims` in both render paths; global-only `repair_plan`; neutral `harness_*` key rendering; frozen key entries allowlisted. Does not edit `harness/claude.rs`/`codex.rs` and calls L3's stable legacy helper signatures. Acceptance: `doctor`, `doctor --debug` and `doctor --json`, plus `doctor fix` plans, byte-identical (existing doctor tests); `cli/doctor.rs` has no `to-migrate` entries.\nconsumes: L1 `doctor_text`, `DoctorTextForm`, `doctor_summary_claims`, the forwarder modules.\nOutside-adapter: all.\nFiles: src/cli/doctor.rs, src/harness/claude/doctor.rs, src/harness/codex/doctor.rs, tests/cli/doctor*.rs imports, allowlist\nSpec: 2026-10-09-agy-harness-adapter--core-sweep-design.md (L4).\nAccounting (R13): every commit carries an 'Outside-adapter: <none | list>' trailer.\nblocked-by ht-poh.2.1: consumes doctor hooks and forwarder modules\nblocked-by ht-poh.2.7: consumes golden snapshot fixtures for per-harness surfaces (byte-identity baseline)",
+    "deps": [
+      "ht-poh.2.1",
+      "ht-poh.2.7",
+      "ht-poh.2"
+    ]
+  },
+  {
+    "id": "ht-poh.2.3",
+    "title": "Setup engine and setup CLI de-harnessed",
+    "issue_type": "task",
+    "description": "D4, D5, D6 (callers), D8 and the L3 rows of D15. `SetupEnv.config_roots` via `default_config_root`; foreground via `foreground_advice`; the `legacy` module becomes kind- and registry-driven with stable `user_inspection(Harness, &SetupEnv)` and `installer_hooks_installed(&SetupEnv, Harness)` signatures; the Codex allowance precheck moves to Codex's installer call site; Codex session-plan items move to `codex/setup.rs`; `plan_claude`/`uninstall_claude` become kind-generic; `setup_status_extras` and `setup_report_lines` replace the Claude branches; trust-reminder label; `trust_reminder` scalar allowlisted; re-exports deleted; `prompt_suggestion.rs` moved into Claude. Only this leaf edits `harness/claude.rs` and `harness/codex.rs` after L1. Acceptance: setup, setup-status and unsetup reports, manifests and exit codes byte-identical for Claude and Codex (existing tests); L3 `to-migrate` entries gone.\nconsumes: L1 `default_config_root`, `settings_kind`/`SettingsKindSpec`, `foreground_advice`, `setup_status_extras`, `setup_report_lines`, `AdapterText.trust_reminder_label`.\nowns: the stable legacy helper signatures above, which L4 consumes unchanged.\nOutside-adapter: all.\nFiles: src/harness/setup.rs, src/cli/setup.rs (except help), src/cli/setup/foreground.rs, src/harness/prompt_suggestion.rs → claude/, src/harness/{claude,codex}.rs, src/harness/{claude,codex}/setup.rs, tests/cli/setup*.rs imports, allowlist\nSpec: 2026-10-09-agy-harness-adapter--core-sweep-design.md (L3).\nAccounting (R13): every commit carries an 'Outside-adapter: <none | list>' trailer.\nblocked-by ht-poh.2.1: consumes `SettingsKindSpec`, setup hooks\nblocked-by ht-poh.2.7: consumes golden snapshot fixtures for per-harness surfaces (byte-identity baseline)",
+    "deps": [
+      "ht-poh.2.1",
+      "ht-poh.2.7",
+      "ht-poh.2"
+    ]
+  },
+  {
+    "id": "ht-poh.2.2",
+    "title": "CLI help, env markers, launch/handoff surface",
+    "issue_type": "task",
+    "description": "D2, D3 and the L2 rows of D15. Registry-derived markers in `cli/mod.rs`/`cli/output.rs` (picker unchanged); new `cli/help.rs` assembling setup, launch, handoff and me-init help from `AdapterText` and registry facts; `cli/commands.rs` non-watch edits (`after_help` wiring, setup flags via `setup_options()`, exit-status text); removes the `SETUP_HELP` hunk in `cli/setup.rs` (lines 59-144 only); launch and handoff text, the opts-env list, the topology `--kind` lookup, the `codex` launch-report key allowlisted, the `harness/launch.rs` re-exports and the frozen V1 allowlist; `client/mod.rs` wording; TRUST-POLICY A4 rewording. Acceptance: L2 `to-migrate` entries gone; marker, me-init, launch, handoff and topology tests green; recovery-argv tests updated to registry order; help output contains every adapter fragment.\nconsumes: L1 `AgentEnvMarker`/`Registry::{env_markers,person_guard_markers}`, `AdapterText` (`setup_*`, `launch_notes`, `config_root_hint`).\nOutside-adapter: all.\nFiles: src/cli/{mod,output,me,commands,launch,handoff,topology_runtime,topology_handoff,help(new)}.rs, src/cli/setup.rs (help hunk only), src/client/mod.rs, src/harness/launch.rs, TRUST-POLICY.md, tests/cli/{handoff,launch}.rs, tests/handoff_topology_cli.rs, allowlist\nSpec: 2026-10-09-agy-harness-adapter--core-sweep-design.md (L2).\nAccounting (R13): every commit carries an 'Outside-adapter: <none | list>' trailer.\nblocked-by ht-poh.2.1: consumes `AgentEnvMarker`, `AdapterText`\nblocked-by ht-poh.2.7: consumes golden snapshot fixtures for per-harness surfaces (byte-identity baseline)",
+    "deps": [
+      "ht-poh.2",
+      "ht-poh.2.1",
+      "ht-poh.2.7"
+    ]
+  },
+  {
+    "id": "ht-poh.2.1",
+    "title": "Adapter trait hooks seam",
+    "issue_type": "task",
+    "description": "Lands every D1 hook with a neutral default, plus the `agent_env_markers` metadata field (all 48 literals in src and tests). Adds registry validation and forwarders, and the D6 `SettingsKindSpec`/`OwnedAllowSpec` engine extension including allow-member-only mode with `native_rewrites`. Makes the D13 neutral-vocabulary moves (move-only, importers repointed) and adds the Claude/Codex/Hermes hook implementations returning today's values (D1 table). Core does not call the new hooks yet, except where the engine and D13 moves are themselves the change. Seam unit tests: each Claude/Codex `AdapterText` fragment is a substring of the core constant it will replace, which pins the temporary copy; the engine's allow-member-only fixtures (pre-existing, array-absent, native rewrite with a dropped key, member removed then re-added, unsetup pruning only when the base lacked the containers); registry rejects bad or duplicate markers, a mismatched `settings_kind.harness`, and over-long text; Claude/Codex/Hermes values. Converts the registration allowlist entries to permanent and removes `to-migrate` entries for the moved items. Acceptance: compiles; existing suite green; nothing observable changes for Claude, Codex or Hermes.\nowns: `HarnessAdapter` hooks (`text`, `default_config_root`, `settings_kind`, `foreground_advice`, `setup_status_extras`, `setup_report_lines`, `doctor_text`, `doctor_summary_claims`, `version_syntax`, `transcript_version`), `AdapterMetadata.agent_env_markers`/`AgentEnvMarker`, `AdapterText`, `ForegroundAdvice`, `DoctorTextForm`, `VersionSyntax`, `TranscriptVersionSpec`, `SettingsKindSpec`/`OwnedAllowSpec` and allow-member-only engine semantics, `PaneShellProbe`, `harness::process`, `claude/doctor.rs`/`codex/doctor.rs` forwarders.\nconsumes: `check-harness-neutral` and the allowlist format and `to-migrate` entries (ht-poh.1); the adapter-owned path rule of D14 (ht-poh.1).\nOutside-adapter: all files listed (trait extension).\nFiles: src/harness/{adapter,registry,setup,mod,launch,operational,recipe,runtime,process(new)}.rs, src/harness/{claude,codex,hermes}.rs + claude/, codex/ (incl. new doctor.rs, launch.rs), src/cli/skill.rs, src/app.rs (imports), src/harness/manifest.rs, src/cli/setup.rs:254 import, src/cli/doctor.rs:71-72 imports, src/cli/launch.rs:71,605, src/harness/hermes/launch.rs, src/test_support/*, tests/** (metadata literals), scripts/harness-neutral-allowlist.txt\nSpec: 2026-10-09-agy-harness-adapter--core-sweep-design.md (L1).\nAccounting (R13): every commit carries an 'Outside-adapter: <none | list>' trailer.\nblocked-by ht-poh.1: consumes artifact\nblocked-by ht-poh.2.7: consumes golden snapshot fixtures for per-harness surfaces (byte-identity baseline)",
+    "deps": [
+      "ht-poh.1",
+      "ht-poh.2",
+      "ht-poh.2.7"
+    ]
+  },
+  {
+    "id": "ht-poh.3.7",
+    "title": "Push-channel promotion of `wake_on: all` lazy rows",
+    "issue_type": "task",
+    "description": "DP8 promotion. `InboxBatchV2Item::LazyMessage.wakes` (skip-if-false, the `informational` precedent) is set by the store's InboxBatchV2 query from the reading seat's `wake_on`. `delivery::page` emits a waking lazy row as a `message` line with `ack_required: false`. The mod code is unchanged. TRUST-POLICY A8 promoted-lazy completion claim.\nconsumes: L5's `wake_on` accessor; L2's `delivery::page`.\n**Acceptance:** default-seat `watch` output byte-identical (DP10 guards); an `all` seat's lazy row appears as `kind: \"message\"`, and `watch ack --via submit` completes it as a lazy row; the InboxBatchV2 wire omits `wakes` when false (snapshot). **Outside-adapter:** none attributable to agy (R11).\nFiles: src/protocol/results.rs, src/store/queries.rs (InboxBatchV2), src/delivery/page.rs, tests/delivery/promotion.rs, TRUST-POLICY.md\nSpec: 2026-10-09-agy-harness-adapter--delivery-policy-design.md (L7).\nAccounting (R13): every commit carries an 'Outside-adapter: <none | list>' trailer.\nblocked-by ht-poh.3.5: consumes wake_on accessor\nblocked-by ht-poh.3.2: consumes delivery::page\nblocked-by ht-poh.3.3: consumes PushChannel re-fit of the watch/dispatch path",
+    "deps": [
+      "ht-poh.3",
+      "ht-poh.3.5",
+      "ht-poh.3.2",
+      "ht-poh.3.3"
+    ]
+  },
+  {
+    "id": "ht-poh.3.6",
+    "title": "Core wake decision honours `wake_on: all`, plus SKILL section",
+    "issue_type": "task",
+    "description": "DP8 core wake. `wake_seat_attention` reads `wake_on`; `lazy_delivery::pending_summary` is shared with `mod_seat_view`. `LogicalAttentionFrontier.lazy` and `advanced_beyond`, the witness re-check, `load_candidate`/`reserve` reading and writing `last_lazy_ordinal`, the `lazy` reason label, the batch window, and the lazy publication reason bit for `wake_on='all'` recipients. Add the SKILL bullet (DP8 text) and the TRUST-POLICY A8 lazy/wake amendment.\nconsumes: L5's `seats.wake_on` accessor and `wake_work.last_lazy_ordinal`.\n**Acceptance:** an idle `all` seat with only a pending lazy row is reserved; it is not re-reserved for the same frontier; a `nudge` seat is never woken by lazy rows; no poke is created; the SKILL test stays under 200 lines; the existing wake and scheduler suites are unchanged. **Outside-adapter:** none attributable to agy (R11).\nFiles: src/store/{attention,wake,lazy_delivery,seats,materialization}.rs, src/ports.rs (frontier/witness), src/scheduler/mod.rs (if eligibility reads the frontier), integrations/skill/SKILL.md, TRUST-POLICY.md, tests/store/wake_on_wake.rs\nSpec: 2026-10-09-agy-harness-adapter--delivery-policy-design.md (L6).\nAccounting (R13): every commit carries an 'Outside-adapter: <none | list>' trailer.\nblocked-by ht-poh.3.5: consumes wake_on column and accessor, last_lazy_ordinal\nblocked-by ht-poh.7: consumes audit\nblocked-by ht-poh.2.7: consumes golden snapshot fixtures for per-harness surfaces (byte-identity baseline)\nblocked-by ht-poh.3.3: consumes wake_suppressed and policy-based idle wake\nconsumes: wake_suppressed (ht-poh.3.3).\nowns: the herdr-threads SKILL wake-on section (SKILL_MD).",
+    "deps": [
+      "ht-poh.3.3",
+      "ht-poh.3",
+      "ht-poh.7",
+      "ht-poh.2.7",
+      "ht-poh.3.5"
+    ]
+  },
+  {
+    "id": "ht-poh.3.5",
+    "title": "`wake_on` preference: migration, store, wire and `herdr-threads wake-on`",
+    "issue_type": "task",
+    "description": "DP8 storage, wire, store and CLI. The next free migration adds `seats.wake_on` and `wake_work.last_lazy_ordinal`, with schema.rs lists updated. `seats::set_wake_on` is an accountable transaction (top-level binding only; `note_new_attention` on change) plus a read. Add `WakeOn`, `SetWakeOn`, `WakeOnQuery`, `WakeOnState` and the `seat.wake_on_v1` capability with a probe arm, the dispatch arms, and `src/cli/wake_on.rs` (`wake-on [nudge|all]`, text and `--json`). TRUST-POLICY A5 row plus the limit. The preference has no wake effect yet; the SKILL lands with the effect (L6).\nowns: the `wake_on` storage and accessor (`seats::wake_on(db, seat)`), the `wake-on` command, the `last_lazy_ordinal` column.\n**Acceptance:** set/read round trip, idempotent replay, subagent refused, migration up-test and schema lists. **Outside-adapter:** none attributable to agy (R11 core feature).\nFiles: migrations/00NN_seat_wake_on.sql, src/store/{schema,seats}.rs, src/protocol/{commands,results,capabilities}.rs, src/service/dispatch.rs, src/cli/{wake_on.rs,commands.rs,mod.rs}, tests/store/wake_on.rs, tests/cli/wake_on.rs, TRUST-POLICY.md\nSpec: 2026-10-09-agy-harness-adapter--delivery-policy-design.md (L5).\nAccounting (R13): every commit carries an 'Outside-adapter: <none | list>' trailer.\nblocked-by ht-poh.1: consumes check",
+    "deps": [
+      "ht-poh.3",
+      "ht-poh.1"
+    ]
+  },
+  {
+    "id": "ht-poh.3.4",
+    "title": "HookPull handlers: `DeliveryPull`/`DeliveryConfirm`, offered ledger, pull-seat routing",
+    "issue_type": "task",
+    "description": "Replace L1's inert arms with DP5/DP6: `src/delivery/ledger.rs` (pure bounded ledger) and `src/service/delivery_pull.rs` (Mutex owner, store-backed `PageSource`, framing via `delivery::frame`, version = FNV-1a over `ModFingerprint`, re-offer bounds 60 s / 3, Unchanged short-circuit). Confirm goes through L3's `ack_policy_delivered(HookPull, cooperative_hook_delivery, \"transcript\")` with a `delivery_confirm_payload`. Add the `COOPERATIVE_HOOK_DELIVERY_PROVENANCE` constant, advertise `delivery.pull_v1` with a probe arm, and add `delivery/routing.rs::omit_digest`, wired into cli/hook.rs (Lifecycle) and harness/bridge.rs (Tool). Test-support `synthetic_fourth` declares `(HookPull, cooperative_hook_delivery, Native)`; fix any pinned expectation this changes. TRUST-POLICY DP9 L4 rows and limits.\nowns: HookPull request semantics (refusals, page, ledger, confirm outcomes), the `cooperative_hook_delivery` provenance.\nconsumes: the L1 wire types; the L2 src/delivery API (`Assembler`, `drain_pages`, `frame`); the L3 `ack_policy_delivered` and `delivery::settle`.\n**Acceptance:** the DP Acceptance HookPull bullets (settle ordinary and lazy, Unchanged, `more`, re-offer bound, rotation discard, truncation refusal, `no_hook_pull`, `session_mismatch`, the advertised capability); routing tests for both boundaries; DP10 guards. **Outside-adapter:** new core needed by the agy adapter (service, delivery, protocol capability, hook/bridge routing, TRUST-POLICY).\nFiles: src/delivery/{ledger,routing}.rs, src/service/{delivery_pull.rs,dispatch.rs,mod.rs}, src/store/receipts.rs (confirm wrapper), src/protocol/{authority,capabilities}.rs, src/cli/hook.rs, src/harness/bridge.rs, src/test_support/mod.rs, src/app.rs (service wiring), tests/service/delivery_pull.rs, TRUST-POLICY.md\nSpec: 2026-10-09-agy-harness-adapter--delivery-policy-design.md (L4).\nAccounting (R13): every commit carries an 'Outside-adapter: <none | list>' trailer.\nblocked-by ht-poh.3.1: consumes wire types\nblocked-by ht-poh.3.2: consumes src/delivery API\nblocked-by ht-poh.3.3: consumes `ack_policy_delivered`, policy lookups\nblocked-by ht-poh.7: consumes audit\nowns (addendum): the per-mechanism digest rule (delivery/routing.rs omit_digest: HookPull keeps the lifecycle digest, omits at tool boundaries).",
+    "deps": [
+      "ht-poh.3",
+      "ht-poh.3.1",
+      "ht-poh.3.3",
+      "ht-poh.3.2",
+      "ht-poh.7"
+    ]
+  },
+  {
+    "id": "ht-poh.3.3",
+    "title": "Claude `PushChannel` re-fit: every Claude check becomes a policy lookup",
+    "issue_type": "task",
+    "description": "DP3 and the DP7 idle-wake part. The Claude adapter declares `(PushChannel, cooperative_mod_delivery, Channel)`. Replace dispatch.rs:531/557/634/653/670, receipts.rs:144-150, cli/watch.rs:933-991, and cli/commands.rs:1097/2930 (registry-derived possible values, `Harness` from the registry) with lookups. Add `NO_PUSH_CHANNEL` constants on both frozen enums. Generalize the store to `ack_policy_delivered(mechanism, provenance, via, digest)` plus the pure `delivery::settle::plan` (adds `src/delivery/settle.rs`); `ack_mod_delivered` keeps its payload and observation. Add `ModChannelRegistration.idle_wake`, `ModChannels::wake_suppressed`, and the scheduler's `mod_suppressed` calling it. Make the doc comments neutral. Remove the matching allowlist `to-migrate` entries. Add the TRUST-POLICY A3/A4/A5/A8 rewording (DP9 L3).\nowns: `ack_policy_delivered` (store settlement entry point), `delivery::settle`, `wake_suppressed`.\nconsumes: the `DeliveryPolicy` trait and registry lookup from L1; the ht-poh.1 allowlist (frozen `not_claude`).\n**Acceptance:** DP10 guards with the existing tests unmodified; new tests that `NO_PUSH_CHANNEL` serializes as `not_claude`, that the clap possible values are `[\"claude\"]`, and that `wake_suppressed` is false for a Native-declared channel; the check passes with these sites gone from `to-migrate`. **Outside-adapter:** reworked implementation (Claude re-fit) plus callers.\nFiles: src/harness/claude.rs (or claude/), src/service/{dispatch,mod_channels}.rs, src/store/receipts.rs, src/delivery/settle.rs, src/cli/{watch,commands}.rs, src/protocol/{watch,attention}.rs, src/ports.rs, src/scheduler/mod.rs, TRUST-POLICY.md, scripts/harness-neutral-allowlist.txt\nSpec: 2026-10-09-agy-harness-adapter--delivery-policy-design.md (L3).\nAccounting (R13): every commit carries an 'Outside-adapter: <none | list>' trailer.\nblocked-by ht-poh.3.1: consumes DeliveryPolicy trait, `Registry::delivery_policy`\nblocked-by ht-poh.1: consumes allowlist\nblocked-by ht-poh.7: consumes audit\nblocked-by ht-poh.2.7: consumes golden snapshot fixtures for per-harness surfaces (byte-identity baseline)\nblocked-by ht-poh.3.2: consumes src/delivery module (delivery::settle lands inside it)",
+    "deps": [
+      "ht-poh.7",
+      "ht-poh.3.2",
+      "ht-poh.1",
+      "ht-poh.3.1",
+      "ht-poh.3",
+      "ht-poh.2.7"
+    ]
+  },
+  {
+    "id": "ht-poh.3.2",
+    "title": "Extract `src/delivery/` from `watch` and port the D4 frame to Rust",
+    "issue_type": "task",
+    "description": "Move-only extraction (DP2). Add `delivery/{mod,assemble,page,frame}.rs`. `cli/watch.rs` keeps a facade with the same names and signatures (`drain`, `EmitState`, `EmitState::new`, `with_command_prefix`, `record_truncated`, `hint_path`), so `tests/cli/watch.rs` compiles unchanged. Add the Rust `frame()` and `HEADER`, with golden fixtures generated from the JS `frame()`, a Rust parity test and a new `integrations/claude/mod/tests/frame_golden.test.ts`.\nowns: the src/delivery API (`Assembler`, `DeliveryItem`, `PageSource`, `drain_pages`, `DrainEvent`, `frame`, `FrameItem`, `HEADER`, page constants).\n**Acceptance:** DP10 guards (`watch` output byte-identical); golden parity green in Rust (and in TS when `claude` is available); no assembly, truncation, label or paging code left in cli/watch.rs. **Outside-adapter:** reworked implementation (extraction).\nFiles: src/lib.rs, src/delivery/{mod,assemble,page,frame}.rs, src/cli/watch.rs, tests/delivery/*.rs, tests/fixtures/delivery/*, integrations/claude/mod/tests/frame_golden.test.ts\nSpec: 2026-10-09-agy-harness-adapter--delivery-policy-design.md (L2).\nAccounting (R13): every commit carries an 'Outside-adapter: <none | list>' trailer.\nblocked-by ht-poh.7: consumes contract audit before the refactor\nblocked-by ht-poh.2.7: consumes golden snapshot fixtures for per-harness surfaces (byte-identity baseline)\nowns (addendum): delivery::page (page.rs: PageSource, drain_pages and the waking-lazy emission point consumed by ht-poh.3.7).\nblocked-by ht-poh.1: consumes check-harness-neutral (src/delivery must name no harness)",
+    "deps": [
+      "ht-poh.7",
+      "ht-poh.2.7",
+      "ht-poh.1",
+      "ht-poh.3"
+    ]
+  },
+  {
+    "id": "ht-poh.3.1",
+    "title": "Delivery seam: `DeliveryPolicy` trait, registry lookup, `DeliveryPull`/`DeliveryConfirm` wire, inert handlers",
+    "issue_type": "task",
+    "description": "**Seam for ht-poh.5.** Add `DeliveryMechanism`, `IdleWake`, the `DeliveryPolicy` trait and `HarnessAdapter::delivery_policy()` (default `None`) (DP1). Add `ErasedAdapter`/`Registration` forwarding, `Registry::delivery_policy(&str)`, `Registry::push_channel_ids()` and the pairing validation in `Registry::new`. Add `src/protocol/delivery.rs` with every DP4 type, plus the `Command::{DeliveryPull, DeliveryConfirm}`, `PermitMutation::DeliveryConfirm`, `CommandResult::{DeliveryPulled, DeliveryConfirmed}`, `validate()` and `claim()` arms. Define the `DELIVERY_PULL` constant without advertising it. The dispatch and store arms answer `ErrorCode::Unsupported` (\"delivery pull is not served\"). No adapter declares a policy yet, so behaviour is unchanged.\nowns: the `DeliveryPolicy` trait and registry lookup; the HookPull wire types (`DeliveryPull`, `DeliveryPullReply`, `DeliveryPage`, `DeliveryConfirm`, report types).\nconsumes: the ht-poh.1 check script (must pass).\n**Acceptance:** wire round-trip and validation tests (batch bounds, duplicates, `marker_prefix` bounds, unknown fields rejected); registry validation tests; the inert arms return `Unsupported`; DP10 guards. **Outside-adapter:** trait extension plus new wire (adapter.rs, registry.rs, protocol/*, dispatch inert arm).\nFiles: src/harness/adapter.rs, src/harness/registry.rs, src/protocol/{delivery.rs,mod.rs,commands.rs,results.rs,capabilities.rs}, src/service/dispatch.rs, src/store/mod.rs (mutate arm), tests/protocol/delivery.rs\nSpec: 2026-10-09-agy-harness-adapter--delivery-policy-design.md (L1).\nAccounting (R13): every commit carries an 'Outside-adapter: <none | list>' trailer.\nblocked-by ht-poh.1: consumes check-harness-neutral",
+    "deps": [
+      "ht-poh.1",
+      "ht-poh.3"
+    ]
+  },
+  {
+    "id": "ht-poh.7",
+    "title": "AGENTS.md harness-neutral rule + delivery contract, and delivery-contract audit with inline fixes",
+    "issue_type": "task",
+    "description": "Spec §1 and §Delivery contract (R8 text, R10). AGENTS.md sections 'Harness-neutral core' and 'Delivery contract' (six rules, token-efficiency goal). Audit current code against each contract rule -> docs/superpowers/runs/2026-10-09-agy-harness-adapter/delivery-contract-audit.md; fix divergences inline when small (behaviour-changing fixes ship with tests); a divergence too large to fix here is recorded with a reason and becomes a punch-list item for the report. Must finish before the delivery refactor.\nowns: AGENTS.md contract text, audit report. Accounting (R13): every commit carries an 'Outside-adapter: <none | list>' trailer naming each change outside src/harness/agy/. Files: AGENTS.md, docs run dir, src/scheduler/*, src/service/* (only for audit fixes).",
+    "deps": [
+      "ht-poh"
+    ]
+  },
+  {
+    "id": "ht-poh.6",
+    "title": "Test infrastructure: agy fake Gemini server + native gate, Gemini↔OpenAI relay + live smoke script",
+    "issue_type": "epic",
+    "description": "Spec §5 (R12). scripts/agy-fake-gemini/ (Python scripted Gemini-native server grown from the probe harness at ~/Documents/Agy_Integration_Research_20261008/work/B/exp and scratchpad probe-toolcall); opt-in native gate (HT_AGY_BIN) under isolated HOME + loopback sandbox + private tmux + isolated named Herdr test session, scripted flows (enroll, /clear, subagent, resume, delivery+confirm, downgrade, permission entry, unsetup, wake); scripts/agy-relay/ thin relay (user-role function responses, unique tool ids, joined system parts, streaming) with enforced cap 40 req/$0.50, key read only locally from ~/.hermes/.env; scripts/agy-live-smoke runner; never in CI.\nowns: fake-server scenario format, relay.\nconsumes: agy hook argv contract (for flows), not needed to build the server/relay themselves. Files: scripts/agy-fake-gemini/*, scripts/agy-relay/*, scripts/agy-native-gate, scripts/agy-live-smoke, docs/evidence/agy-live-smoke/README.md.\nAccounting (R13): every commit carries an 'Outside-adapter: <none | list>' trailer naming each change outside src/harness/agy/.",
+    "deps": [
+      "ht-poh"
+    ]
+  },
+  {
+    "id": "ht-poh.5",
+    "title": "agy HookPull delivery: transcript confirm, pull, systemMessage inject, Stop downgrade",
+    "issue_type": "task",
+    "description": "Spec §3 Delivery/Downgrade/Output discipline (R4). agy adapter declares HookPull/cooperative_hook_delivery/Native; PreInvocation confirm (bounded transcript tail scan) -> DeliveryConfirm, DeliveryPull with cached attention version (per-conversation state file), inject one systemMessage page or nothing; Stop-hook injection-error detection -> downgrade to userMessage keyed by executable identity; doctor downgrade note; fixtures byte-locking output shapes; budgets.\nowns: agy delivery behaviour.\nconsumes: HookPull wire and DeliveryPolicy trait, agy adapter module. Files: src/harness/agy/delivery.rs, src/harness/agy/*, tests/fixtures/agy/.\nAccounting (R13): every commit carries an 'Outside-adapter: <none | list>' trailer naming each change outside src/harness/agy/.\nEvidence for the implementer: transcript marker = the D4 frame header line '[herdr-threads] <kind> <id> …' inside the injected SYSTEM_MESSAGE text; injection-error detection = Stop payload terminationReason 'error' with error text containing 'failed to inject steps' / 'unknown injected step type' (probe runs/ under /private/tmp/claude-501/-Users-alepar-AleCode-herdr-threads/e411a093-57e8-4332-840c-ec519a3f8779/scratchpad/probe-toolcall/runs/, e.g. 15, 19b, tui-04; copy needed samples into tests/fixtures/agy/). TRUST-POLICY accepted limit owned here: a transcript the hook cannot read leaves items pending, never settled.\nblocked-by ht-poh.3.1: consumes DeliveryPolicy trait, registry lookup and HookPull wire types (DeliveryPull/DeliveryConfirm); end-to-end daemon behaviour is exercised by the native gate and the integration sweep\nblocked-by ht-poh.4.1: consumes hook_step seam (HookStep/HookStepContext/HookStepDaemon) and runner branch\nblocked-by ht-poh.4.2: consumes agy module skeleton, InjectionStep encodings, paths::conversation_state location\nblocked-by ht-poh.4.3: consumes top-level role on PreInvocation (witness mapping)\nRefinement from the agy-adapter subspec (2026-10-09-agy-harness-adapter--agy-adapter-design.md D2, D5, D6): delivery runs as the agy adapter's HookStep (hook_step seam, ht-poh.4.1) for top-level Observer PreInvocation/Stop events, using the provided claim, daemon caller and private state dir; per-conversation state file at paths::conversation_state (create only after a non-refused DeliveryPull; delete on session_mismatch); downgrade lookup goes inside admit() selecting InjectionStep (both encodings byte-locked by ht-poh.4.2); TUI Stop reports terminationReason NO_TOOL_CALL (not model_stop); doctor downgrade line extends agy doctor.rs (ht-poh.4.7). Files: src/harness/agy/delivery.rs + one forwarder line in src/harness/agy/mod.rs; no core files.\nconsumes: offered-ledger confirm semantics (DeliveryConfirm outcomes, re-offer bounds) owned by ht-poh.3.4; the D4 frame text via DeliveryPage owned by ht-poh.3.2.\nIdle wake (R5): agy declares IdleWake::Native, so idle wake is the existing Native dispatcher using agy's ComposerPolicy (ht-poh.4.5); exercised end to end by ht-poh.6.7.\nblocked-by ht-poh.3.2: consumes D4 frame text and src/delivery API\nblocked-by ht-poh.3.4: consumes DeliveryPull/Confirm handlers and offered-ledger semantics\nblocked-by ht-poh.4.4: consumes plugin hooks.json registering PreInvocation/Stop\nblocked-by ht-poh.4.5: consumes agy ComposerPolicy used by Native idle wake\nblocked-by ht-poh.4.7: consumes agy doctor.rs projection the downgrade line extends\nowns: downgrade-state record (location under the agy adapter state dir, format) and the agy executable identity definition (resolved path + inode + size + mtime of the resolved target) — consumed by ht-poh.6.2 (restage_agy) and ht-poh.6.6.\nCoverage r2 acceptance: a CI-run integration test drives DeliveryPull -> fixture transcript (tests/fixtures/agy/) -> DeliveryConfirm -> settled receipts through a test daemon (no agy binary). This leaf also adds the downgrade line to agy doctor.rs.\nDesign roast r1 (cluster C1, rule): the single delivery signal is 'offered frame found in this generation's transcript', evaluated at every top-level PreInvocation AND at top-level Stop (bounded tail read, DeliveryConfirm for found ids). If this turn injected and the frame is absent at Stop, record an injection failure regardless of terminationReason/error; that failure drives the userMessage downgrade and the doctor line 'offered, never confirmed (N in generation G)'. Abort-style Stop errors are supporting evidence only. Executable identity source: parent-process image of the hook (ppid → proc_pidpath on macOS, /proc/<ppid>/exe on Linux) resolved through symlinks (path, inode, size, mtime); fallback PATH-resolved agy target when the parent is a shell/launcher. Fixtures: symlinked binary, launcher-wrapped binary, silently-ignored step (no Stop error, frame absent) → downgrade.",
+    "deps": [
+      "ht-poh.4.1",
+      "ht-poh.4.5",
+      "ht-poh.3.1",
+      "ht-poh.3.2",
+      "ht-poh.4.4",
+      "ht-poh.3.4",
+      "ht-poh.4.2",
+      "ht-poh.4.3",
+      "ht-poh.4.7",
+      "ht-poh"
+    ]
+  },
+  {
+    "id": "ht-poh.4",
+    "title": "agy adapter (minus delivery): metadata, owned plugin + skill, owned allow entry, local evidence + decode/witness, context, composer, launch, doctor",
+    "issue_type": "epic",
+    "description": "Spec §3 except the HookPull delivery part (R1, R2, R3, R5, R6, R7). src/harness/agy/ module + builtins() row; local_evidence trait step (presence lock + subagent listing) and daemon role decision; SessionStart/PreInvocation/Stop decode/encode (systemMessage startup check-in); owned plugin dir (plugin.json, hooks.json, skills/herdr-threads/SKILL.md) and status/unsetup incl. disabled detection; owned permissions.allow member via the shared JSON engine; ComposerPolicy from TUI captures; LaunchPolicy; doctor projection; TRUST-POLICY startup-enrollment text; README/docs rows; recorded fixtures. Record Outside-adapter trailers.\nowns: agy adapter module, local_evidence step, agy hook argv contract.\nconsumes: neutral rule (no new core harness names). Files: src/harness/agy/*, src/harness/mod.rs, src/harness/registry.rs (one row), src/harness/adapter.rs (local_evidence), src/cli/hook.rs (runner calls local_evidence), TRUST-POLICY.md, README.md, docs/, tests/fixtures/agy/.\nblocked-by ht-poh.1: consumes check-harness-neutral script (agy module must pass it)\nAccounting (R13): every commit carries an 'Outside-adapter: <none | list>' trailer naming each change outside src/harness/agy/.\nTRUST-POLICY accepted limit owned here: a child conversation that agy gives a presence lock still reads as a child via the subagent listing.\nFile ownership: in src/harness/adapter.rs this task adds only local_evidence; in src/cli/hook.rs only the runner's local_evidence call (sweep task owns InstalledHarness/report_parse_failure).",
+    "deps": [
+      "ht-poh",
+      "ht-poh.1"
+    ]
+  },
+  {
+    "id": "ht-poh.3",
+    "title": "Delivery policy: src/delivery extraction, DeliveryPolicy trait, Claude PushChannel re-fit, HookPull requests, wake_on + SKILL section",
+    "issue_type": "epic",
+    "description": "Spec §2 (R4 core side, R9, R11). Deliver: neutral src/delivery/ (D4 framing, truncation, pages, dedupe, settlement, offered ledger); DeliveryPolicy {mechanism, provenance, idle_wake} + HarnessAdapter::delivery_policy() default None; Claude adapter declares PushChannel/cooperative_mod_delivery/Channel; ModChannels/WatchRequest/watch/watch ack/dispatch with all Claude checks replaced by registry policy lookups (NoPushChannel internally, wire keeps not_claude allowlisted); HookPull DeliveryPull/DeliveryConfirm requests decided against A2; routing (digest suppression, idle_wake Native/Channel per contract); per-seat wake_on nudge|all preference + 'herdr-threads wake-on' command + core wake decision + SKILL section (how/when); TRUST-POLICY updates for cooperative_mod_* rewording, cooperative_hook_delivery provenance, wake_on. Claude mod behaviour byte-identical (existing v0.5.0 tests unchanged).\nowns: DeliveryPolicy trait, HookPull wire (DeliveryPull/DeliveryConfirm), delivery module API, wake_on.\nconsumes: neutral rule and allowlist. Files: src/delivery/*, src/service/{dispatch,mod_channels,workers}.rs, src/protocol/watch.rs, src/protocol/(new delivery).rs, src/cli/watch.rs, src/cli/(wake-on).rs, src/scheduler/mod.rs, src/store/*, src/harness/{adapter,claude}.rs, TRUST-POLICY.md, integrations/skill/SKILL.md, migrations.\nAccounting (R13): every commit carries an 'Outside-adapter: <none | list>' trailer naming each change outside src/harness/agy/.\nFile ownership: in src/harness/adapter.rs this task adds only delivery_policy/DeliveryPolicy; src/store and src/protocol changes limited to the delivery ledger, wake_on and delivery wire.",
+    "deps": [
+      "ht-poh"
+    ]
+  },
+  {
+    "id": "ht-poh.2",
+    "title": "Core sweep: move every production harness-specific site behind the adapter (empty all to-migrate allowlist entries)",
+    "issue_type": "epic",
+    "description": "Spec §1 table (R8). Every site in the table moves behind HarnessAdapter/registry or becomes a permanent frozen-wire/history allowlist entry with reason; afterwards check-harness-neutral has zero to-migrate entries. Includes adapter-supplied env markers (AdapterMetadata.agent_env_markers), validate_actor_harness -> Harness::Agent(_), queries.rs:6310 registry list, setup config_roots per adapter, help fragments, foreground_advice, harness_states notes, doctor sections via doctor_projection, contract/attribution/evidence, InstalledHarness/report_parse_failure, SettingsKind supplied by adapters, registry consts, app/host/topology/ports/store/health references. Claude/Codex/Hermes behaviour unchanged (existing tests guard). Excludes the watch/delivery files (owned by the delivery-policy task).\nconsumes: allowlist to-migrate entries and check script.\nowns: new trait hooks agent_env_markers, help fragments, foreground_advice, harness note, adapter-supplied settings kinds. Files: src/cli/{mod,output,setup,launch,handoff,me,doctor,commands,hook,hook_evidence,topology_*}.rs, src/cli/setup/foreground.rs, src/store/queries.rs, src/daemon/*, src/harness/{adapter,registry,context,contract,attribution,admission,setup,launch,cache,evidence}.rs, src/app.rs, src/host/*, src/protocol/*, src/ports.rs, adapter modules.\nAccounting (R13): every commit carries an 'Outside-adapter: <none | list>' trailer naming each change outside src/harness/agy/.",
+    "deps": [
+      "ht-poh"
+    ]
+  },
+  {
+    "id": "ht-poh.1",
+    "title": "Neutral rule seam: check-harness-neutral script + allowlist (format, to-migrate entries, D14 path rule), CI and per-change wiring",
+    "issue_type": "task",
+    "description": "Spec §1 (R8) — seam: scripts/check-harness-neutral (shell) failing on harness id literals / Harness::<Name> / harness-named types or fields outside src/harness/<id>/, tests/, #[cfg(test)] and the allowlist; prints a count; wired into the per-change checks (AGENTS.md command list) and CI; with its own tests. scripts/harness-neutral-allowlist.txt (path:pattern — reason), initially listing every current production site as 'to-migrate' plus permanent frozen-wire (v1 HarnessHealth/HarnessEvidence/HookParseFailure, legacy contract ids, not_claude wire code)/history migrations/builtins() entries, so the check passes on main.\nowns: check-harness-neutral interface (allowlist format, to-migrate entries). Accounting (R13): every commit carries an 'Outside-adapter: <none | list>' trailer naming each change outside src/harness/agy/. Files: scripts/check-harness-neutral, scripts/harness-neutral-allowlist.txt, .github/workflows/*, AGENTS.md (check command line only).\nAdapter-owned path rule (consumed by ht-poh.2 D14): src/harness/<id>.rs, src/harness/<id>/** and src/harness/<id>_*.rs for every id in builtins() are adapter-owned and exempt; the builtins() rows, CODEX/CLAUDE registry identities, OccupantHarness/context::Harness consts and harness/mod.rs pub mod lines are permanent registration entries.\nowns: the 'Outside-adapter: <none | list>' commit-trailer format (documented in AGENTS.md next to the check).",
+    "deps": [
+      "ht-poh"
+    ]
+  },
+  {
+    "id": "ht-poh",
+    "title": "agy harness adapter on a harness-neutral core",
+    "issue_type": "epic",
+    "description": "Root epic for super-auto run 2026-10-09-agy-harness-adapter. Spec: docs/superpowers/runs/2026-10-09-agy-harness-adapter/2026-10-09-agy-harness-adapter-design.md (R1–R13).",
+    "deps": []
+  }
+]

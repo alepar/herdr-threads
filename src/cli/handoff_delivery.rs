@@ -40,6 +40,256 @@ pub struct Preparation<'a, C: LocalClient + ?Sized> {
     pub client: &'a C,
     pub clock: &'a dyn Clock,
 }
+#[allow(clippy::too_many_arguments)]
+pub fn run_automatic_existing<C: LocalClient + ?Sized, W: Write>(
+    request: &Request,
+    inputs: Preparation<'_, C>,
+    journal: &Journal,
+    actor: super::actor_route::InvocationActor,
+    output: &OutputSpec,
+    writer: &mut W,
+) -> Result<(), RunError> {
+    require_automatic_capability(inputs.client, inputs.clock)?;
+    require_policy_capabilities(inputs.client, inputs.clock, request.policy.as_ref())?;
+    let claim = inputs.claim.clone();
+    let namespace = inputs.namespace.clone();
+    let clock = inputs.clock;
+    let client = inputs.client;
+    let plan = prepare_automatic(request, inputs)?;
+    let original = crate::protocol::handoff::AutomaticOriginal::Delivery(Box::new(plan));
+    let envelope = automatic_envelope(&claim, original.clone())?;
+    envelope
+        .validate_admission()
+        .map_err(super::invalid_request)?;
+    match client.call(
+        Command::AutomaticHandoffDelivery(Box::new(envelope)),
+        &super::cooperative_budget(clock),
+    )? {
+        CommandResult::SeatResolved(seat) if seat == original.delivery().recipient => {}
+        _ => {
+            return Err(super::invalid_request(
+                "unexpected automatic preparation result",
+            ));
+        }
+    }
+    let reference = publish_automatic(journal, original, claim, clock)?;
+    retry_automatic_to_writer(
+        journal, &reference, actor, &namespace, client, None, clock, output, writer,
+    )?;
+    Ok(())
+}
+
+pub(crate) fn require_automatic_capability<C: LocalClient + ?Sized>(
+    client: &C,
+    clock: &dyn Clock,
+) -> Result<(), RunError> {
+    match client.call(Command::Capabilities, &super::cooperative_budget(clock)) {
+        Ok(CommandResult::Capabilities(list))
+            if list.capabilities.iter().any(|capability| {
+                capability == crate::protocol::capabilities::AUTOMATIC_HANDOFF_V1
+            }) =>
+        {
+            Ok(())
+        }
+        Ok(_) => Err(super::unsupported(
+            "daemon lacks automatic handoff capability",
+        )),
+        Err(error) if error.code == ErrorCode::Unsupported => Err(super::unsupported(
+            "daemon lacks automatic handoff capability",
+        )),
+        Err(error) => Err(error.into()),
+    }
+}
+
+pub(crate) fn require_policy_capabilities<C: LocalClient + ?Sized>(
+    client: &C,
+    clock: &dyn Clock,
+    policy: Option<&crate::protocol::handoff::HandoffPolicy>,
+) -> Result<(), RunError> {
+    super::require_handoff_capabilities(client, clock, policy)?;
+    if policy.is_some() {
+        super::require_mutation_capability(
+            client,
+            clock,
+            crate::protocol::capabilities::ENSURE_CREATION_POLICY_V1,
+            "freezing direct invitation creation policy",
+        )?;
+    }
+    Ok(())
+}
+
+pub(crate) fn automatic_envelope(
+    claim: &CallerClaim,
+    original: crate::protocol::handoff::AutomaticOriginal,
+) -> Result<crate::protocol::handoff::AutomaticDeliveryMutation, RunError> {
+    let scope = IntentScope::Cooperative {
+        instance: claim.instance.clone(),
+        seat: claim.seat.clone(),
+    };
+    crate::protocol::handoff::AutomaticDeliveryMutation::new(scope, claim.clone(), original)
+        .map_err(super::invalid_request)
+}
+
+pub(crate) fn validate_automatic_local_admission(
+    journal: &Journal,
+    envelope: &crate::protocol::handoff::AutomaticDeliveryMutation,
+) -> Result<(), RunError> {
+    if envelope.plan().payload.policy.is_none() {
+        return Ok(());
+    }
+    envelope
+        .validate_admission()
+        .map_err(super::invalid_request)?;
+    let thread = crate::protocol::ids::ThreadId::new("\\".repeat(128));
+    let selection = crate::protocol::results::DirectThreadEnsured::admission_witness(
+        thread.clone(),
+        envelope.plan().recipient.clone(),
+    );
+    let reference = IntentRef {
+        ordinal: u64::MAX,
+        operation: OperationId::new("ffffffff-ffff-ffff-ffff-ffffffffffff"),
+    };
+    for summary in envelope
+        .admission_summaries()
+        .map_err(super::invalid_request)?
+    {
+        let mut progress = AutomaticProgress {
+            selection: Some(selection.clone()),
+            thread: Some(thread.clone()),
+            message: Some(CommandResult::MessageSent(
+                crate::protocol::ids::MessageId::new("\\".repeat(128)),
+            )),
+            possible_start: true,
+            launch: if summary.is_null() {
+                None
+            } else {
+                Some(summary.clone())
+            },
+            report: None,
+            report_digest: Some("f".repeat(64)),
+        };
+        let report = automatic_report_value(&reference, &envelope.original, &progress);
+        progress.report = Some(report);
+        let progress_bytes = serde_json::to_vec(&progress).map_err(io::Error::other)?;
+        if progress_bytes.len() > 4 * 1024 * 1024 {
+            return Err(super::invalid_request(
+                "automatic future progress exceeds retained limit",
+            ));
+        }
+        let status = crate::protocol::handoff::HandoffResult {
+            compound: envelope.plan().payload.keys.compound.clone(),
+            state: HandoffState::Completed,
+            thread: Some(thread.clone()),
+        };
+        let terminal = AutomaticTerminal {
+            version: 2,
+            original: serde_json::to_string(&envelope.original.semantic(envelope.claim.clone()))
+                .map_err(io::Error::other)?,
+            completed: status,
+            progress_digest: "f".repeat(64),
+            progress,
+        };
+        if serde_json::to_vec(&terminal)
+            .map_err(io::Error::other)?
+            .len()
+            + crate::cli::journal::MAX_AUTOMATIC_ORIGIN_BYTES
+            > 2 * crate::cli::journal::MAX_AUTOMATIC_ORIGIN_BYTES + 4 * 1024 * 1024
+        {
+            return Err(super::invalid_request(
+                "automatic future terminal exceeds retained limit",
+            ));
+        }
+        handoff::validate_automatic_presentation_admission(journal.root(), &envelope.plan().payload.namespace,
+            &summary, &selection, serde_json::json!({"compound":envelope.plan().payload.keys.compound,"caller_target":envelope.claim.target,"possible_start":true,"status_is_last_observed":true,"status_unknown":false}))
+            .map_err(super::invalid_request)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn publish_automatic(
+    journal: &Journal,
+    original: crate::protocol::handoff::AutomaticOriginal,
+    claim: CallerClaim,
+    clock: &dyn Clock,
+) -> Result<IntentRef, RunError> {
+    validate_automatic_local_admission(journal, &automatic_envelope(&claim, original.clone())?)?;
+    let scope = IntentScope::Cooperative {
+        instance: claim.instance.clone(),
+        seat: claim.seat.clone(),
+    };
+    Ok(journal.record(scope, original.semantic(claim), clock.utc_now().0)?)
+}
+
+pub(crate) fn prepare_automatic<C: LocalClient + ?Sized>(
+    request: &Request,
+    inputs: Preparation<'_, C>,
+) -> Result<crate::protocol::handoff::AutomaticDeliveryPlan, RunError> {
+    let fail = super::invalid_request;
+    if !request.automatic
+        || !request.existing
+        || request.new_tab.is_some()
+        || request.cwd.is_some()
+        || request.kind.is_some()
+        || request.binary.is_some()
+        || request.name.is_some()
+        || !request.argv.is_empty()
+        || request.seat.is_some() == request.selector.pane.is_some()
+        || (request.seat.is_some()
+            && (request.selector.space.is_some() || request.selector.tab.is_some()))
+        || request.thread.is_some()
+        || request.thread_name.is_some()
+        || request.topic.is_some()
+        || request.goal.is_some()
+    {
+        return Err(fail("invalid automatic existing-peer request"));
+    }
+    inputs.namespace.validate().map_err(fail)?;
+    if inputs.claim.role != CallerRole::TopLevel
+        || inputs.claim.instance != inputs.namespace.instance
+    {
+        return Err(fail(
+            "automatic delivery requires original top-level instance claim",
+        ));
+    }
+    let (recipient, target) = if let Some(seat) = &request.seat {
+        (SeatId::new(seat.clone()), None)
+    } else {
+        let target = super::panes::resolve_selector(
+            &request.selector,
+            inputs.topology,
+            Some(inputs.claim.target.as_str()),
+        )?;
+        let found = super::collect_pane_seats(&target, |command| {
+            inputs
+                .client
+                .call(command, &super::cooperative_budget(inputs.clock))
+        })
+        .map_err(|error| match error {
+            super::PaneSeatsError::Api(error) => RunError::from(error),
+            super::PaneSeatsError::Unexpected => fail("unexpected canonical seats result"),
+        })?;
+        let [seat] = found.resolved.as_slice() else {
+            return Err(fail(
+                "automatic delivery pane needs exactly one resolved seat",
+            ));
+        };
+        (seat.seat.clone(), Some(target))
+    };
+    let found = inspect(inputs.client, inputs.clock, &recipient)?;
+    if target.is_some() && target != found.mapping.target {
+        return Err(fail(
+            "automatic delivery pane mapping changed during selection",
+        ));
+    }
+    let payload = crate::protocol::handoff::AutomaticHandoffPayload::new(
+        inputs.namespace.clone(),
+        OperationId::new(uuid::Uuid::new_v4().to_string()),
+        request.body.clone(),
+    )
+    .and_then(|payload| payload.with_policy(request.policy.clone()))
+    .map_err(fail)?;
+    crate::protocol::handoff::AutomaticDeliveryPlan::new(payload, recipient).map_err(fail)
+}
 fn inspect<C: LocalClient + ?Sized>(
     client: &C,
     clock: &dyn Clock,
@@ -75,6 +325,11 @@ pub fn prepare<C: LocalClient + ?Sized>(
     request: &Request,
     inputs: Preparation<'_, C>,
 ) -> Result<DeliveryPlan, RunError> {
+    if request.automatic {
+        return Err(super::unsupported(
+            "automatic delivery producer unavailable",
+        ));
+    }
     let fail = super::invalid_request;
     if let Some(policy) = &request.policy {
         policy.validate().map_err(super::invalid_request)?;
@@ -1069,6 +1324,669 @@ fn remove_completed_files(journal: &Journal, reference: &IntentRef) -> io::Resul
         Err(error) => return Err(error),
     }
     File::open(journal.root())?.sync_all()
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AutomaticProgress {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    selection: Option<crate::protocol::results::DirectThreadEnsured>,
+    thread: Option<crate::protocol::ids::ThreadId>,
+    message: Option<CommandResult>,
+    possible_start: bool,
+    launch: Option<serde_json::Value>,
+    report: Option<serde_json::Value>,
+    report_digest: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AutomaticTerminal {
+    version: u32,
+    original: String,
+    completed: HandoffResult,
+    progress: AutomaticProgress,
+    progress_digest: String,
+}
+
+fn automatic_terminal_path(journal: &Journal, reference: &IntentRef) -> std::path::PathBuf {
+    journal.root().join(format!(
+        "automatic-{:020}-{}.terminal",
+        reference.ordinal,
+        reference.operation.as_str()
+    ))
+}
+
+fn automatic_original(
+    pending: &PendingIntent,
+) -> Result<crate::protocol::handoff::AutomaticOriginal, RunError> {
+    use crate::protocol::handoff::AutomaticOriginal;
+    let SemanticMutation::Frozen { claim, mutation } = &pending.semantic else {
+        return Err(super::invalid_request(
+            "automatic handoff needs frozen caller",
+        ));
+    };
+    let original = match mutation.as_ref() {
+        SemanticMutation::AutomaticDelivery(plan) => AutomaticOriginal::Delivery(plan.clone()),
+        SemanticMutation::AutomaticHandoff(plan) => AutomaticOriginal::Handoff(plan.clone()),
+        _ => return Err(super::invalid_request("not an automatic handoff origin")),
+    };
+    let envelope = automatic_envelope(claim, original.clone())?;
+    if pending.header.scope != envelope.scope || pending.header.semantic_digest != envelope.digest {
+        return Err(super::invalid_request(
+            "automatic original scope or digest mismatch",
+        ));
+    }
+    Ok(original)
+}
+
+fn load_automatic_terminal(
+    journal: &Journal,
+    reference: &IntentRef,
+) -> Result<Option<AutomaticTerminal>, RunError> {
+    let file = match OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(automatic_terminal_path(journal, reference))
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    const MAX: usize = 2 * crate::cli::journal::MAX_AUTOMATIC_ORIGIN_BYTES + 4 * 1024 * 1024;
+    if !file.metadata()?.is_file() || file.metadata()?.len() > MAX as u64 {
+        return Err(super::invalid_request(
+            "unsafe or oversized automatic terminal",
+        ));
+    }
+    let mut bytes = Vec::new();
+    file.take((MAX + 1) as u64).read_to_end(&mut bytes)?;
+    if bytes.len() > MAX {
+        return Err(super::invalid_request("oversized automatic terminal"));
+    }
+    let terminal: AutomaticTerminal = serde_json::from_slice(&bytes).map_err(io::Error::other)?;
+    if serde_json::from_slice::<serde_json::Value>(&bytes).map_err(io::Error::other)?
+        != serde_json::to_value(&terminal).map_err(io::Error::other)?
+        || terminal.version != 2
+        || terminal.progress_digest != retained_digest(&terminal.progress)?
+    {
+        return Err(super::invalid_request("invalid automatic terminal"));
+    }
+    let pending = Journal::decode_automatic_origin(reference, terminal.original.as_bytes())?;
+    let original = automatic_original(&pending)?;
+    automatic_report(
+        reference,
+        &original,
+        &terminal.completed,
+        &terminal.progress,
+    )?;
+    match journal.snapshot_automatic_origin(reference) {
+        Ok(bytes) if bytes != terminal.original.as_bytes() => {
+            return Err(super::invalid_request(
+                "automatic terminal origin contradiction",
+            ));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    if handoff::progress_path(journal, reference).try_exists()? {
+        let saved: AutomaticProgress = handoff::load_progress(journal, reference)?;
+        if serde_json::to_value(saved).map_err(io::Error::other)?
+            != serde_json::to_value(&terminal.progress).map_err(io::Error::other)?
+        {
+            return Err(super::invalid_request(
+                "automatic terminal progress contradiction",
+            ));
+        }
+    }
+    Ok(Some(terminal))
+}
+
+fn save_automatic_terminal(
+    journal: &Journal,
+    reference: &IntentRef,
+    terminal: &AutomaticTerminal,
+) -> Result<(), RunError> {
+    let bytes = serde_json::to_vec(terminal).map_err(io::Error::other)?;
+    const MAX: usize = 2 * crate::cli::journal::MAX_AUTOMATIC_ORIGIN_BYTES + 4 * 1024 * 1024;
+    if bytes.len() > MAX {
+        return Err(super::invalid_request("oversized automatic terminal"));
+    }
+    let temp = journal
+        .root()
+        .join(format!(".automatic-terminal-{}", uuid::Uuid::new_v4()));
+    let save = || -> io::Result<()> {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&temp)?;
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+        fs::hard_link(&temp, automatic_terminal_path(journal, reference))?;
+        File::open(journal.root())?.sync_all()
+    };
+    let result = save();
+    let cleanup = fs::remove_file(&temp);
+    result?;
+    cleanup?;
+    File::open(journal.root())?.sync_all()?;
+    Ok(())
+}
+
+fn automatic_report_value(
+    reference: &IntentRef,
+    original: &crate::protocol::handoff::AutomaticOriginal,
+    progress: &AutomaticProgress,
+) -> serde_json::Value {
+    let mut report = serde_json::json!({
+        "compound":original.delivery().payload.keys.compound,
+        "thread":progress.thread,"recipient":original.delivery().recipient,
+        "message":progress.message,"launch":progress.launch,
+        "outcome":if matches!(original, crate::protocol::handoff::AutomaticOriginal::Handoff(_)) {"started"} else {"staged"},
+        "recovery_ref":reference.recovery_ref(),
+    });
+    if let Some(selection) = &progress.selection {
+        report["selection"] = selection.presentation();
+    }
+    report
+}
+fn validate_automatic_selection(
+    original: &crate::protocol::handoff::AutomaticOriginal,
+    progress: &AutomaticProgress,
+) -> Result<(), RunError> {
+    if let Some(selection) = &progress.selection {
+        selection.validate().map_err(super::invalid_request)?;
+        if original.delivery().payload.policy.is_none()
+            || Some(&selection.thread) != progress.thread.as_ref()
+            || selection.recipient != original.delivery().recipient
+        {
+            return Err(super::invalid_request("automatic selection differs"));
+        }
+    }
+    Ok(())
+}
+
+fn automatic_report(
+    reference: &IntentRef,
+    original: &crate::protocol::handoff::AutomaticOriginal,
+    completed: &HandoffResult,
+    progress: &AutomaticProgress,
+) -> Result<serde_json::Value, RunError> {
+    let keys = &original.delivery().payload.keys;
+    let saved_report = progress
+        .report
+        .as_ref()
+        .ok_or_else(|| super::invalid_request("automatic report is missing"))?;
+    if completed.state != HandoffState::Completed
+        || completed.compound != keys.compound
+        || progress.thread.is_none()
+        || completed.thread != progress.thread
+        || !matches!(&progress.message, Some(CommandResult::MessageSent(id)) if !id.as_str().is_empty())
+        || matches!(
+            original,
+            crate::protocol::handoff::AutomaticOriginal::Handoff(_)
+        ) && (progress.possible_start
+            || progress
+                .launch
+                .as_ref()
+                .is_none_or(|v| v["outcome"] != "started"))
+        || matches!(
+            original,
+            crate::protocol::handoff::AutomaticOriginal::Delivery(_)
+        ) && (progress.possible_start || progress.launch.is_some())
+        || progress.report_digest.as_deref() != Some(retained_digest(saved_report)?.as_str())
+    {
+        return Err(super::invalid_request(
+            "incomplete automatic handoff report",
+        ));
+    }
+    validate_automatic_selection(original, progress)?;
+    let report = automatic_report_value(reference, original, progress);
+    if saved_report != &report {
+        return Err(super::invalid_request(
+            "automatic report differs from retained original",
+        ));
+    }
+    Ok(report)
+}
+
+pub(crate) fn load_automatic_original(
+    journal: &Journal,
+    reference: &IntentRef,
+) -> Result<PendingIntent, RunError> {
+    let pending = if let Some(terminal) = load_automatic_terminal(journal, reference)? {
+        Journal::decode_automatic_origin(reference, terminal.original.as_bytes())?
+    } else {
+        let bytes = journal.snapshot_automatic_origin(reference)?;
+        Journal::decode_automatic_origin(reference, &bytes)?
+    };
+    automatic_original(&pending)?;
+    Ok(pending)
+}
+
+pub(crate) fn resolve_automatic_recovery_ref(
+    journal: &Journal,
+    value: &str,
+) -> Result<IntentRef, RunError> {
+    let ordinal: u64 = value
+        .strip_prefix("local:")
+        .and_then(|s| s.parse().ok())
+        .filter(|n| *n > 0)
+        .ok_or_else(|| super::invalid_request("invalid automatic recovery reference"))?;
+    if value != format!("local:{ordinal}") {
+        return Err(super::invalid_request(
+            "noncanonical automatic recovery reference",
+        ));
+    }
+    let terminal_prefix = format!("automatic-{ordinal:020}-");
+    let intent_prefix = format!("{ordinal:020}-");
+    let mut found = None;
+    for entry in fs::read_dir(journal.root())? {
+        let name = entry?.file_name().to_string_lossy().into_owned();
+        if let Some(operation) = name
+            .strip_prefix(&terminal_prefix)
+            .and_then(|s| s.strip_suffix(".terminal"))
+            .or_else(|| {
+                name.strip_prefix(&intent_prefix)
+                    .and_then(|s| s.strip_suffix(".intent"))
+            })
+        {
+            let reference = IntentRef {
+                ordinal,
+                operation: OperationId::parse(operation.to_owned())
+                    .map_err(super::invalid_request)?,
+            };
+            load_automatic_original(journal, &reference)?;
+            if found
+                .as_ref()
+                .is_some_and(|previous| previous != &reference)
+            {
+                return Err(super::invalid_request(
+                    "ambiguous automatic recovery reference",
+                ));
+            }
+            found = Some(reference);
+        }
+    }
+    found.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "automatic recovery reference not found",
+        )
+        .into()
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn retry_automatic_to_writer<C: LocalClient + ?Sized, W: Write>(
+    journal: &Journal,
+    reference: &IntentRef,
+    actor: super::actor_route::InvocationActor,
+    namespace: &HandoffNamespace,
+    client: &C,
+    launcher: Option<&mut dyn handoff::HandoffLauncher>,
+    clock: &dyn Clock,
+    output: &OutputSpec,
+    writer: &mut W,
+) -> Result<serde_json::Value, RunError> {
+    let result = retry_automatic_inner(
+        journal, reference, actor, namespace, client, launcher, clock, output, writer,
+    );
+    if let Err(error) = &result
+        && super::topology_handoff::reportable_failure(error)
+        && super::retry::preflight_original_actor(
+            journal.root(),
+            &reference.recovery_ref(),
+            actor,
+            &output.context,
+        )
+        .is_ok()
+        && let Ok(pending) = load_automatic_original(journal, reference)
+        && let Ok(original) = automatic_original(&pending)
+        && namespace.instance == original.delivery().payload.namespace.instance
+        && namespace.state_dir.as_os_str()
+            == original.delivery().payload.namespace.state_dir.as_os_str()
+        && namespace.host_endpoint.as_os_str()
+            == original
+                .delivery()
+                .payload
+                .namespace
+                .host_endpoint
+                .as_os_str()
+        && let Ok(progress) = handoff::load_progress::<AutomaticProgress>(journal, reference)
+    {
+        write_automatic_pending(reference, &pending, &original, &progress, output, writer)?;
+    }
+    result
+}
+
+fn write_automatic_pending<W: Write>(
+    reference: &IntentRef,
+    pending: &PendingIntent,
+    original: &crate::protocol::handoff::AutomaticOriginal,
+    progress: &AutomaticProgress,
+    output: &OutputSpec,
+    writer: &mut W,
+) -> Result<(), RunError> {
+    let namespace = &original.delivery().payload.namespace;
+    let context = crate::protocol::output::ContinuationContext {
+        state_dir: Some(namespace.state_dir.to_string_lossy().into_owned()),
+        host: Some(namespace.host_endpoint.to_string_lossy().into_owned()),
+    };
+    let mut retry = vec![
+        "env".into(),
+        format!(
+            "HERDR_PANE_ID={}",
+            pending.semantic.frozen_claim().unwrap().target.as_str()
+        ),
+    ];
+    retry.extend(super::hook::cli_prefix(&context));
+    retry.extend(["retry".into(), reference.recovery_ref()]);
+    let phase = if progress.thread.is_none() {
+        "ensure"
+    } else if progress.message.is_none() {
+        "send"
+    } else if matches!(
+        original,
+        crate::protocol::handoff::AutomaticOriginal::Handoff(_)
+    ) && progress.launch.is_none()
+    {
+        "launch"
+    } else {
+        "complete"
+    };
+    let report = serde_json::json!({
+        "phase":phase,
+        "outcome":if progress.possible_start {"outcome_unknown"} else {"pending"},
+        "namespace":namespace,
+        "compound":original.delivery().payload.keys.compound,
+        "thread":progress.thread,
+        "recipient":original.delivery().recipient,
+        "message":progress.message,
+        "launch":progress.launch,
+        "possible_start":progress.possible_start,
+        "recovery_ref":reference.recovery_ref(),
+        "retry_argv":retry,
+        "guidance":handoff::AUTOMATIC_PENDING_GUIDANCE
+    });
+    let bytes = if output.format == OutputFormat::Json {
+        if matches!(
+            original,
+            crate::protocol::handoff::AutomaticOriginal::Handoff(_)
+        ) {
+            format!("{}\n", serde_json::json!({"handoff_pending":report})).into_bytes()
+        } else {
+            format!("{}\n", serde_json::json!({"delivery_pending":report})).into_bytes()
+        }
+    } else {
+        super::setup::render_text(&report).into_bytes()
+    };
+    if bytes.len() > 1024 * 1024 {
+        return Err(super::invalid_request("oversized automatic pending report"));
+    }
+    writer.write_all(&bytes)?;
+    writer.flush()?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn retry_automatic_inner<C: LocalClient + ?Sized, W: Write>(
+    journal: &Journal,
+    reference: &IntentRef,
+    actor: super::actor_route::InvocationActor,
+    namespace: &HandoffNamespace,
+    client: &C,
+    launcher: Option<&mut dyn handoff::HandoffLauncher>,
+    clock: &dyn Clock,
+    output: &OutputSpec,
+    writer: &mut W,
+) -> Result<serde_json::Value, RunError> {
+    super::retry::preflight_original_actor(
+        journal.root(),
+        &reference.recovery_ref(),
+        actor,
+        &output.context,
+    )?;
+    if resolve_automatic_recovery_ref(journal, &reference.recovery_ref())? != *reference {
+        return Err(super::invalid_request(
+            "automatic original reference mismatch",
+        ));
+    }
+    let _lock = handoff::lock(journal, reference)?;
+    let retained = load_automatic_terminal(journal, reference)?;
+    let pending = if let Some(terminal) = &retained {
+        Journal::decode_automatic_origin(reference, terminal.original.as_bytes())?
+    } else {
+        load_automatic_original(journal, reference)?
+    };
+    let original = automatic_original(&pending)?;
+    let claim = pending.semantic.frozen_claim().unwrap().clone();
+    let frozen = &original.delivery().payload.namespace;
+    namespace.validate().map_err(super::invalid_request)?;
+    if namespace.instance != frozen.instance
+        || namespace.state_dir.as_os_str() != frozen.state_dir.as_os_str()
+        || namespace.host_endpoint.as_os_str() != frozen.host_endpoint.as_os_str()
+    {
+        return Err(super::invalid_request(
+            "automatic current namespace mismatch",
+        ));
+    }
+    let envelope = automatic_envelope(&claim, original.clone())?;
+    let call = |request: crate::protocol::handoff::AutomaticDeliveryMutation| {
+        client
+            .call(
+                Command::AutomaticHandoffDelivery(Box::new(request)),
+                &super::cooperative_budget(clock),
+            )
+            .map_err(RunError::from)
+    };
+    let terminal = if let Some(terminal) = retained {
+        let mut status_request = envelope.clone();
+        status_request.action = crate::protocol::handoff::AutomaticDeliveryAction::Status;
+        let CommandResult::Handoff(status) = call(status_request)? else {
+            return Err(super::invalid_request(
+                "unexpected automatic historical status",
+            ));
+        };
+        if status != terminal.completed {
+            return Err(super::invalid_request(
+                "automatic terminal differs from canonical completion",
+            ));
+        }
+        OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(automatic_terminal_path(journal, reference))?
+            .sync_all()?;
+        File::open(journal.root())?.sync_all()?;
+        terminal
+    } else {
+        let mut query = envelope.clone();
+        query.action = crate::protocol::handoff::AutomaticDeliveryAction::Status;
+        let completed = matches!(call(query), Ok(CommandResult::Handoff(s)) if s.state == HandoffState::Completed);
+        if !completed {
+            require_policy_capabilities(
+                client,
+                clock,
+                original.delivery().payload.policy.as_ref(),
+            )?;
+        }
+        let exact_original = journal.snapshot_automatic_origin(reference)?;
+        let mut progress: AutomaticProgress = handoff::load_progress(journal, reference)?;
+        validate_automatic_selection(&original, &progress)?;
+        if progress
+            .launch
+            .as_ref()
+            .is_some_and(|report| report["format"] == "automatic_launch_noncompletion_v1")
+            || progress.possible_start && progress.launch.is_none()
+        {
+            return Err(crate::protocol::results::ApiError::unknown_outcome(
+                "automatic handoff possible native start; inspect the exact pane before retry",
+            )
+            .into());
+        }
+        let CommandResult::Handoff(mut status) = call(envelope.begin())? else {
+            return Err(super::invalid_request("unexpected automatic Begin result"));
+        };
+        if status.state != HandoffState::Completed {
+            let result = call(envelope.ensure())?;
+            let thread = crate::protocol::handoff::automatic_selected_thread(&result)
+                .map_err(super::invalid_request)?
+                .clone();
+            if status.thread.as_ref().is_some_and(|saved| saved != &thread)
+                || progress
+                    .thread
+                    .as_ref()
+                    .is_some_and(|saved| saved != &thread)
+            {
+                return Err(super::invalid_request(
+                    "automatic Ensure changed selected pair thread",
+                ));
+            }
+            let selection = match &result {
+                CommandResult::DirectThreadEnsured(actual)
+                    if actual.recipient == envelope.plan().recipient =>
+                {
+                    Some(actual.clone())
+                }
+                CommandResult::ThreadCreated(_) if envelope.plan().payload.policy.is_none() => None,
+                _ => {
+                    return Err(super::invalid_request(
+                        "automatic Ensure returned no actual selection",
+                    ));
+                }
+            };
+            if progress
+                .selection
+                .as_ref()
+                .is_some_and(|saved| Some(saved) != selection.as_ref())
+            {
+                return Err(super::invalid_request("automatic Ensure selection changed"));
+            }
+            progress.selection = selection;
+            progress.thread = Some(thread.clone());
+            handoff::save_progress(journal, reference, &progress)?;
+            let sent = call(envelope.send(thread.clone()))?;
+            if !matches!(sent, CommandResult::MessageSent(_))
+                || progress
+                    .message
+                    .as_ref()
+                    .is_some_and(|saved| saved != &sent)
+            {
+                return Err(super::invalid_request("automatic Send result mismatch"));
+            }
+            progress.message = Some(sent);
+            handoff::save_progress(journal, reference, &progress)?;
+            if let crate::protocol::handoff::AutomaticOriginal::Handoff(plan) = &original
+                && progress.launch.is_none()
+            {
+                let launcher = launcher.ok_or_else(|| {
+                    super::invalid_request("automatic launch needs original launcher")
+                })?;
+                let request = handoff::prepare_automatic_startup(launcher, plan, &claim, &thread)?;
+                let launched =
+                    launcher.launch(&request, &plan.delivery.recipient, &mut |possible| {
+                        if possible {
+                            match call(envelope.clone()) {
+                                Ok(CommandResult::SeatResolved(seat))
+                                    if seat == plan.delivery.recipient => {}
+                                Ok(_) => {
+                                    return Err(ApiError::invalid_request(
+                                        "unexpected automatic start guard",
+                                    ));
+                                }
+                                Err(RunError::Api(e)) => return Err(e),
+                                Err(e) => {
+                                    return Err(ApiError::new(
+                                        ErrorCode::StoreCorrupt,
+                                        e.to_string(),
+                                    ));
+                                }
+                            }
+                            progress.possible_start = true;
+                            handoff::save_progress(journal, reference, &progress)
+                        } else {
+                            let mut reset = progress.clone();
+                            reset.possible_start = false;
+                            handoff::save_progress(journal, reference, &reset)
+                                .map(|()| progress = reset)
+                        }
+                        .map_err(|e| ApiError::new(ErrorCode::StoreCorrupt, e.to_string()))
+                    })?;
+                let started = launched.report["outcome"] == "started";
+                if started {
+                    progress.possible_start = false;
+                }
+                if plan.delivery.payload.policy.is_some() {
+                    progress.launch = Some(handoff::automatic_summary(&launched.report)?);
+                    handoff::save_progress(journal, reference, &progress)?;
+                    handoff::save_automatic_diagnostics(journal, reference, &launched.report)?;
+                } else if started {
+                    progress.launch = Some(launched.report);
+                    handoff::save_progress(journal, reference, &progress)?;
+                }
+                if !started {
+                    return Err(ApiError::unknown_outcome(
+                        "automatic native start outcome unknown",
+                    )
+                    .into());
+                }
+            }
+            let report = automatic_report_value(reference, &original, &progress);
+            progress.report_digest = Some(retained_digest(&report)?);
+            progress.report = Some(report);
+            handoff::save_progress(journal, reference, &progress)?;
+            let CommandResult::Handoff(completed) = call(envelope.complete())? else {
+                return Err(super::invalid_request(
+                    "unexpected automatic Complete result",
+                ));
+            };
+            status = completed;
+        }
+        automatic_report(reference, &original, &status, &progress)?;
+        let terminal = AutomaticTerminal {
+            version: 2,
+            original: String::from_utf8(exact_original).map_err(io::Error::other)?,
+            completed: status,
+            progress_digest: retained_digest(&progress)?,
+            progress,
+        };
+        save_automatic_terminal(journal, reference, &terminal)?;
+        terminal
+    };
+    let mut report = automatic_report(
+        reference,
+        &original,
+        &terminal.completed,
+        &terminal.progress,
+    )?;
+    if let Some(summary) = &terminal.progress.launch
+        && summary["format"] == "automatic_launch_summary_v1"
+    {
+        report["local_diagnostics"] =
+            handoff::automatic_diagnostics_marker(journal, reference, summary);
+        report["launch"] = handoff::automatic_launch_presentation(summary);
+    }
+    let bytes = if output.format == OutputFormat::Json {
+        let presented = if matches!(
+            original,
+            crate::protocol::handoff::AutomaticOriginal::Handoff(_)
+        ) {
+            serde_json::json!({"handoff":report})
+        } else {
+            serde_json::json!({"delivery":report})
+        };
+        format!("{presented}\n").into_bytes()
+    } else {
+        super::setup::render_text(&report).into_bytes()
+    };
+    writer.write_all(&bytes)?;
+    writer.flush()?;
+    remove_completed_files(journal, reference)?;
+    Ok(report)
 }
 #[cfg(test)]
 #[path = "../../tests/cli/handoff_delivery.rs"]

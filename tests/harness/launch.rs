@@ -1,4 +1,5 @@
 use super::*;
+use crate::harness::codex::launch::scoped_codex_cwd;
 use crate::ports::{
     CorrelatedStartup, EvidenceKind, ExecutionEvidence, HostSnapshot, IncarnationEvidence,
     ObservationProvenance, PromptOutcome, SafeWakeTarget,
@@ -112,6 +113,12 @@ impl HostPort for FakeHost {
                             expected_incarnation: request.expected_incarnation.clone(),
                             submitted_at_mono: MonoInstant(2),
                             completed_at_mono: MonoInstant(3),
+                            started_process: Some(
+                                crate::protocol::authority::LivenessFingerprint {
+                                    pid: 4242,
+                                    start: 1,
+                                },
+                            ),
                         }),
                     diagnostic: diagnostic.clone(),
                 }
@@ -263,7 +270,38 @@ fn correlation_for_empty_args(harness: Harness) -> CorrelatedStartup {
         expected_incarnation: request.expected_incarnation,
         submitted_at_mono: MonoInstant(2),
         completed_at_mono: MonoInstant(3),
+        started_process: Some(crate::protocol::authority::LivenessFingerprint {
+            pid: 4242,
+            start: 1,
+        }),
     }
+}
+
+/// The managed-launch command carries the started process's fingerprint, and a
+/// startup with none observable has no command at all. Kills: a placeholder
+/// fingerprint taken from anywhere but the startup's host process info, and a
+/// default or zero fingerprint standing in for a missing one.
+#[test]
+fn managed_launch_command_carries_the_started_process_fingerprint() {
+    let mut startup = correlation_for_empty_args(Harness::Codex);
+    let command = managed_launch_command(&startup).unwrap();
+    assert_eq!(
+        command.fingerprint,
+        crate::protocol::authority::LivenessFingerprint {
+            pid: 4242,
+            start: 1
+        }
+    );
+    assert_eq!(command.seat, startup.seat);
+    assert!(command.validate().is_ok());
+    startup.started_process = None;
+    let refusal = managed_launch_command(&startup).unwrap_err();
+    assert_eq!(refusal.code, ErrorCode::InvalidRequest);
+    assert!(refusal.detail.contains("no started process is observable"));
+    // The wire form rejects a zero pid.
+    let mut zero = command;
+    zero.fingerprint.pid = 0;
+    assert!(zero.validate().is_err());
 }
 
 #[test]
@@ -1321,10 +1359,11 @@ pub(crate) fn process_hint_registry(required: bool) -> &'static crate::harness::
 }
 struct HintAdapter(bool);
 impl crate::harness::adapter::HarnessAdapter for HintAdapter {
-    type Admission = crate::harness::operational::ClaudeContract;
+    type Admission = crate::harness::claude::ClaudeContract;
     fn metadata(&self) -> &'static crate::harness::adapter::AdapterMetadata {
         use crate::harness::adapter::*;
         static META: AdapterMetadata = AdapterMetadata {
+            agent_env_markers: &[],
             id: "hinted",
             display_label: "Hint fixture",
             context_spelling: "Hinted",
@@ -1428,10 +1467,10 @@ macro_rules! hint_policy {
  ($ty:ty $(,$hint:item)?) => {
  impl crate::harness::adapter::LaunchPolicy for $ty {
     $($hint)?
-    fn resolve_scope(&self,r:&crate::harness::adapter::LaunchRequest,_:&dyn CodexShellProbe,_:&CallBudget)->Result<crate::harness::adapter::LaunchScope,ApiError> { Ok(crate::harness::adapter::LaunchScope {setup:crate::harness::adapter::ResolvedSetupScope::ConfigRoot(r.environment.cwd.clone()),working_directory:r.environment.cwd.clone(),config_source:"fixture"}) }
+    fn resolve_scope(&self,r:&crate::harness::adapter::LaunchRequest,_:&dyn PaneShellProbe,_:&CallBudget)->Result<crate::harness::adapter::LaunchScope,ApiError> { Ok(crate::harness::adapter::LaunchScope {setup:crate::harness::adapter::ResolvedSetupScope::ConfigRoot(r.environment.cwd.clone()),working_directory:r.environment.cwd.clone(),config_source:"fixture"}) }
     fn validate_native_argv(&self,_:&[String])->Result<(),ApiError>{Ok(())}
     fn compose_argv(&self,caller:Vec<String>,owned:Vec<String>)->Result<Vec<String>,ApiError>{Ok([owned,caller].concat())}
-    fn prepare_launch(&self,_:&crate::harness::adapter::LaunchRequest,_:&crate::harness::adapter::LaunchScope,_:&crate::harness::registry::AdmittedHandle,_:&crate::harness::adapter::LocalSetupStatus,_:&dyn CodexShellProbe,_:&CallBudget)->Result<crate::harness::adapter::LaunchPreparation,ApiError>{panic!("generic preparation uses supplied owned hook")}
+    fn prepare_launch(&self,_:&crate::harness::adapter::LaunchRequest,_:&crate::harness::adapter::LaunchScope,_:&crate::harness::registry::AdmittedHandle,_:&crate::harness::adapter::LocalSetupStatus,_:&dyn PaneShellProbe,_:&CallBudget)->Result<crate::harness::adapter::LaunchPreparation,ApiError>{panic!("generic preparation uses supplied owned hook")}
     fn configuration_fingerprint(&self,_:&crate::harness::adapter::LaunchRequest,_:&crate::harness::adapter::LaunchScope)->Result<String,ApiError>{Ok("hint-fixture".into())}
     fn expected_host_kinds(&self)-> &'static [&'static str]{ &["codex"] }
  }

@@ -579,7 +579,7 @@ impl NickCache {
 /// The harness of `seat`'s current binding, from its private local context
 /// under `instance_dir` (read only when it already exists; nothing is
 /// created). This runs while a message is being rendered, so it reads a
-/// lock-free snapshot ([`ContextJournal::current_snapshot`]): it never waits
+/// lock-free snapshot ([`ContextJournal::registered_snapshot`]): it never waits
 /// on a check-in that holds `context.lock`, and never delays one.
 fn read_harness(
     instance_dir: &std::path::Path,
@@ -594,7 +594,9 @@ fn read_harness(
     }
     let journal =
         ContextJournal::open(&dir, instance, seat.as_str(), Duration::from_millis(200)).ok()?;
-    let current = journal.current_snapshot().ok()??;
+    // A person's saved context, else the context of the seat's agent's last check-in (an agent
+    // saves none).
+    let current = journal.registered_snapshot().ok()??;
     if current.seat != seat.as_str() || current.binding_generation != generation {
         return None;
     }

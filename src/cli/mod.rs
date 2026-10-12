@@ -1,11 +1,14 @@
 //! Typed CLI client, selected renderer and local journal composition.
 pub mod actor_route;
+pub mod caller;
 pub mod commands;
+pub mod direct_send;
 pub mod doctor;
 pub mod exit;
 pub mod follow;
 pub mod handoff;
 pub mod handoff_delivery;
+pub mod help;
 pub mod hook;
 pub mod hook_evidence;
 pub mod hook_inbox;
@@ -32,6 +35,7 @@ pub mod threads;
 pub mod topology_handoff;
 pub mod topology_recover;
 mod topology_runtime;
+pub mod wake_on;
 pub mod watch;
 
 use crate::{
@@ -212,6 +216,58 @@ pub(crate) fn selected_generation(
     Ok(inspection.summary.generation)
 }
 
+/// The selected seat's current mapping generation, read from the daemon (the same inspection
+/// every seat-acting command makes).
+pub(crate) fn seat_generation<C: LocalClient + ?Sized>(
+    client: &C,
+    output: &OutputSpec,
+    selection: &CooperativeSelection,
+    clock: &dyn Clock,
+) -> Result<u64, RunError> {
+    use crate::protocol::{commands::SeatInspectQuery, pagination::PageRequest};
+    let inspection = client.call_with_output(
+        Command::SeatInspect(SeatInspectQuery {
+            seat: selection.seat.clone(),
+            page: PageRequest {
+                cursor: None,
+                limit: 1,
+                max_bytes: crate::protocol::pagination::MAX_PAGE_BYTES,
+            },
+        }),
+        output,
+        &cooperative_budget(clock),
+    )?;
+    let CommandResult::SeatInspect(inspection) = inspection else {
+        return Err(mapping_error("service returned no seat inspection"));
+    };
+    selected_generation(selection, &inspection)
+}
+
+/// `contexts` acting as the calling session when the active caller is an agent (decision 15):
+/// its context is derived from the environment at `generation` and never saved.
+pub(crate) fn caller_journal(
+    contexts: crate::harness::context::ContextJournal,
+    instance: uuid::Uuid,
+    selection: &CooperativeSelection,
+    generation: u64,
+) -> Result<crate::harness::context::ContextJournal, RunError> {
+    match caller::active() {
+        Some(caller::CallerOrigin::Agent(env)) => contexts
+            .with_agent_caller(
+                caller::agent_context(
+                    &env,
+                    instance,
+                    &selection.seat,
+                    &selection.target,
+                    generation,
+                ),
+                env.fingerprint,
+            )
+            .map_err(context_run_error),
+        _ => Ok(contexts),
+    }
+}
+
 struct SocketViewReader(LocalSocketClient);
 impl ViewReader for SocketViewReader {
     fn read(
@@ -238,7 +294,7 @@ where
 /// text output defaults to the human form for a person and stays in the
 /// machine form for pipes, hooks, and models running the CLI through a tool
 /// (including a harness that gives its shell tool a PTY: see
-/// [`output::HARNESS_MARKERS`]).
+/// [`output::harness_marked`]).
 pub fn run_terminal<I, T, W>(
     argv: I,
     writer: &mut W,
@@ -251,30 +307,32 @@ where
 {
     output::set_stdout_is_terminal(stdout_is_terminal);
     output::set_harness_marked(output::harness_marked(|name| std::env::var_os(name)));
+    caller::derive_from_process();
     run(argv, writer)
 }
 
-/// Environment variables an agent harness sets inside its own process
-/// (TRUST-POLICY A4, best effort): `CLAUDECODE` (Claude Code) and
-/// `CODEX_SANDBOX` / `CODEX_SANDBOX_NETWORK_DISABLED` (set by codex-rs on the
-/// commands it spawns). An explicit allowlist, never a prefix: user
-/// configuration such as `CODEX_HOME` or `CODEX_API_KEY` is not evidence.
-/// No local `codex` was available to confirm the list with
-/// `codex exec ... 'env | grep ^CODEX_'`; it follows codex-rs's documented
-/// spawn environment.
-const AGENT_ENV_MARKERS: [&str; 3] = [
-    "CLAUDECODE",
-    "CODEX_SANDBOX",
-    "CODEX_SANDBOX_NETWORK_DISABLED",
-];
-
-/// First agent environment marker present, by name.
+/// First person-guard environment marker present, by name (TRUST-POLICY A4, best effort).
+/// The markers are the `person_guard` ones registered adapters declare, matched by presence:
+/// an explicit allowlist, never a prefix, so user configuration such as a config-root
+/// variable is not evidence. Output-form markers that are not guards stay out of it.
 pub(crate) fn agent_env_marker<K: AsRef<str>, V>(
+    vars: impl IntoIterator<Item = (K, V)>,
+) -> Option<String> {
+    agent_env_marker_in(crate::harness::registry::builtins(), vars)
+}
+
+/// [`agent_env_marker`] against an explicit registry.
+pub(crate) fn agent_env_marker_in<K: AsRef<str>, V>(
+    registry: &crate::harness::registry::Registry,
     vars: impl IntoIterator<Item = (K, V)>,
 ) -> Option<String> {
     vars.into_iter()
         .map(|(key, _)| key.as_ref().to_owned())
-        .find(|key| AGENT_ENV_MARKERS.contains(&key.as_str()))
+        .find(|key| {
+            registry
+                .person_guard_markers()
+                .any(|marker| marker.name == key)
+        })
 }
 
 /// The single client-side agent-evidence rule (TRUST-POLICY A4, best effort;
@@ -361,6 +419,21 @@ where
         }
         error
     })
+}
+
+pub(crate) fn resolve_automatic_new_selectors<C: LocalClient + ?Sized>(
+    parsed: &mut commands::ParsedCli,
+    client: &C,
+    clock: &dyn Clock,
+    topology: impl FnOnce() -> Result<crate::host::observation::HostTopology, ApiError>,
+    caller: impl FnOnce() -> Result<Option<crate::protocol::ids::HostTargetId>, ApiError>,
+) -> Result<(), RunError> {
+    topology_runtime::require_automatic_capability(client, clock)?;
+    if let CliAction::TopologyHandoff(request) = &parsed.action {
+        handoff_delivery::require_policy_capabilities(client, clock, request.policy.as_ref())?;
+    }
+    panes::resolve_cli_targets(parsed, topology, caller)?;
+    Ok(())
 }
 
 fn run_parsed_in_pane<W: Write>(
@@ -458,8 +531,27 @@ fn run_parsed_in_pane<W: Write>(
         parsed.output.context.host.as_ref().map(PathBuf::from),
     ))
     .map_err(context_error)?;
+    if matches!(
+        &parsed.action,
+        CliAction::Mutation(MutationSpec::DirectSend(_))
+    ) {
+        parsed.output.context = crate::protocol::output::ContinuationContext {
+            state_dir: Some(context.state_dir.to_string_lossy().into_owned()),
+            host: Some(context.host_endpoint.to_string_lossy().into_owned()),
+        };
+    }
     let original_actor = if let CliAction::Retry(recovery) = &parsed.action {
         let paths = InstancePaths::resolve_read_only(&context)?;
+        let original = retry::load_original_for_actor(
+            &journal::Journal::read_only(paths.instance_dir.join("intents"))?,
+            recovery.as_str(),
+        )?;
+        if direct_send::plan(&original.semantic).is_some() {
+            parsed.output.context = crate::protocol::output::ContinuationContext {
+                state_dir: Some(context.state_dir.to_string_lossy().into_owned()),
+                host: Some(context.host_endpoint.to_string_lossy().into_owned()),
+            };
+        }
         Some(retry::preflight_original_actor(
             paths.instance_dir.join("intents"),
             recovery.as_str(),
@@ -497,7 +589,8 @@ fn run_parsed_in_pane<W: Write>(
         .as_ref()
         .is_some_and(|selector| selector.direct_id().is_none());
     let try_completed = |parsed: &commands::ParsedCli, writer: &mut W| -> Result<bool, RunError> {
-        let (instance, _, client) = connect(&paths, &clock)?;
+        let (instance, _, client) = connect(&paths, &clock)
+            .map_err(|error| direct_send::pre_executor_error(error, parsed, &paths))?;
         let journal = journal::Journal::open(paths.instance_dir.join("intents"))?;
         let selected_context = crate::protocol::output::ContinuationContext {
             state_dir: Some(context.state_dir.to_string_lossy().into_owned()),
@@ -528,16 +621,36 @@ fn run_parsed_in_pane<W: Write>(
     if historical_retry && try_completed(&parsed, writer)? {
         return Ok(());
     }
-    panes::resolve_cli_targets(
-        &mut parsed,
-        || host.topology(&budget()),
-        || {
-            caller_pane
-                .filter(|pane| !pane.is_empty())
-                .map(|pane| host.current_pane(pane, &budget()))
-                .transpose()
-        },
-    )?;
+    let automatic_new = matches!(&parsed.action, CliAction::TopologyHandoff(request)
+        if request.automatic && request.new_tab.is_some() && !request.existing);
+    let resolved_targets = if automatic_new {
+        let (_, _, client) = connect(&paths, &clock)?;
+        resolve_automatic_new_selectors(
+            &mut parsed,
+            &client,
+            clock.as_ref(),
+            || host.topology(&budget()),
+            || {
+                caller_pane
+                    .filter(|pane| !pane.is_empty())
+                    .map(|pane| host.current_pane(pane, &budget()))
+                    .transpose()
+            },
+        )
+    } else {
+        panes::resolve_cli_targets(
+            &mut parsed,
+            || host.topology(&budget()),
+            || {
+                caller_pane
+                    .filter(|pane| !pane.is_empty())
+                    .map(|pane| host.current_pane(pane, &budget()))
+                    .transpose()
+            },
+        )
+        .map_err(RunError::from)
+    };
+    resolved_targets.map_err(|error| direct_send::pre_executor_error(error, &parsed, &paths))?;
     // A deferred name now denotes an exact canonical target; terminal replay
     // still precedes every live caller/SeatInspect/binding-generation guard.
     if historical_retry && deferred_locator && try_completed(&parsed, writer)? {
@@ -890,6 +1003,7 @@ fn run_parsed_in_pane<W: Write>(
         CliAction::Picker(_) => unreachable!("picker is handled after context resolution"),
         CliAction::Follow(_) => unreachable!("follow is handled after context resolution"),
         CliAction::Summary(_) => unreachable!("summary always derives a caller selection"),
+        CliAction::WakeOn(_) => unreachable!("wake-on always derives a caller selection"),
         CliAction::View { once, page } => {
             if !once {
                 return Err(unsupported(
@@ -916,6 +1030,22 @@ fn run_parsed_in_pane<W: Write>(
     };
     output::write_selected(&result, &parsed.output, max_bytes, writer)?;
     Ok(())
+}
+
+/// The actions that call the daemon as a cooperative caller (reads included).
+fn caller_needs_identity(action: &CliAction) -> bool {
+    matches!(
+        action,
+        CliAction::Wire(_)
+            | CliAction::Mutation(_)
+            | CliAction::PendingOps(_)
+            | CliAction::Retry(_)
+            | CliAction::CachedCheckIn(_)
+            | CliAction::Summary(_)
+            | CliAction::Handoff(_)
+            | CliAction::TopologyHandoff(_)
+            | CliAction::TopologyRecover(_)
+    )
 }
 
 /// A daemon connection opened on first use and then shared, so one CLI
@@ -978,26 +1108,57 @@ where
             .host
             .get_or_insert_with(|| context.host_endpoint.to_string_lossy().into_owned());
     }
+    // Who is calling comes from the environment (decision 15): an agent without a session id is
+    // refused before any daemon call, reads included.
+    // The `human` namespace is a person's explicit choice: it keeps the pane-context path, and
+    // its own guard (TRUST-POLICY A4) refuses it under an agent harness.
+    let origin = (parsed.actor != actor_route::InvocationActor::Human)
+        .then(|| caller::derive(&parsed))
+        .flatten();
+    if let Some(caller::CallerOrigin::Refused(refusal)) = &origin
+        && caller_needs_identity(&parsed.action)
+    {
+        return Err(caller::refusal_error(refusal));
+    }
+    let _origin = caller::ActiveGuard::enter(origin);
     match &parsed.action {
         CliAction::Handoff(request) => {
             let (_, client) = connection.get()?;
             require_handoff_capabilities(client, clock.as_ref(), request.policy.as_ref())?;
+            if request.automatic {
+                handoff_delivery::require_policy_capabilities(
+                    client,
+                    clock.as_ref(),
+                    request.policy.as_ref(),
+                )?;
+            }
         }
         CliAction::TopologyHandoff(request) => {
             let (_, client) = connection.get()?;
             require_handoff_capabilities(client, clock.as_ref(), request.policy.as_ref())?;
+            if request.automatic {
+                handoff_delivery::require_policy_capabilities(
+                    client,
+                    clock.as_ref(),
+                    request.policy.as_ref(),
+                )?;
+            }
         }
         _ => {}
     }
     // Capture omission before default_seat resolves the caller read. The second
     // guard below adds the canonical selected seat while retaining that choice.
     let _origin_inbox = output::InboxInvocationGuard::enter(&parsed, None);
-    let selection = derive_caller(&mut parsed, caller_pane, context, paths, connection, clock)?;
+    let selected = derive_caller(&mut parsed, caller_pane, context, paths, connection, clock);
+    let selection =
+        selected.map_err(|error| direct_send::pre_executor_error(error, &parsed, paths))?;
     resolve_recipient_seats(&mut parsed, paths, connection, clock)?;
     let _inbox =
         output::InboxInvocationGuard::enter(&parsed, selection.as_ref().map(|s| s.seat.clone()));
     if let Some(selection) = selection {
-        let (instance, client) = connection.get()?;
+        let (instance, client) = connection
+            .get()
+            .map_err(|error| direct_send::pre_executor_error(error, &parsed, paths))?;
         run_selected(
             parsed,
             &selection,
@@ -1009,10 +1170,24 @@ where
         )?;
         return Ok(None);
     }
+    let text_read = text_display(&parsed);
     match parsed.action {
         CliAction::Wire(command) => {
             let (_, client) = connection.get()?;
-            run_wire(command, &parsed.output, client, budget, writer)?;
+            let read = command.clone();
+            let result = run_wire_result(command, &parsed.output, client, budget, writer)?;
+            if text_read
+                && let Some(message) = full_body_read(&read, &result)
+                && let Some(claim) = body_reader_claim(
+                    &parsed.output,
+                    caller_pane,
+                    paths,
+                    connection,
+                    clock.as_ref(),
+                )
+            {
+                advance_over_body_read(client, clock.as_ref(), claim, message);
+            }
             Ok(None)
         }
         action => {
@@ -1038,6 +1213,17 @@ pub(crate) fn run_wire<C: LocalClient + ?Sized, W: Write>(
     budget: &dyn Fn() -> CallBudget,
     writer: &mut W,
 ) -> Result<(), RunError> {
+    run_wire_result(command, output_spec, client, budget, writer).map(|_| ())
+}
+
+/// [`run_wire`], returning the result exactly as it was written.
+fn run_wire_result<C: LocalClient + ?Sized, W: Write>(
+    command: Command,
+    output_spec: &OutputSpec,
+    client: &C,
+    budget: &dyn Fn() -> CallBudget,
+    writer: &mut W,
+) -> Result<CommandResult, RunError> {
     let command = match command {
         Command::Inbox(query)
             // A continuation must stay in the protocol that captured it.
@@ -1121,7 +1307,104 @@ pub(crate) fn run_wire<C: LocalClient + ?Sized, W: Write>(
             modes.write(bytes, max_bytes, writer)?;
         }
     };
-    Ok(())
+    Ok(result)
+}
+
+/// Whether this read is a text display (not `--json`, not `--machine`). Like `inbox`, only a
+/// text display moves the reading binding's cursor; machine reads are read-only.
+fn text_display(parsed: &commands::ParsedCli) -> bool {
+    parsed.output.format == OutputFormat::Text
+        && parsed.presentation != output::Presentation::Machine
+}
+
+/// The message a `body` read showed whole (ht-54r F1): the written chunk reaches the end of the
+/// body and the read either started at byte 0 or followed the body's own continuation. A read
+/// from an explicit `--offset` past 0, or a chunk short of the end, is partial.
+fn full_body_read(
+    command: &Command,
+    result: &CommandResult,
+) -> Option<crate::protocol::ids::MessageId> {
+    let Command::Message(query) = command else {
+        return None;
+    };
+    let CommandResult::Message(details) = result else {
+        return None;
+    };
+    let crate::protocol::results::MessageContent::Ordinary {
+        body_offset,
+        body_complete: true,
+        ..
+    } = &details.content
+    else {
+        return None;
+    };
+    (*body_offset == 0 || query.body.cursor.is_some()).then(|| query.message.clone())
+}
+
+/// After a full `body` read, best effort: the calling agent binding's cursors move over the
+/// message it displayed whole (`AdvanceCursors`, the same display walk as a text inbox page;
+/// every role, subagents included). It settles nothing, prints nothing, and a failure only
+/// leaves the message unread for that binding.
+fn advance_over_body_read<C: LocalClient + ?Sized>(
+    client: &C,
+    clock: &dyn Clock,
+    claim: crate::protocol::authority::CallerClaim,
+    message: crate::protocol::ids::MessageId,
+) {
+    if claim.harness == crate::protocol::authority::Harness::Human
+        || !client.supports_capability(
+            crate::protocol::capabilities::BINDING_CURSORS,
+            &cooperative_budget(clock),
+        )
+    {
+        return;
+    }
+    let _ = client.call(
+        Command::AdvanceCursors(crate::protocol::commands::AdvanceCursors {
+            claim,
+            operation: crate::protocol::ids::OperationId::new(uuid::Uuid::new_v4().to_string()),
+            displayed: vec![message],
+        }),
+        &cooperative_budget(clock),
+    );
+}
+
+/// The claim of the agent session calling from `caller_pane` (no explicit selection), derived
+/// as every seat-acting command derives it; `None` for a person or when anything is missing.
+fn body_reader_claim<C, F>(
+    output: &OutputSpec,
+    caller_pane: Option<&str>,
+    paths: &InstancePaths,
+    connection: &LazyConnection<C, F>,
+    clock: &dyn Clock,
+) -> Option<crate::protocol::authority::CallerClaim>
+where
+    C: LocalClient,
+    F: Fn() -> Result<(uuid::Uuid, C), RunError>,
+{
+    let Some(caller::CallerOrigin::Agent(env)) = caller::active() else {
+        return None;
+    };
+    let pane = parse_pane(caller_pane.filter(|pane| !pane.is_empty())?).ok()?;
+    let (_, client) = connection.get().ok()?;
+    let seat = pane_seat(client, output, &pane, clock).ok().flatten()?;
+    let instance = read_existing_namespace(paths).ok().flatten()?;
+    let selection = CooperativeSelection {
+        seat,
+        target: pane,
+        harness: crate::harness::context::Harness::from(env.harness),
+        role: caller::role_of(env.role),
+    };
+    let generation = seat_generation(client, output, &selection, clock).ok()?;
+    let contexts = caller_journal(
+        seat_contexts(paths, instance, &selection.seat).ok()?,
+        instance,
+        &selection,
+        generation,
+    )
+    .ok()?;
+    let context = contexts.current().ok().flatten()?;
+    role_claim(&contexts, &context, selection.role).ok()
 }
 
 fn read_byte_bound(command: &Command) -> u32 {
@@ -1200,6 +1483,257 @@ fn fit_inbox_read<C: LocalClient + ?Sized>(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReadByteSlot {
+    Value(usize),
+    Inline(usize),
+    Insert(usize),
+}
+
+fn invalid_read_continuation() -> ApiError {
+    ApiError::store_corrupt("invalid read continuation budget")
+}
+
+/// Locate only declared option slots. Known generated positional/string fields
+/// are data even when their bytes look like flags. A shadow vector lets the
+/// existing grammar validate option identities/conflicts/numeric values without
+/// decoding opaque cursors or changing any returned data token. This does not
+/// repair inherited generated argv whose literal spellings need CLI escaping.
+fn read_continuation_byte_slot(
+    command: &Command,
+    argv: &[String],
+    cursor: Option<&str>,
+    prefer_generated_literal: bool,
+) -> Result<ReadByteSlot, ApiError> {
+    use crate::protocol::pagination::{DEFAULT_PAGE_BYTES, DEFAULT_PAGE_LIMIT, MAX_PAGE_BYTES};
+    let (action, selector, limit, allow_default) = match command {
+        Command::Message(q) => ("body", q.message.as_str(), None, false),
+        Command::History(q) => ("read", q.thread.as_str(), Some(q.page.limit), true),
+        Command::Search(q) => ("search", q.literal.as_str(), Some(q.page.limit), false),
+        _ => return Err(invalid_read_continuation()),
+    };
+    let expected_thread = match command {
+        Command::Search(q) => q.thread.as_ref().map(|thread| thread.as_str()),
+        _ => None,
+    };
+    let effective = read_byte_bound(command);
+    let (_, retained) =
+        actor_route::split_actor_argv(argv).map_err(|_| invalid_read_continuation())?;
+    let removed_actor = argv.len() - retained.len();
+    let command_index = actor_route::command_index(
+        &retained
+            .iter()
+            .map(std::ffi::OsString::from)
+            .collect::<Vec<_>>(),
+    )
+    .ok_or_else(invalid_read_continuation)?;
+    if retained.get(command_index).map(String::as_str) != Some(action) {
+        return Err(invalid_read_continuation());
+    }
+    let mut shadow = retained.clone();
+    let mut slot = None;
+    let mut selector_seen = false;
+    let mut cursor_seen = false;
+    let mut offset_seen = false;
+    let mut thread_seen = false;
+    let mut delimiter = None;
+    let mut routes = std::collections::HashMap::new();
+    let mut index = 1;
+    while index < retained.len() {
+        if index == command_index {
+            index += 1;
+            continue;
+        }
+        let token = retained[index].as_str();
+        if delimiter.is_some()
+            || (prefer_generated_literal && index == command_index + 1 && token == selector)
+            || !token.starts_with('-')
+        {
+            if index <= command_index || selector_seen || token != selector {
+                return Err(invalid_read_continuation());
+            }
+            shadow[index] = "continuation-literal".into();
+            selector_seen = true;
+            index += 1;
+            continue;
+        }
+        if token == "--" {
+            delimiter = Some(index + removed_actor);
+            index += 1;
+            continue;
+        }
+        let (flag, inline) = token
+            .split_once('=')
+            .map_or((token, None), |(flag, value)| (flag, Some(value)));
+        if matches!(flag, "--json" | "--human" | "--machine") {
+            index += 1;
+            continue;
+        }
+        // Generated read continuations carry routing/output globals only.
+        // Identity selectors are not emitted and need semantic admission beyond
+        // clap structure, so reject them rather than sanitize their values.
+        let string_value = matches!(
+            flag,
+            "--state-dir" | "--host-endpoint" | "--cursor" | "--thread"
+        );
+        if !string_value
+            && !matches!(
+                flag,
+                "--max-bytes" | "--limit" | "--offset" | "--recent" | "--after" | "--before"
+            )
+        {
+            return Err(invalid_read_continuation());
+        }
+        let value_index = index + usize::from(inline.is_none());
+        let value = inline
+            .or_else(|| retained.get(value_index).map(String::as_str))
+            .ok_or_else(invalid_read_continuation)?;
+        if flag == "--max-bytes" {
+            let value: u32 = value.parse().map_err(|_| invalid_read_continuation())?;
+            if slot.is_some() || value != effective || !(256..=MAX_PAGE_BYTES).contains(&value) {
+                return Err(invalid_read_continuation());
+            }
+            slot = Some(if inline.is_some() {
+                ReadByteSlot::Inline(index + removed_actor)
+            } else {
+                ReadByteSlot::Value(value_index + removed_actor)
+            });
+        }
+        if flag == "--cursor" {
+            if cursor_seen || cursor != Some(value) {
+                return Err(invalid_read_continuation());
+            }
+            cursor_seen = true;
+        }
+        if flag == "--offset" {
+            if offset_seen {
+                return Err(invalid_read_continuation());
+            }
+            offset_seen = true;
+        }
+        if flag == "--thread" {
+            if action != "search"
+                || thread_seen
+                || expected_thread != Some(value)
+                || crate::protocol::ids::ThreadId::parse(value).is_err()
+            {
+                return Err(invalid_read_continuation());
+            }
+            thread_seen = true;
+        }
+        if matches!(flag, "--state-dir" | "--host-endpoint")
+            && (value.is_empty()
+                || value.len() > 1024
+                || value.contains('\0')
+                || routes
+                    .insert(flag, value)
+                    .is_some_and(|previous| previous != value))
+        {
+            return Err(invalid_read_continuation());
+        }
+        if string_value {
+            if inline.is_some() {
+                shadow[index] = format!("{flag}=continuation-literal");
+            } else {
+                shadow[value_index] = "continuation-literal".into();
+            }
+        }
+        index += if inline.is_some() { 1 } else { 2 };
+    }
+    if !selector_seen
+        || !(cursor_seen || (action == "body" && offset_seen))
+        || thread_seen != expected_thread.is_some()
+    {
+        return Err(invalid_read_continuation());
+    }
+    let matches = commands::command_for_registry(crate::harness::registry::builtins())
+        .try_get_matches_from(shadow)
+        .map_err(|_| invalid_read_continuation())?;
+    let (parsed_action, selected) = matches.subcommand().ok_or_else(invalid_read_continuation)?;
+    if parsed_action != action {
+        return Err(invalid_read_continuation());
+    }
+    if let Some(limit) = limit
+        && selected
+            .get_one::<u16>("limit")
+            .copied()
+            .unwrap_or(DEFAULT_PAGE_LIMIT)
+            != limit
+    {
+        return Err(invalid_read_continuation());
+    }
+    if action == "read"
+        && (selected.get_one::<u16>("recent").is_some()
+            || selected.get_one::<u64>("after").is_some()
+            || selected.get_one::<u64>("before").is_some())
+    {
+        return Err(invalid_read_continuation());
+    }
+    match slot {
+        Some(slot) => Ok(slot),
+        None if allow_default && effective == DEFAULT_PAGE_BYTES => {
+            Ok(ReadByteSlot::Insert(delimiter.unwrap_or(argv.len())))
+        }
+        None => Err(invalid_read_continuation()),
+    }
+}
+
+/// Restore only successful typed continuations obtained under an internal
+/// reduced bound. No cursor decoding, result re-selection or peer-text rewrite.
+pub(crate) fn normalize_read_continuation_budget(
+    command: &Command,
+    result: &mut CommandResult,
+    invocation_max_bytes: u32,
+) -> Result<(), ApiError> {
+    if read_byte_bound(command) >= invocation_max_bytes {
+        return Ok(());
+    }
+    use crate::protocol::results::MessageContent;
+    let (next, cursor): (&mut Option<Vec<String>>, &Option<String>) = match (command, result) {
+        (Command::Message(_), CommandResult::Message(details)) => match &mut details.content {
+            MessageContent::Ordinary {
+                body_next_argv,
+                body_next_cursor,
+                ..
+            } => (body_next_argv, body_next_cursor),
+            MessageContent::System { .. } => return Ok(()),
+        },
+        (Command::History(_), CommandResult::History(page)) => {
+            (&mut page.next_argv, &page.next_cursor)
+        }
+        (Command::Search(_), CommandResult::Search(page)) => {
+            (&mut page.matches.next_argv, &page.matches.next_cursor)
+        }
+        _ => return Ok(()),
+    };
+    let Some(argv) = next else {
+        return Ok(());
+    };
+    let cursor = cursor.as_deref();
+    // A leading option-looking generated literal and an explicit delimiter are
+    // both legitimate data placements. Accept only one unambiguous option slot.
+    let mut found = None;
+    for generated in [true, false] {
+        if let Ok(slot) = read_continuation_byte_slot(command, argv, cursor, generated) {
+            if found.is_some_and(|previous| previous != slot) {
+                return Err(invalid_read_continuation());
+            }
+            found = Some(slot);
+        }
+    }
+    match found.ok_or_else(invalid_read_continuation)? {
+        ReadByteSlot::Value(index) => argv[index] = invocation_max_bytes.to_string(),
+        ReadByteSlot::Inline(index) => argv[index] = format!("--max-bytes={invocation_max_bytes}"),
+        ReadByteSlot::Insert(index) => {
+            drop(argv.splice(
+                index..index,
+                ["--max-bytes".into(), invocation_max_bytes.to_string()],
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Reserve annotation bytes by reselecting the same read at a smaller bound.
 /// The daemon, rather than the CLI, supplies any body/page continuation: never
 /// trim printed body bytes or synthesize a cursor after selection.
@@ -1212,8 +1746,15 @@ fn fit_annotated_read<C: LocalClient + ?Sized>(
 ) -> Result<(CommandResult, output::ReadModes), RunError> {
     let max_bytes = read_byte_bound(&command);
     loop {
-        let modes = output::ReadModes::lookup(&result, spec, client, &budget())?;
-        if modes.is_empty() {
+        let refitted = read_byte_bound(&command) != max_bytes;
+        if refitted {
+            normalize_read_continuation_budget(&command, &mut result, max_bytes)?;
+        }
+        let mut modes = output::ReadModes::lookup(&result, spec, client, &budget())?;
+        if refitted {
+            modes.require_final_bound();
+        }
+        if modes.is_empty() && !refitted {
             return Ok((result, modes));
         }
         let len = modes.annotate(output::emitted_bytes(&result, spec)?).len();
@@ -1297,6 +1838,56 @@ fn select_display_inbox_page<C: LocalClient + ?Sized>(
     Ok((command, result))
 }
 
+/// A subagent's own identity: the agent id from the caller environment and the native session of
+/// the occupant context. `None` when either is missing (the subagent has no stream of its own).
+fn subagent_identity(
+    context: &crate::harness::context::OccupantContext,
+) -> Option<(crate::protocol::ids::AgentId, String)> {
+    let Some(caller::CallerOrigin::Agent(env)) = caller::active() else {
+        return None;
+    };
+    match (env.agent_id, &context.session) {
+        (Some(agent), crate::harness::context::SessionReference::Native(native)) => {
+            Some((agent, native.clone()))
+        }
+        _ => None,
+    }
+}
+
+/// The caller's claim for `context`: top-level as built, or, for a subagent, in the shape the
+/// hook builds (agent id, per-agent execution), never the parent's.
+fn role_claim(
+    contexts: &crate::harness::context::ContextJournal,
+    context: &crate::harness::context::OccupantContext,
+    role: crate::harness::context::Role,
+) -> Result<crate::protocol::authority::CallerClaim, RunError> {
+    let mut claim = contexts.claim(context).map_err(context_run_error)?;
+    if role == crate::harness::context::Role::TopLevel {
+        return Ok(claim);
+    }
+    let refused = || {
+        unsupported(
+            "subagents may read and summarize; only top-level agents check in, accept or ACK",
+        )
+    };
+    let Some((agent, native)) = subagent_identity(context) else {
+        return Err(refused());
+    };
+    claim.role = crate::protocol::authority::CallerRole::Subagent;
+    claim.execution = crate::protocol::ids::ExecutionId::parse(
+        crate::harness::context::session_execution(
+            context.instance,
+            context.harness,
+            &native,
+            Some(agent.as_str()),
+        )
+        .to_string(),
+    )
+    .map_err(|_| RunError::Api(ApiError::invalid_request("subagent execution id")))?;
+    claim.agent_id = Some(agent);
+    Ok(claim)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_display_inbox<C: LocalClient + ?Sized, W: Write>(
     query: &crate::protocol::commands::InboxQuery,
@@ -1306,6 +1897,7 @@ fn run_display_inbox<C: LocalClient + ?Sized, W: Write>(
     client: &C,
     clock: &dyn Clock,
     writer: &mut W,
+    role: crate::harness::context::Role,
 ) -> Result<(), RunError> {
     use crate::protocol::{ids::MessageId, results::InboxBatchItem};
     let context = contexts
@@ -1314,7 +1906,19 @@ fn run_display_inbox<C: LocalClient + ?Sized, W: Write>(
         .ok_or_else(|| {
             caller_not_located("context missing; explicit lifecycle check-in required")
         })?;
-    let claim = crate::harness::bridge::caller_claim(&context).map_err(context_run_error)?;
+    let subagent = role != crate::harness::context::Role::TopLevel;
+    // A subagent without its own stream (no agent identity, or a daemon without per-binding
+    // cursors) reads read-only: no claim, no cursor, nothing settled.
+    if subagent && subagent_identity(&context).is_none() {
+        return run_wire(
+            Command::Inbox(query.clone()),
+            output_spec,
+            client,
+            &|| cooperative_budget(clock),
+            writer,
+        );
+    }
+    let claim = role_claim(contexts, &context, role)?;
     let mut request = query.clone();
     request.seat = Some(claim.seat.clone());
     let capabilities = match client.call(Command::Capabilities, &cooperative_budget(clock)) {
@@ -1339,6 +1943,26 @@ fn run_display_inbox<C: LocalClient + ?Sized, W: Write>(
         && capabilities
             .iter()
             .any(|name| name == crate::protocol::capabilities::INBOX_BATCH_V2);
+    // Spec §2: an agent reads its own binding's stream and advances only its own cursors.
+    let binding_cursors = v2
+        && claim.harness != crate::protocol::authority::Harness::Human
+        && capabilities
+            .iter()
+            .any(|name| name == crate::protocol::capabilities::BINDING_CURSORS);
+    if subagent && !binding_cursors {
+        // A subagent without its own stream (no agent identity, or a daemon without per-binding
+        // cursors) reads read-only: no claim, no cursor, nothing settled.
+        return run_wire(
+            Command::Inbox(query.clone()),
+            output_spec,
+            client,
+            &|| cooperative_budget(clock),
+            writer,
+        );
+    }
+    if binding_cursors {
+        request.claim = Some(claim.clone());
+    }
     let supported = capabilities
         .iter()
         .any(|name| name == crate::protocol::capabilities::INBOX_BATCH);
@@ -1362,6 +1986,47 @@ fn run_display_inbox<C: LocalClient + ?Sized, W: Write>(
             &claim,
             lazy_display::DisplaySelection::OwnDefaultText,
         )?;
+        // After the whole page was flushed: this binding's cursors move over what it displayed
+        // (every role, subagents included), before any top-level settlement. A failure only means
+        // the messages are offered again.
+        if binding_cursors {
+            // A page that showed first-contact history for a session the daemon had not
+            // enrolled yet still sends the (possibly empty) advance: it enrolls the binding, so
+            // the history is shown once (ht-54r.8).
+            let showed_history = output_spec.format == crate::protocol::output::OutputFormat::Text
+                && matches!(
+                    &result,
+                    CommandResult::InboxBatchV2(page) if page.items.iter().any(|item| matches!(
+                        item,
+                        crate::protocol::results::InboxBatchV2Item::FirstContact(_)
+                    ))
+                );
+            let empty: [MessageId; 0] = [];
+            let batches: Vec<&[MessageId]> = if candidates.displayed.is_empty() && showed_history {
+                vec![&empty[..]]
+            } else {
+                candidates
+                    .displayed
+                    .chunks(crate::protocol::commands::MAX_BATCH_ITEMS)
+                    .collect()
+            };
+            for batch in batches {
+                let _ = client.call(
+                    Command::AdvanceCursors(crate::protocol::commands::AdvanceCursors {
+                        claim: claim.clone(),
+                        operation: crate::protocol::ids::OperationId::new(
+                            uuid::Uuid::new_v4().to_string(),
+                        ),
+                        displayed: batch.to_vec(),
+                    }),
+                    &cooperative_budget(clock),
+                );
+            }
+        }
+        if subagent {
+            // A subagent's display settles nothing: no display ACK, no delivery completion.
+            return Ok(());
+        }
         return lazy_display::settle(
             candidates,
             journal,
@@ -1571,16 +2236,33 @@ pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
     let historical = replay
         .as_ref()
         .and_then(|claim| replay_selection(selection, claim, instance));
+    let origin = caller::active();
     let selection = if let Some(historical) = &historical {
         historical
     } else {
         if !matches!(&parsed.action, CliAction::Retry(_)) {
             validate_actor_harness(parsed.actor, selection.harness)?;
+            if let Some(origin) = &origin {
+                caller::check_selection(origin, selection.harness)?;
+            }
         }
         selection
     };
     if matches!(&parsed.action, CliAction::Summary(_)) {
         return summary::run(parsed, selection, paths, instance, client, clock, writer);
+    }
+    if matches!(&parsed.action, CliAction::WakeOn(_)) {
+        return wake_on::run(parsed, selection, paths, instance, client, clock, writer);
+    }
+    if historical.is_some()
+        && let CliAction::Retry(recovery) = &parsed.action
+    {
+        let journal = journal::Journal::open(paths.instance_dir.join("intents"))?;
+        let reference = journal.resolve_recovery_ref(recovery.as_str())?;
+        let pending = journal.load(&reference)?;
+        if direct_send::plan(&pending.semantic).is_some() {
+            return direct_send::retry(&journal, &reference, client, clock, &parsed.output, writer);
+        }
     }
     let request = Command::SeatInspect(SeatInspectQuery {
         seat: selection.seat.clone(),
@@ -1595,7 +2277,7 @@ pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
         return Err(mapping_error("service returned no seat inspection"));
     };
     let generation = selected_generation(selection, &inspection)?;
-    let contexts = seat_contexts(paths, instance, &selection.seat)?;
+    let mut contexts = seat_contexts(paths, instance, &selection.seat)?;
     let journal = journal::Journal::open(paths.instance_dir.join("intents"))?;
     let mut current = contexts.current().map_err(context_run_error)?;
     let lifecycle = matches!(
@@ -1642,6 +2324,13 @@ pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
         && context.target == selection.target.as_str()
     {
         current = None;
+    }
+    // An agent caller acts as its harness session (decision 15): its context is derived from the
+    // environment at the seat's mapping generation and never saved. The saved pane context is
+    // consulted above only to retire a person's, which an agent's lifecycle check-in replaces.
+    if matches!(origin, Some(caller::CallerOrigin::Agent(_))) {
+        contexts = caller_journal(contexts, instance, selection, generation)?;
+        current = contexts.current().map_err(context_run_error)?;
     }
     // A fresh lifecycle check-in (a new event, not a replay of a recorded
     // one) is a deliberate new registration: it is seeded from the service's
@@ -1690,7 +2379,7 @@ pub(crate) fn run_selected<C: LocalClient + ?Sized, W: Write>(
         let saved = current
             .as_ref()
             .ok_or_else(|| caller_not_located("handoff requires lifecycle check-in"))?;
-        let claim = crate::harness::bridge::caller_claim(saved).map_err(context_run_error)?;
+        let claim = contexts.claim(saved).map_err(context_run_error)?;
         let topology = match &parsed.action {
             CliAction::TopologyHandoff(_) => true,
             CliAction::Retry(recovery) => topology_runtime::is_compound(
@@ -1801,8 +2490,12 @@ fn exact_check_in_replay(
                 let CommandResult::CheckedIn(check) = result else {
                     return Err(context_run_error(ContextError::Corrupt));
                 };
-                return Ok(check.context
-                    == bridge::caller_claim(&response.context).map_err(context_run_error)?);
+                // The daemon echoes the frozen claim, liveness fingerprint included.
+                let mut echoed = check.context.clone();
+                echoed.liveness = None;
+                return Ok(
+                    echoed == bridge::caller_claim(&response.context).map_err(context_run_error)?
+                );
             }
             (
                 journal.find_check_in(&scope, event_id)?,
@@ -2001,6 +2694,7 @@ fn caller_need(
         }
         CliAction::CachedCheckIn(_)
         | CliAction::Summary(_)
+        | CliAction::WakeOn(_)
         | CliAction::Handoff(_)
         | CliAction::TopologyHandoff(_)
         | CliAction::Watch(_)
@@ -2423,6 +3117,25 @@ where
     let seat = pane_seat(client, &parsed.output, &pane, clock.as_ref())?
         .ok_or_else(|| no_seat_for_pane(&pane))?;
     let instance = read_existing_namespace(paths)?.ok_or_else(daemon_unavailable)?;
+    let origin = caller::active();
+    if let Some(caller::CallerOrigin::Agent(env)) = &origin {
+        // An agent's identity is its harness session: no saved context is read or required.
+        let selection = CooperativeSelection {
+            seat,
+            target: pane,
+            harness: crate::harness::context::Harness::from(env.harness),
+            role: caller::role_of(env.role),
+        };
+        if let Some(claim) = replay
+            && let Some(historical) = replay_selection(&selection, &claim, instance)
+        {
+            return Ok(historical);
+        }
+        if !matches!(&parsed.action, CliAction::Retry(_)) {
+            validate_actor_harness(parsed.actor, selection.harness)?;
+        }
+        return Ok(selection);
+    }
     let contexts = seat_contexts(paths, instance, &seat)?;
     let context = match contexts.current().map_err(context_run_error)? {
         Some(context) => context,
@@ -2603,6 +3316,9 @@ fn retry_failure(failure: retry::RetryFailure<ApiError>) -> RunError {
 #[path = "../../tests/cli/cooperative.rs"]
 mod cooperative_tests;
 #[cfg(test)]
+#[path = "../../tests/cli/q5_continuation_normalization.rs"]
+mod q5_continuation_normalization;
+#[cfg(test)]
 #[path = "../../tests/cli/read_cost.rs"]
 mod read_cost_tests;
 #[cfg(test)]
@@ -2689,7 +3405,6 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
     });
     if let CliAction::Wire(Command::Inbox(query)) = &parsed.action
         && own_text_inbox
-        && role == Role::TopLevel
     {
         return run_display_inbox(
             query,
@@ -2699,16 +3414,43 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
             client,
             clock,
             writer,
+            role,
         );
     }
-    if let CliAction::Wire(command) = parsed.action {
-        return run_wire(
+    let text_read = text_display(&parsed);
+    if let CliAction::Wire(mut command) = parsed.action {
+        // An agent's machine read of its own inbox carries its claim so the daemon serves that
+        // binding's stream (every role); machine reads move no cursor.
+        if let Command::Inbox(query) = &mut command
+            && parsed.caller_read_default
+            && query.claim.is_none()
+            && contexts.is_agent_caller()
+            && client.supports_capability(
+                crate::protocol::capabilities::BINDING_CURSORS,
+                &cooperative_budget(clock),
+            )
+            && let Some(context) = contexts.current().map_err(context_run_error)?
+        {
+            let claim = role_claim(contexts, &context, role)?;
+            query.seat = Some(claim.seat.clone());
+            query.claim = Some(claim);
+        }
+        let read = command.clone();
+        let result = run_wire_result(
             command,
             &parsed.output,
             client,
             &|| cooperative_budget(clock),
             writer,
-        );
+        )?;
+        if text_read
+            && let Some(message) = full_body_read(&read, &result)
+            && let Ok(Some(context)) = contexts.current()
+            && let Ok(claim) = role_claim(contexts, &context, role)
+        {
+            advance_over_body_read(client, clock, claim, message);
+        }
+        return Ok(());
     }
     if let CliAction::CachedCheckIn(request) = parsed.action {
         let saved = contexts
@@ -2742,6 +3484,7 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
                 role,
                 event_id: uuid::Uuid::new_v4().to_string(),
                 capability: Capability::SourceSupported,
+                agent_id: None,
             };
             bridge::run_event(
                 journal,
@@ -2765,6 +3508,21 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
             let seed = initial
                 .or(context.as_ref())
                 .ok_or_else(|| unsupported("lifecycle requires a service-resolved durable seat"))?;
+            // An agent's session is its environment's; a differing `--native-session` is a
+            // mistake, never a second identity.
+            let native_session = match (&seed.session, contexts.is_agent_caller()) {
+                (crate::harness::context::SessionReference::Native(own), true) => {
+                    match native_session {
+                        Some(given) if given != *own => {
+                            return Err(invalid_request(
+                                "--native-session differs from the calling harness session",
+                            ));
+                        }
+                        _ => Some(own.clone()),
+                    }
+                }
+                _ => native_session,
+            };
             let event = LifecycleEvent {
                 harness: seed.harness,
                 source: "explicit".into(),
@@ -2773,6 +3531,7 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
                 role,
                 event_id,
                 capability: Capability::SourceSupported,
+                agent_id: None,
             };
             bridge::run_event_as(
                 journal,
@@ -2788,9 +3547,22 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
             )
             .map_err(bridge_run_error)?;
         }
+        CliAction::Mutation(MutationSpec::DirectSend(request)) => {
+            let context = current()?;
+            let claim = contexts.claim(&context).map_err(context_run_error)?;
+            direct_send::start(
+                request,
+                claim,
+                journal,
+                client,
+                clock,
+                &parsed.output,
+                writer,
+            )?;
+        }
         CliAction::Mutation(mutation) => {
             let context = current()?;
-            let claim = bridge::caller_claim(&context).map_err(context_run_error)?;
+            let claim = contexts.claim(&context).map_err(context_run_error)?;
             let scope = IntentScope::Cooperative {
                 instance: claim.instance.clone(),
                 seat: claim.seat.clone(),
@@ -2852,11 +3624,22 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
                     "retry belongs to a different caller location or role",
                 ));
             }
+            if direct_send::plan(&pending.semantic).is_some() {
+                return direct_send::retry(
+                    journal,
+                    &reference,
+                    client,
+                    clock,
+                    &parsed.output,
+                    writer,
+                );
+            }
             if let SemanticMutation::CooperativeCheckIn {
                 claim,
                 mode,
                 event_id,
                 operator,
+                ..
             } = &pending.semantic
             {
                 let saved_session = contexts
@@ -2883,6 +3666,7 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
                     role,
                     event_id: event_id.clone(),
                     capability: Capability::SourceSupported,
+                    agent_id: None,
                 };
                 bridge::run_event_as(
                     journal,
@@ -3006,6 +3790,7 @@ fn cooperative_semantic(mutation: MutationSpec) -> io::Result<SemanticMutation> 
             delivery_mode,
             thread,
             body,
+            direct_recipient: None,
             invited_recipients: require_ack,
             deadline_millis,
             relays_user,
@@ -3199,6 +3984,70 @@ mod topology_contract_retry_tests {
     use super::*;
     use crate::protocol::handoff::topology_contract_tests as fixture;
     use crate::protocol::results::ErrorCode;
+    struct NoAutomaticCapability;
+    impl LocalClient for NoAutomaticCapability {
+        fn call_with_output(
+            &self,
+            command: Command,
+            _: &OutputSpec,
+            budget: &CallBudget,
+        ) -> Result<CommandResult, ApiError> {
+            self.call(command, budget)
+        }
+        fn call(&self, command: Command, _: &CallBudget) -> Result<CommandResult, ApiError> {
+            assert!(matches!(command, Command::Capabilities));
+            Ok(CommandResult::Capabilities(
+                crate::protocol::results::CapabilityList {
+                    capabilities: vec![],
+                },
+            ))
+        }
+    }
+    #[test]
+    fn parsed_non_direct_new_tab_requires_capability_before_selector_host_reads() {
+        let mut parsed = commands::parse_argv([
+            "ht",
+            "--cooperative-seat",
+            "sender",
+            "--cooperative-target",
+            "named pane",
+            "--cooperative-harness",
+            "codex",
+            "--cooperative-role",
+            "top-level",
+            "handoff",
+            "--new-tab",
+            "new peer",
+            "--kind",
+            "codex",
+            "--",
+            "literal work",
+        ])
+        .unwrap();
+        assert!(
+            matches!(&parsed.action, CliAction::TopologyHandoff(request) if request.automatic && request.new_tab.is_some())
+        );
+        assert!(
+            parsed
+                .cooperative_selector
+                .as_ref()
+                .is_some_and(|selector| selector.direct_id().is_none())
+        );
+        let result = resolve_automatic_new_selectors(
+            &mut parsed,
+            &NoAutomaticCapability,
+            &SystemClock::new(),
+            || panic!("capability refusal must precede topology"),
+            || panic!("capability refusal must precede caller pane read"),
+        );
+        assert!(matches!(
+            result,
+            Err(RunError::Api(ApiError {
+                code: ErrorCode::Unsupported,
+                ..
+            }))
+        ));
+    }
     #[test]
     fn topology_contract_retry_refuses_unavailable_or_unconfigured_runtime_before_presentation() {
         let root = std::env::temp_dir().join(format!("topology-retry-{}", uuid::Uuid::new_v4()));

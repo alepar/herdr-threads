@@ -86,7 +86,7 @@ fn parse_accepts(harness: &str, bytes: &[u8]) -> bool {
 /// diagnostic runtime/version witnesses. Optional Claude compact is excluded
 /// from accepted_fixtures and remains tested under its captured qualification.
 fn operational_parse_accepts(harness: &str, bytes: &[u8]) -> bool {
-    use crate::harness::operational::{ClaudeContract, CodexContract};
+    use crate::harness::{claude::ClaudeContract, codex::CodexContract};
     match harness {
         "claude" => {
             claude::parse_event_for_contract(bytes, "e", &ClaudeContract::registered()).is_ok()
@@ -195,8 +195,8 @@ fn canonical_json_sorts_keys_events_and_fields() {
 /// together with them.
 #[test]
 fn contract_ids_are_pinned() {
-    assert_eq!(contract_id(&claude::CONTRACT), "3f860645de4c3363");
-    assert_eq!(contract_id(&codex::CONTRACT), "d3b98d74f26f7e2c");
+    assert_eq!(contract_id(&claude::CONTRACT), "b76ddc7501b1db9c");
+    assert_eq!(contract_id(&codex::CONTRACT), "460af33ca0db709c");
 }
 
 #[test]
@@ -591,7 +591,7 @@ fn adapters_local_dispatch_keeps_legacy_contract_id_bytes() {
     .unwrap();
     assert_eq!(
         String::from_utf8(legacy).unwrap(),
-        "{\"claude\":\"3f860645de4c3363\",\"codex\":\"d3b98d74f26f7e2c\",\"normalize\":{\"claude\":{\"2.1.286 (Claude Code)\":\"2.1.286\"},\"codex\":{\"codex-cli 0.158.0\":\"0.158.0\"}}}\n"
+        "{\"claude\":\"b76ddc7501b1db9c\",\"codex\":\"460af33ca0db709c\",\"normalize\":{\"claude\":{\"2.1.286 (Claude Code)\":\"2.1.286\"},\"codex\":{\"codex-cli 0.158.0\":\"0.158.0\"}}}\n"
     );
     let mut output = Vec::new();
     crate::cli::run_in_pane(["herdr-threads", "adapters", "--json"], None, &mut output).unwrap();
@@ -613,8 +613,8 @@ fn adapters_local_dispatch_keeps_legacy_contract_id_bytes() {
     assert_shipped_discovery_metadata(&discovery, "synthetic_fourth");
     let row = |id: &str| discovery.adapters.iter().find(|row| row.id == id).unwrap();
     for (id, pinned) in [
-        ("claude", "3f860645de4c3363"),
-        ("codex", "d3b98d74f26f7e2c"),
+        ("claude", "b76ddc7501b1db9c"),
+        ("codex", "460af33ca0db709c"),
     ] {
         assert_eq!(row(id).legacy_contract_id.as_deref(), Some(pinned));
         assert!(row(id).contracts.iter().all(|domain| domain.id != pinned));
@@ -766,6 +766,7 @@ mod sparse_discovery_fixture {
 
     pub struct Adapter(pub bool);
     static METADATA: AdapterMetadata = AdapterMetadata {
+        agent_env_markers: &[],
         id: "sparse",
         display_label: "Sparse",
         context_spelling: "Sparse",
@@ -950,4 +951,178 @@ fn adapters_sparse_projection_rejects_missing_duplicate_invalid_and_producer_dri
             "producer drift {change} escaped the shared consumer"
         );
     }
+}
+
+/// A registered adapter that declares its own version syntax and transcript
+/// version, next to the builtins: the core never names it.
+pub(crate) mod version_fixture {
+    use crate::harness::adapter::*;
+    use crate::harness::contract::HarnessContract;
+    use crate::harness::registry::{Registration, Registry};
+    use crate::protocol::time::CallBudget;
+
+    pub(crate) static SYNTAX: VersionSyntax = VersionSyntax {
+        prefix: "tst ",
+        suffix: " (Test)",
+        examples: &[("tst 1.2.3 (Test)", "1.2.3")],
+    };
+    pub(crate) static CONTRACT: HarnessContract = HarnessContract {
+        harness: "test",
+        discriminator: "event",
+        events: &[],
+    };
+    static METADATA: AdapterMetadata = AdapterMetadata {
+        agent_env_markers: &[],
+        id: "test",
+        display_label: "Test",
+        context_spelling: "Tst",
+        context_aliases: &[],
+        executable: ExecutableLookup::Unsupported,
+        host_kinds: &[],
+        setup_scopes: &[],
+        budget: EventBudgetPolicy {
+            lifecycle_ms: 1,
+            observer_ms: 1,
+        },
+        runtime_sources: &[],
+    };
+    static DOMAINS: &[ContractDescriptor] = &[ContractDescriptor {
+        domain_id: "native_payload",
+        origin: crate::harness::evidence::EvidenceOrigin::NativePayload,
+        events: &[],
+        required_milestones: &[],
+        qualifications: &[],
+        holding: crate::harness::evidence::AttributionHolding::Never,
+        resumed_unavailable_reason: None,
+        domain: ContractDomain::Native,
+        contract: &CONTRACT,
+    }];
+
+    pub(crate) struct Adapter {
+        pub(crate) transcript: Option<&'static TranscriptVersionSpec>,
+    }
+    impl HarnessAdapter for Adapter {
+        type Admission = ();
+        fn metadata(&self) -> &'static AdapterMetadata {
+            &METADATA
+        }
+        fn contracts(&self) -> &'static [ContractDescriptor] {
+            DOMAINS
+        }
+        fn version_syntax(&self) -> Option<&'static VersionSyntax> {
+            Some(&SYNTAX)
+        }
+        fn transcript_version(&self) -> Option<&'static TranscriptVersionSpec> {
+            self.transcript
+        }
+        fn observe_install(&self, _: &InstallEnvironment, _: &CallBudget) -> InstallObservation {
+            unreachable!()
+        }
+        fn admit(&self, _: &AdmissionRequest, _: &CallBudget) -> AdmissionDecision<()> {
+            unreachable!()
+        }
+        fn version_ladder(&self, _: &RuntimeIdentity) -> Ladder {
+            unreachable!()
+        }
+        fn classify(&self, _: &HookInput) -> ContractObservation {
+            unreachable!()
+        }
+        fn decode(&self, _: &(), _: &HookInput) -> Result<DecodedEvent, DecodeFailure> {
+            unreachable!()
+        }
+        fn encode(
+            &self,
+            _: &(),
+            _: &DecodedEvent,
+            _: &NeutralOffer,
+        ) -> Result<EncodedOutput, EncodeFailure> {
+            unreachable!()
+        }
+        fn attribute_runtime(&self, _: &HookInput, _: &CallBudget) -> RuntimeAttribution {
+            unreachable!()
+        }
+        fn setup(&self, _: &SetupRequest, _: &CallBudget) -> Result<SetupOutcome, SetupFailure> {
+            unreachable!()
+        }
+        fn status(&self, _: &StatusRequest, _: &CallBudget) -> SetupStatus {
+            unreachable!()
+        }
+        fn unsetup(
+            &self,
+            _: &UnsetupRequest,
+            _: &CallBudget,
+        ) -> Result<RemovalOutcome, SetupFailure> {
+            unreachable!()
+        }
+    }
+
+    /// Claude, Codex, then the test adapter.
+    pub(crate) fn registry(transcript: Option<&'static TranscriptVersionSpec>) -> Registry {
+        let adapter = Box::leak(Box::new(Adapter { transcript }));
+        Registry::new(Box::leak(Box::new([
+            Registration::new(&crate::harness::claude::ClaudeAdapter),
+            Registration::new(&crate::harness::codex::CodexAdapter),
+            Registration::new(adapter),
+        ])))
+        .unwrap()
+    }
+}
+
+#[test]
+fn version_syntax_and_contract_ids_extend_to_a_registered_adapter() {
+    use crate::harness::contract::{
+        contract_ids_json_in, normalize_version_in, render_contract_ids_in,
+    };
+    let registry = version_fixture::registry(None);
+    for (raw, want) in [
+        ("tst 1.2.3 (Test)", Some("1.2.3")),
+        ("  tst 1.2.3 (Test)\n", Some("1.2.3")),
+        ("1.2.3", Some("1.2.3")),
+        ("tst 1.2.3-beta.1 (Test)", None),
+        ("tst 1.2 (Test)", None),
+    ] {
+        assert_eq!(
+            normalize_version_in(&registry, "test", raw).as_deref(),
+            want,
+            "{raw:?}"
+        );
+    }
+    // The builtins keep their own syntax in the extended registry, and the
+    // extended registry's syntax is not visible through the builtin lookup.
+    assert_eq!(
+        normalize_version_in(&registry, "claude", "2.1.286 (Claude Code)").as_deref(),
+        Some("2.1.286")
+    );
+    assert_eq!(
+        normalize_version_in(&registry, "claude", "tst 1.2.3 (Test)"),
+        None
+    );
+    assert_eq!(normalize_version("test", "tst 1.2.3 (Test)"), None);
+    // An adapter that declares no syntax normalizes nothing.
+    assert_eq!(normalize_version("hermes", "1.0.0"), None);
+
+    let doc = contract_ids_json_in(&registry, None);
+    let keys: Vec<&str> = doc
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(keys, ["claude", "codex", "normalize", "test"]);
+    assert_eq!(doc["test"], contract_id(&version_fixture::CONTRACT));
+    assert_eq!(doc["normalize"]["test"]["tst 1.2.3 (Test)"], "1.2.3");
+    assert_eq!(
+        doc["normalize"]["claude"]["2.1.286 (Claude Code)"],
+        "2.1.286"
+    );
+
+    let text = render_contract_ids_in(&registry, None, false);
+    let lines: Vec<&str> = text.lines().map(|l| l.split(' ').next().unwrap()).collect();
+    assert_eq!(lines, ["claude", "codex", "test"], "registry order");
+    assert_eq!(
+        render_contract_ids_in(&registry, Some("test"), false),
+        format!("test {}\n", contract_id(&version_fixture::CONTRACT))
+    );
+    // The builtin registry is untouched by the extended one.
+    assert!(contract_ids_json(None).get("test").is_none());
 }

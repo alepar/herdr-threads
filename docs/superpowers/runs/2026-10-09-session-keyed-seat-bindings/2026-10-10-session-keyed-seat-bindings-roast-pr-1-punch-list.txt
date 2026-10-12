@@ -1,0 +1,5 @@
+[Should-fix] src/store/read_cursors.rs:197
+[Nit] src/harness/claude_rewrite.rs:14; src/cli/commands.rs:1760
+[Nit] src/store/lazy_delivery.rs:46
+[FYI] src/store/schema.rs:592; src/store/schema.rs:423; docs/operations.md:230
+[Nit] TRUST-POLICY.md:312

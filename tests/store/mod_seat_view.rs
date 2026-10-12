@@ -2,8 +2,13 @@
 //! `src/store/seats.rs` as `mod_seat_view_tests`.
 use super::*;
 use crate::{
-    ports::{ModBindingView, ModFingerprint, ModStoreReads},
-    protocol::{authority::Harness, ids::NativeSessionId, watch::WATCH_BODY_LIMIT_BYTES},
+    ports::{ModBindingRef, ModFingerprint, ModStoreReads},
+    protocol::{
+        authority::Harness,
+        ids::{BindingId, NativeSessionId},
+        time::UtcMillis,
+        watch::WATCH_BODY_LIMIT_BYTES,
+    },
     store::{
         SqliteStore,
         cooperative_checkin_tests::{budget, check_in, claim, fixture, lifecycle},
@@ -26,8 +31,23 @@ fn claude_claim(session: &str, execution: &str) -> crate::protocol::authority::C
     claim
 }
 
+/// The view of the seat's oldest open top-level binding (a binding that matches nothing when the
+/// seat has none: the seat-level parts are the same).
 fn view(store: &SqliteStore) -> crate::ports::ModSeatView {
-    store.mod_seat_view(&seat_s(), &budget()).unwrap().unwrap()
+    let db = store.context.open_query(budget()).unwrap();
+    let first = crate::store::bindings::list_open_top_level(&db, &seat_s())
+        .unwrap()
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| BindingId::new("no-such-binding"));
+    view_of(store, &first)
+}
+
+fn view_of(store: &SqliteStore, binding: &BindingId) -> crate::ports::ModSeatView {
+    store
+        .mod_binding_view(&seat_s(), ModBindingRef::Id(binding), &budget())
+        .unwrap()
+        .unwrap()
 }
 
 #[test]
@@ -47,23 +67,24 @@ fn view_reports_open_claude_binding_generation_and_native_session() {
         ),
     )
     .unwrap();
-    assert_eq!(result.context.binding_generation, 1);
+    assert_eq!(result.context.binding_generation, 0);
     let after = view(&store);
-    assert_eq!(
-        after.binding,
-        Some(ModBindingView {
-            generation: 1,
-            provenance: "cooperative_top_level".into(),
-            harness: "claude".into(),
-            native_session: "session-X".into(),
-        })
-    );
-    assert_eq!(after.fingerprint.binding_generation, Some(1));
+    let held = after.binding.clone().unwrap();
+    assert_eq!(held.generation, 0);
+    assert_eq!(held.provenance, "cooperative_top_level");
+    assert_eq!(held.harness, "claude");
+    assert_eq!(held.native_session, "session-X");
+    assert!(held.holds_channel() && held.top_level && held.connected && held.ended_at.is_none());
+    assert_eq!(after.fingerprint.binding_generation, Some(0));
     assert_eq!(after.state, "resolved");
     // An unknown seat has no view.
     assert_eq!(
         store
-            .mod_seat_view(&SeatId::new("nobody"), &budget())
+            .mod_binding_view(
+                &SeatId::new("nobody"),
+                ModBindingRef::Id(&held.binding_id),
+                &budget()
+            )
             .unwrap(),
         None
     );
@@ -214,7 +235,7 @@ fn fingerprint_changes_on_each_call_site() {
     conn.execute_batch(
         "INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('m9','i','t2',2,'ordinary','b',0,6);\
          INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES ('m9','t2','s','pending',100);\
-         INSERT INTO catch_up(seat_id,thread_id,frontier_seq,binding_generation,execution_id,entered_at,state) VALUES ('s','t2',0,0,'e',0,'active');",
+         INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) SELECT 's',1,'p','b',0,'codex','catch-up-row','e','cooperative_top_level',0,'tm','inc' WHERE NOT EXISTS(SELECT 1 FROM occupant_bindings WHERE seat_id='s' AND ended_at IS NULL); INSERT INTO catch_up(binding_id,seat_id,thread_id,frontier_seq,entered_at,state) SELECT binding_id,'s','t2',0,0,'active' FROM occupant_bindings WHERE seat_id='s';",
     )
     .unwrap();
     assert_eq!(fp(&store).pending_receipts, 0, "held by catch-up");
@@ -271,7 +292,11 @@ fn other_seat_transition_notice_is_not_mod_attention() {
     assert_eq!(fp(&store), before, "another seat's open is not attention");
     let o = |store: &SqliteStore| {
         store
-            .mod_seat_view(&SeatId::new("o"), &budget())
+            .mod_binding_view(
+                &SeatId::new("o"),
+                ModBindingRef::Id(&BindingId::new("none")),
+                &budget(),
+            )
             .unwrap()
             .unwrap()
             .fingerprint
@@ -300,7 +325,8 @@ fn lazy_row_changes_the_fingerprint_when_it_publishes_not_when_it_stages() {
     let (store, conn, _) = fixture();
     base(&conn);
     conn.execute_batch(
-        "INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t2','s','joined');\
+        "INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES ('s',0,'p','b',0,'codex','lazy-session','e','cooperative_top_level',0,'tm','inc');\
+         INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t2','s','joined');\
          INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('t2','s',1,1);\
          INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) VALUES('prep-1','i','scope','prep-1',zeroblob(32),'t2',0,0,0,0,0,0,0,'building','lazy');",
     )
@@ -325,8 +351,8 @@ fn lazy_row_changes_the_fingerprint_when_it_publishes_not_when_it_stages() {
     changes(
         &store,
         &conn,
-        "lazy row displayed",
-        "UPDATE lazy_recipients SET state='displayed';",
+        "lazy row displayed (the binding's cursor passes it)",
+        "INSERT INTO binding_cursors(binding_id,thread_id,seq) SELECT binding_id,'t2',1 FROM occupant_bindings WHERE seat_id='s'; UPDATE lazy_recipients SET legacy_pending=legacy_pending;",
     );
     assert_eq!(fp(&store).lazy_pending, 0);
 }
@@ -343,15 +369,163 @@ fn fingerprint_changes_when_a_lifecycle_check_in_rebinds() {
     )
     .unwrap();
     let first = fp(&store);
-    assert_eq!(first.binding_generation, Some(1));
-    // SessionStart of a new execution of the same seat: generation 2.
+    assert_eq!(first.binding_generation, Some(0));
+    // SessionStart of a new execution of the same session (ht-54r.3: the binding is
+    // re-registered in place and the seat's mapping generation stays 0).
     let mut context = claude_claim("session-X", "00000000-0000-4000-8000-000000000002");
-    context.binding_generation = 1;
+    context.binding_generation = 0;
     check_in(&store, lifecycle(context, "op-2")).unwrap();
     let second = view(&store);
-    assert_ne!(first, second.fingerprint);
-    assert_eq!(second.binding.as_ref().unwrap().generation, 2);
-    assert_eq!(second.fingerprint.binding_generation, Some(2));
+    assert_eq!(second.binding.as_ref().unwrap().generation, 0);
+    assert_eq!(second.fingerprint.binding_generation, Some(0));
+}
+
+/// An ordinary message `id` (sequence `seq` of thread `t2`) published to seat `s` as a recipient.
+fn deliver(conn: &Connection, id: &str, seq: u32) {
+    conn.execute_batch(&format!(
+        "INSERT INTO messages(instance_id,id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES ('i','{id}','t2',{seq},'ordinary','b',{seq},{seq}) ON CONFLICT DO NOTHING;
+         INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) VALUES ('p-{id}','i','actor','{id}',zeroblob(32),'t2',0,0,0,0,0,0,1,'sealed');
+         INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES ('p-{id}','t2','s',1,300,0);
+         INSERT INTO send_manifests(preparation_id,message_id,instance_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) SELECT 'p-{id}','{id}','i','t2',decision_seq,{seq},{seq},0,1,0 FROM messages WHERE id='{id}';"
+    ))
+    .unwrap();
+}
+
+/// Two Claude sessions of seat `s` (two top-level bindings), `s` joined to thread `t2`.
+fn two_bindings(store: &SqliteStore, conn: &Connection) -> (BindingId, BindingId) {
+    base(conn);
+    conn.execute_batch(
+        "INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t2','s','joined');\
+         INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('t2','s',1,1);",
+    )
+    .unwrap();
+    let mut ids = Vec::new();
+    for (n, (session, execution, operation)) in [
+        ("session-A", "00000000-0000-4000-8000-00000000000a", "op-a"),
+        ("session-B", "00000000-0000-4000-8000-00000000000b", "op-b"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut context = claude_claim(session, execution);
+        context.binding_generation = 0;
+        // Distinct processes: one process never holds two bindings.
+        context.liveness = Some(crate::protocol::authority::LivenessFingerprint {
+            pid: 10 + n as u32,
+            start: 10 + n as u64,
+        });
+        check_in(store, lifecycle(context, operation)).unwrap();
+        let id: String = conn
+            .query_row(
+                "SELECT binding_id FROM occupant_bindings WHERE native_session=?1",
+                [session],
+                |r| r.get(0),
+            )
+            .unwrap();
+        ids.push(BindingId::new(id));
+    }
+    (ids.remove(0), ids.remove(0))
+}
+
+#[test]
+fn binding_view_fingerprint_moves_with_that_bindings_unread_only() {
+    let (store, conn, _) = fixture();
+    let (a, b) = two_bindings(&store, &conn);
+    // Both bindings carry no cursor for t2 (joined after they enrolled): mail is unread by both.
+    deliver(&conn, "m1", 1);
+    deliver(&conn, "m2", 2);
+    let (a0, b0) = (view_of(&store, &a), view_of(&store, &b));
+    assert_eq!(a0.binding.as_ref().unwrap().binding_id, a);
+    assert_eq!(b0.binding.as_ref().unwrap().binding_id, b);
+    assert_eq!(a0.fingerprint.unread, 2);
+    assert_eq!(b0.fingerprint.unread, 2);
+    assert_eq!(
+        a0.fingerprint, b0.fingerprint,
+        "two bindings with the same unread and the same seat agree"
+    );
+    // A reads m1 (its cursor passes it): A's fingerprint moves, B's does not.
+    conn.execute(
+        "UPDATE binding_cursors SET seq=1 WHERE binding_id=?1 AND thread_id='t2'",
+        [a.as_str()],
+    )
+    .unwrap();
+    let (a1, b1) = (view_of(&store, &a), view_of(&store, &b));
+    assert_ne!(a1.fingerprint, a0.fingerprint);
+    assert_eq!(a1.fingerprint.unread, 1);
+    assert_eq!(b1.fingerprint, b0.fingerprint, "A's cursor is not B's");
+    // A reads everything: nothing is unread for A, while B still has its two.
+    conn.execute(
+        "UPDATE binding_cursors SET seq=2 WHERE binding_id=?1",
+        [a.as_str()],
+    )
+    .unwrap();
+    let (a2, b2) = (view_of(&store, &a), view_of(&store, &b));
+    assert_eq!(a2.fingerprint.unread, 0);
+    assert_eq!(b2.fingerprint.unread, 2);
+    // New mail moves both again.
+    deliver(&conn, "m3", 3);
+    assert_ne!(view_of(&store, &a).fingerprint, a2.fingerprint);
+    assert_ne!(view_of(&store, &b).fingerprint, b2.fingerprint);
+}
+
+#[test]
+fn ended_or_disconnected_binding_view_reports_it() {
+    use crate::store::bindings::{DisconnectReason, disconnect};
+    let (store, conn, _) = fixture();
+    let (a, b) = two_bindings(&store, &conn);
+    deliver(&conn, "m1", 1);
+    assert!(view_of(&store, &a).binding.unwrap().holds_channel());
+    assert_eq!(view_of(&store, &a).fingerprint.unread, 1);
+    // A disconnects: still open, no longer able to hold a channel, and no unread of its own.
+    assert!(disconnect(&conn, &a, DisconnectReason::ProcessExit, UtcMillis(5)).unwrap());
+    let disconnected = view_of(&store, &a);
+    let held = disconnected.binding.clone().unwrap();
+    assert!(!held.connected && held.ended_at.is_none() && !held.holds_channel());
+    assert_eq!(disconnected.fingerprint.unread, 0);
+    // B is untouched by A's disconnect.
+    let sibling = view_of(&store, &b);
+    assert!(sibling.binding.unwrap().holds_channel());
+    assert_eq!(sibling.fingerprint.unread, 1);
+    // A ends: the id reference still reports it, with its end time; the claim reference (open
+    // bindings only) resolves nothing.
+    conn.execute(
+        "UPDATE occupant_bindings SET ended_at=9 WHERE binding_id=?1",
+        [a.as_str()],
+    )
+    .unwrap();
+    let ended = view_of(&store, &a).binding.unwrap();
+    assert_eq!(ended.ended_at, Some(UtcMillis(9)));
+    assert!(!ended.holds_channel());
+    let mut stale = claude_claim("session-A", "00000000-0000-4000-8000-00000000000a");
+    stale.binding_generation = 0;
+    let by_claim = store
+        .mod_binding_view(&seat_s(), ModBindingRef::Claim(&stale), &budget())
+        .unwrap()
+        .unwrap();
+    assert_eq!(by_claim.binding, None);
+    // A claim names a binding of its own seat only, and by its key: B resolves, a stranger does
+    // not, and an agent id names a different (subagent) key.
+    let mut b_claim = claude_claim("session-B", "00000000-0000-4000-8000-00000000000b");
+    b_claim.binding_generation = 0;
+    let resolved = store
+        .mod_binding_view(&seat_s(), ModBindingRef::Claim(&b_claim), &budget())
+        .unwrap()
+        .unwrap();
+    assert_eq!(resolved.binding.unwrap().binding_id, b);
+    b_claim.agent_id = Some(crate::protocol::ids::AgentId::new("agent-1"));
+    assert_eq!(
+        store
+            .mod_binding_view(&seat_s(), ModBindingRef::Claim(&b_claim), &budget())
+            .unwrap()
+            .unwrap()
+            .binding,
+        None
+    );
+    let other = store.mod_binding_view(&SeatId::new("o"), ModBindingRef::Id(&b), &budget());
+    assert!(
+        other.unwrap().unwrap().binding.is_none(),
+        "another seat's binding is not this seat's"
+    );
 }
 
 fn seed_stall_receipt(
@@ -477,4 +651,33 @@ fn lifecycle_check_in_through_the_store_notifies_the_observer() {
         count.load(Ordering::SeqCst) >= 1,
         "a binding change reaches the mod worker"
     );
+}
+
+/// ht-poh.53: the hook-pull notice probe is in the view but deliberately not
+/// in the fingerprint (notices never wake and never move mod attention).
+#[test]
+fn view_reports_the_newest_pending_notice_outside_the_fingerprint() {
+    let (store, conn, _) = fixture();
+    base(&conn);
+    conn.execute_batch(
+        "INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('t4','s',1,1),('t4','o',1,1);\
+         INSERT INTO messages(id,instance_id,thread_id,sequence,kind,event_json,decision_at,decision_seq,event_offset) VALUES ('w-1','i','t4',1,'warn','{}',0,12,1),('w-2','i','t4',2,'warn','{}',0,13,1);\
+         INSERT INTO warning_conditions(condition_kind,thread_id,condition_id,affected_seat_id,open_warning_id,opened_seq) VALUES ('receipt','t4','c-1','o','w-1',12),('receipt','t4','c-2','o','w-2',13);",
+    )
+    .unwrap();
+    assert_eq!(view(&store).newest_pending_notice, None);
+    let before = fp(&store);
+    conn.execute_batch(
+        "INSERT INTO digest_programmatic_warnings(seat_id,warning_id,thread_id,event_seq,event_offset) VALUES ('s','w-1','t4',12,1);",
+    )
+    .unwrap();
+    let first = view(&store).newest_pending_notice;
+    assert!(first.is_some());
+    conn.execute_batch(
+        "INSERT INTO digest_programmatic_warnings(seat_id,warning_id,thread_id,event_seq,event_offset) VALUES ('s','w-2','t4',13,1);",
+    )
+    .unwrap();
+    let second = view(&store).newest_pending_notice;
+    assert!(second > first, "{first:?} {second:?}");
+    assert_eq!(fp(&store), before, "notices are not in the fingerprint");
 }
