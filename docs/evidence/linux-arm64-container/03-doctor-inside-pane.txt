@@ -1,0 +1,104 @@
+{"id":"cli:workspace:create","result":{"root_pane":{"agent_status":"unknown","cwd":"/home/tester","focused":true,"foreground_cwd":"/home/tester","pane_id":"w1:p1","revision":0,"scroll":{"max_offset_from_bottom":0,"offset_from_bottom":0,"viewport_rows":40},"tab_id":"w1:t1","terminal_id":"term_65dabbcfdbd071","workspace_id":"w1"},"tab":{"agent_status":"unknown","focused":true,"label":"1","number":1,"pane_count":1,"tab_id":"w1:t1","workspace_id":"w1"},"type":"workspace_created","workspace":{"active_tab_id":"w1:t1","agent_status":"unknown","focused":true,"label":"scope","number":1,"pane_count":1,"tab_count":1,"workspace_id":"w1"}}}
+HERDR_BIN_PATH=/usr/local/bin/herdr
+HERDR_ENV=1
+HERDR_PANE_ID=w1:p1
+HERDR_SOCKET_PATH=/home/tester/.config/herdr/herdr.sock
+HERDR_TAB_ID=w1:t1
+HERDR_WORKSPACE_ID=w1
+
+### doctor (inside Herdr pane)
+doctor: ok
+daemon: healthy
+claude: not_found, hooks missing
+codex: not_found, hooks missing
+agy: plugin missing, allow entry not-granted
+claude local_config_root : installed: false, enabled: unknown, admitted: unknown, observed: unknown
+  Native enablement and runtime observation are separate from local installation
+claude daemon_default: installation not_found; enablement unknown; callback unknown
+  admission unsupported: no executable `claude` on the daemon's PATH
+codex local_config_root : installed: false, enabled: unknown, admitted: unknown, observed: unknown
+  Native enablement and runtime observation are separate from local installation
+codex daemon_default: installation not_found; enablement unknown; callback unknown
+  admission unsupported: no executable `codex` on the daemon's PATH
+hermes local_unresolved : installed: unknown, enabled: unknown, admitted: unknown, observed: unknown
+  setup: invalid adapter input: Hermes launcher unavailable
+hermes daemon_default: installation not_found; enablement unknown; callback unknown
+  admission unsupported: no executable `hermes` on the daemon's PATH
+agy local_config_root : installed: false, enabled: true, admitted: unknown, observed: unknown
+agy daemon_default: installation not_found; enablement unknown; callback unknown
+  admission unsupported: no executable `agy` on the daemon's PATH
+details: herdr-threads doctor --debug
+rc=0
+
+### doctor --debug (inside Herdr pane)
+herdr-threads doctor
+version: 0.10.0 (protocol 7)
+state_dir: /home/tester/.local/state/herdr/plugins/herdr-threads
+state_dir.source: default (~/.local/state)
+state_dir.status: ok
+host_endpoint: /home/tester/.config/herdr/herdr.sock (present)
+host_endpoint.source: HERDR_SOCKET_PATH
+instance_dir: /home/tester/.local/state/herdr/plugins/herdr-threads/instances/88c2126fe66167330b706756db430e7020e0f4872f476c1e9e54e9dbf013846c
+daemon_log: /home/tester/.local/state/herdr/plugins/herdr-threads/instances/88c2126fe66167330b706756db430e7020e0f4872f476c1e9e54e9dbf013846c/daemon.log
+harness manifest: auto (recorded at daemon start 2026-10-12T21:53:55Z)
+manifest cache: never fetched (using the embedded copy)
+daemon: healthy
+daemon.software_version: 0.10.0
+daemon.version_matches: true
+daemon.boot_id: 3c11f85c-b889-48d5-8231-b29bb37fe465
+daemon.host_reachability: ready
+daemon.harness_claude: unsupported
+daemon.harness_codex: unsupported
+daemon.settings.invitation_default_ms: 300000
+daemon.settings.receipt_default_ms: 300000
+daemon.settings.minimum_wake_delay_ms: 30000
+daemon.settings.wake_batch_delay_ms: 0
+daemon.note: harness claude not installed: no executable `claude` on the daemon's PATH
+daemon.note: harness codex not installed: no executable `codex` on the daemon's PATH
+daemon.note: harness hermes not installed: no executable `hermes` on the daemon's PATH
+daemon.note: harness agy not installed: no executable `agy` on the daemon's PATH
+daemon.note: wake cooperative: prompts only Herdr's detected idle/done claude, codex, hermes or agy agent in the seat's terminal, rechecked immediately before submission; native execution and composer contents are unverified
+skill.summary_procedure: present
+hooks.claude.settings: /home/tester/.claude/settings.json
+hooks.claude.setup_installed: no
+claude on PATH: not found
+hooks.claude.installed.binary: none
+hooks.claude.installed.version: none
+hooks.claude.installed.admission: not_found
+hooks.claude.installed.recipe: none
+hooks.claude.permissions: not_installed
+hooks.claude.prompt_suggestions: default (enabled) (`promptSuggestionEnabled` in /home/tester/.claude/settings.json)
+hooks.claude.prompt_suggestions.note: Claude soft-deadline pokes skip a pane that shows a prompt suggestion; run `herdr-threads setup claude --disable-prompt-suggestions` to turn them off
+hooks.claude.observed: not observable: no executable `claude` on the daemon's PATH
+hooks.claude.recipes: claude-hooks-2.1.283 [2.1.283, 2.1.286]; claude-hooks-2.1.287 {2.1.287}
+hooks.claude.compaction_recovery: unavailable until current runtime is separately qualified; use resume/clear or herdr-threads summary
+hooks.codex: Codex hooks are user-level ($CODEX_HOME/hooks.json, set up by `herdr-threads setup codex`); Codex runs them only once trusted
+hooks.codex.recipes: codex-hooks-v1 {0.157.1, 0.158.0, 0.159.3}
+hooks.codex.hooks_file: /home/tester/.codex/hooks.json
+hooks.codex.setup_installed: no
+hooks.codex.permissions: not_installed
+hooks.codex.trust.status: not_installed
+hooks.codex.installed: no executable codex on PATH
+hooks.agy.plugin: /home/tester/.gemini/config/plugins/herdr-threads installed=no current=no enabled=yes version=none
+hooks.agy.hooks_file: /home/tester/.gemini/config/plugins/herdr-threads/hooks.json
+hooks.agy.allow_entry: command(herdr-threads) not-granted in /home/tester/.gemini/antigravity-cli/settings.json
+hooks.agy.installed: unavailable (binary none)
+hooks.agy.witness: presence_dir=no brain_entries=0 bounded=yes recent_top_level_without_lock=0
+hooks.agy.sandbox: agy --sandbox sessions may not reach the herdr-threads daemon socket (untested); launch refuses --sandbox
+claude local_config_root : installed: false, enabled: unknown, admitted: unknown, observed: unknown
+  Native enablement and runtime observation are separate from local installation
+claude daemon_default: installation not_found; enablement unknown; callback unknown
+  admission unsupported: no executable `claude` on the daemon's PATH
+codex local_config_root : installed: false, enabled: unknown, admitted: unknown, observed: unknown
+  Native enablement and runtime observation are separate from local installation
+codex daemon_default: installation not_found; enablement unknown; callback unknown
+  admission unsupported: no executable `codex` on the daemon's PATH
+hermes local_unresolved : installed: unknown, enabled: unknown, admitted: unknown, observed: unknown
+  setup: invalid adapter input: Hermes launcher unavailable
+hermes daemon_default: installation not_found; enablement unknown; callback unknown
+  admission unsupported: no executable `hermes` on the daemon's PATH
+agy local_config_root : installed: false, enabled: true, admitted: unknown, observed: unknown
+agy daemon_default: installation not_found; enablement unknown; callback unknown
+  admission unsupported: no executable `agy` on the daemon's PATH
+result: ok
+rc=0

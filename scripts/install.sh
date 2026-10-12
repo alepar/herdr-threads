@@ -655,7 +655,7 @@ else
         OUT_NOT_LINKED="Herdr refused the link: $link_output"
         OUT_REGISTER_CMD=$link_cmd
         if [ "$os" = linux ]; then
-            warn "the manifest declares Linux, but Herdr refused the link; see Herdr's error above"
+            warn "the manifest declares Linux, but Herdr refused the link; Herdr's error is in the status below"
         fi
     fi
     if [ "$registered" = 1 ] && server_running; then

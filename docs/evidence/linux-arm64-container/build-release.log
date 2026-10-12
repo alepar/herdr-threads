@@ -1,0 +1,173 @@
++ sudo chown tester /home/tester/work /home/tester/.cargo/registry
++ cd /home/tester/work
++ rm -rf ht dist
++ mkdir ht
++ tar -xf /in/src.tar -C ht
++ cd ht
++ git init -q
++ git add -A
++ git -c user.name=s -c user.email=s@x commit -qm 'main 50d1197c snapshot'
+++ uname -m
++ T=aarch64-unknown-linux-musl
+++ echo aarch64-unknown-linux-musl
+++ tr - _
++ export CC_aarch64_unknown_linux_musl=musl-gcc
++ CC_aarch64_unknown_linux_musl=musl-gcc
++ cargo build --release --locked --target aarch64-unknown-linux-musl
+    Updating crates.io index
+ Downloading crates ...
+  Downloaded crypto-common v0.1.7
+  Downloaded anstyle v1.0.14
+  Downloaded is_terminal_polyfill v1.70.2
+  Downloaded clap_lex v1.1.0
+  Downloaded clap_derive v4.6.4
+  Downloaded toml_writer v1.1.2+spec-1.1.0
+  Downloaded equivalent v1.0.2
+  Downloaded fallible-streaming-iterator v0.1.9
+  Downloaded vcpkg v0.2.15
+  Downloaded cfg-if v1.0.4
+  Downloaded colorchoice v1.0.5
+  Downloaded smallvec v1.15.2
+  Downloaded toml_datetime v1.1.1+spec-1.1.0
+  Downloaded find-msvc-tools v0.1.9
+  Downloaded strsim v0.11.1
+  Downloaded zmij v1.0.23
+  Downloaded shlex v2.0.1
+  Downloaded tokio-macros v2.7.1
+  Downloaded generic-array v0.14.7
+  Downloaded block-buffer v0.10.4
+  Downloaded itoa v1.0.18
+  Downloaded pkg-config v0.3.33
+  Downloaded fallible-iterator v0.3.0
+  Downloaded errno v0.3.14
+  Downloaded cpufeatures v0.2.17
+  Downloaded anstyle-query v1.1.5
+  Downloaded heck v0.5.0
+  Downloaded utf8parse v0.2.2
+  Downloaded bitflags v2.13.1
+  Downloaded version_check v0.9.5
+  Downloaded foldhash v0.2.0
+  Downloaded anstream v1.0.0
+  Downloaded anstyle-parse v1.0.0
+  Downloaded toml_parser v1.1.2+spec-1.1.0
+  Downloaded digest v0.10.7
+  Downloaded signal-hook-registry v1.4.8
+  Downloaded sha2 v0.10.9
+  Downloaded quote v1.0.47
+  Downloaded pin-project-lite v0.2.17
+  Downloaded hashlink v0.11.1
+  Downloaded uuid v1.24.0
+  Downloaded proc-macro2 v1.0.107
+  Downloaded unicode-ident v1.0.24
+  Downloaded clap v4.6.4
+  Downloaded toml_edit v0.25.13+spec-1.1.0
+  Downloaded socket2 v0.6.5
+  Downloaded serde_derive v1.0.229
+  Downloaded serde_core v1.0.229
+  Downloaded getrandom v0.4.3
+  Downloaded libc v0.2.189
+  Downloaded cc v1.3.0
+  Downloaded tokio v1.53.1
+  Downloaded rusqlite v0.39.0
+  Downloaded serde v1.0.229
+  Downloaded winnow v1.0.4
+  Downloaded unicode-width v0.2.2
+  Downloaded hashbrown v0.17.1
+  Downloaded syn v2.0.119
+  Downloaded bytes v1.12.1
+  Downloaded hashbrown v0.16.1
+  Downloaded syn v3.0.2
+  Downloaded indexmap v2.14.0
+  Downloaded clap_builder v4.6.2
+  Downloaded serde_json v1.0.151
+  Downloaded typenum v1.20.1
+  Downloaded mio v1.2.2
+  Downloaded memchr v2.8.3
+  Downloaded libsqlite3-sys v0.37.0
+   Compiling libc v0.2.189
+   Compiling proc-macro2 v1.0.107
+   Compiling unicode-ident v1.0.24
+   Compiling quote v1.0.47
+   Compiling version_check v0.9.5
+   Compiling serde_core v1.0.229
+   Compiling find-msvc-tools v0.1.9
+   Compiling shlex v2.0.1
+   Compiling typenum v1.20.1
+   Compiling vcpkg v0.2.15
+   Compiling utf8parse v0.2.2
+   Compiling pkg-config v0.3.33
+   Compiling cfg-if v1.0.4
+   Compiling anstyle-parse v1.0.0
+   Compiling zmij v1.0.23
+   Compiling anstyle v1.0.14
+   Compiling cc v1.3.0
+   Compiling generic-array v0.14.7
+   Compiling is_terminal_polyfill v1.70.2
+   Compiling colorchoice v1.0.5
+   Compiling foldhash v0.2.0
+   Compiling anstyle-query v1.1.5
+   Compiling getrandom v0.4.3
+   Compiling heck v0.5.0
+   Compiling anstream v1.0.0
+   Compiling strsim v0.11.1
+   Compiling hashbrown v0.16.1
+   Compiling hashbrown v0.17.1
+   Compiling clap_lex v1.1.0
+   Compiling equivalent v1.0.2
+   Compiling serde v1.0.229
+   Compiling syn v3.0.2
+   Compiling syn v2.0.119
+   Compiling winnow v1.0.4
+   Compiling serde_json v1.0.151
+   Compiling clap_builder v4.6.2
+   Compiling hashlink v0.11.1
+   Compiling block-buffer v0.10.4
+   Compiling crypto-common v0.1.7
+   Compiling errno v0.3.14
+   Compiling cpufeatures v0.2.17
+   Compiling digest v0.10.7
+   Compiling socket2 v0.6.5
+   Compiling signal-hook-registry v1.4.8
+   Compiling mio v1.2.2
+   Compiling indexmap v2.14.0
+   Compiling bitflags v2.13.1
+   Compiling libsqlite3-sys v0.37.0
+   Compiling fallible-iterator v0.3.0
+   Compiling pin-project-lite v0.2.17
+   Compiling smallvec v1.15.2
+   Compiling toml_writer v1.1.2+spec-1.1.0
+   Compiling toml_parser v1.1.2+spec-1.1.0
+   Compiling itoa v1.0.18
+   Compiling memchr v2.8.3
+   Compiling fallible-streaming-iterator v0.1.9
+   Compiling toml_datetime v1.1.1+spec-1.1.0
+   Compiling bytes v1.12.1
+   Compiling uuid v1.24.0
+   Compiling sha2 v0.10.9
+   Compiling unicode-width v0.2.2
+   Compiling toml_edit v0.25.13+spec-1.1.0
+   Compiling tokio-macros v2.7.1
+   Compiling clap_derive v4.6.4
+   Compiling serde_derive v1.0.229
+   Compiling tokio v1.53.1
+   Compiling clap v4.6.4
+   Compiling rusqlite v0.39.0
+   Compiling herdr-threads v0.10.0 (/home/tester/work/ht)
+warning: use of deprecated type alias `libc::time_t`: This type is changed to 64-bit in musl 1.2.0, we'll follow that change in the future release. See #1848 for more info.
+   --> src/cli/irc.rs:249:22
+    |
+249 |     let time = libc::time_t::try_from(secs).ok()?;
+    |                      ^^^^^^
+    |
+    = note: `#[warn(deprecated)]` on by default
+
+warning: `herdr-threads` (lib) generated 1 warning
+    Finished `release` profile [optimized] target(s) in 1m 53s
++ file target/aarch64-unknown-linux-musl/release/herdr-threads
+target/aarch64-unknown-linux-musl/release/herdr-threads: ELF 64-bit LSB executable, ARM aarch64, version 1 (SYSV), statically linked, BuildID[sha1]=2e7f19b254881983440d5e7891b8240388f8dc28, not stripped
++ target/aarch64-unknown-linux-musl/release/herdr-threads --version
+herdr-threads 0.10.0
++ echo '<html>placeholder (cargo-about not run in scoping)</html>'
+++ uname -m
++ ./scripts/package-release.sh --binary target/aarch64-unknown-linux-musl/release/herdr-threads --os linux --arch aarch64 --out /home/tester/work/dist --third-party /tmp/tpl.html
+/home/tester/work/dist/herdr-threads-linux-aarch64.tar.gz
