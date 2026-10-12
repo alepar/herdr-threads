@@ -3090,70 +3090,83 @@ fn handoff_policy_hermes_unused_readiness_change_allows_submit_but_native_profil
     }
 }
 
-/// Kills: launching without the owned installation (a missing hook must
-/// refuse with the setup command, before any start).
+/// Hook readiness is advisory for launch (TRUST-POLICY "Integration readiness is
+/// advisory for launch", 673a27ad): without the owned installation the structurally
+/// safe native launch still starts, once, with the caller's argv, and no configuration
+/// descriptor is invented for hooks that are not used. Kills: a residual readiness
+/// veto, or a fabricated `configured_hook` when nothing is installed.
 #[test]
-fn claude_without_owned_hooks_refuses_with_setup_hint() {
+fn claude_without_owned_hooks_starts_without_a_configured_hook() {
     let s = Scratch::new();
     s.harness("claude", "2.1.285 (Claude Code)", b"");
     let (host, seats, handoff) = (FakeHost::new(), seats(), handoff());
-    let result = s.launch(
-        &host,
-        &seats,
-        &handoff,
-        request(ContextHarness::Claude, &[]),
-    );
-    match result {
-        Err(RunError::Api(error)) => {
-            assert_eq!(error.code, ErrorCode::MissingHook);
-            assert!(error.detail.contains("herdr-threads setup claude"));
-            assert!(error.detail.contains("settings.json"));
-        }
-        other => panic!("expected missing hook, got {other:?}"),
-    }
-    assert!(host.submitted().is_empty());
-    assert!(s.records().is_empty());
+    let out = s
+        .launch(
+            &host,
+            &seats,
+            &handoff,
+            request(ContextHarness::Claude, &["--model", "haiku"]),
+        )
+        .unwrap();
+    assert_eq!(out.report["outcome"], "started");
+    let submitted = host.submitted();
+    assert_eq!(submitted.len(), 1);
+    assert_eq!(submitted[0].argv, ["--model", "haiku"]);
+    assert!(submitted[0].configured_hook.is_none());
+    assert_eq!(s.records().len(), 1);
 }
 
 /// Claude loads user hooks from the settings of its own CLAUDE_CONFIG_DIR.
-/// Kills: accepting an installation recorded for another config directory.
+/// Kills: accepting an installation recorded for another config directory as the
+/// launch's configured hook (readiness is advisory, so the launch itself starts).
 #[test]
 fn claude_launch_inspects_the_resolved_config_dir_only() {
     let mut s = Scratch::new();
     s.harness("claude", "2.1.285 (Claude Code)", b"");
     s.setup_claude();
-    s.env
-        .config_roots
-        .insert("claude".into(), s.root.join("other config"));
+    let other = s.root.join("other config");
+    s.env.config_roots.insert("claude".into(), other.clone());
     let (host, seats, handoff) = (FakeHost::new(), seats(), handoff());
-    assert_eq!(
-        code(s.launch(
+    let out = s
+        .launch(
             &host,
             &seats,
             &handoff,
-            request(ContextHarness::Claude, &[])
-        )),
-        ErrorCode::MissingHook
+            request(ContextHarness::Claude, &[]),
+        )
+        .unwrap();
+    assert_eq!(
+        out.report["config_dir"]["path"],
+        other.display().to_string()
     );
-    assert!(host.submitted().is_empty());
+    let submitted = host.submitted();
+    assert_eq!(submitted.len(), 1);
+    assert!(
+        submitted[0].configured_hook.is_none(),
+        "the installation of another config dir is not this launch's hook"
+    );
 }
 
-/// Kills a residual version gate before hook inspection.
+/// Kills a residual version gate before hook inspection: an uncovered version
+/// still has its owned installation inspected and used as the launch's hook.
 #[test]
-fn uncovered_metadata_still_requires_owned_hooks() {
+fn uncovered_metadata_still_inspects_owned_hooks() {
     let s = Scratch::new();
     s.harness("claude", "2.1.200 (Claude Code)", b"");
+    s.setup_claude();
     let (host, seats, handoff) = (FakeHost::new(), seats(), handoff());
-    assert_eq!(
-        code(s.launch(
+    let out = s
+        .launch(
             &host,
             &seats,
             &handoff,
-            request(ContextHarness::Claude, &[])
-        )),
-        ErrorCode::MissingHook
-    );
-    assert!(host.submitted().is_empty());
+            request(ContextHarness::Claude, &[]),
+        )
+        .unwrap();
+    assert_eq!(out.report["outcome"], "started");
+    let submitted = host.submitted();
+    assert_eq!(submitted.len(), 1);
+    assert_eq!(submitted[0].configured_hook.as_ref().unwrap().scope, "user");
 }
 
 // Kills: an adapter readiness veto in the guarded public launch composition.
