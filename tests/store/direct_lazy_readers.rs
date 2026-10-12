@@ -511,11 +511,19 @@ fn q4_episode_two_fresh_direct_lazy_is_admitted_without_old_backlog_before_or_af
     assert!(order.2 < order.1 && order.1 < order.3);
     let b = f.fresh_reader("q4-episode-two-b", 2);
     let c = f.fresh_reader("q4-episode-two-c", 3);
+    let d = f.fresh_reader("q4-episode-two-d", 4);
+    assert_eq!(f.cursor(&d, &thread), None);
     assert_eq!(f.cursor(&b, &thread), None);
     assert_eq!(f.cursor(&c, &thread), None);
     let want = vec![(fresh.clone(), "fresh episode two body".into())];
     assert_eq!(f.lazy(&b), want);
     assert_eq!(f.lazy(&c), want);
+    assert_eq!(f.lazy(&d), want);
+    assert_eq!(
+        f.cursor(&d, &thread),
+        None,
+        "public reads leave D cursorless"
+    );
     let established_stream = vec![
         (old.clone(), "old undisplayed episode gap".into()),
         (fresh.clone(), "fresh episode two body".into()),
@@ -563,7 +571,20 @@ fn q4_episode_two_fresh_direct_lazy_is_admitted_without_old_backlog_before_or_af
         authority,
         "neither display owner acquires participation, receipts or native wake"
     );
+    // D has received no display/completion claim. Shared completion by B
+    // cannot turn acceptance's missing-cursor floor into a displayed body.
+    assert_eq!(f.cursor(&d, &thread), None);
+    assert_eq!(f.lazy(&d), want);
+    assert_eq!(f.cursor(&d, &thread), None);
     f.accept(&thread, "q4-episode-two-accept");
+    let d_floor = f
+        .cursor(&d, &thread)
+        .expect("accept seeds D's current-episode floor");
+    assert!(
+        f.sequence(&old) < d_floor && d_floor < f.sequence(&fresh),
+        "episode floor excludes old history while preserving fresh unread body"
+    );
+    assert_eq!(f.lazy(&d), want);
     assert_eq!(
         f.cursor(&f.a, &thread),
         Some(established),

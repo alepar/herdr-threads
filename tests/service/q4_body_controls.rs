@@ -258,6 +258,10 @@ impl BodyFixture {
         argv: &[String],
         writer: &mut W,
     ) -> Result<(), crate::cli::RunError> {
+        use std::os::unix::fs::PermissionsExt;
+        let session_root = self.directory.join(claim.native_session.as_str());
+        std::fs::create_dir_all(&session_root).unwrap();
+        std::fs::set_permissions(&session_root, std::fs::Permissions::from_mode(0o700)).unwrap();
         let context = OccupantContext {
             format_version: 1,
             instance: self.instance,
@@ -270,7 +274,7 @@ impl BodyFixture {
             role: Role::TopLevel,
         };
         let contexts = ContextJournal::open(
-            &self.directory.join(claim.native_session.as_str()),
+            &session_root,
             self.instance,
             claim.seat.as_str(),
             Duration::from_millis(20),
