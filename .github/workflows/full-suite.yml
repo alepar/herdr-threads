@@ -7,6 +7,11 @@ name: Full suite gate
 # correctness, not this budget. Manual dispatch only, on the exact SHA a
 # release qualifies. Setup and prewarm are ci.yml's tests job; the timer covers
 # only the run. No retry, no native or authenticated harness runs.
+# Capacity: the default profile runs one test per CPU. A standard ubuntu-24.04
+# runner has 4 vCPUs, and .config/nextest.toml records ~1800 test-seconds
+# (>= 450 s at 4 slots even with perfect packing), so on that runner this gate
+# is expected to fail: a red run there measures the runner, and a pass needs a
+# larger runner. The summary records the CPU count beside the wall time.
 
 on:
   workflow_dispatch:
@@ -80,21 +85,33 @@ jobs:
           cargo build --locked --release
           cargo build --locked --release --features test-support
 
-      - name: Full suite (timed, budget under 300 s)
-        # Herdr policy: provisioned, not skipped (HT_SKIP_HERDR_TESTS unset).
+      - name: Isolated Herdr tests are provisioned, not skipped
+        # With HT_SKIP_HERDR_TESTS unset a missing herdr fails those tests.
         shell: bash
+        run: |
+          set -euo pipefail
+          test -z "${HT_SKIP_HERDR_TESTS:-}"
+          command -v herdr
+
+      - name: Full suite (timed, budget under 300 s)
+        shell: bash
+        env:
+          # Plain lines, so the job summary can read the log.
+          CARGO_TERM_COLOR: never
         run: |
           set -euo pipefail
           echo "runner: $(nproc) CPUs"
           start=$(date +%s)
-          cargo nextest run --locked --all-targets --all-features 2>&1 | tee full-suite.log
+          rc=0
+          cargo nextest run --locked --all-targets --all-features 2>&1 | tee full-suite.log || rc=$?
           elapsed=$(( $(date +%s) - start ))
-          echo "Full suite wall time: ${elapsed}s (budget: under 300s)"
+          echo "Full suite wall time: ${elapsed}s (budget: under 300s), exit ${rc}"
           echo "FULL_SUITE_WALL_SECONDS=$elapsed" >> "$GITHUB_ENV"
           if [ "$elapsed" -ge 300 ]; then
-            echo "::error::The full suite exceeded the five-minute budget (${elapsed}s)"
+            echo "::error::The full suite exceeded the five-minute budget (${elapsed}s on $(nproc) CPUs)"
             exit 1
           fi
+          exit "$rc"
 
       - name: Report (job summary)
         if: always()
@@ -107,10 +124,6 @@ jobs:
             echo "Pinned Herdr $HERDR_VERSION provisioned; HT_SKIP_HERDR_TESTS=${HT_SKIP_HERDR_TESTS:-unset}."
             echo '```'
             grep -E '^ +Summary|^ +(FAIL|SIGKILL|TIMEOUT|LEAK)' full-suite.log 2>/dev/null | sort -u || true
-            echo '```'
-            echo 'Skipped by name (empty means none skipped):'
-            echo '```'
-            grep -ho 'skipped: no herdr[^<&]*' full-suite.log 2>/dev/null | sort -u || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 

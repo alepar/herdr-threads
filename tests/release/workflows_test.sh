@@ -91,7 +91,8 @@ check "full-suite.yml: manual dispatch only, contents read" bash -c \
   'test "$(yq -o=json -I=0 ".on | keys" "$1")" = "[\"workflow_dispatch\"]" && test "$(yq ".permissions.contents" "$1")" = read' _ "$full"
 check "full-suite.yml: the exact unsharded command, timed under 300 s" bash -c '
   run=$(yq ".jobs.full-suite.steps[] | select(.name == \"Full suite*\") | .run" "$1")
-  printf "%s\n" "$run" | grep -qxF "cargo nextest run --locked --all-targets --all-features 2>&1 | tee full-suite.log" &&
+  printf "%s\n" "$run" | grep -qxF "cargo nextest run --locked --all-targets --all-features 2>&1 | tee full-suite.log || rc=\$?" &&
+  printf "%s\n" "$run" | grep -qxF "exit \"\$rc\"" &&
   printf "%s\n" "$run" | grep -qF "if [ \"\$elapsed\" -ge 300 ]; then" &&
   ! printf "%s\n" "$run" | grep -qE -- "--partition|--profile|--retries|--test-threads"' _ "$full"
 check "full-suite.yml: prewarm builds precede the timed step" bash -c '
@@ -99,6 +100,12 @@ check "full-suite.yml: prewarm builds precede the timed step" bash -c '
   warm=$(printf "%s\n" "$steps" | grep -n "^Prewarm" | cut -d: -f1)
   timed=$(printf "%s\n" "$steps" | grep -n "^Full suite" | cut -d: -f1)
   [ -n "$warm" ] && [ -n "$timed" ] && [ "$warm" -lt "$timed" ]' _ "$full"
+check "full-suite.yml: no env or step setting weakens the timed run" bash -c '
+  ! yq "[.env, .jobs.full-suite.env, .jobs.full-suite.steps[].env] | .[] | select(. != null) | keys | .[]" "$1" | grep -qE "^(NEXTEST_|HT_SKIP_HERDR_TESTS$)" &&
+  test "$(yq ".jobs.full-suite.steps[] | select(.name == \"Full suite*\") | has(\"continue-on-error\")" "$1")" = false &&
+  test "$(yq ".jobs.full-suite | has(\"continue-on-error\")" "$1")" = false' _ "$full"
+check "full-suite.yml: prewarm builds the timed command (--no-run)" bash -c \
+  'yq ".jobs.full-suite.steps[] | select(.name == \"Prewarm*\") | .run" "$1" | grep -qxF "cargo nextest run --locked --all-targets --all-features --no-run"' _ "$full"
 check "full-suite.yml: run-scoped always() leak check" bash -c \
   'test "$(yq ".jobs.full-suite.steps[] | select(.run == \"scripts/check-no-leaked-processes*\") | .if" "$1")" = "always()" &&
    yq ".jobs.full-suite.env.HT_LEAK_RUN_ID" "$1" | grep -qF "github.run_id"' _ "$full"
