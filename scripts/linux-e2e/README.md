@@ -155,13 +155,20 @@ source file: you may have to log in again on the host. Prefer a dedicated accoun
   `projects["<repo checkout>"].hasTrustDialogAccepted: true` (folder trust); with `ANTHROPIC_API_KEY` also
   `customApiKeyResponses.approved: ["<last 20 characters of the key>"]`, which is how Claude records an approved
   custom key (a `CLAUDE_CODE_OAUTH_TOKEN` needs no approval). Measured on Claude Code 2.1.296 in this image without
-  logging in (captured screens: `scripts/wake_e2e_fixtures/`). The credential comes only from the environment the
-  panes inherit; the real Claude config is never read, `--claude-config-dir` is refused, and the driver refuses
-  (exit 2) before any harness starts when neither variable is set.
+  logging in (captured screens: `scripts/wake_e2e_fixtures/`). The credential comes only from the environment: the
+  driver's preflight checks its own, the agents inherit the Herdr server's (inside this runner both are the
+  server's). The real Claude config is never read, `--claude-config-dir` is refused, and the driver refuses (exit 2)
+  before any harness starts when neither variable is set. So a bare non-macOS host in linux mode also needs
+  `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`; it cannot reuse a logged-in Claude config. With `--keep`, the
+  scratch `.claude.json` (mode 0600) keeps an API key's 20-character approval suffix. Evidence files are redacted
+  of `sk-ant-` tokens and of the credential values and their tails.
+- Startup screens are matched on the whole visible screen in this mode (macOS keeps its original check).
 - The driver never types into Claude's first-run screens (theme picker, folder trust, custom API key, login
   method): it fails the recipient with `startup dialog (nothing typed)` or `is not logged in`.
-- Codex is set up as on macOS (scratch `CODEX_HOME`, private `auth.json` copy) but runs with
-  `--dangerously-bypass-approvals-and-sandbox` instead of `--approve-for-me`. Codex's Linux sandbox is bubblewrap,
+- Codex is set up as on macOS (scratch `CODEX_HOME`, private `auth.json` copy). Only inside this runner's container
+  (the Herdr server carries `HT_LINUX_E2E_CONTAINER=1` from `in-container.sh` and `/.dockerenv` exists; both are
+  required) it runs with `--dangerously-bypass-approvals-and-sandbox` instead of `--approve-for-me`; a bare Linux
+  host keeps `--approve-for-me` and its sandbox. Codex's Linux sandbox is bubblewrap,
   which needs an unprivileged user namespace; Docker's default seccomp profile denies that, so under
   `--approve-for-me` every model shell command (`sleep 12` in the busy cases) fails (`bwrap: No permissions to create
   a new namespace`). Hooks run in the Codex process itself and reach the daemon socket under
@@ -174,7 +181,7 @@ source file: you may have to log in again on the host. Prefer a dedicated accoun
   ...` overrides the flags.
   The two Codex recipients share one scratch `CODEX_HOME`; their first starts at once raced on its state DB
   migration (one Codex exited: `duplicate column name: thread_id`), so in this mode the second start waits until the
-  first Codex is up.
+  first Codex is up. macOS keeps concurrent starts (unchanged; the race was not seen there).
 
 First live run, one case (spends a little quota):
 

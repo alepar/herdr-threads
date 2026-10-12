@@ -944,8 +944,17 @@ class HarnessMode(TempDir):
         self.assertEqual(r.launch_line("claude"), MACOS_CLAUDE_LINE)
         self.assertEqual(r.launch_line("codex"), MACOS_CODEX_LINE)
 
+    def in_container(self):
+        """A fake /.dockerenv for the runner-container check."""
+        dockerenv = self.tmp / "dockerenv"
+        dockerenv.write_text("")
+        saved = W.DOCKERENV
+        W.DOCKERENV = dockerenv
+        self.addCleanup(setattr, W, "DOCKERENV", saved)
+
     def test_linux_launch_lines_use_the_scratch_config_and_bypass_the_codex_sandbox(self):
-        with Env(CLAUDE_CONFIG_DIR="/home/me/.claude-real"):  # a real dir in the environment is ignored
+        self.in_container()
+        with Env(CLAUDE_CONFIG_DIR="/home/me/.claude-real", HT_LINUX_E2E_CONTAINER="1"):  # a real dir is ignored
             args = parsed_args(["--harness-mode", "linux"])
         self.assertIsNone(args.claude_config_dir)
         r = launch_run(args)
@@ -956,6 +965,25 @@ class HarnessMode(TempDir):
                                                            "/private/tmp/ht-wake-e2e.X/claude-config"))
         self.assertEqual(r.launch_line("codex"), MACOS_CODEX_LINE.replace(
             "--approve-for-me", "--dangerously-bypass-approvals-and-sandbox"))
+
+    def test_codex_sandbox_is_bypassed_only_in_linux_mode_inside_the_runner_container(self):
+        dockerenv, absent = self.tmp / "dockerenv", self.tmp / "absent"
+        dockerenv.write_text("")
+        marker = {"HT_LINUX_E2E_CONTAINER": "1"}
+        self.assertEqual(W.default_codex_args("linux", marker, dockerenv), "--dangerously-bypass-approvals-and-sandbox")
+        for mode, env, path in (("linux", {}, dockerenv),            # a bare Linux workstation in Docker-less shape
+                                ("linux", {}, absent),               # a bare Linux workstation
+                                ("linux", marker, absent),           # a stray marker outside a container
+                                ("linux", {"HT_LINUX_E2E_CONTAINER": "yes"}, dockerenv),
+                                ("macos", marker, dockerenv)):
+            self.assertEqual(W.default_codex_args(mode, env, path), "--approve-for-me", (mode, env, path))
+
+    def test_linux_without_the_marker_keeps_the_codex_sandbox(self):
+        self.in_container()  # /.dockerenv present, marker absent
+        with Env(HT_LINUX_E2E_CONTAINER=None):
+            args = parsed_args(["--harness-mode", "linux"])
+        self.assertEqual(args.codex_args, "--approve-for-me")
+        self.assertEqual(launch_run(args).launch_line("codex"), MACOS_CODEX_LINE)
 
     def test_linux_refuses_a_real_claude_config_dir(self):
         with self.assertRaises(SystemExit):
@@ -1013,6 +1041,20 @@ class HarnessMode(TempDir):
                                  "projects": {"/repo": {"hasTrustDialogAccepted": True}},
                                  "customApiKeyResponses": {"approved": [FAKE_API_KEY[-20:]], "rejected": []}})
 
+    def test_padded_api_key_is_approved_without_its_whitespace(self):
+        state = W.claude_scratch_state("/repo", {"ANTHROPIC_API_KEY": f"  {FAKE_API_KEY}\n"})
+        self.assertEqual(state["customApiKeyResponses"]["approved"], [FAKE_API_KEY[-20:]])
+
+    def test_malformed_existing_claude_json_is_a_clear_error(self):
+        cfg = self.tmp / "cfg"
+        cfg.mkdir()
+        (cfg / ".claude.json").write_text("{not json")
+        with self.assertRaisesRegex(RuntimeError, "not valid JSON"):
+            W.seed_claude_config(cfg, "/repo", {})
+        (cfg / ".claude.json").write_text("[]")
+        with self.assertRaisesRegex(RuntimeError, "JSON object"):
+            W.seed_claude_config(cfg, "/repo", {})
+
     def test_linux_seed_merges_and_never_follows_a_link(self):
         cfg = self.tmp / "cfg"
         cfg.mkdir()
@@ -1034,7 +1076,8 @@ class LinuxPreflight(TempDir):
 
     def preflight(self, mode, harness=("claude",), **env):
         r = object.__new__(W.Run)
-        r.args = SimpleNamespace(harness=list(harness), harness_mode=mode, codex_auth_home=None)
+        r.args = SimpleNamespace(harness=list(harness), harness_mode=mode, codex_auth_home=None,
+                                 codex_args="--approve-for-me")
         r.endpoint, r.bin, r.run_id, r.root = "/fake/sock", "/bin/sh", "000000-test", self.tmp
         started = []
         r.run = lambda argv, **kw: started.append(argv) or (0, "x 1.0", "")
@@ -1093,25 +1136,51 @@ class StartupScreens(unittest.TestCase):
                                   ("claude-custom-api-key.txt", "blocked", "startup dialog"),
                                   ("claude-login-method.txt", "idle", "is not logged in"),
                                   ("claude-composer-not-logged-in.txt", "idle", "is not logged in")):
-            got = W.startup_refusal(self.screen(name), status, "linux")
+            got = W.linux_startup_refusal(self.screen(name), status)
             self.assertTrue(got and got.startswith(why), (name, got))
 
     def test_screens_are_refused_from_text_alone(self):
         for name in ("claude-theme-picker.txt", "claude-trust-folder.txt", "claude-custom-api-key.txt"):
-            self.assertTrue(W.DIALOG.search(self.screen(name)), name)
+            self.assertTrue(W.LINUX_DIALOG.search(self.screen(name)), name)
 
     def test_theme_picker_prompt_is_outside_the_last_400_characters(self):
         lines = [ln.strip() for ln in self.screen("claude-theme-picker.txt").splitlines() if ln.strip()]
-        self.assertIsNone(W.DIALOG.search(" | ".join(lines)[-400:]))  # why the whole screen is checked
+        self.assertIsNone(W.LINUX_DIALOG.search(" | ".join(lines)[-400:]))  # why the whole screen is checked
 
     def test_composers_are_not_refused(self):
         for name in ("claude-composer-api-key.txt", "claude-composer-oauth-token.txt", "codex-composer-bypass.txt"):
-            self.assertIsNone(W.startup_refusal(self.screen(name), "idle", "linux"), name)
+            self.assertIsNone(W.linux_startup_refusal(self.screen(name), "idle"), name)
 
-    def test_login_hint_names_the_mode(self):
+    def test_login_hint_names_the_credential_env(self):
         screen = self.screen("claude-login-method.txt")
-        self.assertIn("CLAUDE_CODE_OAUTH_TOKEN", W.startup_refusal(screen, "idle", "linux"))
-        self.assertIn("--claude-config-dir", W.startup_refusal(screen, "idle", "macos"))
+        self.assertIn("CLAUDE_CODE_OAUTH_TOKEN", W.linux_startup_refusal(screen, "idle"))
+
+    def test_macos_keeps_the_original_tail_check(self):
+        """macOS: only the last 400 characters and the original patterns, so a real config's banner text higher up
+        ("Allow Claude to run", "Select login method", "/login") is no startup dialog; the composer gets its prompt."""
+        banner = ("What's new: Allow Claude to run tools in the background. Select login method from /login.\n"
+                  + "x" * 600 + "\n❯\n  ⏵⏵ auto mode on\n")
+
+        class Prompted(Exception):
+            pass
+
+        def herdr(*argv, **kw):
+            words = " ".join(argv)
+            if words.startswith("pane read"):
+                return {"raw": "$ "}
+            if words.startswith("agent get"):
+                return {"result": {"agent": {"agent": "claude", "agent_status": "idle"}}}
+            if words.startswith("agent read"):
+                return {"raw": banner}
+            if words.startswith("agent prompt"):
+                raise Prompted()
+            return {}
+        run = SimpleNamespace(herdr=herdr, launch_line=lambda h: "launch", args=SimpleNamespace(harness_mode="macos"),
+                              coord_seats=lambda: "s")
+        with self.assertRaises(Prompted):
+            W.Recipient(run, "cl-nudge", "claude", "nudge", "w1:p2", "sAAAAAAAA").start()
+        self.assertEqual(W.DIALOG.pattern, r"Trust this folder\?|trust (the files in )?this folder|Do you trust|"
+                         r"Allow .* to run|Do you want to proceed\?|Would you like to run")  # dc575a28's pattern
 
     def test_start_types_nothing_into_a_first_run_screen(self):
         typed = []
@@ -1133,6 +1202,44 @@ class StartupScreens(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "startup dialog"):
             rec.start()
         self.assertEqual([a[:2] for a in typed], [("pane", "run")])
+
+
+class Redaction(TempDir):
+    """No Claude credential reaches the evidence: commands.jsonl, result rows (error tails quote screens), panes."""
+
+    def test_redact_hides_tokens_values_and_tails(self):
+        secrets = W.secret_values({"ANTHROPIC_API_KEY": f" {FAKE_API_KEY}\n", "CLAUDE_CODE_OAUTH_TOKEN": ""})
+        screen = (FIXTURES / "claude-custom-api-key.txt").read_text()  # shows "sk-ant-...<last 20>"
+        screen += f"\nfull {FAKE_API_KEY} tail {FAKE_API_KEY[-12:]} other sk-ant-oat01-unrelated_Tok-en\n"
+        out = W.redact(screen, secrets)
+        for leak in (FAKE_API_KEY, FAKE_API_KEY[-20:], FAKE_API_KEY[-12:], "sk-ant-oat01-unrelated_Tok-en"):
+            self.assertNotIn(leak, out)
+        self.assertIn("Detected a custom API key", out)
+
+    def test_fixture_key_tail_is_what_the_screen_shows(self):
+        # the fixture's fake key (probe-05) ended in FAKEFAKE-probeonlyAA: its 20-character tail is redacted
+        key = "sk-ant-api03-FAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE-probeonlyAA"
+        self.assertNotIn("FAKEFAKE-probeonlyAA",
+                         W.redact((FIXTURES / "claude-custom-api-key.txt").read_text(),
+                                  W.secret_values({"ANTHROPIC_API_KEY": key})))
+
+    def test_command_log_and_rows_are_redacted(self):
+        r = real_run(self.tmp)
+        r.secrets = W.secret_values({"CLAUDE_CODE_OAUTH_TOKEN": "fake-oauth-0123456789abcdefghij"})
+        r.results = []
+        r.run(["echo", "token fake-oauth-0123456789abcdefghij and sk-ant-api03-zzz"], tag="echo")
+        r.cmdlog.close()
+        log = (self.tmp / "commands.jsonl").read_text()
+        self.assertNotIn("fake-oauth", log)
+        self.assertNotIn("0123456789abcdefghij", log)
+        self.assertNotIn("sk-ant-api03-zzz", log)
+        json.loads(log.splitlines()[0])  # still valid JSON
+        import contextlib
+        import io
+        with contextlib.redirect_stdout(io.StringIO()):
+            r.record({"case": "invite/group", "recipient": "cl-nudge", "wake_on": "nudge", "result": "FAIL",
+                      "checks": {"error": "startup: ... ANTHROPIC_API_KEY: sk-ant-...0123456789abcdefghij"}})
+        self.assertNotIn("0123456789abcdefghij", json.dumps(r.results))
 
 
 class CodexStartOrder(unittest.TestCase):
