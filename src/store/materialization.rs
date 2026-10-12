@@ -173,7 +173,11 @@ pub fn advance_work(
             failure = Some(budget_error(budget));
             break;
         }
-        if clock.monotonic_now().0.saturating_sub(started) >= 5 {
+        // The 5 ms quantum yields only after progress: a stall before the
+        // first unit (preemption, a slow job load) must not become a
+        // zero-unit DeadlineExceeded while the call budget above has time left.
+        let elapsed = clock.monotonic_now().0.saturating_sub(started);
+        if units > 0 && elapsed >= 5 {
             break;
         }
         let mut save = tx.savepoint().map_err(store_error)?;
