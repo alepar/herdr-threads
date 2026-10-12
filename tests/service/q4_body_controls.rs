@@ -400,6 +400,16 @@ fn preaccept_utf8_body_final_flushed_text_advances_only_its_binding_and_invalida
     let mut exact_body = String::new();
     let mut complete = false;
     for step in 0..128 {
+        let invocation = crate::cli::commands::parse_argv(argv.iter().map(String::as_str)).unwrap();
+        let crate::cli::commands::CliAction::Wire(Command::Message(request)) = &invocation.action
+        else {
+            panic!("printed continuation must use the public Body route")
+        };
+        assert_eq!(request.message, message);
+        assert_eq!(
+            request.body.max_bytes, 2048,
+            "printed continuation changed original bound at step {step}: {argv:?}"
+        );
         flushed.store(false, Ordering::SeqCst);
         let mut writer = BodyWriter {
             flushed: &flushed,
@@ -426,28 +436,103 @@ fn preaccept_utf8_body_final_flushed_text_advances_only_its_binding_and_invalida
             body_offset,
             body_complete,
             body_next_argv,
-            ..
+            body_next_cursor,
+            body_total_bytes,
         } = details.content
         else {
             panic!("ordinary body");
         };
+        assert_eq!(body_total_bytes, 65_536);
         assert_eq!(body_offset as usize, exact_body.len());
         assert!(body.is_char_boundary(body_offset as usize));
         assert!(
-            String::from_utf8(writer.bytes)
-                .unwrap()
-                .contains(&body_data)
+            writer.bytes.len() <= 2048,
+            "actual final Body stdout exceeds original byte bound at step {step}"
         );
-        exact_body.push_str(&body_data);
+        let output = std::str::from_utf8(&writer.bytes).unwrap();
+        assert!(output.contains(&body_data));
+        let printed_body = output
+            .lines()
+            .filter_map(|line| line.strip_prefix("  "))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(
+            printed_body, body_data,
+            "actual printed UTF8 body differs from canonical selected bytes"
+        );
+        assert!(
+            !printed_body.is_empty(),
+            "continued Body read made no byte progress"
+        );
+        assert_eq!(
+            body.get(body_offset as usize..body_offset as usize + printed_body.len()),
+            Some(printed_body.as_str())
+        );
+        exact_body.push_str(&printed_body);
         assert!(body.is_char_boundary(exact_body.len()));
+        let printed_next: Vec<_> = output
+            .lines()
+            .filter_map(|line| line.strip_prefix("more: "))
+            .collect();
         if body_complete {
+            assert!(
+                printed_next.is_empty(),
+                "complete body printed a continuation"
+            );
+            assert!(body_next_cursor.is_none());
+            assert!(body_next_argv.is_none());
             complete = true;
             break;
         }
         assert_eq!(f.cursor(&f.a), None, "partial output is not whole display");
         assert_eq!(f.consumer(&f.a), before_a);
         assert_eq!(f.consumer(&f.b), before_b);
-        argv = body_next_argv.expect("actual server continuation argv");
+        assert_eq!(
+            printed_next.len(),
+            1,
+            "incomplete body must print one actual continuation"
+        );
+        let emitted = shlex::split(printed_next[0])
+            .expect("printed Body continuation must retain shell argument boundaries");
+        let next = crate::cli::commands::parse_argv(emitted.iter().map(String::as_str)).unwrap();
+        let crate::cli::commands::CliAction::Wire(Command::Message(next_request)) = &next.action
+        else {
+            panic!("printed continuation changed Body action")
+        };
+        assert_eq!(next_request.message, message);
+        assert_eq!(
+            next_request.body.max_bytes, 2048,
+            "backend bound escaped into actual stdout continuation at step {step}"
+        );
+        assert_eq!(
+            next_request.body.cursor, body_next_cursor,
+            "printed opaque Body cursor differs from raw backend continuation"
+        );
+        assert!(next_request.body.cursor.is_some());
+        assert!(next_request.body.offset.is_none());
+        assert_eq!(next.actor, invocation.actor);
+        assert_eq!(next.output, invocation.output);
+        let mut expected = body_next_argv.expect("raw backend continuation metadata");
+        assert_eq!(
+            expected
+                .iter()
+                .filter(|arg| arg.as_str() == "--max-bytes")
+                .count(),
+            1
+        );
+        let bound = expected
+            .iter()
+            .position(|arg| arg == "--max-bytes")
+            .unwrap()
+            + 1;
+        expected[bound] = "2048".into();
+        assert_eq!(
+            emitted, expected,
+            "printed non-budget argv tokens/order changed"
+        );
+        // Follow the model-visible command. BodyClient.last intentionally keeps
+        // the pre-normalization backend result as independent byte/cursor evidence.
+        argv = emitted;
     }
     assert!(complete);
     assert_eq!(exact_body, body);

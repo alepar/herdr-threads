@@ -3316,14 +3316,14 @@ fn retry_failure(failure: retry::RetryFailure<ApiError>) -> RunError {
 #[path = "../../tests/cli/cooperative.rs"]
 mod cooperative_tests;
 #[cfg(test)]
+#[path = "../../tests/cli/q5_continuation_normalization.rs"]
+mod q5_continuation_normalization;
+#[cfg(test)]
 #[path = "../../tests/cli/read_cost.rs"]
 mod read_cost_tests;
 #[cfg(test)]
 #[path = "../../tests/cli/service_output.rs"]
 mod service_output_tests;
-#[cfg(test)]
-#[path = "../../tests/cli/q5_continuation_normalization.rs"]
-mod q5_continuation_normalization;
 
 /// Runtime composition seam for an already service-resolved durable seat and
 /// private context directory. The provider declares honest role and harness;
