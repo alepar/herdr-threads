@@ -1,0 +1,59 @@
+{
+  "staged_tree": "33f1fcb0185cb2622d9e334dd575908ec08afdde",
+  "index_sha256": "ed5a5a0ef8a8306fabadcbcc5e14017e20602c15ca78da9dcbf4ca1f773739ed",
+  "commands": [
+    {
+      "stage": "fmt",
+      "argv": [
+        "cargo",
+        "fmt",
+        "--",
+        "--check"
+      ],
+      "exit": 0,
+      "seconds": 5.017955958028324,
+      "log": "/private/tmp/ht-resume1012-integration-merge-gates/fmt.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "stage": "neutral",
+      "argv": [
+        "scripts/check-harness-neutral"
+      ],
+      "exit": 0,
+      "seconds": 1.6296378748957068,
+      "log": "/private/tmp/ht-resume1012-integration-merge-gates/neutral.log",
+      "sha256": "7561605afc0af5f27527d99451825bc26c55fa2f7083bb392ad4244e406b0536"
+    },
+    {
+      "stage": "clippy",
+      "argv": [
+        "nice",
+        "cargo",
+        "clippy",
+        "--locked",
+        "--all-targets",
+        "--all-features",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit": 0,
+      "seconds": 73.08688320894726,
+      "log": "/private/tmp/ht-resume1012-integration-merge-gates/clippy.log",
+      "sha256": "421e0d885b0c40c88d3ac1e3fed19750c52478a8d7d8584d41e209cc697004cc"
+    },
+    {
+      "stage": "default",
+      "argv": [
+        "nice",
+        "scripts/check-default-features"
+      ],
+      "exit": 0,
+      "seconds": 46.22332391701639,
+      "log": "/private/tmp/ht-resume1012-integration-merge-gates/default.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "exit": 0
+}
