@@ -57,6 +57,7 @@ fn ordinary(id: &str, body: &str, ack: bool) -> InboxBatchV2Item {
 }
 fn page_offer(items: Vec<InboxBatchV2Item>, has_more: bool) -> InboxOffer {
     InboxOffer {
+        receipt_offer: false,
         page: Page {
             items,
             next_cursor: None,
@@ -292,6 +293,7 @@ fn far_budget() -> CallBudget {
 }
 fn commit(offer: &InboxOffer, lazy: Vec<MessageId>, displayed: Vec<MessageId>) -> LazyCommit {
     LazyCommit {
+        in_turn: false,
         link: CompletionLink {
             endpoint: PathBuf::from("/unused"),
             instance: uuid::Uuid::nil(),
@@ -358,6 +360,38 @@ fn inbox_sends_claim_and_advances_after_full_flush() {
             .iter()
             .any(|c| matches!(c, Command::AdvanceCursors(_)))
     );
+}
+
+// ht-705. Kills: claiming in-turn presentation to a daemon that does not record it (an older
+// daemon refuses the unknown field, which would also lose the cursor advance), dropping the
+// hook's in-turn flag on the way to the daemon, and changing the wire form of an ordinary advance.
+#[test]
+fn in_turn_presentation_is_sent_only_to_a_daemon_that_records_it() {
+    let items = vec![ordinary("m1", "needs receipt", true)];
+    let old = Recording::new(CAPS, items.clone());
+    assert!(
+        !read_page(&old, claim(), &far_budget())
+            .expect("a page")
+            .receipt_offer
+    );
+    let caps = [CAPS, &[crate::protocol::capabilities::RECEIPT_OFFER]].concat();
+    let daemon = Recording::new(&caps, items);
+    let offer = read_page(&daemon, claim(), &far_budget()).expect("a page");
+    assert!(offer.receipt_offer);
+    let (_, lazy_ids, displayed) = append_shown(String::new(), &offer, &prefix(), 4096);
+    let mut turn = commit(&offer, lazy_ids, displayed);
+    turn.in_turn = true;
+    turn.submit(&daemon).unwrap();
+    let calls = daemon.calls();
+    let Command::AdvanceCursors(advance) = &calls[1] else {
+        panic!("cursors advance: {calls:?}")
+    };
+    assert!(advance.in_turn);
+    assert_eq!(advance.displayed, vec![MessageId::new("m1")]);
+    let mut ordinary_advance = advance.clone();
+    ordinary_advance.in_turn = false;
+    let wire = serde_json::to_value(Command::AdvanceCursors(ordinary_advance)).unwrap();
+    assert!(!wire.to_string().contains("in_turn"), "{wire}");
 }
 
 // Kills: advancing over a message the output withheld (it would never be shown again).

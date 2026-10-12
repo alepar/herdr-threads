@@ -17,7 +17,7 @@ use crate::{
     ports::LocalClient,
     protocol::{
         authority::{CallerClaim, CallerRole},
-        capabilities::{BINDING_CURSORS, INBOX_BATCH_V2, LAZY_HOOK_DELIVERY},
+        capabilities::{BINDING_CURSORS, INBOX_BATCH_V2, LAZY_HOOK_DELIVERY, RECEIPT_OFFER},
         commands::{AdvanceCursors, Command, CompleteInboxDelivery, InboxQuery, LazyCompletionVia},
         ids::{MessageId, OperationId},
         output::{ContinuationContext, OutputFormat, OutputSpec, encode_selected},
@@ -51,6 +51,8 @@ pub struct InboxOffer {
     /// The daemon keeps per-binding cursors: the page is this binding's own stream, and a full
     /// display advances them (`AdvanceCursors`).
     pub cursors: bool,
+    /// The daemon records in-turn receipt presentation (`AdvanceCursors.in_turn`).
+    pub receipt_offer: bool,
 }
 
 /// Read the page: top-level claims only, only from a daemon serving the v2
@@ -89,10 +91,12 @@ pub fn read_page<C: LocalClient + ?Sized>(
     else {
         return None;
     };
+    let receipt_offer = cursors && client.supports_capability(RECEIPT_OFFER, budget);
     (!page.items.is_empty()).then_some(InboxOffer {
         page,
         claim,
         cursors,
+        receipt_offer,
     })
 }
 
@@ -273,6 +277,8 @@ pub struct LazyCommit {
     /// Every message shown whole; with `cursors`, the binding's cursors advance over them.
     pub displayed: Vec<MessageId>,
     pub cursors: bool,
+    /// The hook ran inside the occupant's turn and the daemon records it (`AdvanceCursors.in_turn`).
+    pub in_turn: bool,
     pub deadline: Instant,
 }
 
@@ -301,6 +307,7 @@ impl LazyCommit {
                     claim: self.claim.clone(),
                     operation: OperationId::new(uuid::Uuid::new_v4().to_string()),
                     displayed: self.displayed.clone(),
+                    in_turn: self.in_turn,
                 }),
                 &budget,
             );

@@ -2221,6 +2221,9 @@ pub struct WakeCandidate {
     pub actionable_warning_generation: Option<u64>,
     pub actionable_warning_seq: Option<u64>,
     pub warning_offer: Option<WarningOfferFrontier>,
+    /// Every pending receipt was shown whole to the current occupant inside its turn
+    /// (`receipt_offer`, ht-705): it was served in-turn, so no idle wake is owed for them.
+    pub receipts_offered_to_current_occupant: bool,
     pub attention_version: u64,
     pub checkpoint_version: u64,
     pub retry_step: u32,
@@ -2425,10 +2428,14 @@ impl WakeCandidate {
             _ => false,
         }
     }
+    /// A pending receipt the current occupant has not been served in-turn.
+    pub fn has_unoffered_receipt(&self) -> bool {
+        self.has_pending_receipt && !self.receipts_offered_to_current_occupant
+    }
     pub fn has_actionable_work(&self) -> bool {
         !self.effectively_retired
             && (self.has_pending_invitation
-                || self.has_pending_receipt
+                || self.has_unoffered_receipt()
                 || self.has_unreserved_lazy()
                 || (self.actionable_warning_seq.is_some()
                     && !self.warning_offered_for_current_occupant()))
@@ -4217,6 +4224,7 @@ mod allocation_tests {
             actionable_warning_generation: None,
             actionable_warning_seq: None,
             warning_offer: None,
+            receipts_offered_to_current_occupant: false,
             attention_version: 0,
             checkpoint_version: 0,
             retry_step: 0,

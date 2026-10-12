@@ -120,6 +120,14 @@ Enforcement:
   mail. Rule 4 is enforced in `poke_eligibility` itself, with no exception (DC-3, fixed).
 - Claude mod channel: whether the mod submits a turn only when idle is decided in the mod (frozen at v0.5.0, R9) and
   is not verifiable from core code (DC-4).
+- Served in-turn (ht-705, 2026-10-11): a nudge a standard hook showed whole inside the recipient's turn used to stay a
+  pending receipt (the hook never ACKs), so the idle wake fired after that turn and the model read it again (found
+  on Codex by `scripts/wake-e2e.py` busy-nudge). The hook's post-flush `AdvanceCursors` now carries `in_turn` at a
+  tool boundary or turn start (`src/cli/hook.rs`, `src/cli/hook_inbox.rs`), the daemon records the displayed pending
+  receipts in `receipt_offer` for that top-level binding (`src/store/control.rs` `advance_cursors`), and
+  `WakeCandidate::has_actionable_work` skips pending receipts all recorded for the current occupant
+  (`src/store/wake.rs` `receipts_offered`). The receipt stays pending; a lifecycle check-in clears the records.
+  Pinned by `tests/integration/lazy_attention.rs` `in_turn_display_of_a_nudge_owes_no_idle_wake`.
 
 Pinning tests: `tests/scheduler/dispatch.rs` `active_attention_is_always_deferred_then_idle_delivers`,
 `blocked_or_human_input_target_is_never_prompted`, `nonempty_composer_skips_before_stash_or_restore`,

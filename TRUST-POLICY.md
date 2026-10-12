@@ -707,8 +707,17 @@ context, it submits exactly the lazy IDs shown whole with `CompleteInboxDelivery
 execution's canonical claim and the `cooperative_hook_context` claim (`via: hook_context`). The daemon
 decides it under the same checks as inbox completion (A2). The claim is that the hook emitted the body as
 context, not that the harness ingested it or the model read it. The hook never ACKs: ACK-required
-messages it shows stay pending, with an exact `ack` command for the agent. It writes no local journal
-record. A failed or unknown completion leaves the rows pending and they are shown again (at least once).
+messages it shows stay pending, with an exact `ack` command for the agent. A hook that ran inside the
+occupant's turn (a tool boundary, or a turn start that checks in the same way; never a lifecycle check-in,
+after which the session may sit idle) marks its cursor advance `in_turn` (ht-705, only to a daemon
+advertising `inbox.receipt_offer_v1`): the daemon then records in `receipt_offer` each displayed message
+whose seat receipt is still pending, for the displaying top-level binding. That record is wake
+eligibility only (delivery contract rule 4: served in-turn, so no idle wake is owed): the wake candidate
+skips the seat's pending receipts when every one of them is recorded for the binding a seat-level
+reader follows. It settles nothing, records no ACK actor or provenance, and leaves the receipt pending,
+listed by `inbox` and subject to its deadline. A newer unshown receipt, another occupant, or a
+lifecycle check-in of the binding (which clears its records) makes the wake owed again. It writes no
+local journal record. A failed or unknown completion leaves the rows pending and they are shown again (at least once).
 A hook-pull harness's standard hook never reads an inbox page or makes this claim: its lazy rows complete only
 through `DeliveryConfirm` (`cooperative_hook_delivery`) or the caller's own text inbox; the daemon refuses
 `via: hook_context` from a hook-pull binding. So on a hook-pull harness only `cooperative_hook_delivery`
@@ -724,7 +733,9 @@ the seat's open invitations and its still-pending ACK obligations. A display mov
 binding's cursors, with the exact message IDs it showed whole. The command is decided in the daemon against
 the canonical view (A2) and resolves the claim to its own binding like any plain cooperative call (it may
 enroll). It is the one write a declared subagent may send, because it changes no seat state: it records no ACK
-actor, creates no receipt, settles no obligation and attributes no action. A cursor never moves backwards,
+actor, creates no receipt, settles no obligation and attributes no action. Its `in_turn` form (a top-level
+standard hook's in-turn display, above) adds only the binding's `receipt_offer` rows, which affect wake
+eligibility and nothing else; a subagent's or a non-in-turn advance records none. A cursor never moves backwards,
 never moves past an unshown message the seat can receive, and a read never enrolls. A client that fails to
 send it only causes redisplay (at least once). Only a top-level binding's display ACK settles the seat's
 obligation; other bindings see that message in their own stream marked settled. A full text `body <id>` read

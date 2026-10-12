@@ -888,6 +888,11 @@ pub struct AdvanceCursors {
     pub claim: CallerClaim,
     pub operation: OperationId,
     pub displayed: Vec<MessageId>,
+    /// The display happened inside the occupant's turn (a tool-boundary or turn-start hook),
+    /// so the messages it showed whole with a pending receipt were served in-turn (ht-705).
+    /// Sent only to a daemon advertising `inbox.receipt_offer_v1`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub in_turn: bool,
 }
 
 /// What a [`BindingEvent`] reports.

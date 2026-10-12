@@ -993,3 +993,59 @@ fn lazy_attention_backlog_allows_qualified_quiet_archive() {
     assert!(f.inbox("agent").is_empty());
     assert_eq!(f.count("receipts"), 0);
 }
+
+/// ht-705: a nudge shown whole inside the recipient's turn (a tool-boundary hook page, which
+/// sends `AdvanceCursors { in_turn: true }` after its output is flushed) was served in-turn, so
+/// the idle wake after that turn is owed to no one (delivery contract rule 4). The receipt stays
+/// pending (presentation is not an ACK). Kills: the post-turn duplicate wake on Codex; a display
+/// outside a turn (lifecycle hook, CLI) suppressing the wake; one shown receipt hiding a newer
+/// unshown one; a new occupant (lifecycle check-in) inheriting the old one's presentation.
+#[test]
+fn in_turn_display_of_a_nudge_owes_no_idle_wake() {
+    let f = Fixture::new();
+    let wake_owed = || {
+        f.store
+            .wake_candidates(PageRequest::default(), &budget())
+            .unwrap()
+            .items
+            .iter()
+            .any(|c| c.seat.as_str() == "agent" && c.has_actionable_work())
+    };
+    let display = |op: &str, displayed: Vec<MessageId>, in_turn: bool| {
+        f.store
+            .advance_cursors(
+                &AdvanceCursors {
+                    claim: f.claim("agent"),
+                    operation: OperationId::new(op),
+                    displayed,
+                    in_turn,
+                },
+                &budget(),
+            )
+            .unwrap();
+    };
+    let receipt_pending = || {
+        attention::wake_seat_attention(&f.db, "agent")
+            .unwrap()
+            .attention
+            .has_pending_receipt
+    };
+    let first = f.send("nudge-1", DeliveryMode::Ordinary);
+    assert!(
+        wake_owed(),
+        "control: an unshown nudge wakes an idle session"
+    );
+    display("shown-idle", vec![first.clone()], false);
+    assert!(wake_owed(), "a display outside a turn leaves the wake owed");
+    display("shown-in-turn", vec![first.clone()], true);
+    assert!(!wake_owed(), "served in-turn: no idle wake");
+    assert!(receipt_pending(), "presentation settles nothing");
+    let second = f.send("nudge-2", DeliveryMode::Ordinary);
+    assert!(wake_owed(), "a newer unshown nudge still wakes");
+    display("shown-2", vec![second], true);
+    assert!(!wake_owed());
+    f.check("agent", "current", false);
+    assert!(!wake_owed(), "a Current check-in keeps the presentation");
+    f.check("agent", "new-session", true);
+    assert!(wake_owed(), "a new occupant was not served");
+}

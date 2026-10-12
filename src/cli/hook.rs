@@ -3661,6 +3661,9 @@ fn run_admitted_hook_since(
                         messages: shown,
                         displayed,
                         cursors: offer.cursors,
+                        // A tool boundary (or a turn start, which checks in the same way) is
+                        // inside the turn; a lifecycle check-in may leave the session idle.
+                        in_turn: offer.receipt_offer && composition_event.kind == EventKind::Tool,
                         deadline,
                     })
                 }

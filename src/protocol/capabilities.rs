@@ -50,6 +50,11 @@ pub const BINDING_CURSORS: &str = "inbox.binding_cursors_v1";
 /// unread mail and notice frontier, and the digest token carries the binding (ht-54r.9).
 pub const BINDING_DIGEST: &str = "attention.binding_digest_v1";
 
+/// In-turn receipt presentation: `AdvanceCursors.in_turn` records, for a top-level binding, the
+/// displayed messages whose receipt is still pending, and the wake candidate owes that occupant
+/// no idle wake for them (ht-705). Nothing is settled.
+pub const RECEIPT_OFFER: &str = "inbox.receipt_offer_v1";
+
 pub const INBOX_BATCH: &str = "inbox.batch_v1";
 pub const ATTENTION_NOTICE_DELIVERY: &str = "attention.notice_delivery_v1";
 
@@ -95,6 +100,7 @@ pub const ADVERTISED: &[&str] = &[
     LAZY_HOOK_DELIVERY,
     BINDING_CURSORS,
     BINDING_DIGEST,
+    RECEIPT_OFFER,
 ];
 
 /// The capability set a daemon advertised to this client session. The empty set

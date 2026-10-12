@@ -71,7 +71,8 @@ const V32: &str = include_str!("../../migrations/0032_session_bindings.sql");
 const V33: &str = include_str!("../../migrations/0033_archival_scan_scope.sql");
 const V34: &str = include_str!("../../migrations/0034_binding_delivery_state.sql");
 const V35: &str = include_str!("../../migrations/0035_binding_attention_frontiers.sql");
-pub(crate) const LATEST_VERSION: i64 = 35;
+const V36: &str = include_str!("../../migrations/0036_receipt_offer.sql");
+pub(crate) const LATEST_VERSION: i64 = 36;
 
 /// Decode only persisted results, after the caller's digest has matched. Live
 /// protocol responses still require disposition. Missing original context
@@ -185,6 +186,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
                 .and_then(|_| conn.execute_batch(V33))
                 .and_then(|_| conn.execute_batch(V34))
                 .and_then(|_| conn.execute_batch(V35))
+                .and_then(|_| conn.execute_batch(V36))
                 .and_then(|_| conn.pragma_update(None, "user_version", LATEST_VERSION));
             match result {
                 Ok(()) => conn.execute_batch("COMMIT").map_err(store_error)?,
@@ -425,7 +427,7 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
             verify_existing(conn)
         }
         17 => verify_existing(conn),
-        18..=35 => verify_existing(conn),
+        18..=36 => verify_existing(conn),
         _ => Err(api_error(
             ErrorCode::IncompatibleSchema,
             format!("unsupported schema version {version}"),
@@ -666,7 +668,11 @@ pub fn initialize(conn: &Connection, now: impl FnOnce() -> UtcMillis) -> Result<
     if (1..=34).contains(&version) {
         migrate_v34_to_v35(conn)?;
     }
-    verify_existing_v35(conn)
+    verify_existing_v35(conn)?;
+    if (1..=35).contains(&version) {
+        migrate_v35_to_v36(conn)?;
+    }
+    verify_existing_v36(conn)
 }
 
 /// V35 (ht-54r.9): the warning offer and notice frontiers move from one row per seat to one row
@@ -704,6 +710,37 @@ const V35_AUDITED: [(&str, &str, &str); 4] = [
 
 fn verify_existing_v35(conn: &Connection) -> Result<(), ApiError> {
     audit_rebuilt_objects(conn, V35, &V35_AUDITED, "binding attention frontier")
+}
+
+/// V36 (ht-705): per-binding receipt presentation, the wake candidate's in-turn evidence. One
+/// transaction.
+fn migrate_v35_to_v36(conn: &Connection) -> Result<(), ApiError> {
+    conn.execute_batch("BEGIN IMMEDIATE").map_err(store_error)?;
+    let result = conn
+        .execute_batch(V36)
+        .map_err(store_error)
+        .and_then(|_| verify_existing_v36(conn))
+        .and_then(|_| {
+            conn.pragma_update(None, "user_version", 36)
+                .map_err(store_error)
+        });
+    match result {
+        Ok(()) => conn.execute_batch("COMMIT").map_err(store_error),
+        Err(error) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(error)
+        }
+    }
+}
+
+/// Objects V36 creates, audited exactly as written (see `V32_AUDITED`).
+const V36_AUDITED: [(&str, &str, &str); 2] = [
+    ("table", "receipt_offer", "receipt_offer"),
+    ("index", "receipt_offer_seat", "receipt_offer_seat"),
+];
+
+fn verify_existing_v36(conn: &Connection) -> Result<(), ApiError> {
+    audit_rebuilt_objects(conn, V36, &V36_AUDITED, "receipt offer")
 }
 
 /// V33 (ht-54r.15): archival scan scope. Narrows the mutation-revision triggers so the revision
