@@ -737,18 +737,20 @@ fn reversed_concurrent_ensures_converge_then_explicit_accept_reuses() {
     assert_eq!(
         plan.iter()
             .filter(|s| {
-                (s.starts_with(
+                s.starts_with(
                     "SEARCH membership_intervals USING COVERING INDEX membership_intervals_snapshot (thread_id=? AND seat_id",
                 ) || s.starts_with(
                     "SEARCH membership_intervals USING COVERING INDEX presentation_membership_history (thread_id=? AND seat_id",
-                ))
+                )
             })
             .count(),
         3,
         "{plan:?}"
     );
     assert!(
-        !plan.iter().any(|s| s.starts_with("SCAN membership_intervals")),
+        !plan
+            .iter()
+            .any(|s| s.starts_with("SCAN membership_intervals")),
         "{plan:?}"
     );
 
