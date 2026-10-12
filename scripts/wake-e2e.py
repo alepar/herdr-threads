@@ -16,23 +16,31 @@ so no wake prompt may be typed during or after that turn, and the item must arri
 
 Isolation: an isolated daemon and state dir (driven by --bin, default the repo's bin/herdr-threads), owned hooks
 installed by the public `setup` CLI into scratch HOME / CLAUDE_CONFIG_DIR / CODEX_HOME copies, one owned Herdr
-workspace on the current Herdr server (closed at the end unless --keep). Never writes the real user config:
+workspace on the current Herdr server (closed at the end unless --keep). The script itself never writes the real
+user config:
 - Claude keeps its real config directory (on macOS its keychain credentials are keyed by it) and loads the scratch
   installation as a flag layer (`--setting-sources project,local --settings <scratch>/settings.json`), which also
-  carries the delivery mod (`env.CLAUDE_CODE_PLUGIN_DIRS`).
-- Codex runs with CODEX_HOME at a scratch home holding setup's hooks.json/config.toml and a symlink to the source
-  profile's auth.json (--codex-auth-home, else $CODEX_HOME or ~/.codex; never read). The agent working directory is
-  pre-trusted in that scratch config.toml only.
+  carries the delivery mod (`env.CLAUDE_CODE_PLUGIN_DIRS`). Limit: Claude Code itself still records its session
+  state (transcripts, project history) in that real directory, as any Claude session does.
+- Codex runs with CODEX_HOME at a scratch home holding setup's hooks.json/config.toml and a private mode-0600 copy
+  of the source profile's auth.json (--codex-auth-home, else $CODEX_HOME or ~/.codex). Codex writes refreshed
+  tokens only into that copy; the source file is never written, and credentials never enter the evidence. A refresh
+  inside the run is recorded (no contents) because it can rotate the source profile's refresh token. The agent
+  working directory is pre-trusted in that scratch config.toml only.
 Agents work in the repository checkout (already trusted by Claude, so no folder-trust dialog is answered).
-The sender is an owned coordinator pane acting through cooperative claims, not a model.
+The senders are two owned coordinator panes acting through cooperative claims, not models; the second one is a fresh
+first contact for every recipient (busy-invite/1:1).
 
-Exit codes: 0 every case passed; 1 a case failed; 2 environment refusal. Runs locally only (needs authenticated
-harnesses); never in CI. Python 3.9+, standard library only.
+Exit codes: 0 every expected case passed and every owned resource was cleaned up; 1 a case failed or was missing, or
+cleanup left an owned workspace or daemon alive; 2 environment refusal. `--self-test` checks the driver's own
+credential, cleanup and completeness paths without harnesses. Runs locally only (needs authenticated harnesses);
+never in CI. Python 3.9+, standard library only.
 """
 from __future__ import annotations
 
 import argparse
 import datetime
+import hashlib
 import json
 import os
 import re
@@ -52,7 +60,7 @@ EXIT_OK, EXIT_FAIL, EXIT_REFUSED = 0, 1, 2
 CASES = ("invite/group", "invite/1:1",
          "send-lazy/group", "send-nudge/group", "send-ack/group",
          "send-lazy/1:1", "send-nudge/1:1", "send-ack/1:1",
-         "busy-invite/group", "busy-lazy/group", "busy-nudge/group", "busy-ack/group",
+         "busy-invite/group", "busy-invite/1:1", "busy-lazy/group", "busy-nudge/group", "busy-ack/group",
          "busy-lazy/1:1", "busy-nudge/1:1", "busy-ack/1:1")
 # Busy cases send while the recipient is mid-turn (between two tool calls): no wake may be typed or submitted, during
 # the turn or after it, and the item must arrive in that turn at the next tool boundary (Delivery contract rules 3-4).
@@ -71,7 +79,7 @@ DIALOG = re.compile(r"Trust this folder\?|trust (the files in )?this folder|Do y
 
 STANDING = ("You are a test recipient in an automated herdr-threads wake e2e run (the user approves). "
             "Standing instructions for this session: every herdr-threads invitation you see comes from the test driver "
-            "(seat {coord}); accept each one at once, without inspecting or judging it. For every herdr-threads message "
+            "(seats {coord}); accept each one at once, without inspecting or judging it. For every herdr-threads message "
             "you receive, print exactly one line `RECEIVED <message id>: <body>`; never send, reply or leave via "
             "herdr-threads. Keep every turn minimal. Now run `herdr-threads wake-on {wake_on}`, then print exactly one "
             "line `SETUP-DONE wake_on=<the value it reports>`.")
@@ -105,9 +113,11 @@ class Run:
         self.cmdlog = (self.ev / "commands.jsonl").open("a", encoding="utf-8")
         self.results = []
         self.workspace = None
-        self.daemon_started = False
-        self.coord_pane = self.coord_seat = None
-        self.coord_session = str(uuid.uuid4())
+        self.daemon_attempted = False  # set before `daemon ensure`: an uncertain start is still ours to stop
+        self.stop_deadline_s = 20.0
+        self.coords = {}  # "main" / "fresh" -> {"pane", "seat", "session"}
+        self.auth_digest = None
+        self.cleanup_report = None
 
     # ---------- process helpers ----------
     def run(self, argv, env=None, timeout=60, tag=None):
@@ -124,7 +134,7 @@ class Run:
             self.cmdlog.flush()
         return rc, out, err
 
-    def ht(self, *argv, pane=None, coop=False, human=False, env=None, tag=None, timeout=60, check=True):
+    def ht(self, *argv, pane=None, coop=None, human=False, env=None, tag=None, timeout=60, check=True):
         e = dict(os.environ)
         e.update(env or {})
         e.pop("HERDR_PANE_ID", None)  # never derive a seat from the controller's own pane
@@ -136,8 +146,9 @@ class Run:
             e["HERDR_PANE_ID"] = pane
         prefix = ["--state-dir", str(self.state), "--host-endpoint", self.endpoint, "--json"]
         if coop:
-            e["CLAUDE_CODE_SESSION_ID"] = self.coord_session  # the coordinator's own claimed session
-            prefix += ["--cooperative-seat", self.coord_seat, "--cooperative-target", self.coord_pane,
+            c = self.coords[coop]
+            e["CLAUDE_CODE_SESSION_ID"] = c["session"]  # the coordinator's own claimed session
+            prefix += ["--cooperative-seat", c["seat"], "--cooperative-target", c["pane"],
                        "--cooperative-harness", "claude", "--cooperative-role", "top-level"]
         argv = list(argv)
         # A self-granting command takes its words first, every option after.
@@ -181,7 +192,8 @@ class Run:
         sha = self.run(["git", "-C", str(REPO), "rev-parse", "HEAD"], tag="git")[1].strip()
         dirty = bool(self.run(["git", "-C", str(REPO), "status", "--porcelain"], tag="git")[1].strip())
         self.facts = {"run_id": self.run_id, "sha": sha, "dirty": dirty, "versions": versions,
-                      "root": str(self.root), "started_utc": utc()}
+                      "bin": self.bin, "bin_sha256": file_sha256(self.bin), "root": str(self.root),
+                      "started_utc": utc()}
         print(f"wake-e2e {self.run_id}: sha {sha[:12]}{' (dirty)' if dirty else ''}, root {self.root}", flush=True)
         for k, v in versions.items():
             print(f"  {k}: {v}", flush=True)
@@ -202,15 +214,15 @@ class Run:
                         f"if [ \"$pin_state\" = 1 ]; then set -- --state-dir {q(str(self.state))} \"$@\"; fi\n"
                         f"exec {q(self.bin)} \"$@\"\n")
         shim.chmod(0o700)
+        self.daemon_attempted = True
         self.ht("daemon", "ensure", tag="daemon:ensure", timeout=60)
-        self.daemon_started = True
         self.ht("daemon", "health", tag="daemon:health", timeout=20)
         setup_env = {"HOME": str(self.home), "CLAUDE_CONFIG_DIR": str(self.claude_cfg), "CODEX_HOME": str(self.codex_home),
                      "CLAUDE_CODE_PLUGIN_DIRS": ""}  # never copy a real installed mod into the scratch layer
         for h in self.args.harness:
             self.ht("setup", h, "--with-permissions", env=setup_env, tag=f"setup:{h}", timeout=120)
         if "codex" in self.args.harness:
-            (self.codex_home / "auth.json").symlink_to(self.codex_auth_home() / "auth.json")
+            self.auth_digest = provision_codex_auth(self.codex_auth_home() / "auth.json", self.codex_home / "auth.json")
             cfg = self.codex_home / "config.toml"
             text = cfg.read_text() if cfg.exists() else ""
             key = f'[projects."{self.cwd}"]'
@@ -239,18 +251,20 @@ class Run:
     def layout(self):
         data = self.herdr("workspace", "create", "--label", f"wake-e2e-{self.run_id}", "--cwd", self.cwd, "--no-focus")
         self.workspace = data["result"]["workspace"]["workspace_id"]
-        self.coord_pane = data["result"]["root_pane"]["pane_id"]
         self.herdr("tab", "rename", data["result"]["tab"]["tab_id"], "coordinator")
-        self.coord_seat = self.seat(self.coord_pane)
-        self.ht("check-in", "--lifecycle-event", f"wake-e2e-coordinator-{uuid.uuid4()}",
-                pane=self.coord_pane, coop=True, tag="coordinator:check-in")
+        # "fresh" never contacts a recipient before busy-invite/1:1, so that case is a real first contact.
+        for role, pane in (("main", data["result"]["root_pane"]["pane_id"]), ("fresh", None)):
+            pane = pane or self.tab("coordinator-fresh")
+            self.coords[role] = {"pane": pane, "seat": self.seat(pane), "session": str(uuid.uuid4())}
+            self.ht("check-in", "--lifecycle-event", f"wake-e2e-coordinator-{uuid.uuid4()}",
+                    pane=pane, coop=role, tag=f"coordinator:{role}:check-in")
         self.recipients = []
         for h in self.args.harness:
             for wake_on in ("nudge", "all"):
                 name = f"{h[:2]}-{wake_on}"
                 pane = self.tab(name)
                 self.recipients.append(Recipient(self, name, h, wake_on, pane, self.seat(pane)))
-        print(f"  workspace {self.workspace}: coordinator {self.coord_seat}; " +
+        print(f"  workspace {self.workspace}: coordinators {self.coord_seats()}; " +
               ", ".join(f"{r.name}={r.seat}" for r in self.recipients), flush=True)
 
     def launch_line(self, harness):
@@ -270,19 +284,88 @@ class Run:
             argv += ["-m", self.args.codex_model]
         return f"{path} HERDR_AGENT=codex CODEX_HOME={q(str(self.codex_home))} {shlex.join(argv)}"
 
-    def cleanup(self):
-        if self.workspace and not self.args.keep:
-            self.herdr("workspace", "close", self.workspace, check=False, tag="cleanup:workspace")
-        if self.daemon_started and not self.args.keep:
-            self.ht("daemon", "stop", check=False, tag="cleanup:daemon", timeout=30)
-            end = time.time() + 20
-            while time.time() < end and self.run_rc("daemon", "health") == 0:
-                time.sleep(0.5)
+    def coord_seats(self):
+        return " and ".join(c["seat"] for c in self.coords.values()) or "none"
 
-    def run_rc(self, *argv):
+    def cleanup(self):
+        """Attempt every owned resource independently, then verify it is gone. Returns the problems found;
+        any problem makes the run fail. `--keep` is the explicit diagnostic opt-out."""
+        problems, steps = [], []
+        if self.args.keep:
+            self.cleanup_report = {"skipped": "--keep", "workspace": self.workspace,
+                                   "daemon_attempted": self.daemon_attempted}
+            return problems
+        if self.workspace:
+            try:
+                rc = self.run(["herdr", "workspace", "close", self.workspace], tag="cleanup:workspace", timeout=30)[0]
+                steps.append({"workspace_close_rc": rc})
+            except Exception as e:  # keep going: the daemon is ours too
+                steps.append({"workspace_close_error": str(e)[:200]})
+            try:
+                if self.workspace_alive():
+                    problems.append(f"workspace {self.workspace} still open after close")
+            except Exception as e:
+                problems.append(f"workspace {self.workspace}: closure not verified: {str(e)[:200]}")
+        if self.daemon_attempted:
+            try:
+                rc = self.run_rc("daemon", "stop", timeout=30)
+                steps.append({"daemon_stop_rc": rc})
+            except Exception as e:
+                steps.append({"daemon_stop_error": str(e)[:200]})
+            end = time.time() + self.stop_deadline_s
+            healthy = True
+            while True:
+                try:
+                    healthy = self.run_rc("daemon", "health") == 0
+                except Exception:
+                    healthy = True  # unknown is not stopped
+                if not healthy or time.time() >= end:
+                    break
+                time.sleep(0.5)
+            if healthy:
+                problems.append(f"isolated daemon still healthy {self.stop_deadline_s:.0f}s after stop")
+            leftover = self.owned_processes()
+            if leftover:
+                problems.append(f"owned processes still running: {leftover}")
+        self.cleanup_report = {"steps": steps, "problems": problems}
+        return problems
+
+    def workspace_alive(self):
+        rc, out, _err = self.run(["herdr", "workspace", "list"], tag="cleanup:verify-workspace", timeout=30)
+        if rc != 0:
+            raise RuntimeError(f"workspace list rc={rc}")
+        return any(row.get("workspace_id") == self.workspace for row in walk(json.loads(out or "{}")))
+
+    def owned_processes(self):
+        """pids whose command line names this run's private root (the daemon's --state-dir, the shim)."""
+        rc, out, _err = self.run(["pgrep", "-f", str(self.root)], tag="cleanup:verify-processes", timeout=10)
+        return [int(p) for p in out.split() if p.isdigit() and int(p) != os.getpid()] if rc == 0 else []
+
+    def run_rc(self, *argv, timeout=10):
         e = {k: v for k, v in os.environ.items() if k not in CALLER_SESSION_ENV and k != "HERDR_PANE_ID"}
         return self.run([self.bin, "--state-dir", str(self.state), "--host-endpoint", self.endpoint, *argv],
-                        env=e, tag="cleanup:health", timeout=10)[0]
+                        env=e, tag="cleanup:" + "-".join(argv), timeout=timeout)[0]
+
+
+def file_sha256(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def provision_codex_auth(source, dest):
+    """A private regular-file copy (mode 0600) of the source credentials: Codex's file store truncates and rewrites
+    auth.json on token refresh, which would follow a symlink into the real profile. Returns the copy's digest, so the
+    run can report (without contents) whether Codex refreshed tokens."""
+    dest = Path(dest)
+    if dest.is_symlink() or dest.exists():
+        dest.unlink()
+    fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "wb") as out, open(source, "rb") as src:
+        shutil.copyfileobj(src, out)
+    return file_sha256(dest)
 
 
 def first_id(text, prefix):
@@ -373,7 +456,7 @@ class Recipient:
             raise RuntimeError(f"{self.name}: startup dialog (nothing typed): {self.tail()}")
         for _attempt in range(2):  # one retry: a transient model/capacity error ends the first turn early
             reported = re.compile(r"SETUP-DONE wake_on=%s\b" % self.wake_on)
-            self.prompt(STANDING.format(coord=self.run.coord_seat, wake_on=self.wake_on), expect=reported)
+            self.prompt(STANDING.format(coord=self.run.coord_seats(), wake_on=self.wake_on), expect=reported)
             if reported.search(self.screen()):
                 break
         else:
@@ -397,20 +480,27 @@ class Recipient:
         self.last_wake = time.time()
 
     # ---------- actions ----------
-    def coord(self, *argv):
-        return json.loads(self.run.ht(*argv, pane=self.run.coord_pane, coop=True))
+    def coord(self, *argv, role="main"):
+        return json.loads(self.run.ht(*argv, pane=self.run.coords[role]["pane"], coop=role))
 
-    def send(self, mode, body, direct):
+    def send(self, mode, body, direct, role="main"):
         argv = ["send"] + (["--seat", self.seat] if direct else [self.group]) + ["--body", body]
         argv += {"lazy": ["--lazy"], "nudge": ["--nudge"], "ack": ["--require-ack", self.seat]}[mode]
-        data = self.coord(*argv)
+        data = self.coord(*argv, role=role)
         mid = (data.get("result") or {}).get("data")
         if not isinstance(mid, str) or not mid:
             raise RuntimeError(f"send returned no message id: {data}")
         return mid
 
-    def joined(self, thread):
-        data = self.coord("thread", "participants", thread)
+    def pair_thread(self, role="main"):
+        """The coordinator's 1:1 pair with this recipient (the direct send made it), or None."""
+        for row in walk(self.coord("thread", "list", "--joined", role=role)):
+            if str(row.get("topic_data", "")).startswith("1:1") and self.seat in str(row.get("topic_data")):
+                return row.get("thread")
+        return None
+
+    def joined(self, thread, role="main"):
+        data = self.coord("thread", "participants", thread, role=role)
         for row in walk(data):
             if row.get("seat") == self.seat:
                 return row.get("joined") is True, row.get("effective_state")
@@ -465,7 +555,14 @@ class Recipient:
         time.sleep(3)  # well inside `sleep 12`: the agent is running a tool
         busy_at_send = self.status()
         checks = {"busy_at_send": busy_at_send}
-        if kind == "invite":
+        role = "main"
+        if kind == "invite" and channel == "1:1":
+            # First contact from the fresh coordinator, mid-turn: pair + invitation + lazy opening message.
+            role = "fresh"
+            ref = {"message": self.send("lazy", f"pair-open-busy {self.run.run_id}", direct=True, role=role)}
+            thread = self.pair_thread(role=role)
+            ref["thread"] = thread
+        elif kind == "invite":
             name = f"wake-e2e-busy-{self.name}-{self.run.run_id}"
             thread = self.coord("thread", "create", "--name", name, "--topic", f"wake-e2e busy test thread for {self.name}",
                                 "--goal", "wake e2e test traffic")["result"]["data"]
@@ -482,11 +579,13 @@ class Recipient:
         if kind == "invite":
             ok = False
             for _ in range(10):
-                ok, _state = self.joined(thread)
+                ok, _state = self.joined(thread, role=role) if thread else (False, "no pair thread")
                 if ok:
                     break
                 time.sleep(1)
             checks["joined"] = ok
+            if channel == "1:1":
+                checks["opening_message_delivered"] = self.on_screen(ref["message"], tries=5)
         else:
             checks["delivered_in_turn"] = self.on_screen(ref["message"], tries=5)
             if kind == "ack":
@@ -495,7 +594,7 @@ class Recipient:
         passed = (busy_at_send not in IDLE and checks["self_started_turn_after_s"] is None
                   and checks["wake_prompts_since_busy_prompt"] == 0
                   and all(v is True or v == "acknowledged" for k, v in checks.items()
-                          if k in ("joined", "delivered_in_turn", "ack")))
+                          if k in ("joined", "opening_message_delivered", "delivered_in_turn", "ack")))
         self.run.record({"case": case, "harness": self.harness, "wake_on": self.wake_on, "recipient": self.name,
                          "expect_wake": False,
                          "woke": checks["self_started_turn_after_s"] is not None
@@ -544,11 +643,7 @@ class Recipient:
         if action == "invite":
             thread = self.group if channel == "group" else None
             if thread is None:
-                data = self.coord("thread", "list", "--joined")
-                for row in walk(data):
-                    if str(row.get("topic_data", "")).startswith("1:1") and self.seat in str(row.get("topic_data")):
-                        thread = row.get("thread")
-                self.pair = thread
+                thread = self.pair = self.pair_thread()
             ok = False
             for _ in range(20):
                 ok, state = self.joined(thread)
@@ -586,11 +681,7 @@ class Recipient:
             thread = self.group
         elif channel == "1:1" and not self.pair:
             self.send("nudge", f"pair-setup {self.run.run_id}", direct=True)
-            thread = None
-            for row in walk(self.coord("thread", "list", "--joined")):
-                if str(row.get("topic_data", "")).startswith("1:1") and self.seat in str(row.get("topic_data")):
-                    thread = row.get("thread")
-            self.pair = thread
+            thread = self.pair = self.pair_thread()
         else:
             return
         end = time.time() + 120
@@ -633,7 +724,13 @@ def record(self, row):
 Run.record = record
 
 
-def summary(run):
+def expected_rows(run, cases):
+    return {(r.name, c) for r in getattr(run, "recipients", []) for c in cases}
+
+
+def summary(run, cases):
+    """The table of every collected row. Passes only when each expected recipient x case has exactly one row and it
+    is PASS: a missing, duplicated or unexpected row fails the run."""
     order = {c: i for i, c in enumerate(CASES)}
     rows = sorted(run.results, key=lambda r: (order.get(r["case"], 99), r["wake_on"] != "nudge", r["harness"]))
     lines = ["| case | wake-on | harness | expect wake | woke (s) | checks | result |", "|---|---|---|---|---|---|---|"]
@@ -641,13 +738,34 @@ def summary(run):
         woke = f"{r.get('woke')} ({r.get('t_wake_s')})" if r.get("woke") else str(r.get("woke"))
         lines.append(f"| {r['case']} | {r['wake_on']} | {r['harness']} | {r.get('expect_wake')} | {woke} | "
                      f"{json.dumps(r.get('checks'))} | {r['result']} |")
+    expected = expected_rows(run, cases)
+    seen = [(r["recipient"], r["case"]) for r in rows]
+    missing = sorted(expected - set(seen))
+    extra = sorted({k for k in seen if k not in expected or seen.count(k) > 1})
     passed = sum(r["result"] == "PASS" for r in rows)
-    lines.append(f"\n{passed}/{len(rows)} passed")
-    text = "\n".join(lines)
-    (run.ev / "report.md").write_text(f"# wake e2e {run.run_id}\n\n```json\n{json.dumps(run.facts, indent=2)}\n```\n\n{text}\n")
-    (run.ev / "results.json").write_text(json.dumps({"facts": run.facts, "results": rows}, indent=2))
-    print("\n" + text, flush=True)
-    return passed == len(rows) and rows
+    lines.append(f"\n{passed}/{len(expected)} expected rows passed ({len(rows)} collected)")
+    if missing:
+        lines.append(f"missing rows: {missing}")
+    if extra:
+        lines.append(f"unexpected or duplicated rows: {extra}")
+    run.table = "\n".join(lines)
+    run.completeness = {"expected": len(expected), "collected": len(rows), "missing": missing, "extra": extra}
+    print("\n" + run.table, flush=True)
+    return bool(expected) and not missing and not extra and passed == len(rows)
+
+
+def write_evidence(run, rc):
+    """report.md / results.json, written after cleanup so they carry its outcome and the final exit code."""
+    facts = dict(getattr(run, "facts", {}), finished_utc=utc(), exit_code=rc)
+    if run.auth_digest:
+        facts["codex_auth_refreshed_in_run"] = file_sha256(run.codex_home / "auth.json") != run.auth_digest \
+            if (run.codex_home / "auth.json").exists() else "copy missing"
+    doc = {"facts": facts, "completeness": getattr(run, "completeness", None), "cleanup": run.cleanup_report,
+           "results": run.results}
+    (run.ev / "results.json").write_text(json.dumps(doc, indent=2))
+    (run.ev / "report.md").write_text(
+        f"# wake e2e {run.run_id}\n\n```json\n{json.dumps(facts, indent=2)}\n```\n\n{getattr(run, 'table', '')}\n\n"
+        f"cleanup: `{json.dumps(run.cleanup_report)}`\n\nexit code: {rc}\n")
 
 
 def main(argv=None):
@@ -667,13 +785,18 @@ def main(argv=None):
                     help="extra Codex TUI flags (sandbox/approval), default %(default)r")
     ap.add_argument("--codex-auth-home", help="Codex home whose auth.json the scratch CODEX_HOME links to "
                                               "(default $CODEX_HOME or ~/.codex)")
+    ap.add_argument("--self-test", action="store_true",
+                    help="check the driver's credential, cleanup and completeness paths (no harnesses) and exit")
     args = ap.parse_args(argv)
+    if args.self_test:
+        return self_test()
     args.harness = [h for h in args.harness.split(",") if h]
     cases = [c for c in args.cases.split(",") if c]
     unknown = [c for c in cases if c not in CASES] + [h for h in args.harness if h not in ("claude", "codex")]
     if unknown:
         ap.error(f"unknown case/harness: {unknown}")
     run = Run(args)
+    rc = EXIT_FAIL
     try:
         run.preflight()
         run.scratch()
@@ -684,17 +807,36 @@ def main(argv=None):
             w.start()
         for w in workers:
             w.join()
-        ok = summary(run)
-        print(f"evidence: {run.ev}", flush=True)
-        return EXIT_OK if ok else EXIT_FAIL
+        rc = EXIT_OK if summary(run, cases) else EXIT_FAIL
     except Refused as e:
         print(f"wake-e2e: refused: {e}", file=sys.stderr)
-        return EXIT_REFUSED
-    except Exception as e:
-        print(f"wake-e2e: aborted: {e}", file=sys.stderr)
-        return EXIT_FAIL
+        rc = EXIT_REFUSED
+    except BaseException as e:  # including KeyboardInterrupt: cleanup still runs and the run fails
+        print(f"wake-e2e: aborted: {e!r}", file=sys.stderr)
+        rc = EXIT_FAIL
     finally:
-        run.cleanup()
+        try:
+            problems = run.cleanup()
+        except BaseException as e:
+            problems = [f"cleanup raised: {e!r}"]
+            run.cleanup_report = {"problems": problems}
+        if problems:
+            print("wake-e2e: cleanup incomplete: " + "; ".join(problems), file=sys.stderr)
+            rc = EXIT_FAIL
+        write_evidence(run, rc)
+        print(f"evidence: {run.ev} (exit {rc})", flush=True)
+    return rc
+
+
+SELF_TEST = Path(__file__).resolve().parent / "wake_e2e_selftest.py"
+
+
+def self_test():
+    """The driver's own failure paths, with fakes for Herdr and the daemon (scripts/wake_e2e_selftest.py)."""
+    import unittest
+    sys.path.insert(0, str(SELF_TEST.parent))
+    suite = unittest.defaultTestLoader.loadTestsFromName(SELF_TEST.stem)
+    return EXIT_OK if unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful() else EXIT_FAIL
 
 
 if __name__ == "__main__":
