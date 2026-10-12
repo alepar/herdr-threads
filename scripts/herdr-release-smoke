@@ -119,8 +119,8 @@ def fetch(version: str, asset: str, digest: str, cache: Path) -> Path:
             except (OSError, http.client.HTTPException) as e:  # URLError, HTTPError, timeouts, IncompleteRead
                 error = e
             part.unlink(missing_ok=True)
-            if attempt == 2:
-                raise error
+            if attempt == 2:  # reported by main as this version's ERROR row; the matrix goes on
+                raise RuntimeError(f"download of {asset} {version} failed after 3 attempts: {error}") from error
             time.sleep(5 * (attempt + 1))
         part.rename(binary)
     actual = sha256(binary)
@@ -128,7 +128,8 @@ def fetch(version: str, asset: str, digest: str, cache: Path) -> Path:
         binary.unlink()
         raise RuntimeError(f"checksum mismatch for {asset} {version}: {actual} != {digest} (cache entry removed)")
     binary.chmod(0o755)
-    reported = subprocess.run([str(binary), "--version"], capture_output=True, text=True).stdout.strip()
+    reported = subprocess.run([str(binary), "--version"], capture_output=True, text=True,
+                              errors="replace").stdout.strip()
     if reported != f"herdr {version}":
         raise RuntimeError(f"{binary} reports {reported!r}, expected 'herdr {version}'")
     return binary
@@ -184,7 +185,7 @@ def main() -> int:
         started = time.monotonic()
         try:
             binary = fetch(version, asset, listed[version][asset], args.cache)
-        except (RuntimeError, OSError, KeyError) as error:
+        except (RuntimeError, OSError, KeyError, http.client.HTTPException) as error:
             results.append((version, "ERROR", 0.0, str(error)))
             continue
         run_env = dict(env, PATH=f"{binary.parent}{os.pathsep}{env['PATH']}", HT_HERDR_SMOKE_VERSION=version)

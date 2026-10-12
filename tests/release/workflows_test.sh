@@ -97,7 +97,11 @@ check "ci.yml: linux-e2e never runs the live wake matrix or --check-upstream" ba
 check "ci.yml: linux-e2e references no secrets or tokens" bash -c \
   '! yq ".jobs.linux-e2e" "$1" | grep -qE "secrets\b|GITHUB_TOKEN|github\.token"' _ "$ci"
 check "ci.yml: linux-e2e ends with an always() leak check" bash -c \
-  'test "$(yq ".jobs.linux-e2e.steps[] | select(.run == \"scripts/check-no-leaked-processes*\") | .if" "$1")" = "always()"' _ "$ci"
+  'test "$(yq ".jobs.linux-e2e.steps[] | select(.run == \"scripts/check-no-leaked-processes*\") | .if" "$1")" = "always()" \
+   && test "$(yq ".jobs.linux-e2e.steps[-1].run" "$1")" = "scripts/check-no-leaked-processes --run-id \"\$HT_LEAK_RUN_ID\" --grace 15"' _ "$ci"
+check "ci.yml: linux-e2e runs on every push and pull request (no job-level if)" bash -c \
+  'test "$(yq ".jobs.linux-e2e | has(\"if\")" "$1")" = false \
+   && test "$(yq "(.on | has(\"push\")) and (.on | has(\"pull_request\")) and .on.push == null and .on.pull_request == null" "$1")" = true' _ "$ci"
 
 check "herdr-plugin.toml platforms = [\"macos\", \"linux\"]" \
   grep -qxF 'platforms = ["macos", "linux"]' herdr-plugin.toml
