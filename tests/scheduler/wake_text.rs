@@ -40,14 +40,15 @@ impl ReservationCheck for CurrentReservation {
     }
 }
 
-/// Records every typed prompt text.
-struct TextRecordingHost {
-    observation: HostObservation,
+/// Records every typed prompt text. Shared with the store's wake tests (ht-705), which drive the
+/// real dispatcher against a real store.
+pub(crate) struct TextRecordingHost {
+    pub(crate) observation: HostObservation,
     /// Set on the safe target the host hands back (a recovery hint carries none of its own).
-    host_bound_harness: Option<&'static str>,
+    pub(crate) host_bound_harness: Option<&'static str>,
     /// The pane's foreground pids the host reports.
-    foreground: Vec<u32>,
-    typed: Mutex<Vec<String>>,
+    pub(crate) foreground: Vec<u32>,
+    pub(crate) typed: Mutex<Vec<String>>,
 }
 impl HostPort for TextRecordingHost {
     fn foreground_pids(&self, _: &HostTargetId, _: &HostCallContext) -> Result<Vec<u32>, ApiError> {
@@ -128,7 +129,7 @@ impl HostPort for TextRecordingHost {
     }
 }
 
-fn observation(verified_idle: bool) -> HostObservation {
+pub(crate) fn observation(verified_idle: bool) -> HostObservation {
     HostObservation {
         focused: false,
         target: HostTargetId::new("target"),

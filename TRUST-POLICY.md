@@ -396,6 +396,13 @@ model open work, and summary closure never changes receipt state or installs glo
   no fallback to the latest claim or touch, even for a seat with one target (nothing is guessed, and the
   refusal is pre-send so the reminder ladder does not climb). Only a reservation that names no targets
   (a legacy source) keeps the single-harness rule. A soft poke follows the same targets and rule.
+  *Served in-turn* (ht-705, A8): a target that was shown every pending receipt (or invitation) the wake is
+  reserved for inside its own turn is owed no wake for it; the seat-level candidate drops those items only
+  when every target was served, so one binding's turn never hides a sibling's owed wake. Immediately before
+  the prompt, after the reservation fence, the daemon rechecks the binding the composer chose (or, with no
+  composer choice, the seat-level binding a registered wake reaches) against its own records; a served
+  binding gets a pre-send refusal (nothing typed, the ladder does not climb) and an unserved sibling's wake
+  stays owed for a later attempt.
   Verified 2026-10-11 (`evidence/ht-54r.89/summary.md`, derived fingerprints, no harness logged in): the
   fingerprint pid is a foreground process for Claude 2.1.296 (live: `CLAUDE_PID` among seven foreground
   processes), Codex 0.162.1 native and via npm (node launcher plus native child), Hermes v0.21.5 and
@@ -712,13 +719,15 @@ occupant's turn (a tool boundary, or a turn start that checks in the same way; n
 after which the session may sit idle) marks its cursor advance `in_turn` (ht-705, only to a daemon
 advertising `inbox.in_turn_offer_v1`) and names the invitations it showed: the daemon then records in
 `in_turn_offer`, for the displaying top-level binding, each displayed message whose seat receipt is still
-pending and each named invitation still pending for the seat. That record is wake eligibility only
-(delivery contract rule 4: served in-turn, so no idle wake is owed): the wake candidate skips the seat's
-pending receipts (and, separately, its pending invitations) when every one of them is recorded for the
-binding a seat-level reader follows. It settles nothing: no ACK actor or provenance, no acceptance; the
-receipt or invitation stays pending, listed by `inbox` and subject to its deadline. A newer unshown item,
-another occupant, or a lifecycle check-in of the binding (which clears its records) makes the wake owed
-again. Warnings need no record: the check-in that carries them already advances the binding's warning
+pending and each named invitation still pending for the seat. That record is wake eligibility only, and
+it is per binding (delivery contract rule 4: served in-turn, so no idle wake is owed to that binding):
+the wake candidate skips the seat's pending receipts (and, separately, its pending invitations) only when
+every one of them is recorded for every binding a wake could reach (each connected top-level target;
+with none, the seat-level binding), and the dispatch recheck refuses the prompt to the one binding it
+reaches when that binding is served (A4 *Wake*, *Served in-turn*). It settles nothing: no ACK actor or
+provenance, no acceptance; the receipt or invitation stays pending, listed by `inbox` and subject to its
+deadline. A newer unshown item, an unserved sibling or new occupant, or a lifecycle check-in of the binding
+(which clears that binding's records only) makes the wake owed again. Warnings need no record: the check-in that carries them already advances the binding's warning
 offer frontier. It writes no
 local journal record. A failed or unknown completion leaves the rows pending and they are shown again (at least once).
 A hook-pull harness's standard hook never reads an inbox page or makes this claim: its lazy rows complete only

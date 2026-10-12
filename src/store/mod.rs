@@ -2895,6 +2895,17 @@ impl StorePort for SqliteStore {
             .map_err(|e| db.map_error(e))?;
         wake::validate_reservation(&db, &self.instance, reservation)
     }
+    fn wake_owed_to_binding(
+        &self,
+        reservation: &WakeReservation,
+        binding: Option<&crate::protocol::ids::BindingId>,
+        budget: &CallBudget,
+    ) -> Result<bool, ApiError> {
+        let db = self.context.open_query(budget.clone())?;
+        db.execute_batch("BEGIN DEFERRED")
+            .map_err(|e| db.map_error(e))?;
+        wake::wake_owed_to_binding(&db, reservation, binding)
+    }
     fn complete_wake(
         &self,
         attempt: WakeAttemptId,
