@@ -73,6 +73,11 @@ CASES = ("invite/group", "invite/1:1",
 BUSY_PROMPT = ("Busy-turn test {tag}: run the shell command `sleep 12`, then run the shell command `sleep 1`, then "
                "handle any herdr-threads items exactly as your standing instructions say, and finally print BUSY-DONE.")
 BUSY_AFTER_S = 40.0
+# The busy turn's native end: a line of the agent's output that is BUSY-DONE apart from bullets, markup or a final
+# period. It is searched only after the prompt's own "BUSY-DONE." so a wrapped prompt line never matches.
+BUSY_DONE_LINE = re.compile(r"^[^\w\n]*BUSY-DONE[^\w\n]*$", re.M)
+BUSY_PROMPT_END = "BUSY-DONE."
+BUSY_END_GRACE_S = 10.0  # idle this long with no BUSY-DONE line: the turn is over without one
 WAKE_MARKERS = ("herdr-threads: wake up", "herdr-threads: attention pending")
 WAKE_WINDOW_S = 6.0     # a woken agent leaves idle well inside this (observed 0.3-1.1 s)
 SPACING_S = 35.0        # the per-seat wake retry guard is 30 s after each reservation (src/notification/policy.rs)
@@ -546,6 +551,25 @@ def walk(x):
             yield from walk(v)
 
 
+def busy_turn_split(text, anchor):
+    """Split the screen at the busy turn's native boundaries: (in_turn, after_turn, end_seen). `in_turn` runs from
+    the busy prompt `anchor` to the agent's BUSY-DONE line, `after_turn` is everything later; None if the prompt
+    is not on screen."""
+    at = text.find(anchor)  # the prompt itself: an agent echoing the tag later must not move it
+    if at < 0:
+        return None
+    rest = text[at:]
+    prompt_end = rest.find(BUSY_PROMPT_END)
+    end = BUSY_DONE_LINE.search(rest, prompt_end + len(BUSY_PROMPT_END) if prompt_end >= 0 else 0)
+    if end is None:
+        return rest, "", False
+    return rest[:end.end()], rest[end.end():], True
+
+
+def wake_count(text):
+    return sum(text.count(m) for m in WAKE_MARKERS)
+
+
 class Recipient:
     def __init__(self, run, name, harness, wake_on, pane, seat):
         self.run, self.name, self.harness, self.wake_on, self.pane, self.seat = run, name, harness, wake_on, pane, seat
@@ -676,13 +700,6 @@ class Recipient:
                 return row["effective_status"]
         return None
 
-    def wakes_since(self, anchor):
-        """Wake prompts typed after the last occurrence of `anchor` (this case's own prompt) on screen."""
-        text = self.screen(1000)
-        at = text.rfind(anchor)
-        segment = text[at:] if at >= 0 else ""
-        return sum(segment.count(m) for m in WAKE_MARKERS), at >= 0
-
     def watch_quiet(self, seconds):
         """Seconds until the idle recipient started a turn on its own, or None if it stayed idle throughout."""
         t0 = time.time()
@@ -733,12 +750,28 @@ class Recipient:
             ref = {"thread": thread}
         else:
             ref = {"message": self.send(kind, f"{case} {self.run.run_id}", direct=channel == "1:1")}
-        self.wait_idle()
+        anchor = f"Busy-turn test {tag}"
+        # The quiet window starts at the busy turn's native end (its BUSY-DONE line, then the first idle status),
+        # not after a confirmed-idle wait: that wait would absorb a short wake turn typed right after the turn.
+        end, idle_since = time.time() + TURN_TIMEOUT_MS / 1000, None
+        while time.time() < end and not (busy_turn_split(self.screen(1000), anchor) or ("", "", False))[2]:
+            idle_since = (idle_since or time.time()) if self.status() in IDLE else None
+            if idle_since and time.time() - idle_since > BUSY_END_GRACE_S:
+                break  # recorded below as busy_turn_end_seen False, without waiting out the turn timeout
+            time.sleep(0.5)
+        while time.time() < end and self.status() not in IDLE:
+            time.sleep(0.25)
         # A wake owed after the turn (even one held by the 30 s per-seat guard) would start a turn in here.
         checks["self_started_turn_after_s"] = self.watch_quiet(BUSY_AFTER_S)
         self.wait_idle()
-        count, found = self.wakes_since(f"Busy-turn test {tag}")
-        checks["wake_prompts_since_busy_prompt"] = count if found else "busy prompt not on screen"
+        split = busy_turn_split(self.screen(1000), anchor)
+        if split is None:
+            in_turn, after_turn, checks["busy_turn_end_seen"] = "", "", "busy prompt not on screen"
+        else:
+            in_turn, after_turn, checks["busy_turn_end_seen"] = split
+        # Rule 4: no wake is typed into the busy turn; a wake after it means an item was not served in-turn.
+        checks["wake_prompts_in_busy_turn"] = wake_count(in_turn)
+        checks["wake_prompts_after_busy_turn"] = wake_count(after_turn)
         if kind == "invite":
             ok = False
             for _ in range(10):
@@ -748,20 +781,22 @@ class Recipient:
                 time.sleep(1)
             checks["joined"] = ok
             if channel == "1:1":
-                checks["opening_message_delivered"] = self.on_screen(ref["message"], tries=5)
+                checks["opening_message_delivered_in_turn"] = ref["message"] in in_turn
         else:
-            checks["delivered_in_turn"] = self.on_screen(ref["message"], tries=5)
+            checks["delivered_in_turn"] = ref["message"] in in_turn
             if kind == "ack":
                 checks["ack"] = self.receipt(ref["message"])
         self.settled()
         passed = (busy_at_send not in IDLE and checks["self_started_turn_after_s"] is None
-                  and checks["wake_prompts_since_busy_prompt"] == 0
+                  and checks["busy_turn_end_seen"] is True
+                  and checks["wake_prompts_in_busy_turn"] == 0 and checks["wake_prompts_after_busy_turn"] == 0
                   and all(v is True or v == "acknowledged" for k, v in checks.items()
-                          if k in ("joined", "opening_message_delivered", "delivered_in_turn", "ack")))
+                          if k in ("joined", "opening_message_delivered_in_turn", "delivered_in_turn", "ack")))
         self.run.record({"case": case, "harness": self.harness, "wake_on": self.wake_on, "recipient": self.name,
                          "expect_wake": False,
                          "woke": checks["self_started_turn_after_s"] is not None
-                         or checks["wake_prompts_since_busy_prompt"] != 0, "t_wake_s": None,
+                         or checks["wake_prompts_in_busy_turn"] != 0 or checks["wake_prompts_after_busy_turn"] != 0,
+                         "t_wake_s": None,
                          "hello_sent": False, "checks": checks, "ref": ref,
                          "result": "PASS" if passed else "FAIL", "utc": utc()})
 
@@ -827,8 +862,16 @@ class Recipient:
                         break
                     time.sleep(1)
                 checks["ack"] = status
-        verified = all(v is True or v == "acknowledged" for k, v in checks.items() if k != "late_wake_s")
-        passed = woke == expect_wake and verified
+        # The case owns the rest of the spacing window: a turn the recipient starts on its own in here (a follow-up
+        # wake for an item this case left pending) fails this case, and spacing restarts after it, so the next case
+        # is never measured against the 30 s guard of a wake it did not cause.
+        checks["trailing_wake_s"] = self.watch_quiet(max(0.0, SPACING_S - (time.time() - self.last_wake)))
+        if checks["trailing_wake_s"] is not None:
+            self.wait_idle()
+            self.settled()
+        verified = all(v is True or v == "acknowledged" for k, v in checks.items()
+                       if k not in ("late_wake_s", "trailing_wake_s"))
+        passed = woke == expect_wake and verified and checks["trailing_wake_s"] is None
         row = {"case": case, "harness": self.harness, "wake_on": self.wake_on, "recipient": self.name,
                "expect_wake": expect_wake, "woke": woke, "t_wake_s": t_wake, "hello_sent": hello,
                "checks": checks, "ref": ref, "result": "PASS" if passed else "FAIL", "utc": utc()}

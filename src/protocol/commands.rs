@@ -418,6 +418,12 @@ pub struct InboxQuery {
     /// stream (spec §2 Inbox, per binding); without it, today's per-seat page.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub claim: Option<CallerClaim>,
+    /// Thread scope (ht-br0, `inbox.thread_scope_v1`; `InboxBatchV2` first page only): the page
+    /// carries only the reader's unread lazy rows of this thread and no other source (no
+    /// ordinary, receipt, invitation or warning rows). A text `accept` reads it to show the
+    /// joined thread's opening lazy mail in its own output.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread: Option<ThreadId>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1210,6 +1216,17 @@ impl Command {
                 return Ok(());
             }
             _ => {}
+        }
+        if let Self::Inbox(v) | Self::InboxBatch(v) = self
+            && v.thread.is_some()
+        {
+            return Err("thread-scoped inbox is a v2 batch read only");
+        }
+        if let Self::InboxBatchV2(v) = self
+            && v.thread.is_some()
+            && v.page.cursor.is_some()
+        {
+            return Err("a thread-scoped inbox page has no continuation");
         }
         if let Some(page) = self.page() {
             page.validate()?;

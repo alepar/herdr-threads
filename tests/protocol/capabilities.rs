@@ -246,6 +246,7 @@ fn probe_inbox_batch() {
     use crate::protocol::commands::InboxQuery;
     let handler = daemon_handler(Uuid::new_v4(), Uuid::new_v4());
     let command = Command::InboxBatch(InboxQuery {
+        thread: None,
         claim: None,
         seat: Some(crate::protocol::ids::SeatId::new("seat-probe")),
         page: Default::default(),
@@ -275,6 +276,7 @@ fn capability_constants_are_stable() {
     assert_eq!(BINDING_CURSORS, "inbox.binding_cursors_v1");
     assert_eq!(BINDING_DIGEST, "attention.binding_digest_v1");
     assert_eq!(IN_TURN_OFFER, "inbox.in_turn_offer_v1");
+    assert_eq!(INBOX_THREAD_SCOPE, "inbox.thread_scope_v1");
     assert_eq!(
         ADVERTISED,
         &[
@@ -306,7 +308,8 @@ fn capability_constants_are_stable() {
             "delivery.presentation_v2",
             "inbox.binding_cursors_v1",
             "attention.binding_digest_v1",
-            "inbox.in_turn_offer_v1"
+            "inbox.in_turn_offer_v1",
+            "inbox.thread_scope_v1"
         ]
     );
 }
@@ -330,6 +333,7 @@ fn every_advertised_capability_has_a_handler() {
             INBOX_BATCH => probe_inbox_batch(),
             INBOX_BATCH_V2 => {
                 let command = Command::InboxBatchV2(crate::protocol::commands::InboxQuery {
+                    thread: None,
                     claim: None,
                     seat: Some(crate::protocol::ids::SeatId::new("seat-probe")),
                     page: Default::default(),
@@ -483,6 +487,7 @@ fn every_advertised_capability_has_a_handler() {
                 );
             }
             BINDING_CURSORS => probe_binding_cursors(),
+            INBOX_THREAD_SCOPE => probe_inbox_thread_scope(),
             IN_TURN_OFFER => {
                 // The in-turn flag and its invitations are on the wire only when set and
                 // round-trip; the store records them
@@ -729,6 +734,7 @@ fn bare_daemon_advertises_legacy_capabilities_without_v2_recorder() {
             "inbox.binding_cursors_v1",
             "attention.binding_digest_v1",
             "inbox.in_turn_offer_v1",
+            "inbox.thread_scope_v1",
             "invitation.confirmation_v1"
         ]
     );
@@ -2164,5 +2170,43 @@ fn presentation_capability_routes_use_configured_domain() {
         )
         .unwrap(),
         1
+    );
+}
+
+/// `inbox.thread_scope_v1` (ht-br0): `InboxQuery.thread` is on the wire only when set and
+/// round-trips; only a v2 first page may carry it. The store serves it
+/// (`binding_inbox::thread_scoped_page_lists_only_that_threads_lazy_rows`).
+fn probe_inbox_thread_scope() {
+    use crate::protocol::{
+        commands::InboxQuery,
+        ids::{SeatId, ThreadId},
+        pagination::PageRequest,
+    };
+    let query = |thread: Option<&str>, cursor: Option<&str>| InboxQuery {
+        seat: Some(SeatId::new("s")),
+        page: PageRequest {
+            cursor: cursor.map(str::to_owned),
+            ..PageRequest::default()
+        },
+        claim: None,
+        thread: thread.map(ThreadId::new),
+    };
+    let scoped = Command::InboxBatchV2(query(Some("t"), None));
+    assert!(scoped.validate().is_ok());
+    let json = serde_json::to_value(&scoped).unwrap();
+    assert_eq!(json.to_string().matches("\"thread\":\"t\"").count(), 1);
+    assert_eq!(serde_json::from_value::<Command>(json).unwrap(), scoped);
+    let plain = serde_json::to_value(Command::InboxBatchV2(query(None, None))).unwrap();
+    assert!(!plain.to_string().contains("\"thread\""), "{plain}");
+    assert!(Command::Inbox(query(Some("t"), None)).validate().is_err());
+    assert!(
+        Command::InboxBatch(query(Some("t"), None))
+            .validate()
+            .is_err()
+    );
+    assert!(
+        Command::InboxBatchV2(query(Some("t"), Some("v2:x")))
+            .validate()
+            .is_err()
     );
 }

@@ -1570,6 +1570,7 @@ fn required_then_independent_ordinary_acceptance_keeps_one_join_interval() {
     };
     assert!(threads.items.iter().any(|item| item.thread == thread));
     let inbox = crate::protocol::commands::Command::Inbox(crate::protocol::commands::InboxQuery {
+        thread: None,
         claim: None,
         seat: Some(SeatId::new("s2")),
         page: Default::default(),
@@ -2661,6 +2662,7 @@ fn managed_required_reattach_preserves_upgraded_ordinary_invitation_and_history(
     assert_eq!(conn.query_row("SELECT episode,joined_seq FROM membership_intervals WHERE thread_id=?1 AND seat_id='s2' AND left_seq IS NULL",
         [thread.as_str()], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))).unwrap(), interval);
     let inbox = crate::protocol::commands::Command::Inbox(crate::protocol::commands::InboxQuery {
+        thread: None,
         seat: Some(SeatId::new("s2")),
         page: Default::default(),
         claim: None,
@@ -9908,6 +9910,7 @@ fn invitation_rejection_delivers_reason_once_as_a_thread_warning() {
         &context,
         "i",
         &crate::protocol::commands::Command::InboxBatch(crate::protocol::commands::InboxQuery {
+            thread: None,
             seat: Some(SeatId::new("s1")),
             page: Default::default(),
             claim: None,

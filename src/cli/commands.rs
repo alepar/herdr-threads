@@ -2385,6 +2385,7 @@ fn parse_cli_in_registry(
         Top::Archive { thread } => CliAction::Mutation(MutationSpec::Archive(thread_id(thread)?)),
         Top::Reopen { thread } => CliAction::Mutation(MutationSpec::Reopen(thread_id(thread)?)),
         Top::Inbox(args) => CliAction::Wire(WireCommand::Inbox(InboxQuery {
+            thread: None,
             claim: None,
             seat: args.seat.map(|s| id(s, SeatId::parse)).transpose()?,
             page: page(args.page)?,

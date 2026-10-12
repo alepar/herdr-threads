@@ -428,6 +428,7 @@ fn public_lazy_continuation_refuses_real_old_episode_audience_loss() {
         .store
         .query(
             &Command::InboxBatchV2(InboxQuery {
+                thread: None,
                 seat: Some(f.b.seat.clone()),
                 claim: Some(f.b.clone()),
                 page: PageRequest {

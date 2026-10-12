@@ -546,6 +546,7 @@ fn inbox_counts_published_warning_and_receipt_in_same_snapshot() {
     INSERT INTO send_manifests(instance_id,preparation_id,message_id,thread_id,decision_seq,decision_at,base_sequence,interval_high_water,recipient_count,warning_count) VALUES ('i','p','m','t',10,10,1,0,1,1);
     UPDATE threads SET next_sequence=3 WHERE id='t';").unwrap();
     let q = Command::Inbox(InboxQuery {
+        thread: None,
         claim: None,
         seat: Some(SeatId::new("s")),
         page: page(None),
@@ -569,6 +570,7 @@ fn invitation_relevance_inbox_supplies_canonical_goal_without_joining() {
         &store,
         "i",
         &Command::InboxBatch(InboxQuery {
+            thread: None,
             claim: None,
             seat: Some(SeatId::new("s")),
             page: PageRequest::default(),
@@ -622,6 +624,7 @@ fn invitation_relevance_goal_yields_to_bounded_inspection_without_skipping() {
             &store,
             "i",
             &Command::InboxBatch(InboxQuery {
+                thread: None,
                 claim: None,
                 seat: Some(SeatId::new("s")),
                 page: PageRequest {
@@ -659,6 +662,7 @@ fn inbox_batch_displays_pending_body_and_only_complete_agent_receipt_is_candidat
         &store,
         "i",
         &Command::InboxBatch(InboxQuery {
+            thread: None,
             claim: None,
             seat: Some(SeatId::new("s")),
             page: page(None),
@@ -721,6 +725,7 @@ fn inbox_v2_current_agent_counts_registered_harnesses_only() {
             &store,
             "i",
             &Command::InboxBatchV2(InboxQuery {
+                thread: None,
                 seat: Some(SeatId::new("s")),
                 page: page(None),
                 claim: None,
@@ -764,6 +769,7 @@ fn inbox_batch_partial_body_has_cursor_and_no_candidate_until_final_chunk() {
             &store,
             "i",
             &Command::InboxBatch(InboxQuery {
+                thread: None,
                 claim: None,
                 seat: Some(SeatId::new("s")),
                 page: request.clone(),
@@ -821,6 +827,7 @@ fn inbox_batch_pages_101_receipts_without_acknowledging_or_skipping() {
             &store,
             "i",
             &Command::InboxBatch(InboxQuery {
+                thread: None,
                 claim: None,
                 seat: Some(SeatId::new("s")),
                 page: request.clone(),
@@ -871,6 +878,7 @@ fn inbox_batch_defers_later_arrivals_to_next_traversal() {
         &store,
         "i",
         &Command::InboxBatch(InboxQuery {
+            thread: None,
             claim: None,
             seat: Some(SeatId::new("s")),
             page: request.clone(),
@@ -889,6 +897,7 @@ fn inbox_batch_defers_later_arrivals_to_next_traversal() {
             &store,
             "i",
             &Command::InboxBatch(InboxQuery {
+                thread: None,
                 claim: None,
                 seat: Some(SeatId::new("s")),
                 page: request.clone(),
@@ -914,6 +923,7 @@ fn inbox_batch_defers_later_arrivals_to_next_traversal() {
         &store,
         "i",
         &Command::InboxBatch(InboxQuery {
+            thread: None,
             claim: None,
             seat: Some(SeatId::new("s")),
             page: PageRequest {
@@ -954,6 +964,7 @@ fn inbox_batch_finds_unprojected_active_warning_for_frozen_member() {
         &store,
         "i",
         &Command::InboxBatch(InboxQuery {
+            thread: None,
             claim: None,
             seat: Some(SeatId::new("s")),
             page: page(None),
@@ -996,6 +1007,7 @@ fn inbox_batch_keeps_open_and_clear_transition_visible_before_recipient_projecti
         &store,
         "i",
         &Command::InboxBatch(InboxQuery {
+            thread: None,
             claim: None,
             seat: Some(SeatId::new("s")),
             page: page(None),
@@ -1031,6 +1043,7 @@ fn inbox_batch_keeps_open_and_clear_transition_visible_before_recipient_projecti
             &store,
             "i",
             &Command::InboxBatch(InboxQuery {
+                thread: None,
                 claim: None,
                 seat: Some(SeatId::new("s")),
                 page: page(None),
@@ -1170,6 +1183,7 @@ fn warning_continuations_keep_published_identity_during_projection() {
         &store,
         "i",
         &Command::InboxBatch(InboxQuery {
+            thread: None,
             claim: None,
             seat: Some(SeatId::new("s")),
             page: inbox_page.clone(),
@@ -1211,6 +1225,7 @@ fn warning_continuations_keep_published_identity_during_projection() {
             &store,
             "i",
             &Command::InboxBatch(InboxQuery {
+                thread: None,
                 claim: None,
                 seat: Some(SeatId::new("s")),
                 page: inbox_page.clone(),
@@ -1267,6 +1282,7 @@ fn queued_close_hides_active_condition_without_inventing_clear_and_allows_reopen
             &store,
             "i",
             &Command::InboxBatch(InboxQuery {
+                thread: None,
                 claim: None,
                 seat: Some(SeatId::new("s")),
                 page: page(None),
@@ -1366,6 +1382,7 @@ fn inbox_clear_recipient_is_frozen_at_close_decision_before_projection() {
             &store,
             "i",
             &Command::InboxBatch(InboxQuery {
+                thread: None,
                 claim: None,
                 seat: Some(SeatId::new(seat)),
                 page: page(None),
@@ -1499,6 +1516,7 @@ fn inbox_pages_205_invited_threads_without_skipping() {
             &store,
             "i",
             &Command::Inbox(InboxQuery {
+                thread: None,
                 claim: None,
                 seat: Some(SeatId::new("s")),
                 page: request.clone(),
@@ -1538,6 +1556,7 @@ fn inbox_continuation_stales_when_published_receipt_enters_examined_thread() {
     db.execute_batch("COMMIT").unwrap();
     let q = |cursor| {
         Command::Inbox(InboxQuery {
+            thread: None,
             claim: None,
             seat: Some(SeatId::new("s")),
             page: page(cursor),
@@ -1573,6 +1592,7 @@ fn inbox_continuation_stales_on_new_invitation_in_examined_thread() {
     db.execute_batch("COMMIT").unwrap();
     let q = |cursor| {
         Command::Inbox(InboxQuery {
+            thread: None,
             claim: None,
             seat: Some(SeatId::new("s")),
             page: page(cursor),
@@ -1599,6 +1619,7 @@ fn inbox_continuation_stales_at_committed_retirement_fence() {
     db.execute_batch("COMMIT").unwrap();
     let q = |cursor| {
         Command::Inbox(InboxQuery {
+            thread: None,
             claim: None,
             seat: Some(SeatId::new("s")),
             page: page(cursor),
@@ -1639,6 +1660,7 @@ fn inbox_validation_pages_unrelated_publications_before_advancing() {
     db.execute_batch("COMMIT").unwrap();
     let make = |cursor| {
         Command::Inbox(InboxQuery {
+            thread: None,
             claim: None,
             seat: Some(SeatId::new("s")),
             page: page(cursor),
@@ -1734,6 +1756,7 @@ fn inbox_continuation_survives_projection_of_already_published_receipt() {
     first_page.limit = 1;
     let make = |page| {
         Command::Inbox(InboxQuery {
+            thread: None,
             claim: None,
             seat: Some(SeatId::new("s")),
             page,
@@ -1767,6 +1790,7 @@ fn inbox_continuation_ignores_hidden_preparation_for_same_seat() {
     db.execute_batch("COMMIT").unwrap();
     let make = |cursor| {
         Command::Inbox(InboxQuery {
+            thread: None,
             claim: None,
             seat: Some(SeatId::new("s")),
             page: page(cursor),
@@ -2469,6 +2493,7 @@ fn retired_seat_has_no_actionable_pending_invitation_before_cleanup() {
         &store,
         "i",
         &Command::Inbox(InboxQuery {
+            thread: None,
             claim: None,
             seat: Some(SeatId::new("s")),
             page: page(None),
@@ -4953,6 +4978,7 @@ fn adapter_inbox_batch_stale_generation_cannot_offer_display_ack() {
         &store,
         "i",
         &Command::InboxBatch(InboxQuery {
+            thread: None,
             claim: None,
             seat: Some(SeatId::new("s")),
             page: page(None),
@@ -5009,6 +5035,7 @@ fn adapter_inbox_batch_candidates_require_canonical_registered_agent() {
             &store,
             "i",
             &Command::InboxBatch(InboxQuery {
+                thread: None,
                 claim: None,
                 seat: Some(SeatId::new("s")),
                 page: page(None),
@@ -5114,6 +5141,7 @@ fn user_intent_inbox_canonical_claims_survive_full_and_chunked_output() {
                         &store,
                         "i",
                         &Command::InboxBatch(InboxQuery {
+                            thread: None,
                             claim: None,
                             seat: Some(SeatId::new("s")),
                             page: request.clone(),
@@ -5590,6 +5618,7 @@ fn human_guidance_canonical_requesting_caller_before_page_fit() {
         },
     };
     let command = Command::Inbox(InboxQuery {
+        thread: None,
         claim: None,
         seat: Some(SeatId::new("s")),
         page: PageRequest {
@@ -6010,6 +6039,7 @@ fn v2_invitation_goal_and_revision_fit_or_yield_to_usable_pending_inspection() {
             &store,
             "i",
             &Command::InboxBatchV2(InboxQuery {
+                thread: None,
                 seat: Some(SeatId::new("s")),
                 claim: None,
                 page: PageRequest {

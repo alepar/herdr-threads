@@ -630,6 +630,7 @@ fn cli_inbox_prints_first_contact_once() {
         context: ContinuationContext::default(),
     };
     let query = InboxQuery {
+        thread: None,
         seat: None,
         page: PageRequest::default(),
         claim: None,

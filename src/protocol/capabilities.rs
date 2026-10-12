@@ -63,6 +63,11 @@ pub const BINDING_DIGEST: &str = "attention.binding_digest_v1";
 /// (ht-705). Nothing is settled or accepted.
 pub const IN_TURN_OFFER: &str = "inbox.in_turn_offer_v1";
 
+/// Thread-scoped lazy page: `InboxQuery.thread` on an `InboxBatchV2` first page selects only the
+/// reader's unread lazy rows of that thread (ht-br0: a text `accept` shows the joined thread's
+/// opening lazy mail in its own output).
+pub const INBOX_THREAD_SCOPE: &str = "inbox.thread_scope_v1";
+
 pub const INBOX_BATCH: &str = "inbox.batch_v1";
 pub const ATTENTION_NOTICE_DELIVERY: &str = "attention.notice_delivery_v1";
 
@@ -117,6 +122,7 @@ pub const ADVERTISED: &[&str] = &[
     BINDING_CURSORS,
     BINDING_DIGEST,
     IN_TURN_OFFER,
+    INBOX_THREAD_SCOPE,
 ];
 
 /// The capability set a daemon advertised to this client session. The empty set

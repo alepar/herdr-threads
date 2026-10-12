@@ -166,11 +166,19 @@ fn send_mode(
     body: &str,
     delivery_mode: crate::protocol::commands::DeliveryMode,
 ) -> MessageId {
+    send_in(fx, "t", body, delivery_mode)
+}
+fn send_in(
+    fx: &mut Fx,
+    thread: &str,
+    body: &str,
+    delivery_mode: crate::protocol::commands::DeliveryMode,
+) -> MessageId {
     fx.sends += 1;
     let request = SendMessage {
         delivery_mode,
         user_intent: None,
-        thread: ThreadId::new("t"),
+        thread: ThreadId::new(thread),
         body: body.into(),
         invited_recipients: vec![],
         deadline_millis: None,
@@ -236,10 +244,15 @@ enum Row {
 }
 
 fn page(fx: &Fx, claim: Option<&CallerClaim>) -> Vec<Row> {
+    page_in(fx, claim, None)
+}
+/// `page`, thread-scoped (`InboxQuery.thread`, ht-br0) when `thread` is set.
+fn page_in(fx: &Fx, claim: Option<&CallerClaim>, thread: Option<&str>) -> Vec<Row> {
     let CommandResult::InboxBatchV2(page) = query_with_output(
         &fx.context,
         "i",
         &Command::InboxBatchV2(InboxQuery {
+            thread: thread.map(ThreadId::new),
             claim: claim.cloned(),
             seat: Some(SeatId::new("b")),
             page: PageRequest {
@@ -795,6 +808,7 @@ fn warning_refs(fx: &Fx, claim: &CallerClaim) -> Vec<String> {
         &fx.context,
         "i",
         &Command::InboxBatchV2(InboxQuery {
+            thread: None,
             claim: Some(claim.clone()),
             seat: Some(SeatId::new("b")),
             page: PageRequest {
@@ -872,4 +886,83 @@ fn bound_warning_cutoff_is_the_reading_bindings_own_offer_frontier() {
         "nb1's frontier covers it"
     );
     assert_eq!(warning_refs(&fx, &sub2), ["warning"]);
+}
+
+// ht-br0: a thread-scoped page (`InboxQuery.thread`) lists only the reader's unread lazy rows of
+// that thread: no lazy row of another thread, no ordinary message, receipt or invitation. The
+// unscoped page is unchanged. A scoped request never resumes a continuation cursor.
+#[test]
+fn thread_scoped_page_lists_only_that_threads_lazy_rows() {
+    let mut fx = fx("binding-inbox-thread-scope");
+    fx.conn
+        .execute(
+            "INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at) VALUES ('t2','i','topic2','goal',0,0)",
+            [],
+        )
+        .unwrap();
+    for seat in ["a", "b"] {
+        fx.conn
+            .execute(
+                "INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t2',?1,'joined')",
+                [seat],
+            )
+            .unwrap();
+        fx.conn.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('t2',?1,1,1)", [seat]).unwrap();
+    }
+    use crate::protocol::commands::DeliveryMode::{Lazy, Ordinary};
+    let lazy_t = send_lazy(&mut fx, "lazy in t");
+    // The lazy row precedes the ordinary one: the binding-scoped page stops at the first unread
+    // ordinary row (`thread_scoped_page_stops_at_the_first_unread_ordinary_row`).
+    let lazy_t2 = send_in(&mut fx, "t2", "lazy in t2", Lazy);
+    let ordinary_t2 = send_in(&mut fx, "t2", "ordinary in t2", Ordinary);
+    let lazy = |id: &MessageId| Row::Lazy(id.as_str().to_owned());
+    let b1 = claim_b1();
+    assert_eq!(page_in(&fx, Some(&b1), Some("t2")), [lazy(&lazy_t2)]);
+    assert_eq!(
+        page_in(&fx, None, Some("t2")),
+        [lazy(&lazy_t2)],
+        "seat form"
+    );
+    assert_eq!(page_in(&fx, Some(&b1), Some("t")), [lazy(&lazy_t)]);
+    let all = page(&fx, Some(&b1));
+    for row in [lazy(&lazy_t), lazy(&lazy_t2), msg(&ordinary_t2, true)] {
+        assert!(all.contains(&row), "{row:?} in {all:?}");
+    }
+    let refused = query_with_output(
+        &fx.context,
+        "i",
+        &Command::InboxBatchV2(InboxQuery {
+            thread: Some(ThreadId::new("t2")),
+            claim: Some(b1),
+            seat: Some(SeatId::new("b")),
+            page: PageRequest {
+                limit: 50,
+                max_bytes: 60_000,
+                cursor: Some("v2:anything".into()),
+            },
+        }),
+        &OutputSpec::default(),
+        &budget(),
+    )
+    .unwrap_err();
+    assert_eq!(refused.code, ErrorCode::InvalidRequest, "{refused:?}");
+}
+
+// ht-br0: the binding-scoped thread page stops at the binding's first unread ordinary row (the
+// display walk's stop): a lazy row above it could be shown but not passed, so the scoped page
+// leaves it to the binding's unscoped stream. The seat form is unchanged.
+#[test]
+fn thread_scoped_page_stops_at_the_first_unread_ordinary_row() {
+    let mut fx = fx("binding-inbox-thread-scope-stop");
+    use crate::protocol::commands::DeliveryMode::Ordinary;
+    let before = send_lazy(&mut fx, "lazy before");
+    let ordinary = send_in(&mut fx, "t", "ordinary between", Ordinary);
+    let after = send_lazy(&mut fx, "lazy after");
+    let lazy = |id: &MessageId| Row::Lazy(id.as_str().to_owned());
+    let b1 = claim_b1();
+    assert_eq!(page_in(&fx, Some(&b1), Some("t")), [lazy(&before)]);
+    let all = page(&fx, Some(&b1));
+    for row in [lazy(&before), msg(&ordinary, true), lazy(&after)] {
+        assert!(all.contains(&row), "{row:?} in {all:?}");
+    }
 }
