@@ -404,10 +404,8 @@ class Recipient:
         argv = ["send"] + (["--seat", self.seat] if direct else [self.group]) + ["--body", body]
         argv += {"lazy": ["--lazy"], "nudge": ["--nudge"], "ack": ["--require-ack", self.seat]}[mode]
         data = self.coord(*argv)
-        # `send THREAD` wraps the id ({"result":{"data":ID}}); direct `send --seat` prints {"message":ID,"thread":..}.
-        mid = (data.get("result") or {}).get("data") if isinstance((data.get("result") or {}).get("data"), str) \
-            else data.get("message")
-        if not mid:
+        mid = (data.get("result") or {}).get("data")
+        if not isinstance(mid, str) or not mid:
             raise RuntimeError(f"send returned no message id: {data}")
         return mid
 
