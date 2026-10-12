@@ -1483,6 +1483,257 @@ fn fit_inbox_read<C: LocalClient + ?Sized>(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReadByteSlot {
+    Value(usize),
+    Inline(usize),
+    Insert(usize),
+}
+
+fn invalid_read_continuation() -> ApiError {
+    ApiError::store_corrupt("invalid read continuation budget")
+}
+
+/// Locate only declared option slots. Known generated positional/string fields
+/// are data even when their bytes look like flags. A shadow vector lets the
+/// existing grammar validate option identities/conflicts/numeric values without
+/// decoding opaque cursors or changing any returned data token. This does not
+/// repair inherited generated argv whose literal spellings need CLI escaping.
+fn read_continuation_byte_slot(
+    command: &Command,
+    argv: &[String],
+    cursor: Option<&str>,
+    prefer_generated_literal: bool,
+) -> Result<ReadByteSlot, ApiError> {
+    use crate::protocol::pagination::{DEFAULT_PAGE_BYTES, DEFAULT_PAGE_LIMIT, MAX_PAGE_BYTES};
+    let (action, selector, limit, allow_default) = match command {
+        Command::Message(q) => ("body", q.message.as_str(), None, false),
+        Command::History(q) => ("read", q.thread.as_str(), Some(q.page.limit), true),
+        Command::Search(q) => ("search", q.literal.as_str(), Some(q.page.limit), false),
+        _ => return Err(invalid_read_continuation()),
+    };
+    let expected_thread = match command {
+        Command::Search(q) => q.thread.as_ref().map(|thread| thread.as_str()),
+        _ => None,
+    };
+    let effective = read_byte_bound(command);
+    let (_, retained) =
+        actor_route::split_actor_argv(argv).map_err(|_| invalid_read_continuation())?;
+    let removed_actor = argv.len() - retained.len();
+    let command_index = actor_route::command_index(
+        &retained
+            .iter()
+            .map(std::ffi::OsString::from)
+            .collect::<Vec<_>>(),
+    )
+    .ok_or_else(invalid_read_continuation)?;
+    if retained.get(command_index).map(String::as_str) != Some(action) {
+        return Err(invalid_read_continuation());
+    }
+    let mut shadow = retained.clone();
+    let mut slot = None;
+    let mut selector_seen = false;
+    let mut cursor_seen = false;
+    let mut offset_seen = false;
+    let mut thread_seen = false;
+    let mut delimiter = None;
+    let mut routes = std::collections::HashMap::new();
+    let mut index = 1;
+    while index < retained.len() {
+        if index == command_index {
+            index += 1;
+            continue;
+        }
+        let token = retained[index].as_str();
+        if delimiter.is_some()
+            || (prefer_generated_literal && index == command_index + 1 && token == selector)
+            || !token.starts_with('-')
+        {
+            if index <= command_index || selector_seen || token != selector {
+                return Err(invalid_read_continuation());
+            }
+            shadow[index] = "continuation-literal".into();
+            selector_seen = true;
+            index += 1;
+            continue;
+        }
+        if token == "--" {
+            delimiter = Some(index + removed_actor);
+            index += 1;
+            continue;
+        }
+        let (flag, inline) = token
+            .split_once('=')
+            .map_or((token, None), |(flag, value)| (flag, Some(value)));
+        if matches!(flag, "--json" | "--human" | "--machine") {
+            index += 1;
+            continue;
+        }
+        // Generated read continuations carry routing/output globals only.
+        // Identity selectors are not emitted and need semantic admission beyond
+        // clap structure, so reject them rather than sanitize their values.
+        let string_value = matches!(
+            flag,
+            "--state-dir" | "--host-endpoint" | "--cursor" | "--thread"
+        );
+        if !string_value
+            && !matches!(
+                flag,
+                "--max-bytes" | "--limit" | "--offset" | "--recent" | "--after" | "--before"
+            )
+        {
+            return Err(invalid_read_continuation());
+        }
+        let value_index = index + usize::from(inline.is_none());
+        let value = inline
+            .or_else(|| retained.get(value_index).map(String::as_str))
+            .ok_or_else(invalid_read_continuation)?;
+        if flag == "--max-bytes" {
+            let value: u32 = value.parse().map_err(|_| invalid_read_continuation())?;
+            if slot.is_some() || value != effective || !(256..=MAX_PAGE_BYTES).contains(&value) {
+                return Err(invalid_read_continuation());
+            }
+            slot = Some(if inline.is_some() {
+                ReadByteSlot::Inline(index + removed_actor)
+            } else {
+                ReadByteSlot::Value(value_index + removed_actor)
+            });
+        }
+        if flag == "--cursor" {
+            if cursor_seen || cursor != Some(value) {
+                return Err(invalid_read_continuation());
+            }
+            cursor_seen = true;
+        }
+        if flag == "--offset" {
+            if offset_seen {
+                return Err(invalid_read_continuation());
+            }
+            offset_seen = true;
+        }
+        if flag == "--thread" {
+            if action != "search"
+                || thread_seen
+                || expected_thread != Some(value)
+                || crate::protocol::ids::ThreadId::parse(value).is_err()
+            {
+                return Err(invalid_read_continuation());
+            }
+            thread_seen = true;
+        }
+        if matches!(flag, "--state-dir" | "--host-endpoint")
+            && (value.is_empty()
+                || value.len() > 1024
+                || value.contains('\0')
+                || routes
+                    .insert(flag, value)
+                    .is_some_and(|previous| previous != value))
+        {
+            return Err(invalid_read_continuation());
+        }
+        if string_value {
+            if inline.is_some() {
+                shadow[index] = format!("{flag}=continuation-literal");
+            } else {
+                shadow[value_index] = "continuation-literal".into();
+            }
+        }
+        index += if inline.is_some() { 1 } else { 2 };
+    }
+    if !selector_seen
+        || !(cursor_seen || (action == "body" && offset_seen))
+        || thread_seen != expected_thread.is_some()
+    {
+        return Err(invalid_read_continuation());
+    }
+    let matches = commands::command_for_registry(crate::harness::registry::builtins())
+        .try_get_matches_from(shadow)
+        .map_err(|_| invalid_read_continuation())?;
+    let (parsed_action, selected) = matches.subcommand().ok_or_else(invalid_read_continuation)?;
+    if parsed_action != action {
+        return Err(invalid_read_continuation());
+    }
+    if let Some(limit) = limit
+        && selected
+            .get_one::<u16>("limit")
+            .copied()
+            .unwrap_or(DEFAULT_PAGE_LIMIT)
+            != limit
+    {
+        return Err(invalid_read_continuation());
+    }
+    if action == "read"
+        && (selected.get_one::<u16>("recent").is_some()
+            || selected.get_one::<u64>("after").is_some()
+            || selected.get_one::<u64>("before").is_some())
+    {
+        return Err(invalid_read_continuation());
+    }
+    match slot {
+        Some(slot) => Ok(slot),
+        None if allow_default && effective == DEFAULT_PAGE_BYTES => {
+            Ok(ReadByteSlot::Insert(delimiter.unwrap_or(argv.len())))
+        }
+        None => Err(invalid_read_continuation()),
+    }
+}
+
+/// Restore only successful typed continuations obtained under an internal
+/// reduced bound. No cursor decoding, result re-selection or peer-text rewrite.
+pub(crate) fn normalize_read_continuation_budget(
+    command: &Command,
+    result: &mut CommandResult,
+    invocation_max_bytes: u32,
+) -> Result<(), ApiError> {
+    if read_byte_bound(command) >= invocation_max_bytes {
+        return Ok(());
+    }
+    use crate::protocol::results::MessageContent;
+    let (next, cursor): (&mut Option<Vec<String>>, &Option<String>) = match (command, result) {
+        (Command::Message(_), CommandResult::Message(details)) => match &mut details.content {
+            MessageContent::Ordinary {
+                body_next_argv,
+                body_next_cursor,
+                ..
+            } => (body_next_argv, body_next_cursor),
+            MessageContent::System { .. } => return Ok(()),
+        },
+        (Command::History(_), CommandResult::History(page)) => {
+            (&mut page.next_argv, &page.next_cursor)
+        }
+        (Command::Search(_), CommandResult::Search(page)) => {
+            (&mut page.matches.next_argv, &page.matches.next_cursor)
+        }
+        _ => return Ok(()),
+    };
+    let Some(argv) = next else {
+        return Ok(());
+    };
+    let cursor = cursor.as_deref();
+    // A leading option-looking generated literal and an explicit delimiter are
+    // both legitimate data placements. Accept only one unambiguous option slot.
+    let mut found = None;
+    for generated in [true, false] {
+        if let Ok(slot) = read_continuation_byte_slot(command, argv, cursor, generated) {
+            if found.is_some_and(|previous| previous != slot) {
+                return Err(invalid_read_continuation());
+            }
+            found = Some(slot);
+        }
+    }
+    match found.ok_or_else(invalid_read_continuation)? {
+        ReadByteSlot::Value(index) => argv[index] = invocation_max_bytes.to_string(),
+        ReadByteSlot::Inline(index) => argv[index] = format!("--max-bytes={invocation_max_bytes}"),
+        ReadByteSlot::Insert(index) => {
+            drop(argv.splice(
+                index..index,
+                ["--max-bytes".into(), invocation_max_bytes.to_string()],
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Reserve annotation bytes by reselecting the same read at a smaller bound.
 /// The daemon, rather than the CLI, supplies any body/page continuation: never
 /// trim printed body bytes or synthesize a cursor after selection.
@@ -1495,8 +1746,15 @@ fn fit_annotated_read<C: LocalClient + ?Sized>(
 ) -> Result<(CommandResult, output::ReadModes), RunError> {
     let max_bytes = read_byte_bound(&command);
     loop {
-        let modes = output::ReadModes::lookup(&result, spec, client, &budget())?;
-        if modes.is_empty() {
+        let refitted = read_byte_bound(&command) != max_bytes;
+        if refitted {
+            normalize_read_continuation_budget(&command, &mut result, max_bytes)?;
+        }
+        let mut modes = output::ReadModes::lookup(&result, spec, client, &budget())?;
+        if refitted {
+            modes.require_final_bound();
+        }
+        if modes.is_empty() && !refitted {
             return Ok((result, modes));
         }
         let len = modes.annotate(output::emitted_bytes(&result, spec)?).len();

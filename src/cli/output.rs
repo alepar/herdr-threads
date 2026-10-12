@@ -312,6 +312,9 @@ pub fn write_selected<W: Write>(
 #[derive(Default)]
 pub(crate) struct ReadModes {
     lazy: Vec<crate::protocol::ids::MessageId>,
+    // An actual refit must retain its invocation bound through final decorations,
+    // including when the newly selected page has no Lazy rows.
+    enforce_final_bound: bool,
 }
 
 impl ReadModes {
@@ -402,11 +405,18 @@ impl ReadModes {
                     .map(|mode| mode.message),
             );
         }
-        Ok(Self { lazy })
+        Ok(Self {
+            lazy,
+            ..Self::default()
+        })
     }
 
     pub(crate) fn is_empty(&self) -> bool {
         self.lazy.is_empty()
+    }
+
+    pub(crate) fn require_final_bound(&mut self) {
+        self.enforce_final_bound = true;
     }
 
     /// A service-generated row preceding the unchanged selected encoding.
@@ -431,7 +441,7 @@ impl ReadModes {
         writer: &mut W,
     ) -> Result<(), OutputError> {
         let bytes = self.annotate(bytes);
-        if !self.is_empty() && bytes.len() > max_bytes as usize {
+        if (self.enforce_final_bound || !self.is_empty()) && bytes.len() > max_bytes as usize {
             return Err(OutputError::Api(
                 ApiError::invalid_budget("annotated read exceeds byte budget")
                     .with_required_minimum_bytes(bytes.len().try_into().unwrap_or(u32::MAX)),
