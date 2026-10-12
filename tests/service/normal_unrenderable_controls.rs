@@ -53,7 +53,7 @@ fn normal_unrenderable_head_control(mode: crate::protocol::commands::DeliveryMod
     // Lazy has one continuation command; Ordinary has two. Both exceed
     // 65536 before any metadata, so an empty page cannot admit this head.
 
-    let mut later = std::collections::BTreeMap::new();
+    let mut later: std::collections::BTreeMap<MessageId, String> = std::collections::BTreeMap::new();
     let mut seen = std::collections::BTreeSet::new();
     let mut quiet = false;
     for pull_number in 0..16 {
