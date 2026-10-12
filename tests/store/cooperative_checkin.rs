@@ -2053,7 +2053,7 @@ fn open_warning_dedup_invitation_in(
 /// event appender), source marker, open condition and attribution job the
 /// v24 decision wrote, then the completed attribution of the only recipient
 /// (the thread has no members; the affected invitee is attributed at the
-/// event's sequence) with both jobs complete.
+/// event's sequence), its wake-work bump, with both jobs complete.
 fn attributed_v24_warning_dedup_invitation(conn: &mut Connection) -> MessageId {
     let tx = conn.transaction().unwrap();
     let invitation = InvitationId::new("dedup-invitation-1");
@@ -2109,6 +2109,8 @@ fn attributed_v24_warning_dedup_invitation(conn: &mut Connection) -> MessageId {
         rusqlite::params![warning.as_str(), event_seq],
     )
     .unwrap();
+    // v24 `attribute()` bumped the recipient's wake work for an actionable, unoffered warning.
+    tx.execute("INSERT INTO wake_work(seat_id,attention_version) VALUES('s',1) ON CONFLICT(seat_id) DO UPDATE SET attention_version=attention_version+1", []).unwrap();
     // intervals -> affected -> finalize: three worker units.
     tx.execute("UPDATE warning_jobs SET phase='complete',status='complete',cursor_ordinal=?2,processed_units=3,last_error=NULL WHERE warning_id=?1", rusqlite::params![warning.as_str(), interval_high_water]).unwrap();
     tx.execute("UPDATE work_jobs SET position=high_water,completed_units=3,status='complete',last_error=NULL,completed_at=100 WHERE id=?1", [format!("work:{}", warning.as_str())]).unwrap();

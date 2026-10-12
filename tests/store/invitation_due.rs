@@ -625,7 +625,7 @@ fn invitation_backlog_restart_reconstructs_progress_without_recipient_activity()
 fn invitation_confirmation_prior_schema_upgrade_preserves_exact_open_origins() {
     // The genuine prefix just before invitation warning origin (42).
     let path =
-        std::env::temp_dir().join(format!("invitation-origin-v33-{}.db", uuid::Uuid::new_v4()));
+        std::env::temp_dir().join(format!("invitation-origin-v41-{}.db", uuid::Uuid::new_v4()));
     let conn = Connection::open(&path).unwrap();
     conn.pragma_update(None, "foreign_keys", "ON").unwrap();
     let mut migrations: Vec<_> =

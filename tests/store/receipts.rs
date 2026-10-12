@@ -4866,8 +4866,17 @@ fn receipt_discovery_four_historical_streams_charge_every_visit_and_reset_once()
 
 #[test]
 fn receipt_discovery_upgrade_combined_reset_warning_and_cursors_roll_back_together() {
-    // Main36 shifts the genuine post-send-time, pre-backfill prefix to 38.
-    let (context, mut db, _) = receipt_discovery_historical(38);
+    // f93279dd wrote this at its genuine 34: the populated prefix just before receipt
+    // warning origins, deadline-backfill capture already behind it; composed, that is 42
+    // (before 43). 38 (post-send-time, pre-backfill, so the seeded receipt also enters
+    // migration 40's capture) is kept as extra coverage.
+    for prefix in [42, 38] {
+        combined_reset_warning_and_cursors_roll_back_together_from(prefix);
+    }
+}
+
+fn combined_reset_warning_and_cursors_roll_back_together_from(prefix: usize) {
+    let (context, mut db, _) = receipt_discovery_historical(prefix);
     discovery_receipt(&db, "rollback-source", 1, 500);
     db.execute("INSERT INTO receipt_state(message_id,seat_id,state,ack_required,deadline_at) VALUES ('rollback-source','c','pending',1,5000)",[]).unwrap();
     db.execute("UPDATE threads SET next_sequence=2 WHERE id='t'", [])
