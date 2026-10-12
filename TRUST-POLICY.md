@@ -767,9 +767,11 @@ deciding-transaction step, `read_cursors::init_for_join`, in this order:
 
 1. *Seat-wide pending population.* Every `lazy_recipients` row of the seat in that thread whose published
    message's sequence is greater than the seat's furthest cursor there (the highest cursor any binding of the
-   seat holds in the thread, open or ended; 0 when none) is marked seat-pending (`legacy_pending`, the same
-   flag rows carried from before V34 use). Nothing else selects the population: not membership intervals, not
-   when the row was addressed, and not the row's historical `state`. Typically these are a direct send's
+   seat holds in the thread, open or ended; 0 when none) and that no completion has displayed (`state` is
+   still `pending`) is marked seat-pending (`legacy_pending`, the same flag rows carried from before V34 use).
+   So a row displayed out of order while a cursor was held behind an undisplayed one (a truncated delivery)
+   is never shown again after a join. Nothing else selects the population: not membership intervals and not
+   when the row was addressed. Typically these are a direct send's
    frozen invited target rows (A8), plus joined-era rows no binding has passed yet.
 2. *Join-head frontier.* Every open binding of the seat, any role, gets a cursor at the thread head; a higher
    cursor it already has is kept.

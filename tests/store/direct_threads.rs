@@ -1101,3 +1101,108 @@ fn manual_two_member_channel_is_not_adopted_and_normal_send_is_unchanged() {
     drop(db);
     let _ = std::fs::remove_file(path);
 }
+
+/// ht-8y9: a join never marks seat-pending a lazy row some completion already displayed. The
+/// binding displays `shown` while its cursor is held behind `held` (an earlier row no completion
+/// covered, as a truncated delivery leaves it), so `shown` is past the seat's furthest cursor at
+/// the rejoin; only `held` becomes seat-pending.
+#[test]
+fn rejoin_never_reshows_a_lazy_row_displayed_out_of_order() {
+    let (store, db, path) = store_fixture();
+    let pair = thread(ensure(&store, "s1", "s2", "ensure").unwrap());
+    accept_pair(&store, &db, &pair, "s2", "accept");
+    send_direct(&store, &pair, DeliveryMode::Lazy, "held");
+    send_direct(&store, &pair, DeliveryMode::Lazy, "shown");
+    let message = |body: &str| -> (MessageId, i64) {
+        db.query_row(
+            "SELECT id,sequence FROM messages WHERE body=?1",
+            [body],
+            |r| Ok((MessageId::new(r.get::<_, String>(0)?), r.get(1)?)),
+        )
+        .unwrap()
+    };
+    let ((held, held_seq), (shown, _)) = (message("held"), message("shown"));
+    let binding: String = db
+        .query_row(
+            "SELECT binding_id FROM occupant_bindings WHERE seat_id='s2' AND ended_at IS NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let binding = BindingId::parse(binding).unwrap();
+    let tx = db.unchecked_transaction().unwrap();
+    crate::store::lazy_delivery::complete_for_binding(
+        &tx,
+        "i",
+        &SeatId::new("s2"),
+        Some(&binding),
+        std::slice::from_ref(&shown),
+    )
+    .unwrap();
+    tx.commit().unwrap();
+    let cursor = crate::store::read_cursors::cursor_for(&db, &binding, &pair)
+        .unwrap()
+        .unwrap();
+    assert!(
+        cursor < u64::try_from(held_seq).unwrap(),
+        "cursor held behind `held`"
+    );
+    let leave = Leave {
+        thread: pair.clone(),
+        operation: OperationId::new("leave"),
+        claim: claim("s2"),
+    };
+    let hash = cooperative_payload_hash("leave", &leave).unwrap();
+    store
+        .mutate(
+            PermitMutation::Leave(leave),
+            permit(
+                "s2",
+                "leave",
+                ObligationRef::Control(pair.clone()),
+                hash,
+                100,
+            ),
+            &budget(),
+        )
+        .unwrap();
+    let invite = Invite {
+        thread: pair.clone(),
+        seat: SeatId::new("s2"),
+        deadline_millis: None,
+        operation: OperationId::new("reinvite"),
+        claim: claim("s1"),
+    };
+    let hash = cooperative_payload_hash("invite", &invite).unwrap();
+    store
+        .mutate(
+            PermitMutation::Invite(invite),
+            permit(
+                "s1",
+                "reinvite",
+                ObligationRef::Control(pair.clone()),
+                hash,
+                100,
+            ),
+            &budget(),
+        )
+        .unwrap();
+    accept_pair(&store, &db, &pair, "s2", "reaccept");
+    let pending = |id: &MessageId| -> i64 {
+        db.query_row(
+            "SELECT legacy_pending FROM lazy_recipients WHERE message_id=?1 AND seat_id='s2'",
+            [id.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    assert_eq!(
+        pending(&held),
+        1,
+        "the undisplayed row stays pending for the seat"
+    );
+    assert_eq!(pending(&shown), 0, "the displayed row is not shown again");
+    drop(store);
+    drop(db);
+    let _ = std::fs::remove_file(path);
+}

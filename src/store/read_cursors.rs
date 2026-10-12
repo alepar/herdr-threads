@@ -136,14 +136,15 @@ pub fn seed_preview(db: &Connection, seat: &SeatId, thread: &ThreadId) -> Result
 /// A seat joined `thread`: every open binding of the seat gets a cursor at the join point (the
 /// thread head), keeping a higher cursor it already has. Returns the number of bindings touched.
 ///
-/// Lazy messages addressed to the seat past its furthest-read point (a direct send's frozen
-/// invited target, ht-8y9) stay pending at seat level instead: they take the `legacy_pending`
+/// Lazy messages addressed to the seat past its furthest-read point that no completion has
+/// displayed (a direct send's frozen invited target, ht-8y9; a row displayed out of order while a
+/// cursor was held is never shown again) stay pending at seat level instead: they take the `legacy_pending`
 /// path, unread for every top-level binding until one displays them. A cursor cannot do this,
 /// because ordinary messages to an invitee interleave with them and were already offered as
 /// pending receipts before the join; they must not be offered again.
 pub fn init_for_join(tx: &Connection, seat: &SeatId, thread: &ThreadId) -> Result<usize, ApiError> {
     tx.execute(
-        "UPDATE lazy_recipients SET legacy_pending=1 WHERE seat_id=?1 AND thread_id=?2 AND legacy_pending=0 \
+        "UPDATE lazy_recipients SET legacy_pending=1 WHERE seat_id=?1 AND thread_id=?2 AND legacy_pending=0 AND state='pending' \
          AND message_id IN (SELECT m.id FROM messages m WHERE m.thread_id=?2 AND m.sequence>COALESCE(\
            (SELECT MAX(c.seq) FROM binding_cursors c JOIN occupant_bindings o ON o.binding_id=c.binding_id \
              WHERE o.seat_id=?1 AND c.thread_id=?2),0))",
