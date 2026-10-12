@@ -450,10 +450,20 @@ class Recipient:
             time.sleep(gap)
         self.wait_idle()
         tag = f"{case} {self.run.run_id}"
-        self.run.herdr("agent", "prompt", self.pane, BUSY_PROMPT.format(tag=tag))
-        end = time.time() + 30
-        while self.status() in IDLE and time.time() < end:
-            time.sleep(0.25)
+        # Codex can swallow a prompt submitted right after a turn ends: confirm the busy turn started, retry once,
+        # and never measure a "busy" case against an idle recipient.
+        for _attempt in range(2):
+            self.run.herdr("agent", "prompt", self.pane, BUSY_PROMPT.format(tag=tag))
+            end = time.time() + 15
+            while self.status() in IDLE and time.time() < end:
+                time.sleep(0.25)
+            if self.status() not in IDLE:
+                break
+            time.sleep(2)
+        else:
+            self.run.record({"case": case, "harness": self.harness, "wake_on": self.wake_on, "recipient": self.name,
+                             "result": "BLOCKED", "checks": {"reason": "busy prompt not taken twice"}})
+            return
         time.sleep(3)  # well inside `sleep 12`: the agent is running a tool
         busy_at_send = self.status()
         checks = {"busy_at_send": busy_at_send}
