@@ -95,3 +95,5 @@ SQLite work measurement: outer VmStep hid nested ALTER validation. Actual linked
 
 - [2026-10-12 successor] Main independently reproduced previously filtered queue-retention finding as >2MB model append and requested bounded successor with narrowed merged-driver/docs findings — formal convergence and filtered scope did not establish merge readiness or a production waiver.
 - [2026-10-12 successor] bd create rejects simultaneous --id and --parent although both appear in help — retried correctly with parent-assigned ids20–22; no duplicate tasks created.
+
+- [2026-10-12 successor] A completion follow-up was queued with send_message on an idle native worker, so it did not resume — corrected to followup_task; avoidable coordinator idle wait, no source/test result lost.
