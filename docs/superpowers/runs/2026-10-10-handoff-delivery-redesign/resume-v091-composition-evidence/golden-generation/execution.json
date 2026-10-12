@@ -1,0 +1,90 @@
+{
+  "head": "8d37746d98e6bd766761e5cff82018ebf579643b",
+  "tree": "147212b87330382ac3f2541457a0c5941dfffe53",
+  "run_id": "573e1e9a-b5aa-4dd4-a03b-1aedc8a9516b",
+  "purpose": "controlled actual fixture generation, not regression GREEN",
+  "commands": [
+    {
+      "argv": [
+        "nice",
+        "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target/debug/deps/combined-ccdf0e34a69a440f",
+        "--exact",
+        "golden_surfaces::help_texts",
+        "--nocapture"
+      ],
+      "exit": 0,
+      "seconds": 0.9512533750385046
+    },
+    {
+      "argv": [
+        "nice",
+        "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target/debug/deps/combined-ccdf0e34a69a440f",
+        "--exact",
+        "golden_surfaces::setup_reports",
+        "--nocapture"
+      ],
+      "exit": 0,
+      "seconds": 1.6477957089664415
+    },
+    {
+      "argv": [
+        "nice",
+        "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target/debug/deps/combined-ccdf0e34a69a440f",
+        "--exact",
+        "golden_surfaces::setup_status_reports",
+        "--nocapture"
+      ],
+      "exit": 0,
+      "seconds": 3.1341810420854017
+    },
+    {
+      "argv": [
+        "nice",
+        "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target/debug/deps/combined-ccdf0e34a69a440f",
+        "--exact",
+        "golden_surfaces::hook_stdout_per_event",
+        "--nocapture"
+      ],
+      "exit": 0,
+      "seconds": 0.417731957975775
+    }
+  ],
+  "list": {
+    "exit": 0,
+    "seconds": 6.520885416073725
+  },
+  "binary": {
+    "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target/debug/deps/combined-ccdf0e34a69a440f",
+    "sha256": "bcb55c9d9e9f989a0a5e330db5e49e0a60374f9f302a2a756240ed2ef604e8a4"
+  },
+  "leak_exit": 0,
+  "changed_paths": [
+    "tests/fixtures/golden/help/handoff.txt",
+    "tests/fixtures/golden/help/setup.txt",
+    "tests/fixtures/golden/hook/claude.PostToolUse.stdout.status",
+    "tests/fixtures/golden/hook/claude.Stop.stdout.status",
+    "tests/fixtures/golden/hook/claude.UserPromptSubmit.stdout.status",
+    "tests/fixtures/golden/hook/codex.PostToolUse.stdout.status",
+    "tests/fixtures/golden/hook/codex.Stop.stdout.status",
+    "tests/fixtures/golden/hook/hermes.PostToolUse.stdout.status",
+    "tests/fixtures/golden/hook/hermes.PreToolUse.stdout.status",
+    "tests/fixtures/golden/hook/hermes.SessionStart.stdout.status",
+    "tests/fixtures/golden/hook/hermes.Stop.stdout.status",
+    "tests/fixtures/golden/hook/hermes.UserPromptSubmit.stdout.status",
+    "tests/fixtures/golden/setup-status/all.json",
+    "tests/fixtures/golden/setup-status/claude.absent.json",
+    "tests/fixtures/golden/setup-status/claude.absent.text",
+    "tests/fixtures/golden/setup-status/claude.json",
+    "tests/fixtures/golden/setup-status/claude.text",
+    "tests/fixtures/golden/setup-status/codex.absent.json",
+    "tests/fixtures/golden/setup-status/codex.absent.text",
+    "tests/fixtures/golden/setup-status/codex.json",
+    "tests/fixtures/golden/setup-status/codex.text",
+    "tests/fixtures/golden/setup/all.json",
+    "tests/fixtures/golden/setup/claude.json",
+    "tests/fixtures/golden/setup/claude.text",
+    "tests/fixtures/golden/setup/codex.json",
+    "tests/fixtures/golden/setup/codex.text"
+  ],
+  "head_after": "8d37746d98e6bd766761e5cff82018ebf579643b"
+}

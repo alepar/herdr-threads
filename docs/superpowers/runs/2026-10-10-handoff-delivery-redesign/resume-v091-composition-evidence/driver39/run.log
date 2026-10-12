@@ -1,0 +1,127 @@
+test_clean_run_has_no_problems (wake_e2e_selftest.Cleanup.test_clean_run_has_no_problems) ... ok
+test_close_failure_still_stops_the_daemon_and_fails (wake_e2e_selftest.Cleanup.test_close_failure_still_stops_the_daemon_and_fails) ... ok
+test_close_raising_still_stops_the_daemon (wake_e2e_selftest.Cleanup.test_close_raising_still_stops_the_daemon) ... ok
+test_daemon_still_healthy_after_deadline_fails (wake_e2e_selftest.Cleanup.test_daemon_still_healthy_after_deadline_fails) ... ok
+test_exiting_process_inside_the_grace_period_passes (wake_e2e_selftest.Cleanup.test_exiting_process_inside_the_grace_period_passes) ... ok
+test_failed_process_scan_is_unknown_not_clean (wake_e2e_selftest.Cleanup.test_failed_process_scan_is_unknown_not_clean) ... ok
+test_keep_skips_cleanup_without_failing (wake_e2e_selftest.Cleanup.test_keep_skips_cleanup_without_failing) ... ok
+test_leftover_owned_process_fails (wake_e2e_selftest.Cleanup.test_leftover_owned_process_fails) ... ok
+test_refreshed_auth_copy_is_kept_and_reported (wake_e2e_selftest.Cleanup.test_refreshed_auth_copy_is_kept_and_reported) ... wake-e2e: Codex refreshed its tokens during the run; the refreshed credentials are kept at /var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/wake-e2e-selftest.zm5hzwoc/codex-home/auth.json (mode 0600). The source profile's refresh token may have been rotated: copy this file back or log in again, then delete it.
+ok
+test_timed_out_health_probe_is_not_stopped (wake_e2e_selftest.Cleanup.test_timed_out_health_probe_is_not_stopped) ... ok
+test_timed_out_process_scan_is_unknown_not_clean (wake_e2e_selftest.Cleanup.test_timed_out_process_scan_is_unknown_not_clean) ... ok
+test_uncertain_daemon_start_is_still_stopped (wake_e2e_selftest.Cleanup.test_uncertain_daemon_start_is_still_stopped) ... ok
+test_uncertain_workspace_create_is_found_by_label_and_closed (wake_e2e_selftest.Cleanup.test_uncertain_workspace_create_is_found_by_label_and_closed) ... ok
+test_unchanged_auth_copy_is_deleted (wake_e2e_selftest.Cleanup.test_unchanged_auth_copy_is_deleted) ... ok
+test_unverifiable_workspace_closure_fails (wake_e2e_selftest.Cleanup.test_unverifiable_workspace_closure_fails) ... ok
+test_copy_is_a_private_regular_file (wake_e2e_selftest.CodexAuthCopy.test_copy_is_a_private_regular_file) ... ok
+test_native_refresh_never_writes_the_source (wake_e2e_selftest.CodexAuthCopy.test_native_refresh_never_writes_the_source) ... ok
+test_replaces_a_stale_symlink_without_following_it (wake_e2e_selftest.CodexAuthCopy.test_replaces_a_stale_symlink_without_following_it) ... ok
+test_blocked_fails (wake_e2e_selftest.Completeness.test_blocked_fails) ... 
+| case | wake-on | harness | expect wake | woke (s) | checks | result |
+|---|---|---|---|---|---|---|
+| busy-nudge/group | nudge | claude | None | None | null | BLOCKED |
+
+0/1 expected rows passed (1 collected)
+ok
+test_complete_all_pass (wake_e2e_selftest.Completeness.test_complete_all_pass) ... 
+| case | wake-on | harness | expect wake | woke (s) | checks | result |
+|---|---|---|---|---|---|---|
+| invite/group | nudge | claude | None | None | null | PASS |
+| send-lazy/group | nudge | claude | None | None | null | PASS |
+
+2/2 expected rows passed (2 collected)
+ok
+test_duplicate_row_fails (wake_e2e_selftest.Completeness.test_duplicate_row_fails) ... 
+| case | wake-on | harness | expect wake | woke (s) | checks | result |
+|---|---|---|---|---|---|---|
+| invite/group | nudge | claude | None | None | null | PASS |
+| invite/group | nudge | claude | None | None | null | PASS |
+
+2/1 expected rows passed (2 collected)
+unexpected or duplicated rows: [('cl-nudge', 'invite/group')]
+ok
+test_missing_recipient_fails (wake_e2e_selftest.Completeness.test_missing_recipient_fails) ... 
+| case | wake-on | harness | expect wake | woke (s) | checks | result |
+|---|---|---|---|---|---|---|
+| invite/group | nudge | claude | None | None | null | PASS |
+
+1/2 expected rows passed (1 collected)
+missing rows: [('co-nudge', 'invite/group')]
+ok
+test_missing_row_fails (wake_e2e_selftest.Completeness.test_missing_row_fails) ... 
+| case | wake-on | harness | expect wake | woke (s) | checks | result |
+|---|---|---|---|---|---|---|
+| invite/group | nudge | claude | None | None | null | PASS |
+
+1/2 expected rows passed (1 collected)
+missing rows: [('cl-nudge', 'send-lazy/group')]
+ok
+test_no_rows_fails (wake_e2e_selftest.Completeness.test_no_rows_fails) ... 
+| case | wake-on | harness | expect wake | woke (s) | checks | result |
+|---|---|---|---|---|---|---|
+
+0/0 expected rows passed (0 collected)
+ok
+test_a_helper_ignoring_sigterm_is_killed (wake_e2e_selftest.Interruption.test_a_helper_ignoring_sigterm_is_killed) ... ok
+test_a_worker_that_does_not_stop_fails_cleanup (wake_e2e_selftest.Interruption.test_a_worker_that_does_not_stop_fails_cleanup) ... ok
+test_cleanup_terminates_the_helper_drains_the_worker_and_refuses_new_helpers (wake_e2e_selftest.Interruption.test_cleanup_terminates_the_helper_drains_the_worker_and_refuses_new_helpers) ... ok
+test_helper_cut_off_by_the_drain_reports_stopped_not_a_result (wake_e2e_selftest.Interruption.test_helper_cut_off_by_the_drain_reports_stopped_not_a_result) ... ok
+test_interrupt_in_the_calling_thread_kills_its_helper (wake_e2e_selftest.Interruption.test_interrupt_in_the_calling_thread_kills_its_helper)
+Ctrl-C/SIGTERM while the main thread waits on a helper (e.g. `workspace create`): no orphan. ... ok
+test_clean_all_pass_run_exits_zero (wake_e2e_selftest.MainExitCode.test_clean_all_pass_run_exits_zero) ... [PASS   ] cl-nudge  invite/group      wake_on=nudge expect=None  woke=None  t=None {}
+
+| case | wake-on | harness | expect wake | woke (s) | checks | result |
+|---|---|---|---|---|---|---|
+| invite/group | nudge | claude | None | None | {} | PASS |
+
+1/1 expected rows passed (1 collected)
+evidence: /var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/wake-e2e-selftest.mn75ramy/ev (exit 0)
+ok
+test_cleanup_problem_fails_an_all_pass_run (wake_e2e_selftest.MainExitCode.test_cleanup_problem_fails_an_all_pass_run) ... [PASS   ] cl-nudge  invite/group      wake_on=nudge expect=None  woke=None  t=None {}
+
+| case | wake-on | harness | expect wake | woke (s) | checks | result |
+|---|---|---|---|---|---|---|
+| invite/group | nudge | claude | None | None | {} | PASS |
+
+1/1 expected rows passed (1 collected)
+wake-e2e: cleanup incomplete: daemon alive
+evidence: /var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/wake-e2e-selftest.uh8krg9m/ev (exit 1)
+ok
+test_cleanup_raising_fails (wake_e2e_selftest.MainExitCode.test_cleanup_raising_fails) ... [PASS   ] cl-nudge  invite/group      wake_on=nudge expect=None  woke=None  t=None {}
+
+| case | wake-on | harness | expect wake | woke (s) | checks | result |
+|---|---|---|---|---|---|---|
+| invite/group | nudge | claude | None | None | {} | PASS |
+
+1/1 expected rows passed (1 collected)
+wake-e2e: cleanup incomplete: cleanup raised: RuntimeError('herdr gone')
+evidence: /var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/wake-e2e-selftest.47ffhqmj/ev (exit 1)
+ok
+test_interrupt_still_cleans_up_and_fails (wake_e2e_selftest.MainExitCode.test_interrupt_still_cleans_up_and_fails) ... wake-e2e: aborted: KeyboardInterrupt('signal 15')
+evidence: /var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/wake-e2e-selftest.gcri9wyi/ev (exit 1)
+ok
+test_sigterm_while_joining_a_blocked_worker_drains_it (wake_e2e_selftest.MainExitCode.test_sigterm_while_joining_a_blocked_worker_drains_it) ... wake-e2e: aborted: KeyboardInterrupt('signal 15')
+evidence: /var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/wake-e2e-selftest.0liljb1m/ev (exit 1)
+ok
+test_a_drain_error_does_not_skip_owned_resources (wake_e2e_selftest.PartialStartAndDrainErrors.test_a_drain_error_does_not_skip_owned_resources) ... wake-e2e: aborted: KeyboardInterrupt('signal 2')
+wake-e2e: cleanup incomplete: drain raised: RuntimeError('drain exploded')
+evidence: /var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/wake-e2e-selftest.1q7jdmt9/ev (exit 1)
+ok
+test_a_worker_interrupted_mid_start_is_still_joined (wake_e2e_selftest.PartialStartAndDrainErrors.test_a_worker_interrupted_mid_start_is_still_joined)
+Thread.start launched the thread, then the interrupt arrived before start() returned. ... wake-e2e: aborted: KeyboardInterrupt('signal 15 inside start()')
+evidence: /var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/wake-e2e-selftest.p60wgytk/ev (exit 1)
+ok
+test_drain_joins_a_thread_that_finishes_starting_late (wake_e2e_selftest.PartialStartAndDrainErrors.test_drain_joins_a_thread_that_finishes_starting_late)
+The join retries while start() has not completed (the mid-start window), then joins the thread. ... ok
+test_failed_second_thread_start (wake_e2e_selftest.PartialStartAndDrainErrors.test_failed_second_thread_start) ... wake-e2e: aborted: RuntimeError("can't start new thread")
+evidence: /var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/wake-e2e-selftest.c9jyg8qe/ev (exit 1)
+ok
+test_interrupt_between_thread_starts (wake_e2e_selftest.PartialStartAndDrainErrors.test_interrupt_between_thread_starts) ... wake-e2e: aborted: KeyboardInterrupt('signal 15')
+evidence: /var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/wake-e2e-selftest.saqu28ay/ev (exit 1)
+ok
+
+----------------------------------------------------------------------
+Ran 39 tests in 11.771s
+
+OK

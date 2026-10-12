@@ -1,0 +1,15 @@
+{
+  "source": "20e7ca73e41a9449376169ab6875c0675da02edc",
+  "files": {
+    "wake-e2e.py": "aada07ae0cfc210b1ce24bf60aebeedcad5e58c3fce6f3f933bbef102ae7dbff",
+    "wake_e2e_selftest.py": "9a941c755afc7e776c4188bc8d923153cd2686de2e162ac3854920f972ebceb2"
+  },
+  "run_id": "39ad2ac3-31f5-4c8b-944d-5cb60f19b579",
+  "argv": [
+    "python3",
+    "/private/tmp/ht-v091-wake-driver-selftest/wake-e2e.py",
+    "--self-test"
+  ],
+  "exit": 1,
+  "seconds": 27.00348779198248
+}

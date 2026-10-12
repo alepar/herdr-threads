@@ -1,0 +1,59 @@
+{
+  "staged_tree": "HEAD",
+  "index_sha256": "0e02723784cbc589b4ed53de388abedc6fa55146232b55cea9d953695e87d956",
+  "commands": [
+    {
+      "stage": "fmt",
+      "argv": [
+        "cargo",
+        "fmt",
+        "--",
+        "--check"
+      ],
+      "exit": 0,
+      "seconds": 4.700566167011857,
+      "log": "/private/tmp/ht-v091-composition-fixture-gates/fmt.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "stage": "neutral",
+      "argv": [
+        "scripts/check-harness-neutral"
+      ],
+      "exit": 0,
+      "seconds": 1.3525560839334503,
+      "log": "/private/tmp/ht-v091-composition-fixture-gates/neutral.log",
+      "sha256": "7561605afc0af5f27527d99451825bc26c55fa2f7083bb392ad4244e406b0536"
+    },
+    {
+      "stage": "clippy",
+      "argv": [
+        "nice",
+        "cargo",
+        "clippy",
+        "--locked",
+        "--all-targets",
+        "--all-features",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit": 0,
+      "seconds": 48.14784683298785,
+      "log": "/private/tmp/ht-v091-composition-fixture-gates/clippy.log",
+      "sha256": "c87837d2ffbccb6200031442ba8e2c624dcad970d3ce9fb2dfc9e2cb17def91d"
+    },
+    {
+      "stage": "default",
+      "argv": [
+        "nice",
+        "scripts/check-default-features"
+      ],
+      "exit": 0,
+      "seconds": 34.13799950003158,
+      "log": "/private/tmp/ht-v091-composition-fixture-gates/default.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "exit": 0
+}

@@ -142,3 +142,9 @@ sweepFix: single pass ht-0lo.16–.18 complete/closed at f4b74f311b28c39eec0c1a4
 
 - phase6-finish-review · sweep-fix-final-review.md no newCritical/Important; finalcombinedC/currentconsumer/speed explicitlypending. All3sweephelperworktrees removednormally --keep-branch, commitsretained; no processesstopped/survived.
 - currentMain-composition-ruling · resume-v091-composition-design.md boundedModeB underexistingautonomy; source-onlyschema/semantic/hook/helperlanes, parentsoleCargo. NewMain1–36immutable/prospective37–46; narrowdirectacceptQ4exception/confirming-onlywake/evidence-separation retained. No liveauthenticatedreleaseagentmatrix requested.
+
+baseAbsorbed: 20e7ca73e41a9449376169ab6875c0675da02edc → 79a0c3dd160a5733ba2018e8337c042eca7bd438, 20 conflicted files (source495mechanical/declaredsemanticresolution; parentpromotionclean); canonicalMain1–36immutable/prospective37–46.
+
+- currentMain36-verification · actual95focused89PASS6FAIL6.821s/list224.156; singlecompositionlightreviewNEEDS_FIX7test/fixtureitems, onefixpass8d37/c53, normal11PASS6.833s/list63.468, allscopedleaks0. GenuineMain36schema/wake/directreader/Q4 controlsPASS95; no productionchangeafter495 and no source/error/assertionwaiver. Promotion79a0tree6068=validatedc53, all4compile-onlygatesPASS. Two[doc-drift]Minor retainedfromlightreview. Evidence resume-v091-composition-evidence/.
+- postLoopAudit-required · materialbehavioralMainabsorption mandates one scoped PR post-cap audit fromlastreviewedf4a8 tocurrenttip; codeRoastRound2/convergedexit remainsunchanged, no newfixloop. FinalC one rerunstillunspent behindaudit/freshsourceproof.
+- currentMain-helper · old3916572442aliases6mandatoryimmutable, additivecurrentMain55+separatefeature1/sourceSQL1–36map; onefocusedREVISE plusonefixpassverifiedAST, no rereview. No finalseal/count/PASSclaim yet.

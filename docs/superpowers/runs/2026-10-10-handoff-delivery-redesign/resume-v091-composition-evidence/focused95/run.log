@@ -1,0 +1,953 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.04s
+────────────
+ Nextest run ID 128bc934-8876-41e0-b612-e4798dbfdd62 with nextest profile: default
+    Starting 95 tests across 4 binaries (5928 tests skipped)
+        PASS [   0.017s] ( 1/95) herdr-threads cli::hook_inbox::tests::truncated_page_advances_only_what_was_displayed
+  stdout ───
+
+    running 1 test
+    test cli::hook_inbox::tests::truncated_page_advances_only_what_was_displayed ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4953 filtered out; finished in 0.01s
+
+
+        PASS [   0.020s] ( 2/95) herdr-threads harness::contract_tests::contract_ids_are_pinned
+  stdout ───
+
+    running 1 test
+    test harness::contract_tests::contract_ids_are_pinned ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4953 filtered out; finished in 0.00s
+
+
+        PASS [   0.021s] ( 3/95) herdr-threads harness::codex_tests::every_declared_hook_is_installed_by_setup_and_encodes_context_only
+  stdout ───
+
+    running 1 test
+    test harness::codex_tests::every_declared_hook_is_installed_by_setup_and_encodes_context_only ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4953 filtered out; finished in 0.01s
+
+
+        PASS [   0.021s] ( 4/95) herdr-threads cli::hook_inbox::tests::inbox_sends_claim_and_advances_after_full_flush
+  stdout ───
+
+    running 1 test
+    test cli::hook_inbox::tests::inbox_sends_claim_and_advances_after_full_flush ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4953 filtered out; finished in 0.00s
+
+
+        PASS [   0.022s] ( 5/95) herdr-threads daemon::transport::watch_connection::tests::presentation_owner_accepted_wire_carries_the_registered_lease
+  stdout ───
+
+    running 1 test
+    test daemon::transport::watch_connection::tests::presentation_owner_accepted_wire_carries_the_registered_lease ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4953 filtered out; finished in 0.01s
+
+
+        PASS [   0.022s] ( 6/95) herdr-threads harness::codex_tests::declaration_reports_native_transport_and_receipt_unsupported
+  stdout ───
+
+    running 1 test
+    test harness::codex_tests::declaration_reports_native_transport_and_receipt_unsupported ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4953 filtered out; finished in 0.00s
+
+
+        PASS [   0.024s] ( 7/95) herdr-threads harness::adapter_seam::adapter_seam_settings_kinds_name_their_adapter_and_declare_today_s_groups
+  stdout ───
+
+    running 1 test
+    test harness::adapter_seam::adapter_seam_settings_kinds_name_their_adapter_and_declare_today_s_groups ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4953 filtered out; finished in 0.00s
+
+
+        PASS [   0.025s] ( 8/95) herdr-threads cli::hook_inbox::tests::in_turn_presentation_is_sent_only_to_a_daemon_that_records_it
+  stdout ───
+
+    running 1 test
+    test cli::hook_inbox::tests::in_turn_presentation_is_sent_only_to_a_daemon_that_records_it ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4953 filtered out; finished in 0.00s
+
+
+        PASS [   0.011s] ( 9/95) herdr-threads harness::setup_tests::codex_session_plan_registers_event_per_group
+  stdout ───
+
+    running 1 test
+    test harness::setup_tests::codex_session_plan_registers_event_per_group ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4953 filtered out; finished in 0.00s
+
+
+        PASS [   0.032s] (10/95) herdr-threads harness::contract_tests::adapters_local_dispatch_keeps_legacy_contract_id_bytes
+  stdout ───
+
+    running 1 test
+    test harness::contract_tests::adapters_local_dispatch_keeps_legacy_contract_id_bytes ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4953 filtered out; finished in 0.01s
+
+  stderr ───
+    discovery producer identity=claude scopes=["config_root"] domains={"native_payload"} canary=true
+    discovery producer identity=codex scopes=["config_root"] domains={"native_payload"} canary=true
+    discovery producer identity=hermes scopes=["config_root", "profile"] domains={"bridge_envelope", "native_callback"} canary=true
+    discovery producer identity=agy scopes=["config_root"] domains={"native_payload"} canary=false
+    discovery producer identity=synthetic_fourth scopes=["config_root"] domains={"synthetic"} canary=false
+
+        PASS [   0.010s] (11/95) herdr-threads protocol::capabilities::tests::bare_daemon_advertises_legacy_capabilities_without_v2_recorder
+  stdout ───
+
+    running 1 test
+    test protocol::capabilities::tests::bare_daemon_advertises_legacy_capabilities_without_v2_recorder ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4953 filtered out; finished in 0.00s
+
+
+        PASS [   0.011s] (12/95) herdr-threads protocol::capabilities::tests::capability_constants_are_stable
+  stdout ───
+
+    running 1 test
+    test protocol::capabilities::tests::capability_constants_are_stable ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4953 filtered out; finished in 0.00s
+
+
+        PASS [   0.011s] (13/95) herdr-threads scheduler::tests::new_attention_retries_a_refusal_backed_off_seat_at_once_and_keeps_the_backoff
+  stdout ───
+
+    running 1 test
+    test scheduler::tests::new_attention_retries_a_refusal_backed_off_seat_at_once_and_keeps_the_backoff ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4953 filtered out; finished in 0.00s
+
+
+        PASS [   0.012s] (14/95) herdr-threads scheduler::wake_text_tests::a_recovery_hint_always_names_inbox
+  stdout ───
+
+    running 1 test
+    test scheduler::wake_text_tests::a_recovery_hint_always_names_inbox ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4953 filtered out; finished in 0.00s
+
+
+        PASS [   0.013s] (15/95) herdr-threads scheduler::wake_text_tests::a_seat_holding_parked_ids_is_woken_with_the_marker
+  stdout ───
+
+    running 1 test
+    test scheduler::wake_text_tests::a_seat_holding_parked_ids_is_woken_with_the_marker ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4953 filtered out; finished in 0.00s
+
+
+        PASS [   0.014s] (16/95) herdr-threads scheduler::wake_text_tests::registry_wake_text_is_the_marker_unless_the_policy_injects
+  stdout ───
+
+    running 1 test
+    test scheduler::wake_text_tests::registry_wake_text_is_the_marker_unless_the_policy_injects ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4953 filtered out; finished in 0.00s
+
+
+        PASS [   0.015s] (17/95) herdr-threads scheduler::wake_text_tests::native_wake_types_the_bound_harness_wake_text
+  stdout ───
+
+    running 1 test
+    test scheduler::wake_text_tests::native_wake_types_the_bound_harness_wake_text ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4953 filtered out; finished in 0.00s
+
+
+        PASS [   0.011s] (18/95) herdr-threads scheduler::wake_text_tests::wake_texts_are_one_line_and_the_minimal_one_is_content_free
+  stdout ───
+
+    running 1 test
+    test scheduler::wake_text_tests::wake_texts_are_one_line_and_the_minimal_one_is_content_free ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4953 filtered out; finished in 0.00s
+
+
+        PASS [   0.011s] (19/95) herdr-threads scheduler::wake_text_tests::the_inbox_marker_follows_the_composer_bindings_parking
+  stdout ───
+
+    running 1 test
+    test scheduler::wake_text_tests::the_inbox_marker_follows_the_composer_bindings_parking ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4953 filtered out; finished in 0.00s
+
+
+        PASS [   0.096s] (20/95) herdr-threads cli::hook_inbox::tests::cli_inbox_prints_first_contact_once
+  stdout ───
+
+    running 1 test
+    test cli::hook_inbox::tests::cli_inbox_prints_first_contact_once ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4953 filtered out; finished in 0.08s
+
+
+        PASS [   0.110s] (21/95) herdr-threads harness::setup_tests::codex_setup_registers_event_per_group
+  stdout ───
+
+    running 1 test
+    test harness::setup_tests::codex_setup_registers_event_per_group ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4953 filtered out; finished in 0.10s
+
+
+        PASS [   0.165s] (22/95) herdr-threads cli::hook_inbox::tests::subagent_inbox_never_sends_ack_displayed
+  stdout ───
+
+    running 1 test
+    test cli::hook_inbox::tests::subagent_inbox_never_sends_ack_displayed ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4953 filtered out; finished in 0.14s
+
+
+        PASS [   0.157s] (23/95) herdr-threads store::connection::tests::published_v35_to_v36_late_offer_index_failure_rolls_back
+  stdout ───
+
+    running 1 test
+    test store::connection::tests::published_v35_to_v36_late_offer_index_failure_rolls_back ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4953 filtered out; finished in 0.13s
+
+
+        PASS [   0.256s] (24/95) herdr-threads store::attention::tests::presentation_exact_recovery_keeps_sibling_unread_after_receipt_and_lazy_settlement
+  stdout ───
+
+    running 1 test
+    test store::attention::tests::presentation_exact_recovery_keeps_sibling_unread_after_receipt_and_lazy_settlement ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4953 filtered out; finished in 0.25s
+
+
+        PASS [   0.196s] (25/95) herdr-threads store::connection::tests::direct_pair_migration_preserves_v28_and_enforces_identity
+  stdout ───
+
+    running 1 test
+    test store::connection::tests::direct_pair_migration_preserves_v28_and_enforces_identity ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4953 filtered out; finished in 0.18s
+
+
+        PASS [   0.417s] (26/95) herdr-threads service::delivery_pull::tests::a_departed_inviter_remains_actionable_after_whole_deadline_warning_until_acceptance
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::a_departed_inviter_remains_actionable_after_whole_deadline_warning_until_acceptance ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4953 filtered out; finished in 0.41s
+
+
+        PASS [   0.222s] (27/95) herdr-threads store::connection::tests::published_v36_corrupt_offer_catalog_refuses_before_feature_migration
+  stdout ───
+
+    running 1 test
+    test store::connection::tests::published_v36_corrupt_offer_catalog_refuses_before_feature_migration ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4953 filtered out; finished in 0.21s
+
+
+        FAIL [   0.213s] (28/95) herdr-threads store::connection::tests::user_intent_schema22_fresh_and_v21_upgrade
+  stdout ───
+
+    running 1 test
+    test store::connection::tests::user_intent_schema22_fresh_and_v21_upgrade ... FAILED
+
+    failures:
+
+    failures:
+        store::connection::tests::user_intent_schema22_fresh_and_v21_upgrade
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4953 filtered out; finished in 0.20s
+
+  stderr ───
+
+    thread 'store::connection::tests::user_intent_schema22_fresh_and_v21_upgrade' (59056831) panicked at src/store/../../tests/store/schema.rs:5798:5:
+    assertion `left == right` failed
+      left: [("allocation_decisions", 40), ("delivery_observations", 148), ("digest_open_warning_recipients", 204), ("digest_open_warnings", 187), ("digest_pending_invitations", 193), ("digest_pending_manifest_receipts", 198), ("digest_programmatic_warnings", 210), ("filter_revisions", 146), ("host_instances", 4), ("human_receipt_reconciliation_bounds", 257), ("human_receipt_waivers", 247), ("invitation_cancellations", 164), ("invitation_context_latest", 416), ("invitation_presentation_consumers", 419), ("invitation_presentation_items", 425), ("invitation_rejections", 261), ("invitations", 60), ("membership_intervals", 52), ("memberships", 47), ("messages", 69), ("observed_targets", 20), ("operations", 118), ("prepared_recipients", 93), ("prepared_unavailable_warnings", 101), ("presentation_confirming_invitations", 429), ("presentation_warning_fence", 439), ("presentation_warning_proofs", 437), ("receipt_state", 115), ("receipts", 79), ("recovery_baseline_releases", 18), ("recovery_baseline_targets", 23), ("recovery_holds", 25), ("requirement_episodes", 157), ("retirement_audits", 143), ("retirements", 137), ("schema_identity", 2), ("seat_availability", 57), ("seats", 30), ("send_manifests", 107), ("send_preparations", 89), ("service_authors", 151), ("service_notification_preparations", 169), ("service_notification_publications", 175), ("service_notification_recipients", 172), ("snapshot_generations", 6), ("snapshot_targets", 11), ("sqlite_sequence", 15), ("summary_blocks", 225), ("summary_items", 229), ("summary_job_durations", 240), ("summary_jobs", 235), ("summary_transitions", 232), ("threads", 43), ("wake_batches", 136), ("wake_work", 120), ("warning_close_sweeps", 271), ("warning_conditions", 262), ("warning_jobs", 123), ("warning_recipients", 127), ("work_jobs", 274)]
+     right: [("allocation_decisions", 40), ("delivery_observations", 148), ("digest_open_warning_recipients", 204), ("digest_open_warnings", 187), ("digest_pending_invitations", 193), ("digest_pending_manifest_receipts", 198), ("digest_programmatic_warnings", 210), ("filter_revisions", 146), ("host_instances", 4), ("human_receipt_reconciliation_bounds", 257), ("human_receipt_waivers", 247), ("invitation_cancellations", 164), ("invitation_rejections", 261), ("invitations", 60), ("membership_intervals", 52), ("memberships", 47), ("messages", 69), ("observed_targets", 20), ("operations", 118), ("prepared_recipients", 93), ("prepared_unavailable_warnings", 101), ("receipt_state", 115), ("receipts", 79), ("recovery_baseline_releases", 18), ("recovery_baseline_targets", 23), ("recovery_holds", 25), ("requirement_episodes", 157), ("retirement_audits", 143), ("retirements", 137), ("schema_identity", 2), ("seat_availability", 57), ("seats", 30), ("send_manifests", 107), ("send_preparations", 89), ("service_authors", 151), ("service_notification_preparations", 169), ("service_notification_publications", 175), ("service_notification_recipients", 172), ("snapshot_generations", 6), ("snapshot_targets", 11), ("sqlite_sequence", 15), ("summary_blocks", 225), ("summary_items", 229), ("summary_job_durations", 240), ("summary_jobs", 235), ("summary_transitions", 232), ("threads", 43), ("wake_batches", 136), ("wake_work", 120), ("warning_close_sweeps", 271), ("warning_conditions", 262), ("warning_jobs", 123), ("warning_recipients", 127), ("work_jobs", 274)]
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.539s] (29/95) herdr-threads service::delivery_pull::tests::departed_receipt_origins_survive_pull_offers_late_association_and_partial_ack
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::departed_receipt_origins_survive_pull_offers_late_association_and_partial_ack ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4953 filtered out; finished in 0.52s
+
+
+        PASS [   0.523s] (30/95) herdr-threads store::connection::tests::absorption_main24_and25_to26_preserves_diagnostics_and_matches_fresh_catalog
+  stdout ───
+
+    running 1 test
+    test store::connection::tests::absorption_main24_and25_to26_preserves_diagnostics_and_matches_fresh_catalog ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4953 filtered out; finished in 0.51s
+
+
+        PASS [   0.597s] (31/95) herdr-threads service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_only_reopens_quiet_watch_and_hook_with_preserved_reader
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_only_reopens_quiet_watch_and_hook_with_preserved_reader ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4953 filtered out; finished in 0.59s
+
+
+        PASS [   0.647s] (32/95) herdr-threads service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_fanout_includes_disconnected_open_and_keeps_absent_stale_consumers
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_fanout_includes_disconnected_open_and_keeps_absent_stale_consumers ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4953 filtered out; finished in 0.64s
+
+
+        PASS [   0.176s] (33/95) herdr-threads store::control::tests::direct_threads::reader_controls::q4_binding_enrolled_after_direct_join_keeps_main_seat_maximum_no_backlog
+  stdout ───
+
+    running 1 test
+    test store::control::tests::direct_threads::reader_controls::q4_binding_enrolled_after_direct_join_keeps_main_seat_maximum_no_backlog ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4953 filtered out; finished in 0.16s
+
+
+        PASS [   0.309s] (34/95) herdr-threads store::connection::tests::v28_upgrade_migrates_bindings_to_session_keyed_v32
+  stdout ───
+
+    running 1 test
+    test store::connection::tests::v28_upgrade_migrates_bindings_to_session_keyed_v32 ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4953 filtered out; finished in 0.29s
+
+
+        PASS [   0.175s] (35/95) herdr-threads store::control::tests::direct_threads::reader_controls::q4_direct_lazy_completion_is_independent_for_two_initial_bindings
+  stdout ───
+
+    running 1 test
+    test store::control::tests::direct_threads::reader_controls::q4_direct_lazy_completion_is_independent_for_two_initial_bindings ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4953 filtered out; finished in 0.16s
+
+
+        PASS [   0.263s] (36/95) herdr-threads store::connection::tests::v34_to_v35_moves_attention_frontiers_to_bindings
+  stdout ───
+
+    running 1 test
+    test store::connection::tests::v34_to_v35_moves_attention_frontiers_to_bindings ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4953 filtered out; finished in 0.25s
+
+
+        PASS [   0.279s] (37/95) herdr-threads store::control::tests::direct_threads::accepting_a_pair_invitation_keeps_the_opening_messages_unread
+  stdout ───
+
+    running 1 test
+    test store::control::tests::direct_threads::accepting_a_pair_invitation_keeps_the_opening_messages_unread ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4953 filtered out; finished in 0.26s
+
+
+        PASS [   0.135s] (38/95) herdr-threads store::control::tests::direct_threads::reader_controls::q4_initial_published_direct_lazy_is_readable_without_a_recipient_cursor
+  stdout ───
+
+    running 1 test
+    test store::control::tests::direct_threads::reader_controls::q4_initial_published_direct_lazy_is_readable_without_a_recipient_cursor ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4953 filtered out; finished in 0.12s
+
+
+        PASS [   0.240s] (39/95) herdr-threads store::control::tests::direct_threads::reader_controls::q4_episode_two_fresh_direct_lazy_is_admitted_without_old_backlog_before_or_after_accept
+  stdout ───
+
+    running 1 test
+    test store::control::tests::direct_threads::reader_controls::q4_episode_two_fresh_direct_lazy_is_admitted_without_old_backlog_before_or_after_accept ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4953 filtered out; finished in 0.22s
+
+
+        PASS [   0.157s] (40/95) herdr-threads store::control::tests::direct_threads::reader_controls::q4_rejection_prevents_cursorless_direct_lazy_revival_or_display_bootstrap
+  stdout ───
+
+    running 1 test
+    test store::control::tests::direct_threads::reader_controls::q4_rejection_prevents_cursorless_direct_lazy_revival_or_display_bootstrap ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4953 filtered out; finished in 0.14s
+
+
+        PASS [   0.147s] (41/95) herdr-threads store::control::tests::direct_threads::rejoin_never_reshows_a_lazy_row_displayed_out_of_order
+  stdout ───
+
+    running 1 test
+    test store::control::tests::direct_threads::rejoin_never_reshows_a_lazy_row_displayed_out_of_order ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4953 filtered out; finished in 0.14s
+
+
+        PASS [   0.611s] (42/95) herdr-threads store::connection::tests::published_v36_upgrade_preserves_exact_in_turn_offers_and_delivery_history
+  stdout ───
+
+    running 1 test
+    test store::connection::tests::published_v36_upgrade_preserves_exact_in_turn_offers_and_delivery_history ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4953 filtered out; finished in 0.59s
+
+
+        PASS [   0.307s] (43/95) herdr-threads store::control::tests::direct_threads::reader_controls::q4_initial_accept_preserves_each_bindings_unread_body_and_display_gap
+  stdout ───
+
+    running 1 test
+    test store::control::tests::direct_threads::reader_controls::q4_initial_accept_preserves_each_bindings_unread_body_and_display_gap ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4953 filtered out; finished in 0.29s
+
+
+        PASS [   0.246s] (44/95) herdr-threads store::control::tests::direct_threads::writer_floor_controls::q4_operator_orphan_episode_floor_admits_fresh_body_and_preserves_existing_stream
+  stdout ───
+
+    running 1 test
+    test store::control::tests::direct_threads::writer_floor_controls::q4_operator_orphan_episode_floor_admits_fresh_body_and_preserves_existing_stream ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4953 filtered out; finished in 0.23s
+
+
+        PASS [   0.273s] (45/95) herdr-threads store::control::tests::direct_threads::writer_floor_controls::q4_native_pending_episode_reused_by_native_and_service_writers_keeps_exact_floor_rows
+  stdout ───
+
+    running 1 test
+    test store::control::tests::direct_threads::writer_floor_controls::q4_native_pending_episode_reused_by_native_and_service_writers_keeps_exact_floor_rows ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4953 filtered out; finished in 0.25s
+
+
+        PASS [   0.186s] (46/95) herdr-threads store::control::tests::direct_threads::writer_floor_controls::q4_pair_refuses_managed_ownership_and_required_writer_without_changing_floor_authority
+  stdout ───
+
+    running 1 test
+    test store::control::tests::direct_threads::writer_floor_controls::q4_pair_refuses_managed_ownership_and_required_writer_without_changing_floor_authority ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4953 filtered out; finished in 0.17s
+
+
+        PASS [   0.241s] (47/95) herdr-threads store::control::tests::direct_threads::writer_floor_controls::q4_ordinary_service_episode_floor_admits_fresh_body_and_preserves_existing_stream
+  stdout ───
+
+    running 1 test
+    test store::control::tests::direct_threads::writer_floor_controls::q4_ordinary_service_episode_floor_admits_fresh_body_and_preserves_existing_stream ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4953 filtered out; finished in 0.23s
+
+
+        PASS [   0.259s] (48/95) herdr-threads store::control::tests::direct_threads::writer_floor_controls::q4_service_pending_episode_reused_by_service_and_native_writers_keeps_exact_floor_rows
+  stdout ───
+
+    running 1 test
+    test store::control::tests::direct_threads::writer_floor_controls::q4_service_pending_episode_reused_by_service_and_native_writers_keeps_exact_floor_rows ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4953 filtered out; finished in 0.25s
+
+
+        PASS [   1.121s] (49/95) herdr-threads service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_private_failure_rolls_back_episode_join_all_readers
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_private_failure_rolls_back_episode_join_all_readers ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4953 filtered out; finished in 1.11s
+
+
+        PASS [   0.017s] (50/95) herdr-threads::combined contracts::wake_candidate_exposes_pending_obligation_with_zero_projection_bits
+  stdout ───
+
+    running 1 test
+    test contracts::wake_candidate_exposes_pending_obligation_with_zero_projection_bits ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 745 filtered out; finished in 0.00s
+
+
+        PASS [   0.157s] (51/95) herdr-threads store::wake_tests::a_recovery_hint_wake_to_a_served_binding_is_refused
+  stdout ───
+
+    running 1 test
+    test store::wake_tests::a_recovery_hint_wake_to_a_served_binding_is_refused ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4953 filtered out; finished in 0.14s
+
+
+        PASS [   0.207s] (52/95) herdr-threads store::effective::tests::unpublished_staging_is_invisible_and_first_later_anchor_is_immutable
+  stdout ───
+
+    running 1 test
+    test store::effective::tests::unpublished_staging_is_invisible_and_first_later_anchor_is_immutable ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4953 filtered out; finished in 0.19s
+
+
+        PASS [   1.309s] (53/95) herdr-threads protocol::capabilities::tests::every_advertised_capability_has_a_handler
+  stdout ───
+
+    running 1 test
+    test protocol::capabilities::tests::every_advertised_capability_has_a_handler ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4953 filtered out; finished in 1.30s
+
+
+        PASS [   0.308s] (54/95) herdr-threads store::wake_tests::a_binding_served_one_reason_is_still_woken_for_another
+  stdout ───
+
+    running 1 test
+    test store::wake_tests::a_binding_served_one_reason_is_still_woken_for_another ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4953 filtered out; finished in 0.29s
+
+
+        FAIL [   0.281s] (55/95) herdr-threads::combined golden_surfaces::help_texts
+  stdout ───
+
+    running 1 test
+    test golden_surfaces::help_texts ... FAILED
+
+    failures:
+
+    failures:
+        golden_surfaces::help_texts
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 745 filtered out; finished in 0.27s
+
+  stderr ───
+
+    thread 'golden_surfaces::help_texts' (59057023) panicked at tests/golden_surfaces.rs:89:23:
+    golden fixture /Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/tests/fixtures/golden/help/setup.txt differs at line 116:
+      expected: `<this executable> --state-dir <state> --host-endpoint <socket> hook <harness>`, registered
+      actual:   `<this executable> --state-dir <state> --host-endpoint <socket> hook-event <harness> <EVENT>`
+    (HT_BLESS=1 rewrites it)
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.322s] (56/95) herdr-threads::combined golden_surfaces::contract_id_output
+  stdout ───
+
+    running 1 test
+    test golden_surfaces::contract_id_output ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 745 filtered out; finished in 0.31s
+
+
+        PASS [   0.503s] (57/95) herdr-threads store::wake_tests::an_in_turn_offer_after_reservation_cancels_that_bindings_wake
+  stdout ───
+
+    running 1 test
+    test store::wake_tests::an_in_turn_offer_after_reservation_cancels_that_bindings_wake ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4953 filtered out; finished in 0.49s
+
+
+        FAIL [   0.349s] (58/95) herdr-threads::combined golden_surfaces::setup_reports
+  stdout ───
+
+    running 1 test
+    test golden_surfaces::setup_reports ... FAILED
+
+    failures:
+
+    failures:
+        golden_surfaces::setup_reports
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 745 filtered out; finished in 0.34s
+
+  stderr ───
+
+    thread 'golden_surfaces::setup_reports' (59057075) panicked at tests/golden_surfaces.rs:89:23:
+    golden fixture /Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/tests/fixtures/golden/setup/claude.text differs at line 4:
+      expected: command: '<bin>' '--state-dir' '<root>/state' '--host-endpoint' '<root>/host.sock' 'hook' 'claude' # herdr-threads-owner:<uuid>
+      actual:   command: '<bin>' '--state-dir' '<root>/state' '--host-endpoint' '<root>/host.sock' 'hook' 'claude'
+    (HT_BLESS=1 rewrites it)
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   1.634s] (59/95) herdr-threads service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_preserves_real_nonempty_carry_outbox_and_full_offer_window
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_preserves_real_nonempty_carry_outbox_and_full_offer_window ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4953 filtered out; finished in 1.62s
+
+  stderr ───
+    Q4 carry before-reclaim: offers=256 sent_offers=255 lazy=true rendered=255 unoffered=2 ids=[MessageId("mAV6kneF8"), MessageId("mU4Yy8k8w")] done=0 cursor=Some((Invitations, Some(InboxBatchV2UnreadPosition { after_ordinal: 511, high_water_ordinal: 515 }), 2, 2, 274, Some((0, 0, 509, 515)), None)) carry=[] partial=0 skip=None
+    Q4 carry after-reclaim: offers=256 sent_offers=255 lazy=true rendered=1 unoffered=1 ids=[MessageId("mU4Yy8k8w")] done=1 cursor=None carry=[MessageId("mU4Yy8k8w")] partial=0 skip=None
+
+        FAIL [   0.350s] (60/95) herdr-threads::combined golden_surfaces::setup_status_reports
+  stdout ───
+
+    running 1 test
+    test golden_surfaces::setup_status_reports ... FAILED
+
+    failures:
+
+    failures:
+        golden_surfaces::setup_status_reports
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 745 filtered out; finished in 0.34s
+
+  stderr ───
+
+    thread 'golden_surfaces::setup_status_reports' (59057094) panicked at tests/golden_surfaces.rs:89:23:
+    golden fixture /Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/tests/fixtures/golden/setup-status/claude.absent.text differs at line 49:
+      expected: scope: user
+      actual:   registration_conflict: none
+    (HT_BLESS=1 rewrites it)
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.555s] (61/95) herdr-threads::combined direct_send::json_output_uses_the_versioned_send_envelope_with_the_thread
+  stdout ───
+
+    running 1 test
+    test direct_send::json_output_uses_the_versioned_send_envelope_with_the_thread ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 745 filtered out; finished in 0.53s
+
+
+        PASS [   0.892s] (62/95) herdr-threads store::effective::tests::dormant_upgrade_actual_v31_backfill32_reopens_and_rolls_back_without_recapture
+  stdout ───
+
+    running 1 test
+    test store::effective::tests::dormant_upgrade_actual_v31_backfill32_reopens_and_rolls_back_without_recapture ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4953 filtered out; finished in 0.88s
+
+
+        PASS [   0.409s] (63/95) herdr-threads::combined invitation_content::binding_presentation::binding_input_cannot_select_a_sibling_or_canonical_subagent
+  stdout ───
+
+    running 1 test
+    test invitation_content::binding_presentation::binding_input_cannot_select_a_sibling_or_canonical_subagent ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 745 filtered out; finished in 0.40s
+
+
+        PASS [   0.494s] (64/95) herdr-threads::combined invitation_content::binding_presentation::carried_message_rechecks_own_unread_and_sibling_ack_without_touching_receipt
+  stdout ───
+
+    running 1 test
+    test invitation_content::binding_presentation::carried_message_rechecks_own_unread_and_sibling_ack_without_touching_receipt ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 745 filtered out; finished in 0.49s
+
+
+        FAIL [   0.869s] (65/95) herdr-threads::combined golden_surfaces::hook_stdout_per_event
+  stdout ───
+
+    running 1 test
+    test golden_surfaces::hook_stdout_per_event ... FAILED
+
+    failures:
+
+    failures:
+        golden_surfaces::hook_stdout_per_event
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 745 filtered out; finished in 0.85s
+
+  stderr ───
+
+    thread 'golden_surfaces::hook_stdout_per_event' (59057029) panicked at tests/golden_surfaces.rs:803:18:
+    called `Result::unwrap()` on an `Err` value: Os { code: 32, kind: BrokenPipe, message: "Broken pipe" }
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.593s] (66/95) herdr-threads::combined invitation_content::binding_presentation::carry_quantum_accounts_all_thirty_two_keys_and_refuses_a_thirty_third
+  stdout ───
+
+    running 1 test
+    test invitation_content::binding_presentation::carry_quantum_accounts_all_thirty_two_keys_and_refuses_a_thirty_third ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 745 filtered out; finished in 0.58s
+
+
+        PASS [   0.518s] (67/95) herdr-threads::combined invitation_content::binding_presentation::continued_body_cancellation_during_decision_sample_rolls_back_tentative_save
+  stdout ───
+
+    running 1 test
+    test invitation_content::binding_presentation::continued_body_cancellation_during_decision_sample_rolls_back_tentative_save ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 745 filtered out; finished in 0.51s
+
+
+        PASS [   0.535s] (68/95) herdr-threads::combined invitation_content::binding_presentation::continued_body_cancellation_before_final_save_rolls_back_and_retries
+  stdout ───
+
+    running 1 test
+    test invitation_content::binding_presentation::continued_body_cancellation_before_final_save_rolls_back_and_retries ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 745 filtered out; finished in 0.52s
+
+
+        PASS [   0.553s] (69/95) herdr-threads::combined invitation_content::binding_presentation::continued_body_retirement_is_private_and_charged_once
+  stdout ───
+
+    running 1 test
+    test invitation_content::binding_presentation::continued_body_retirement_is_private_and_charged_once ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 745 filtered out; finished in 0.53s
+
+
+        PASS [   2.347s] (70/95) herdr-threads::hook_entrypoint lazy_mail_reaches_the_next_codex_tool_hook
+  stdout ───
+
+    running 1 test
+    test lazy_mail_reaches_the_next_codex_tool_hook ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 85 filtered out; finished in 2.33s
+
+
+        PASS [   1.401s] (71/95) herdr-threads store::effective::tests::dormant_upgrade_bounded_batches_survive_restart_and_continuing_arrivals
+  stdout ───
+
+    running 1 test
+    test store::effective::tests::dormant_upgrade_bounded_batches_survive_restart_and_continuing_arrivals ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4953 filtered out; finished in 1.38s
+
+
+        PASS [   0.458s] (72/95) herdr-threads::combined invitation_content::binding_presentation::continued_pending_body_survives_own_display_cursor
+  stdout ───
+
+    running 1 test
+    test invitation_content::binding_presentation::continued_pending_body_survives_own_display_cursor ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 745 filtered out; finished in 0.44s
+
+
+        PASS [   0.553s] (73/95) herdr-threads::combined invitation_content::binding_presentation::continued_body_retirement_rolls_back_when_final_state_write_fails
+  stdout ───
+
+    running 1 test
+    test invitation_content::binding_presentation::continued_body_retirement_rolls_back_when_final_state_write_fails ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 745 filtered out; finished in 0.53s
+
+
+        PASS [   0.302s] (74/95) herdr-threads::combined invitation_content::binding_presentation::same_generation_binding_outboxes_and_notice_frontiers_are_independent
+  stdout ───
+
+    running 1 test
+    test invitation_content::binding_presentation::same_generation_binding_outboxes_and_notice_frontiers_are_independent ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 745 filtered out; finished in 0.29s
+
+
+        PASS [   0.419s] (75/95) herdr-threads::combined invitation_content::binding_presentation::continued_unread_body_survives_sibling_full_read
+  stdout ───
+
+    running 1 test
+    test invitation_content::binding_presentation::continued_unread_body_survives_sibling_full_read ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 745 filtered out; finished in 0.41s
+
+
+        PASS [   0.349s] (76/95) herdr-threads::combined invitation_content::binding_presentation::sibling_settled_receipt_remains_in_bound_normal_and_exact_recovery
+  stdout ───
+
+    running 1 test
+    test invitation_content::binding_presentation::sibling_settled_receipt_remains_in_bound_normal_and_exact_recovery ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 745 filtered out; finished in 0.34s
+
+
+        PASS [   0.403s] (77/95) herdr-threads::combined invitation_content::binding_presentation::unread_partial_presentation_resumes_after_same_binding_full_body_read
+  stdout ───
+
+    running 1 test
+    test invitation_content::binding_presentation::unread_partial_presentation_resumes_after_same_binding_full_body_read ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 745 filtered out; finished in 0.39s
+
+
+        PASS [   0.322s] (78/95) herdr-threads::combined lazy26_prerequisite::fresh_store_installs26_and_reopens
+  stdout ───
+
+    running 1 test
+    test lazy26_prerequisite::fresh_store_installs26_and_reopens ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 745 filtered out; finished in 0.31s
+
+
+        PASS [   0.948s] (79/95) herdr-threads::combined invitation_content::binding_presentation::continued_body_refuses_corrupt_accumulator_and_missing_authority_without_progress
+  stdout ───
+
+    running 1 test
+    test invitation_content::binding_presentation::continued_body_refuses_corrupt_accumulator_and_missing_authority_without_progress ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 745 filtered out; finished in 0.94s
+
+
+        PASS [   0.334s] (80/95) herdr-threads::combined lazy26_prerequisite::historical25_store_upgrade_preserves_evidence_and_defaults_modes
+  stdout ───
+
+    running 1 test
+    test lazy26_prerequisite::historical25_store_upgrade_preserves_evidence_and_defaults_modes ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 745 filtered out; finished in 0.32s
+
+
+        PASS [   0.293s] (81/95) herdr-threads::combined lazy_attention::a_sibling_lifecycle_check_in_resets_only_its_own_in_turn_service
+  stdout ───
+
+    running 1 test
+    test lazy_attention::a_sibling_lifecycle_check_in_resets_only_its_own_in_turn_service ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 745 filtered out; finished in 0.27s
+
+
+        PASS [   0.473s] (82/95) herdr-threads::combined invitation_content::composed_v43_invitation_epoch_alter_records_nested_work_and_preserves_state
+  stdout ───
+
+    running 1 test
+    test invitation_content::composed_v43_invitation_epoch_alter_records_nested_work_and_preserves_state ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 745 filtered out; finished in 0.46s
+
+  stderr ───
+    sqlite_version=3.51.3 composed44_invitations=1 exact45_epoch_alter_outer_vm=1947 including_nested_progress=6055
+    sqlite_version=3.51.3 composed44_invitations=32 exact45_epoch_alter_outer_vm=1947 including_nested_progress=8349
+    sqlite_version=3.51.3 composed44_invitations=128 exact45_epoch_alter_outer_vm=1947 including_nested_progress=15458
+
+        PASS [   0.220s] (83/95) herdr-threads::combined lazy_schema::lazy_schema_upgrade25_defaults_existing_messages_to_ordinary
+  stdout ───
+
+    running 1 test
+    test lazy_schema::lazy_schema_upgrade25_defaults_existing_messages_to_ordinary ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 745 filtered out; finished in 0.20s
+
+
+        PASS [   0.372s] (84/95) herdr-threads::combined lazy_attention::in_turn_display_of_an_invitation_owes_no_idle_wake
+  stdout ───
+
+    running 1 test
+    test lazy_attention::in_turn_display_of_an_invitation_owes_no_idle_wake ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 745 filtered out; finished in 0.36s
+
+
+        PASS [   0.405s] (85/95) herdr-threads::combined lazy_attention::in_turn_display_of_a_nudge_owes_no_idle_wake
+  stdout ───
+
+    running 1 test
+    test lazy_attention::in_turn_display_of_a_nudge_owes_no_idle_wake ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 745 filtered out; finished in 0.39s
+
+
+        PASS [   1.708s] (86/95) herdr-threads store::wake_tests::in_turn_service_is_decided_for_the_binding_the_composer_reaches
+  stdout ───
+
+    running 1 test
+    test store::wake_tests::in_turn_service_is_decided_for_the_binding_the_composer_reaches ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4953 filtered out; finished in 1.69s
+
+
+        PASS [   0.236s] (87/95) herdr-threads::combined setup_cli::codex_setup_installs_user_hooks_and_unsetup_restores_bytes
+  stdout ───
+
+    running 1 test
+    test setup_cli::codex_setup_installs_user_hooks_and_unsetup_restores_bytes ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 745 filtered out; finished in 0.22s
+
+
+        PASS [   0.420s] (88/95) herdr-threads::combined topology_handoff::schema_tests::registered28_preserves25_and26_history_and_rolls_back_late_ddl_failure
+  stdout ───
+
+    running 1 test
+    test topology_handoff::schema_tests::registered28_preserves25_and26_history_and_rolls_back_late_ddl_failure ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 745 filtered out; finished in 0.41s
+
+
+        PASS [   0.878s] (89/95) herdr-threads::hook_entrypoint lazy_mail_reaches_the_next_codex_user_prompt_hook
+  stdout ───
+
+    running 1 test
+    test lazy_mail_reaches_the_next_codex_user_prompt_hook ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 85 filtered out; finished in 0.86s
+
+
+        FAIL [   0.614s] (90/95) herdr-threads::hook_entrypoint native_event_entrypoints_dispatch_declared_codecs_and_refuse_invalid_pairs_before_effects
+  stdout ───
+
+    running 1 test
+    test native_event_entrypoints_dispatch_declared_codecs_and_refuse_invalid_pairs_before_effects ... FAILED
+
+    failures:
+
+    failures:
+        native_event_entrypoints_dispatch_declared_codecs_and_refuse_invalid_pairs_before_effects
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 85 filtered out; finished in 0.60s
+
+  stderr ───
+
+    thread 'native_event_entrypoints_dispatch_declared_codecs_and_refuse_invalid_pairs_before_effects' (59057792) panicked at tests/hook_entrypoint.rs:6653:9:
+    herdr-threads hook: no agy, claude, codex, hermes or other registered agent harness process among this process's ancestors
+
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   1.038s] (91/95) herdr-threads::hook_entrypoint pair_accept_delivers_mixed_opening_mail_once
+  stdout ───
+
+    running 1 test
+    test pair_accept_delivers_mixed_opening_mail_once ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 85 filtered out; finished in 1.03s
+
+
+        PASS [   2.584s] (92/95) herdr-threads::integration channel_activation::channel_activation_real_daemon_loads_fresh_21_and_22_and_owns_archival_lane
+  stdout ───
+
+    running 1 test
+    test channel_activation::channel_activation_real_daemon_loads_fresh_21_and_22_and_owns_archival_lane ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 236 filtered out; finished in 2.57s
+
+
+        PASS [   3.105s] (93/95) herdr-threads::combined topology_handoff::schema_tests::registered28_fresh_and_genuine_historical_chains_reopen
+  stdout ───
+
+    running 1 test
+    test topology_handoff::schema_tests::registered28_fresh_and_genuine_historical_chains_reopen ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 745 filtered out; finished in 3.08s
+
+
+        PASS [   1.274s] (94/95) herdr-threads::hook_entrypoint pair_rejoin_with_two_bindings_pins_read_positions
+  stdout ───
+
+    running 1 test
+    test pair_rejoin_with_two_bindings_pins_read_positions ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 85 filtered out; finished in 1.27s
+
+
+        PASS [   4.353s] (95/95) herdr-threads::combined lazy_attention::in_turn_timed_invitation_service_ignores_unseen_lazy_backlog_per_binding
+  stdout ───
+
+    running 1 test
+    test lazy_attention::in_turn_timed_invitation_service_ignores_unseen_lazy_backlog_per_binding ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 745 filtered out; finished in 4.33s
+
+
+────────────
+     Summary [   6.821s] 95 tests run: 89 passed, 6 failed, 5928 skipped
+        FAIL [   0.213s] (28/95) herdr-threads store::connection::tests::user_intent_schema22_fresh_and_v21_upgrade
+        FAIL [   0.281s] (55/95) herdr-threads::combined golden_surfaces::help_texts
+        FAIL [   0.349s] (58/95) herdr-threads::combined golden_surfaces::setup_reports
+        FAIL [   0.350s] (60/95) herdr-threads::combined golden_surfaces::setup_status_reports
+        FAIL [   0.869s] (65/95) herdr-threads::combined golden_surfaces::hook_stdout_per_event
+        FAIL [   0.614s] (90/95) herdr-threads::hook_entrypoint native_event_entrypoints_dispatch_declared_codecs_and_refuse_invalid_pairs_before_effects
+error: test run failed
