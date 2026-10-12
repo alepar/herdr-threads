@@ -93,6 +93,19 @@ pub const CONTRACT: HarnessContract = HarnessContract {
                 f("agent_type", Str, false),
             ],
         },
+        // The turn start (ht-mu3): a text-only turn makes no tool call, so pending items ride
+        // this hook's context.
+        EventContract {
+            event: "UserPromptSubmit",
+            class: EventClass::Tool,
+            fields: &[
+                f("hook_event_name", Str, true),
+                f("session_id", Str, true),
+                f("turn_id", Str, true),
+                f("agent_id", Str, false),
+                f("agent_type", Str, false),
+            ],
+        },
         // A subagent's end (ht-54r.11): disconnects the binding keyed by (session_id, agent_id).
         EventContract {
             event: "SubagentStop",
@@ -224,6 +237,11 @@ pub enum HookPurpose {
     /// that shape without a decision (source-read), and a live 0.158.0 run
     /// delivered it to the model without blocking the tool call.
     ToolBoundaryContext,
+    /// `UserPromptSubmit` bounded attention at turn start, the same Current check-in as a tool
+    /// boundary: a text-only turn makes no tool call. Output is only
+    /// `hookSpecificOutput.{hookEventName, additionalContext}` (0.158.0 embedded schema). A
+    /// Codex that never fires it leaves delivery to the tool boundary.
+    TurnStartContext,
     /// `SubagentStop` / `SessionEnd`: a bookkeeping event that disconnects the binding it names
     /// (spec §3). It renders no context.
     EndEvent,
@@ -266,6 +284,11 @@ pub const DECLARATION: Declaration = Declaration {
             event: "PreToolUse",
             matcher: Some("^Bash$"),
             purpose: HookPurpose::ToolBoundaryContext,
+        },
+        OwnedHook {
+            event: "UserPromptSubmit",
+            matcher: None,
+            purpose: HookPurpose::TurnStartContext,
         },
         OwnedHook {
             event: "SubagentStop",
@@ -1015,6 +1038,12 @@ fn check_hooks_v1(value: &Value) -> Result<(), ContextError> {
                 return Err(ContextError::Invalid);
             }
         }
+        "UserPromptSubmit" => {
+            required(value, "turn_id")?;
+            if field(value, "agent_id")?.is_some() != field(value, "agent_type")?.is_some() {
+                return Err(ContextError::Invalid);
+            }
+        }
         "SubagentStop" => {
             // The end of a spawned thread: the binding it disconnects is keyed by (session, agent).
             required(value, "agent_id")?;
@@ -1092,6 +1121,7 @@ pub fn encode_event_context(
     let name = match event.source.as_str() {
         "SubagentStart" if event.role == Role::Subagent => "SubagentStart",
         "PreToolUse" if event.kind == EventKind::Tool => "PreToolUse",
+        "UserPromptSubmit" if event.kind == EventKind::Tool => "UserPromptSubmit",
         "startup" | "resume" | "clear" | "compact" => "SessionStart",
         _ => return Err(ContextError::Invalid),
     };
@@ -1154,6 +1184,8 @@ fn parse_shape(value: &Value, event_id: &str) -> Result<LifecycleEvent, ContextE
             required(value, "tool_use_id")?;
             (name, EventKind::Tool, role)
         }
+        // A turn start checks in like a tool boundary (Current mode).
+        "UserPromptSubmit" => (name, EventKind::Tool, role),
         _ => return Err(ContextError::Invalid),
     };
     Ok(LifecycleEvent {
@@ -1168,8 +1200,8 @@ fn parse_shape(value: &Value, event_id: &str) -> Result<LifecycleEvent, ContextE
     })
 }
 
-/// Codex's declared context-only hook groups (SessionStart, SubagentStart, Bash PreToolUse) in the
-/// `hooks.json` form. The 10 s timeout bounds Codex's wait (its default is 600 s); the hook's own
+/// Codex's declared hook groups (SessionStart, SubagentStart, Bash PreToolUse, UserPromptSubmit,
+/// SubagentStop, SessionEnd) in the `hooks.json` form. The 10 s timeout bounds Codex's wait (its default is 600 s); the hook's own
 /// watchdog ends it far earlier.
 pub fn declared_hook_groups(command: &str) -> Vec<(&'static str, Value)> {
     use super::setup::event_command;
@@ -1209,9 +1241,10 @@ pub const fn settings_kind() -> super::setup::SettingsKind {
 /// Help and report fragments of the Codex adapter (verbatim from the core text they replace).
 static TEXT: AdapterText = AdapterText {
     setup_scope: "  codex   $CODEX_HOME/hooks.json (default ~/.codex/hooks.json) for the hook groups
-          (SessionStart, SubagentStart, Bash PreToolUse). With consent, agent permissions go
-          in their own file, $CODEX_HOME/rules/herdr-threads.rules: an allow rule for
-          `herdr-threads` and `ht` and prompt rules for the same human and setup commands.
+          (SessionStart, SubagentStart, Bash PreToolUse, UserPromptSubmit). With consent,
+          agent permissions go in their own file, $CODEX_HOME/rules/herdr-threads.rules:
+          an allow rule for `herdr-threads` and `ht` and prompt rules for the same human
+          and setup commands.
           Setup installs no sandbox socket, writable-root or network allowance. Run
           herdr-threads commands through Codex's approved outside-sandbox execution; a
           denied approval is a policy refusal.
@@ -1484,6 +1517,11 @@ impl HarnessAdapter for CodexAdapter {
                     always_send: false,
                 },
                 super::evidence::EvidenceEvent {
+                    native_event: "UserPromptSubmit",
+                    milestone: None,
+                    always_send: false,
+                },
+                super::evidence::EvidenceEvent {
                     native_event: "SubagentStop",
                     milestone: None,
                     always_send: false,
@@ -1567,7 +1605,16 @@ impl HarnessAdapter for CodexAdapter {
             }
         }
         parse_event_for_contract(&input.bytes, &uuid::Uuid::new_v4().to_string(), admitted)
-            .map(|event| DecodedEvent::from_native_payload(event, &input.bytes))
+            .map(|event| {
+                let turn_start = event.source == "UserPromptSubmit";
+                let mut decoded = DecodedEvent::from_native_payload(event, &input.bytes);
+                // A Current check-in decodes as a tool boundary; Codex validates the output's
+                // hookEventName against the event that ran.
+                if turn_start {
+                    decoded.metadata.native_event = "UserPromptSubmit".into();
+                }
+                decoded
+            })
             .map_err(DecodeFailure::Native)
     }
     fn encode(
