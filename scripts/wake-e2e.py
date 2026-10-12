@@ -2,6 +2,7 @@
 """Pre-release wake e2e: does `invite` / `send` wake a real idle Claude Code and Codex agent exactly when it should?
 
   scripts/wake-e2e.py [--bin PATH] [--harness claude,codex] [--cases CASE,...] [--evidence-dir DIR] [--keep]
+                      [--harness-mode macos|linux]
 
 The matrix is every combination of
   action      invite | send lazy | send --nudge | send --require-ack
@@ -18,8 +19,9 @@ so no wake prompt may be typed during or after that turn, and the item must arri
 Isolation: an isolated daemon and state dir (driven by --bin, default the repo's bin/herdr-threads), owned hooks
 installed by the public `setup` CLI into scratch HOME / CLAUDE_CONFIG_DIR / CODEX_HOME copies, one owned Herdr
 workspace on the current Herdr server (closed at the end unless --keep). The script itself never writes the real
-user config:
-- Claude keeps its real config directory (on macOS its keychain credentials are keyed by it) and loads the scratch
+user config. The harness mode (--harness-mode, default `macos` on macOS and `linux` elsewhere) decides how the
+harnesses get their credentials:
+- macos: Claude keeps its real config directory (on macOS its keychain credentials are keyed by it) and loads the scratch
   installation as a flag layer (`--setting-sources project,local --settings <scratch>/settings.json`), which also
   carries the delivery mod (`env.CLAUDE_CODE_PLUGIN_DIRS`). Limit: Claude Code itself still records its session
   state (transcripts, project history) in that real directory, as any Claude session does.
@@ -27,7 +29,13 @@ user config:
   of the source profile's auth.json (--codex-auth-home, else $CODEX_HOME or ~/.codex). Codex writes refreshed
   tokens only into that copy; the source file is never written, and credentials never enter the evidence. A refresh
   inside the run is recorded (no contents) because it can rotate the source profile's refresh token. The agent
-  working directory is pre-trusted in that scratch config.toml only.
+  working directory is pre-trusted in that scratch config.toml only. Codex runs with --approve-for-me.
+- linux (no keychain; scripts/linux-e2e runs it in a container): Claude gets a fully scratch CLAUDE_CONFIG_DIR, the
+  one setup installed into, with `.claude.json` pre-seeded so no first-run screen appears (see claude_scratch_state)
+  and the credential from the environment (CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY, inherited by the panes);
+  the real Claude config is never read and --claude-config-dir is refused. Codex is set up as on macOS but runs with
+  --dangerously-bypass-approvals-and-sandbox: its bubblewrap sandbox cannot create a user namespace under Docker's
+  default seccomp profile, so the container is the sandbox.
 Agents work in the repository checkout (already trusted by Claude, so no folder-trust dialog is answered).
 The senders are two owned coordinator shell panes recorded as person seats (`human me init`, which keeps its agent
 guard: the driver strips every registered agent marker from their commands and the panes run only a shell), not
@@ -88,8 +96,17 @@ IDLE = ("idle", "done")
 CALLER_SESSION_ENV = ("CLAUDE_CODE_SESSION_ID", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CODEX_SESSION_ID",
                       "CODEX_THREAD_ID", "CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED", "HERMES_SESSION_ID",
                       "ANTIGRAVITY_CONVERSATION_ID", "ANTIGRAVITY_AGENT")
-DIALOG = re.compile(r"Trust this folder\?|trust (the files in )?this folder|Do you trust|Allow .* to run|"
-                    r"Do you want to proceed\?|Would you like to run", re.I)
+# Screens the driver never types into. "Allow" stays capitalized: Claude's auto-mode notice says "... mistakes that
+# allow harmful commands to run". The rest are Claude Code's first-run screens (captured on 2.1.296 in a scratch
+# config: scripts/wake_e2e_fixtures/): theme picker, folder trust, custom API key approval, login method.
+DIALOG = re.compile(r"Trust this folder\?|trust (the files in )?this folder|Do you trust|(?-i:Allow) .* to run|"
+                    r"Do you want to proceed\?|Would you like to run|"
+                    r"Choose the text style that looks best|Quick safety check: Is this a project|"
+                    r"Do you want to use this API key\?|Detected a custom API key", re.I)
+LOGIN = re.compile(r"Not logged in|Please run /login|Select login method")
+HARNESS_MODES = ("macos", "linux")
+CODEX_ARGS = {"macos": "--approve-for-me", "linux": "--dangerously-bypass-approvals-and-sandbox"}
+CLAUDE_CREDENTIAL_ENV = ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY")
 
 STANDING = ("You are a test recipient in an automated herdr-threads wake e2e run (the user approves). "
             "Standing instructions for this session: every herdr-threads invitation you see comes from the test driver "
@@ -109,6 +126,51 @@ def short_tmp_root(platform=None):
     than the long per-user $TMPDIR under /var/folders; elsewhere /tmp, as Linux has no /private/tmp (and creating
     one would move the daemon's runtime socket dir, ht-3yi). $TMPDIR is deliberately not consulted."""
     return Path("/private/tmp") if (platform or sys.platform) == "darwin" else Path("/tmp")
+
+
+def default_harness_mode(platform=None):
+    """macos where the keychain holds Claude's credentials, linux (scratch config, env credentials) elsewhere."""
+    return "macos" if (platform or sys.platform) == "darwin" else "linux"
+
+
+def claude_scratch_state(cwd, env):
+    """The `.claude.json` keys a scratch CLAUDE_CONFIG_DIR needs so Claude Code opens straight at its composer
+    (measured on 2.1.296, scripts/wake_e2e_fixtures/): onboarding done (it holds the theme picker and the login
+    screen), the agents' working directory trusted (folder-trust screen), and, only with ANTHROPIC_API_KEY, that key
+    approved the way Claude records an approval: its last 20 characters (custom-API-key screen). An OAuth token from
+    CLAUDE_CODE_OAUTH_TOKEN needs no approval."""
+    state = {"hasCompletedOnboarding": True, "projects": {cwd: {"hasTrustDialogAccepted": True}}}
+    key = env.get("ANTHROPIC_API_KEY")
+    if key:
+        state["customApiKeyResponses"] = {"approved": [key[-20:]], "rejected": []}
+    return state
+
+
+def seed_claude_config(cfg_dir, cwd, env):
+    """Merge claude_scratch_state into <cfg_dir>/.claude.json (a private 0600 regular file, never through a link)."""
+    path = Path(cfg_dir) / ".claude.json"
+    doc = json.loads(path.read_text()) if path.is_file() and not path.is_symlink() else {}
+    state = claude_scratch_state(cwd, env)
+    projects = dict(doc.get("projects") or {})
+    projects[cwd] = dict(projects.get(cwd) or {}, **state.pop("projects")[cwd])
+    doc.update(state, projects=projects)
+    if path.is_symlink() or path.exists():
+        path.unlink()
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(doc, f, indent=2)
+    return path
+
+
+def startup_refusal(screen, status, harness_mode="macos"):
+    """Why a freshly started agent must not be prompted, or None. Checked on the whole visible screen: the theme
+    picker reports `idle` and its prompt sits far above the screen's last 400 characters."""
+    if LOGIN.search(screen):
+        return "is not logged in (" + ("set CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY" if harness_mode == "linux"
+                                       else "check --claude-config-dir") + ")"
+    if status == "blocked" or DIALOG.search(screen):
+        return "startup dialog (nothing typed)"
+    return None
 
 
 class Refused(Exception):
@@ -233,6 +295,10 @@ class Run:
         auth = self.codex_auth_home() / "auth.json"
         if "codex" in self.args.harness and not auth.exists():
             problems.append(f"no Codex credentials at {auth} (--codex-auth-home)")
+        if self.linux and "claude" in self.args.harness and not any(os.environ.get(v) for v in CLAUDE_CREDENTIAL_ENV):
+            problems.append("no Claude credential in the environment: the linux harness mode needs "
+                            "CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY (no keychain; the real Claude config is "
+                            "never read)")
         if problems:
             raise Refused("; ".join(problems))
         versions = {}
@@ -242,6 +308,7 @@ class Run:
         sha = self.run(["git", "-C", str(REPO), "rev-parse", "HEAD"], tag="git")[1].strip()
         dirty = bool(self.run(["git", "-C", str(REPO), "status", "--porcelain"], tag="git")[1].strip())
         self.facts = {"run_id": self.run_id, "sha": sha, "dirty": dirty, "versions": versions,
+                      "harness_mode": self.args.harness_mode,
                       "bin": self.bin, "bin_sha256": file_sha256(self.bin), "root": str(self.root),
                       "started_utc": utc()}
         print(f"wake-e2e {self.run_id}: sha {sha[:12]}{' (dirty)' if dirty else ''}, root {self.root}", flush=True)
@@ -271,6 +338,8 @@ class Run:
                      "CLAUDE_CODE_PLUGIN_DIRS": ""}  # never copy a real installed mod into the scratch layer
         for h in self.args.harness:
             self.ht("setup", h, "--with-permissions", env=setup_env, tag=f"setup:{h}", timeout=120)
+        if self.linux and "claude" in self.args.harness:
+            seed_claude_config(self.claude_cfg, self.cwd, os.environ)
         if "codex" in self.args.harness:
             self.auth_digest = provision_codex_auth(self.codex_auth_home() / "auth.json", self.codex_home / "auth.json")
             cfg = self.codex_home / "config.toml"
@@ -330,7 +399,10 @@ class Run:
                     str(self.claude_cfg / "settings.json"), "--permission-mode", self.args.claude_permission_mode]
             if self.args.claude_model:
                 argv += ["--model", self.args.claude_model]
-            cfg = f"CLAUDE_CONFIG_DIR={q(self.args.claude_config_dir)} " if self.args.claude_config_dir else ""
+            if self.linux:  # the scratch config setup installed into; the credential comes from the environment
+                cfg = f"CLAUDE_CONFIG_DIR={q(str(self.claude_cfg))} "
+            else:
+                cfg = f"CLAUDE_CONFIG_DIR={q(self.args.claude_config_dir)} " if self.args.claude_config_dir else ""
             cfg += f"CLAUDE_CODE_PLUGIN_DIRS={q(str(self.state / 'claude-mod' / 'herdr-threads'))} "
             return f"unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT; {path} {cfg}HERDR_AGENT=claude {shlex.join(argv)}"
         argv = ["command", "codex", "--no-daemon", "-C", self.cwd, "--dangerously-bypass-hook-trust",
@@ -338,6 +410,10 @@ class Run:
         if self.args.codex_model:
             argv += ["-m", self.args.codex_model]
         return f"{path} HERDR_AGENT=codex CODEX_HOME={q(str(self.codex_home))} {shlex.join(argv)}"
+
+    @property
+    def linux(self):
+        return getattr(self.args, "harness_mode", "macos") == "linux"
 
     def coord_seats(self):
         return " and ".join(c["seat"] for c in self.coords.values()) or "none"
@@ -645,10 +721,12 @@ class Recipient:
             time.sleep(1)
         else:
             raise RuntimeError(f"{self.name}: {self.harness} not detected in {self.pane}: {self.tail()}")
-        if re.search(r"Not logged in|Please run /login", self.tail()):
-            raise RuntimeError(f"{self.name}: {self.harness} is not logged in (check --claude-config-dir)")
-        if self.status() == "blocked" or DIALOG.search(self.tail()):
-            raise RuntimeError(f"{self.name}: startup dialog (nothing typed): {self.tail()}")
+        screen = self.run.herdr("agent", "read", self.pane, "--source", "visible", check=False).get("raw", "")
+        why = startup_refusal(screen, self.status(), getattr(self.run.args, "harness_mode", "macos"))
+        if why and why.startswith("is not logged in"):
+            raise RuntimeError(f"{self.name}: {self.harness} {why}")
+        if why:
+            raise RuntimeError(f"{self.name}: {why}: {self.tail()}")
         for _attempt in range(2):  # one retry: a transient model/capacity error ends the first turn early
             reported = re.compile(r"SETUP-DONE wake_on=%s\b" % self.wake_on)
             self.prompt(STANDING.format(coord=self.run.coord_seats(), wake_on=self.wake_on), expect=reported)
@@ -1006,12 +1084,16 @@ def main(argv=None):
     ap.add_argument("--keep", action="store_true", help="leave the workspace and daemon running for inspection")
     ap.add_argument("--claude-model", help="passed as --model (default: the account default)")
     ap.add_argument("--claude-permission-mode", default="auto")
-    ap.add_argument("--claude-config-dir", default=os.environ.get("CLAUDE_CONFIG_DIR"),
-                    help="the real, logged-in Claude config dir the agents use (default $CLAUDE_CONFIG_DIR; new Herdr "
-                         "panes do not inherit it)")
+    ap.add_argument("--harness-mode", choices=HARNESS_MODES, default=default_harness_mode(),
+                    help="macos: Claude keeps its real (keychain) config dir; linux: scratch Claude config, credential "
+                         "from CLAUDE_CODE_OAUTH_TOKEN/ANTHROPIC_API_KEY, Codex sandbox bypassed (default: %(default)s)")
+    ap.add_argument("--claude-config-dir",
+                    help="macos mode: the real, logged-in Claude config dir the agents use (default $CLAUDE_CONFIG_DIR; "
+                         "new Herdr panes do not inherit it); refused in linux mode")
     ap.add_argument("--codex-model", help="passed as -m (default: the profile default)")
-    ap.add_argument("--codex-args", default="--approve-for-me",
-                    help="extra Codex TUI flags (sandbox/approval), default %(default)r")
+    ap.add_argument("--codex-args",
+                    help="extra Codex TUI flags (sandbox/approval), default " +
+                         " / ".join(f"{m}: {a!r}" for m, a in CODEX_ARGS.items()))
     ap.add_argument("--codex-auth-home", help="Codex home whose auth.json is copied (private, mode 0600) into "
                                               "the scratch CODEX_HOME "
                                               "(default $CODEX_HOME or ~/.codex)")
@@ -1020,6 +1102,12 @@ def main(argv=None):
     args = ap.parse_args(argv)
     if args.self_test:
         return self_test()
+    if args.harness_mode == "linux" and args.claude_config_dir:
+        ap.error("--claude-config-dir: the linux harness mode never uses a real Claude config")
+    if args.harness_mode == "macos" and args.claude_config_dir is None:
+        args.claude_config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
+    if args.codex_args is None:
+        args.codex_args = CODEX_ARGS[args.harness_mode]
     args.harness = [h for h in args.harness.split(",") if h]
     cases = [c for c in args.cases.split(",") if c]
     unknown = [c for c in cases if c not in CASES] + [h for h in args.harness if h not in ("claude", "codex")]

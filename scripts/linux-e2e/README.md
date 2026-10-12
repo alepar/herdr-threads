@@ -145,9 +145,39 @@ source file: you may have to log in again on the host. Prefer a dedicated accoun
   matrix; pin cheap models with `-- --claude-model ... --codex-model ...`, narrow with `--harness`/`--cases`).
   It runs locally, person-initiated, never in CI (AGENTS.md "Pre-release wake e2e").
 
-## Not done yet (live mode on Linux)
+## Harness setup on Linux (the driver's `linux` harness mode)
 
-The driver's harness setup is still the macOS one: on Linux it needs a scratch Claude config with seeded
-onboarding and folder trust (`.claude.json`: `hasCompletedOnboarding`, theme, `projects[cwd]`), the first-run theme
-picker in its `DIALOG` pattern, and a decision on the Codex sandbox inside Docker (Landlock/seccomp/bubblewrap;
-possibly `--security-opt seccomp=unconfined` or no sandbox). Until then `--live` gets as far as the driver.
+`scripts/wake-e2e.py` selects `--harness-mode linux` on any non-macOS host (macOS keeps `macos`, unchanged):
+
+- Claude gets a fully scratch `CLAUDE_CONFIG_DIR` under the run root, the one the public `setup claude` installed
+  the hooks into. The driver seeds its `.claude.json` so Claude Code opens straight at the composer:
+  `hasCompletedOnboarding: true` (onboarding holds the theme picker and the login screen) and
+  `projects["<repo checkout>"].hasTrustDialogAccepted: true` (folder trust); with `ANTHROPIC_API_KEY` also
+  `customApiKeyResponses.approved: ["<last 20 characters of the key>"]`, which is how Claude records an approved
+  custom key (a `CLAUDE_CODE_OAUTH_TOKEN` needs no approval). Measured on Claude Code 2.1.296 in this image without
+  logging in (captured screens: `scripts/wake_e2e_fixtures/`). The credential comes only from the environment the
+  panes inherit; the real Claude config is never read, `--claude-config-dir` is refused, and the driver refuses
+  (exit 2) before any harness starts when neither variable is set.
+- The driver never types into Claude's first-run screens (theme picker, folder trust, custom API key, login
+  method): it fails the recipient with `startup dialog (nothing typed)` or `is not logged in`.
+- Codex is set up as on macOS (scratch `CODEX_HOME`, private `auth.json` copy) but runs with
+  `--dangerously-bypass-approvals-and-sandbox` instead of `--approve-for-me`. Codex's Linux sandbox is bubblewrap,
+  which needs an unprivileged user namespace; Docker's default seccomp profile denies that, so under
+  `--approve-for-me` every model shell command (`sleep 12` in the busy cases) fails (`bwrap: No permissions to create
+  a new namespace`). Hooks run in the Codex process itself and reach the daemon socket under
+  `/tmp/herdr-threads-<uid>/` either way. Security: the agent's commands run unsandboxed as the unprivileged
+  `tester` user, so the container is the boundary: no bind mounts, no extra capabilities, Docker's default seccomp
+  profile kept, and only test credentials inside. The alternative, `--security-opt seccomp=unconfined` on the
+  container, does make the workspace-write sandbox work (measured), but it removes the seccomp filter for the whole
+  container, may additionally need AppArmor relaxed on Ubuntu hosts, and the wake e2e does not test the Codex
+  sandbox (Codex sandbox behaviour is measured by its own probes), so the runner does not do it. `-- --codex-args
+  ...` overrides the flags.
+
+First live run, one case (spends a little quota):
+
+```sh
+scripts/linux-e2e/run wake-e2e --live --codex-auth-file ~/codex-test-auth.json \
+    -- --harness codex --cases send-nudge/group
+scripts/linux-e2e/run wake-e2e --live --claude-oauth-token-file ~/claude-test-token \
+    -- --harness claude --cases send-nudge/group
+```

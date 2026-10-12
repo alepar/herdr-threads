@@ -858,6 +858,283 @@ class RunRoot(TempDir):
         self.assertEqual(stat.S_IMODE(r.root.stat().st_mode), 0o700)
 
 
+FIXTURES = Path(__file__).resolve().parent / "wake_e2e_fixtures"
+FAKE_API_KEY = "sk-ant-api03-FAKEFAKEFAKEFAKE-selftest-only-0123456789"
+# launch_line() of the macOS mode as the driver produced it before the linux mode existed (dc575a28), same inputs.
+MACOS_CLAUDE_LINE = ('unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT; PATH=/private/tmp/ht-wake-e2e.X/bin:"$PATH" '
+                     'CLAUDE_CONFIG_DIR=/Users/me/.claude-real CLAUDE_CODE_PLUGIN_DIRS=/private/tmp/ht-wake-e2e.X/state/'
+                     'claude-mod/herdr-threads HERDR_AGENT=claude command claude --setting-sources project,local '
+                     '--settings /private/tmp/ht-wake-e2e.X/claude-config/settings.json --permission-mode auto')
+MACOS_CODEX_LINE = ('PATH=/private/tmp/ht-wake-e2e.X/bin:"$PATH" HERDR_AGENT=codex CODEX_HOME=/private/tmp/ht-wake-e2e.X/'
+                    'codex-home command codex --no-daemon -C /repo --dangerously-bypass-hook-trust -c '
+                    'check_for_update_on_startup=false --approve-for-me')
+
+
+class Env:
+    """Temporarily set (value) or remove (None) environment variables."""
+
+    def __init__(self, **values):
+        self.values, self.saved = values, {}
+
+    def __enter__(self):
+        for k, v in self.values.items():
+            self.saved[k] = os.environ.get(k)
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    def __exit__(self, *exc):
+        for k, v in self.saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+def parsed_args(argv):
+    """The argparse result main() builds (and resolves) for argv, without starting a run."""
+    captured = {}
+    saved = {k: getattr(W.Run, k) for k in ("__init__", "preflight", "cleanup")}
+    saved_evidence = W.write_evidence
+
+    def init(run, args):
+        captured["args"] = args
+        run.args, run.ev, run.cleanup_report = args, None, None
+
+    def preflight(run):
+        raise W.Refused("self-test: stop after parsing")
+    W.Run.__init__, W.Run.preflight, W.Run.cleanup = init, preflight, lambda run: []
+    W.write_evidence = lambda run, rc: None
+    try:
+        import contextlib
+        import io
+        with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+            W.main(argv)
+    finally:
+        for k, v in saved.items():
+            setattr(W.Run, k, v)
+        W.write_evidence = saved_evidence
+    return captured["args"]
+
+
+def launch_run(args):
+    r = object.__new__(W.Run)
+    r.args = args
+    root = Path("/private/tmp/ht-wake-e2e.X")
+    r.bindir, r.claude_cfg, r.state, r.codex_home = root / "bin", root / "claude-config", root / "state", root / "codex-home"
+    r.cwd = "/repo"
+    return r
+
+
+class HarnessMode(TempDir):
+    """--harness-mode: macos keeps the pre-linux behaviour exactly; linux gets a scratch Claude config and env
+    credentials, never the real Claude config."""
+
+    def test_default_follows_the_platform(self):
+        self.assertEqual(W.default_harness_mode("darwin"), "macos")
+        self.assertEqual(W.default_harness_mode("linux"), "linux")
+
+    def test_macos_launch_lines_are_unchanged(self):
+        with Env(CLAUDE_CONFIG_DIR="/Users/me/.claude-real"):
+            args = parsed_args(["--harness-mode", "macos"])
+        self.assertEqual(args.claude_config_dir, "/Users/me/.claude-real")
+        self.assertEqual(args.codex_args, "--approve-for-me")
+        r = launch_run(args)
+        self.assertEqual(r.launch_line("claude"), MACOS_CLAUDE_LINE)
+        self.assertEqual(r.launch_line("codex"), MACOS_CODEX_LINE)
+
+    def test_linux_launch_lines_use_the_scratch_config_and_bypass_the_codex_sandbox(self):
+        with Env(CLAUDE_CONFIG_DIR="/home/me/.claude-real"):  # a real dir in the environment is ignored
+            args = parsed_args(["--harness-mode", "linux"])
+        self.assertIsNone(args.claude_config_dir)
+        r = launch_run(args)
+        claude = r.launch_line("claude")
+        self.assertIn(" CLAUDE_CONFIG_DIR=/private/tmp/ht-wake-e2e.X/claude-config ", claude)
+        self.assertNotIn("claude-real", claude)
+        self.assertEqual(claude, MACOS_CLAUDE_LINE.replace("/Users/me/.claude-real",
+                                                           "/private/tmp/ht-wake-e2e.X/claude-config"))
+        self.assertEqual(r.launch_line("codex"), MACOS_CODEX_LINE.replace(
+            "--approve-for-me", "--dangerously-bypass-approvals-and-sandbox"))
+
+    def test_linux_refuses_a_real_claude_config_dir(self):
+        with self.assertRaises(SystemExit):
+            import contextlib
+            import io
+            with contextlib.redirect_stderr(io.StringIO()):
+                W.main(["--harness-mode", "linux", "--claude-config-dir", "/home/me/.claude"])
+
+    def test_explicit_codex_args_win_in_both_modes(self):
+        for mode in W.HARNESS_MODES:
+            self.assertEqual(parsed_args(["--harness-mode", mode, "--codex-args", "-s read-only"]).codex_args,
+                             "-s read-only")
+
+    def scratch_run(self, mode, harness=("claude", "codex")):
+        calls = []
+        r = object.__new__(W.Run)
+        r.args = SimpleNamespace(harness=list(harness), harness_mode=mode, codex_auth_home=str(self.tmp / "src"))
+        r.root = self.tmp / "root"
+        r.state, r.home, r.claude_cfg = r.root / "state", r.root / "home", r.root / "claude-config"
+        r.codex_home, r.bindir, r.bin, r.endpoint, r.cwd = r.root / "codex-home", r.root / "bin", "/fake/ht", "/s", "/repo"
+        r.daemon_attempted = False
+        (self.tmp / "src").mkdir()
+        (self.tmp / "src" / "auth.json").write_bytes(FAKE_AUTH)
+        r.ht = lambda *argv, env=None, **kw: calls.append((argv, dict(env or {}))) or ""
+        r.scratch()
+        return r, calls
+
+    def test_macos_scratch_is_unchanged(self):
+        with Env(ANTHROPIC_API_KEY=FAKE_API_KEY):
+            r, calls = self.scratch_run("macos")
+        setup_env = {"HOME": str(r.home), "CLAUDE_CONFIG_DIR": str(r.claude_cfg), "CODEX_HOME": str(r.codex_home),
+                     "CLAUDE_CODE_PLUGIN_DIRS": ""}
+        self.assertEqual(calls, [(("daemon", "ensure"), {}), (("daemon", "health"), {}),
+                                 (("setup", "claude", "--with-permissions"), setup_env),
+                                 (("setup", "codex", "--with-permissions"), setup_env)])
+        self.assertEqual(sorted(p.name for p in r.claude_cfg.iterdir()), [])  # nothing seeded: the real dir is used
+        self.assertEqual((r.codex_home / "config.toml").read_text(),
+                         '\n\n[projects."/repo"]\ntrust_level = "trusted"\n\n[notice]\nhide_rate_limit_model_nudge = true\n')
+
+    def test_linux_scratch_seeds_exactly_the_first_run_keys(self):
+        with Env(ANTHROPIC_API_KEY=None, CLAUDE_CODE_OAUTH_TOKEN="fake-oauth-token"):
+            r, calls = self.scratch_run("linux")
+        self.assertEqual([c[0][:2] for c in calls], [("daemon", "ensure"), ("daemon", "health"),
+                                                     ("setup", "claude"), ("setup", "codex")])
+        self.assertEqual(calls[2][1]["CLAUDE_CONFIG_DIR"], str(r.claude_cfg))  # hooks go into the scratch config
+        path = r.claude_cfg / ".claude.json"
+        self.assertEqual(json.loads(path.read_text()),
+                         {"hasCompletedOnboarding": True, "projects": {"/repo": {"hasTrustDialogAccepted": True}}})
+        self.assertEqual(stat.S_IMODE(os.lstat(path).st_mode), 0o600)
+        self.assertNotIn("fake-oauth-token", path.read_text())  # an OAuth token needs no approval: never written
+
+    def test_linux_api_key_is_approved_by_its_last_20_characters(self):
+        state = W.claude_scratch_state("/repo", {"ANTHROPIC_API_KEY": FAKE_API_KEY})
+        self.assertEqual(state, {"hasCompletedOnboarding": True,
+                                 "projects": {"/repo": {"hasTrustDialogAccepted": True}},
+                                 "customApiKeyResponses": {"approved": [FAKE_API_KEY[-20:]], "rejected": []}})
+
+    def test_linux_seed_merges_and_never_follows_a_link(self):
+        cfg = self.tmp / "cfg"
+        cfg.mkdir()
+        outside = self.tmp / "outside.json"
+        outside.write_text("{}")
+        (cfg / ".claude.json").symlink_to(outside)
+        W.seed_claude_config(cfg, "/repo", {})
+        self.assertEqual(outside.read_text(), "{}")
+        self.assertFalse((cfg / ".claude.json").is_symlink())
+        (cfg / ".claude.json").write_text(json.dumps({"userID": "u", "projects": {"/repo": {"x": 1}, "/o": {}}}))
+        W.seed_claude_config(cfg, "/repo", {})
+        self.assertEqual(json.loads((cfg / ".claude.json").read_text()),
+                         {"userID": "u", "hasCompletedOnboarding": True,
+                          "projects": {"/repo": {"x": 1, "hasTrustDialogAccepted": True}, "/o": {}}})
+
+
+class LinuxPreflight(TempDir):
+    """The linux mode refuses before any process starts when no Claude credential is in the environment."""
+
+    def preflight(self, mode, harness=("claude",), **env):
+        r = object.__new__(W.Run)
+        r.args = SimpleNamespace(harness=list(harness), harness_mode=mode, codex_auth_home=None)
+        r.endpoint, r.bin, r.run_id, r.root = "/fake/sock", "/bin/sh", "000000-test", self.tmp
+        started = []
+        r.run = lambda argv, **kw: started.append(argv) or (0, "x 1.0", "")
+        values = {"HERDR_ENV": "1", "CLAUDE_CODE_OAUTH_TOKEN": None, "ANTHROPIC_API_KEY": None}
+        values.update(env)
+        path = self.tmp / "path"
+        path.mkdir(exist_ok=True)
+        for tool in ("herdr", "claude", "codex"):
+            (path / tool).write_text("#!/bin/sh\nexit 0\n")
+            (path / tool).chmod(0o700)
+        values["PATH"] = str(path)
+        import contextlib
+        import io
+        with Env(**values), contextlib.redirect_stdout(io.StringIO()):
+            try:
+                r.preflight()
+                return None, started
+            except W.Refused as e:
+                return str(e), started
+
+    def test_linux_without_credential_env_refuses_before_any_process(self):
+        why, started = self.preflight("linux")
+        self.assertIn("CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY", why)
+        self.assertEqual(started, [])
+
+    def test_empty_credential_env_is_no_credential(self):
+        why, _ = self.preflight("linux", CLAUDE_CODE_OAUTH_TOKEN="")
+        self.assertIn("no Claude credential", why)
+
+    def test_linux_with_either_credential_passes(self):
+        for var in W.CLAUDE_CREDENTIAL_ENV:
+            why, started = self.preflight("linux", **{var: "fake"})
+            self.assertIsNone(why, var)
+            self.assertTrue(started)
+
+    def test_codex_only_needs_no_claude_credential(self):
+        why, _ = self.preflight("linux", harness=())
+        self.assertIsNone(why)
+
+    def test_macos_does_not_ask_for_credential_env(self):
+        why, _ = self.preflight("macos")
+        self.assertIsNone(why)
+
+
+class StartupScreens(unittest.TestCase):
+    """Captured screens (scripts/wake_e2e_fixtures/, Claude Code 2.1.296 and Codex 0.162.1 in the runner image):
+    a first-run screen is refused and never typed into; a composer is not."""
+
+    def screen(self, name):
+        return (FIXTURES / name).read_text()
+
+    def test_claude_first_run_screens_are_refused(self):
+        # the theme picker and the login screen report `idle`: only the screen text can stop the driver
+        for name, status, why in (("claude-theme-picker.txt", "idle", "startup dialog"),
+                                  ("claude-trust-folder.txt", "blocked", "startup dialog"),
+                                  ("claude-custom-api-key.txt", "blocked", "startup dialog"),
+                                  ("claude-login-method.txt", "idle", "is not logged in"),
+                                  ("claude-composer-not-logged-in.txt", "idle", "is not logged in")):
+            got = W.startup_refusal(self.screen(name), status, "linux")
+            self.assertTrue(got and got.startswith(why), (name, got))
+
+    def test_screens_are_refused_from_text_alone(self):
+        for name in ("claude-theme-picker.txt", "claude-trust-folder.txt", "claude-custom-api-key.txt"):
+            self.assertTrue(W.DIALOG.search(self.screen(name)), name)
+
+    def test_theme_picker_prompt_is_outside_the_last_400_characters(self):
+        lines = [ln.strip() for ln in self.screen("claude-theme-picker.txt").splitlines() if ln.strip()]
+        self.assertIsNone(W.DIALOG.search(" | ".join(lines)[-400:]))  # why the whole screen is checked
+
+    def test_composers_are_not_refused(self):
+        for name in ("claude-composer-api-key.txt", "claude-composer-oauth-token.txt", "codex-composer-bypass.txt"):
+            self.assertIsNone(W.startup_refusal(self.screen(name), "idle", "linux"), name)
+
+    def test_login_hint_names_the_mode(self):
+        screen = self.screen("claude-login-method.txt")
+        self.assertIn("CLAUDE_CODE_OAUTH_TOKEN", W.startup_refusal(screen, "idle", "linux"))
+        self.assertIn("--claude-config-dir", W.startup_refusal(screen, "idle", "macos"))
+
+    def test_start_types_nothing_into_a_first_run_screen(self):
+        typed = []
+        screen = self.screen("claude-theme-picker.txt")
+
+        def herdr(*argv, **kw):
+            words = " ".join(argv)
+            if words.startswith("pane read"):
+                return {"raw": "$ "}
+            if words.startswith("agent get"):
+                return {"result": {"agent": {"agent": "claude", "agent_status": "idle"}}}
+            if words.startswith("agent read"):
+                return {"raw": screen}
+            typed.append(argv)  # pane run (the launch line) and any prompt
+            return {}
+        run = SimpleNamespace(herdr=herdr, launch_line=lambda h: "launch", args=SimpleNamespace(harness_mode="linux"),
+                              coord_seats=lambda: "s")
+        rec = W.Recipient(run, "cl-nudge", "claude", "nudge", "w1:p2", "sAAAAAAAA")
+        with self.assertRaisesRegex(RuntimeError, "startup dialog"):
+            rec.start()
+        self.assertEqual([a[:2] for a in typed], [("pane", "run")])
+
+
 def row(recipient, case, result="PASS"):
     return {"recipient": recipient, "case": case, "result": result, "wake_on": "nudge", "harness": "claude"}
 
