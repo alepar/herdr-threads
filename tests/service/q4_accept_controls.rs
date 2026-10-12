@@ -857,7 +857,7 @@ fn presentation_q4_accept_preserves_real_nonempty_carry_outbox_and_full_offer_wi
             assert_eq!(
                 refilled.get(id),
                 Some(stamp),
-                "SETUP: untouched offer count/timestamps/truncation survive reclamation: {id}"
+                "SETUP: untouched offer count/timestamps/truncation survive reclamation: {id:?}"
             );
         }
     }
@@ -895,7 +895,7 @@ fn presentation_q4_accept_preserves_real_nonempty_carry_outbox_and_full_offer_wi
         ).unwrap();
         assert!(
             pending,
-            "SETUP: carried ordinary remains canonically pending and unread: {id}"
+            "SETUP: carried ordinary remains canonically pending and unread: {id:?}"
         );
     }
     canonical_lazy_invitation_backlog(
