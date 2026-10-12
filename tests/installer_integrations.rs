@@ -495,18 +495,46 @@ fn installer_and_setup_upgrade_an_older_copied_hook_file_in_place() {
     // A copy whose SubagentStart group runs the hook with another event's argument, or with an
     // extra argument, is an edit, not a missing event: refused with the hand-edit remedy, the
     // file left alone, and the installer refuses it too.
-    for edit in [
-        "'--event' 'SessionStart' #",
-        "'--event' 'SubagentStart' '--verbose' #",
-        "'--event' 'SubagentStart'\t#",
-    ] {
+    let swap = |from: &'static str, to: &'static str| move |c: &str| c.replace(from, to);
+    type Edit = Box<dyn Fn(&str) -> String>;
+    let edits: Vec<(&str, Edit)> = vec![
+        (
+            "wrong event",
+            Box::new(swap(
+                "'--event' 'SubagentStart'",
+                "'--event' 'SessionStart'",
+            )),
+        ),
+        (
+            "extra argument",
+            Box::new(swap("'SubagentStart' #", "'SubagentStart' '--verbose' #")),
+        ),
+        (
+            "tab",
+            Box::new(swap("'SubagentStart' #", "'SubagentStart'\t#")),
+        ),
+        ("leading space", Box::new(|c: &str| format!(" {c}"))),
+        (
+            "environment prefix",
+            Box::new(|c: &str| format!("FOO=1 {c}")),
+        ),
+        (
+            "unmarked extra argument",
+            Box::new(|c: &str| format!("{} '--verbose'", c.split_once(" # ").unwrap().0)),
+        ),
+    ];
+    for (edit, apply) in &edits {
         let w = Fixture::new();
         success(&w.install());
         let copy = w.older_copy(&OLDER_CODEX_EVENTS);
-        let wrong = String::from_utf8(fs::read(copy.join("hooks.json")).unwrap())
-            .unwrap()
-            .replace("'--event' 'SubagentStart' #", &edit.replace('\t', "\\t"));
-        assert!(wrong.contains(&edit.replace('\t', "\\t")), "{wrong}");
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&fs::read(copy.join("hooks.json")).unwrap()).unwrap();
+        let slot = &mut value["hooks"]["SubagentStart"][0]["hooks"][0]["command"];
+        let original = slot.as_str().unwrap().to_owned();
+        let command = apply(&original);
+        assert_ne!(command, original, "{edit}");
+        *slot = serde_json::json!(command);
+        let wrong = serde_json::to_vec(&value).unwrap();
         fs::write(copy.join("hooks.json"), &wrong).unwrap();
         let out = w.run_codex_home(&copy, &["setup", "codex"]);
         assert!(!out.status.success());
@@ -523,7 +551,7 @@ fn installer_and_setup_upgrade_an_older_copied_hook_file_in_place() {
             "{}",
             String::from_utf8_lossy(&out.stdout)
         );
-        assert_eq!(fs::read(copy.join("hooks.json")).unwrap(), wrong.as_bytes());
+        assert_eq!(fs::read(copy.join("hooks.json")).unwrap(), wrong, "{edit}");
     }
 
     // A copy registered without `--event` is refused with the hand-edit remedy (unsetup does not

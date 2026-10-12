@@ -1263,7 +1263,7 @@ fn install_user_settings_inner<F: FnOnce()>(
         // Another setup's groups for this command that are not adoptable (edited, duplicated)
         // refuse: a second owned set beside them would run the hook twice per event.
         if adopt_user_settings(kind, config, manifest_path, hook_argv)?.is_none()
-            && holds_marked_groups(kind, expected_base, hook_argv)?
+            && holds_registrations(kind, expected_base, hook_argv)?
         {
             return Err(SetupError::Conflict);
         }
@@ -1983,10 +1983,10 @@ pub struct Adoptable {
 /// apart from its owner marker, all with one valid marker, each exactly the declared group for
 /// `<command> # herdr-threads-owner:<id>`. A copy made by an older setup lacks the events declared
 /// since: it is adopted with the events it has (setup then upgrades it like a recorded older
-/// declaration; `owned` lists only those). An unmarked copy, a marked registration without
-/// `--event`, with another event's argument or under an undeclared event, a second or edited copy,
-/// two markers, or no event at all is not adoptable (those keep their existing install/refusal
-/// behavior).
+/// declaration; `owned` lists only those). Any registration of the command that is unmarked or
+/// edited ([`registrations`]), without `--event`, with another event's argument or under an
+/// undeclared event, a second copy, two markers, or no event at all is not adoptable (those keep
+/// their existing install/refusal behavior).
 pub fn find_adoptable(
     kind: SettingsKind,
     bytes: &[u8],
@@ -1999,30 +1999,25 @@ pub fn find_adoptable(
         .into_iter()
         .map(|entry| entry.event)
         .collect();
-    // Unmarked copies keep their existing install/refusal behavior.
-    for event in &declared {
-        let evented = event_command(&base, event);
-        if hook_commands(&value, event).any(|command| command == base || command == evented) {
-            return Ok(None);
-        }
-    }
     let mut id: Option<String> = None;
     let mut events: Vec<String> = Vec::new();
-    for marked in marked_commands(&value, &base) {
-        // Every marked registration of this command must be an authentic per-event group under
-        // its own declared event: one without `--event`, with another event's argument, or under
-        // an event this adapter does not declare would be left beside a second set.
-        if !marked.canonical
-            || marked.argument.as_deref() != Some(marked.event.as_str())
-            || !declared.contains(&marked.event)
-            || events.contains(&marked.event)
-            || !uuid::Uuid::parse_str(&marked.marker)
-                .is_ok_and(|uuid| uuid.to_string() == marked.marker)
-            || id.get_or_insert_with(|| marked.marker.clone()) != &marked.marker
+    for registration in registrations(&value, &base) {
+        // Every registration of this command must be an authentic marked per-event group under
+        // its own declared event. An unmarked or edited one (another argument, extra words,
+        // other spacing, a prefix), one without `--event`, or one under an event this adapter
+        // does not declare would be left beside a second set.
+        let Some(marker) = registration.marker.filter(|_| registration.canonical) else {
+            return Ok(None);
+        };
+        if registration.argument.as_deref() != Some(registration.event.as_str())
+            || !declared.contains(&registration.event)
+            || events.contains(&registration.event)
+            || !uuid::Uuid::parse_str(&marker).is_ok_and(|uuid| uuid.to_string() == marker)
+            || id.get_or_insert_with(|| marker.clone()) != &marker
         {
             return Ok(None);
         }
-        events.push(marked.event);
+        events.push(registration.event);
     }
     let Some(installation_id) = id else {
         return Ok(None);
@@ -2052,67 +2047,78 @@ fn hook_commands<'a>(value: &'a Value, event: &str) -> impl Iterator<Item = &'a 
         .filter_map(|hook| hook.get("command").and_then(Value::as_str))
 }
 
-/// One registration of this hook command carrying an owner marker, wherever it sits.
-struct MarkedCommand {
+/// One registration of this hook command, wherever it sits.
+struct Registration {
     /// The event array it is registered under.
     event: String,
-    /// Its `--event` argument, when the command is exactly `<base> '--event' '<X>'` before the
-    /// marker; `None` for the pre-per-event spelling or any other (edited) form.
-    argument: Option<String>,
-    /// Exactly one of the two spellings setup writes, nothing else between `base` and the marker.
+    /// Exactly `<base>[ '--event' '<X>']`, optionally followed by exactly
+    /// ` # herdr-threads-owner:<marker>`: the spellings setup writes, nothing else.
     canonical: bool,
-    marker: String,
+    /// Its `--event` argument, when canonical with one.
+    argument: Option<String>,
+    /// Its owner marker, when canonical with one.
+    marker: Option<String>,
 }
 
-/// Every registration of the hook command `base` with an owner marker, under any event array,
-/// whatever else it carries: canonical `<base>[ '--event' '<X>'] # herdr-threads-owner:<marker>`
-/// or edited (extra words or spacing before the marker). Another executable, state directory or
-/// instance has another `base` (which ends at a closing quote) and is not listed.
-fn marked_commands(value: &Value, base: &str) -> Vec<MarkedCommand> {
+impl Registration {
+    /// Exactly the bare hook command, with or without `--event`, no owner marker: the unowned
+    /// identical hook setup's own conflict handling already refuses.
+    fn exact_unmarked(&self) -> bool {
+        self.canonical && self.marker.is_none()
+    }
+}
+
+/// Every registration of the hook command `base` (its full quoted argv) under any event array:
+/// any command containing it, canonical or edited (a prefix, extra words, other spacing, an
+/// owner comment missing or changed). Another executable, state directory or instance has another
+/// `base` and is not listed. Accepted limit: a copy whose argv was re-quoted (unquoted or
+/// double-quoted words) no longer contains `base` and is not recognized.
+fn registrations(value: &Value, base: &str) -> Vec<Registration> {
     let Some(hooks) = value["hooks"].as_object() else {
         return Vec::new();
     };
     let mut found = Vec::new();
     for event in hooks.keys() {
         for command in hook_commands(value, event) {
-            let Some(rest) = command.strip_prefix(base) else {
+            if !command.contains(base) {
                 continue;
-            };
-            // Found by its comment text alone, so other whitespace before `#` (a tab) is still
-            // ours; only the exact single space is canonical.
-            let comment = OWNER_MARKER.trim_start();
-            let Some(at) = rest.find(comment) else {
-                continue;
-            };
-            let marker = &rest[at + comment.len()..];
-            let Some(between) = rest[..at].strip_suffix(' ') else {
-                found.push(MarkedCommand {
+            }
+            let parsed = command.strip_prefix(base).and_then(|rest| {
+                let (argument, rest) = match rest.strip_prefix(" '--event' '") {
+                    Some(tail) => {
+                        let (argument, rest) = tail.split_once('\'')?;
+                        (Some(argument.to_owned()), rest)
+                    }
+                    None => (None, rest),
+                };
+                let marker = match rest {
+                    "" => None,
+                    _ => Some(rest.strip_prefix(OWNER_MARKER)?.to_owned()),
+                };
+                Some((argument, marker))
+            });
+            found.push(match parsed {
+                Some((argument, marker)) => Registration {
                     event: event.clone(),
-                    argument: None,
+                    canonical: true,
+                    argument,
+                    marker,
+                },
+                None => Registration {
+                    event: event.clone(),
                     canonical: false,
-                    marker: marker.to_owned(),
-                });
-                continue;
-            };
-            let argument = between
-                .strip_prefix(" '--event' '")
-                .and_then(|tail| tail.strip_suffix('\''))
-                .filter(|argument| !argument.contains('\''))
-                .map(str::to_owned);
-            found.push(MarkedCommand {
-                event: event.clone(),
-                canonical: between.is_empty() || argument.is_some(),
-                argument,
-                marker: marker.to_owned(),
+                    argument: None,
+                    marker: None,
+                },
             });
         }
     }
     found
 }
 
-/// The event arrays under which `bytes` register this hook command more than once with an owner
-/// marker (for example a second owned set written beside a copied older one, or an edited copy's
-/// group beside the canonical one): every such group runs on each event.
+/// The event arrays under which `bytes` register this hook command more than once (for example a
+/// second owned set written beside a copied older one, or an edited copy's group beside the
+/// canonical one): every such registration runs on each event.
 pub(crate) fn doubled_events(
     _kind: SettingsKind,
     bytes: &[u8],
@@ -2121,10 +2127,10 @@ pub(crate) fn doubled_events(
     let base = shell_command(hook_argv)?;
     let value = root(bytes)?;
     let mut doubled: Vec<String> = Vec::new();
-    let marked = marked_commands(&value, &base);
-    for entry in &marked {
+    let found = registrations(&value, &base);
+    for entry in &found {
         if !doubled.contains(&entry.event)
-            && marked
+            && found
                 .iter()
                 .filter(|other| other.event == entry.event)
                 .count()
@@ -2148,9 +2154,10 @@ pub(crate) fn doubled_warning(file: &Path, events: &[String]) -> String {
     )
 }
 
-/// Whether `bytes` register this hook command anywhere with some setup's owner marker, adoptable
-/// or not.
-pub(crate) fn holds_marked_groups(
+/// Whether `bytes` register this hook command anywhere other than as the exact unmarked command
+/// (which setup's conflict handling refuses on its own): another setup's marked groups or an edited
+/// copy, adoptable or not.
+pub(crate) fn holds_registrations(
     _kind: SettingsKind,
     bytes: &[u8],
     hook_argv: &[String],
@@ -2158,7 +2165,9 @@ pub(crate) fn holds_marked_groups(
     if bytes.is_empty() {
         return Ok(false);
     }
-    Ok(!marked_commands(&root(bytes)?, &shell_command(hook_argv)?).is_empty())
+    Ok(registrations(&root(bytes)?, &shell_command(hook_argv)?)
+        .iter()
+        .any(|registration| !registration.exact_unmarked()))
 }
 
 /// [`find_adoptable`] over the current file; `None` when the file does not exist.
@@ -2392,23 +2401,56 @@ mod adoption_tests {
         // other edit before its marker, is an edit, not a missing event; so is a marked group
         // under an event this adapter does not declare.
         let kind = codex::settings_kind();
-        for edit in [
-            "'--event' 'PreToolUse' '--verbose' #",
-            "'--verbose' '--event' 'PreToolUse' #",
-            "'--event' 'PreToolUse'  #",
-            "'--event' 'PreToolUse'\t#",
-        ] {
+        let swap =
+            |from: &'static str, to: &'static str| move |command: &str| command.replace(from, to);
+        type Edit = Box<dyn Fn(&str) -> String>;
+        let edits: Vec<(&str, Edit)> = vec![
+            (
+                "extra argument after",
+                Box::new(swap("'PreToolUse' #", "'PreToolUse' '--verbose' #")),
+            ),
+            (
+                "extra argument before",
+                Box::new(swap("'--event'", "'--verbose' '--event'")),
+            ),
+            (
+                "doubled space",
+                Box::new(swap("'PreToolUse' #", "'PreToolUse'  #")),
+            ),
+            ("tab", Box::new(swap("'PreToolUse' #", "'PreToolUse'\t#"))),
+            (
+                "leading space",
+                Box::new(|command: &str| format!(" {command}")),
+            ),
+            (
+                "environment prefix",
+                Box::new(|command: &str| format!("FOO=1 {command}")),
+            ),
+            (
+                "unmarked extra argument",
+                Box::new(|command: &str| {
+                    let (head, _) = command.split_once(" # ").unwrap();
+                    format!("{head} '--verbose'")
+                }),
+            ),
+            (
+                "unmarked trailing space",
+                Box::new(|command: &str| format!("{} ", command.split_once(" # ").unwrap().0)),
+            ),
+        ];
+        for (edit, apply) in &edits {
             let mut edited = missing.clone();
-            let command = edited["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+            let original = edited["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
                 .as_str()
                 .unwrap()
-                .replace("'--event' 'PreToolUse' #", edit);
-            assert!(command.contains(edit), "{command}");
+                .to_owned();
+            let command = apply(&original);
+            assert_ne!(command, original, "{edit}");
             edited["hooks"]["PreToolUse"][0]["hooks"][0]["command"] = json!(command);
             assert!(adoptable(&edited).is_none(), "{edit:?}");
             let bytes = serde_json::to_vec(&edited).unwrap();
             assert!(
-                holds_marked_groups(kind, &bytes, &argv()).unwrap(),
+                holds_registrations(kind, &bytes, &argv()).unwrap(),
                 "{edit:?}"
             );
             // Beside the canonical group, the edited one is a second registration.
@@ -2433,7 +2475,7 @@ mod adoption_tests {
         .unwrap();
         assert!(adoptable(&wrong).is_none());
         let bytes = serde_json::to_vec(&wrong).unwrap();
-        assert!(holds_marked_groups(kind, &bytes, &argv()).unwrap());
+        assert!(holds_registrations(kind, &bytes, &argv()).unwrap());
         let mut undeclared = missing.clone();
         undeclared["hooks"]["SomeOtherEvent"] = value["hooks"]["SubagentStart"].clone();
         assert!(adoptable(&undeclared).is_none());
@@ -2462,7 +2504,7 @@ mod adoption_tests {
         )
         .unwrap();
         let bytes = serde_json::to_vec(&foreign).unwrap();
-        assert!(!holds_marked_groups(kind, &bytes, &argv()).unwrap());
+        assert!(!holds_registrations(kind, &bytes, &argv()).unwrap());
 
         let mut unmarked = value.clone();
         unmarked["hooks"]["SessionStart"]
@@ -3240,15 +3282,16 @@ pub(crate) mod legacy {
         // A symlinked file keeps its own refusal (setup never follows the link).
         if recorded.is_none()
             && !fs::symlink_metadata(&file.path).is_ok_and(|meta| meta.file_type().is_symlink())
-            && lib::holds_marked_groups(kind, &base, &argv).unwrap_or(false)
+            && lib::holds_registrations(kind, &base, &argv).unwrap_or(false)
             && !matches!(lib::find_adoptable(kind, &base, &argv), Ok(Some(_)))
         {
             file.undo();
             return Err(api(
                 ErrorCode::Conflict,
                 format!(
-                    "{} holds herdr-threads hook groups of another setup (an owner marker) that \
-                     cannot be adopted: edited, duplicated, or registered without `--event`. \
+                    "{} holds herdr-threads hook registrations setup cannot adopt: another \
+                     setup's groups or copies of the hook command that are edited, duplicated, \
+                     unmarked or registered without `--event`. \
                      Setup does not add a second set beside them, and unsetup does not own them: \
                      remove those groups from the file by hand, then set up again; nothing was \
                      changed",
