@@ -30,6 +30,8 @@ struct Client {
     service: DomainService,
     supported: bool,
     omit_creation_policy: bool,
+    /// Exact discovery reply for scoped mixed-capability peer controls.
+    capability_override: Option<Vec<String>>,
     lose: Mutex<Option<&'static str>>,
     calls: Mutex<Vec<Command>>,
 }
@@ -49,7 +51,9 @@ impl LocalClient for Client {
         }
         if matches!(command, Command::Capabilities) {
             return Ok(CommandResult::Capabilities(CapabilityList {
-                capabilities: if self.supported {
+                capabilities: if let Some(capabilities) = &self.capability_override {
+                    capabilities.clone()
+                } else if self.supported {
                     herdr_threads::protocol::capabilities::ADVERTISED
                         .iter()
                         .filter(|name| {
@@ -144,6 +148,7 @@ impl Fixture {
                 service,
                 supported: true,
                 omit_creation_policy: false,
+                capability_override: None,
                 lose: Mutex::new(None),
                 calls: Mutex::new(vec![]),
             },
@@ -205,6 +210,477 @@ impl Write for LostOutput {
     }
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
+    }
+}
+
+// Kills: admitting a new ordinary direct compound from Direct/Ensure support
+// alone, mutating the pair before send-time receipt semantics are negotiated.
+#[test]
+fn modern_ordinary_direct_send_requires_receipt_capability_before_any_effect() {
+    use herdr_threads::protocol::{
+        capabilities::{DIRECT_THREADS_V1, ENSURE_CREATION_POLICY_V1},
+        results::ErrorCode,
+    };
+    for flags in [
+        vec!["--nudge"],
+        vec!["--require-ack", "seat-b", "--deadline", "30"],
+    ] {
+        let mut f = Fixture::new(false);
+        f.client.capability_override = Some(vec![
+            DIRECT_THREADS_V1.into(),
+            ENSURE_CREATION_POLICY_V1.into(),
+        ]);
+        let effects = [
+            "direct_threads",
+            "threads",
+            "invitations",
+            "memberships",
+            "messages",
+            "operations",
+            "send_preparations",
+            "send_manifests",
+            "prepared_recipients",
+            "lazy_recipients",
+            "receipts",
+            "receipt_state",
+            "wake_work",
+        ];
+        let before = effects.map(|table| f.count(table));
+        let mut args = vec!["send", "--seat", "seat-b", "--body", "modern ordinary"];
+        args.extend(flags);
+        let mut output = Vec::new();
+        let result = f.run(&args, &mut output);
+        assert!(
+            matches!(result, Err(RunError::Api(ref error)) if error.code == ErrorCode::Unsupported),
+            "Direct/Ensure without send-time receipts must refuse the new ordinary compound: {result:?}"
+        );
+        assert!(output.is_empty());
+        assert!(
+            f.journal
+                .page(&Default::default())
+                .unwrap()
+                .items
+                .is_empty()
+        );
+        assert_eq!(effects.map(|table| f.count(table)), before);
+        assert!(
+            matches!(
+                f.client.calls.lock().unwrap().as_slice(),
+                [Command::Capabilities]
+            ),
+            "refusal must precede journal, inspection, Ensure and Send"
+        );
+    }
+}
+
+#[test]
+fn modern_ordinary_direct_send_with_receipt_capability_commits_exact_ordinary_body() {
+    use herdr_threads::protocol::{
+        capabilities::{DIRECT_THREADS_V1, ENSURE_CREATION_POLICY_V1, SEND_TIME_RECEIPTS_V1},
+        commands::{DeliveryMode, InvitationConfirmation},
+    };
+    let mut f = Fixture::new(false);
+    f.client.capability_override = Some(vec![
+        DIRECT_THREADS_V1.into(),
+        ENSURE_CREATION_POLICY_V1.into(),
+        SEND_TIME_RECEIPTS_V1.into(),
+    ]);
+    let mut output = Vec::new();
+    f.run(
+        &[
+            "send",
+            "--seat",
+            "seat-b",
+            "--body",
+            "modern ordinary",
+            "--nudge",
+        ],
+        &mut output,
+    )
+    .unwrap();
+    assert!(!output.is_empty());
+    assert!(
+        f.journal
+            .page(&Default::default())
+            .unwrap()
+            .items
+            .is_empty()
+    );
+    assert_eq!(f.count("direct_threads"), 1);
+    assert_eq!(f.count("lazy_recipients"), 0);
+    let message: String = f.db.query_row(
+        "SELECT id FROM messages WHERE body='modern ordinary' AND kind='ordinary' AND delivery_mode='ordinary'",
+        [], |row| row.get(0),
+    ).unwrap();
+    let receipt = herdr_threads::store::effective::effective_receipt(&f.db, &message, "seat-b")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        receipt.state,
+        herdr_threads::store::effective::EffectiveReceiptState::Pending
+    );
+    assert!(receipt.deadline_at.is_some());
+    let calls = f.client.calls.lock().unwrap();
+    assert!(calls.iter().any(|command| matches!(command,
+        Command::EnsureDirectThread(ensure) if ensure.creation_policy.as_ref().is_some_and(|policy|
+            policy.confirmation == InvitationConfirmation::Lazy && policy.deadline_millis.is_none())
+    )));
+    let sends = calls
+        .iter()
+        .filter_map(|command| match command {
+            Command::SendMessage(send) => Some(send),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(sends.len(), 1);
+    assert_eq!(sends[0].delivery_mode, DeliveryMode::Ordinary);
+    assert_eq!(sends[0].body, "modern ordinary");
+    assert_eq!(
+        sends[0].direct_recipient.as_ref().unwrap().as_str(),
+        "seat-b"
+    );
+}
+
+#[test]
+fn modern_lazy_direct_send_is_exempt_from_receipt_capability() {
+    use herdr_threads::protocol::{
+        capabilities::{DIRECT_THREADS_V1, ENSURE_CREATION_POLICY_V1, LAZY_SEND},
+        commands::{DeliveryMode, InvitationConfirmation},
+    };
+    let mut f = Fixture::new(false);
+    f.client.capability_override = Some(vec![
+        DIRECT_THREADS_V1.into(),
+        ENSURE_CREATION_POLICY_V1.into(),
+        LAZY_SEND.into(),
+    ]);
+    f.run(
+        &["send", "--seat", "seat-b", "--body", "modern lazy"],
+        &mut Vec::new(),
+    )
+    .unwrap();
+    assert!(
+        f.journal
+            .page(&Default::default())
+            .unwrap()
+            .items
+            .is_empty()
+    );
+    assert_eq!(f.count("direct_threads"), 1);
+    assert_eq!(f.count("lazy_recipients"), 1);
+    assert_eq!(f.count("receipts"), 0);
+    assert_eq!(f.count("prepared_recipients"), 0);
+    assert_eq!(f.count("receipt_state"), 0);
+    let calls = f.client.calls.lock().unwrap();
+    assert!(calls.iter().any(|command| matches!(command,
+        Command::EnsureDirectThread(ensure) if ensure.creation_policy.as_ref().is_some_and(|policy|
+            policy.confirmation == InvitationConfirmation::Lazy && policy.deadline_millis.is_none())
+    )));
+    let sends = calls
+        .iter()
+        .filter_map(|command| match command {
+            Command::SendMessage(send) => Some(send),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(sends.len(), 1);
+    assert_eq!(sends[0].delivery_mode, DeliveryMode::Lazy);
+    assert_eq!(sends[0].body, "modern lazy");
+    assert_eq!(
+        sends[0].direct_recipient.as_ref().unwrap().as_str(),
+        "seat-b"
+    );
+    assert!(sends[0].invited_recipients.is_empty());
+    assert!(sends[0].deadline_millis.is_none());
+}
+
+fn record_historical_direct_receipt_control(
+    f: &Fixture,
+    mode: herdr_threads::protocol::commands::DeliveryMode,
+    body: &str,
+) -> herdr_threads::cli::journal::IntentRef {
+    use herdr_threads::{
+        cli::{
+            direct_send::{Plan, Request},
+            journal::{IntentScope, SemanticMutation},
+        },
+        protocol::{
+            commands::DeliveryMode,
+            handoff::HandoffNamespace,
+            ids::{OperationId, SeatId},
+        },
+    };
+    let context = f.contexts.current().unwrap().unwrap();
+    let claim = f.contexts.claim(&context).unwrap();
+    let target = SeatId::new("seat-b");
+    let plan = Plan {
+        creation_policy: None,
+        namespace: HandoffNamespace {
+            instance: claim.instance.clone(),
+            state_dir: f.root.clone(),
+            host_endpoint: PathBuf::from("/isolated-host.sock"),
+        },
+        request: Request {
+            target: target.clone(),
+            delivery_mode: mode,
+            body: body.into(),
+            require_ack: if mode == DeliveryMode::Ordinary {
+                vec![target]
+            } else {
+                vec![]
+            },
+            deadline_millis: (mode == DeliveryMode::Ordinary).then_some(30_000),
+            relays_user: false,
+            user_intent: None,
+        },
+        ensure_key: OperationId::new(uuid::Uuid::new_v4().to_string()),
+        send_key: OperationId::new(uuid::Uuid::new_v4().to_string()),
+    };
+    let scope = IntentScope::Cooperative {
+        instance: claim.instance.clone(),
+        seat: claim.seat.clone(),
+    };
+    let semantic =
+        SemanticMutation::freeze(SemanticMutation::DirectSend(Box::new(plan)), claim).unwrap();
+    assert!(
+        !serde_json::to_string(&semantic)
+            .unwrap()
+            .contains("creation_policy")
+    );
+    f.journal.record(scope, semantic, 0).unwrap()
+}
+
+#[test]
+fn pending_historical_ordinary_direct_retry_requires_receipts_without_rewriting_original() {
+    use herdr_threads::{
+        cli::journal::SemanticMutation,
+        protocol::{
+            capabilities::{DIRECT_THREADS_V1, ENSURE_CREATION_POLICY_V1},
+            commands::DeliveryMode,
+            results::ErrorCode,
+        },
+    };
+    use sha2::{Digest, Sha256};
+    let mut f = Fixture::new(false);
+    let reference =
+        record_historical_direct_receipt_control(&f, DeliveryMode::Ordinary, "retained ordinary");
+    let original = f.journal.load(&reference).unwrap();
+    assert_eq!(
+        f.journal.page(&Default::default()).unwrap().items[0].status,
+        herdr_threads::protocol::results::IntentStatus::Pending
+    );
+    let original_bytes = serde_json::to_vec(&original.semantic).unwrap();
+    assert_eq!(
+        original.header.semantic_digest,
+        format!("{:x}", Sha256::digest(&original_bytes))
+    );
+    let intent_path = std::fs::read_dir(f.root.join("intents"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| path.extension().is_some_and(|ext| ext == "intent"))
+        .unwrap();
+    let stored_original = std::fs::read(&intent_path).unwrap();
+    let before = [
+        f.count("direct_threads"),
+        f.count("invitations"),
+        f.count("messages"),
+        f.count("operations"),
+        f.count("send_preparations"),
+        f.count("prepared_recipients"),
+    ];
+    f.client.capability_override = Some(vec![
+        DIRECT_THREADS_V1.into(),
+        ENSURE_CREATION_POLICY_V1.into(),
+    ]);
+    let result = f.run(&["retry", &reference.recovery_ref()], &mut Vec::new());
+    assert!(
+        matches!(result, Err(RunError::Api(ref error)) if error.code == ErrorCode::Unsupported),
+        "pending historical ordinary retry must refuse before additional effects: {result:?}"
+    );
+    assert_eq!(
+        [
+            f.count("direct_threads"),
+            f.count("invitations"),
+            f.count("messages"),
+            f.count("operations"),
+            f.count("send_preparations"),
+            f.count("prepared_recipients")
+        ],
+        before
+    );
+    assert!(matches!(
+        f.client.calls.lock().unwrap().as_slice(),
+        [Command::Capabilities]
+    ));
+    assert_eq!(std::fs::read(&intent_path).unwrap(), stored_original);
+    let retained = f.journal.load(&reference).unwrap();
+    assert_eq!(
+        serde_json::to_vec(&retained.semantic).unwrap(),
+        original_bytes
+    );
+    assert_eq!(retained.semantic, original.semantic);
+    assert_eq!(
+        retained.header.semantic_digest,
+        original.header.semantic_digest
+    );
+    let SemanticMutation::Frozen { claim, mutation } = &retained.semantic else {
+        panic!("historical frozen claim");
+    };
+    let SemanticMutation::DirectSend(plan) = mutation.as_ref() else {
+        panic!("historical direct plan");
+    };
+    assert!(plan.creation_policy.is_none());
+    assert_eq!(claim, original.semantic.frozen_claim().unwrap());
+
+    // The same immutable historical original remains executable on a capable peer.
+    f.client.capability_override = None;
+    f.client.calls.lock().unwrap().clear();
+    f.run(&["retry", &reference.recovery_ref()], &mut Vec::new())
+        .unwrap();
+    let calls = f.client.calls.lock().unwrap();
+    let ensure = calls
+        .iter()
+        .find_map(|command| match command {
+            Command::EnsureDirectThread(value) => Some(value),
+            _ => None,
+        })
+        .unwrap();
+    let send = calls
+        .iter()
+        .find_map(|command| match command {
+            Command::SendMessage(value) => Some(value),
+            _ => None,
+        })
+        .unwrap();
+    assert!(ensure.creation_policy.is_none());
+    assert_eq!(ensure.operation, plan.ensure_key);
+    assert_eq!(send.operation, plan.send_key);
+    assert_eq!(&ensure.claim, claim);
+    assert_eq!(&send.claim, claim);
+    assert_eq!(send.body, plan.request.body);
+    assert_eq!(send.delivery_mode, plan.request.delivery_mode);
+    assert_eq!(send.invited_recipients, plan.request.require_ack);
+    assert_eq!(send.deadline_millis, plan.request.deadline_millis);
+}
+
+#[test]
+fn historical_lazy_direct_retry_is_exempt_from_receipt_capability() {
+    use herdr_threads::protocol::{
+        capabilities::{DIRECT_THREADS_V1, LAZY_SEND},
+        commands::DeliveryMode,
+    };
+    let mut f = Fixture::new(false);
+    let reference =
+        record_historical_direct_receipt_control(&f, DeliveryMode::Lazy, "retained lazy");
+    f.client.capability_override = Some(vec![DIRECT_THREADS_V1.into(), LAZY_SEND.into()]);
+    f.run(&["retry", &reference.recovery_ref()], &mut Vec::new())
+        .unwrap();
+    assert!(
+        f.journal
+            .page(&Default::default())
+            .unwrap()
+            .items
+            .is_empty()
+    );
+    assert_eq!(f.count("direct_threads"), 1);
+    assert_eq!(f.count("lazy_recipients"), 1);
+    assert_eq!(f.count("receipts"), 0);
+    assert_eq!(f.count("receipt_state"), 0);
+    let calls = f.client.calls.lock().unwrap();
+    assert!(calls.iter().any(|command| matches!(command, Command::EnsureDirectThread(ensure) if ensure.creation_policy.is_none())));
+    assert!(calls.iter().any(|command| matches!(command, Command::SendMessage(send) if send.delivery_mode == DeliveryMode::Lazy && send.body == "retained lazy")));
+}
+
+#[test]
+fn committed_direct_ordinary_output_retry_does_not_require_receipt_capability() {
+    use herdr_threads::protocol::{
+        capabilities::{DIRECT_THREADS_V1, ENSURE_CREATION_POLICY_V1},
+        commands::DeliveryMode,
+    };
+    for historical in [false, true] {
+        let mut f = Fixture::new(false);
+        let result = if historical {
+            let reference = record_historical_direct_receipt_control(
+                &f,
+                DeliveryMode::Ordinary,
+                "committed ordinary",
+            );
+            f.run(&["retry", &reference.recovery_ref()], &mut LostOutput)
+        } else {
+            f.run(
+                &[
+                    "send",
+                    "--seat",
+                    "seat-b",
+                    "--body",
+                    "committed ordinary",
+                    "--nudge",
+                ],
+                &mut LostOutput,
+            )
+        };
+        assert!(
+            matches!(result, Err(RunError::Io(ref error)) if error.to_string().contains("lost output"))
+        );
+        let recovery = f.recovery();
+        let reference = f.journal.resolve_recovery_ref(&recovery).unwrap();
+        let retained = f.journal.load(&reference).unwrap();
+        assert_eq!(
+            f.journal.page(&Default::default()).unwrap().items[0].status,
+            herdr_threads::protocol::results::IntentStatus::CommittedAwaitingOutput
+        );
+        let original_commands = f.client.calls.lock().unwrap().clone();
+        let before = [
+            f.count("direct_threads"),
+            f.count("invitations"),
+            f.count("messages"),
+            f.count("operations"),
+            f.count("send_manifests"),
+            f.count("prepared_recipients"),
+        ];
+        let message: String =
+            f.db.query_row(
+                "SELECT id FROM messages WHERE body='committed ordinary'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        f.client.capability_override = Some(vec![
+            DIRECT_THREADS_V1.into(),
+            ENSURE_CREATION_POLICY_V1.into(),
+        ]);
+        f.client.calls.lock().unwrap().clear();
+        let mut output = Vec::new();
+        f.run(&["retry", &recovery], &mut output).unwrap();
+        assert!(String::from_utf8(output).unwrap().contains(&message));
+        assert_eq!(
+            [
+                f.count("direct_threads"),
+                f.count("invitations"),
+                f.count("messages"),
+                f.count("operations"),
+                f.count("send_manifests"),
+                f.count("prepared_recipients")
+            ],
+            before
+        );
+        assert!(
+            f.journal
+                .page(&Default::default())
+                .unwrap()
+                .items
+                .is_empty()
+        );
+        for command in f.client.calls.lock().unwrap().iter() {
+            if let Command::EnsureDirectThread(ensure) = command {
+                assert_eq!(ensure.creation_policy.is_none(), historical);
+                assert_eq!(Some(&ensure.claim), retained.semantic.frozen_claim());
+                assert!(original_commands.contains(command));
+            }
+            if let Command::SendMessage(send) = command {
+                assert_eq!(Some(&send.claim), retained.semantic.frozen_claim());
+                assert!(original_commands.contains(command));
+            }
+        }
     }
 }
 

@@ -6600,3 +6600,6 @@ fn presentation_q3_publication_recipient_keys_have_constant_sqlite_work() {
         "production mode-specific point work must not follow unrelated retained recipients"
     );
 }
+
+#[path = "query_work_q4.rs"]
+mod query_work_q4;

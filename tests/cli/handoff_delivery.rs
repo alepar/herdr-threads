@@ -4334,3 +4334,204 @@ fn automatic_existing_max_escaped_body_and_independent_frozen_deadlines() {
     assert_eq!(send.body, body);
     assert_eq!(send.deadline_millis, Some(7000));
 }
+
+// Kills: skipping the receipt negotiation for a retained policy=None original.
+// Discovery is overridden; every execution call uses the existing producer fixture.
+struct ReceiptCapabilityPeer<'a> {
+    inner: &'a AutomaticPeerClient,
+    receipts: bool,
+    calls: Mutex<Vec<Command>>,
+}
+impl LocalClient for ReceiptCapabilityPeer<'_> {
+    fn call_with_output(
+        &self,
+        command: Command,
+        _: &OutputSpec,
+        budget: &CallBudget,
+    ) -> Result<CommandResult, ApiError> {
+        self.call(command, budget)
+    }
+    fn call(&self, command: Command, budget: &CallBudget) -> Result<CommandResult, ApiError> {
+        self.calls.lock().unwrap().push(command.clone());
+        if matches!(command, Command::Capabilities) {
+            let mut capabilities = vec![crate::protocol::capabilities::AUTOMATIC_HANDOFF_V1.into()];
+            if self.receipts {
+                capabilities.push(crate::protocol::capabilities::SEND_TIME_RECEIPTS_V1.into());
+            }
+            return Ok(CommandResult::Capabilities(
+                crate::protocol::results::CapabilityList { capabilities },
+            ));
+        }
+        self.inner.call(command, budget)
+    }
+}
+
+#[test]
+fn historical_none_automatic_existing_retry_requires_receipts_before_effects_and_preserves_origin()
+{
+    use crate::protocol::handoff::{
+        AutomaticDeliveryAction, AutomaticDeliveryPlan, AutomaticHandoffPayload, AutomaticOriginal,
+    };
+    use sha2::{Digest, Sha256};
+    let tmp = TempRoot::new();
+    let journal = Journal::open(tmp.0.join("intents")).unwrap();
+    let inner = AutomaticPeerClient::new(true);
+    let namespace = fixture::payload().handoff.namespace;
+    let payload = AutomaticHandoffPayload::new(
+        namespace.clone(),
+        crate::protocol::ids::OperationId::new("retained-receipt-existing"),
+        inner.body.clone(),
+    )
+    .unwrap();
+    let plan = AutomaticDeliveryPlan::new(payload, SeatId::new("recipient")).unwrap();
+    assert!(plan.payload.policy.is_none());
+    let keys = plan.payload.keys.clone();
+    let claim = canonical_claim();
+    let reference = publish_automatic(
+        &journal,
+        AutomaticOriginal::Delivery(Box::new(plan.clone())),
+        claim.clone(),
+        &TestClock,
+    )
+    .unwrap();
+    let original = load_automatic_original(&journal, &reference).unwrap();
+    let bytes = journal.snapshot_automatic_origin(&reference).unwrap();
+    let semantic = serde_json::to_vec(&original.semantic).unwrap();
+    assert!(
+        !String::from_utf8(semantic.clone())
+            .unwrap()
+            .contains("\"policy\"")
+    );
+    assert_eq!(
+        original.header.semantic_digest,
+        format!("{:x}", Sha256::digest(&semantic))
+    );
+    let peer = ReceiptCapabilityPeer {
+        inner: &inner,
+        receipts: false,
+        calls: Mutex::new(vec![]),
+    };
+    let mut parsed =
+        super::super::commands::parse_argv(["ht", "retry", &reference.recovery_ref()]).unwrap();
+    parsed.output = OutputSpec::default();
+    let mut output = Vec::new();
+    assert!(
+        !super::super::topology_runtime::try_completed_with_namespace(
+            &parsed,
+            &journal,
+            &namespace,
+            &peer,
+            &TestClock,
+            &mut output
+        )
+        .unwrap()
+    );
+    assert!(output.is_empty());
+    let result = retry_automatic_to_writer(
+        &journal,
+        &reference,
+        super::super::actor_route::InvocationActor::Agent,
+        &namespace,
+        &peer,
+        None,
+        &TestClock,
+        &OutputSpec::default(),
+        &mut output,
+    );
+    assert!(
+        matches!(result, Err(RunError::Api(ref error)) if error.code == ErrorCode::Unsupported),
+        "pending None original must negotiate receipts: {result:?}"
+    );
+    assert_eq!(
+        journal.snapshot_automatic_origin(&reference).unwrap(),
+        bytes
+    );
+    assert_eq!(
+        load_automatic_original(&journal, &reference)
+            .unwrap()
+            .semantic,
+        original.semantic
+    );
+    assert_eq!(*inner.invitations.lock().unwrap(), 0);
+    assert!(!*inner.sent.lock().unwrap());
+    assert!(!*inner.completed.lock().unwrap());
+    assert!(inner.thread.lock().unwrap().is_none());
+    assert!(
+        peer.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|c| matches!(c, Command::Capabilities))
+    );
+    assert!(peer.calls.lock().unwrap().iter().all(|c| matches!(c,
+        Command::Capabilities | Command::SeatInspect(_) | Command::Seats(_)) || matches!(c,
+        Command::AutomaticHandoffDelivery(q) if matches!(q.action, AutomaticDeliveryAction::Status))), "refusal permits only discovery/read/status");
+    let capable = ReceiptCapabilityPeer {
+        inner: &inner,
+        receipts: true,
+        calls: Mutex::new(vec![]),
+    };
+    let mut first = Vec::new();
+    retry_automatic_to_writer(
+        &journal,
+        &reference,
+        super::super::actor_route::InvocationActor::Agent,
+        &namespace,
+        &capable,
+        None,
+        &TestClock,
+        &OutputSpec::default(),
+        &mut first,
+    )
+    .unwrap();
+    assert_eq!(*inner.invitations.lock().unwrap(), 1);
+    assert!(*inner.completed.lock().unwrap());
+    for c in capable.calls.lock().unwrap().iter() {
+        if let Command::AutomaticHandoffDelivery(q) = c {
+            assert_eq!(q.plan(), &plan);
+            assert_eq!(q.plan().payload.keys, keys);
+            if let AutomaticDeliveryAction::Ensure(ensure) = &q.action {
+                assert!(ensure.creation_policy.is_none());
+                assert_eq!(ensure.operation, keys.ensure);
+                assert_eq!(ensure.claim, claim);
+            }
+            if let AutomaticDeliveryAction::Send(send) = &q.action {
+                assert_eq!(send.operation, keys.send);
+                assert_eq!(send.body, plan.payload.body);
+                assert_eq!(send.claim, claim);
+            }
+        }
+    }
+    let terminal = load_automatic_terminal(&journal, &reference)
+        .unwrap()
+        .unwrap();
+    assert_eq!(terminal.original.as_bytes(), bytes);
+    let retained =
+        super::super::retry::load_original_for_actor(&journal, &reference.recovery_ref()).unwrap();
+    assert_eq!(retained.semantic, original.semantic);
+    assert_eq!(
+        retained.header.semantic_digest,
+        original.header.semantic_digest
+    );
+    // Actual parsed public completed classifier stays exempt on an old peer.
+    let mut parsed =
+        super::super::commands::parse_argv(["ht", "retry", &reference.recovery_ref()]).unwrap();
+    parsed.output = OutputSpec::default();
+    peer.calls.lock().unwrap().clear();
+    let mut replay = Vec::new();
+    assert!(
+        super::super::topology_runtime::try_completed_with_namespace(
+            &parsed,
+            &journal,
+            &namespace,
+            &peer,
+            &TestClock,
+            &mut replay
+        )
+        .unwrap()
+    );
+    assert_eq!(replay, first);
+    assert!(peer.calls.lock().unwrap().iter().all(|c| matches!(c, Command::Capabilities) || matches!(c,
+        Command::AutomaticHandoffDelivery(q) if matches!(q.action, AutomaticDeliveryAction::Status))));
+    assert_eq!(*inner.invitations.lock().unwrap(), 1);
+}

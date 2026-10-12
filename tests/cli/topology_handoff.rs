@@ -7282,6 +7282,244 @@ mod live {
             assert_eq!(peer.identity.plan.payload.handoff.body, "\0".repeat(65536));
         }
 
+        // Kills: admitting historical None bootstrap without send-time semantics,
+        // before any parent Begin/Reserve or native creation/launch submission.
+        struct BootstrapReceiptPeer<'a> {
+            inner: &'a AutoPeer,
+            receipts: bool,
+            calls: std::sync::Mutex<Vec<Command>>,
+        }
+        impl LocalClient for BootstrapReceiptPeer<'_> {
+            fn call_with_output(
+                &self,
+                command: Command,
+                _: &crate::protocol::output::OutputSpec,
+                budget: &CallBudget,
+            ) -> Result<CommandResult, ApiError> {
+                self.call(command, budget)
+            }
+            fn call(
+                &self,
+                command: Command,
+                budget: &CallBudget,
+            ) -> Result<CommandResult, ApiError> {
+                self.calls.lock().unwrap().push(command.clone());
+                if matches!(command, Command::Capabilities) {
+                    let mut capabilities =
+                        vec![crate::protocol::capabilities::AUTOMATIC_HANDOFF_V1.into()];
+                    if self.receipts {
+                        capabilities
+                            .push(crate::protocol::capabilities::SEND_TIME_RECEIPTS_V1.into());
+                    }
+                    return Ok(CommandResult::Capabilities(
+                        crate::protocol::results::CapabilityList { capabilities },
+                    ));
+                }
+                self.inner.call(command, budget)
+            }
+        }
+        fn receipt_bootstrap_counts(peer: &AutoPeer) -> Vec<i64> {
+            let state = peer.base.peer.state.lock().unwrap();
+            [
+                "operations",
+                "threads",
+                "direct_threads",
+                "invitations",
+                "memberships",
+                "messages",
+                "send_preparations",
+                "send_manifests",
+                "prepared_recipients",
+                "receipts",
+                "receipt_state",
+                "automatic_bootstrap_parents",
+                "automatic_bootstrap_keys",
+                "automatic_handoff_companions",
+            ]
+            .iter()
+            .map(|table| {
+                state
+                    .db
+                    .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
+                        row.get(0)
+                    })
+                    .unwrap()
+            })
+            .collect()
+        }
+        #[test]
+        fn public_historical_none_new_tab_retry_requires_receipts_before_any_effect_and_preserves_origin()
+         {
+            use super::super::super::super::{actor_route::InvocationActor, retry};
+            use sha2::{Digest, Sha256};
+            // Original producer fixture parses actual --new-tab and then records the
+            // historical omitted policy; no runtime-dependent reconstruction occurs.
+            let peer = AutoPeer::with_body_policy("codex", "literal work", true);
+            assert!(peer.identity.plan.payload.handoff.policy.is_none());
+            let original = peer
+                .base
+                .journal
+                .snapshot_bootstrap_origin(&peer.reference)
+                .unwrap();
+            let retained =
+                retry::load_original_for_actor(&peer.base.journal, &peer.reference.recovery_ref())
+                    .unwrap();
+            let semantic = serde_json::to_vec(&retained.semantic).unwrap();
+            assert!(
+                !String::from_utf8(semantic.clone())
+                    .unwrap()
+                    .contains("\"policy\"")
+            );
+            assert_eq!(
+                retained.header.semantic_digest,
+                format!("{:x}", Sha256::digest(&semantic))
+            );
+            let counts = receipt_bootstrap_counts(&peer);
+            let old = BootstrapReceiptPeer {
+                inner: &peer,
+                receipts: false,
+                calls: std::sync::Mutex::new(vec![]),
+            };
+            let mut launcher = DownstreamLauncher::default();
+            let mut output = Vec::new();
+            let result = retry::run_automatic_bootstrap_retry_to_writer(
+                &peer.base.journal,
+                &peer.reference,
+                InvocationActor::Agent,
+                peer.ns(),
+                &old,
+                &peer,
+                &mut launcher,
+                &peer.base.clock,
+                BootstrapSubmissionInputs {
+                    witness: &peer.base.witness,
+                    context: &peer.base.context,
+                },
+                &crate::protocol::output::OutputSpec::default(),
+                &mut output,
+            );
+            assert!(
+                matches!(result, Err(RunError::Api(ref error)) if error.code == crate::protocol::results::ErrorCode::Unsupported),
+                "historical pending None bootstrap must negotiate receipts: {result:?}"
+            );
+            assert_eq!(receipt_bootstrap_counts(&peer), counts);
+            assert_eq!(launcher.starts, 0);
+            assert_eq!(peer.base.peer.state.lock().unwrap().native_calls, 0);
+            assert_eq!(
+                peer.base
+                    .journal
+                    .snapshot_bootstrap_origin(&peer.reference)
+                    .unwrap(),
+                original
+            );
+            let after =
+                retry::load_original_for_actor(&peer.base.journal, &peer.reference.recovery_ref())
+                    .unwrap();
+            assert_eq!(after.semantic, retained.semantic);
+            assert_eq!(
+                after.header.semantic_digest,
+                retained.header.semantic_digest
+            );
+            let calls = old.calls.lock().unwrap();
+            assert!(calls.iter().any(|c| matches!(c, Command::Capabilities)));
+            assert!(calls.iter().all(|c| matches!(c, Command::Capabilities | Command::SeatInspect(_) | Command::Seats(_)) || matches!(c,
+                Command::AutomaticBootstrap(q) if matches!(q.action, AutomaticBootstrapAction::Status)) || matches!(c,
+                Command::AutomaticHandoffDelivery(q) if matches!(q.action, AutomaticDeliveryAction::Status))), "only discovery/read/status before refusal");
+            drop(calls);
+            let capable = BootstrapReceiptPeer {
+                inner: &peer,
+                receipts: true,
+                calls: std::sync::Mutex::new(vec![]),
+            };
+            let mut first = Vec::new();
+            let completed = retry::run_automatic_bootstrap_retry_to_writer(
+                &peer.base.journal,
+                &peer.reference,
+                InvocationActor::Agent,
+                peer.ns(),
+                &capable,
+                &peer,
+                &mut launcher,
+                &peer.base.clock,
+                BootstrapSubmissionInputs {
+                    witness: &peer.base.witness,
+                    context: &peer.base.context,
+                },
+                &crate::protocol::output::OutputSpec::default(),
+                &mut first,
+            )
+            .unwrap();
+            assert_eq!(completed.state, BootstrapState::Completed);
+            assert_eq!(launcher.starts, 1);
+            assert_eq!(peer.base.peer.state.lock().unwrap().native_calls, 1);
+            let attachment = completed.attachment.as_ref().unwrap();
+            assert!(attachment.child.plan().payload.policy.is_none());
+            let child = attachment.child.clone();
+            for command in capable.calls.lock().unwrap().iter() {
+                match command {
+                    Command::AutomaticBootstrap(q) => assert_eq!(q.identity, peer.identity),
+                    Command::AutomaticHandoffDelivery(q) => {
+                        assert_eq!(q.plan(), child.plan());
+                        if let AutomaticDeliveryAction::Ensure(ensure) = &q.action {
+                            assert!(ensure.creation_policy.is_none());
+                            assert_eq!(ensure.operation, child.plan().payload.keys.ensure);
+                            assert_eq!(ensure.claim, peer.identity.claim);
+                        }
+                        if let AutomaticDeliveryAction::Send(send) = &q.action {
+                            assert_eq!(send.operation, child.plan().payload.keys.send);
+                            assert_eq!(send.body, "literal work");
+                            assert_eq!(send.claim, peer.identity.claim);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let terminal_path = peer.base.journal.root().join(format!(
+                "automatic-bootstrap-{:020}-{}.terminal",
+                peer.reference.ordinal,
+                peer.reference.operation.as_str()
+            ));
+            let terminal: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(terminal_path).unwrap()).unwrap();
+            assert_eq!(terminal["original"].as_str().unwrap().as_bytes(), original);
+            let after =
+                retry::load_original_for_actor(&peer.base.journal, &peer.reference.recovery_ref())
+                    .unwrap();
+            assert_eq!(after.semantic, retained.semantic);
+            assert_eq!(
+                after.header.semantic_digest,
+                retained.header.semantic_digest
+            );
+            let mut parsed = super::super::super::super::commands::parse_argv([
+                "ht",
+                "retry",
+                &peer.reference.recovery_ref(),
+            ])
+            .unwrap();
+            parsed.output = crate::protocol::output::OutputSpec::default();
+            let before_replay = receipt_bootstrap_counts(&peer);
+            old.calls.lock().unwrap().clear();
+            let mut replay = Vec::new();
+            assert!(
+                super::super::super::super::topology_runtime::try_completed_with_namespace(
+                    &parsed,
+                    &peer.base.journal,
+                    peer.ns(),
+                    &old,
+                    &peer.base.clock,
+                    &mut replay
+                )
+                .unwrap()
+            );
+            assert_eq!(replay, first);
+            assert_eq!(receipt_bootstrap_counts(&peer), before_replay);
+            assert_eq!(peer.base.peer.state.lock().unwrap().native_calls, 1);
+            assert_eq!(launcher.starts, 1);
+            assert!(old.calls.lock().unwrap().iter().all(|c| matches!(c, Command::Capabilities) || matches!(c,
+                Command::AutomaticBootstrap(q) if matches!(q.action, AutomaticBootstrapAction::Status)) || matches!(c,
+                Command::AutomaticHandoffDelivery(q) if matches!(q.action, AutomaticDeliveryAction::Status))));
+        }
+
         #[test]
         fn modern_automatic_maximum_escaped_body_completes_and_recovers_exactly() {
             let body = "\0".repeat(65536);
