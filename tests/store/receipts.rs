@@ -4528,7 +4528,9 @@ fn receipt_discovery_sparse_episodes_survive_source_rowid_reuse_and_snapshot_res
 
 #[test]
 fn receipt_discovery_populated34_upgrade_rolls_back_and_reopens_with_bounded_bootstrap() {
-    let (context, mut db, _) = receipt_discovery_historical(37);
+    // "populated34" is the genuine prefix just before receipt warning origins:
+    // composed 42 (invitation warning origin) before 43.
+    let (context, mut db, _) = receipt_discovery_historical(42);
     for n in 0..125 {
         db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,author_kind,actor_seat_id,body,decision_at,decision_seq) VALUES (?1,'i','t',?2,'ordinary',NULL,?3,'x',0,?2)",params![format!("historical-{n}"),n+1,if n==1{"b"}else{"a"}]).unwrap();
         db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms,available_at,deadline_at) VALUES (?1,'t','b','pending',1,0,5000)",[format!("historical-{n}")]).unwrap();
@@ -4563,7 +4565,7 @@ fn receipt_discovery_populated34_upgrade_rolls_back_and_reopens_with_bounded_boo
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        37
+        42
     );
     assert_eq!(
         db.query_row(
@@ -4705,7 +4707,7 @@ fn receipt_discovery_populated34_upgrade_rolls_back_and_reopens_with_bounded_boo
         reopened
             .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        39
+        crate::store::schema::LATEST_VERSION
     );
 }
 
@@ -4725,7 +4727,7 @@ fn discovery_manifest(
 
 #[test]
 fn receipt_discovery_four_historical_streams_charge_every_visit_and_reset_once() {
-    let (context, db, clock) = receipt_discovery_historical(34);
+    let (context, db, clock) = receipt_discovery_historical(39);
     for n in 0..50 {
         discovery_receipt(&db, &format!("four-{n}"), n + 1, 5000);
         discovery_manifest(
@@ -4739,13 +4741,15 @@ fn receipt_discovery_four_historical_streams_charge_every_visit_and_reset_once()
     }
     // Populate31 before the actual32 capture, then reach genuine34 through
     // immutable migration DDL. No relabeled current image or synthetic bounds.
+    // (Pre-composition names: composed 39 = handoff bounds, 40 = deadline
+    // backfill capture, 42 = invitation warning origin, 43 = receipt origins.)
     let mut migrations =
         std::fs::read_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations"))
             .unwrap()
             .map(|p| p.unwrap().path())
             .collect::<Vec<_>>();
     migrations.sort();
-    for (n, path) in migrations.into_iter().enumerate().skip(34).take(3) {
+    for (n, path) in migrations.into_iter().enumerate().skip(39).take(3) {
         db.execute_batch(&std::fs::read_to_string(path).unwrap())
             .unwrap();
         db.pragma_update(None, "user_version", (n + 1) as i64)
@@ -4946,7 +4950,7 @@ fn receipt_discovery_upgrade_combined_reset_warning_and_cursors_roll_back_togeth
 
 #[test]
 fn receipt_discovery_terminal_upgrade_counts_rows_and_catalog_rejects_missing_projection() {
-    let (context, mut db, _) = receipt_discovery_historical(37);
+    let (context, mut db, _) = receipt_discovery_historical(42);
     for n in 0..125 {
         discovery_receipt(&db, &format!("terminal-{n}"), n + 1, 500);
         db.execute("INSERT INTO receipt_state(message_id,seat_id,state,ack_required,deadline_at) VALUES (?1,'c','acked',0,500)",[format!("terminal-{n}")]).unwrap();
