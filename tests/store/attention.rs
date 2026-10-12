@@ -4141,6 +4141,14 @@ fn presentation_exact_recovery_keeps_sibling_unread_after_receipt_and_lazy_settl
         let binding = BindingId::new(binding);
         let mut work = PresentationWork::default();
         let context = queries::ordinary_due_context(&db, "i", &seat, &binding, &mut work).unwrap();
+        let expected_context_probes = 3;
+        let context_probes = work.ordinary_due_key_probes;
+        assert_eq!(
+            context_probes,
+            expected_context_probes,
+            "{}: exact-binding context probes",
+            binding.as_str()
+        );
         let ordinary = queries::ordinary_presentation_message_by_id(
             &db,
             "i",
@@ -4161,6 +4169,14 @@ fn presentation_exact_recovery_keeps_sibling_unread_after_receipt_and_lazy_settl
                 }
             ));
         }
+        let expected_ordinary_probes = if unread { 18 } else { 16 };
+        let ordinary_end_probes = work.ordinary_due_key_probes;
+        assert_eq!(
+            ordinary_end_probes - context_probes,
+            expected_ordinary_probes,
+            "{}: settled ordinary eligibility and optional hydration probes",
+            binding.as_str()
+        );
         let lazy = queries::ordinary_presentation_message_by_id(
             &db,
             "i",
@@ -4172,9 +4188,22 @@ fn presentation_exact_recovery_keeps_sibling_unread_after_receipt_and_lazy_settl
         )
         .unwrap();
         assert_eq!(lazy.is_some(), unread);
+        // Lazy charges one message point, seven existing eligibility relations and
+        // three canonical episode points: direct pair, seat and current invitation.
+        // The envelope is charged even when own-cursor scope short-circuits them;
+        // an unread body adds three hydration points. A: 3+16+11=30; B: 3+18+14=35.
+        let expected_lazy_probes = if unread { 14 } else { 11 };
+        assert_eq!(
+            work.ordinary_due_key_probes - ordinary_end_probes,
+            expected_lazy_probes,
+            "{}: lazy eligibility and optional hydration probes",
+            binding.as_str()
+        );
         assert_eq!(
             work.ordinary_due_key_probes,
-            if unread { 3 + 18 + 11 } else { 3 + 16 + 8 }
+            expected_context_probes + expected_ordinary_probes + expected_lazy_probes,
+            "{}: complete exact recovery probe total",
+            binding.as_str()
         );
         assert_eq!(work.ordinary_due_seeks, 1);
     }
