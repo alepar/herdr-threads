@@ -59,6 +59,14 @@ priority = 90
 filter = "test(=store::page_fit::tests::differential_matches_greedy_for_every_site)"
 priority = 90
 
+# The same for the other CPU-heavy 35-47 s tests: in default order they start
+# after ~5400 of ~6100 tests and finish in the run's tail.
+[[profile.default.overrides]]
+filter = """
+binary(herdr-threads) & test(/^(harness::agy::doctor::tests::an_over_cap_brain_is_unbounded_and_limited|harness::agy::witness::tests::a_brain_directory_past_the_cap_reads_as_a_child_and_one_at_the_cap_is_examined|store::queries::tests::query_work_q4::q4_(episode_private_and_reconciliation_points_have_constant_sqlite_work|three_event_keys_and_actual_floor_have_constant_sqlite_work|raw_hundred_scope_charge_and_lazy_due_fourteen_use_actual_helpers))$/)
+"""
+priority = 90
+
 # The send chain asserts commit-to-wake under 100 ms for three sends; beside
 # the full suite's process-heavy tests it missed that budget (120-260 ms) while
 # it measures ~15-25 ms alone or under synthetic CPU load. It runs alone, and
