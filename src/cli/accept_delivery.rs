@@ -158,6 +158,9 @@ fn channel_completes<C: LocalClient + ?Sized>(
     clock: &dyn Clock,
     budget: &dyn Fn() -> CallBudget,
 ) -> bool {
+    // `clock` must be the clock the transport measures call budgets on (production shares one
+    // SystemClock): a read cut off at the capped deadline then always sees `remaining() == 0`
+    // and falls back; a refusal processed just past the deadline also falls back (at least once).
     let bound_ms = u64::try_from(request.grace.bound.as_millis()).unwrap_or(u64::MAX);
     let deadline = MonoInstant(clock.monotonic_now().0.saturating_add(bound_ms));
     let remaining = || deadline.0.saturating_sub(clock.monotonic_now().0);

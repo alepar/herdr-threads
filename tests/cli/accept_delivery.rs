@@ -89,6 +89,11 @@ struct Script {
     /// that ends first cuts the read off at its deadline with `deadline_exceeded`.
     page_delay: Duration,
     fail_advance_only: bool,
+    /// The page read with this 1-based index is refused at once (a canonical refusal, not a
+    /// timeout); 0 refuses none.
+    refuse_read: usize,
+    /// Each page read's (call time, budget deadline), in TestClock milliseconds.
+    page_budgets: Mutex<Vec<(u64, u64)>>,
     pages: Mutex<VecDeque<Page<InboxBatchV2Item>>>,
     calls: Mutex<Vec<&'static str>>,
 }
@@ -100,6 +105,8 @@ impl Script {
             fail_bookkeeping: false,
             page_delay: Duration::ZERO,
             fail_advance_only: false,
+            refuse_read: 0,
+            page_budgets: Mutex::new(vec![]),
             pages: Mutex::new(pages.into()),
             calls: Mutex::new(vec![]),
         }
@@ -152,6 +159,13 @@ impl LocalClient for Script {
             Command::InboxBatchV2(query) => {
                 self.calls.lock().unwrap().push("page");
                 assert_eq!(query.thread, Some(ThreadId::new("t")));
+                self.page_budgets
+                    .lock()
+                    .unwrap()
+                    .push((TestClock.monotonic_now().0, budget.deadline.0));
+                if self.page_budgets.lock().unwrap().len() == self.refuse_read {
+                    return busy();
+                }
                 if !self.page_delay.is_zero() {
                     let left = budget
                         .deadline
@@ -353,11 +367,10 @@ fn a_live_channel_that_misses_the_grace_leaves_the_accept_to_show_and_settle() {
     assert_eq!(script.count("complete"), 1);
 }
 
-/// Main review I1: a slow but bounded daemon must not stretch the 2 s grace. The grace runs from
-/// before the first peek and caps every peek's budget at its end, so with 300 ms reads and a
-/// 400 ms grace the wait ends near 400 ms (not 300 ms of first read + 400 ms + a final 5 s-budget
-/// read), the read cut off by the grace's end falls back to printing, and the fallback's own read
-/// has the caller's fresh budget.
+/// Main review I1: a slow but bounded daemon must not stretch the grace. The grace runs from
+/// before the first peek and every peek's budget ends by the grace's end, so no read can outlast
+/// it; the read cut off there falls back to printing, and the fallback's own read has the
+/// caller's fresh budget. Asserted on the budgets the scripted daemon received, not wall time.
 #[test]
 fn a_slow_daemon_cannot_stretch_the_channel_grace() {
     let mut script = Script::new(vec![page(vec![lazy("m1", "opener body")], false)]);
@@ -367,18 +380,28 @@ fn a_slow_daemon_cannot_stretch_the_channel_grace() {
         bound: Duration::from_millis(400),
         interval: Duration::from_millis(50),
     };
-    let started = Instant::now();
     let run = run_with(&script, &claim(), Presentation::Auto, grace);
-    let elapsed = started.elapsed();
-    // grace (400 ms) + the fallback's own full read (300 ms) + bookkeeping, with slack for a
-    // loaded test machine; the unbounded grace took >= 1 s here (300 first + up to 400 + 300).
-    assert!(elapsed < Duration::from_millis(900), "took {elapsed:?}");
+    let budgets = script.page_budgets.lock().unwrap().clone();
+    let (fallback, peeks) = budgets.split_last().expect("peeks and a fallback read");
+    // The grace starts just before the first peek, so it ends by that peek's call time + bound.
+    let grace_end = peeks[0].0 + 400;
+    for (_, deadline) in peeks {
+        assert!(
+            *deadline <= grace_end,
+            "peek budget past the grace: {budgets:?}"
+        );
+    }
+    assert!(
+        fallback.1 >= fallback.0 + 4_000,
+        "fallback keeps a fresh budget: {budgets:?}"
+    );
     assert_eq!(run.out.matches("opener body").count(), 1, "{}", run.out);
     assert_eq!(run.diagnostics, "");
     assert_eq!(script.count("advance"), 1);
 }
 
-/// The first peek alone outlasting the grace is the grace running out (fallback), not a refusal.
+/// The first peek alone outlasting the grace is the grace running out (fallback), not a refusal:
+/// its budget already ends with the grace.
 #[test]
 fn a_first_peek_cut_off_by_the_grace_falls_back_to_printing() {
     let mut script = Script::new(vec![page(vec![lazy("m1", "opener body")], false)]);
@@ -388,19 +411,38 @@ fn a_first_peek_cut_off_by_the_grace_falls_back_to_printing() {
         bound: Duration::from_millis(100),
         interval: Duration::from_millis(20),
     };
-    let started = Instant::now();
     let run = run_with(&script, &claim(), Presentation::Auto, grace);
+    let budgets = script.page_budgets.lock().unwrap().clone();
+    assert_eq!(
+        budgets.len(),
+        2,
+        "one cut-off peek, then the fallback's read: {budgets:?}"
+    );
     assert!(
-        started.elapsed() < Duration::from_millis(600),
-        "took {:?}",
-        started.elapsed()
+        budgets[0].1 <= budgets[0].0 + 100,
+        "first peek capped at the grace: {budgets:?}"
+    );
+    assert!(
+        budgets[1].1 >= budgets[1].0 + 4_000,
+        "fallback keeps a fresh budget: {budgets:?}"
     );
     assert_eq!(run.out.matches("opener body").count(), 1, "{}", run.out);
-    assert_eq!(
-        script.count("page"),
-        2,
-        "one cut-off peek, then the fallback's read"
-    );
+}
+
+/// A peek the daemon refuses inside the grace shows nothing: the rows stay with the channel.
+/// Both the first peek and a later one (after the first offered the opener).
+#[test]
+fn a_peek_refused_inside_the_grace_shows_nothing() {
+    for refused in [1, 2] {
+        let mut script = Script::new(vec![page(vec![lazy("m1", "opener body")], false)]);
+        script.live = true;
+        script.refuse_read = refused;
+        let run = run_with(&script, &claim(), Presentation::Auto, fast_grace(5_000));
+        assert_eq!(run.out, "", "refused peek {refused}");
+        assert_eq!(run.diagnostics, "", "refused peek {refused}");
+        assert_eq!(script.count("page"), refused, "no read after the refusal");
+        assert_eq!(script.count("advance") + script.count("complete"), 0);
+    }
 }
 
 /// Main review M1: when only AdvanceCursors fails and completion succeeds, the diagnostics line
