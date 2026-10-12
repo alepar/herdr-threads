@@ -2,4 +2,4 @@ r1 [Should-fix] integrations/claude/mod/hooks/register.js:289
 r1 [Should-fix] src/store/invitation_content.rs:2442
 r1 [Should-fix] tests/store/effective.rs:2136
 r1 [Should-fix] src/service/delivery_presentation.rs:62
-r1 [Should-fix] integrations/claude/mod/hooks/register.js:296 [lanes: premortem]
+r1 [Should-fix] integrations/claude/mod/hooks/register.js:296
