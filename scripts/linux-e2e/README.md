@@ -172,6 +172,9 @@ source file: you may have to log in again on the host. Prefer a dedicated accoun
   container, may additionally need AppArmor relaxed on Ubuntu hosts, and the wake e2e does not test the Codex
   sandbox (Codex sandbox behaviour is measured by its own probes), so the runner does not do it. `-- --codex-args
   ...` overrides the flags.
+  The two Codex recipients share one scratch `CODEX_HOME`; their first starts at once raced on its state DB
+  migration (one Codex exited: `duplicate column name: thread_id`), so in this mode the second start waits until the
+  first Codex is up.
 
 First live run, one case (spends a little quota):
 

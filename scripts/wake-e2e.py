@@ -52,6 +52,7 @@ never in CI. Python 3.9+, standard library only.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime
 import hashlib
 import json
@@ -215,6 +216,7 @@ class Run:
         self.start_attempted = set()  # recorded just before Thread.start: a mid-start interrupt is still joined
         self.drain_timeout_s = 30.0
         self.child_term_grace_s = 3.0
+        self.codex_start = threading.Lock()  # linux mode: one Codex start at a time (Recipient.start)
 
     # ---------- process helpers ----------
     def run(self, argv, env=None, timeout=60, tag=None, cleanup=False):
@@ -711,16 +713,21 @@ class Recipient:
         while time.time() < end and not re.search(r"[%$#>] ?$", self.run.herdr(
                 "pane", "read", self.pane, "--source", "visible", check=False).get("raw", "").rstrip("\n ") + " "):
             time.sleep(0.5)
-        self.run.herdr("pane", "run", self.pane, self.run.launch_line(self.harness))
-        end = time.time() + 180
-        while time.time() < end:
-            data = self.run.herdr("agent", "get", self.pane, check=False)
-            agent = (data.get("result") or {}).get("agent") or {}
-            if agent.get("agent") == self.harness and agent.get("agent_status") in IDLE + ("blocked",):
-                break
-            time.sleep(1)
-        else:
-            raise RuntimeError(f"{self.name}: {self.harness} not detected in {self.pane}: {self.tail()}")
+        # The Codex recipients share one scratch CODEX_HOME: two first starts at once race on its state DB migration
+        # (seen in the linux runner: "migration 3: duplicate column name: thread_id", one Codex exits). In the linux
+        # mode the second start waits until the first Codex is up.
+        serial = self.harness == "codex" and getattr(self.run.args, "harness_mode", "macos") == "linux"
+        with (self.run.codex_start if serial else contextlib.nullcontext()):
+            self.run.herdr("pane", "run", self.pane, self.run.launch_line(self.harness))
+            end = time.time() + 180
+            while time.time() < end:
+                data = self.run.herdr("agent", "get", self.pane, check=False)
+                agent = (data.get("result") or {}).get("agent") or {}
+                if agent.get("agent") == self.harness and agent.get("agent_status") in IDLE + ("blocked",):
+                    break
+                time.sleep(1)
+            else:
+                raise RuntimeError(f"{self.name}: {self.harness} not detected in {self.pane}: {self.tail()}")
         screen = self.run.herdr("agent", "read", self.pane, "--source", "visible", check=False).get("raw", "")
         why = startup_refusal(screen, self.status(), getattr(self.run.args, "harness_mode", "macos"))
         if why and why.startswith("is not logged in"):

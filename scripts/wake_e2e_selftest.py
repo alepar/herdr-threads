@@ -1135,6 +1135,60 @@ class StartupScreens(unittest.TestCase):
         self.assertEqual([a[:2] for a in typed], [("pane", "run")])
 
 
+class CodexStartOrder(unittest.TestCase):
+    """Two Codex recipients share one scratch CODEX_HOME; in the linux mode their first starts never overlap (a
+    concurrent state DB migration made one Codex exit in the runner). macOS keeps its concurrent starts."""
+
+    def starts(self, mode):
+        events, lock = [], threading.Lock()
+        polls = {}
+        screen = (FIXTURES / "claude-trust-folder.txt").read_text()  # stops each start() right after detection
+
+        def herdr(*argv, **kw):
+            words = " ".join(argv)
+            pane = argv[2] if len(argv) > 2 else None
+            if words.startswith("pane read"):
+                return {"raw": "$ "}
+            if words.startswith("pane run"):
+                with lock:
+                    events.append(("run", pane))
+                return {}
+            if words.startswith("agent get"):
+                with lock:
+                    polls[pane] = polls.get(pane, 0) + 1
+                    up = polls[pane] > 2
+                    if up and ("up", pane) not in events:
+                        events.append(("up", pane))
+                return {"result": {"agent": {"agent": "codex" if up else None, "agent_status": "idle"}}}
+            if words.startswith("agent read"):
+                return {"raw": screen}
+            return {}
+        run = SimpleNamespace(herdr=herdr, launch_line=lambda h: "launch", args=SimpleNamespace(harness_mode=mode),
+                              coord_seats=lambda: "s", codex_start=threading.Lock())
+        recipients = [W.Recipient(run, n, "codex", n[3:], pane, "sAAAAAAAA")
+                      for n, pane in (("co-nudge", "w1:p2"), ("co-all", "w1:p3"))]
+        errors = []
+
+        def start(r):
+            try:
+                r.start()
+            except RuntimeError as e:
+                errors.append(str(e))
+        threads = [threading.Thread(target=start, args=(r,)) for r in recipients]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(30)
+        self.assertEqual(len(errors), 2, errors)
+        return [e[0] for e in events]
+
+    def test_linux_codex_starts_one_at_a_time(self):
+        self.assertEqual(self.starts("linux"), ["run", "up", "run", "up"])
+
+    def test_macos_codex_starts_stay_concurrent(self):
+        self.assertEqual(self.starts("macos")[:2], ["run", "run"])
+
+
 def row(recipient, case, result="PASS"):
     return {"recipient": recipient, "case": case, "result": result, "wake_on": "nudge", "harness": "claude"}
 
