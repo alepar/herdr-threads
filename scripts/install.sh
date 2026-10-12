@@ -470,8 +470,8 @@ case "$(uname -m)" in
     *) die "unsupported architecture: $(uname -m) (aarch64 and x86_64 only)" ;;
 esac
 if [ "$os" = linux ]; then
-    warn "Linux support is EXPERIMENTAL and unvalidated: the plugin manifest declares macOS only,"
-    warn "and the host incarnation witness is macOS-only, so Linux runs degraded (Unknown incarnation)."
+    warn "Linux support is experimental: install, Herdr link and daemon were exercised on Linux aarch64 only"
+    warn "(Ubuntu 24.04, Herdr 0.9.3); Linux x86_64 and agent harness sessions on Linux are unverified."
 fi
 asset="herdr-threads-$os-$arch.tar.gz"
 
@@ -655,7 +655,7 @@ else
         OUT_NOT_LINKED="Herdr refused the link: $link_output"
         OUT_REGISTER_CMD=$link_cmd
         if [ "$os" = linux ]; then
-            warn "the manifest declares Linux, but Linux is unverified for this release; see Herdr's error above"
+            warn "the manifest declares Linux, but Herdr refused the link; see Herdr's error above"
         fi
     fi
     if [ "$registered" = 1 ] && server_running; then
@@ -814,7 +814,7 @@ next_steps() {
     esac
     step "Try it: in a Herdr shell pane run herdr-threads human me init, then follow https://github.com/$REPO#try-it-yourself"
     if [ "$os" = linux ]; then
-        printf '%s\n' "  - Linux is EXPERIMENTAL and unvalidated; please report problems."
+        printf '%s\n' "  - Linux is experimental (x86_64 and agent harness sessions unverified); please report problems."
     fi
 }
 

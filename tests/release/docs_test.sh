@@ -83,9 +83,10 @@ check 'follow-on dispatch: ubuntu-24.04 x86_64 install layout, tier 0' follow_ha
 check 'follow-on dispatch: since-verified --bisect on the real registry' follow_has 'since-verified --bisect'
 check 'follow-on dispatch: live gh issue filing step' follow_has 'file_issues\.py|issue filing'
 
-# README: the Linux link is unverified until the follow-on rehearsal.
-readme_linux() { grep -iE 'linux' README.md | grep -iE 'unverified' | grep -qiE 'rehearsal'; }
-check 'README: Linux link unverified until the follow-on rehearsal' readme_linux
+# README: Linux is experimental, and the line names what is still unverified there
+# (x86_64 and agent harness sessions); only the exercised arm64 link is claimed.
+readme_linux() { grep -iE 'linux' README.md | grep -iE 'experimental' | grep -iE 'unverified' | grep -iE 'x86_64' | grep -qiE 'harness sessions'; }
+check 'README: Linux experimental, x86_64 and harness sessions unverified' readme_linux
 
 if [ "$fails" -ne 0 ]; then
   printf 'DOCS_TEST_FAIL %d check(s) failed\n' "$fails"
