@@ -9,6 +9,7 @@ Run: python3 -m unittest discover -s scripts/tests -p test_linux_e2e_run.py  (or
 """
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import signal
@@ -62,8 +63,13 @@ FAKE_DOCKER = textwrap.dedent(r'''
     elif cmd == "images":
         print(os.environ.get("FAKE_DOCKER_IMAGES", ""))
     elif cmd == "ps":
-        if "name=" not in " ".join(argv):
+        if "status=exited" in argv:
+            print(os.environ.get("FAKE_DOCKER_EXITED", ""))
+        elif "name=" not in " ".join(argv):
             print(os.environ.get("FAKE_DOCKER_CONTAINERS", ""))
+    elif argv[:1] == ["exec"] and argv[-2:] == ["touch", "/home/tester/run/lease"]:
+        print("lease renewal refused", file=sys.stderr)
+        sys.exit(int(os.environ.get("FAKE_DOCKER_TOUCH_RC", "0")))
     elif cmd == "run":
         print("fakecontainerid")
     elif cmd == "stop":
@@ -238,6 +244,29 @@ class Lifecycle(Fake):
         p.send_signal(signal.SIGTERM)
         p.wait(timeout=30)
 
+    def test_lease_failures_are_logged(self):
+        p = subprocess.Popen(self.cli("self-test"), env=dict(self.env, FAKE_DOCKER_HANG="self-test",
+                                                               HT_LINUX_E2E_LEASE_S="4", FAKE_DOCKER_TOUCH_RC="1",
+                                                               FAKE_DOCKER_MARK_HANG=str(self.tmp / "hang")),
+                             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+        wait_for(self.tmp / "hang", "the hanging step")
+        wait_for(self.evidence / "host" / "lease.log", "a logged lease failure")
+        p.send_signal(signal.SIGTERM)
+        _, err = p.communicate(timeout=30)
+        self.assertIn("lease renewal failed", err)
+        lease = self.facts()["lease"]
+        self.assertGreaterEqual(lease["failures"], 1)
+        self.assertIn("lease renewal refused", lease["last_error"])
+
+    def test_exited_containers_of_this_worktree_are_removed_with_their_evidence(self):
+        r = self.run_cli("self-test", env={"FAKE_DOCKER_EXITED": "ht-linux-e2e-old"})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(["rm", "-v", "ht-linux-e2e-old"], self.argvs())
+        ps = next(a for a in self.argvs() if "status=exited" in a)
+        self.assertTrue(any(x.startswith("label=dev.herdr-threads.linux-e2e.worktree=") for x in ps))
+        self.assertTrue((self.evidence / "leftovers" / "ht-linux-e2e-old" / "copied.txt").exists())
+        self.assertEqual(self.facts()["leftovers_removed"], ["ht-linux-e2e-old"])
+
     def test_cache_volumes_are_labelled_per_arch_and_worktree(self):
         self.assertEqual(self.run_cli("self-test").returncode, 0)
         creates = [a for a in self.argvs() if a[:2] == ["volume", "create"]]
@@ -298,8 +327,9 @@ class Lifecycle(Fake):
         self.assertEqual(len(self.removed()), 1)
 
     def test_leftovers_are_reported(self):
-        stale = self.tmp / "ht-linux-e2e-cred.999999.abc"  # pid 999999: not running
+        stale = self.tmp / "ht-linux-e2e-cred.999999.abc"
         stale.mkdir()
+        (stale / "lock").write_text("")  # nobody holds it
         r = self.run_cli("self-test", env={"FAKE_DOCKER_CONTAINERS": "ht-linux-e2e-old (Exited (3))"})
         self.assertEqual(r.returncode, 0)
         self.assertIn("labelled containers exist", r.stderr)
@@ -411,10 +441,21 @@ class Clean(Fake):
         return [argv[i + 1] for i, a in enumerate(argv) if a == "--filter"]
 
     def test_default_clean_is_this_worktree_and_dangling_images(self):
-        stale = self.tmp / "ht-linux-e2e-cred.999999.abc"
+        # Stale: an unheld lock, even though the name's pid (ours) is alive; or no lock file and old.
+        stale = self.tmp / f"ht-linux-e2e-cred.{os.getpid()}.stale"
         stale.mkdir()
-        live = self.tmp / f"ht-linux-e2e-cred.{os.getpid()}.abc"  # a live runner's dir is kept
+        (stale / "lock").write_text("")
+        old = self.tmp / "ht-linux-e2e-cred.1.old"
+        old.mkdir()
+        os.utime(old, (time.time() - 3600, time.time() - 3600))
+        # Live: a held lock (a runner mid-run), or no lock file yet but just created.
+        live = self.tmp / "ht-linux-e2e-cred.999999.live"
         live.mkdir()
+        fd = os.open(live / "lock", os.O_RDWR | os.O_CREAT)
+        self.addCleanup(os.close, fd)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        fresh = self.tmp / "ht-linux-e2e-cred.999998.fresh"
+        fresh.mkdir()
         env = {"FAKE_DOCKER_CONTAINERS": "c1", "FAKE_DOCKER_VOLUMES": "v1\nv2", "FAKE_DOCKER_IMAGES": "i1"}
         r = self.run_cli("clean", env=env)
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -429,7 +470,9 @@ class Clean(Fake):
         self.assertIn(["volume", "rm", "-f", "v1", "v2"], argvs)
         self.assertIn(["rmi", "i1"], argvs)  # unforced: an image in use is kept
         self.assertFalse(stale.exists())
+        self.assertFalse(old.exists())
         self.assertTrue(live.exists())
+        self.assertTrue(fresh.exists())
 
     def test_clean_all(self):
         r = self.run_cli("clean", "--all", env={"FAKE_DOCKER_IMAGES": "i1"})

@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import fcntl
 import hashlib
 import json
 import os
@@ -127,23 +128,34 @@ def listed_herdr_versions(repo):
     return versions
 
 
-def pid_alive(pid):
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
+LOCK_GRACE_S = 60  # a dir without its lock file is a runner between mkdtemp and flock, or a stale one after this
 
 
 def stale_cred_dirs():
-    """Env-file dirs of runners that died without cleanup (SIGKILL): ht-linux-e2e-cred.<pid>.* with a dead pid."""
+    """Env-file dirs of runners that died without cleanup (SIGKILL). A live runner holds an exclusive flock on
+    <dir>/lock for the dir's whole life, so a dir whose lock can be taken is stale whatever its name's pid now is
+    (pid reuse cannot hide it); a dir without a lock file is stale once older than LOCK_GRACE_S."""
     stale = []
     for d in Path(tempfile.gettempdir()).glob(CRED_PREFIX + "*"):
-        parts = d.name[len(CRED_PREFIX):].split(".")
-        if parts and parts[0].isdigit() and not pid_alive(int(parts[0])):
+        lock = d / "lock"
+        try:
+            fd = os.open(lock, os.O_RDWR)
+        except FileNotFoundError:
+            try:
+                if time.time() - d.stat().st_mtime > LOCK_GRACE_S:
+                    stale.append(d)
+            except OSError:
+                pass
+            continue
+        except OSError:
+            continue
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             stale.append(d)
+        except OSError:
+            pass  # held: a live runner's
+        finally:
+            os.close(fd)
     return stale
 
 
@@ -279,6 +291,7 @@ class Runner:
         base = Path(tempfile.gettempdir()) / "ht-linux-e2e"
         self.evidence = Path(args.evidence_dir) if args.evidence_dir else base / f"{args.command}-{self.run_id}"
         self.private = None      # 0700 host dir for an env-file; removed at exit
+        self.lock_fd = None      # flock held on <private>/lock while the dir exists
         self.container = False   # a `docker run` was attempted: cleanup must remove self.name
         self.child = None
         self.step_no = 0
@@ -336,8 +349,27 @@ class Runner:
             raise Refused(f"unsupported Docker architecture {arch!r}")
         return known[arch]
 
+    def remove_exited(self):
+        """This worktree's stopped containers (a killed run's, stopped by its watchdog, which already scrubbed the
+        credentials): their evidence is saved under evidence/leftovers/<name>/, then they are removed."""
+        try:
+            names = self.capture("ps", "-a", "--filter", f"label={WORKTREE_LABEL}={self.worktree}",
+                                 "--filter", "status=exited", "--format", "{{.Names}}").split()
+        except (subprocess.CalledProcessError, OSError):
+            return
+        for name in names:
+            out = self.evidence / "leftovers" / name
+            out.mkdir(parents=True, exist_ok=True)
+            detached([self.docker, "cp", f"{name}:{HOME}/evidence/.", str(out)], timeout=300)
+            r = detached([self.docker, "rm", "-v", name])
+            print(f"linux-e2e: removed stopped container {name} of an earlier run of this worktree "
+                  f"({'its evidence: ' + str(out) if r.returncode == 0 else 'rm failed: ' + r.stderr.strip()})",
+                  file=sys.stderr)
+        self.facts["leftovers_removed"] = names
+
     def warn_leftovers(self):
         """Live or stopped labelled containers and stale credential dirs from runs that died (e.g. SIGKILL)."""
+        self.remove_exited()
         try:
             rows = self.capture("ps", "-a", "--filter", f"label={LABEL}", "--format", "{{.Names}} ({{.Status}})")
         except (subprocess.CalledProcessError, OSError):
@@ -410,10 +442,32 @@ class Runner:
         print(f"  container {self.name} (lease {LEASE_S}s, max life {self.max_life}s)", flush=True)
 
     def heartbeat(self):
+        """Renew the watchdog's lease. Failures are counted and logged (evidence/host/lease.log, runner.json) so a
+        lapsed lease is diagnosable; the first one is also reported on stderr."""
         interval = max(1.0, LEASE_S / 4)
+        lease = self.facts["lease"] = {"renewals": 0, "failures": 0, "last_error": None}
+        log = self.evidence / "host" / "lease.log"
         while not self.beat_stop.wait(interval):
-            subprocess.run([self.docker, "exec", self.name, "touch", f"{HOME}/run/lease"],
-                           stdin=subprocess.DEVNULL, capture_output=True)
+            try:
+                r = subprocess.run([self.docker, "exec", self.name, "touch", f"{HOME}/run/lease"],
+                                   stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10)
+                error = None if r.returncode == 0 else f"rc {r.returncode}: {r.stderr.strip()[:300]}"
+            except (subprocess.TimeoutExpired, OSError) as e:
+                error = repr(e)[:300]
+            if error is None:
+                lease["renewals"] += 1
+                continue
+            lease["failures"] += 1
+            lease["last_error"] = error
+            if lease["failures"] == 1:
+                print(f"linux-e2e: warning: lease renewal failed ({error}); the container stops itself after "
+                      f"{LEASE_S}s without one", file=sys.stderr)
+            try:
+                log.parent.mkdir(parents=True, exist_ok=True)
+                with log.open("a") as f:
+                    f.write(f"{datetime.datetime.now().isoformat(timespec='seconds')} renewal failed: {error}\n")
+            except OSError:
+                pass
 
     def export_source(self):
         archive = subprocess.Popen(self.archive(), stdout=subprocess.PIPE)
@@ -478,9 +532,17 @@ class Runner:
             elif gone.stdout.strip():
                 problems.append(f"container {self.name} still exists")
             self.facts["container_removed"] = not problems
+        self.drop_private()
+        return problems
+
+    def drop_private(self):
+        """Remove the env-file dir, then release its lock (in that order: a held lock means a live dir)."""
         if self.private:
             shutil.rmtree(self.private, ignore_errors=True)
-        return problems
+            self.private = None
+        if self.lock_fd is not None:
+            os.close(self.lock_fd)
+            self.lock_fd = None
 
     # ---------- subcommands ----------
     def prepared(self):
@@ -559,9 +621,12 @@ class Runner:
         return env_lines, codex_auth, missing
 
     def env_file(self, lines):
-        """A mode-0600 env-file in a private 0700 dir named after this pid (so `clean` can tell a stale one)."""
+        """A mode-0600 env-file in a private 0700 dir whose lock this runner holds while the dir exists (so
+        `clean` and later runs can tell a stale one)."""
         self.private = Path(tempfile.mkdtemp(prefix=f"{CRED_PREFIX}{os.getpid()}."))
         os.chmod(self.private, 0o700)
+        self.lock_fd = os.open(self.private / "lock", os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(self.lock_fd, fcntl.LOCK_EX)
         path = self.private / "claude.env"
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, "w") as f:
@@ -585,9 +650,7 @@ class Runner:
         env_file = self.env_file(env_lines) if env_lines else None
         if self.step("herdr-up", env_file=env_file) != 0:
             return EXIT_FAIL
-        if self.private:
-            shutil.rmtree(self.private, ignore_errors=True)
-            self.private = None
+        self.drop_private()
         driver = [*self.args.driver_args, "--harness", ",".join(self.args.harnesses)]
         self.stage(b"".join(a.encode() + b"\0" for a in driver), f"{HOME}/run/driver-args", "stage-driver-args")
         if codex_auth is not None:

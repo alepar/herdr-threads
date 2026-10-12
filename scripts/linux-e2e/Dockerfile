@@ -65,9 +65,15 @@ RUN read -r _ node_arch _ node_sha < /etc/ht-arch; \
     /opt/node/bin/node --version
 
 # Claude Code and Codex: `npm ci` verifies every tarball against the lockfile's integrity. No login.
+# --ignore-scripts: no package lifecycle script runs. The only one in this tree is Claude Code's postinstall
+# (`node install.cjs`, reviewed for 2.1.296): it copies the binary of the already-installed, lockfile-verified
+# native package (@anthropic-ai/claude-code-linux-<arch>) over the bin/claude.exe stub, with no network access
+# (its only subprocess is `sysctl` on macOS). It is run explicitly below; Codex 0.162.1 and both native packages
+# declare no scripts. Re-check this when bumping the lockfile.
 ENV PATH=/opt/node/bin:$PATH
 COPY scripts/linux-e2e/npm/package.json scripts/linux-e2e/npm/package-lock.json /opt/harnesses/
-RUN cd /opt/harnesses && npm ci --no-audit --no-fund && npm cache clean --force \
+RUN cd /opt/harnesses && npm ci --ignore-scripts --no-audit --no-fund && npm cache clean --force \
+    && (cd node_modules/@anthropic-ai/claude-code && node install.cjs) \
     && mkdir bin && ln -s ../node_modules/.bin/claude bin/claude && ln -s ../node_modules/.bin/codex bin/codex \
     && bin/claude --version && bin/codex --version
 

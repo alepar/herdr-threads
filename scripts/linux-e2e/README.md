@@ -24,7 +24,8 @@ Common options: `--evidence-dir DIR` (default: a new directory under the system 
    (newest listed release, SHA-256 checked for the container's architecture), Node 22 (official tarball, SHA-256
    pinned), Claude Code and the Codex CLI via `npm ci` from [npm/package-lock.json](npm/package-lock.json), which
    pins the sha512 integrity of every tarball including the per-platform native packages (installed, never logged
-   in), python3, git, procps and lsof; a non-root user `tester` without sudo. Update the pins in the `ARG` lines
+   in; `npm ci --ignore-scripts`, then Claude Code's reviewed postinstall run explicitly, see the Dockerfile),
+   python3, git, procps and lsof; a non-root user `tester` without sudo. Update the pins in the `ARG` lines
    and, for the harnesses, with `npm install --package-lock-only` in `npm/`.
 2. Starts one container with `docker run --init` (PID 1 reaps the helpers' zombies), labelled
    `dev.herdr-threads.linux-e2e=1` plus this worktree and run, no bind mounts, `--cap-drop ALL`,
@@ -43,9 +44,13 @@ The container bounds its own life. Its main process is a watchdog; the runner re
 point, after `--timeout` + 30 min for `wake-e2e` (2 h for the others), or on `docker stop`, the watchdog deletes the
 staged and driver-copied credentials and exits, which stops the container and kills the agents. A killed runner
 still leaves a stopped container (and, if it held one, its env-file dir `$TMPDIR/ht-linux-e2e-cred.<pid>.*`): the
-next run warns about both, and `clean` removes them. `clean` (no flag) touches only this worktree's containers and
+next run removes this worktree's stopped containers itself (their evidence saved under `leftovers/`; the watchdog
+has already scrubbed their credentials), warns about everything else, and `clean` removes stale env-file dirs (a
+live runner holds a lock on its dir, so pid reuse cannot hide a stale one). `clean` (no flag) touches only this worktree's containers and
 volumes, its stale env-file dirs and unused dangling runner images; `clean --all` removes every object with the
-shared label, including containers someone started by hand from the image (they inherit its label). A host that sleeps longer than the lease stops the run too.
+shared label, including containers someone started by hand from the image (they inherit its label). This is fail-safe, not resumable: a host that sleeps, or a runner suspended with Ctrl-Z, for longer than the
+lease (60 s) stops a live run too. Lease renewal failures are counted in `runner.json` (`lease`) and logged in
+`host/lease.log`.
 
 Evidence layout: `runner.json` (SHA, tree, image id, steps with exit codes and times, credential kinds,
 container removal), `host/NN-step.log` (each step's output), `container/` (what the steps wrote: Herdr server log,
@@ -73,7 +78,7 @@ Exit codes: 0 passed, 1 failed, 2 refused (usage, preflight, missing credentials
   before and after are in the evidence. Driver arguments follow `--`; the runner sets `--bin`, `--codex-auth-home`
   and `--evidence-dir` (`container/wake-e2e/`) itself and refuses them, and any abbreviation of a driver option
   (`--harn`), there; it passes `--harness` on in canonical form. `--live` refuses a dirty worktree unless
-  `--allow-dirty`.
+  `--allow-dirty` (untracked files count as dirty too, deliberately: `git status --porcelain`).
 
 ## Credentials (wake-e2e only)
 
