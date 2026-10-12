@@ -43,7 +43,9 @@ The container bounds its own life. Its main process is a watchdog; the runner re
 point, after `--timeout` + 30 min for `wake-e2e` (2 h for the others), or on `docker stop`, the watchdog deletes the
 staged and driver-copied credentials and exits, which stops the container and kills the agents. A killed runner
 still leaves a stopped container (and, if it held one, its env-file dir `$TMPDIR/ht-linux-e2e-cred.<pid>.*`): the
-next run warns about both, and `clean` removes them. A host that sleeps longer than the lease stops the run too.
+next run warns about both, and `clean` removes them. `clean` (no flag) touches only this worktree's containers and
+volumes, its stale env-file dirs and unused dangling runner images; `clean --all` removes every object with the
+shared label, including containers someone started by hand from the image (they inherit its label). A host that sleeps longer than the lease stops the run too.
 
 Evidence layout: `runner.json` (SHA, tree, image id, steps with exit codes and times, credential kinds,
 container removal), `host/NN-step.log` (each step's output), `container/` (what the steps wrote: Herdr server log,

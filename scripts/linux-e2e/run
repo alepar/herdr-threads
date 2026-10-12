@@ -618,19 +618,30 @@ def clean(args):
           "volumes": ["volume", "ls", "-q", *filters],
           "images": ["images", "-q", "--filter", f"label={LABEL}", "--filter", f"reference={IMAGE}"]
           if args.all else ["images", "-q", "--filter", f"label={LABEL}", "--filter", "dangling=true"]}
-    rm = {"containers": ["rm", "-f", "-v"], "volumes": ["volume", "rm", "-f"], "images": ["rmi", "-f"]}
+    # Dangling images are removed unforced: one still used by a container (any worktree's, or a container started
+    # from the image by hand, which inherits its label) is kept and reported.
+    rm = {"containers": ["rm", "-f", "-v"], "volumes": ["volume", "rm", "-f"],
+          "images": ["rmi", "-f"] if args.all else ["rmi"]}
     rc = EXIT_OK
     for kind in ("containers", "volumes", "images"):
         if kind == "images" and args.all and args.keep_image:
             continue
         ids = sorted(set(subprocess.run([docker, *ls[kind]], check=True, capture_output=True,
                                         text=True).stdout.split()))
-        if ids:
+        kept = []
+        if ids and kind == "images" and not args.all:
+            for image in ids:
+                r = subprocess.run([docker, *rm[kind], image], capture_output=True, text=True)
+                if r.returncode != 0:
+                    kept.append(image)
+            ids = [i for i in ids if i not in kept]
+        elif ids:
             r = subprocess.run([docker, *rm[kind], *ids], capture_output=True, text=True)
             if r.returncode != 0:
                 print(f"linux-e2e clean: {kind}: {r.stderr.strip()}", file=sys.stderr)
                 rc = EXIT_FAIL
-        print(f"linux-e2e clean: {kind}: {' '.join(ids) if ids else 'none'}")
+        print(f"linux-e2e clean: {kind}: {' '.join(ids) if ids else 'none'}" +
+              (f" (kept, in use: {' '.join(kept)})" if kept else ""))
     stale = stale_cred_dirs()
     for d in stale:
         shutil.rmtree(d, ignore_errors=True)

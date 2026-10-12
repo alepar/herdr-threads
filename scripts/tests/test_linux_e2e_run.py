@@ -427,7 +427,7 @@ class Clean(Fake):
         self.assertIn("dangling=true", self.filters(images))
         self.assertIn(["rm", "-f", "-v", "c1"], argvs)
         self.assertIn(["volume", "rm", "-f", "v1", "v2"], argvs)
-        self.assertIn(["rmi", "-f", "i1"], argvs)
+        self.assertIn(["rmi", "i1"], argvs)  # unforced: an image in use is kept
         self.assertFalse(stale.exists())
         self.assertTrue(live.exists())
 
@@ -439,6 +439,7 @@ class Clean(Fake):
                 self.assertIn("label=dev.herdr-threads.linux-e2e", self.filters(argv))
         images = next(a for a in self.argvs() if a[:1] == ["images"])
         self.assertIn("reference=ht-linux-e2e-runner", self.filters(images))
+        self.assertIn(["rmi", "-f", "i1"], self.argvs())
 
     def test_keep_image(self):
         r = self.run_cli("clean", "--all", "--keep-image", env={"FAKE_DOCKER_IMAGES": "i1"})
