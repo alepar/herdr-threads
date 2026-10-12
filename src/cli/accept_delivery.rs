@@ -9,7 +9,9 @@
 //! opener unseen that turn. The caller's own text accept therefore appends one thread-scoped page
 //! of its own text inbox: the same rows `inbox` prints under the same lazy eligibility, only lazy
 //! rows of the accepted thread that lie below the binding's first unread ordinary row there (the
-//! display walk's stop, so every row shown whole is passed and never shown again), within the
+//! display walk's stop, so every row shown whole is passed and not shown again; a page cut by
+//! its bounds while lazy ordinal and message sequence disagree may repeat a row, at least once,
+//! as plain `inbox` does), within the
 //! default inbox bounds, with one `next:` line naming `inbox` when more remains. It is the
 //! caller's default text-inbox display (A8), under the same claim: the page is written and
 //! flushed first, then the binding's cursors advance over what it showed whole and the lazy rows

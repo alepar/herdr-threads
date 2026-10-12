@@ -272,14 +272,6 @@ pub fn binding_unread_stats(
     Ok((u64::try_from(count).unwrap_or(0), newest))
 }
 
-/// Advance `binding`'s cursor in `thread` over the longest prefix of messages past the cursor
-/// whose sequences are all in `displayed`. Messages the seat cannot receive in that thread (its
-/// own sends, kinds the inbox never shows) count as displayed, and so does a message whose seat
-/// receipt this same binding display-ACKed: `ack_binding_id` is the binding and the ACK
-/// observation carries `action_provenance`, which only display settlements write (text-inbox
-/// display, mod or hook-pull delivery). Another binding's ACK and an explicit `ack` do not count
-/// (ht-54r F1). Monotonic. Returns the cursor.
-// ht-54r.22 adds lazy-mode messages to the receivable set.
 /// Whether message `x` carries this binding's own display ACK (`?1` seat, `?4` binding): the walk
 /// passes such a message without it being displayed again. The single copy, shared by the walk
 /// and [`first_ordinary_walk_stop`].
@@ -288,12 +280,14 @@ const WALK_DISPLAY_ACKED: &str = "(EXISTS(SELECT 1 FROM receipt_state rs WHERE r
     OR EXISTS(SELECT 1 FROM receipts rc WHERE rc.message_id=x.id AND rc.seat_id=?1 AND rc.state='acked' \
     AND rc.ack_binding_id=?4 AND json_extract(rc.ack_observation,'$.action_provenance') IS NOT NULL))";
 
-/// The first ordinary message of `thread` past `binding`'s cursor (0 without one) at which the
+/// The first ordinary message of `thread` past `binding`'s cursor at which the
 /// display walk ([`advance_through_displayed`]) stops when a display shows only lazy rows: a
 /// receivable ordinary message the binding has not display-ACKed. `None` when there is none.
 /// A display of lazy rows below it can be passed whole by the walk; a lazy row above it cannot
 /// (ht-br0: the text accept's thread-scoped page shows only rows below this stop, so its
-/// completion never leaves a shown row unread in the binding's own stream).
+/// completion never leaves a shown row unread in the binding's own stream). Without a cursor it
+/// starts at 0, not at the walk's displayed-episode floor: never higher than the walk's real stop,
+/// so the page can only show fewer rows (an accept normally creates the cursor first).
 pub fn first_ordinary_walk_stop(
     db: &Connection,
     binding: &BindingId,
@@ -319,6 +313,14 @@ pub fn first_ordinary_walk_stop(
     .transpose()
 }
 
+/// Advance `binding`'s cursor in `thread` over the longest prefix of messages past the cursor
+/// whose sequences are all in `displayed`. Messages the seat cannot receive in that thread (its
+/// own sends, kinds the inbox never shows) count as displayed, and so does a message whose seat
+/// receipt this same binding display-ACKed: `ack_binding_id` is the binding and the ACK
+/// observation carries `action_provenance`, which only display settlements write (text-inbox
+/// display, mod or hook-pull delivery). Another binding's ACK and an explicit `ack` do not count
+/// (ht-54r F1). Monotonic. Returns the cursor.
+// ht-54r.22 adds lazy-mode messages to the receivable set.
 pub fn advance_through_displayed(
     tx: &Connection,
     binding: &BindingId,

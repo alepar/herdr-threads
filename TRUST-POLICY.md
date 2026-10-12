@@ -760,8 +760,8 @@ cannot complete delivery. JSON, machine, explicit-seat reads, history, bodies an
 read-only for Lazy completion. A complete successful own text body display may separately advance only
 the calling binding's read cursor, as specified below; it is not Lazy completion or a receipt ACK.
 A top-level agent's text `accept` (and `accept-required`) output is that same default text inbox
-display, thread-scoped (ht-br0): after the accept result was written and flushed, and only while no mod channel
-is live for the caller's binding, it reads one `InboxBatchV2` page of the caller's own stream restricted to the
+display, thread-scoped (ht-br0): after the accept result was written and flushed (with a live mod channel,
+only after the channel grace below has run out), it reads one `InboxBatchV2` page of the caller's own stream restricted to the
 accepted thread's unread lazy rows (`InboxQuery.thread`, `inbox.thread_scope_v1`; no ordinary, receipt,
 invitation or warning row). The thread scope only narrows the unchanged lazy eligibility (the binding's own
 cursor/scope branch and the top-level legacy-pending branch); it never admits a row the unscoped text inbox
@@ -769,7 +769,10 @@ would not show that binding. It narrows it further to rows below the binding's f
 that thread: the first receivable ordinary message past the binding's cursor that the binding has not
 display-ACKed (`read_cursors::first_ordinary_walk_stop`, where the display walk below stops when a display
 shows no ordinary row). So every row the page shows whole is passed by the binding's own walk, and no later
-hook, `inbox` or channel offers it to that binding again; lazy rows above the stop stay in the binding's own
+hook, `inbox` or channel offers it to that binding again, when the page holds the lowest-sequence unread lazy
+rows below the stop. The page is ordered by lazy ordinal (assigned at preparation) and the walk by message
+sequence (assigned at publication); with concurrent senders the two can disagree, and a page cut by its bounds
+may then leave a shown row above the binding's cursor, offered again (at least once, as the plain text inbox); lazy rows above the stop stay in the binding's own
 stream and are shown once, with the ordinary rows, by its next hook or `inbox`. A claim that names no binding
 of the seat gets no scoped row. It writes and flushes the page, then advances the binding's cursors and
 completes the lazy rows it showed whole exactly as the text inbox does, under the same claim (via none; no new

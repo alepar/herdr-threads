@@ -693,6 +693,11 @@ class BusyTurnBoundary(unittest.TestCase):
             self.assertTrue(W.busy_turn_split(prompt + line + "\n", self.ANCHOR)[2], line)
         for line in ("\u2022 I'll run both sleeps, then print BUSY-DONE", "Done. BUSY-DONE"):
             self.assertFalse(W.busy_turn_split(prompt + line + "\n", self.ANCHOR)[2], line)
+        echoed = (prompt + "\u2022 RECEIVED mEARLY\n"
+                  + f"\u2022 Done with Busy-turn test {self.ANCHOR[15:]}; printing BUSY-DONE.\n\u2022 BUSY-DONE\n")
+        in_turn, _after, seen = W.busy_turn_split(echoed, self.ANCHOR)
+        self.assertTrue(seen)
+        self.assertIn("mEARLY", in_turn)  # the turn starts at the prompt, not at the agent's echo of its tag
 
 
 class BusyQuietWindow(unittest.TestCase):

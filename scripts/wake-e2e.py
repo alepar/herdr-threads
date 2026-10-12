@@ -555,7 +555,7 @@ def busy_turn_split(text, anchor):
     """Split the screen at the busy turn's native boundaries: (in_turn, after_turn, end_seen). `in_turn` runs from
     the busy prompt `anchor` to the agent's BUSY-DONE line, `after_turn` is everything later; None if the prompt
     is not on screen."""
-    at = text.rfind(anchor)
+    at = text.find(anchor)  # the prompt itself: an agent echoing the tag later must not move it
     if at < 0:
         return None
     rest = text[at:]
@@ -754,7 +754,7 @@ class Recipient:
         # The quiet window starts at the busy turn's native end (its BUSY-DONE line, then the first idle status),
         # not after a confirmed-idle wait: that wait would absorb a short wake turn typed right after the turn.
         end, idle_since = time.time() + TURN_TIMEOUT_MS / 1000, None
-        while time.time() < end and not (busy_turn_split(self.screen(), anchor) or ("", "", False))[2]:
+        while time.time() < end and not (busy_turn_split(self.screen(1000), anchor) or ("", "", False))[2]:
             idle_since = (idle_since or time.time()) if self.status() in IDLE else None
             if idle_since and time.time() - idle_since > BUSY_END_GRACE_S:
                 break  # recorded below as busy_turn_end_seen False, without waiting out the turn timeout
