@@ -670,7 +670,8 @@ warning `informational` in the inbox batch, so `watch` raises no `attention` lin
 independent of sender role, relay and human intent. A lazy audience is frozen by canonical preparation
 and publication; recipient identity is immutable, and its pending/displayed progress is monotonic.
 Already addressed rows survive leaving, retirement and archival, with no transfer to another seat.
-Rows past the seat's furthest cursor when it joins become seat-pending (join frontier, below).
+Undisplayed rows (`state` still `pending`) past the seat's furthest cursor when it joins become seat-pending
+(join frontier, below).
 Unpublished rows are invisible and may be discarded in bounded cleanup; published progress is retained.
 Lazy delivery creates no receipt, deadline, ACK evidence, wake attention, wake, poke or automatic adoption,
 except that a seat with `wake_on: all` is woken (wake eligibility only; still no receipt, digest
@@ -815,16 +816,23 @@ and the join frontier gives a human seat's pre-join ordinary messages no separat
 ht-8y9).
 
 A rejoin follows the same rule: an older sibling's cursor rises to the head, past joined-era mail another
-binding of the seat read (lazy rows at or below the seat's furthest cursor are not marked; ordinary ones keep
-only their seat-level receipts). Lazy rows past the furthest cursor are marked, so at seat level no lazy row is
-lost by a join.
+binding of the seat read or passed (lazy rows at or below the seat's furthest cursor are not marked; ordinary
+ones keep only their seat-level receipts). The furthest cursor need not come from a display: a resumed
+fast-forward, an ended binding's cursor or a subagent's `AdvanceCursors` can set it without completing any
+lazy row. So only undisplayed lazy rows past the furthest cursor are guaranteed to survive a join (marked
+seat-pending); an undisplayed lazy row at or below it is passed by every binding. Example: A fast-forwards past
+unshown lazy rows 1..50 while sibling B is at 0; after a leave and rejoin rows 1..50 are not marked and B rises to
+the head, so no binding sees them.
 
 ## Accepted limits
 
 Pre-join lazy mail is seat-level, not per binding (join frontier, A8). A seat-pending row is settled for the
 seat by the first top-level binding that displays it; a sibling top-level binding gets no copy, and a subagent
 never sees it. A join raises every open binding's cursor to the head, so on a rejoin an older sibling skips
-joined-era mail another binding of the seat already read. This keeps a mixed opening (lazy and ordinary rows
+joined-era mail another binding of the seat read or passed. A lazy row at or below the seat's furthest cursor
+is never marked, even when that cursor came from a fast-forward, an ended binding or a subagent's
+`AdvanceCursors` rather than a display, so such a row undisplayed by any binding is passed by all of them after
+the join. This keeps a mixed opening (lazy and ordinary rows
 interleaved) from re-offering ordinary rows already offered or ACKed as pending receipts, which one per-binding
 cursor cannot express. A human seat's pre-join ordinary messages get no pending-receipt path (unchanged).
 Pinned by `tests/hook_entrypoint.rs`
