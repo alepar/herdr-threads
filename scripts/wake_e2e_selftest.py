@@ -71,6 +71,12 @@ class FakeRun:
         r.workspace = workspace
         r.daemon_attempted = daemon_attempted
         r.stop_deadline_s = 0.3
+        r.process_grace_s = 0.6
+        r.layout_attempted = workspace is not None
+        r.run_id = "000000-test"
+        r.auth_digest = None
+        r.auth_refreshed = None
+        r.codex_home = tmp / "codex-home"
         r.cleanup_report = None
         r.bin, r.state, r.endpoint = "/fake/herdr-threads", tmp / "state", "/fake/sock"
         self.calls = []
@@ -137,6 +143,47 @@ class Cleanup(TempDir):
         f = FakeRun(self.tmp)
         f.script["pgrep"] = lambda: (0, "424242\n", "")
         self.assertTrue(any("424242" in p for p in f.r.cleanup()))
+
+    def test_timed_out_health_probe_is_not_stopped(self):
+        f = FakeRun(self.tmp)
+        f.script["daemon health"] = lambda: ("timeout", "", "")
+        self.assertTrue(any("still healthy" in p for p in f.r.cleanup()))
+
+    def test_exiting_process_inside_the_grace_period_passes(self):
+        f = FakeRun(self.tmp)
+        answers = iter([(0, "424242\n", ""), (0, "424242\n", "")])
+        f.script["pgrep"] = lambda: next(answers, (1, "", ""))
+        self.assertEqual(f.r.cleanup(), [])
+
+    def test_uncertain_workspace_create_is_found_by_label_and_closed(self):
+        f = FakeRun(self.tmp, workspace=None)
+        f.r.layout_attempted = True
+        listed = {"result": {"workspaces": [{"workspace_id": "w77", "label": "wake-e2e-000000-test"}]}}
+        lists = iter([(0, json.dumps(listed), ""), (0, json.dumps({"result": {"workspaces": []}}), "")])
+        f.script["workspace list"] = lambda: next(lists)
+        self.assertEqual(f.r.cleanup(), [])
+        self.assertEqual(f.r.workspace, "w77")
+        self.assertIn("workspace close", f.calls)
+
+    def test_unchanged_auth_copy_is_deleted(self):
+        f = FakeRun(self.tmp)
+        f.r.codex_home.mkdir()
+        (self.tmp / "src.json").write_bytes(FAKE_AUTH)
+        f.r.auth_digest = W.provision_codex_auth(self.tmp / "src.json", f.r.codex_home / "auth.json")
+        self.assertEqual(f.r.cleanup(), [])
+        self.assertFalse((f.r.codex_home / "auth.json").exists())
+        self.assertFalse(f.r.auth_refreshed)
+
+    def test_refreshed_auth_copy_is_kept_and_reported(self):
+        f = FakeRun(self.tmp)
+        f.r.codex_home.mkdir()
+        (self.tmp / "src.json").write_bytes(FAKE_AUTH)
+        f.r.auth_digest = W.provision_codex_auth(self.tmp / "src.json", f.r.codex_home / "auth.json")
+        (f.r.codex_home / "auth.json").write_bytes(b"refreshed")
+        f.r.cleanup()
+        self.assertTrue((f.r.codex_home / "auth.json").exists())
+        self.assertTrue(f.r.auth_refreshed)
+        self.assertEqual((self.tmp / "src.json").read_bytes(), FAKE_AUTH)
 
     def test_keep_skips_cleanup_without_failing(self):
         f = FakeRun(self.tmp, keep=True)
@@ -221,6 +268,17 @@ class MainExitCode(TempDir):
         rc, doc = self.main()
         self.assertEqual(rc, W.EXIT_OK)
         self.assertEqual(doc["completeness"]["missing"], [])
+
+    def test_interrupt_still_cleans_up_and_fails(self):
+        cleaned = []
+        W.Run.cleanup = lambda run: cleaned.append(True) or setattr(run, "cleanup_report", {"problems": []}) or []
+
+        def layout(run):
+            raise KeyboardInterrupt("signal 15")
+        W.Run.layout = layout
+        rc, doc = self.main()
+        self.assertEqual((rc, cleaned), (W.EXIT_FAIL, [True]))
+        self.assertEqual(doc["facts"]["exit_code"], W.EXIT_FAIL)
 
     def test_cleanup_raising_fails(self):
         def cleanup(run):

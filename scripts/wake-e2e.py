@@ -46,6 +46,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -114,9 +115,12 @@ class Run:
         self.results = []
         self.workspace = None
         self.daemon_attempted = False  # set before `daemon ensure`: an uncertain start is still ours to stop
+        self.layout_attempted = False
+        self.process_grace_s = 10.0
         self.stop_deadline_s = 20.0
         self.coords = {}  # "main" / "fresh" -> {"pane", "seat", "session"}
         self.auth_digest = None
+        self.auth_refreshed = None
         self.cleanup_report = None
 
     # ---------- process helpers ----------
@@ -249,7 +253,8 @@ class Run:
         return seat
 
     def layout(self):
-        data = self.herdr("workspace", "create", "--label", f"wake-e2e-{self.run_id}", "--cwd", self.cwd, "--no-focus")
+        self.layout_attempted = True  # an uncertain create is found by its label at cleanup
+        data = self.herdr("workspace", "create", "--label", self.workspace_label(), "--cwd", self.cwd, "--no-focus")
         self.workspace = data["result"]["workspace"]["workspace_id"]
         self.herdr("tab", "rename", data["result"]["tab"]["tab_id"], "coordinator")
         # "fresh" never contacts a recipient before busy-invite/1:1, so that case is a real first contact.
@@ -295,6 +300,12 @@ class Run:
             self.cleanup_report = {"skipped": "--keep", "workspace": self.workspace,
                                    "daemon_attempted": self.daemon_attempted}
             return problems
+        if not self.workspace and self.layout_attempted:
+            try:
+                self.workspace = self.workspace_by_label()
+                steps.append({"workspace_found_by_label": self.workspace})
+            except Exception as e:
+                problems.append(f"workspace {self.workspace_label()}: create outcome not verified: {str(e)[:200]}")
         if self.workspace:
             try:
                 rc = self.run(["herdr", "workspace", "close", self.workspace], tag="cleanup:workspace", timeout=30)[0]
@@ -316,7 +327,8 @@ class Run:
             healthy = True
             while True:
                 try:
-                    healthy = self.run_rc("daemon", "health") == 0
+                    rc = self.run_rc("daemon", "health")
+                    healthy = rc == 0 or not isinstance(rc, int)  # a timed-out probe is unknown, not stopped
                 except Exception:
                     healthy = True  # unknown is not stopped
                 if not healthy or time.time() >= end:
@@ -324,11 +336,46 @@ class Run:
                 time.sleep(0.5)
             if healthy:
                 problems.append(f"isolated daemon still healthy {self.stop_deadline_s:.0f}s after stop")
+        # Exiting agents and their session-end hooks may still name the root for a moment: allow a grace period.
+        # Codex agents carry the root only in their environment; the workspace check above covers them.
+        end = time.time() + self.process_grace_s
+        leftover = self.owned_processes()
+        while leftover and time.time() < end:
+            time.sleep(0.5)
             leftover = self.owned_processes()
-            if leftover:
-                problems.append(f"owned processes still running: {leftover}")
+        if leftover:
+            problems.append(f"owned processes still running {self.process_grace_s:.0f}s after cleanup: {leftover}")
+        if self.auth_digest is not None:
+            steps.append(self.retire_auth_copy())
         self.cleanup_report = {"steps": steps, "problems": problems}
         return problems
+
+    def workspace_label(self):
+        return f"wake-e2e-{self.run_id}"
+
+    def workspace_by_label(self):
+        rc, out, _err = self.run(["herdr", "workspace", "list"], tag="cleanup:find-workspace", timeout=30)
+        if rc != 0:
+            raise RuntimeError(f"workspace list rc={rc}")
+        for row in walk(json.loads(out or "{}")):
+            if row.get("label") == self.workspace_label() and row.get("workspace_id"):
+                return row["workspace_id"]
+        return None
+
+    def retire_auth_copy(self):
+        """Delete the credential copy unless Codex refreshed it in the run: then it may hold the only current refresh
+        token (rotation can retire the source's), so it is kept, private, and the operator is told where."""
+        copy = self.codex_home / "auth.json"
+        if not copy.exists():
+            return {"codex_auth_copy": "absent"}
+        self.auth_refreshed = file_sha256(copy) != self.auth_digest
+        if not self.auth_refreshed:
+            copy.unlink()
+            return {"codex_auth_copy": "deleted (unchanged)"}
+        print(f"wake-e2e: Codex refreshed its tokens during the run; the refreshed credentials are kept at {copy} "
+              f"(mode 0600). The source profile's refresh token may have been rotated: copy this file back or log in "
+              f"again, then delete it.", file=sys.stderr)
+        return {"codex_auth_copy": f"kept (refreshed): {copy}"}
 
     def workspace_alive(self):
         rc, out, _err = self.run(["herdr", "workspace", "list"], tag="cleanup:verify-workspace", timeout=30)
@@ -758,10 +805,15 @@ def write_evidence(run, rc):
     """report.md / results.json, written after cleanup so they carry its outcome and the final exit code."""
     facts = dict(getattr(run, "facts", {}), finished_utc=utc(), exit_code=rc)
     if run.auth_digest:
-        facts["codex_auth_refreshed_in_run"] = file_sha256(run.codex_home / "auth.json") != run.auth_digest \
-            if (run.codex_home / "auth.json").exists() else "copy missing"
+        copy = run.codex_home / "auth.json"
+        refreshed = run.auth_refreshed
+        if refreshed is None and copy.exists():  # --keep: the copy was not retired
+            refreshed = file_sha256(copy) != run.auth_digest
+        facts["codex_auth_refreshed_in_run"] = refreshed
+    with run.lock:  # workers left running after an interrupt may still append
+        results = list(run.results)
     doc = {"facts": facts, "completeness": getattr(run, "completeness", None), "cleanup": run.cleanup_report,
-           "results": run.results}
+           "results": results}
     (run.ev / "results.json").write_text(json.dumps(doc, indent=2))
     (run.ev / "report.md").write_text(
         f"# wake e2e {run.run_id}\n\n```json\n{json.dumps(facts, indent=2)}\n```\n\n{getattr(run, 'table', '')}\n\n"
@@ -783,7 +835,8 @@ def main(argv=None):
     ap.add_argument("--codex-model", help="passed as -m (default: the profile default)")
     ap.add_argument("--codex-args", default="--approve-for-me",
                     help="extra Codex TUI flags (sandbox/approval), default %(default)r")
-    ap.add_argument("--codex-auth-home", help="Codex home whose auth.json the scratch CODEX_HOME links to "
+    ap.add_argument("--codex-auth-home", help="Codex home whose auth.json is copied (private, mode 0600) into "
+                                              "the scratch CODEX_HOME "
                                               "(default $CODEX_HOME or ~/.codex)")
     ap.add_argument("--self-test", action="store_true",
                     help="check the driver's credential, cleanup and completeness paths (no harnesses) and exit")
@@ -795,6 +848,10 @@ def main(argv=None):
     unknown = [c for c in cases if c not in CASES] + [h for h in args.harness if h not in ("claude", "codex")]
     if unknown:
         ap.error(f"unknown case/harness: {unknown}")
+    def terminate(signum, _frame):
+        raise KeyboardInterrupt(f"signal {signum}")
+    saved = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
+    signal.signal(signal.SIGTERM, terminate)  # SIGTERM takes the same cleanup path as Ctrl-C
     run = Run(args)
     rc = EXIT_FAIL
     try:
@@ -815,6 +872,9 @@ def main(argv=None):
         print(f"wake-e2e: aborted: {e!r}", file=sys.stderr)
         rc = EXIT_FAIL
     finally:
+        # Cleanup runs to the end: a second Ctrl-C or SIGTERM must not cut off the remaining steps.
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
         try:
             problems = run.cleanup()
         except BaseException as e:
@@ -825,6 +885,8 @@ def main(argv=None):
             rc = EXIT_FAIL
         write_evidence(run, rc)
         print(f"evidence: {run.ev} (exit {rc})", flush=True)
+        for sig, handler in saved.items():
+            signal.signal(sig, handler)
     return rc
 
 
