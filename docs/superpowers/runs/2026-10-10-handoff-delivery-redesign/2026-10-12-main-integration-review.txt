@@ -1,0 +1,58 @@
+Independent Main integration review — handoff delivery redesign
+Reviewed candidate: d3b459b54b89e9747bd8bd4d04831c9b9fd55a19
+Candidate tree: 639f9555fca9a2a651b2bd36b142fc68f7e446ca
+Main: 7ac8c4bf6cfd88509df1336f354e8a230f65cc36
+Merge base: 20e7ca73e41a9449376169ab6875c0675da02edc
+
+Assessment: READY TO MERGE WITH FIXES; not ready as-is.
+Counts: Critical 0, Important 3, Minor 1. No new migration or receipt-authority defect confirmed within the inspected coverage.
+
+Strengths
+
+* All 36 historical migration blobs match Main byte-for-byte. The feature appends prospective 37–46 rather than recognizing two incompatible schemas under version 36.
+* Inspected receipt/body-bearing table rebuilds disable foreign keys before BEGIN, retain named tables and stored fields, check the rebuilt schema/foreign keys before committing, and restore the connection setting. Receipt ordinals, sparse rowids, ACK binding/provenance and sequence state are copied explicitly (migrations/0038_receipt_send_time.sql; src/store/schema.rs:5146).
+* Modern send semantics have explicit capability admission before fresh journal/native effects. Immutable historical originals and completed presentation are treated separately from pending submission. Handoff validation compares actual phase body, recipients, policy, keys and claim to its frozen original (src/protocol/handoff.rs:95).
+* Physical presentation confirmation has its own binding/consumer/token/control masks. The inspected store confirmation path does not ACK mail or advance a reader, and Watch confirmation is checked against the exact Live lease. Hook adapter completion is sequenced after complete stdout write/flush (src/store/invitation_content.rs:850; src/service/delivery_presentation.rs:330; src/cli/hook.rs:3913).
+* The canonical active-direct-invitation reader exception is implemented deliberately: direct acceptance captures the event floor before changing membership, preserves existing binding cursors and seeds only missing ones at that floor. Generic join remains separate (src/store/control.rs:1095,1136).
+
+Important issues
+
+I1. Obsolete invitation contexts accumulate without bound while append is stalled; recovery appends the entire history.
+File: integrations/claude/mod/hooks/register.js:292–299,543–553 (candidate).
+Trigger: A pending invitation receives topic/command-context revisions while one io.append is unresolved, or successive append attempts are refused. The duplicate predicate only matches the same contextVersion. Every new version gets another queue object/body; there is no same-ID replacement of non-inflight obsolete contexts, nor a bounded pump batch.
+Impact: Memory grows with revisions to one invitation, defeating the bounded-state and latest-context contract. Once append resumes, pumpLazy frames all retained obsolete versions in one request, producing an unbounded model-visible burst and potentially repeated oversized/refused appends. This requires cooperative ordinary writers and a stalled consumer, not adversarial input.
+Evidence: Ran exact frozen createCore under Node with mock IO, no native harness/daemon. One stalled append, 2,000 revisions of invitation:one, a 1,000-byte goal and small topic/accept command: queue=2,000, unique IDs=1, body bytes >=2,000,000. Resolving the first append left 1,999 queued revisions and produced a second append of 2,247,800 bytes (first append 1,151 bytes). Every individual context fits canonical topic/goal limits. This independently reconfirms the old punch-listed queue concern; its prior scope filter is not a production waiver.
+Fix: Preserve the exact object already in flight, coalesce pending contexts for the same invitation to the latest whole/current context (including the partial-to-whole rule), and bound the consumer's framed append batch. Keep run fencing so late failures cannot delete a replacement-run object. Add a focused stalled/refused append regression asserting bounded retained revisions and eventual latest context.
+
+I2. Main's person-producer wake driver still expects a wake for a new Lazy direct invitation under wake_on=nudge.
+File: scripts/wake-e2e.py:772,788 (Main 7ac8c4bf; these Main-only changes survive the ordinary three-way integration).
+Trigger: invite/1:1 for an idle nudge-only recipient. Main now runs human send --seat RECIPIENT --lazy (Main driver:645–650,788). The feature direct-send producer freezes EnsureCreationPolicy::Lazy unconditionally, including a Human claim (src/cli/direct_send.rs:253–257). Its invitation has no wake obligation; publication of the Lazy body only enqueues wake work for wake_on=all (src/store/lazy_delivery.rs:904–909). InvitationContext::wakes returns false for that Lazy invitation (src/delivery/invitation.rs:108).
+Impact: The authenticated release matrix reports correct passive behavior as FAIL. The expected-wake formula exempts only send-lazy/nudge, not invite/1:1/nudge. This invalidates that release oracle; it is not evidence that the core should wake Lazy invitations.
+Evidence: Traced current Main driver through current feature CLI/canonical producers and wake projection. Human Invite parsing clears policy on the group route (src/cli/commands.rs:1873), so the earlier cooperative/group reproduction is obsolete after integration and is deliberately NOT repeated here. Human priority bypasses catch-up hold, but does not change the Lazy body wake mode or the explicit direct invitation policy. No authenticated matrix was run by this review.
+Fix: Correct the direct-invitation oracle to passive under nudge, or separately create an explicitly confirming invitation if that is the case the driver intends to exercise. Preserve Main's guarded person coordinators. Add a driver control covering the merged producer semantics. This is a release-qualification defect; a live authenticated gate is required before tagging, not automatically before an ordinary merge.
+
+I3. Public usage guidance contradicts the independent active-direct-invitation reader contract.
+File: docs/agent-usage.md:159 (candidate).
+Trigger: Two bindings of one seat read a direct opening message before/after acceptance of the active invitation. The guide says accept/join starts every session at the thread head and the first top-level reader settles the pending opening mail for every session.
+Impact: Agents/operators are told acceptance skips their own backlog and a sibling's display settles their stream. Actual direct acceptance preserves existing cursors, inserts missing open-binding cursors at the invitation event floor, and leaves independent sibling delivery intact. These are functional instructions about what work remains, not cosmetic prose.
+Evidence: TRUST-POLICY.md:851–904 explicitly states the direct exception. src/store/control.rs:1095–1142 chooses init_for_direct_accept rather than generic init_for_join; the former inserts missing cursors without raising existing ones. The candidate report already records this unresolved contradiction. A review cap cannot clear it.
+Fix: Limit head-seeding/seat-pending wording to generic join/nonpair acceptance, and document active direct acceptance's own-cursor/event-floor/sibling exception, while retaining the normal fresh-binding-after-acceptance seeding rule.
+
+Minor issue
+
+M1. The pair-opening changelog needs the same direct-reader qualification.
+File: CHANGELOG.md:9 (candidate).
+The entry joins the true direct-opening preservation statement to an unqualified head-frontier/first-reader-seat settlement description. Qualify the generic route versus active direct acceptance consistently with I3. No separate implementation defect is asserted.
+
+Evidence and review boundaries
+
+* Read-only review used a git archive of exact d3b459b under /private/tmp/handoff-review-d3b459b because the supplied worktree was clean at 8974a87c. Its two subsequent files are run records; HEAD/index/branch were never changed. No herdr-threads mutations, native agents, Rust builds, suites or subagents were run.
+* Independently compared Git blob IDs for migrations 1–36: 36 inspected, zero changed. Reviewed migration suffix and rebuilds chiefly for invitation-policy additions, receipt preservation, larger handoff envelopes and transactional schema admission; migration 46's large relevance-trigger set was sampled rather than exhaustively proven.
+* Inspected requirements: TRUST-POLICY receipt/invitation/direct-reader/presentation clauses, receipts/invitations/hooks design subtrees, resume-v091-composition design, retained report/punch list/post-cap audit. Inspected production passes chiefly covered receipt deadline projection/backfill/due selection, invitation create/accept/pair policy, canonical confirmation and service owner/lease fences, capability admission, handoff body/frozen phase validation, native-event/setup ownership migration, Claude queue/state machine and AGY/Watch completion. The entire roughly 100-file production diff and tens of thousands of added test lines were NOT exhaustively read. Complex relevance/discovery SQL, all concurrency interleavings, all launch/recovery routes and all adapter states remain coverage limits.
+* Retained acceptance is credible for its stated scope: execution.json seals 6abdf38f931f5ad3d386ae85890cbcf6af0912c3/tree fb3f09bcc0349b05351ff308333388cc0cdd0d63; focused-results accounts exactly 821 passed/executed, recovery-results exactly 6, evidence_complete=true, no missing/extra/duplicates/errors. The three scoped leak logs say no leaked test processes. Git diff 6abdf38f→d3b459b contains only paths within the run directory, so no later production change invalidates that source epoch. These retained results were inspected, not rerun, and do not prove native uptake or the current Main release matrix.
+* Existing lint/default-feature/speed records were not rerun merely to repeat unchanged work. This review's only dynamic check was the bounded mock-IO Node reproduction of I1; it started no daemon or test child and disposed its fake core.
+* Five previously unverified nits are not treated as verified defects here. No blanket signoff is inferred from prior roast convergence/cap or from the passing selected matrix.
+
+Recommended integration order: repair I1 with a focused queue regression; correct I3/M1 and Main's narrowed I2 oracle; preserve Main's person-coordinator driver/selftests and historical migration bytes; run change-appropriate required checks on the integration result. Keep authenticated release qualification distinct and run it before tagging under the user's release contract.
+
+Final verdict: With fixes (0 C / 3 I / 1 M). The inspected canonical receipt and presentation boundaries are careful, but the confirmed production queue failure and contradictory public instructions warrant correction before treating this candidate as ready as-is.

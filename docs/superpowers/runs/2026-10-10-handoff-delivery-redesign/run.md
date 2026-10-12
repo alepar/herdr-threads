@@ -1,7 +1,7 @@
 # super-auto run — 2026-10-10-handoff-delivery-redesign
 
 flags: planOneShot=true skipPlanRoast=true skipCodeRoast=false autonomous=true
-phase: finish
+phase: code
 codeMechanism: ordinary-subagents
 skillSource: /Users/alepar/.codex/plugins/cache/superpowers-alepar/superpowers/6.4.2-alepar5.1/skills @ 59cbc3cc081e3d0e647c491676ff6d7cdbc44745 (6.4.2-alepar5.1)
 migrated: historical repeated Spec/Quality task pipelines → one focused task review; detailed review remains formal code roast
@@ -31,12 +31,12 @@ parked:
 - 2026-10-10-handoff-delivery-redesign-roast-design-2.md · degraded-verdict · "clean (0 nits) [low coverage] — proceeded, not re-roasted under caller-owned fully autonomous exception; sole cause literal zero-raw rule despite all nine fresh scouts completed and both prior Blockings resolved; no dead stages, caps, escalations or unverified findings"
 
 codeBuckets:
-  completed: ht-0lo.19, ht-0lo.8.3, ht-0lo.8, ht-0lo, ht-0lo.11, ht-0lo.16, ht-0lo.17, ht-0lo.18, ht-0lo.6, ht-0lo.7, ht-0lo.2.1, ht-0lo.1.1, ht-0lo.3.1, ht-0lo.4.1, ht-0lo.1.3, ht-0lo.2.2, ht-0lo.4.2, ht-0lo.2.3, ht-0lo.1.2, ht-0lo.3.2, ht-0lo.5, ht-0lo.1, ht-0lo.2, ht-0lo.3, ht-0lo.4, ht-0lo.8.1, ht-0lo.8.2, ht-0lo.8.4, ht-0lo.9, ht-0lo.10, ht-0lo.12, ht-0lo.13, ht-0lo.14, ht-0lo.15
+  completed: ht-0lo.19, ht-0lo.8.3, ht-0lo.8, ht-0lo.11, ht-0lo.16, ht-0lo.17, ht-0lo.18, ht-0lo.6, ht-0lo.7, ht-0lo.2.1, ht-0lo.1.1, ht-0lo.3.1, ht-0lo.4.1, ht-0lo.1.3, ht-0lo.2.2, ht-0lo.4.2, ht-0lo.2.3, ht-0lo.1.2, ht-0lo.3.2, ht-0lo.5, ht-0lo.1, ht-0lo.2, ht-0lo.3, ht-0lo.4, ht-0lo.8.1, ht-0lo.8.2, ht-0lo.8.4, ht-0lo.9, ht-0lo.10, ht-0lo.12, ht-0lo.13, ht-0lo.14, ht-0lo.15
   escalated:
-  pendingRetry:
+  pendingRetry: ht-0lo.20, ht-0lo.21, ht-0lo.22, ht-0lo
   parked:
   stalled: false
-  review: ready (after the phase-6 sweep @ 6abdf38f931f5ad3d386ae85890cbcf6af0912c3)
+  review: not ready (Main review3Important/1Minor; user-requested independently reviewed successor in progress)
   sweep: 6abdf38f — 827 passed, 0 failed, 0 errors, 0 skipped; focused821 plus mandatory6; command: source-sealed expanded focused C (project ht-zo4 restriction), all scoped leaks0 UUID7643628a @ 6abdf38f931f5ad3d386ae85890cbcf6af0912c3
 
 - resume2026-10-11 · user explicitly requested "$super-auto this, fully autonomous, design roast off, code roast on"; skipPlanRoast=true applies prospectively; retained completed designRound2 and low-coverage history, code phase/counters/epic unchanged.
@@ -161,3 +161,6 @@ feedback: none (one fresh gpt-6-astra/high analyst; no upstream-worthy findings,
 - finish-handback · authoritative report-status clean[degraded:lowcoverage,planroastskipped]; report committedbeforeonce-onlyfeedbackanalysis, all34beadsterminal. Existinguserauthorization selectsretainedfeaturecandidate forMain-owned integrationdecision andqualifiednotification; noMainmerge/push/config/release. Rootworktreereviewartifacts/warmtarget retaineduntilMainchoice. Source/evidenceunchangedoutsideRUNafter6abdf38f, no repeatedsuite.
 
 - Main-notified · verified taQXwBH7X topic/goal/self+canonicalMain sRpHoWRVk participation; user-authorized qualifiedcandidate notification mWupGkbzO sent asnudge (receipt/adoption/merge notinferred). Candidate d3b459b5, frozenaccepted6abdf38f; final-main-ready-message.txt retained. No externalupstreamissue or Mainmutation.
+
+resumeChange: user relayed request mBjmMsKyF (teAA2NJVh) authorizes bounded independently reviewed successor for Main review mNDU9IKMB. OriginalGoal/flags/codeRound2/converged exit/postcap/history retained; no roast counter reset or automatic fix-loop restart. Prior report archived report-pre-main-review.md; source6abdf38f827PASS remains historical, not successor clearance.
+- Main-successor · Main7ac guardedperson-driver exactclean composition7ea79d3d/tree170e1d05, allrequiredmergegatesPASS4.603/1.345/22.842/7.899. ScopequeueI1/driverI2/docsI3+M1 becomes boundedfixbeads ht-0lo.20–.22 underreopenedroot; disjointtaskworktrees, threeindependentauthors, one freshlightreview/atmostonefixpass each, serialcompile-onlymerges. ParentsoleCargo/realdaemon/plugin qualification; lightweightprivateNode/PythonworkerTDD allowed. Mainpipeline/profile/remedybranch84d remainsotherowner, noimport or foreignmutation. Evidence2026-10-12-main-integration-review.txt and successorplan.
