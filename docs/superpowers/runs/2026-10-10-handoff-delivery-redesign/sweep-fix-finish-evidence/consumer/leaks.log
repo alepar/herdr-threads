@@ -1,0 +1,30 @@
+Traceback (most recent call last):
+  File "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/scripts/check-no-leaked-processes", line 231, in <module>
+    sys.exit(main())
+             ~~~~^^
+  File "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/scripts/check-no-leaked-processes", line 204, in main
+    leaks = scan(root, args.run_id, args.exclude)
+  File "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/scripts/check-no-leaked-processes", line 183, in scan
+    procs = collect()
+  File "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/scripts/check-no-leaked-processes", line 118, in collect
+    for line in _run(["ps", "-axww", "-o", "pid=", "-o", "ppid=", "-o", "command="]).splitlines():
+                ~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/scripts/check-no-leaked-processes", line 112, in _run
+    return subprocess.run(argv, capture_output=True, text=True, check=False).stdout
+           ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/subprocess.py", line 555, in run
+    with Popen(*popenargs, **kwargs) as process:
+         ~~~~~^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/subprocess.py", line 1039, in __init__
+    self._execute_child(args, executable, preexec_fn, close_fds,
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                        pass_fds, cwd, env,
+                        ^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+                        gid, gids, uid, umask,
+                        ^^^^^^^^^^^^^^^^^^^^^^
+                        start_new_session, process_group)
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.7/Frameworks/Python.framework/Versions/3.14/lib/python3.14/subprocess.py", line 1990, in _execute_child
+    raise child_exception_type(errno_num, err_msg, err_filename)
+PermissionError: [Errno 1] Operation not permitted: 'ps'

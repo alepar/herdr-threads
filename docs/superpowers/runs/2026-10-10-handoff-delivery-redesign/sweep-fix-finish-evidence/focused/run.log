@@ -1,0 +1,324 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.04s
+────────────
+ Nextest run ID 154ddd74-5e64-4d48-a79e-6d5c81162dc9 with nextest profile: default
+    Starting 26 tests across 1 binary (4917 tests skipped)
+        PASS [   0.021s] ( 1/26) herdr-threads protocol::watch::tests::accepted_presentation_lease_survives_new_decoder_and_old_bytes_stay_omitted
+  stdout ───
+
+    running 1 test
+    test protocol::watch::tests::accepted_presentation_lease_survives_new_decoder_and_old_bytes_stay_omitted ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4942 filtered out; finished in 0.00s
+
+
+        PASS [   0.023s] ( 2/26) herdr-threads daemon::transport::watch_connection::tests::presentation_owner_accepted_wire_carries_the_registered_lease
+  stdout ───
+
+    running 1 test
+    test daemon::transport::watch_connection::tests::presentation_owner_accepted_wire_carries_the_registered_lease ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4942 filtered out; finished in 0.01s
+
+
+        PASS [   0.024s] ( 3/26) herdr-threads daemon::transport::watch_connection::tests::accepted_reply_carries_attention_version_and_the_claim
+  stdout ───
+
+    running 1 test
+    test daemon::transport::watch_connection::tests::accepted_reply_carries_attention_version_and_the_claim ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4942 filtered out; finished in 0.00s
+
+
+        PASS [   0.024s] ( 4/26) herdr-threads daemon::transport::watch_connection::tests::legacy_accepted_wire_omits_even_a_registered_presentation_lease
+  stdout ───
+
+    running 1 test
+    test daemon::transport::watch_connection::tests::legacy_accepted_wire_omits_even_a_registered_presentation_lease ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4942 filtered out; finished in 0.00s
+
+
+        PASS [   0.031s] ( 5/26) herdr-threads cli::watch::tests::q3_all_watch_mode_capabilities_send_true_and_use_the_accepted_lease
+  stdout ───
+
+    running 1 test
+    test cli::watch::tests::q3_all_watch_mode_capabilities_send_true_and_use_the_accepted_lease ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4942 filtered out; finished in 0.02s
+
+
+        PASS [   0.036s] ( 6/26) herdr-threads cli::watch::tests::q3_missing_binding_cursors_capability_keeps_old_wire_and_consumer
+  stdout ───
+
+    running 1 test
+    test cli::watch::tests::q3_missing_binding_cursors_capability_keeps_old_wire_and_consumer ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4942 filtered out; finished in 0.01s
+
+
+        PASS [   0.037s] ( 7/26) herdr-threads cli::watch::tests::q3_missing_watch_mode_capability_keeps_old_wire_and_consumer
+  stdout ───
+
+    running 1 test
+    test cli::watch::tests::q3_missing_watch_mode_capability_keeps_old_wire_and_consumer ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4942 filtered out; finished in 0.01s
+
+
+        PASS [   0.037s] ( 8/26) herdr-threads cli::watch::tests::q3_missing_generic_presentation_capability_keeps_old_wire_and_consumer
+  stdout ───
+
+    running 1 test
+    test cli::watch::tests::q3_missing_generic_presentation_capability_keeps_old_wire_and_consumer ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4942 filtered out; finished in 0.02s
+
+
+        PASS [   0.244s] ( 9/26) herdr-threads store::attention::tests::presentation_exact_recovery_keeps_sibling_unread_after_receipt_and_lazy_settlement
+  stdout ───
+
+    running 1 test
+    test store::attention::tests::presentation_exact_recovery_keeps_sibling_unread_after_receipt_and_lazy_settlement ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4942 filtered out; finished in 0.22s
+
+
+        PASS [   0.358s] (10/26) herdr-threads service::mod_channels::tests::domain::q3_legacy_claim_only_registration_has_no_presentation_lease
+  stdout ───
+
+    running 1 test
+    test service::mod_channels::tests::domain::q3_legacy_claim_only_registration_has_no_presentation_lease ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4942 filtered out; finished in 0.34s
+
+
+        PASS [   0.572s] (11/26) herdr-threads service::mod_channels::tests::domain::q3_mixed_same_seat_modes_and_replacement_cannot_borrow_old_leases
+  stdout ───
+
+    running 1 test
+    test service::mod_channels::tests::domain::q3_mixed_same_seat_modes_and_replacement_cannot_borrow_old_leases ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4942 filtered out; finished in 0.55s
+
+
+        PASS [   0.690s] (12/26) herdr-threads service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_fanout_includes_disconnected_open_and_keeps_absent_stale_consumers
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_fanout_includes_disconnected_open_and_keeps_absent_stale_consumers ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4942 filtered out; finished in 0.68s
+
+
+        PASS [   0.703s] (13/26) herdr-threads service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_only_reopens_quiet_watch_and_hook_with_preserved_reader
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_only_reopens_quiet_watch_and_hook_with_preserved_reader ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4942 filtered out; finished in 0.69s
+
+
+        PASS [   0.778s] (14/26) herdr-threads service::delivery_pull::tests::presentation_capacity_last_slot_parks_unknown_carry_and_only_continues_for_due_keys
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_capacity_last_slot_parks_unknown_carry_and_only_continues_for_due_keys ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4942 filtered out; finished in 0.75s
+
+
+        PASS [   0.114s] (15/26) herdr-threads store::queries::tests::query_work_q4::q4_public_and_origin_warning_sources_remain_enabled
+  stdout ───
+
+    running 1 test
+    test store::queries::tests::query_work_q4::q4_public_and_origin_warning_sources_remain_enabled ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4942 filtered out; finished in 0.09s
+
+
+        PASS [   1.162s] (16/26) herdr-threads store::attention::tests::presentation_capacity_due_exact_keys_have_bounded_actual_sql_plans_and_vm
+  stdout ───
+
+    running 1 test
+    test store::attention::tests::presentation_capacity_due_exact_keys_have_bounded_actual_sql_plans_and_vm ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4942 filtered out; finished in 1.14s
+
+  stderr ───
+    due retained=32 executions=2 rows=2 vm=107 plan=["SCAN CONSTANT ROW", "SCALAR SUBQUERY 5", "SEARCH sm USING INDEX sqlite_autoindex_send_manifests_2 (message_id=?)", "SEARCH r USING INDEX sqlite_autoindex_lazy_recipients_1 (preparation_id=? AND seat_id=?)", "SEARCH m USING INDEX sqlite_autoindex_messages_3 (id=? AND thread_id=?)", "SEARCH b USING INDEX sqlite_autoindex_occupant_bindings_1 (binding_id=?)", "CORRELATED SCALAR SUBQUERY 1", "SEARCH lc USING PRIMARY KEY (binding_id=? AND thread_id=?)", "CORRELATED SCALAR SUBQUERY 2", "SEARCH lc USING PRIMARY KEY (binding_id=? AND thread_id=?)", "CORRELATED SCALAR SUBQUERY 4", "SEARCH lm USING INDEX sqlite_autoindex_memberships_1 (thread_id=? AND seat_id=?)", "CORRELATED SCALAR SUBQUERY 3", "SEARCH ls USING INDEX sqlite_autoindex_seats_1 (id=?)", "SEARCH li USING INDEX sqlite_autoindex_invitations_2 (thread_id=? AND seat_id=? AND episode=?)", "SEARCH ld USING INDEX sqlite_autoindex_direct_threads_1 (thread_id=?)"]
+    due retained=32 executions=2 rows=2 vm=107 plan=["SCAN CONSTANT ROW", "SCALAR SUBQUERY 5", "SEARCH sm USING INDEX sqlite_autoindex_send_manifests_2 (message_id=?)", "SEARCH r USING INDEX sqlite_autoindex_lazy_recipients_1 (preparation_id=? AND seat_id=?)", "SEARCH m USING INDEX sqlite_autoindex_messages_3 (id=? AND thread_id=?)", "SEARCH b USING INDEX sqlite_autoindex_occupant_bindings_1 (binding_id=?)", "CORRELATED SCALAR SUBQUERY 1", "SEARCH lc USING PRIMARY KEY (binding_id=? AND thread_id=?)", "CORRELATED SCALAR SUBQUERY 2", "SEARCH lc USING PRIMARY KEY (binding_id=? AND thread_id=?)", "CORRELATED SCALAR SUBQUERY 4", "SEARCH lm USING INDEX sqlite_autoindex_memberships_1 (thread_id=? AND seat_id=?)", "CORRELATED SCALAR SUBQUERY 3", "SEARCH ls USING INDEX sqlite_autoindex_seats_1 (id=?)", "SEARCH li USING INDEX sqlite_autoindex_invitations_2 (thread_id=? AND seat_id=? AND episode=?)", "SEARCH ld USING INDEX sqlite_autoindex_direct_threads_1 (thread_id=?)"]
+    due retained=32 executions=3 rows=3 vm=17 plan=["SCAN CONSTANT ROW", "SCALAR SUBQUERY 1", "SEARCH occupant_bindings USING INDEX occupant_bindings_session_key (seat_id=? AND harness=?)"]
+    due retained=32 executions=3 rows=3 vm=17 plan=["SCAN CONSTANT ROW", "SCALAR SUBQUERY 1", "SEARCH occupant_bindings USING INDEX occupant_bindings_session_key (seat_id=? AND harness=?)"]
+    due retained=32 executions=1 rows=1 vm=47 plan=["SEARCH b USING INDEX sqlite_autoindex_occupant_bindings_1 (binding_id=?)", "SEARCH s USING INDEX sqlite_autoindex_seats_1 (id=?)"]
+    due retained=32 executions=1 rows=1 vm=47 plan=["SEARCH b USING INDEX sqlite_autoindex_occupant_bindings_1 (binding_id=?)", "SEARCH s USING INDEX sqlite_autoindex_seats_1 (id=?)"]
+    due retained=32 executions=2 rows=2 vm=20 plan=["SEARCH seat_availability USING INDEX seat_availability_after (seat_id=? AND decision_seq>?)"]
+    due retained=32 executions=2 rows=2 vm=20 plan=["SEARCH seat_availability USING INDEX seat_availability_after (seat_id=? AND decision_seq>?)"]
+    due retained=32 executions=1 rows=1 vm=12 plan=["SEARCH host_instances USING INDEX sqlite_autoindex_host_instances_1 (id=?)"]
+    due retained=32 executions=1 rows=1 vm=12 plan=["SEARCH host_instances USING INDEX sqlite_autoindex_host_instances_1 (id=?)"]
+    due retained=32 executions=10 rows=7 vm=21 plan=["SEARCH messages USING INDEX sqlite_autoindex_messages_1 (id=?)"]
+    due retained=32 executions=10 rows=7 vm=21 plan=["SEARCH messages USING INDEX sqlite_autoindex_messages_1 (id=?)"]
+    due retained=32 executions=2 rows=0 vm=17 plan=["SEARCH sm USING INDEX sqlite_autoindex_send_manifests_2 (message_id=?)", "SEARCH m USING INDEX sqlite_autoindex_messages_1 (id=?)", "CORRELATED SCALAR SUBQUERY 2", "SEARCH c USING PRIMARY KEY (binding_id=? AND thread_id=?)", "SEARCH pr USING COVERING INDEX sqlite_autoindex_prepared_recipients_1 (preparation_id=? AND seat_id=?)", "SEARCH mb EXISTS USING INDEX sqlite_autoindex_memberships_1 (thread_id=? AND seat_id=?)"]
+    due retained=32 executions=2 rows=0 vm=17 plan=["SEARCH sm USING INDEX sqlite_autoindex_send_manifests_2 (message_id=?)", "SEARCH m USING INDEX sqlite_autoindex_messages_1 (id=?)", "CORRELATED SCALAR SUBQUERY 2", "SEARCH c USING PRIMARY KEY (binding_id=? AND thread_id=?)", "SEARCH pr USING COVERING INDEX sqlite_autoindex_prepared_recipients_1 (preparation_id=? AND seat_id=?)", "SEARCH mb EXISTS USING INDEX sqlite_autoindex_memberships_1 (thread_id=? AND seat_id=?)"]
+    due retained=32 executions=2 rows=1 vm=42 plan=["SEARCH r USING INDEX sqlite_autoindex_receipts_1 (message_id=? AND seat_id=?)", "SEARCH s USING INDEX sqlite_autoindex_seats_1 (id=?)", "SEARCH m USING INDEX sqlite_autoindex_messages_1 (id=?)"]
+    due retained=32 executions=2 rows=1 vm=42 plan=["SEARCH r USING INDEX sqlite_autoindex_receipts_1 (message_id=? AND seat_id=?)", "SEARCH s USING INDEX sqlite_autoindex_seats_1 (id=?)", "SEARCH m USING INDEX sqlite_autoindex_messages_1 (id=?)"]
+    due retained=32 executions=4 rows=2 vm=74 plan=["SEARCH sm USING INDEX sqlite_autoindex_send_manifests_2 (message_id=?)", "SEARCH pr USING INDEX sqlite_autoindex_prepared_recipients_1 (preparation_id=? AND seat_id=?)", "SEARCH s USING INDEX sqlite_autoindex_seats_1 (id=?)", "SEARCH rs USING INDEX sqlite_autoindex_receipt_state_1 (message_id=? AND seat_id=?) LEFT-JOIN", "SEARCH cut USING INDEX sqlite_autoindex_receipt_send_time_cutovers_1 (instance_id=?) LEFT-JOIN"]
+    due retained=32 executions=4 rows=2 vm=74 plan=["SEARCH sm USING INDEX sqlite_autoindex_send_manifests_2 (message_id=?)", "SEARCH pr USING INDEX sqlite_autoindex_prepared_recipients_1 (preparation_id=? AND seat_id=?)", "SEARCH s USING INDEX sqlite_autoindex_seats_1 (id=?)", "SEARCH rs USING INDEX sqlite_autoindex_receipt_state_1 (message_id=? AND seat_id=?) LEFT-JOIN", "SEARCH cut USING INDEX sqlite_autoindex_receipt_send_time_cutovers_1 (instance_id=?) LEFT-JOIN"]
+    due retained=32 executions=3 rows=3 vm=22 plan=["SEARCH messages USING INDEX sqlite_autoindex_messages_1 (id=?)"]
+    due retained=32 executions=3 rows=3 vm=22 plan=["SEARCH messages USING INDEX sqlite_autoindex_messages_1 (id=?)"]
+    due retained=32 executions=3 rows=1 vm=12 plan=["SEARCH human_receipt_waivers USING INDEX sqlite_autoindex_human_receipt_waivers_1 (seat_id=?)"]
+    due retained=32 executions=3 rows=1 vm=12 plan=["SEARCH human_receipt_waivers USING INDEX sqlite_autoindex_human_receipt_waivers_1 (seat_id=?)"]
+    due retained=32 executions=3 rows=3 vm=12 plan=["SEARCH threads USING INDEX sqlite_autoindex_threads_1 (id=?)"]
+    due retained=32 executions=3 rows=3 vm=12 plan=["SEARCH threads USING INDEX sqlite_autoindex_threads_1 (id=?)"]
+    due retained=32 executions=1 rows=1 vm=12 plan=["SEARCH seats USING INDEX sqlite_autoindex_seats_1 (id=?)"]
+    due retained=32 executions=1 rows=1 vm=12 plan=["SEARCH seats USING INDEX sqlite_autoindex_seats_1 (id=?)"]
+    due retained=2048 executions=2 rows=2 vm=107 plan=["SCAN CONSTANT ROW", "SCALAR SUBQUERY 5", "SEARCH sm USING INDEX sqlite_autoindex_send_manifests_2 (message_id=?)", "SEARCH r USING INDEX sqlite_autoindex_lazy_recipients_1 (preparation_id=? AND seat_id=?)", "SEARCH m USING INDEX sqlite_autoindex_messages_3 (id=? AND thread_id=?)", "SEARCH b USING INDEX sqlite_autoindex_occupant_bindings_1 (binding_id=?)", "CORRELATED SCALAR SUBQUERY 1", "SEARCH lc USING PRIMARY KEY (binding_id=? AND thread_id=?)", "CORRELATED SCALAR SUBQUERY 2", "SEARCH lc USING PRIMARY KEY (binding_id=? AND thread_id=?)", "CORRELATED SCALAR SUBQUERY 4", "SEARCH lm USING INDEX sqlite_autoindex_memberships_1 (thread_id=? AND seat_id=?)", "CORRELATED SCALAR SUBQUERY 3", "SEARCH ls USING INDEX sqlite_autoindex_seats_1 (id=?)", "SEARCH li USING INDEX sqlite_autoindex_invitations_2 (thread_id=? AND seat_id=? AND episode=?)", "SEARCH ld USING INDEX sqlite_autoindex_direct_threads_1 (thread_id=?)"]
+    due retained=2048 executions=2 rows=2 vm=107 plan=["SCAN CONSTANT ROW", "SCALAR SUBQUERY 5", "SEARCH sm USING INDEX sqlite_autoindex_send_manifests_2 (message_id=?)", "SEARCH r USING INDEX sqlite_autoindex_lazy_recipients_1 (preparation_id=? AND seat_id=?)", "SEARCH m USING INDEX sqlite_autoindex_messages_3 (id=? AND thread_id=?)", "SEARCH b USING INDEX sqlite_autoindex_occupant_bindings_1 (binding_id=?)", "CORRELATED SCALAR SUBQUERY 1", "SEARCH lc USING PRIMARY KEY (binding_id=? AND thread_id=?)", "CORRELATED SCALAR SUBQUERY 2", "SEARCH lc USING PRIMARY KEY (binding_id=? AND thread_id=?)", "CORRELATED SCALAR SUBQUERY 4", "SEARCH lm USING INDEX sqlite_autoindex_memberships_1 (thread_id=? AND seat_id=?)", "CORRELATED SCALAR SUBQUERY 3", "SEARCH ls USING INDEX sqlite_autoindex_seats_1 (id=?)", "SEARCH li USING INDEX sqlite_autoindex_invitations_2 (thread_id=? AND seat_id=? AND episode=?)", "SEARCH ld USING INDEX sqlite_autoindex_direct_threads_1 (thread_id=?)"]
+    due retained=2048 executions=3 rows=3 vm=17 plan=["SCAN CONSTANT ROW", "SCALAR SUBQUERY 1", "SEARCH occupant_bindings USING INDEX occupant_bindings_session_key (seat_id=? AND harness=?)"]
+    due retained=2048 executions=3 rows=3 vm=17 plan=["SCAN CONSTANT ROW", "SCALAR SUBQUERY 1", "SEARCH occupant_bindings USING INDEX occupant_bindings_session_key (seat_id=? AND harness=?)"]
+    due retained=2048 executions=1 rows=1 vm=47 plan=["SEARCH b USING INDEX sqlite_autoindex_occupant_bindings_1 (binding_id=?)", "SEARCH s USING INDEX sqlite_autoindex_seats_1 (id=?)"]
+    due retained=2048 executions=1 rows=1 vm=47 plan=["SEARCH b USING INDEX sqlite_autoindex_occupant_bindings_1 (binding_id=?)", "SEARCH s USING INDEX sqlite_autoindex_seats_1 (id=?)"]
+    due retained=2048 executions=2 rows=2 vm=20 plan=["SEARCH seat_availability USING INDEX seat_availability_after (seat_id=? AND decision_seq>?)"]
+    due retained=2048 executions=2 rows=2 vm=20 plan=["SEARCH seat_availability USING INDEX seat_availability_after (seat_id=? AND decision_seq>?)"]
+    due retained=2048 executions=1 rows=1 vm=12 plan=["SEARCH host_instances USING INDEX sqlite_autoindex_host_instances_1 (id=?)"]
+    due retained=2048 executions=1 rows=1 vm=12 plan=["SEARCH host_instances USING INDEX sqlite_autoindex_host_instances_1 (id=?)"]
+    due retained=2048 executions=10 rows=7 vm=21 plan=["SEARCH messages USING INDEX sqlite_autoindex_messages_1 (id=?)"]
+    due retained=2048 executions=10 rows=7 vm=21 plan=["SEARCH messages USING INDEX sqlite_autoindex_messages_1 (id=?)"]
+    due retained=2048 executions=2 rows=0 vm=17 plan=["SEARCH sm USING INDEX sqlite_autoindex_send_manifests_2 (message_id=?)", "SEARCH m USING INDEX sqlite_autoindex_messages_1 (id=?)", "CORRELATED SCALAR SUBQUERY 2", "SEARCH c USING PRIMARY KEY (binding_id=? AND thread_id=?)", "SEARCH pr USING COVERING INDEX sqlite_autoindex_prepared_recipients_1 (preparation_id=? AND seat_id=?)", "SEARCH mb EXISTS USING INDEX sqlite_autoindex_memberships_1 (thread_id=? AND seat_id=?)"]
+    due retained=2048 executions=2 rows=0 vm=17 plan=["SEARCH sm USING INDEX sqlite_autoindex_send_manifests_2 (message_id=?)", "SEARCH m USING INDEX sqlite_autoindex_messages_1 (id=?)", "CORRELATED SCALAR SUBQUERY 2", "SEARCH c USING PRIMARY KEY (binding_id=? AND thread_id=?)", "SEARCH pr USING COVERING INDEX sqlite_autoindex_prepared_recipients_1 (preparation_id=? AND seat_id=?)", "SEARCH mb EXISTS USING INDEX sqlite_autoindex_memberships_1 (thread_id=? AND seat_id=?)"]
+    due retained=2048 executions=2 rows=1 vm=42 plan=["SEARCH r USING INDEX sqlite_autoindex_receipts_1 (message_id=? AND seat_id=?)", "SEARCH s USING INDEX sqlite_autoindex_seats_1 (id=?)", "SEARCH m USING INDEX sqlite_autoindex_messages_1 (id=?)"]
+    due retained=2048 executions=2 rows=1 vm=42 plan=["SEARCH r USING INDEX sqlite_autoindex_receipts_1 (message_id=? AND seat_id=?)", "SEARCH s USING INDEX sqlite_autoindex_seats_1 (id=?)", "SEARCH m USING INDEX sqlite_autoindex_messages_1 (id=?)"]
+    due retained=2048 executions=4 rows=2 vm=74 plan=["SEARCH sm USING INDEX sqlite_autoindex_send_manifests_2 (message_id=?)", "SEARCH pr USING INDEX sqlite_autoindex_prepared_recipients_1 (preparation_id=? AND seat_id=?)", "SEARCH s USING INDEX sqlite_autoindex_seats_1 (id=?)", "SEARCH rs USING INDEX sqlite_autoindex_receipt_state_1 (message_id=? AND seat_id=?) LEFT-JOIN", "SEARCH cut USING INDEX sqlite_autoindex_receipt_send_time_cutovers_1 (instance_id=?) LEFT-JOIN"]
+    due retained=2048 executions=4 rows=2 vm=74 plan=["SEARCH sm USING INDEX sqlite_autoindex_send_manifests_2 (message_id=?)", "SEARCH pr USING INDEX sqlite_autoindex_prepared_recipients_1 (preparation_id=? AND seat_id=?)", "SEARCH s USING INDEX sqlite_autoindex_seats_1 (id=?)", "SEARCH rs USING INDEX sqlite_autoindex_receipt_state_1 (message_id=? AND seat_id=?) LEFT-JOIN", "SEARCH cut USING INDEX sqlite_autoindex_receipt_send_time_cutovers_1 (instance_id=?) LEFT-JOIN"]
+    due retained=2048 executions=3 rows=3 vm=22 plan=["SEARCH messages USING INDEX sqlite_autoindex_messages_1 (id=?)"]
+    due retained=2048 executions=3 rows=3 vm=22 plan=["SEARCH messages USING INDEX sqlite_autoindex_messages_1 (id=?)"]
+    due retained=2048 executions=3 rows=1 vm=12 plan=["SEARCH human_receipt_waivers USING INDEX sqlite_autoindex_human_receipt_waivers_1 (seat_id=?)"]
+    due retained=2048 executions=3 rows=1 vm=12 plan=["SEARCH human_receipt_waivers USING INDEX sqlite_autoindex_human_receipt_waivers_1 (seat_id=?)"]
+    due retained=2048 executions=3 rows=3 vm=12 plan=["SEARCH threads USING INDEX sqlite_autoindex_threads_1 (id=?)"]
+    due retained=2048 executions=3 rows=3 vm=12 plan=["SEARCH threads USING INDEX sqlite_autoindex_threads_1 (id=?)"]
+    due retained=2048 executions=1 rows=1 vm=12 plan=["SEARCH seats USING INDEX sqlite_autoindex_seats_1 (id=?)"]
+    due retained=2048 executions=1 rows=1 vm=12 plan=["SEARCH seats USING INDEX sqlite_autoindex_seats_1 (id=?)"]
+
+        PASS [   1.193s] (17/26) herdr-threads service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_private_failure_rolls_back_episode_join_all_readers
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_private_failure_rolls_back_episode_join_all_readers ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4942 filtered out; finished in 1.18s
+
+
+        PASS [   1.532s] (18/26) herdr-threads service::delivery_pull::tests::presentation_full_pending_carry_reaches_quiet_without_evicting_offers
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_full_pending_carry_reaches_quiet_without_evicting_offers ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4942 filtered out; finished in 1.52s
+
+
+        PASS [   0.905s] (19/26) herdr-threads store::queries::tests::query_work_q4::q4_scalar_agreement_and_strict_retirement_use_exact_scope
+  stdout ───
+
+    running 1 test
+    test store::queries::tests::query_work_q4::q4_scalar_agreement_and_strict_retirement_use_exact_scope ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4942 filtered out; finished in 0.89s
+
+  stderr ───
+    Q4 actualSQL plan=["SEARCH sm USING INDEX sqlite_autoindex_send_manifests_2 (message_id=?)", "SEARCH r USING INDEX sqlite_autoindex_lazy_recipients_1 (preparation_id=? AND seat_id=?)", "SEARCH b USING INDEX sqlite_autoindex_occupant_bindings_1 (binding_id=?)", "CORRELATED SCALAR SUBQUERY 1", "SEARCH lc USING PRIMARY KEY (binding_id=? AND thread_id=?)", "CORRELATED SCALAR SUBQUERY 2", "SEARCH lc USING PRIMARY KEY (binding_id=? AND thread_id=?)", "CORRELATED SCALAR SUBQUERY 4", "SEARCH lm USING INDEX sqlite_autoindex_memberships_1 (thread_id=? AND seat_id=?)", "CORRELATED SCALAR SUBQUERY 3", "SEARCH ls USING INDEX sqlite_autoindex_seats_1 (id=?)", "SEARCH li USING INDEX sqlite_autoindex_invitations_2 (thread_id=? AND seat_id=? AND episode=?)", "SEARCH ld USING INDEX sqlite_autoindex_direct_threads_1 (thread_id=?)"]
+    Q4 actualSQL plan=["SEARCH sm USING INDEX sqlite_autoindex_send_manifests_2 (message_id=?)", "SEARCH r USING INDEX sqlite_autoindex_lazy_recipients_1 (preparation_id=? AND seat_id=?)", "SEARCH b USING INDEX sqlite_autoindex_occupant_bindings_1 (binding_id=?)", "CORRELATED SCALAR SUBQUERY 1", "SEARCH lc USING PRIMARY KEY (binding_id=? AND thread_id=?)", "CORRELATED SCALAR SUBQUERY 2", "SEARCH lc USING PRIMARY KEY (binding_id=? AND thread_id=?)", "CORRELATED SCALAR SUBQUERY 4", "SEARCH lm USING INDEX sqlite_autoindex_memberships_1 (thread_id=? AND seat_id=?)", "CORRELATED SCALAR SUBQUERY 3", "SEARCH ls USING INDEX sqlite_autoindex_seats_1 (id=?)", "SEARCH li USING INDEX sqlite_autoindex_invitations_2 (thread_id=? AND seat_id=? AND episode=?)", "SEARCH ld USING INDEX sqlite_autoindex_direct_threads_1 (thread_id=?)"]
+    Q4 actualSQL plan=["SEARCH sm USING INDEX sqlite_autoindex_send_manifests_2 (message_id=?)", "SEARCH r USING INDEX sqlite_autoindex_lazy_recipients_1 (preparation_id=? AND seat_id=?)", "SEARCH b USING INDEX sqlite_autoindex_occupant_bindings_1 (binding_id=?)", "CORRELATED SCALAR SUBQUERY 1", "SEARCH lc USING PRIMARY KEY (binding_id=? AND thread_id=?)", "CORRELATED SCALAR SUBQUERY 2", "SEARCH lc USING PRIMARY KEY (binding_id=? AND thread_id=?)", "CORRELATED SCALAR SUBQUERY 4", "SEARCH lm USING INDEX sqlite_autoindex_memberships_1 (thread_id=? AND seat_id=?)", "CORRELATED SCALAR SUBQUERY 3", "SEARCH ls USING INDEX sqlite_autoindex_seats_1 (id=?)", "SEARCH li USING INDEX sqlite_autoindex_invitations_2 (thread_id=? AND seat_id=? AND episode=?)", "SEARCH ld USING INDEX sqlite_autoindex_direct_threads_1 (thread_id=?)"]
+    Q4 actualSQL plan=["SEARCH sm USING INDEX sqlite_autoindex_send_manifests_2 (message_id=?)", "SEARCH r USING INDEX sqlite_autoindex_lazy_recipients_1 (preparation_id=? AND seat_id=?)", "SEARCH b USING INDEX sqlite_autoindex_occupant_bindings_1 (binding_id=?)", "CORRELATED SCALAR SUBQUERY 1", "SEARCH lc USING PRIMARY KEY (binding_id=? AND thread_id=?)", "CORRELATED SCALAR SUBQUERY 2", "SEARCH lc USING PRIMARY KEY (binding_id=? AND thread_id=?)", "CORRELATED SCALAR SUBQUERY 4", "SEARCH lm USING INDEX sqlite_autoindex_memberships_1 (thread_id=? AND seat_id=?)", "CORRELATED SCALAR SUBQUERY 3", "SEARCH ls USING INDEX sqlite_autoindex_seats_1 (id=?)", "SEARCH li USING INDEX sqlite_autoindex_invitations_2 (thread_id=? AND seat_id=? AND episode=?)", "SEARCH ld USING INDEX sqlite_autoindex_direct_threads_1 (thread_id=?)"]
+    Q4 actualSQL plan=["SEARCH sm USING INDEX sqlite_autoindex_send_manifests_2 (message_id=?)", "SEARCH r USING INDEX sqlite_autoindex_lazy_recipients_1 (preparation_id=? AND seat_id=?)", "SEARCH b USING INDEX sqlite_autoindex_occupant_bindings_1 (binding_id=?)", "CORRELATED SCALAR SUBQUERY 1", "SEARCH lc USING PRIMARY KEY (binding_id=? AND thread_id=?)", "CORRELATED SCALAR SUBQUERY 2", "SEARCH lc USING PRIMARY KEY (binding_id=? AND thread_id=?)", "CORRELATED SCALAR SUBQUERY 4", "SEARCH lm USING INDEX sqlite_autoindex_memberships_1 (thread_id=? AND seat_id=?)", "CORRELATED SCALAR SUBQUERY 3", "SEARCH ls USING INDEX sqlite_autoindex_seats_1 (id=?)", "SEARCH li USING INDEX sqlite_autoindex_invitations_2 (thread_id=? AND seat_id=? AND episode=?)", "SEARCH ld USING INDEX sqlite_autoindex_direct_threads_1 (thread_id=?)"]
+    Q4 actualSQL plan=["SEARCH sm USING INDEX sqlite_autoindex_send_manifests_2 (message_id=?)", "SEARCH r USING INDEX sqlite_autoindex_lazy_recipients_1 (preparation_id=? AND seat_id=?)", "SEARCH b USING INDEX sqlite_autoindex_occupant_bindings_1 (binding_id=?)", "CORRELATED SCALAR SUBQUERY 1", "SEARCH lc USING PRIMARY KEY (binding_id=? AND thread_id=?)", "CORRELATED SCALAR SUBQUERY 2", "SEARCH lc USING PRIMARY KEY (binding_id=? AND thread_id=?)", "CORRELATED SCALAR SUBQUERY 4", "SEARCH lm USING INDEX sqlite_autoindex_memberships_1 (thread_id=? AND seat_id=?)", "CORRELATED SCALAR SUBQUERY 3", "SEARCH ls USING INDEX sqlite_autoindex_seats_1 (id=?)", "SEARCH li USING INDEX sqlite_autoindex_invitations_2 (thread_id=? AND seat_id=? AND episode=?)", "SEARCH ld USING INDEX sqlite_autoindex_direct_threads_1 (thread_id=?)"]
+    Q4 actualSQL plan=["SCAN CONSTANT ROW", "SCALAR SUBQUERY 4", "SEARCH m USING INDEX sqlite_autoindex_messages_1 (id=?)", "CORRELATED SCALAR SUBQUERY 1", "SEARCH lc USING PRIMARY KEY (binding_id=? AND thread_id=?)", "CORRELATED SCALAR SUBQUERY 3", "SEARCH lm USING INDEX sqlite_autoindex_memberships_1 (thread_id=? AND seat_id=?)", "CORRELATED SCALAR SUBQUERY 2", "SEARCH li USING INDEX sqlite_autoindex_invitations_2 (thread_id=? AND seat_id=? AND episode=?)", "SEARCH ld USING INDEX sqlite_autoindex_direct_threads_1 (thread_id=?)", "SEARCH ls USING INDEX sqlite_autoindex_seats_1 (id=?)"]
+
+        PASS [   1.698s] (20/26) herdr-threads service::delivery_pull::tests::presentation_watch_settled_receipts_reclaim_live_offer_capacity
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_watch_settled_receipts_reclaim_live_offer_capacity ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4942 filtered out; finished in 1.68s
+
+
+        PASS [   1.823s] (21/26) herdr-threads service::delivery_pull::tests::presentation_full_pending_carry_serves_due_known_offers_without_admitting_fresh_id
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::presentation_full_pending_carry_serves_due_known_offers_without_admitting_fresh_id ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4942 filtered out; finished in 1.80s
+
+
+        PASS [   1.438s] (22/26) herdr-threads store::queries::tests::query_work_q4::q4_private_fresh_excludes_warning_history
+  stdout ───
+
+    running 1 test
+    test store::queries::tests::query_work_q4::q4_private_fresh_excludes_warning_history ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4942 filtered out; finished in 1.41s
+
+  stderr ───
+    Q4 warning_history=128 private_fresh_VM_units=173
+    Q4 warning_history=8192 private_fresh_VM_units=173
+
+        PASS [   1.865s] (23/26) herdr-threads service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_preserves_real_nonempty_carry_outbox_and_full_offer_window
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::q4_accept_controls::presentation_q4_accept_preserves_real_nonempty_carry_outbox_and_full_offer_window ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4942 filtered out; finished in 1.85s
+
+  stderr ───
+    Q4 carry before-reclaim: offers=256 sent_offers=255 lazy=true rendered=255 unoffered=2 ids=[MessageId("m25j8EJTd"), MessageId("msPW602YD")] done=0 cursor=Some((Invitations, Some(InboxBatchV2UnreadPosition { after_ordinal: 511, high_water_ordinal: 515 }), 2, 2, 274, Some((0, 0, 509, 515)), None)) carry=[] partial=0 skip=None
+    Q4 carry after-reclaim: offers=256 sent_offers=255 lazy=true rendered=1 unoffered=1 ids=[MessageId("msPW602YD")] done=1 cursor=None carry=[MessageId("msPW602YD")] partial=0 skip=None
+
+        PASS [   1.353s] (24/26) herdr-threads store::queries::tests::query_work_q4::q4_private_resumed_excludes_warning_history
+  stdout ───
+
+    running 1 test
+    test store::queries::tests::query_work_q4::q4_private_resumed_excludes_warning_history ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4942 filtered out; finished in 1.33s
+
+  stderr ───
+    Q4 warning_history=128 private_resumed_VM_units=97
+    Q4 warning_history=8192 private_resumed_VM_units=97
+
+        PASS [  12.348s] (25/26) herdr-threads store::queries::tests::query_work_q4::q4_raw_hundred_scope_charge_and_lazy_due_fourteen_use_actual_helpers
+  stdout ───
+
+    running 1 test
+    test store::queries::tests::query_work_q4::q4_raw_hundred_scope_charge_and_lazy_due_fourteen_use_actual_helpers ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4942 filtered out; finished in 12.33s
+
+  stderr ───
+    Q4 noise=128 actual_raw100_VM_units=6018 actual_due_VM_units=51 raw_quanta=1
+    Q4 noise=8192 actual_raw100_VM_units=6018 actual_due_VM_units=51 raw_quanta=1
+
+        PASS [  13.208s] (26/26) herdr-threads store::queries::tests::query_work_q4::q4_episode_private_and_reconciliation_points_have_constant_sqlite_work
+  stdout ───
+
+    running 1 test
+    test store::queries::tests::query_work_q4::q4_episode_private_and_reconciliation_points_have_constant_sqlite_work ... ok
+
+    test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4942 filtered out; finished in 13.19s
+
+  stderr ───
+    Q4 actualSQL plan=["SCAN CONSTANT ROW", "SCALAR SUBQUERY 5", "SEARCH m USING INDEX sqlite_autoindex_messages_1 (id=?)", "SEARCH sm USING INDEX sqlite_autoindex_send_manifests_2 (message_id=?)", "SEARCH r USING INDEX sqlite_autoindex_lazy_recipients_1 (preparation_id=? AND seat_id=?)", "SEARCH b USING INDEX sqlite_autoindex_occupant_bindings_1 (binding_id=?)", "CORRELATED SCALAR SUBQUERY 1", "SEARCH lc USING PRIMARY KEY (binding_id=? AND thread_id=?)", "CORRELATED SCALAR SUBQUERY 2", "SEARCH lc USING PRIMARY KEY (binding_id=? AND thread_id=?)", "CORRELATED SCALAR SUBQUERY 4", "SEARCH lm USING INDEX sqlite_autoindex_memberships_1 (thread_id=? AND seat_id=?)", "CORRELATED SCALAR SUBQUERY 3", "SEARCH ls USING INDEX sqlite_autoindex_seats_1 (id=?)", "SEARCH li USING INDEX sqlite_autoindex_invitations_2 (thread_id=? AND seat_id=? AND episode=?)", "SEARCH ld USING INDEX sqlite_autoindex_direct_threads_1 (thread_id=?)"]
+    Q4 actualSQL plan=["SEARCH messages USING INDEX sqlite_autoindex_messages_1 (id=?)"]
+    Q4 actualSQL plan=["SEARCH sm USING INDEX sqlite_autoindex_send_manifests_2 (message_id=?)", "SEARCH r USING INDEX sqlite_autoindex_lazy_recipients_1 (preparation_id=? AND seat_id=?)", "SEARCH b USING INDEX sqlite_autoindex_occupant_bindings_1 (binding_id=?)", "CORRELATED SCALAR SUBQUERY 1", "SEARCH lc USING PRIMARY KEY (binding_id=? AND thread_id=?)", "CORRELATED SCALAR SUBQUERY 2", "SEARCH lc USING PRIMARY KEY (binding_id=? AND thread_id=?)", "CORRELATED SCALAR SUBQUERY 4", "SEARCH lm USING INDEX sqlite_autoindex_memberships_1 (thread_id=? AND seat_id=?)", "CORRELATED SCALAR SUBQUERY 3", "SEARCH ls USING INDEX sqlite_autoindex_seats_1 (id=?)", "SEARCH li USING INDEX sqlite_autoindex_invitations_2 (thread_id=? AND seat_id=? AND episode=?)", "SEARCH ld USING INDEX sqlite_autoindex_direct_threads_1 (thread_id=?)"]
+    Q4 actualSQL plan=["SCAN CONSTANT ROW", "SCALAR SUBQUERY 4", "SEARCH m USING INDEX sqlite_autoindex_messages_1 (id=?)", "CORRELATED SCALAR SUBQUERY 1", "SEARCH lc USING PRIMARY KEY (binding_id=? AND thread_id=?)", "CORRELATED SCALAR SUBQUERY 3", "SEARCH lm USING INDEX sqlite_autoindex_memberships_1 (thread_id=? AND seat_id=?)", "CORRELATED SCALAR SUBQUERY 2", "SEARCH li USING INDEX sqlite_autoindex_invitations_2 (thread_id=? AND seat_id=? AND episode=?)", "SEARCH ld USING INDEX sqlite_autoindex_direct_threads_1 (thread_id=?)", "SEARCH ls USING INDEX sqlite_autoindex_seats_1 (id=?)"]
+    Q4 actual pointSQL SQLite=3.51.3 noise=128 same100 VM=[(188, 22, 171, 122), (188, 22, 171, 122), (188, 22, 171, 122), (188, 22, 171, 122), (188, 22, 171, 122), (188, 22, 171, 122), (188, 22, 171, 122), (188, 22, 171, 122), (188, 22, 171, 122), (188, 22, 171, 122), (188, 22, 171, 122), (188, 22, 171, 122), (188, 22, 171, 122), (188, 22, 171, 122), (188, 22, 171, 122), (188, 22, 171, 122), (188, 22, 171, 122), (188, 22, 171, 122), (188, 22, 171, 122), (188, 22, 171, 122), (188, 22, 171, 122), (188, 22, 171, 122), (188, 22, 171, 122), (188, 22, 171, 122), (188, 22, 171, 122), (167, 22, 154, 89), (167, 22, 154, 89), (167, 22, 154, 89), (167, 22, 154, 89), (167, 22, 154, 89), (167, 22, 154, 89), (167, 22, 154, 89), (167, 22, 154, 89), (167, 22, 154, 89), (167, 22, 154, 89), (167, 22, 154, 89), (167, 22, 154, 89), (167, 22, 154, 89), (167, 22, 154, 89), (167, 22, 154, 89), (167, 22, 154, 89), (167, 22, 154, 89), (167, 22, 154, 89), (167, 22, 154, 89), (167, 22, 154, 89), (167, 22, 154, 89), (167, 22, 154, 89), (167, 22, 154, 89), (167, 22, 154, 89), (167, 22, 154, 89), (172, 22, 158, 94), (172, 22, 158, 94), (172, 22, 158, 94), (172, 22, 158, 94), (172, 22, 158, 94), (172, 22, 158, 94), (172, 22, 158, 94), (172, 22, 158, 94), (172, 22, 158, 94), (172, 22, 158, 94), (172, 22, 158, 94), (172, 22, 158, 94), (172, 22, 158, 94), (172, 22, 158, 94), (172, 22, 158, 94), (172, 22, 158, 94), (172, 22, 158, 94), (172, 22, 158, 94), (172, 22, 158, 94), (172, 22, 158, 94), (172, 22, 158, 94), (172, 22, 158, 94), (172, 22, 158, 94), (172, 22, 158, 94), (172, 22, 158, 94), (126, 22, 116, 62), (126, 22, 116, 62), (126, 22, 116, 62), (126, 22, 116, 62), (126, 22, 116, 62), (126, 22, 116, 62), (126, 22, 116, 62), (126, 22, 116, 62), (126, 22, 116, 62), (126, 22, 116, 62), (126, 22, 116, 62), (126, 22, 116, 62), (126, 22, 116, 62), (126, 22, 116, 62), (126, 22, 116, 62), (126, 22, 116, 62), (126, 22, 116, 62), (126, 22, 116, 62), (126, 22, 116, 62), (126, 22, 116, 62), (126, 22, 116, 62), (126, 22, 116, 62), (126, 22, 116, 62), (126, 22, 116, 62), (126, 22, 116, 62)] lazy_source_SHA256=d271124b66b1515e3b5d8f6df159a6cf18c933867591e221a4f3c18f1b1a1b7c query_source_SHA256=a7300a1134da848dfa454a210add5bb4b9a84dc15d54d180d10a7ac7e701b1a5 recon_source_SHA256=014f6829888a976dffc0a937734d9da66f9698b831a5db799fbcea2dc85bd41e
+    Q4 actualSQL plan=["SCAN CONSTANT ROW", "SCALAR SUBQUERY 5", "SEARCH m USING INDEX sqlite_autoindex_messages_1 (id=?)", "SEARCH sm USING INDEX sqlite_autoindex_send_manifests_2 (message_id=?)", "SEARCH r USING INDEX sqlite_autoindex_lazy_recipients_1 (preparation_id=? AND seat_id=?)", "SEARCH b USING INDEX sqlite_autoindex_occupant_bindings_1 (binding_id=?)", "CORRELATED SCALAR SUBQUERY 1", "SEARCH lc USING PRIMARY KEY (binding_id=? AND thread_id=?)", "CORRELATED SCALAR SUBQUERY 2", "SEARCH lc USING PRIMARY KEY (binding_id=? AND thread_id=?)", "CORRELATED SCALAR SUBQUERY 4", "SEARCH lm USING INDEX sqlite_autoindex_memberships_1 (thread_id=? AND seat_id=?)", "CORRELATED SCALAR SUBQUERY 3", "SEARCH ls USING INDEX sqlite_autoindex_seats_1 (id=?)", "SEARCH li USING INDEX sqlite_autoindex_invitations_2 (thread_id=? AND seat_id=? AND episode=?)", "SEARCH ld USING INDEX sqlite_autoindex_direct_threads_1 (thread_id=?)"]
+    Q4 actualSQL plan=["SEARCH messages USING INDEX sqlite_autoindex_messages_1 (id=?)"]
+    Q4 actualSQL plan=["SEARCH sm USING INDEX sqlite_autoindex_send_manifests_2 (message_id=?)", "SEARCH r USING INDEX sqlite_autoindex_lazy_recipients_1 (preparation_id=? AND seat_id=?)", "SEARCH b USING INDEX sqlite_autoindex_occupant_bindings_1 (binding_id=?)", "CORRELATED SCALAR SUBQUERY 1", "SEARCH lc USING PRIMARY KEY (binding_id=? AND thread_id=?)", "CORRELATED SCALAR SUBQUERY 2", "SEARCH lc USING PRIMARY KEY (binding_id=? AND thread_id=?)", "CORRELATED SCALAR SUBQUERY 4", "SEARCH lm USING INDEX sqlite_autoindex_memberships_1 (thread_id=? AND seat_id=?)", "CORRELATED SCALAR SUBQUERY 3", "SEARCH ls USING INDEX sqlite_autoindex_seats_1 (id=?)", "SEARCH li USING INDEX sqlite_autoindex_invitations_2 (thread_id=? AND seat_id=? AND episode=?)", "SEARCH ld USING INDEX sqlite_autoindex_direct_threads_1 (thread_id=?)"]
+    Q4 actualSQL plan=["SCAN CONSTANT ROW", "SCALAR SUBQUERY 4", "SEARCH m USING INDEX sqlite_autoindex_messages_1 (id=?)", "CORRELATED SCALAR SUBQUERY 1", "SEARCH lc USING PRIMARY KEY (binding_id=? AND thread_id=?)", "CORRELATED SCALAR SUBQUERY 3", "SEARCH lm USING INDEX sqlite_autoindex_memberships_1 (thread_id=? AND seat_id=?)", "CORRELATED SCALAR SUBQUERY 2", "SEARCH li USING INDEX sqlite_autoindex_invitations_2 (thread_id=? AND seat_id=? AND episode=?)", "SEARCH ld USING INDEX sqlite_autoindex_direct_threads_1 (thread_id=?)", "SEARCH ls USING INDEX sqlite_autoindex_seats_1 (id=?)"]
+    Q4 actual pointSQL SQLite=3.51.3 noise=8192 same100 VM=[(188, 22, 171, 122), (188, 22, 171, 122), (188, 22, 171, 122), (188, 22, 171, 122), (188, 22, 171, 122), (188, 22, 171, 122), (188, 22, 171, 122), (188, 22, 171, 122), (188, 22, 171, 122), (188, 22, 171, 122), (188, 22, 171, 122), (188, 22, 171, 122), (188, 22, 171, 122), (188, 22, 171, 122), (188, 22, 171, 122), (188, 22, 171, 122), (188, 22, 171, 122), (188, 22, 171, 122), (188, 22, 171, 122), (188, 22, 171, 122), (188, 22, 171, 122), (188, 22, 171, 122), (188, 22, 171, 122), (188, 22, 171, 122), (188, 22, 171, 122), (167, 22, 154, 89), (167, 22, 154, 89), (167, 22, 154, 89), (167, 22, 154, 89), (167, 22, 154, 89), (167, 22, 154, 89), (167, 22, 154, 89), (167, 22, 154, 89), (167, 22, 154, 89), (167, 22, 154, 89), (167, 22, 154, 89), (167, 22, 154, 89), (167, 22, 154, 89), (167, 22, 154, 89), (167, 22, 154, 89), (167, 22, 154, 89), (167, 22, 154, 89), (167, 22, 154, 89), (167, 22, 154, 89), (167, 22, 154, 89), (167, 22, 154, 89), (167, 22, 154, 89), (167, 22, 154, 89), (167, 22, 154, 89), (167, 22, 154, 89), (172, 22, 158, 94), (172, 22, 158, 94), (172, 22, 158, 94), (172, 22, 158, 94), (172, 22, 158, 94), (172, 22, 158, 94), (172, 22, 158, 94), (172, 22, 158, 94), (172, 22, 158, 94), (172, 22, 158, 94), (172, 22, 158, 94), (172, 22, 158, 94), (172, 22, 158, 94), (172, 22, 158, 94), (172, 22, 158, 94), (172, 22, 158, 94), (172, 22, 158, 94), (172, 22, 158, 94), (172, 22, 158, 94), (172, 22, 158, 94), (172, 22, 158, 94), (172, 22, 158, 94), (172, 22, 158, 94), (172, 22, 158, 94), (172, 22, 158, 94), (126, 22, 116, 62), (126, 22, 116, 62), (126, 22, 116, 62), (126, 22, 116, 62), (126, 22, 116, 62), (126, 22, 116, 62), (126, 22, 116, 62), (126, 22, 116, 62), (126, 22, 116, 62), (126, 22, 116, 62), (126, 22, 116, 62), (126, 22, 116, 62), (126, 22, 116, 62), (126, 22, 116, 62), (126, 22, 116, 62), (126, 22, 116, 62), (126, 22, 116, 62), (126, 22, 116, 62), (126, 22, 116, 62), (126, 22, 116, 62), (126, 22, 116, 62), (126, 22, 116, 62), (126, 22, 116, 62), (126, 22, 116, 62), (126, 22, 116, 62)] lazy_source_SHA256=d271124b66b1515e3b5d8f6df159a6cf18c933867591e221a4f3c18f1b1a1b7c query_source_SHA256=a7300a1134da848dfa454a210add5bb4b9a84dc15d54d180d10a7ac7e701b1a5 recon_source_SHA256=014f6829888a976dffc0a937734d9da66f9698b831a5db799fbcea2dc85bd41e
+
+────────────
+     Summary [  13.506s] 26 tests run: 26 passed, 4917 skipped
