@@ -155,10 +155,13 @@ export function createCore(io) {
   function discardStale(items, why) {
     const stale = items.filter((it) => it.run !== S.run || !S.live)
     if (!stale.length) return items
-    const gone = new Set(stale.map((it) => it.id))
-    S.queue = S.queue.filter((q) => !gone.has(q.id))
+    // Invitation IDs outlive their context: retire only the obsolete queued object.
+    const obsolete = new Set(stale)
+    const gone = new Set(stale.filter((it) => it.kind !== 'invitation').map((it) => it.id))
+    const retain = (it) => !obsolete.has(it) && !gone.has(it.id)
+    S.queue = S.queue.filter(retain)
     ledger('refused', { ids: stale.map((it) => it.id), reason: `channel_lost:${why}` })
-    return items.filter((it) => !gone.has(it.id))
+    return items.filter(retain)
   }
 
   function stopChild() {
