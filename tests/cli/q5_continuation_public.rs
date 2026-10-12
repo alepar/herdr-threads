@@ -46,6 +46,9 @@ struct Fixture {
 }
 impl Fixture {
     fn new() -> Self {
+        Self::with_lazy_only(None)
+    }
+    fn with_lazy_only(lazy_only: Option<&str>) -> Self {
         let iso = TestIsolation::new("q5-public-continuations");
         let context = StoreContext::new(iso.path("db"), Arc::new(SystemClock::new()));
         let db = context.open_writer().unwrap();
@@ -54,9 +57,14 @@ impl Fixture {
             INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES('t','i','topic','goal',0,0,41);").unwrap();
         // Historical ordinary-content rows with canonical mixed delivery modes.
         // Read/Search do not require a membership/read cursor; none is manufactured.
-        for n in 1..=40_u64 {
+        for n in 1..=40_i64 {
+            let id = format!("q5-msg-{n}");
+            let is_lazy = match lazy_only {
+                Some(wanted) => wanted == id,
+                None => n % 2 == 0,
+            };
             db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,actor_seat_id,body,decision_seq,decision_at,delivery_mode,author_role) VALUES(?1,'i','t',?2,'ordinary','s',?3,?2,0,?4,'agent')",
-                rusqlite::params![format!("q5-msg-{n}"), n, format!("needle value π {}", "x".repeat(180)), if n % 2 == 0 { "lazy" } else { "ordinary" }]).unwrap();
+                rusqlite::params![id, n, format!("needle value π {}", "x".repeat(180)), if is_lazy { "lazy" } else { "ordinary" }]).unwrap();
         }
         let client = RecordedStore {
             inner: StoreClient {
@@ -125,6 +133,65 @@ fn next(result: &CommandResult) -> (&Option<String>, &Option<Vec<String>>) {
         CommandResult::History(page) => (&page.next_cursor, &page.next_argv),
         CommandResult::Search(search) => (&search.matches.next_cursor, &search.matches.next_argv),
         _ => panic!("unexpected selected result"),
+    }
+}
+// Decode the actual stable machine row shape, independently of the backend
+// result count. The simple fixture body has no controls requiring escaping.
+fn rendered_rows(raw: &CommandResult, text: &str) -> Vec<MessageId> {
+    match raw {
+        CommandResult::History(page) => {
+            let rows: Vec<_> = text.lines().filter(|line| line.starts_with('#')).collect();
+            assert_eq!(
+                rows.len(),
+                page.items.len(),
+                "printed History row multiplicity changed"
+            );
+            rows.iter()
+                .zip(&page.items)
+                .map(|(row, m)| {
+                    let (header, body) = row.split_once(": ").expect("history body separator");
+                    assert_eq!(
+                        body, m.preview_data,
+                        "full selected History body was truncated/changed"
+                    );
+                    MessageId::new(header.split_whitespace().nth(1).unwrap())
+                })
+                .collect()
+        }
+        CommandResult::Search(search) => {
+            let rows: Vec<_> = text
+                .lines()
+                .filter_map(|line| line.strip_prefix("matches: "))
+                .collect();
+            assert_eq!(
+                rows.len(),
+                1,
+                "actual Search matches payload missing/duplicated"
+            );
+            let data: serde_json::Value = serde_json::from_str(rows[0]).unwrap();
+            let items = data["items"].as_array().unwrap();
+            assert_eq!(
+                items.len(),
+                search.matches.items.len(),
+                "printed Search row multiplicity changed"
+            );
+            items
+                .iter()
+                .zip(&search.matches.items)
+                .map(|(row, hit)| {
+                    let SearchHit::Body(m) = hit else {
+                        panic!("fixture must match only body rows")
+                    };
+                    assert_eq!(row["kind"], "body");
+                    assert_eq!(
+                        row["data"]["preview_data"], m.preview_data,
+                        "full selected Search body was truncated/changed"
+                    );
+                    MessageId::new(row["data"]["message"].as_str().unwrap())
+                })
+                .collect()
+        }
+        _ => panic!(),
     }
 }
 fn page_of(command: &Command) -> &herdr_threads::protocol::pagination::PageRequest {
@@ -207,15 +274,23 @@ fn execute_owned(argv: &[String], client: &impl LocalClient) -> (Result<(), RunE
 }
 // Calibrate only route padding to an actual serializer boundary. The success oracle
 // below is a parsed public invocation and its recorded canonical read requests.
-fn boundary(f: &Fixture, search: bool, max: u32, human: bool, lose_lazy: bool) -> Vec<String> {
+fn boundary(
+    f: &Fixture,
+    search: bool,
+    max: u32,
+    human: bool,
+    lose_lazy: bool,
+) -> (Vec<String>, Option<String>) {
     for pad in 0..=512 {
         let args = argv(search, max, pad, human);
         let (command, spec, actor) = wire(&args);
         let _namespace = herdr_threads::protocol::output::CommandNamespaceGuard::enter(
             actor == InvocationActor::Human,
         );
-        let Ok(raw) = f.raw(&command, &spec) else {
-            continue;
+        let raw = match f.raw(&command, &spec) {
+            Ok(raw) => raw,
+            Err(error) if error.code == ErrorCode::InvalidBudget => continue,
+            Err(error) => panic!("canonical calibration failed before budget boundary: {error:?}"),
         };
         let selected = ids(&raw);
         if selected.len() < 2 || next(&raw).1.is_none() {
@@ -235,16 +310,7 @@ fn boundary(f: &Fixture, search: bool, max: u32, human: bool, lose_lazy: bool) -
             .map(|id| format!("[lazy] {}\n", id.as_str()).len())
             .sum();
         if bytes <= max as usize && bytes + markers > max as usize {
-            if lose_lazy {
-                f.db.execute("UPDATE messages SET delivery_mode='ordinary'", [])
-                    .unwrap();
-                f.db.execute(
-                    "UPDATE messages SET delivery_mode='lazy' WHERE id=?1",
-                    [lazy[0].as_str()],
-                )
-                .unwrap();
-            }
-            return args;
+            return (args, lose_lazy.then(|| lazy[0].as_str().to_owned()));
         }
     }
     panic!(
@@ -266,7 +332,13 @@ fn without_budget(args: &[String]) -> Vec<String> {
 fn follow(search: bool, max: u32, human: bool, lose_lazy: bool) {
     with_render_now(UtcMillis(0), || {
         let f = Fixture::new();
-        let mut args = boundary(&f, search, max, human, lose_lazy);
+        let (mut args, lazy_only) = boundary(&f, search, max, human, lose_lazy);
+        // Delivery mode is immutable. Seed a fresh canonical fixture with the
+        // chosen final-row Lazy mode, rather than modifying existing messages.
+        let f = match lazy_only {
+            Some(id) => Fixture::with_lazy_only(Some(&id)),
+            None => f,
+        };
         let before = snapshot(&f.db);
         let (_, original_spec, original_actor) = wire(&args);
         let mut seen = std::collections::BTreeSet::new();
@@ -327,13 +399,48 @@ fn follow(search: bool, max: u32, human: bool, lose_lazy: bool) {
                 }
             }
             let (_, _, raw) = reads.last().unwrap();
-            for id in ids(raw) {
-                assert!(seen.insert(id), "server cursor replayed a selected row");
-            }
             let text = std::str::from_utf8(&out).unwrap();
+            let rendered_ids = rendered_rows(raw, text);
+            assert_eq!(
+                rendered_ids,
+                ids(raw),
+                "actual printed row IDs/order differ from the last canonical selected page"
+            );
+            for id in rendered_ids {
+                assert!(seen.insert(id), "printed continuation replayed a row");
+            }
+            // Complete row bytes and framing must survive the CLI refit. Only
+            // the declared service continuation's budget value may be restored.
+            let mut expected_result = raw.clone();
+            let expected_argv = match &mut expected_result {
+                CommandResult::History(p) => &mut p.next_argv,
+                CommandResult::Search(s) => &mut s.matches.next_argv,
+                _ => panic!(),
+            };
+            if let Some(argv) = expected_argv {
+                assert_eq!(argv[argv.len() - 2], "--max-bytes");
+                let last = argv.len() - 1;
+                argv[last] = max.to_string();
+            }
+            let mut expected_bytes = Vec::new();
+            for id in f.lazy_ids(raw) {
+                expected_bytes.extend_from_slice(format!("[lazy] {}\n", id.as_str()).as_bytes());
+            }
+            {
+                let _namespace = herdr_threads::protocol::output::CommandNamespaceGuard::enter(
+                    original_actor == InvocationActor::Human,
+                );
+                expected_bytes.extend(encode_selected(&expected_result, &spec).unwrap());
+            }
+            assert_eq!(
+                out, expected_bytes,
+                "actual rows/body/framing or original continuation bound changed"
+            );
             let printed: Vec<_> = text
                 .lines()
-                .filter_map(|line| line.strip_prefix("next: "))
+                .filter_map(|line| {
+                    line.strip_prefix(if search { "matches.next: " } else { "next: " })
+                })
                 .collect();
             let (cursor, raw_argv) = next(raw);
             let Some(raw_argv) = raw_argv else {
@@ -343,6 +450,13 @@ fn follow(search: bool, max: u32, human: bool, lose_lazy: bool) {
                     seen.len(),
                     40,
                     "all matching rows must be reached without trimming"
+                );
+                let expected_ids: std::collections::BTreeSet<_> = (1..=40)
+                    .map(|n| MessageId::new(format!("q5-msg-{n}")))
+                    .collect();
+                assert_eq!(
+                    seen, expected_ids,
+                    "every exact fixture message must be printed once"
                 );
                 assert!(refits > 0);
                 assert_eq!(
@@ -386,9 +500,18 @@ fn follow(search: bool, max: u32, human: bool, lose_lazy: bool) {
             );
             assert_eq!(next_spec, original_spec);
             assert_eq!(next_actor, original_actor);
+            // SQLite None operation_scope returns agent-spelled argv; the CLI
+            // renderer adds the invocation's human namespace on a rendering copy.
+            let mut rendered_raw_argv = raw_argv.clone();
+            {
+                let _namespace = herdr_threads::protocol::output::CommandNamespaceGuard::enter(
+                    original_actor == InvocationActor::Human,
+                );
+                herdr_threads::protocol::output::namespace_argv(&mut rendered_raw_argv);
+            }
             assert_eq!(
                 without_budget(&emitted),
-                without_budget(raw_argv),
+                without_budget(&rendered_raw_argv),
                 "non-budget argv tokens changed"
             );
             match (&original_command, &next_command) {
