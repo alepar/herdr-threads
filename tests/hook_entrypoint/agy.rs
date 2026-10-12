@@ -1785,6 +1785,85 @@ mod activation {
         };
         assert_pending_without_wake();
 
+        // Failure-local observation only. The binding selection uses the exact
+        // registered seat/harness/session. Every other relation is looked up by
+        // the captured message, thread, invitation, preparation or binding key.
+        // Keep this predicate byte-identical to binding_lazy_unread_sql! so the
+        // witness separates reader eligibility from publication/continuation.
+        let lazy_diagnostic = || {
+            let snapshot: String = db.query_row(
+                r#"WITH b AS (SELECT * FROM occupant_bindings
+                    WHERE seat_id=?2 AND harness=?6 AND native_session=?7
+                    AND generation=?8 AND execution_id=?9 AND target_id=?10
+                    AND agent_id='' AND ended_at IS NULL)
+                SELECT json_object(
+                    'binding',(SELECT json_object('id',binding_id,'seat',seat_id,
+                        'generation',generation,'execution',execution_id,'session',native_session,
+                        'role',role,'liveness',liveness,'pid',liveness_pid,'start',liveness_start,
+                        'registered_at',registered_at,'observed_at',observed_at) FROM b),
+                    'membership',(SELECT json_object('episode',episode,'state',state,
+                        'joined_at',joined_at,'left_at',left_at,'retired_at',retired_at)
+                        FROM memberships WHERE thread_id=?3 AND seat_id=?2),
+                    'invitation',(SELECT json_object('id',id,'episode',episode,'state',state,
+                        'confirmation',confirmation,'created_decision',created_decision_seq)
+                        FROM invitations WHERE id=?5 AND thread_id=?3 AND seat_id=?2),
+                    'cursor',(SELECT json_object('binding',c.binding_id,'thread',c.thread_id,'seq',c.seq)
+                        FROM binding_cursors c JOIN b ON b.binding_id=c.binding_id WHERE c.thread_id=?3),
+                    'lazy',(SELECT json_object('ordinal',ordinal,'preparation',preparation_id,
+                        'message',message_id,'thread',thread_id,'seat',seat_id,'state',state,
+                        'legacy_pending',legacy_pending)
+                        FROM lazy_recipients WHERE message_id=?1 AND seat_id=?2),
+                    'message',(SELECT json_object('id',id,'instance',instance_id,'thread',thread_id,
+                        'kind',kind,'mode',delivery_mode,'sequence',sequence,'decision',decision_seq,
+                        'body_bytes',length(CAST(body AS BLOB)),'body_excerpt',substr(body,1,256))
+                        FROM messages WHERE id=?1),
+                    'manifest',(SELECT json_object('preparation',preparation_id,'message',message_id,
+                        'instance',instance_id,'thread',thread_id,'decision',decision_seq,
+                        'base_sequence',base_sequence,'recipient_count',recipient_count,
+                        'warning_count',warning_count,'interval_high',interval_high_water)
+                        FROM send_manifests WHERE message_id=?1),
+                    'preparation',(SELECT json_object('id',p.id,'status',p.status,
+                        'mode',p.delivery_mode,'recipient_count',p.recipient_count,
+                        'recipient_cursor',p.recipient_cursor,'recipient_high',p.recipient_high_water)
+                        FROM lazy_recipients r JOIN send_preparations p ON p.id=r.preparation_id
+                        WHERE r.message_id=?1 AND r.seat_id=?2),
+                    'send_attention',(SELECT json_object('id',j.id,'status',j.status,
+                        'position',j.position,'high_water',j.high_water,'last_error',j.last_error)
+                        FROM lazy_recipients r JOIN work_jobs j ON j.kind='send_attention'
+                        AND j.subject_id=r.preparation_id WHERE r.message_id=?1 AND r.seat_id=?2),
+                    'head',(SELECT decision_seq FROM host_instances WHERE id=?4),
+                    'reader_gate',(SELECT json_object(
+                        'has_cursor',EXISTS(SELECT 1 FROM binding_cursors c WHERE c.binding_id=b.binding_id AND c.thread_id=r.thread_id),
+                        'joined',EXISTS(SELECT 1 FROM memberships mb WHERE mb.thread_id=r.thread_id AND mb.seat_id=r.seat_id AND mb.state='joined'),
+                        'past_cursor',m.sequence>COALESCE((SELECT c.seq FROM binding_cursors c WHERE c.binding_id=b.binding_id AND c.thread_id=r.thread_id),0),
+                        'legacy_pending',r.legacy_pending,
+                        'binding_lazy_unread',((m.sequence>COALESCE((SELECT c.seq FROM binding_cursors c WHERE c.binding_id=b.binding_id AND c.thread_id=r.thread_id),0) AND (EXISTS(SELECT 1 FROM binding_cursors c2 WHERE c2.binding_id=b.binding_id AND c2.thread_id=r.thread_id) OR EXISTS(SELECT 1 FROM memberships mb WHERE mb.thread_id=r.thread_id AND mb.seat_id=r.seat_id AND mb.state='joined'))) OR (r.legacy_pending=1 AND b.role='top_level')))
+                        FROM b JOIN lazy_recipients r ON r.seat_id=b.seat_id JOIN messages m ON m.id=r.message_id
+                        WHERE r.message_id=?1 AND r.thread_id=?3),
+                    'consumer',(SELECT json_object('binding',c.binding_id,'generation',c.generation,
+                        'execution',c.execution,'ordinary_done',c.ordinary_done,
+                        'ordinary_version',c.ordinary_version,'ordinary_cursor',c.ordinary_cursor,
+                        'ordinary_pending_items',json_array_length(c.ordinary_pending,'$.items'),
+                        'ordinary_partial_bytes',length(CAST(c.ordinary_partial AS BLOB)),
+                        'ordinary_skip_body',c.ordinary_skip_body,
+                        'publication_after',c.ordinary_publication_after,'publication_high',c.ordinary_publication_high,
+                        'passive_generation',c.ordinary_passive_generation,'scan_passive_generation',c.ordinary_scan_passive_generation,
+                        'outbox_token',c.outbox_token,'last_token',c.last_token,'outbox_more',c.outbox_more,
+                        'retired_mask',c.outbox_retired_mask,'confirmed_mask',c.outbox_confirmed_mask)
+                        FROM invitation_presentation_consumers c JOIN b ON b.binding_id=c.binding_id
+                        WHERE c.consumer='hook'))"#,
+                params![message.as_str(), elected.recipient.seat.as_str(), actual.thread.as_str(),
+                    elected.recipient.instance, invitation.id.as_str(), elected.recipient.harness.as_str(),
+                    elected.recipient.native_session.as_str(), before_binding.0, elected.recipient.execution.as_str(),
+                    elected.recipient.target.as_str()],
+                |row| row.get(0),
+            ).unwrap();
+            let canonical: Value = serde_json::from_str(&snapshot).unwrap();
+            json!({"message":message,"thread":actual.thread,"recipient":elected.recipient,
+                "expected_body":body,"canonical":canonical})
+        };
+        let lazy_before_hook = lazy_diagnostic();
+
         let hook = elected.run("PreInvocation", false);
         assert_eq!(hook.code, Some(0), "{}", hook.stderr);
         let consumer = observer.take();
@@ -1886,7 +1965,18 @@ mod activation {
                 _ => None,
             })
             .collect();
-        assert_eq!(messages.len(), 1);
+        assert_eq!(
+            messages.len(),
+            1,
+            "exact Lazy body missing; before={lazy_before_hook}; after={}; pull={pull:?}; page={page:?}; native={:?}; confirm={:?}; exchange_count={}",
+            lazy_diagnostic(),
+            String::from_utf8_lossy(&hook.stdout),
+            consumer.iter().find(|exchange| matches!(
+                exchange.command,
+                Command::DeliveryPresentationConfirmV2(_)
+            )),
+            consumer.len()
+        );
         let (id, lazy, content) = messages[0];
         assert_eq!(id, message);
         assert!(*lazy);

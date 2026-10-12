@@ -1188,6 +1188,44 @@ fn presentation_q3_fast_forward_coalesces_every_gap_beyond_description_cap() {
     for consumers in [0, 2] {
         let (f, a, b, _) = q3_reader_fixture(consumers);
         let (threads, _) = q3_many_thread_messages(&f, &a, DeliveryMode::Ordinary);
+        let binding = binding_for_claim(&f, &a);
+        let canonical_scope = || {
+            f.db.query_row(
+                "SELECT generation,execution_id FROM occupant_bindings WHERE binding_id=?1",
+                [binding.as_str()],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+            )
+            .unwrap()
+        };
+        let scope_before = canonical_scope();
+        let current_consumers: i64 = f.db.query_row(
+            "SELECT COUNT(*) FROM invitation_presentation_consumers c JOIN occupant_bindings b ON b.binding_id=c.binding_id JOIN seats s ON s.id=b.seat_id WHERE c.binding_id=?1 AND c.instance_id=s.instance_id AND ((c.generation=b.generation AND c.execution=b.execution_id) OR (c.mod_generation=b.generation AND c.mod_execution=b.execution_id))",
+            [binding.as_str()], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(
+            current_consumers,
+            i64::try_from(consumers).unwrap(),
+            "SETUP: exact current consumer scope"
+        );
+        // The send allocator also reserves positions for deferred warnings.
+        // Capture published heads before reconnect; allocated next_sequence-1
+        // is not a message and cannot be the expected fast-forward cursor.
+        let heads = threads
+            .iter()
+            .cloned()
+            .chain(std::iter::once(ThreadId::new("t")))
+            .map(|thread| {
+                let head: i64 =
+                    f.db.query_row(
+                        "SELECT COALESCE(MAX(sequence),0) FROM messages WHERE thread_id=?1",
+                        [thread.as_str()],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                (thread, head)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(heads.len(), 13);
         let before = q3_reader_counters(&f, &a);
         let retained = q3_preserved_reader_state(&f, &a);
         let sibling = q3_consumer_snapshot(&f, &b);
@@ -1231,22 +1269,20 @@ fn presentation_q3_fast_forward_coalesces_every_gap_beyond_description_cap() {
             fast_forward.more, 5,
             "all thirteen joined gaps move; only eight descriptions fit"
         );
+        assert_eq!(
+            canonical_scope(),
+            scope_before,
+            "lifecycle reconnect keeps the canonical generation/execution scope"
+        );
+        assert_eq!(result.context.binding_generation, a.binding_generation);
+        assert_eq!(result.context.execution, a.execution);
+        assert_eq!(binding_for_claim(&f, &result.context), binding);
         q3_assert_one_reader_signal(&before, &q3_reader_counters(&f, &a));
         assert_eq!(q3_preserved_reader_state(&f, &a), retained);
         assert_eq!(q3_consumer_snapshot(&f, &b), sibling);
         assert_eq!(q3_cursors(&f, &b), sibling_cursors);
         assert_eq!(q3_receipt_snapshot(&f), receipts);
-        for thread in threads
-            .into_iter()
-            .chain(std::iter::once(ThreadId::new("t")))
-        {
-            let head: i64 =
-                f.db.query_row(
-                    "SELECT next_sequence-1 FROM threads WHERE id=?1",
-                    [thread.as_str()],
-                    |row| row.get(0),
-                )
-                .unwrap();
+        for (thread, head) in heads {
             assert_eq!(
                 f.db.query_row::<i64, _, _>(
                     "SELECT seq FROM binding_cursors WHERE binding_id=?1 AND thread_id=?2",
