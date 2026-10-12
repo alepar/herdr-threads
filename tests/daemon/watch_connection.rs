@@ -602,20 +602,29 @@ async fn daemon_shutdown_closes_open_watches_with_stopping_and_drains() {
 
 #[tokio::test]
 async fn presentation_owner_accepted_wire_carries_the_registered_lease() {
+    for capability in [
+        crate::protocol::capabilities::MOD_WATCH,
+        crate::protocol::capabilities::MOD_WATCH_PRESENTATION_V2,
+        crate::protocol::capabilities::DELIVERY_PRESENTATION_V2,
+        crate::protocol::capabilities::BINDING_CURSORS,
+    ] {
+        assert!(
+            crate::protocol::capabilities::ADVERTISED.contains(&capability),
+            "presentation owner requires advertised {capability}"
+        );
+    }
     let fake = WatchFake::accepting(7);
     let lease = "0123456789abcdef0123456789abcdef".to_owned();
     *fake.presentation_lease.lock().unwrap() = Some(lease.clone());
-    let request = watch_request(&fake.instance, Some(&fake.boot));
+    let mut request = watch_request(&fake.instance, Some(&fake.boot));
+    request.watch.presentation_v2 = true;
     let mut served = start(fake, &request);
     let reply: WatchReply = read_json(&mut served.client).await;
-    let active = crate::protocol::capabilities::ADVERTISED
-        .contains(&crate::protocol::capabilities::DELIVERY_PRESENTATION_V2);
-    let expected = advertised_presentation_lease(active, Some(lease.clone()));
     assert_eq!(
         reply.outcome,
         WatchOutcome::Accepted(WatchAccepted {
             attention_version: 7,
-            presentation_lease: expected
+            presentation_lease: Some(lease.clone())
         })
     );
     assert_eq!(
@@ -634,6 +643,35 @@ async fn presentation_owner_accepted_wire_carries_the_registered_lease() {
     assert_eq!(
         serde_json::to_string(&inactive).unwrap(),
         r#"{"kind":"accepted","args":{"attention_version":7}}"#
+    );
+    drop(served.client);
+    served.task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn legacy_accepted_wire_omits_even_a_registered_presentation_lease() {
+    let fake = WatchFake::accepting(7);
+    *fake.presentation_lease.lock().unwrap() = Some("0123456789abcdef0123456789abcdef".to_owned());
+    let request = watch_request(&fake.instance, Some(&fake.boot));
+    let mut served = start(fake.clone(), &request);
+    let frame = tokio::time::timeout(Duration::from_secs(5), read_frame(&mut served.client))
+        .await
+        .expect("a frame within five seconds")
+        .expect("a readable frame");
+    let reply: WatchReply = serde_json::from_slice(&frame).unwrap();
+    assert_eq!(
+        reply.outcome,
+        WatchOutcome::Accepted(WatchAccepted {
+            attention_version: 7,
+            presentation_lease: None,
+        })
+    );
+    assert_eq!(
+        std::str::from_utf8(&frame).unwrap(),
+        format!(
+            r#"{{"version":{},"request_id":"w1","instance":"{}","daemon_boot":"{}","outcome":{{"kind":"accepted","args":{{"attention_version":7}}}}}}"#,
+            PROTOCOL_VERSION, fake.instance, fake.boot
+        )
     );
     drop(served.client);
     served.task.await.unwrap().unwrap();
