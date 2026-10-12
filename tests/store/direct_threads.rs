@@ -233,9 +233,9 @@ fn send_direct(store: &SqliteStore, thread: &ThreadId, mode: DeliveryMode, key: 
         .unwrap();
 }
 
-/// ht-8y9: the opening lazy messages of a first-contact direct send stay unread for the invited
-/// target until it accepts, and accepting does not skip them. Ordinary ones already reached it as
-/// pending receipts, so accepting moves the cursor to the head (no second offer).
+/// ht-8y9: the opening lazy messages of a first-contact direct send stay pending for the invited
+/// target through its accept (seat-level `legacy_pending`), while its cursor joins at the head:
+/// ordinary ones already reached it as pending receipts and are not offered again.
 #[test]
 fn accepting_a_pair_invitation_keeps_the_opening_messages_unread() {
     for mode in [DeliveryMode::Lazy, DeliveryMode::Ordinary] {
@@ -243,13 +243,6 @@ fn accepting_a_pair_invitation_keeps_the_opening_messages_unread() {
         let pair = thread(ensure(&store, "s1", "s2", "ensure").unwrap());
         send_direct(&store, &pair, mode, "open-1");
         send_direct(&store, &pair, mode, "open-2");
-        let first: i64 = db
-            .query_row(
-                "SELECT MIN(sequence) FROM messages WHERE thread_id=?1 AND kind='ordinary'",
-                [pair.as_str()],
-                |r| r.get(0),
-            )
-            .unwrap();
         let invitation: String = db
             .query_row("SELECT id FROM invitations WHERE seat_id='s2'", [], |r| {
                 r.get(0)
@@ -292,12 +285,17 @@ fn accepting_a_pair_invitation_keeps_the_opening_messages_unread() {
         let lazy = mode == DeliveryMode::Lazy;
         assert_eq!(
             crate::store::read_cursors::cursor_for(&db, &binding, &pair).unwrap(),
-            Some(u64::try_from(if lazy { first - 1 } else { last }).unwrap()),
+            Some(u64::try_from(last).unwrap()),
             "{mode:?}"
         );
         assert_eq!(
             crate::store::read_cursors::has_unread(&db, &binding).unwrap(),
             lazy,
+            "{mode:?}"
+        );
+        assert_eq!(
+            count(&db, "lazy_recipients WHERE legacy_pending=1"),
+            if lazy { 2 } else { 0 },
             "{mode:?}"
         );
         drop(store);
