@@ -236,6 +236,7 @@ impl Fixture {
             .store
             .query(
                 &Command::InboxBatchV2(InboxQuery {
+                    thread: None,
                     claim: None,
                     seat: Some(SeatId::new(seat)),
                     page: PageRequest::default(),

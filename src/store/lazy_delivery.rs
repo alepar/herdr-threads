@@ -128,6 +128,18 @@ pub const BINDING_PENDING_CANDIDATES_SQL: &str = concat!(
     binding_lazy_unread_sql!(),
     ") AND r.ordinal>?2 AND r.ordinal<=?3 ORDER BY r.ordinal LIMIT ?4"
 );
+/// `PENDING_CANDIDATES_SQL` restricted to one thread (`?5`; ht-br0 thread-scoped page).
+pub const THREAD_PENDING_CANDIDATES_SQL: &str = concat!(
+    "SELECT r.ordinal,r.preparation_id,r.message_id,r.thread_id,r.seat_id FROM lazy_recipients r INDEXED BY lazy_recipients_seat_ordinal LEFT JOIN messages m ON m.id=r.message_id WHERE r.seat_id=?1 AND r.thread_id=?5 AND (m.id IS NULL OR ",
+    seat_unread_sql!(),
+    ") AND r.ordinal>?2 AND r.ordinal<=?3 ORDER BY r.ordinal LIMIT ?4"
+);
+/// `BINDING_PENDING_CANDIDATES_SQL` restricted to one thread (`?6`; ht-br0 thread-scoped page).
+pub const BINDING_THREAD_PENDING_CANDIDATES_SQL: &str = concat!(
+    "SELECT r.ordinal,r.preparation_id,r.message_id,r.thread_id,r.seat_id FROM lazy_recipients r INDEXED BY lazy_recipients_seat_ordinal LEFT JOIN messages m ON m.id=r.message_id JOIN occupant_bindings b ON b.binding_id=?5 AND b.seat_id=r.seat_id WHERE r.seat_id=?1 AND r.thread_id=?6 AND (m.id IS NULL OR ",
+    binding_lazy_unread_sql!(),
+    ") AND r.ordinal>?2 AND r.ordinal<=?3 ORDER BY r.ordinal LIMIT ?4"
+);
 pub const ADDRESSED_SQL: &str = "SELECT EXISTS(SELECT 1 FROM lazy_recipients r JOIN send_manifests sm ON sm.preparation_id=r.preparation_id AND sm.message_id=r.message_id WHERE r.seat_id=?1 AND r.message_id=?2 AND sm.instance_id=?3)";
 pub const CLEANUP_CANDIDATES_SQL: &str = "SELECT ordinal FROM lazy_recipients INDEXED BY lazy_recipients_preparation_ordinal WHERE preparation_id=?1 AND ordinal>?2 AND ordinal<=?3 ORDER BY ordinal LIMIT ?4";
 
@@ -454,6 +466,24 @@ pub fn pending_page(
     high_water: HighWater,
     work_limit: usize,
 ) -> Result<PendingPage, ApiError> {
+    pending_page_in(
+        conn, instance, seat, binding, None, after, high_water, work_limit,
+    )
+}
+
+/// [`pending_page`], with `thread` restricting the candidates to that one thread (ht-br0
+/// thread-scoped page); rows of other threads are neither returned nor counted as work.
+#[allow(clippy::too_many_arguments)]
+pub fn pending_page_in(
+    conn: &Connection,
+    instance: &str,
+    seat: &SeatId,
+    binding: Option<&BindingId>,
+    thread: Option<&ThreadId>,
+    after: i64,
+    high_water: HighWater,
+    work_limit: usize,
+) -> Result<PendingPage, ApiError> {
     validate_bounds(after, high_water.recipient_ordinal, work_limit)?;
     if high_water.publication_decision < 0 {
         return Err(api_error(
@@ -483,8 +513,41 @@ pub fn pending_page(
             seat: SeatId::new(r.get::<_, String>(4)?),
         })
     };
-    let candidates = match binding {
-        None => conn
+    let candidates = match (binding, thread) {
+        (None, Some(thread)) => conn
+            .prepare(THREAD_PENDING_CANDIDATES_SQL)
+            .map_err(store_error)?
+            .query_map(
+                params![
+                    seat.as_str(),
+                    after,
+                    high_water.recipient_ordinal,
+                    work_limit as i64,
+                    thread.as_str()
+                ],
+                read_row,
+            )
+            .map_err(store_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(store_error)?,
+        (Some(binding), Some(thread)) => conn
+            .prepare(BINDING_THREAD_PENDING_CANDIDATES_SQL)
+            .map_err(store_error)?
+            .query_map(
+                params![
+                    seat.as_str(),
+                    after,
+                    high_water.recipient_ordinal,
+                    work_limit as i64,
+                    binding.as_str(),
+                    thread.as_str()
+                ],
+                read_row,
+            )
+            .map_err(store_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(store_error)?,
+        (None, None) => conn
             .prepare(PENDING_CANDIDATES_SQL)
             .map_err(store_error)?
             .query_map(
@@ -499,7 +562,7 @@ pub fn pending_page(
             .map_err(store_error)?
             .collect::<Result<Vec<_>, _>>()
             .map_err(store_error)?,
-        Some(binding) => conn
+        (Some(binding), None) => conn
             .prepare(BINDING_PENDING_CANDIDATES_SQL)
             .map_err(store_error)?
             .query_map(

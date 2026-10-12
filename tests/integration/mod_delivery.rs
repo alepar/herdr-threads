@@ -3549,6 +3549,54 @@ fn lazy_row_appended_then_completed() {
     assert_eq!(again["result"], "already_settled", "{again}");
 }
 
+/// ht-br0 negative: while B's mod channel is live, B's text `accept` of a pair invitation prints
+/// no opening body (the channel delivers the binding's lazy rows itself); the watch streams the
+/// opener exactly once and its `append` ack completes it.
+#[test]
+fn text_accept_with_a_live_mod_channel_leaves_the_opener_to_the_watch() {
+    let rig = Rig::new();
+    let mut watch = rig.watch(SESSION_B);
+    watch.wait_connected();
+    rig.cli(
+        Some((&rig.a, PANE_A)),
+        &["send", "--seat", &rig.b, "--body", "pair opener via mod"],
+    )
+    .data("direct send");
+    let (pair, id): (String, String) = rig
+        .db()
+        .query_row(
+            "SELECT m.thread_id,m.id FROM messages m JOIN direct_threads d ON d.thread_id=m.thread_id WHERE m.body='pair opener via mod'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    let accept = rig.cli_text_b(&["accept", &pair]);
+    assert_eq!(accept.code, 0, "{}{}", accept.stdout, accept.stderr);
+    assert!(accept.stdout.starts_with("accepted"), "{}", accept.stdout);
+    assert!(
+        !accept.stdout.contains("pair opener via mod"),
+        "{}",
+        accept.stdout
+    );
+    let line = watch.wait_item(&id);
+    assert_eq!(line["kind"], "lazy", "{line}");
+    assert_eq!(line["body"], "pair opener via mod");
+    let result = rig.ack_result(SESSION_B, "append", &id);
+    assert_eq!(result["result"], "settled", "{result}");
+    assert_eq!(rig.lazy_state(&id), "displayed");
+    // Only lines after the first copy count (`seen` keeps the one `wait_item` returned).
+    assert_eq!(
+        watch.seen.iter().filter(|line| line["id"] == id).count(),
+        1,
+        "{:#?}",
+        watch.seen
+    );
+    watch.seen.clear();
+    watch.assert_no_line("a second copy of the opener", QUIET, |line| {
+        line["id"] == id
+    });
+}
+
 /// Spec D4: a body over 8 KiB streams as its first 8 KiB plus the marker with
 /// `truncated: true`; the mod must not ack it, and when it does the ack is a
 /// terminal refusal decided by the daemon from the stored length (the local

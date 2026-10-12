@@ -1779,6 +1779,325 @@ fn pair_accept_delivers_mixed_opening_mail_once() {
     );
 }
 
+// ht-br0: the text-accept twin of `pair_accept_delivers_mixed_opening_mail_once`. The accept's
+// own output is the binding's own text inbox restricted to the thread's lazy rows: it shows each
+// lazy opening message once and neither shows nor ACKs the ordinary (receipt) messages. Direct
+// acceptance inserts the accepting binding's cursor at the invitation's event floor, so the
+// display completes the opener for this binding; the binding's cursor then stops at the first
+// unread ordinary row (Lazy and ordinary rows share one per-binding cursor), so the later lazy
+// rows stay in this binding's own stream and the next hook shows them with the ordinary rows,
+// exactly as after a hook display in `pair_accept_delivers_mixed_opening_mail_once`.
+#[test]
+fn text_pair_accept_shows_the_lazy_opening_mail_once_and_leaves_ordinary_mail() {
+    let fx = Fixture::start();
+    let started = fx.hook("w9:p1", &start("sess-1"));
+    assert_eq!(started.code, Some(0), "{}", started.stderr);
+    let peer = fx.hook("w9:p2", &start("sess-1"));
+    assert_eq!(peer.code, Some(0), "{}", peer.stderr);
+    let direct = |body: &str| {
+        fx.cooperative("peer", "w9:p2", &["send", "--seat", "seat", "--body", body]);
+    };
+    direct("lazy-open");
+    let thread = fx.count_text("SELECT thread_id FROM direct_threads");
+    let ordinary = |body: &str| {
+        fx.cooperative(
+            "peer",
+            "w9:p2",
+            &["send", &thread, "--body", body, "--require-ack", "seat"],
+        )["result"]["data"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    let acked = ordinary("ordinary-acked");
+    direct("lazy-middle");
+    ordinary("ordinary-pending");
+    direct("lazy-last");
+    fx.cooperative("seat", "w9:p1", &["ack", &acked]);
+    let text = text_cli(
+        &fx,
+        "claude",
+        "sess-1",
+        "seat",
+        "w9:p1",
+        &["accept", &thread],
+    );
+    let times = |context: &str, body: &str| context.matches(&format!("\\n  {body}")).count();
+    let shown = |body: &str| text.matches(&format!("\n  {body}\n")).count();
+    assert!(text.starts_with("accepted"), "{text}");
+    for (body, n) in [
+        ("ordinary-acked", 0),
+        ("ordinary-pending", 0),
+        ("lazy-open", 1),
+        ("lazy-middle", 1),
+        ("lazy-last", 1),
+    ] {
+        assert_eq!(shown(body), n, "accept output, {body}: {text}");
+    }
+    assert!(!text.contains("next:"), "one page holds the opener: {text}");
+    let sequence = |body: &str| {
+        fx.count(&format!(
+            "SELECT sequence FROM messages WHERE thread_id='{thread}' AND body='{body}'"
+        ))
+    };
+    let read_position = fx.count(&format!(
+        "SELECT c.seq FROM binding_cursors c JOIN occupant_bindings b ON b.binding_id=c.binding_id WHERE b.seat_id='seat' AND b.native_session='sess-1' AND c.thread_id='{thread}'"
+    ));
+    assert!(
+        read_position >= sequence("lazy-open") && read_position < sequence("ordinary-acked"),
+        "the accept's display completes the opener for this binding only up to the ordinary gap: {read_position}"
+    );
+    let hook = fx.hook("w9:p1", &tool("sess-1"));
+    assert_eq!(hook.code, Some(0), "{}", hook.stderr);
+    let after = if hook.stdout.is_empty() {
+        String::new()
+    } else {
+        context_of(&hook)
+    };
+    // The opener is never shown again. The ordinary rows the accept did not show stay in the
+    // binding's stream (the pending one also as the owed receipt), and the lazy rows past the
+    // first ordinary row ride that stream with them (base direct-acceptance semantics).
+    for (body, n) in [
+        ("ordinary-acked", 1),
+        ("ordinary-pending", 1),
+        ("lazy-open", 0),
+        ("lazy-middle", 1),
+        ("lazy-last", 1),
+    ] {
+        assert_eq!(times(&after, body), n, "after accept, {body}: {after}");
+    }
+    assert_eq!(
+        fx.count("SELECT count(*) FROM lazy_recipients WHERE legacy_pending=1"),
+        0,
+        "direct acceptance marks no seat-wide legacy rows"
+    );
+}
+
+// ht-br0 negatives: a person's `human accept`, a JSON accept and a `--machine` accept print no
+// opening body and complete nothing: the opener stays undisplayed (direct acceptance marks no
+// seat-wide legacy row) and an agent's next hook still delivers it.
+#[test]
+fn human_json_and_machine_accept_leave_the_opening_message_pending() {
+    for mode in ["json", "machine", "human"] {
+        let fx = Fixture::start();
+        let peer = fx.hook("w9:p2", &start("sess-1"));
+        assert_eq!(peer.code, Some(0), "{mode}: {}", peer.stderr);
+        if mode != "human" {
+            let started = fx.codex_hook(
+                "w9:p3",
+                &Payload::session_start("cx-sess", "startup")
+                    .codex("t0")
+                    .bytes(),
+            );
+            assert_eq!(started.code, Some(0), "{mode}: {}", started.stderr);
+        }
+        fx.cooperative(
+            "peer",
+            "w9:p2",
+            &["send", "--seat", "cx", "--body", "pending opening body"],
+        );
+        let thread = fx.count_text("SELECT thread_id FROM direct_threads");
+        let text = match mode {
+            "json" => text_cli(
+                &fx,
+                "codex",
+                "cx-sess",
+                "cx",
+                "w9:p3",
+                &["--json", "accept", &thread],
+            ),
+            "machine" => text_cli(
+                &fx,
+                "codex",
+                "cx-sess",
+                "cx",
+                "w9:p3",
+                &["--machine", "accept", &thread],
+            ),
+            _ => human_cli(&fx, "w9:p3", &["accept", &thread]),
+        };
+        assert!(text.contains("accepted"), "{mode}: {text}");
+        assert!(!text.contains("pending opening body"), "{mode}: {text}");
+        assert_eq!(
+            fx.count(
+                "SELECT count(*) FROM lazy_recipients WHERE seat_id='cx' AND state='pending' AND legacy_pending=0"
+            ),
+            1,
+            "{mode}: the row stays undisplayed"
+        );
+        if mode != "human" {
+            let tool = fx.codex_hook(
+                "w9:p3",
+                &Payload::pre_tool_use("cx-sess", "ls")
+                    .codex("t1")
+                    .with("tool_use_id", "call_1".into())
+                    .bytes(),
+            );
+            assert_eq!(tool.code, Some(0), "{mode}: {}", tool.stderr);
+            let tool_out = String::from_utf8_lossy(&tool.stdout);
+            assert!(
+                tool_out.contains("pending opening body"),
+                "{mode}: the binding's next hook delivers it: {tool_out}"
+            );
+        }
+    }
+}
+
+// ht-br0, generic (non-pair) acceptance: the join frontier keeps its seat-wide policy (an
+// undisplayed lazy row past the seat's furthest cursor becomes seat-pending, `legacy_pending`), and the text accept's thread-scoped
+// page reads it through that unchanged legacy branch: shown once in the accept output, completed
+// for the seat, never re-shown by the next hooks. A JSON accept shows nothing and leaves it
+// seat-pending. Kills: a thread scope that replaces or bypasses the legacy branch.
+#[test]
+fn text_generic_accept_shows_seat_pending_lazy_mail_once() {
+    for mode in ["json", "text"] {
+        let fx = Fixture::start();
+        let peer = fx.hook("w9:p2", &start("sess-1"));
+        assert_eq!(peer.code, Some(0), "{mode}: {}", peer.stderr);
+        let started = fx.codex_hook(
+            "w9:p3",
+            &Payload::session_start("cx-sess", "startup")
+                .codex("t0")
+                .bytes(),
+        );
+        assert_eq!(started.code, Some(0), "{mode}: {}", started.stderr);
+        let thread =
+            fx.cooperative("peer", "w9:p2", &["thread", "create", "--topic", "generic"])["result"]
+                ["data"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+        // Joined-era lazy mail the seat leaves undisplayed: on the generic re-accept it lies past
+        // the seat's furthest cursor, so the join frontier marks it seat-pending and raises the
+        // binding's cursor to the head (only the legacy branch can show it then).
+        fx.cooperative("peer", "w9:p2", &["invite", &thread, "--seat", "cx"]);
+        let json = |command: &[&str]| {
+            let mut args = vec!["--json"];
+            args.extend_from_slice(command);
+            text_cli(&fx, "codex", "cx-sess", "cx", "w9:p3", &args)
+        };
+        json(&["accept", &thread]);
+        fx.cooperative(
+            "peer",
+            "w9:p2",
+            &["send", &thread, "--body", "generic opening body"],
+        );
+        assert_eq!(
+            fx.count("SELECT count(*) FROM lazy_recipients WHERE seat_id='cx' AND state='pending'"),
+            1,
+            "{mode}: the joined seat is in the lazy audience"
+        );
+        json(&["leave", &thread]);
+        fx.cooperative("peer", "w9:p2", &["invite", &thread, "--seat", "cx"]);
+        let id = fx.count_text("SELECT id FROM messages WHERE body='generic opening body'");
+        let args: &[&str] = if mode == "json" {
+            &["--json", "accept", &thread]
+        } else {
+            &["accept", &thread]
+        };
+        let text = text_cli(&fx, "codex", "cx-sess", "cx", "w9:p3", args);
+        assert!(text.contains("accepted"), "{mode}: {text}");
+        if mode == "json" {
+            assert!(!text.contains("generic opening body"), "{text}");
+            assert_eq!(
+                fx.count(
+                    "SELECT count(*) FROM lazy_recipients WHERE seat_id='cx' AND state='pending' AND legacy_pending=1"
+                ),
+                1,
+                "generic acceptance keeps the seat-pending population"
+            );
+            assert!(
+                fx.count(&format!(
+                    "SELECT c.seq FROM binding_cursors c JOIN occupant_bindings b ON b.binding_id=c.binding_id WHERE b.seat_id='cx' AND b.native_session='cx-sess' AND c.thread_id='{thread}'"
+                )) >= fx.count(&format!("SELECT sequence FROM messages WHERE id='{id}'")),
+                "the join head passed it: only the legacy branch can show it"
+            );
+            continue;
+        }
+        assert!(text.starts_with("accepted"), "{text}");
+        assert!(
+            text.contains(&id),
+            "accept output names the message: {text}"
+        );
+        assert_eq!(
+            text.matches("generic opening body").count(),
+            1,
+            "accept output carries the body once: {text}"
+        );
+        assert_eq!(
+            fx.count(
+                "SELECT count(*) FROM lazy_recipients WHERE seat_id='cx' AND state='displayed' AND legacy_pending=0"
+            ),
+            1,
+            "the accept's display completes the seat-pending row for the seat"
+        );
+        let tool = fx.codex_hook(
+            "w9:p3",
+            &Payload::pre_tool_use("cx-sess", "ls")
+                .codex("t1")
+                .with("tool_use_id", "call_1".into())
+                .bytes(),
+        );
+        assert_eq!(tool.code, Some(0), "{}", tool.stderr);
+        let tool_out = String::from_utf8_lossy(&tool.stdout);
+        assert!(!tool_out.contains("generic opening body"), "{tool_out}");
+    }
+}
+
+// ht-br0 on direct acceptance: the text accept's page completes the opener for the accepting
+// binding only. A sibling top-level binding of the seat keeps its independent own stream (its
+// cursor was inserted at the same event floor), so its next hook still shows the opener once.
+// Kills: a scoped display that settles seat-wide where direct acceptance does not.
+#[test]
+fn text_pair_accept_completes_the_opener_for_the_accepting_binding_only() {
+    let fx = Fixture::start();
+    fx.register("w9:p1", "sess-1");
+    let cleared = fx.hook("w9:p1", &Payload::session_start("sess-b", "clear").bytes());
+    assert_eq!(cleared.code, Some(0), "{}", cleared.stderr);
+    fx.register("w9:p2", "sess-1");
+    assert_eq!(
+        fx.count(
+            "SELECT count(*) FROM occupant_bindings WHERE seat_id='seat' AND ended_at IS NULL AND role='top_level'"
+        ),
+        2
+    );
+    fx.cooperative(
+        "peer",
+        "w9:p2",
+        &["send", "--seat", "seat", "--body", "sibling opening body"],
+    );
+    let thread = fx.count_text("SELECT thread_id FROM direct_threads");
+    let text = text_cli(
+        &fx,
+        "claude",
+        "sess-1",
+        "seat",
+        "w9:p1",
+        &["accept", &thread],
+    );
+    assert!(text.starts_with("accepted"), "{text}");
+    assert_eq!(text.matches("sibling opening body").count(), 1, "{text}");
+    let pull = |session: &str| {
+        let hook = fx.hook("w9:p1", &tool(session));
+        assert_eq!(hook.code, Some(0), "{session}: {}", hook.stderr);
+        if hook.stdout.is_empty() {
+            String::new()
+        } else {
+            context_of(&hook)
+        }
+    };
+    let times = |context: &str, body: &str| context.matches(&format!("\\n  {body}")).count();
+    let accepting = pull("sess-1");
+    assert_eq!(times(&accepting, "sibling opening body"), 0, "{accepting}");
+    let sibling = pull("sess-b");
+    assert_eq!(times(&sibling, "sibling opening body"), 1, "{sibling}");
+    assert_eq!(
+        fx.count("SELECT count(*) FROM lazy_recipients WHERE legacy_pending=1"),
+        0,
+        "direct acceptance marks no seat-wide legacy rows"
+    );
+}
+
 // ht-8y9: leave, reinvite and rejoin with two bindings of the seat at distinct read positions.
 // Q4 direct invitation acceptance preserves each established cursor, including across rejoin.
 // Both readers retain their own opening mail; one binding's display does not consume its sibling's stream.
@@ -2178,6 +2497,141 @@ fn lazy_mail_reaches_the_next_codex_tool_hook() {
         "{}",
         String::from_utf8_lossy(&repeat.stdout)
     );
+}
+
+/// One in-process CLI run as `harness` session `session` of `seat` in `pane`, in text output
+/// (no `--json`); returns stdout.
+fn text_cli(
+    fx: &Fixture,
+    harness: &str,
+    session: &str,
+    seat: &str,
+    pane: &str,
+    command: &[&str],
+) -> String {
+    let mut args = vec![
+        "herdr-threads",
+        "--state-dir",
+        fx.state.to_str().unwrap(),
+        "--host-endpoint",
+        fx.host.to_str().unwrap(),
+        "--cooperative-seat",
+        seat,
+        "--cooperative-target",
+        pane,
+        "--cooperative-harness",
+        harness,
+        "--cooperative-role",
+        "top-level",
+    ];
+    args.extend_from_slice(command);
+    let mut out = Vec::new();
+    let _agent = agent_origin(harness, session);
+    herdr_threads::cli::run(args, &mut out).unwrap();
+    String::from_utf8(out).unwrap()
+}
+
+/// One `herdr-threads human ...` run by a person (no harness ancestry or marker) in `pane`, in
+/// text output; returns stdout. `me init` first makes the pane's seat a person's.
+fn human_cli(fx: &Fixture, pane: &str, command: &[&str]) -> String {
+    let run = |command: &[&str]| {
+        let out = scrubbed_command(BIN)
+            .arg("human")
+            .args([
+                "--state-dir",
+                fx.state.to_str().unwrap(),
+                "--host-endpoint",
+                fx.host.to_str().unwrap(),
+            ])
+            .args(command)
+            .env("HERDR_ENV", "1")
+            .env("HERDR_PANE_ID", pane)
+            .env("HERDR_SOCKET_PATH", &fx.host)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{command:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).unwrap()
+    };
+    run(&["me", "init"]);
+    run(command)
+}
+
+// ht-br0: Codex has no post-tool delivery, so when `accept` of a pair invitation is the last
+// tool call of a turn, the pair's lazy opening message must ride the accept's own output (the
+// caller's own text-inbox display, thread-scoped), not wait for the next hook or wake. Kills:
+// an accept that leaves the opener seat-pending until the next PreToolUse/UserPromptSubmit.
+#[test]
+fn codex_pair_accept_output_carries_the_opening_message() {
+    let fx = Fixture::start();
+    // The in-process CLI acts as session `sess-1`; direct send's ensure enrolls no binding.
+    let peer = fx.hook("w9:p2", &start("sess-1"));
+    assert_eq!(peer.code, Some(0), "{}", peer.stderr);
+    let started = fx.codex_hook(
+        "w9:p3",
+        &Payload::session_start("cx-sess", "startup")
+            .codex("t0")
+            .bytes(),
+    );
+    assert_eq!(started.code, Some(0), "{}", started.stderr);
+    fx.cooperative(
+        "peer",
+        "w9:p2",
+        &["send", "--seat", "cx", "--body", "codex opening body"],
+    );
+    let thread = fx.count_text("SELECT thread_id FROM direct_threads");
+    let id = fx.count_text("SELECT id FROM messages WHERE body='codex opening body'");
+    let text = text_cli(&fx, "codex", "cx-sess", "cx", "w9:p3", &["accept", &thread]);
+    assert!(text.starts_with("accepted"), "{text}");
+    assert!(text.contains(&id), "accept output names the opener: {text}");
+    assert_eq!(
+        text.matches("codex opening body").count(),
+        1,
+        "accept output carries the opener body once: {text}"
+    );
+    assert_eq!(
+        fx.count(
+            "SELECT count(*) FROM lazy_recipients WHERE seat_id='cx' AND state='displayed' AND legacy_pending=0"
+        ),
+        1,
+        "the accept's display completes the opener (no seat-wide legacy row on direct acceptance)"
+    );
+    let opener = fx.count(&format!("SELECT sequence FROM messages WHERE id='{id}'"));
+    assert!(
+        fx.count(&format!(
+            "SELECT c.seq FROM binding_cursors c JOIN occupant_bindings b ON b.binding_id=c.binding_id WHERE b.seat_id='cx' AND b.native_session='cx-sess' AND c.thread_id='{thread}'"
+        )) >= opener,
+        "the accepting binding's own cursor passed the opener"
+    );
+    let tool = fx.codex_hook(
+        "w9:p3",
+        &Payload::pre_tool_use("cx-sess", "ls")
+            .codex("t1")
+            .with("tool_use_id", "call_1".into())
+            .bytes(),
+    );
+    assert_eq!(tool.code, Some(0), "{}", tool.stderr);
+    let tool_out = String::from_utf8_lossy(&tool.stdout);
+    assert!(!tool_out.contains("codex opening body"), "{tool_out}");
+    let turn = fx.codex_hook(
+        "w9:p3",
+        &Payload::bare("UserPromptSubmit")
+            .with("session_id", "cx-sess".into())
+            .with("transcript_path", serde_json::Value::Null)
+            .with("cwd", "/tmp".into())
+            .with("model", "gpt-5".into())
+            .with("permission_mode", "default".into())
+            .with("prompt", "hello".into())
+            .with("turn_id", "t2".into())
+            .bytes(),
+    );
+    assert_eq!(turn.code, Some(0), "{}", turn.stderr);
+    let turn_out = String::from_utf8_lossy(&turn.stdout);
+    assert!(!turn_out.contains("codex opening body"), "{turn_out}");
 }
 
 // ht-mu3: a text-only Codex turn makes no tool call, so the lazy item rides

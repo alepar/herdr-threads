@@ -1308,6 +1308,7 @@ mod binding_presentation {
             .store
             .query(
                 &Command::InboxBatchV2(InboxQuery {
+                    thread: None,
                     seat: Some(claim.seat.clone()),
                     claim: Some(claim.clone()),
                     page: PageRequest {

@@ -4,7 +4,7 @@ Status: adopted 2026-10-01; B5 guards implemented (epic `ht-rzi`). Normative for
 attribution, receipt provenance and operator repair. Where an older design document requires adversarial
 proof of who is calling, this policy supersedes it. C5's guard is owned by B4 (`ht-p03.2`) and is the one
 guard still marked **required**. Amended 2026-10-02 for thread summaries and deadline extension (epic ht-1ip), and 2026-10-03 for the
-`managed_launch` binding (ht-5n6), and 2026-10-03 for human receipt waivers, and 2026-10-10 for cooperative peer-data wording (ht-poh.41). Amended 2026-10-10 for the session-keyed binding vocabulary (ht-54r; implemented
+`managed_launch` binding (ht-5n6), and 2026-10-03 for human receipt waivers, and 2026-10-12 for the text accept's thread-scoped opening-mail display (ht-br0), and 2026-10-10 for cooperative peer-data wording (ht-poh.41). Amended 2026-10-10 for the session-keyed binding vocabulary (ht-54r; implemented
 end to end, swept by ht-54r.25: every provenance value below has a production writer), and 2026-10-11 for absorbing
 the agy adapter into it (agy's conversation id is a harness session variable under `cooperative_env_session`).
 
@@ -757,7 +757,18 @@ caller (A2) and exact published addressed message IDs in its deciding transactio
 cannot complete delivery. JSON, machine, explicit-seat reads, history, bodies and summaries remain
 read-only for Lazy completion. A complete successful own text body display may separately advance only
 the calling binding's read cursor, as specified below; it is not Lazy completion or a receipt ACK.
-Local display journals are cooperative hints, never authority. Completion is idempotent
+A top-level agent's text `accept` (and `accept-required`) output is that same default text inbox
+display, thread-scoped (ht-br0): after the accept result was written and flushed, and only while no mod channel
+is live for the caller's binding, it reads one `InboxBatchV2` page of the caller's own stream restricted to the
+accepted thread's unread lazy rows (`InboxQuery.thread`, `inbox.thread_scope_v1`; no ordinary, receipt,
+invitation or warning row). The thread scope only narrows the unchanged lazy eligibility (the binding's own
+cursor/scope branch and the top-level legacy-pending branch); it never admits a row the unscoped text inbox
+would not show that binding. It writes and flushes the page, then advances the binding's cursors and completes
+the lazy rows it showed whole exactly as the text inbox does, under the same claim (via none; no new
+provenance). The accept is already committed and its result and exit status do not depend on this display; a
+failure leaves the rows pending for the next hook, wake or `inbox`. A JSON, `--machine` or `human` accept, a
+subagent, and a binding whose mod channel is live show no rows and complete nothing; an `accept` retry presents
+only its retained result. Local display journals are cooperative hints, never authority. Completion is idempotent
 presentation bookkeeping: it records no ACK actor, receipt provenance, timeline ACK, agreement,
 instruction adoption, task completion or proof of model consumption. Partial output and changed
 bindings cannot manufacture complete display. Frozen completion retries preserve their original full
@@ -896,6 +907,14 @@ parked progress. No consumer-history scan or sibling substitution is allowed. Ch
 failure rolls back invitation, membership/interval, cursor and all tentative private writes together.
 Historical accept replay neither reseeds nor invalidates again. General Join and nonpair acceptance
 retain their head policy; no new binding fanout occurs at publication or reading.
+The accepting top-level binding's own text `accept` then shows its own unread Lazy rows of the pair
+above that floor in its output (A8, ht-br0) and completes them as its text inbox would: only that
+binding's cursors advance, and each sibling binding keeps its independent own stream (no seat-wide
+settlement, no legacy-pending marking). Accepted limit: the page carries no ordinary row and Lazy and
+ordinary rows share that one cursor, so its progress stops at the thread's first unread ordinary row;
+Lazy rows it showed above that row stay in the binding's own stream and the next hook or `inbox` shows
+them again together with the ordinary rows (pinned by
+`text_pair_accept_shows_the_lazy_opening_mail_once_and_leaves_ordinary_mail`).
 
 A new binding while the invitation is pending can independently receive that episode's addressed work,
 even if a sibling displayed it. A new binding after acceptance retains normal joined-thread seat-maximum
@@ -958,7 +977,10 @@ of it, even though its own cursor never moved. A completion matching no open bin
 form, which completes for the whole seat) advances the cursors of every open top-level binding of the seat. A
 subagent binding never sees a seat-pending row (the branch requires `top_level`) and, like every subagent,
 cannot complete one; it sees only mail past its head cursor. A binding enrolled later sees still-pending rows
-if it is top-level. Ordinary messages are not part of this: one addressed to the seat before it joined (an
+if it is top-level. On a generic `accept` or `accept-required` (not the active direct-invitation
+exception), the accepting top-level binding's own text `accept` displays the joined thread's seat-pending lazy
+rows in its output (A8, ht-br0), so that completion clears them for the seat as above and the accept itself is
+the first opportunity, with no later hook needed. Ordinary messages are not part of this: one addressed to the seat before it joined (an
 ACK request to an invitee, a direct `--nudge` target) is a pending receipt from publication, listed with the
 seat's ACK obligations until settled and never re-offered through the cursor stream after the join, because
 every cursor starts at the head. That pending-receipt path is an agent seat's; a human seat's receipt is waived,
@@ -988,6 +1010,14 @@ interleaved) from re-offering ordinary rows already offered or ACKed as pending 
 cursor cannot express. A human seat's pre-join ordinary messages get no pending-receipt path (unchanged).
 The narrow active direct-invitation acceptance exception preserves independent own streams, as
 described above; its mixed-mode read behavior differs from this generic join frontier.
+The text accept's thread-scoped display (A8, ht-br0) is pinned by `tests/hook_entrypoint.rs`
+`codex_pair_accept_output_carries_the_opening_message`,
+`text_pair_accept_shows_the_lazy_opening_mail_once_and_leaves_ordinary_mail`,
+`text_pair_accept_completes_the_opener_for_the_accepting_binding_only`,
+`text_generic_accept_shows_seat_pending_lazy_mail_once` and
+`human_json_and_machine_accept_leave_the_opening_message_pending`, the mod test
+`text_accept_with_a_live_mod_channel_leaves_the_opener_to_the_watch`, and the store test
+`thread_scoped_page_lists_only_that_threads_lazy_rows`.
 
 Delivery-only cleanup recovery retains a private, bounded versioned terminal record after
 intent/progress removal. It preserves exact original immutable intent bytes and the genuine

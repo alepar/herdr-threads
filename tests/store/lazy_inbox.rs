@@ -187,6 +187,7 @@ fn query(
         context,
         "i",
         &Command::InboxBatchV2(InboxQuery {
+            thread: None,
             claim: None,
             seat: Some(SeatId::new("b")),
             page: request,
@@ -558,6 +559,7 @@ fn lazy_inbox_addressed_leave_retire_archive() {
         &context,
         "i",
         &Command::InboxBatchV2(InboxQuery {
+            thread: None,
             claim: None,
             seat: Some(SeatId::new("b")),
             page: PageRequest::default(),
@@ -597,6 +599,7 @@ fn lazy_inbox_v2_rejects_changed_binding_foreign_and_bad_body_cursor() {
             &context,
             "i",
             &Command::InboxBatchV2(InboxQuery {
+                thread: None,
                 claim: None,
                 seat: Some(SeatId::new("b")),
                 page: PageRequest {
@@ -756,6 +759,7 @@ fn lazy_inbox_v2_small_budget_and_read_only_queries() {
             &context,
             "i",
             &Command::InboxBatchV2(InboxQuery {
+                thread: None,
                 claim: None,
                 seat: Some(SeatId::new("b")),
                 page: PageRequest {
@@ -1218,11 +1222,13 @@ fn invitation_confirmation_inbox_metadata_distinguishes_lazy_timed_and_legacy() 
     }
     for command in [
         Command::InboxBatch(InboxQuery {
+            thread: None,
             seat: Some(SeatId::new("b")),
             page: PageRequest::default(),
             claim: Some(claim()),
         }),
         Command::InboxBatchV2(InboxQuery {
+            thread: None,
             seat: Some(SeatId::new("b")),
             page: PageRequest::default(),
             claim: Some(claim()),

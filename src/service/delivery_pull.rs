@@ -163,6 +163,7 @@ struct StorePageSource<'a> {
 impl PageSource for StorePageSource<'_> {
     fn page(&mut self, cursor: Option<String>) -> Result<Page<InboxBatchV2Item>, PageError> {
         let command = Command::InboxBatchV2(InboxQuery {
+            thread: None,
             claim: Some(self.claim.clone()),
             seat: Some(self.seat.clone()),
             page: PageRequest {

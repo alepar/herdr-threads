@@ -40,6 +40,14 @@ pub fn hook_inbox_page(policy: Option<&dyn DeliveryPolicy>, channel_live: bool) 
         )
 }
 
+/// Whether a caller's own text `accept` appends the accepted thread's pending lazy rows to its
+/// output (ht-br0). The accept output is the caller's own text-inbox display, a completion source
+/// every harness has (a hook-pull seat's rows complete through it too, A8); only a live mod
+/// channel, which delivers the binding's lazy rows itself, keeps them out of the accept.
+pub fn accept_output_page(channel_live: bool) -> bool {
+    !channel_live
+}
+
 #[cfg(test)]
 #[path = "../../tests/delivery/routing.rs"]
 mod tests;

@@ -1792,6 +1792,7 @@ fn default_directory_and_inbox_resolve_only_the_trusted_selected_seat() {
     assert_eq!(page.items.len(), 1);
     assert_eq!(page.items[0].thread, ThreadId::new("t1"));
     let inbox = Command::Inbox(InboxQuery {
+        thread: None,
         claim: None,
         seat: None,
         page: PageRequest::default(),

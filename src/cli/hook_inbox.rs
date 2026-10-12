@@ -76,6 +76,7 @@ pub fn read_page<C: LocalClient + ?Sized>(
     let CommandResult::InboxBatchV2(page) = client
         .call_with_output(
             Command::InboxBatchV2(InboxQuery {
+                thread: None,
                 claim: cursors.then(|| claim.clone()),
                 seat: Some(claim.seat.clone()),
                 page: PageRequest {
