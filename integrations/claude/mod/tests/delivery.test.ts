@@ -2119,6 +2119,121 @@ test('a changed command context arriving during complete append remains queued',
 })
 
 const notice = (warning: string) => ({ schema: 1, id: `notice:${warning}`, kind: 'notice', warning, thread: 'T1', body: `inspect ${warning}` })
+const queuedInvitation = (version: number, extra: Any = {}) => ({ schema: 1,
+  id: 'invitation:bounded', kind: 'invitation', thread: 'T1', topic_revision: String(version),
+  command_context_epoch: String(version), wakes: false, truncated: false,
+  body: `goal ${version}\nnext: herdr-threads accept T1`, ...extra })
+
+test('bounded invitation retains only inflight and latest pending context while append stalls', async () => {
+  const h = await harness({ state: IDLE, appendMode: 'manual' }).boot()
+  h.line(queuedInvitation(0))
+  for (let i = 1; i <= 2000; i++) h.line(queuedInvitation(i))
+  expect(h.core.snapshot().queue.length).toBe(2)
+  h.pendingAppends[0].res({})
+  await flush()
+  expect(h.appends.length).toBe(2)
+  expect(h.appends[1]).toContain('goal 2000')
+  expect(h.appends[1]).not.toContain('goal 1999')
+  h.pendingAppends[1].res({})
+  await flush()
+  expect(h.core.snapshot().queue).toEqual([])
+  expect(h.core.snapshot().rec.invitationVersions['invitation:bounded']).toBe('["2000","2000"]')
+  expect(h.ackRuns()).toEqual([])
+  expect(h.submits).toEqual([])
+  h.core.dispose()
+})
+
+test('bounded invitation coalesces refused revisions and preserves whole same-version context', async () => {
+  const h = await harness({ state: IDLE, appendMode: 'manual' }).boot()
+  h.line(queuedInvitation(0))
+  h.pendingAppends[0].res({ deny: 'refused' })
+  await flush()
+  for (let i = 1; i <= 2000; i++) h.line(queuedInvitation(i, { truncated: true, body: `partial ${i}` }))
+  h.line(queuedInvitation(2000))
+  h.line(queuedInvitation(2000, { truncated: true, body: 'goal omitted' }))
+  expect(h.core.snapshot().queue.length).toBe(1)
+  await h.advance(30000)
+  expect(h.appends.length).toBe(2)
+  expect(h.appends[1]).toContain('goal 2000')
+  expect(h.appends[1]).not.toContain('goal omitted')
+  h.pendingAppends[1].res({})
+  await flush()
+  expect(h.core.snapshot().queue).toEqual([])
+  expect(h.core.snapshot().rec.invitationVersions['invitation:bounded']).toBe('["2000","2000"]')
+  expect(h.ackRuns()).toEqual([])
+  h.core.dispose()
+})
+
+test('bounded invitation late old-run denial leaves current whole context pending', async () => {
+  const h = await harness({ state: IDLE, appendMode: 'manual' }).boot()
+  h.line(queuedInvitation(0, { truncated: true }))
+  h.exit(1)
+  await h.advance(1000)
+  await h.connect()
+  h.line(queuedInvitation(1))
+  h.line(queuedInvitation(2))
+  h.pendingAppends[0].res({ deny: 'late old-run failure' })
+  await flush()
+  expect(h.core.snapshot().queue).toEqual(['invitation:bounded'])
+  await h.advance(30000)
+  expect(h.appends[1]).toContain('goal 2')
+  h.pendingAppends[1].res({})
+  await flush()
+  expect(h.core.snapshot().rec.invitationVersions['invitation:bounded']).toBe('["2","2"]')
+  expect(h.core.snapshot().queue).toEqual([])
+  expect(h.ackRuns()).toEqual([])
+  h.core.dispose()
+})
+
+test('bounded invitation replay keeps the old inflight run distinct from its live replacement', async () => {
+  const h = await harness({ state: IDLE, appendMode: 'manual' }).boot()
+  h.line(queuedInvitation(7))
+  h.exit(1)
+  await h.advance(1000)
+  await h.connect()
+  h.line(queuedInvitation(7))
+  expect(h.core.snapshot().queue.length).toBe(2)
+  h.pendingAppends[0].res({ deny: 'old run refused' })
+  await flush()
+  expect(h.core.snapshot().queue).toEqual(['invitation:bounded'])
+  await h.advance(30000)
+  expect(h.appends.length).toBe(2)
+  expect(h.appends[1]).toContain('goal 7')
+  h.pendingAppends[1].res({})
+  await flush()
+  expect(h.core.snapshot().queue).toEqual([])
+  expect(h.ackRuns()).toEqual([])
+  h.core.dispose()
+})
+
+for (const { name, count, body, active } of [
+  { name: 'passive item count', count: 80, body: 'small', active: false },
+  { name: 'passive UTF-8 bytes', count: 20, body: '界\n'.repeat(2000), active: false },
+  { name: 'idle item count', count: 80, body: 'small', active: true },
+  { name: 'idle UTF-8 bytes', count: 20, body: '界\n'.repeat(2000), active: true },
+]) {
+  test(`framed append batches bound ${name} without losing messages`, async () => {
+    const h = await harness({ state: active ? IDLE : busyState(), appendMode: 'manual' }).boot()
+    h.line(queuedInvitation(0, { wakes: active })) // Stall before the distinct IDs arrive.
+    await flush()
+    for (let i = 0; i < count; i++) h.line({ ...(active ? msg(`bounded-${i}`) : lazy(`bounded-${i}`)), body })
+    let completed = 0
+    while (h.core.snapshot().queue.length) {
+      const text = h.appends[completed]
+      expect(text).toBeDefined()
+      expect(new TextEncoder().encode(text).length).toBeLessThanOrEqual(64 * 1024)
+      expect((text.match(/^\[herdr-threads\] (?:message|lazy|invitation) /gm) ?? []).length).toBeLessThanOrEqual(32)
+      h.pendingAppends[completed++].res({})
+      await flush()
+    }
+    const ids = h.appends.join('\n').match(/^\[herdr-threads\] (?:message|lazy) bounded-\d+ /gm) ?? []
+    expect(ids.length).toBe(count)
+    expect(new Set(ids).size).toBe(count)
+    expect(Object.keys(h.core.snapshot().rec.delivered).length).toBe(count)
+    if (!active) expect(h.submits).toEqual([])
+    h.core.dispose()
+  })
+}
 const epochAttention = (epoch: string) => ({ ...attention(7), id: `attention:${epoch}`, presentation_epoch: epoch, text: `episode ${epoch}` })
 const epochCleared = (epoch: string) => ({ ...cleared(7), id: `attention_cleared:${epoch}`, presentation_epoch: epoch })
 
