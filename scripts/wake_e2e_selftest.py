@@ -554,6 +554,85 @@ class CoordinatorCalls(TempDir):
         self.assertEqual({k: v["seat"] for k, v in r.coords.items()}, {"main": "sCCCCCCCC", "fresh": "sDDDDDDDD"})
 
 
+class IdleWakeOracle(TempDir):
+    """Run the real case/producer path with private fake CLI and recipient observations."""
+
+    def run_case(self, case, wake_on, woke, delivered=True):
+        calls, rows, prompts, windows = [], [], [], []
+        r = object.__new__(W.Run)
+        r.state, r.endpoint, r.bin = self.tmp / "state", "/fake/sock", "/fake/herdr-threads"
+        r.run_id = "private-oracle"
+        r.coords = {"main": {"pane": "w1:p1", "seat": "sAAAAAAAA"}}
+        r.record = rows.append
+
+        def run(argv, env=None, timeout=60, tag=None, cleanup=False):
+            calls.append((argv, env))
+            data = "mAAAAAAAA" if "send" in argv else "tAAAAAAAA"
+            return 0, json.dumps({"result": {"data": data}}), ""
+        r.run = run
+        recipient = W.Recipient(r, "co-" + wake_on, "codex", wake_on, "w1:p2", "sBBBBBBBB")
+        recipient.group = "tAAAAAAAA"
+        recipient.wait_idle = lambda: None
+        recipient.prompt = prompts.append
+        recipient.joined = lambda thread: (True, "joined")
+        recipient.pair_thread = lambda: "tBBBBBBBB"
+        recipient.on_screen = lambda mid: delivered
+        recipient.receipt = lambda mid: "acknowledged"
+
+        def watch(window):
+            windows.append(window)
+            return 0.5 if woke else None
+        recipient.watch_for_wake = watch
+        recipient.case(case)
+        self.assertEqual(len(rows), 1)
+        return rows[0], calls, prompts, windows
+
+    def test_lazy_direct_invitation_is_passive_under_nudge(self):
+        row_, calls, prompts, windows = self.run_case("invite/1:1", "nudge", woke=False)
+        argv, env = calls[0]
+        self.assertEqual(argv[1], "human")
+        self.assertEqual(argv[argv.index("send"):],
+                         ["send", "--seat", "sBBBBBBBB", "--body", "pair-open private-oracle", "--lazy"])
+        self.assertEqual(env["HERDR_PANE_ID"], "w1:p1")
+        self.assertFalse(any(a.startswith("--cooperative") or a == "--operator" for a in argv))
+        self.assertEqual(row_["expect_wake"], False)
+        self.assertEqual(row_["result"], "PASS")
+        self.assertEqual(prompts, ["hello"])
+        self.assertEqual(windows, [W.WAKE_WINDOW_S])
+        self.assertEqual(row_["checks"]["opening_message_delivered"], True)
+
+    def test_idle_matrix_preserves_group_invite_and_send_modes(self):
+        for wake_on in ("nudge", "all"):
+            for action in ("invite", "send-lazy", "send-nudge", "send-ack"):
+                for channel in ("group", "1:1"):
+                    case = action + "/" + channel
+                    passive = wake_on == "nudge" and (action == "send-lazy" or case == "invite/1:1")
+                    with self.subTest(case=case, wake_on=wake_on):
+                        row_, calls, prompts, windows = self.run_case(case, wake_on, woke=not passive)
+                        self.assertEqual(row_["expect_wake"], not passive)
+                        self.assertEqual(row_["result"], "PASS")
+                        self.assertEqual(prompts, ["hello"] if passive else [])
+                        self.assertEqual(windows, [W.WAKE_WINDOW_S])
+                        self.assertTrue(all(argv[1] == "human" for argv, _ in calls))
+                        if case == "invite/group":
+                            argv = calls[-1][0]
+                            self.assertEqual(argv[argv.index("invite"):],
+                                             ["invite", "tAAAAAAAA", "--seat", "sBBBBBBBB"])
+
+    def test_unexpected_direct_wake_fails(self):
+        row_, _, _, _ = self.run_case("invite/1:1", "nudge", woke=True)
+        self.assertEqual(row_["result"], "FAIL")
+
+    def test_missing_all_direct_wake_fails(self):
+        row_, _, _, _ = self.run_case("invite/1:1", "all", woke=False)
+        self.assertEqual(row_["result"], "FAIL")
+
+    def test_passive_direct_opening_still_requires_delivery(self):
+        row_, _, _, _ = self.run_case("invite/1:1", "nudge", woke=False, delivered=False)
+        self.assertEqual(row_["checks"]["opening_message_delivered"], False)
+        self.assertEqual(row_["result"], "FAIL")
+
+
 def row(recipient, case, result="PASS"):
     return {"recipient": recipient, "case": case, "result": result, "wake_on": "nudge", "harness": "claude"}
 
