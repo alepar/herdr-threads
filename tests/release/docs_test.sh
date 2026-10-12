@@ -87,8 +87,9 @@ check 'follow-on dispatch: live gh issue filing step' follow_has 'file_issues\.p
 # (x86_64 and agent harness sessions); only the exercised arm64 link is claimed.
 readme_linux() { grep -iE 'linux' README.md | grep -iE 'experimental' | grep -iE 'unverified' | grep -iE 'x86_64' | grep -iE 'harness sessions' | grep -qiE 'rehearsal'; }
 check 'README: Linux experimental, x86_64 and harness sessions unverified until the rehearsal' readme_linux
-# No claim that Linux x86_64 or harness sessions were verified or exercised.
-readme_no_linux_overclaim() { ! grep -iE 'linux' README.md | grep -iE '(x86_64|harness sessions)[^;.]*(verified|exercised|passes)' | grep -qviE 'unverified'; }
+# No claim that Linux x86_64 or harness sessions were verified or exercised. Checked per
+# clause: the README's Linux paragraph is one line that also says "unverified".
+readme_no_linux_overclaim() { ! grep -iE 'linux' README.md | sed 's/[;.] /\n/g' | grep -iE 'x86_64|harness sessions' | grep -iE 'verified|exercised|passes' | grep -qviE 'unverified'; }
 check 'README: no Linux x86_64 or harness-session overclaim' readme_no_linux_overclaim
 # The installer never returns to the false macOS-only manifest/witness warning.
 install_no_stale_linux() { ! grep -qE 'declares macOS only|Unknown incarnation' scripts/install.sh; }
