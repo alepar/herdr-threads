@@ -106,10 +106,12 @@ pub(crate) fn elected_health_provider(
     host: ElectedHostEvidence,
 ) -> impl Fn(&CallBudget) -> HealthInputs + Send + Sync + 'static {
     let workers = workers.into();
+    let started = clock.monotonic_now();
     let health = ElectedHealth {
         instance,
         boot,
         settings,
+        started,
         clock,
         store,
         workers,
@@ -192,12 +194,16 @@ struct ElectedHealth {
     store: Arc<dyn StorePort>,
     workers: Vec<Arc<WorkerStatus>>,
     host: ElectedHostEvidence,
+    /// The provider's construction at daemon boot, on `clock`: Health's
+    /// startup bound (`starting`) is measured from it.
+    started: MonoInstant,
 }
 
 impl ElectedHealth {
     fn inputs(&self, request: &CallBudget) -> HealthInputs {
         let mut inputs = HealthInputs::unknown(self.instance, self.boot);
         inputs.settings = Some(self.settings.clone());
+        inputs.since_start_ms = Some(self.clock.monotonic_now().0.saturating_sub(self.started.0));
         inputs.database = ComponentStatus::Ready;
         inputs.schema = ComponentStatus::Ready;
         let summary_budget = health_summary_budget(request, self.clock.as_ref());

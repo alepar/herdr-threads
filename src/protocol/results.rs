@@ -789,7 +789,25 @@ pub struct HarnessHealth {
     pub claude: HarnessState,
 }
 
+/// The Health note a daemon adds while it is starting: no host
+/// reconciliation has completed since it started, nothing else is wrong, and
+/// the startup bound (`daemon::health::STARTUP_GRACE_MS`) has not passed. It
+/// rides on a `degraded` state, so the wire shape (key set and state values
+/// a shipped `deny_unknown_fields` CLI decodes) is unchanged; a newer client
+/// reads it through [`Health::starting`].
+pub const HEALTH_STARTING_NOTE: &str =
+    "starting: the first host reconciliation since daemon start has not completed yet";
+
 impl Health {
+    /// Whether the daemon reported itself starting (see
+    /// [`HEALTH_STARTING_NOTE`]): a `degraded` state with no completed
+    /// reconciliation and the starting note.
+    pub fn starting(&self) -> bool {
+        self.state == HealthState::Degraded
+            && self.last_reconciliation_at.is_none()
+            && self.notes.iter().any(|note| note == HEALTH_STARTING_NOTE)
+    }
+
     /// Honest starting point for a reachable daemon before bounded providers
     /// have supplied their observations. Callers must populate proven fields.
     pub fn unknown(

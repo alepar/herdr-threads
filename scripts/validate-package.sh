@@ -426,7 +426,7 @@ try:
     check("doctor action succeeds", doctor["exit_code"] == 0, repr(doctor))
     check("doctor action reports a concise serving-daemon verdict",
           field(doctor["stdout"], "doctor") in ("ok", "degraded")
-          and field(doctor["stdout"], "daemon") in ("healthy", "degraded")
+          and field(doctor["stdout"], "daemon") in ("healthy", "starting", "degraded")
           and "details: herdr-threads doctor --debug" in doctor["stdout"], doctor["stdout"])
     doctor_debug = run([str(binary), "--state-dir", str(plugin_state), "--host-endpoint", str(socket),
                         "doctor", "--debug"]).stdout

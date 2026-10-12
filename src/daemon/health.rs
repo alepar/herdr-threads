@@ -1,7 +1,7 @@
 //! Health is assembled from injected observations without scanning durable work.
 use crate::protocol::results::{
-    ApiError, CapabilityState, ComponentState, ErrorClass, HarnessHealth, HarnessState, Health,
-    HealthComponent, HealthSettings, HealthState,
+    ApiError, CapabilityState, ComponentState, ErrorClass, HEALTH_STARTING_NOTE, HarnessHealth,
+    HarnessState, Health, HealthComponent, HealthSettings, HealthState,
 };
 use crate::protocol::time::UtcMillis;
 use crate::protocol::wire::PROTOCOL_VERSION;
@@ -136,7 +136,23 @@ pub struct HealthInputs {
     /// [`HARNESS_EVIDENCE_UNAVAILABLE_LINE`] (see [`harness_version_lines`]),
     /// so Health is `degraded` rather than silently clean.
     pub harness_version_lines: Vec<String>,
+    /// Milliseconds since this daemon's Health provider was built at boot,
+    /// on its monotonic clock. None (no start time supplied) keeps the
+    /// ordinary classification: never `starting`, no overdue line.
+    pub since_start_ms: Option<u64>,
 }
+
+/// How long after daemon start Health may report `starting` while no host
+/// reconciliation has completed. The first capture has a 5 s budget and the
+/// first pass normally completes within 1-5 s of start; 30 s leaves room for
+/// a slow host or a loaded machine and still surfaces a daemon that never
+/// reconciles as `degraded` well before anyone would wait on it.
+pub const STARTUP_GRACE_MS: u64 = 30_000;
+
+/// The limitation that explains a `degraded` Health once the startup bound
+/// passed with no completed reconciliation and nothing else wrong.
+pub const FIRST_RECONCILIATION_OVERDUE_LINE: &str =
+    "reconciliation: none completed within 30 s of daemon start";
 
 /// The limitation shown while the harness version evidence cannot be read.
 pub const HARNESS_EVIDENCE_UNAVAILABLE_LINE: &str = "harness contract diagnostics unavailable: the evidence store could not be read, so actual input failures would not show here";
@@ -440,6 +456,7 @@ impl HealthInputs {
             degraded_lanes: Vec::new(),
             transitions_refused: 0,
             harness_version_lines: Vec::new(),
+            since_start_ms: None,
         }
     }
 
@@ -619,25 +636,62 @@ impl HealthInputs {
                 "retirement cleanup degraded; inspect the exact seat for the retained error".into(),
             );
         }
-        fit_budget(&mut health.limitations, sample_at, sample_len);
-        fit_budget(&mut health.notes, 0, 0);
-        // Healthy is the designed operating mode, not native verification:
-        // cooperative wake (or native current execution), cooperative or
-        // supported harnesses, and no host receipt registration needed
-        // (receipts are cooperative). Those facts are notes.
-        health.state = if health.database.state == ComponentState::Ready
+        // Facts that are fine whatever has been observed so far.
+        let settled = health.database.state == ComponentState::Ready
             && health.schema.state == ComponentState::Ready
-            && health.host.reachability == ComponentState::Ready
             && scheduler.state == ComponentState::Ready
-            && health.host.coherent_enumeration == CapabilityState::Supported
-            && wake_available
-            && self.harnesses.iter().all(|(_, status)| status.acceptable())
+            && self.degraded_lanes.is_empty()
             && !self.retirement.pending
             && !self.retirement.degraded
             && !lacking_evidence
             && !unresolved
-            && self.harness_version_lines.is_empty()
-        {
+            && self.harness_version_lines.is_empty();
+        // Healthy is the designed operating mode, not native verification:
+        // cooperative wake (or native current execution), cooperative or
+        // supported harnesses, and no host receipt registration needed
+        // (receipts are cooperative). Those facts are notes.
+        let healthy = settled
+            && health.host.reachability == ComponentState::Ready
+            && health.host.coherent_enumeration == CapabilityState::Supported
+            && wake_available
+            && self.harnesses.iter().all(|(_, status)| status.acceptable());
+        // Not healthy only because the host, a harness or a wake capability
+        // has not been observed yet, before any reconciliation completed:
+        // `starting` within the startup bound, explained as overdue after it.
+        let awaiting_first_observation = !healthy
+            && settled
+            && self.last_reconciliation_at.is_none()
+            && matches!(
+                health.host.reachability,
+                ComponentState::Ready | ComponentState::Unknown
+            )
+            && matches!(
+                health.host.coherent_enumeration,
+                CapabilityState::Supported | CapabilityState::Unknown
+            )
+            && (wake_available
+                || self.safe_prompt == CapabilityState::Unknown
+                || self.current_execution == CapabilityState::Unknown)
+            && self
+                .harnesses
+                .iter()
+                .all(|(_, status)| status.acceptable() || matches!(status, HarnessStatus::Unknown));
+        match self.since_start_ms {
+            Some(elapsed) if awaiting_first_observation && elapsed < STARTUP_GRACE_MS => {
+                health.notes.insert(0, HEALTH_STARTING_NOTE.into());
+            }
+            Some(_) if awaiting_first_observation => {
+                health
+                    .limitations
+                    .insert(0, FIRST_RECONCILIATION_OVERDUE_LINE.into());
+                // No unresolved-seat sample exists here (`settled`), so the
+                // sample range need not shift.
+            }
+            _ => {}
+        }
+        fit_budget(&mut health.limitations, sample_at, sample_len);
+        fit_budget(&mut health.notes, 0, 0);
+        health.state = if healthy {
             HealthState::Healthy
         } else {
             HealthState::Degraded
@@ -655,3 +709,6 @@ mod health_harness_state;
 #[cfg(test)]
 #[path = "../../tests/daemon/health_optimistic.rs"]
 mod health_optimistic;
+#[cfg(test)]
+#[path = "../../tests/daemon/health_starting.rs"]
+mod health_starting;

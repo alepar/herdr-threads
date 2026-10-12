@@ -792,10 +792,14 @@ fn production_health_builder_pins_every_elected_field() {
         degraded_lanes,
         transitions_refused,
         harness_version_lines,
+        since_start_ms,
     } = health(&budget);
     // The version lines come from the production wiring (`run_elected`), not
     // from the provider.
     assert!(harness_version_lines.is_empty());
+    // Measured on the provider's monotonic clock from its construction at
+    // boot (this fixed clock never advances), so Health can tell `starting`.
+    assert_eq!(since_start_ms, Some(0));
     assert!(degraded_lanes.is_empty());
     assert_eq!(transitions_refused, 0);
     assert_eq!(got_instance, instance_id);

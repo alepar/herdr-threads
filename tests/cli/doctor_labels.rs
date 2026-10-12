@@ -525,3 +525,64 @@ fn task3_versionless_doctor_metadata_unknown_is_informational_not_repairable() {
         [crate::harness::adapter::LocalRepair::InstallOwned]
     ));
 }
+
+/// Health as the daemon assembles it in its first seconds (before the first
+/// reconciliation), or once the startup bound passed.
+fn boot_health(since_start_ms: u64, reconciled: bool) -> crate::protocol::results::Health {
+    use crate::daemon::health::{ComponentStatus, HealthInputs};
+    let mut inputs = HealthInputs::unknown(uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
+    inputs.database = ComponentStatus::Ready;
+    inputs.schema = ComponentStatus::Ready;
+    inputs.scheduler = ComponentStatus::Ready;
+    inputs.safe_prompt = crate::protocol::results::CapabilityState::Supported;
+    inputs.current_execution = crate::protocol::results::CapabilityState::Unsupported;
+    inputs.since_start_ms = Some(since_start_ms);
+    if reconciled {
+        inputs.host = ComponentStatus::Ready;
+        inputs.coherent_enumeration = crate::protocol::results::CapabilityState::Supported;
+        inputs.last_reconciliation_at = Some(crate::protocol::time::UtcMillis(9));
+        inputs.set_harness(
+            "claude",
+            crate::daemon::health::HarnessStatus::Supported("claude: listed".into()),
+        );
+        inputs.set_harness(
+            "codex",
+            crate::daemon::health::HarnessStatus::Supported("codex: listed".into()),
+        );
+    }
+    inputs.assemble()
+}
+
+/// W8. Kills: doctor reporting `daemon: degraded` (and a degraded result)
+/// for a daemon that has not finished its first reconciliation yet; and a
+/// `starting` that survives the first reconciliation or the startup bound.
+#[test]
+fn doctor_reports_starting_until_the_first_reconciliation_or_the_bound() {
+    let starting = boot_health(1_000, false);
+    assert_eq!(daemon_state_label(&starting), "starting");
+    assert!(!health_degrades_result(&starting));
+
+    let reconciled = boot_health(1_000, true);
+    assert_eq!(daemon_state_label(&reconciled), "healthy");
+    assert!(!health_degrades_result(&reconciled));
+
+    let overdue = boot_health(crate::daemon::health::STARTUP_GRACE_MS, false);
+    assert_eq!(daemon_state_label(&overdue), "degraded");
+    assert!(health_degrades_result(&overdue));
+    assert!(
+        overdue
+            .limitations
+            .iter()
+            .any(|line| line == crate::daemon::health::FIRST_RECONCILIATION_OVERDUE_LINE)
+    );
+
+    // The text report and repair gating treat `starting` as a serving daemon.
+    let report = json!({
+        "result": "ok", "context": {"ok": true}, "state_dir": {"safe": true},
+        "daemon": {"state": daemon_state_label(&starting), "version_matches": true},
+    });
+    let text = render_text(&report);
+    assert!(text.starts_with("doctor: ok\n"), "{text}");
+    assert!(text.contains("daemon: starting\n"), "{text}");
+    assert!(repairs_allowed(&report));
+}

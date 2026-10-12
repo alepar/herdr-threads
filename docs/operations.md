@@ -68,12 +68,14 @@ Hook installation is per harness environment, so `doctor` (run in that environme
 - `harness NAME not installed: no executable ... on the daemon's PATH`;
 - `receipt cooperative: harness cooperative means an admitted recipe without native-verified receipt; ...`, while a harness is `cooperative` (receipts are cooperative, demonstrated live only on Claude 2.1.285-2.1.286 and Codex 0.159.2, schema-matched, live-unverified);
 - `wake cooperative: ...`, while wakes use the cooperative safe prompt instead of native current execution.
+- `starting: the first host reconciliation since daemon start has not completed yet`, for at most 30 s after the daemon starts, while the only reason Health is not `healthy` is that the host, a harness or the wake capability has not been observed yet. The state stays `degraded` on the wire (older CLIs decode it unchanged); `doctor` shows `daemon: starting` and does not degrade its result for it. A real problem in that window (host unavailable, a degraded lane, a refused harness, ...) is reported as `degraded` at once.
 
 `limitations` are problems; a `degraded` state names at least one. Read them rather than the state word alone:
 
 - `harness NAME unsupported: ...` for an installed binary whose `--version` could not be observed or recognized (the hook cannot admit it), and `harness NAME unknown: ...` before the boot observation finishes;
 - a version verdict line (`harness NAME VERSION broken: ...` or `NAME VERSION is below the supported floor MIN; upgrade NAME`), at most one per harness: see "Version verdicts";
 - `host unavailable: ...` when the host socket is unreachable;
+- `reconciliation: none completed within 30 s of daemon start` when the startup window above ended without a completed reconciliation and nothing else explains the `degraded` state;
 - `wake unavailable: ...` when the host offers neither native current execution nor the safe cooperative prompt;
 - `scheduler degraded: ...` for a background worker failure (typed, redacted);
 - `retirement cleanup pending` / `retirement cleanup degraded`;
