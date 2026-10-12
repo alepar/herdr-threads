@@ -7507,9 +7507,17 @@ fn reclamation_read_full_body(f: &Fixture, message: &MessageId) -> String {
         commands::{BodyReadRequest, MessageQuery},
         results::MessageContent,
     };
+    // max_bytes bounds the encoded response, including summary and two
+    // continuation representations, rather than 4096 raw body bytes. The
+    // largest fixture is 58,000 bytes; require at least 1024 bytes of progress
+    // per partial reply, giving a finite ceiling of 57 reads including the tail.
+    const MAX_FIXTURE_BYTES: usize = 58_000;
+    const MIN_PARTIAL_BYTES: usize = 1024;
     let mut cursor = None;
     let mut complete = String::new();
-    for _ in 0..16 {
+    let mut expected_total = None;
+    for _ in 0..MAX_FIXTURE_BYTES.div_ceil(MIN_PARTIAL_BYTES) {
+        let previous_cursor = cursor.clone();
         let CommandResult::Message(read) = f
             .service
             .handle(
@@ -7539,14 +7547,32 @@ fn reclamation_read_full_body(f: &Fixture, message: &MessageId) -> String {
         else {
             panic!("ordinary body")
         };
+        assert!(body_total_bytes <= MAX_FIXTURE_BYTES as u64);
+        assert_eq!(
+            *expected_total.get_or_insert(body_total_bytes),
+            body_total_bytes
+        );
         assert_eq!(body_offset as usize, complete.len());
+        if !body_complete {
+            assert!(
+                body_data.len() >= MIN_PARTIAL_BYTES,
+                "partial reply must make bounded byte progress"
+            );
+        }
         complete.push_str(&body_data);
         if body_complete {
             assert!(body_next_cursor.is_none());
             assert_eq!(complete.len() as u64, body_total_bytes);
             return complete;
         }
-        cursor = Some(body_next_cursor.expect("bounded continuation makes progress"));
+        let next = body_next_cursor.expect("bounded continuation makes progress");
+        assert_ne!(Some(&next), previous_cursor.as_ref());
+        let position = crate::protocol::pagination::Cursor::decode(&next).unwrap();
+        assert_eq!(position.after_ordinal, complete.len() as u64);
+        assert_eq!(position.high_water_ordinal, body_total_bytes);
+        assert!(position.after_ordinal > body_offset);
+        assert!(position.after_ordinal < body_total_bytes);
+        cursor = Some(next);
     }
     panic!("fixture full body exceeds bounded continuation reads")
 }

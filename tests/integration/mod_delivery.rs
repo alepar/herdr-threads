@@ -4433,15 +4433,20 @@ fn stale_attention_is_retracted_after_accept_and_after_a_notice_offer() {
         )
     );
     assert!(notice.get("ack_required").is_none(), "{notice}");
-    let (offered_generation, offered_execution, frontier, ordinal, generation, execution, thread):
-        (i64, String, i64, i64, i64, String, String) = rig.db().query_row(
-            "SELECT offered.generation,offered.execution_id,o.offered_ordinal,d.ordinal,b.generation,b.execution_id,d.thread_id FROM digest_notice_offer o JOIN occupant_bindings offered ON offered.binding_id=o.binding_id AND offered.seat_id=o.seat_id JOIN digest_programmatic_warnings d ON d.seat_id=o.seat_id JOIN occupant_bindings b ON b.seat_id=o.seat_id AND b.harness='claude' AND b.native_session=?3 AND b.agent_id='' AND b.role='top_level' AND b.ended_at IS NULL AND b.liveness='connected' AND b.binding_id=o.binding_id WHERE o.seat_id=?1 AND d.warning_id=?2",
-            [rig.b.as_str(), warning, SESSION_B],
-            |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?)),
+    let (expected_binding, expected_generation, expected_execution) =
+        expected_notice_binding(&rig, descriptor.instance_uuid);
+    let (offered_generation, offered_execution, frontier, ordinal, generation, execution, thread, offered_binding):
+        (i64, String, i64, i64, i64, String, String, String) = rig.db().query_row(
+            "SELECT offered.generation,offered.execution_id,o.offered_ordinal,d.ordinal,b.generation,b.execution_id,d.thread_id,o.binding_id FROM digest_notice_offer o JOIN occupant_bindings offered ON offered.binding_id=o.binding_id AND offered.seat_id=o.seat_id JOIN digest_programmatic_warnings d ON d.seat_id=o.seat_id JOIN occupant_bindings b ON b.seat_id=o.seat_id AND b.harness='claude' AND b.native_session=?3 AND b.agent_id='' AND b.role='top_level' AND b.ended_at IS NULL AND b.liveness='connected' AND b.binding_id=o.binding_id WHERE o.seat_id=?1 AND d.warning_id=?2 AND o.binding_id=?4",
+            [rig.b.as_str(), warning, SESSION_B, expected_binding.as_str()],
+            |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?,row.get(7)?)),
         ).unwrap();
     assert_eq!(thread, managed.as_str());
+    assert_eq!(offered_binding, expected_binding);
     assert_eq!(offered_generation, generation);
+    assert_eq!(offered_generation, expected_generation);
     assert_eq!(offered_execution, execution);
+    assert_eq!(offered_execution, expected_execution);
     assert_ne!(execution, SESSION_B);
     assert!(ordinal > 0 && frontier >= ordinal);
     // The replacement may replay the earlier invitation's clear as well.
@@ -4514,6 +4519,23 @@ fn clear_rebind_pending_item_restreamed_to_new_session() {
         .find(|line| line["id"] == id)
         .unwrap_or_else(|| panic!("no result line for {id}"));
     assert_eq!(settled["result"], "settled", "{settled}");
+}
+
+/// The exact Watch binding expected by the notice tests, independently of its offer row.
+fn expected_notice_binding(rig: &Rig, instance: uuid::Uuid) -> (String, i64, String) {
+    let (binding, generation): (String, i64) = rig.db().query_row(
+        "SELECT b.binding_id,s.generation FROM seats s JOIN occupant_bindings b ON b.seat_id=s.id WHERE s.id=?1 AND s.instance_id=?2 AND s.state='resolved' AND s.target_id=?3 AND b.harness='claude' AND b.native_session=?4 AND b.agent_id='' AND b.role='top_level' AND b.ended_at IS NULL AND b.liveness='connected'",
+        rusqlite::params![rig.b.as_str(), instance.to_string(), PANE_B, SESSION_B],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    ).unwrap();
+    let execution = herdr_threads::harness::context::session_execution(
+        instance,
+        Harness::Claude,
+        SESSION_B,
+        None,
+    )
+    .to_string();
+    (binding, generation, execution)
 }
 
 /// The open binding of native session `session` on B's seat: `(binding_id, liveness,
@@ -4935,15 +4957,20 @@ fn notice_published_while_live_reaches_the_next_pre_tool_use_once() {
         )
     );
     assert!(notice.get("ack_required").is_none(), "{notice}");
-    let (offered_generation, offered_execution, frontier, ordinal, generation, execution, thread):
-        (i64, String, i64, i64, i64, String, String) = rig.db().query_row(
-            "SELECT offered.generation,offered.execution_id,o.offered_ordinal,d.ordinal,b.generation,b.execution_id,d.thread_id FROM digest_notice_offer o JOIN occupant_bindings offered ON offered.binding_id=o.binding_id AND offered.seat_id=o.seat_id JOIN digest_programmatic_warnings d ON d.seat_id=o.seat_id JOIN occupant_bindings b ON b.seat_id=o.seat_id AND b.harness='claude' AND b.native_session=?3 AND b.agent_id='' AND b.role='top_level' AND b.ended_at IS NULL AND b.liveness='connected' AND b.binding_id=o.binding_id WHERE o.seat_id=?1 AND d.warning_id=?2",
-            [rig.b.as_str(), warning, SESSION_B],
-            |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?)),
+    let (expected_binding, expected_generation, expected_execution) =
+        expected_notice_binding(&rig, descriptor.instance_uuid);
+    let (offered_generation, offered_execution, frontier, ordinal, generation, execution, thread, offered_binding):
+        (i64, String, i64, i64, i64, String, String, String) = rig.db().query_row(
+            "SELECT offered.generation,offered.execution_id,o.offered_ordinal,d.ordinal,b.generation,b.execution_id,d.thread_id,o.binding_id FROM digest_notice_offer o JOIN occupant_bindings offered ON offered.binding_id=o.binding_id AND offered.seat_id=o.seat_id JOIN digest_programmatic_warnings d ON d.seat_id=o.seat_id JOIN occupant_bindings b ON b.seat_id=o.seat_id AND b.harness='claude' AND b.native_session=?3 AND b.agent_id='' AND b.role='top_level' AND b.ended_at IS NULL AND b.liveness='connected' AND b.binding_id=o.binding_id WHERE o.seat_id=?1 AND d.warning_id=?2 AND o.binding_id=?4",
+            [rig.b.as_str(), warning, SESSION_B, expected_binding.as_str()],
+            |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?,row.get(7)?)),
         ).unwrap();
     assert_eq!(thread, managed.as_str());
+    assert_eq!(offered_binding, expected_binding);
     assert_eq!(offered_generation, generation);
+    assert_eq!(offered_generation, expected_generation);
     assert_eq!(offered_execution, execution);
+    assert_eq!(offered_execution, expected_execution);
     assert_ne!(execution, SESSION_B);
     assert!(ordinal > 0 && frontier >= ordinal);
     for _ in 0..2 {

@@ -1676,6 +1676,12 @@ mod daemon {
         origin.target = HostTargetId::new("p-origin");
         origin.native_session = NativeSessionId::new("origin-conversation");
         origin.execution = ExecutionId::new("00000000-0000-4000-8000-000000000009");
+        // These are independent sessions, not one process switching sessions:
+        // a shared TEST fingerprint would canonically supersede the recipient
+        // on the origin's lifecycle check-in, even though their seats differ.
+        // This in-process service has no real-process liveness worker.
+        origin.liveness =
+            Some(crate::protocol::authority::LivenessFingerprint { pid: 2, start: 1 });
         let CommandResult::CheckedIn(origin) = world
             .service
             .handle(
@@ -1695,6 +1701,18 @@ mod daemon {
             panic!("origin check-in")
         };
         let origin = origin.context;
+        for caller in [&recipient, &origin] {
+            let state: (String, Option<String>) = world.db.query_row(
+                "SELECT liveness,disconnect_reason FROM occupant_bindings WHERE seat_id=?1 AND harness=?2 AND native_session=?3 AND agent_id='' AND generation=?4 AND execution_id=?5 AND ended_at IS NULL",
+                rusqlite::params![caller.seat.as_str(), caller.harness.as_str(), caller.native_session.as_str(), caller.binding_generation, caller.execution.as_str()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            ).unwrap();
+            assert_eq!(
+                state,
+                ("connected".into(), None),
+                "independent canonical session remains connected"
+            );
+        }
         //300NUL per field is a supported public canonical producer: unlike the
         // old scripted1024NUL fixture, the released4096byte event admission fits.
         let topic = "\0".repeat(300);
