@@ -1,5 +1,5 @@
 use super::*;
-use crate::cli::{CliAction, RunError, commands::parse_argv};
+use crate::cli::{commands::parse_argv, CliAction, RunError};
 use crate::protocol::{
     authority::CallerRole,
     commands::Command,
@@ -123,6 +123,8 @@ struct FakeClient {
     presentation_capability: bool,
     /// The daemon also serves per-binding unread streams (`inbox.binding_cursors_v1`).
     cursors_capability: bool,
+    /// Explicit Watch-mode agreement, independent of generic presentation support.
+    watch_presentation_capability: bool,
     /// Makes the capability probe fail: `Err` is an outer (transport) failure,
     /// `Ok` a definitive daemon rejection.
     probe: Option<Result<ApiError, ApiError>>,
@@ -138,6 +140,7 @@ impl FakeClient {
             watch_capability: true,
             presentation_capability: false,
             cursors_capability: false,
+            watch_presentation_capability: false,
             probe: None,
         }
     }
@@ -181,6 +184,9 @@ impl LocalClient for FakeClient {
                         }
                         if self.cursors_capability {
                             list.push(crate::protocol::capabilities::BINDING_CURSORS.to_owned());
+                        }
+                        if self.watch_presentation_capability {
+                            list.push("mod.watch_presentation_v2".to_owned());
                         }
                         list
                     } else {
@@ -855,11 +861,9 @@ fn the_attention_line_follows_the_command_prefix() {
     let WatchItem::Invitation(invitation) = &got[0].item else {
         panic!("invitation body missing")
     };
-    assert!(
-        invitation
-            .body
-            .contains("next: /opt/ht --state-dir /s accept t1")
-    );
+    assert!(invitation
+        .body
+        .contains("next: /opt/ht --state-dir /s accept t1"));
     assert_eq!(
         got[1].item,
         WatchItem::Attention(crate::protocol::watch::WatchAttention {
@@ -1037,11 +1041,15 @@ fn write_frame(stream: &mut UnixStream, value: &impl serde::Serialize) {
 }
 
 fn read_request(stream: &mut UnixStream) -> WatchWireRequest {
+    WatchWireRequest::decode(&read_raw_request(stream)).unwrap()
+}
+
+fn read_raw_request(stream: &mut UnixStream) -> Vec<u8> {
     let mut prefix = [0u8; 4];
     stream.read_exact(&mut prefix).unwrap();
     let mut body = vec![0u8; u32::from_be_bytes(prefix) as usize];
     stream.read_exact(&mut body).unwrap();
-    WatchWireRequest::decode(&body).unwrap()
+    body
 }
 
 fn reply(request: &WatchWireRequest, outcome: WatchOutcome) -> WatchReply {
@@ -1086,6 +1094,26 @@ impl Server {
         }
     }
 
+    /// Preserve the actual first-frame bytes before any typed decoder can normalize them.
+    fn start_raw(script: impl FnOnce(&mut UnixStream, Vec<u8>) + Send + 'static) -> Self {
+        let dir = temp_dir("raw-srv");
+        let socket = dir.join("s");
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let request = read_raw_request(&mut stream);
+            script(&mut stream, request);
+        });
+        Self {
+            dir,
+            socket,
+            handle: Some(handle),
+        }
+    }
+
     fn finish(mut self) {
         self.handle.take().unwrap().join().unwrap();
         std::fs::remove_dir_all(&self.dir).unwrap();
@@ -1112,6 +1140,250 @@ fn empty_inbox() -> FakeClient {
         Command::InboxBatchV2(_) => Ok(CommandResult::InboxBatchV2(page(vec![], None))),
         other => panic!("unexpected command {other:?}"),
     })
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+struct Q3HistoricalWatch {
+    claim: CallerClaim,
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+struct Q3HistoricalWatchWire {
+    version: u16,
+    request_id: String,
+    expected_instance: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    expected_boot: Option<String>,
+    watch: Q3HistoricalWatch,
+}
+
+#[test]
+fn q3_absent_watch_opt_in_preserves_historical_bytes() {
+    let historical = serde_json::to_vec(&Q3HistoricalWatch { claim: claim() }).unwrap();
+    let decoded: WireWatch = serde_json::from_slice(&historical).unwrap();
+    assert_eq!(serde_json::to_vec(&decoded).unwrap(), historical);
+    let accepted: crate::protocol::watch::WatchAccepted =
+        serde_json::from_str(r#"{"attention_version":7}"#).unwrap();
+    assert_eq!(
+        serde_json::to_vec(&accepted).unwrap(),
+        br#"{"attention_version":7}"#
+    );
+}
+
+#[test]
+fn q3_false_watch_opt_in_normalizes_to_historical_bytes() {
+    let historical = serde_json::to_vec(&Q3HistoricalWatch { claim: claim() }).unwrap();
+    let mut value: serde_json::Value = serde_json::from_slice(&historical).unwrap();
+    value["presentation_v2"] = serde_json::json!(false);
+    let decoded = serde_json::from_value::<WireWatch>(value);
+    assert!(decoded.is_ok(), "explicit false must decode: {decoded:?}");
+    assert_eq!(serde_json::to_vec(&decoded.unwrap()).unwrap(), historical);
+}
+
+#[test]
+fn q3_true_watch_opt_in_is_explicit_and_strictly_typed() {
+    let mut value = serde_json::json!({"claim": claim(), "presentation_v2": true});
+    let decoded = serde_json::from_value::<WireWatch>(value.clone());
+    assert!(decoded.is_ok(), "explicit true must decode: {decoded:?}");
+    assert_eq!(serde_json::to_value(decoded.unwrap()).unwrap(), value);
+    for invalid in [
+        serde_json::json!(null),
+        serde_json::json!(1),
+        serde_json::json!("true"),
+    ] {
+        value["presentation_v2"] = invalid;
+        assert!(serde_json::from_value::<WireWatch>(value.clone()).is_err());
+    }
+    value["presentation_v2"] = serde_json::json!(true);
+    value["unrecognized_mode"] = serde_json::json!(true);
+    assert!(serde_json::from_value::<WireWatch>(value.clone()).is_err());
+    assert!(
+        serde_json::from_value::<Q3HistoricalWatch>(
+            serde_json::json!({"claim": claim(), "presentation_v2": true})
+        )
+        .is_err(),
+        "strict old peers really reject the opt-in field"
+    );
+}
+
+fn q3_negotiated_session(
+    presentation: bool,
+    cursors: bool,
+    channel: bool,
+) -> (Vec<u8>, Vec<Command>) {
+    let captured = Arc::new(Mutex::new(None));
+    let capture = captured.clone();
+    let lease = "0123456789abcdef0123456789abcdef";
+    let server = Server::start_raw(move |stream, bytes| {
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let request = Q3HistoricalWatchWire {
+            version: PROTOCOL_VERSION,
+            request_id: value["request_id"].as_str().unwrap().into(),
+            expected_instance: value["expected_instance"].as_str().unwrap().into(),
+            expected_boot: None,
+            watch: Q3HistoricalWatch { claim: claim() },
+        };
+        *capture.lock().unwrap() = Some(bytes);
+        // An unsolicited valid lease must not override a missing capability leg.
+        write_frame(
+            stream,
+            &WatchReply {
+                version: request.version,
+                request_id: request.request_id,
+                instance: request.expected_instance,
+                daemon_boot: uuid::Uuid::from_u128(3).to_string(),
+                outcome: WatchOutcome::Accepted(crate::protocol::watch::WatchAccepted {
+                    presentation_lease: Some(lease.into()),
+                    attention_version: 7,
+                }),
+            },
+        );
+    });
+    let mut client = FakeClient::new(|command| match command {
+        Command::InboxBatchV2(_) => Ok(CommandResult::InboxBatchV2(page(vec![], None))),
+        Command::DeliveryPullV2(_) => Ok(CommandResult::DeliveryPulledV2(
+            crate::protocol::delivery::DeliveryPullReplyV2::Unchanged {
+                attention_version: 7,
+            },
+        )),
+        other => panic!("unexpected negotiation command {other:?}"),
+    });
+    client.presentation_capability = presentation;
+    client.cursors_capability = cursors;
+    client.watch_presentation_capability = channel;
+    let clock = clock();
+    let mut out = Vec::new();
+    let result = run_session(session(&client, &clock, &server.socket), &mut out, || true);
+    server.finish();
+    assert_eq!(result, 0);
+    assert!(
+        lines(&out)
+            .iter()
+            .all(|line| matches!(line.item, WatchItem::Status(_))),
+        "a drain signal or capability must not manufacture model content"
+    );
+    let bytes = captured.lock().unwrap().take().unwrap();
+    (bytes, client.calls())
+}
+
+#[test]
+fn q3_missing_watch_mode_capability_keeps_old_wire_and_consumer() {
+    let (bytes, calls) = q3_negotiated_session(true, true, false);
+    let historical: Q3HistoricalWatchWire = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(serde_json::to_vec(&historical).unwrap(), bytes);
+    assert!(
+        matches!(calls.as_slice(), [Command::InboxBatchV2(_)]),
+        "{calls:?}"
+    );
+}
+
+#[test]
+fn q3_missing_generic_presentation_capability_keeps_old_wire_and_consumer() {
+    let (bytes, calls) = q3_negotiated_session(false, true, true);
+    let historical: Q3HistoricalWatchWire = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(serde_json::to_vec(&historical).unwrap(), bytes);
+    assert!(
+        matches!(calls.as_slice(), [Command::InboxBatchV2(_)]),
+        "{calls:?}"
+    );
+}
+
+#[test]
+fn q3_missing_binding_cursors_capability_keeps_old_wire_and_consumer() {
+    let (bytes, calls) = q3_negotiated_session(true, false, true);
+    let historical: Q3HistoricalWatchWire = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(serde_json::to_vec(&historical).unwrap(), bytes);
+    assert!(
+        matches!(calls.as_slice(), [Command::InboxBatchV2(_)]),
+        "{calls:?}"
+    );
+    let Command::InboxBatchV2(query) = &calls[0] else {
+        unreachable!()
+    };
+    assert!(
+        query.claim.is_none(),
+        "historical seat stream remains available without cursors"
+    );
+}
+
+#[test]
+fn q3_all_watch_mode_capabilities_send_true_and_use_the_accepted_lease() {
+    let (bytes, calls) = q3_negotiated_session(true, true, true);
+    let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(value["watch"]["presentation_v2"], true);
+    assert!(serde_json::from_slice::<Q3HistoricalWatchWire>(&bytes).is_err());
+    assert!(
+        matches!(calls.as_slice(), [Command::DeliveryPullV2(pull)]
+        if pull.presentation_lease.as_deref() == Some("0123456789abcdef0123456789abcdef")),
+        "{calls:?}"
+    );
+}
+
+#[test]
+fn q3_watch_discovery_failure_never_opens_a_registration_socket() {
+    let dir = temp_dir("probe-failure");
+    let socket = dir.join("s");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    for probe in [
+        Err(ApiError::host_unavailable("lost")),
+        Ok(ApiError::store_busy("busy")),
+    ] {
+        let mut client = empty_inbox();
+        client.presentation_capability = true;
+        client.cursors_capability = true;
+        client.watch_presentation_capability = true;
+        client.probe = Some(probe);
+        let clock = clock();
+        let mut out = Vec::new();
+        assert_eq!(
+            run_session(session(&client, &clock, &socket), &mut out, || true),
+            1
+        );
+        assert_eq!(
+            status_of(&lines(&out)[0]).reason,
+            Some(WatchStatusReason::DaemonUnavailable)
+        );
+        assert!(client.calls().is_empty());
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            io::ErrorKind::WouldBlock
+        );
+    }
+    drop(listener);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn q3_missing_mod_watch_capability_never_opens_a_registration_socket() {
+    let dir = temp_dir("probe-unsupported");
+    let socket = dir.join("s");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let mut client = empty_inbox();
+    client.watch_capability = false;
+    client.presentation_capability = true;
+    client.cursors_capability = true;
+    client.watch_presentation_capability = true;
+    let clock = clock();
+    let mut out = Vec::new();
+    assert_eq!(
+        run_session(session(&client, &clock, &socket), &mut out, || true),
+        3
+    );
+    assert_eq!(
+        status_of(&lines(&out)[0]).reason,
+        Some(WatchStatusReason::Unsupported)
+    );
+    assert!(client.calls().is_empty());
+    assert_eq!(
+        listener.accept().unwrap_err().kind(),
+        io::ErrorKind::WouldBlock
+    );
+    drop(listener);
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
@@ -1708,10 +1980,9 @@ fn watch_ack_over_the_batch_limit_sends_chunks_and_settles_every_id() {
     );
     let operations: HashSet<&str> = sent.iter().map(|ack| ack.operation.as_str()).collect();
     assert_eq!(operations.len(), 3, "each chunk has its own operation id");
-    assert!(
-        sent.iter()
-            .all(|ack| ack.via == ModDeliveryVia::Context && ack.claim == claim())
-    );
+    assert!(sent
+        .iter()
+        .all(|ack| ack.via == ModDeliveryVia::Context && ack.claim == claim()));
 }
 
 #[test]
@@ -1856,12 +2127,10 @@ fn watch_carries_a_passive_invitation_as_invitation_content_never_a_message() {
     let value = serde_json::to_value(&lines[0]).unwrap();
     assert_eq!(value["kind"], "invitation");
     assert_eq!(value["wakes"], false);
-    assert!(
-        value["body"]
-            .as_str()
-            .unwrap()
-            .contains("review the passive handoff")
-    );
+    assert!(value["body"]
+        .as_str()
+        .unwrap()
+        .contains("review the passive handoff"));
     assert!(value["body"].as_str().unwrap().contains("accept"));
     assert!(value.get("ack_required").is_none(), "not a message receipt");
 }

@@ -31,6 +31,909 @@ use std::sync::{
     atomic::{AtomicI64, Ordering},
 };
 
+// Q3 controls keep publication, canonical reader changes and channel input in
+// separate steps. A parked client never obtains success by unconditional Pull.
+struct GuardModStoreReads(Arc<dyn StorePort>);
+impl crate::ports::ModStoreReads for GuardModStoreReads {
+    fn mod_binding_view(
+        &self,
+        _: &SeatId,
+        _: crate::ports::ModBindingRef<'_>,
+        _: &CallBudget,
+    ) -> Result<Option<crate::ports::ModSeatView>, crate::protocol::results::ApiError> {
+        panic!("capable channel invoked the legacy aggregate view")
+    }
+    fn presentation_seat_view(
+        &self,
+        seat: &SeatId,
+        binding: crate::ports::ModBindingRef<'_>,
+        budget: &CallBudget,
+    ) -> Result<Option<crate::ports::ModSeatView>, crate::protocol::results::ApiError> {
+        self.0.presentation_seat_view(seat, binding, budget)
+    }
+    fn presentation_refresh(
+        &self,
+        seat: &SeatId,
+        binding: &BindingId,
+        generation: u64,
+        native: &str,
+        budget: &CallBudget,
+    ) -> Result<Option<crate::ports::ModPresentationRefresh>, crate::protocol::results::ApiError>
+    {
+        self.0
+            .presentation_refresh(seat, binding, generation, native, budget)
+    }
+    fn mod_stall_oldest(
+        &self,
+        seat: &SeatId,
+        at: UtcMillis,
+        limit: usize,
+        budget: &CallBudget,
+    ) -> Result<Option<UtcMillis>, crate::protocol::results::ApiError> {
+        self.0.mod_stall_oldest(seat, at, limit, budget)
+    }
+}
+
+#[derive(Default)]
+struct Q3Sink(std::sync::Mutex<Vec<crate::protocol::watch::WatchFrame>>);
+impl crate::ports::ModChannelSink for Q3Sink {
+    fn push(&self, frame: crate::protocol::watch::WatchFrame) -> bool {
+        self.0.lock().unwrap().push(frame);
+        true
+    }
+}
+
+struct Q3Channel {
+    window: OfferWindowFixture,
+    sink: Arc<Q3Sink>,
+}
+impl Q3Channel {
+    fn new() -> Self {
+        use crate::{
+            ports::ModChannels,
+            protocol::watch::{ModDeliverySetting, WatchRequest},
+            service::mod_channels::ModChannelRegistry,
+        };
+        let mut f = fixture(0);
+        let recipient = check_in(
+            &f,
+            fixture_claim(&f, "c", "pc", Harness::Claude, "q3-reader-b"),
+            "q3-reader-b-ci",
+        );
+        let sender = check_in(
+            &f,
+            fixture_claim(&f, "x", "px", fourth(), "q3-sender"),
+            "q3-sender-ci",
+        );
+        let registry = Arc::new(ModChannelRegistry::new(
+            f.clock.clone(),
+            Arc::new(GuardModStoreReads(f.store.clone())),
+            "i".into(),
+            Arc::new(|| {}),
+            ModDeliverySetting::On,
+        ));
+        f.service = DomainService::new("i".into(), f.store.clone(), f.clock.clone())
+            .with_cooperative_owner(501, Arc::new(FairWriter::new(32)))
+            .with_delivery_pull(f.state.clone())
+            .with_mod_channels(registry.clone());
+        let sink = Arc::new(Q3Sink::default());
+        let (channel, _) = f
+            .service
+            .watch_register(
+                &WatchRequest {
+                    claim: recipient.clone(),
+                },
+                sink.clone(),
+                &budget(),
+            )
+            .unwrap();
+        let lease = registry.presentation_lease(channel).unwrap();
+        let this = Self {
+            window: OfferWindowFixture {
+                f,
+                recipient,
+                sender,
+                watch: Some((registry, channel, lease)),
+            },
+            sink,
+        };
+        // Actual Accepted drain and bounded continuation precede quietness.
+        this.drain_until_quiet();
+        this.registry().pass(now_utc(&this.window.f)).unwrap();
+        this.take_frames();
+        this.registry().pass(now_utc(&this.window.f)).unwrap();
+        assert!(this.take_frames().is_empty());
+        this
+    }
+    fn registry(&self) -> &crate::service::mod_channels::ModChannelRegistry {
+        &self.window.watch.as_ref().unwrap().0
+    }
+    fn take_frames(&self) -> Vec<crate::protocol::watch::WatchFrame> {
+        std::mem::take(&mut *self.sink.0.lock().unwrap())
+    }
+    fn drain_until_quiet(&self) {
+        self.drain_continuation(self.window.pull());
+    }
+    fn drain_continuation(
+        &self,
+        mut reply: crate::protocol::delivery::DeliveryPullReplyV2,
+    ) -> std::collections::BTreeSet<MessageId> {
+        use crate::protocol::delivery::DeliveryPullReplyV2;
+        let mut shown = std::collections::BTreeSet::new();
+        for _ in 0..256 {
+            match reply {
+                DeliveryPullReplyV2::Unchanged { .. } => return shown,
+                DeliveryPullReplyV2::Page(page) => {
+                    for id in page.offered.iter().chain(&page.truncated) {
+                        assert!(
+                            shown.insert(id.clone()),
+                            "fixed-clock continuation cannot reoffer {id:?}"
+                        );
+                    }
+                    if !page.more {
+                        return shown;
+                    }
+                    reply = self.window.pull();
+                }
+                other => panic!("admitted continuation refused: {other:?}"),
+            }
+        }
+        panic!("existing bounded continuation did not quiet")
+    }
+    fn sibling(&self) -> CallerClaim {
+        let mut claim = fixture_claim(&self.window.f, "c", "pc", Harness::Claude, "q3-reader-a");
+        claim.liveness.as_mut().unwrap().pid = 4242;
+        let claim = check_in(&self.window.f, fresh_execution(claim, 9), "q3-reader-a-ci");
+        assert_ne!(
+            binding_for_claim(&self.window.f, &claim),
+            binding_for_claim(&self.window.f, &self.window.recipient)
+        );
+        assert_eq!(self.window.f.db.query_row(
+            "SELECT count(*) FROM occupant_bindings WHERE seat_id='c' AND ended_at IS NULL AND liveness='connected'",
+            [], |r| r.get::<_, i64>(0),
+        ).unwrap(), 2);
+        claim
+    }
+    fn native_version(&self) -> i64 {
+        self.window
+            .f
+            .db
+            .query_row(
+                "SELECT COALESCE((SELECT attention_version FROM wake_work WHERE seat_id='c'),0)",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+    fn finish_attention(&self, message: &MessageId) {
+        let job: String = self.window.f.db.query_row(
+            "SELECT id FROM work_jobs WHERE kind='send_attention' AND subject_id=(SELECT preparation_id FROM send_manifests WHERE message_id=?1)",
+            [message.as_str()], |row| row.get(0),
+        ).unwrap();
+        finish_presentation_attention_job(&self.window.f, &job);
+    }
+    fn ack_as(&self, claim: &CallerClaim, message: &MessageId, operation: &str) {
+        let result = self
+            .window
+            .f
+            .service
+            .handle(
+                Command::Ack(crate::protocol::commands::Ack {
+                    claim: claim.clone(),
+                    messages: vec![message.clone()],
+                    operation: OperationId::new(operation),
+                }),
+                peer(),
+                &budget(),
+            )
+            .unwrap();
+        assert!(
+            matches!(result, CommandResult::Acknowledged(_)),
+            "{result:?}"
+        );
+    }
+    fn frame_then_pull(&self) -> crate::protocol::delivery::DeliveryPullReplyV2 {
+        use crate::protocol::watch::WatchFrame;
+        // These are normal safety/worker passes at the unchanged clock. No
+        // notify, mark_dirty, reconnect or synthetic version drives the client.
+        let manifests: usize = self
+            .window
+            .f
+            .db
+            .query_row(
+                "SELECT count(*) FROM send_manifests WHERE instance_id='i'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        // The stable-prefix publication contract is ceil(M/100)+2 successful
+        // quanta. There are no concurrent arrivals, new threads or deadlines.
+        for _ in 0..manifests.div_ceil(100) + 2 {
+            self.registry().pass(now_utc(&self.window.f)).unwrap();
+            let frames = self.take_frames();
+            if !frames.is_empty() {
+                assert!(
+                    frames
+                        .iter()
+                        .all(|v| matches!(v, WatchFrame::Attention { .. }))
+                );
+                return self.window.pull();
+            }
+        }
+        panic!("canonical change never requested the parked channel's next Pull")
+    }
+    fn receipt(&self, message: &MessageId) -> String {
+        self.window
+            .f
+            .db
+            .query_row(
+                "SELECT state FROM receipt_state WHERE message_id=?1 AND seat_id='c'",
+                [message.as_str()],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+}
+
+// Kills Lazy-only publication observation when an ordinary recipient's shared
+// receipt settles before the materializer can create its native signal.
+#[test]
+fn presentation_q3_quiet_ordinary_sibling_ack_before_materialization_drains_passively() {
+    use crate::protocol::{
+        commands::DeliveryMode,
+        delivery::{DeliveryPullReplyV2, PresentationItemV2},
+    };
+    let q = Q3Channel::new();
+    let a = q.sibling();
+    let native = q.native_version();
+    let body = "ordinary published before sibling settlement";
+    let message = q.window.send(0, DeliveryMode::Ordinary, body);
+    assert_eq!(q.native_version(), native);
+    assert_eq!(
+        q.window
+            .f
+            .db
+            .query_row(
+                "SELECT count(*) FROM receipts WHERE message_id=?1 AND seat_id='c'",
+                [message.as_str()],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        0,
+        "the ACK race precedes physical materialization"
+    );
+    assert_eq!(reclamation_read_full_body(&q.window.f, &message), body);
+    reclamation_advance_displayed(&q.window.f, &a, std::slice::from_ref(&message), "q3-a-read");
+    let b_cursor = reclamation_cursor(&q.window.f, &q.window.recipient);
+    q.ack_as(&a, &message, "q3-a-early-ack");
+    assert_eq!(q.receipt(&message), "acked");
+    assert_eq!(
+        reclamation_cursor(&q.window.f, &q.window.recipient),
+        b_cursor
+    );
+    q.finish_attention(&message);
+    assert_eq!(
+        q.native_version(),
+        native,
+        "terminal materialization creates no pending signal"
+    );
+    let DeliveryPullReplyV2::Page(page) = q.frame_then_pull() else {
+        panic!("passive body page")
+    };
+    assert!(page.offered.contains(&message));
+    assert!(page.items.iter().any(
+        |item| matches!(item, PresentationItemV2::Message { id, lazy: false, content }
+        if id == &message && content.body == body && !content.ack_required && !content.wakes)
+    ));
+    assert!(page.emitted_controls.is_empty());
+    assert_eq!(
+        q.receipt(&message),
+        "acked",
+        "presentation cannot recreate an obligation"
+    );
+    assert_eq!(q.native_version(), native);
+    assert_eq!(
+        reclamation_cursor(&q.window.f, &q.window.recipient),
+        b_cursor
+    );
+    use crate::ports::ModChannels;
+    let (a_channel, _) = q
+        .window
+        .f
+        .service
+        .watch_register(
+            &crate::protocol::watch::WatchRequest { claim: a.clone() },
+            Arc::new(Q3Sink::default()),
+            &budget(),
+        )
+        .unwrap();
+    let CommandResult::DeliveryPulledV2(a_page) = q
+        .window
+        .f
+        .service
+        .handle(
+            Command::DeliveryPullV2(crate::protocol::delivery::DeliveryPullV2 {
+                claim: a,
+                consumer: crate::protocol::delivery::PresentationConsumer::Watch,
+                render: crate::protocol::delivery::PresentationRenderRequest::WatchJsonLinesV1,
+                presentation_lease: q.registry().presentation_lease(a_channel),
+                marker_prefix: vec![],
+            }),
+            peer(),
+            &budget(),
+        )
+        .unwrap()
+    else {
+        panic!("A's real Watch drain")
+    };
+    assert!(!matches!(a_page, DeliveryPullReplyV2::Refused { .. }));
+    assert!(
+        !matches!(a_page, DeliveryPullReplyV2::Page(ref page) if page.offered.contains(&message)),
+        "A's own completed cursor suppresses its settled body"
+    );
+    q.registry().unregister(a_channel, now_utc(&q.window.f));
+    q.drain_continuation(DeliveryPullReplyV2::Page(page));
+    q.registry().pass(now_utc(&q.window.f)).unwrap();
+    q.take_frames();
+    q.registry().pass(now_utc(&q.window.f)).unwrap();
+    assert!(
+        q.take_frames().is_empty(),
+        "fixed eligibility does not repeat a passive drain"
+    );
+}
+
+// Kills treating transport drain requests as message ACK/wake authority. Both
+// paths use actual producers and materializers; their resulting items differ.
+#[test]
+fn presentation_q3_quiet_pending_and_lazy_publications_have_distinct_authority() {
+    use crate::protocol::{
+        commands::DeliveryMode,
+        delivery::{DeliveryPullReplyV2, PresentationItemV2},
+    };
+    for lazy in [false, true] {
+        let q = Q3Channel::new();
+        let native = q.native_version();
+        let message = q.window.send(
+            0,
+            if lazy {
+                DeliveryMode::Lazy
+            } else {
+                DeliveryMode::Ordinary
+            },
+            "canonical quiet publication",
+        );
+        if !lazy {
+            q.finish_attention(&message);
+        }
+        let after_publication = q.native_version();
+        assert_eq!(after_publication > native, !lazy);
+        let DeliveryPullReplyV2::Page(page) = q.frame_then_pull() else {
+            panic!("published content page")
+        };
+        assert!(page.items.iter().any(|item| matches!(item, PresentationItemV2::Message { id, lazy: actual_lazy, content }
+            if id == &message && *actual_lazy == lazy && content.body == "canonical quiet publication"
+                && content.ack_required != lazy && !content.wakes)));
+        assert!(page.emitted_controls.is_empty());
+        assert_eq!(q.native_version(), after_publication);
+        if lazy {
+            assert_eq!(q.window.f.db.query_row(
+                "SELECT (SELECT count(*) FROM receipts WHERE message_id=?1)+(SELECT count(*) FROM receipt_state WHERE message_id=?1)",
+                [message.as_str()], |row| row.get::<_, i64>(0),
+            ).unwrap(), 0);
+            assert_eq!(
+                q.window
+                    .f
+                    .db
+                    .query_row(
+                        "SELECT state FROM lazy_recipients WHERE message_id=?1 AND seat_id='c'",
+                        [message.as_str()],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .unwrap(),
+                "pending",
+                "the drain hint cannot complete display"
+            );
+        } else {
+            assert_eq!(q.receipt(&message), "pending");
+        }
+    }
+}
+
+fn assert_q3_parked_reader_progress(read_first: bool) {
+    use crate::protocol::{commands::DeliveryMode, delivery::DeliveryPullReplyV2};
+    let q = Q3Channel::new();
+    let sent = (0..257)
+        .map(|n| q.window.send(n, DeliveryMode::Ordinary, "real parked body"))
+        .collect::<Vec<_>>();
+    q.finish_attention(&sent[0]);
+    let initial = q.frame_then_pull();
+    assert_eq!(
+        q.drain_continuation(initial),
+        sent[..256].iter().cloned().collect()
+    );
+    let stamps = q.window.offers();
+    assert_eq!(stamps.len(), 256);
+    assert!(!stamps.contains_key(&sent[256]));
+    q.registry().pass(now_utc(&q.window.f)).unwrap();
+    q.take_frames();
+    q.registry().pass(now_utc(&q.window.f)).unwrap();
+    assert!(q.take_frames().is_empty());
+    let parked = capacity_normal_state(&q.window);
+    let cursor = reclamation_cursor(&q.window.f, &q.window.recipient);
+    let native = q.native_version();
+    let read = || {
+        assert_eq!(
+            reclamation_read_full_body(&q.window.f, &sent[0]),
+            "real parked body"
+        );
+        reclamation_advance_displayed(
+            &q.window.f,
+            &q.window.recipient,
+            &sent[..1],
+            "q3-parked-read",
+        );
+    };
+    if read_first {
+        read();
+        assert!(reclamation_cursor(&q.window.f, &q.window.recipient) > cursor);
+    } else {
+        q.ack_as(&q.window.recipient, &sent[0], "q3-parked-ack");
+    }
+    // The first authority alone cannot evict unread or pending offers. Consume
+    // any legitimate first-event frame, but never poll a parked client.
+    q.registry().pass(now_utc(&q.window.f)).unwrap();
+    if !q.take_frames().is_empty() {
+        q.drain_until_quiet();
+    }
+    assert_eq!(q.window.offers(), stamps);
+    assert_eq!(capacity_normal_state(&q.window), parked);
+    if read_first {
+        q.ack_as(&q.window.recipient, &sent[0], "q3-parked-ack");
+    } else {
+        read();
+    }
+    assert_eq!(q.native_version(), native);
+    assert_eq!(q.receipt(&sent[0]), "acked");
+    let DeliveryPullReplyV2::Page(page) = q.frame_then_pull() else {
+        panic!("released capacity resumes backlog")
+    };
+    assert!(
+        page.offered.contains(&sent[256]),
+        "ID257 must arrive without new send or reconnect: {page:?}"
+    );
+    assert!(!page.offered.contains(&sent[0]));
+    let offers = q.window.offers();
+    assert!(!offers.contains_key(&sent[0]));
+    assert!(offers.contains_key(&sent[256]));
+    for id in &sent[1..256] {
+        assert_eq!(offers.get(id), stamps.get(id));
+    }
+    assert_eq!(q.receipt(&sent[256]), "pending");
+    assert_eq!(q.native_version(), native);
+}
+
+#[test]
+fn presentation_q3_parked_reader_then_ack_resumes_existing_id257() {
+    assert_q3_parked_reader_progress(true);
+}
+
+#[test]
+fn presentation_q3_parked_ack_then_reader_resumes_existing_id257() {
+    assert_q3_parked_reader_progress(false);
+}
+
+#[test]
+fn presentation_q3_capable_registry_uses_only_bounded_real_store_reads() {
+    let q = Q3Channel::new();
+    for _ in 0..3 {
+        q.registry().pass(now_utc(&q.window.f)).unwrap();
+    }
+    assert!(q.take_frames().is_empty());
+    assert_eq!(q.native_version(), 0);
+}
+
+// Kills a receipt-success path that never requests bounded current-owner
+// maintenance, and retirement that mistakes a sibling's ACK for B's display.
+#[test]
+fn presentation_q3_shared_ack_rechecks_read_captured_body_but_keeps_unread_sibling() {
+    use crate::protocol::{commands::DeliveryMode, delivery::DeliveryPullReplyV2};
+    for read_b in [true, false] {
+        let q = Q3Channel::new();
+        let a = q.sibling();
+        let body = "b".repeat(58_000);
+        let first = q
+            .window
+            .send(0, DeliveryMode::Ordinary, &"a".repeat(58_000));
+        let continued = q.window.send(1, DeliveryMode::Ordinary, &body);
+        q.finish_attention(&first);
+        let DeliveryPullReplyV2::Page(first_page) = q.frame_then_pull() else {
+            panic!("actual body capture")
+        };
+        assert!(first_page.truncated.contains(&first));
+        let partial = || {
+            q.window.f.db.query_row(
+            "SELECT ordinary_partial FROM invitation_presentation_consumers WHERE binding_id=?1 AND consumer='watch'",
+            [binding_for_claim(&q.window.f, &q.window.recipient).as_str()],
+            |row| row.get::<_, String>(0),
+        ).unwrap()
+        };
+        let captured: std::collections::HashMap<String, String> =
+            serde_json::from_str(&partial()).unwrap();
+        assert!(
+            captured
+                .get(continued.as_str())
+                .is_some_and(|v| !v.is_empty() && v.len() < WATCH_BODY_LIMIT_BYTES),
+            "source-created current body must actually be captured: {captured:?}"
+        );
+        assert!(!q.window.offers().contains_key(&continued));
+        // Observe publication before the receipt event, so it cannot substitute
+        // for the later shared-settlement recheck.
+        q.registry().pass(now_utc(&q.window.f)).unwrap();
+        q.take_frames();
+        let native = q.native_version();
+        let before = partial();
+        if read_b {
+            assert_eq!(
+                reclamation_read_full_body(&q.window.f, &first),
+                "a".repeat(58_000)
+            );
+            assert_eq!(reclamation_read_full_body(&q.window.f, &continued), body);
+            reclamation_advance_displayed(
+                &q.window.f,
+                &q.window.recipient,
+                &[first.clone(), continued.clone()],
+                "q3-captured-b-read",
+            );
+            let sequence: i64 = q
+                .window
+                .f
+                .db
+                .query_row(
+                    "SELECT sequence FROM messages WHERE id=?1",
+                    [continued.as_str()],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(reclamation_cursor(&q.window.f, &q.window.recipient) >= sequence);
+        }
+        assert_eq!(
+            partial(),
+            before,
+            "own body display cannot discard the still-Pending capture"
+        );
+        assert_eq!(q.window.f.db.query_row(
+            "SELECT COALESCE((SELECT state FROM receipt_state WHERE message_id=?1 AND seat_id='c'),'pending')",
+            [continued.as_str()], |row| row.get::<_, String>(0),
+        ).unwrap(), "pending");
+        q.ack_as(&a, &continued, "q3-captured-a-ack");
+        assert_eq!(
+            q.native_version(),
+            native,
+            "shared settlement needs no new native version"
+        );
+        let reply = q.frame_then_pull();
+        assert!(!matches!(reply, DeliveryPullReplyV2::Refused { .. }));
+        let remaining: std::collections::HashMap<String, String> =
+            serde_json::from_str(&partial()).unwrap();
+        if read_b {
+            assert!(
+                !remaining.contains_key(continued.as_str()),
+                "terminal plus B's completed cursor retires the exact capture"
+            );
+            assert!(!q.window.offers().contains_key(&continued));
+            let work = q
+                .window
+                .f
+                .service
+                .presentation
+                .last_work
+                .lock()
+                .unwrap()
+                .unwrap();
+            assert!(
+                work.ordinary_continuation_key_probes > 0
+                    && work.ordinary_continuation_key_probes <= 15
+            );
+        } else {
+            assert!(
+                matches!(reply, DeliveryPullReplyV2::Page(ref page) if page.truncated.contains(&continued))
+                    || remaining.contains_key(continued.as_str()),
+                "unread B must retain or receive its passive body: {reply:?}"
+            );
+            assert!(
+                reclamation_cursor(&q.window.f, &q.window.recipient)
+                    < q.window
+                        .f
+                        .db
+                        .query_row::<i64, _, _>(
+                            "SELECT sequence FROM messages WHERE id=?1",
+                            [continued.as_str()],
+                            |row| row.get(0)
+                        )
+                        .unwrap()
+            );
+        }
+        assert_eq!(q.receipt(&continued), "acked");
+        assert_eq!(q.native_version(), native);
+    }
+}
+
+fn q3_consumer_snapshot(
+    f: &Fixture,
+    claim: &CallerClaim,
+) -> Vec<(String, Vec<rusqlite::types::Value>)> {
+    let mut query =
+        f.db.prepare(
+            "SELECT * FROM invitation_presentation_consumers WHERE binding_id=?1 ORDER BY consumer",
+        )
+        .unwrap();
+    query
+        .query_map([binding_for_claim(f, claim).as_str()], |row| {
+            Ok((
+                row.get::<_, String>("consumer")?,
+                (0..row.as_ref().column_count())
+                    .map(|column| row.get::<_, rusqlite::types::Value>(column))
+                    .collect::<rusqlite::Result<Vec<_>>>()?,
+            ))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap()
+}
+
+fn q3_preserved_reader_state(f: &Fixture, claim: &CallerClaim) -> Vec<Vec<rusqlite::types::Value>> {
+    let mut query =
+        f.db.prepare(
+            "SELECT * FROM invitation_presentation_consumers WHERE binding_id=?1 ORDER BY consumer",
+        )
+        .unwrap();
+    let preserved = query
+        .column_names()
+        .iter()
+        .enumerate()
+        .filter_map(|(index, name)| {
+            (!matches!(*name, "ordinary_passive_generation" | "mod_version")).then_some(index)
+        })
+        .collect::<Vec<_>>();
+    query
+        .query_map([binding_for_claim(f, claim).as_str()], |row| {
+            preserved
+                .iter()
+                .map(|column| row.get::<_, rusqlite::types::Value>(*column))
+                .collect::<rusqlite::Result<Vec<_>>>()
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap()
+}
+
+fn q3_reader_fixture(consumers: usize) -> (Fixture, CallerClaim, CallerClaim, MessageId) {
+    let f = fixture(0);
+    let a = pull_seat(&f);
+    let b = second_binding(&f);
+    let sender = check_in(
+        &f,
+        fixture_claim(&f, "x", "px", fourth(), "q3-reader-sender"),
+        "q3-reader-sender-ci",
+    );
+    for claim in [&a, &b] {
+        if consumers > 0 {
+            let reply = presentation_test_pull(&f, claim);
+            assert!(!matches!(
+                reply,
+                crate::protocol::delivery::DeliveryPullReplyV2::Refused { .. }
+            ));
+        }
+        if consumers > 1 {
+            f.store
+                .presentation_refresh(
+                    &claim.seat,
+                    &binding_for_claim(&f, claim),
+                    claim.binding_generation,
+                    claim.native_session.as_str(),
+                    &budget(),
+                )
+                .unwrap()
+                .unwrap();
+        }
+    }
+    let CommandResult::MessageSent(message) = f
+        .service
+        .handle(
+            Command::SendMessage(crate::protocol::commands::SendMessage {
+                delivery_mode: crate::protocol::commands::DeliveryMode::Ordinary,
+                user_intent: None,
+                thread: ThreadId::new("t"),
+                body: "reader invalidation canonical body".into(),
+                direct_recipient: None,
+                invited_recipients: vec![],
+                deadline_millis: None,
+                operation: OperationId::new("q3-reader-send"),
+                claim: sender,
+                relays_user: false,
+            }),
+            peer(),
+            &budget(),
+        )
+        .unwrap()
+    else {
+        panic!("canonical reader fixture send")
+    };
+    assert_eq!(
+        reclamation_read_full_body(&f, &message),
+        "reader invalidation canonical body"
+    );
+    (f, a, b, message)
+}
+
+// Kills seat-wide invalidation, per-message bumps, skipped refresh-only rows,
+// stale-header promotion, and repeat operations inventing a new private signal.
+#[test]
+fn presentation_q3_reader_change_is_binding_local_coalesced_and_noop_stable() {
+    for consumers in 0..=2 {
+        let (f, a, b, message) = q3_reader_fixture(consumers);
+        let a_binding = binding_for_claim(&f, &a);
+        let b_before = q3_consumer_snapshot(&f, &b);
+        let cursor_b = reclamation_cursor(&f, &b);
+        let preserved = q3_preserved_reader_state(&f, &a);
+        let offers = f
+            .state
+            .lock()
+            .get(&a_binding)
+            .map(|entry| entry.offers.clone());
+        let mut counters = f.db.prepare("SELECT consumer,ordinary_passive_generation,mod_version FROM invitation_presentation_consumers WHERE binding_id=?1 ORDER BY consumer").unwrap();
+        let before = counters
+            .query_map([a_binding.as_str()], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        drop(counters);
+        let native = wake_attention(&f);
+        let authority = || {
+            f.db.query_row(
+            "SELECT json_array((SELECT count(*) FROM receipt_state),(SELECT count(*) FROM receipts),(SELECT count(*) FROM invitations WHERE state='accepted'),(SELECT count(*) FROM lazy_recipients WHERE state='displayed'))",
+            [], |row| row.get::<_, String>(0),
+        ).unwrap()
+        };
+        let authority_before = authority();
+        reclamation_advance_displayed(&f, &a, std::slice::from_ref(&message), "q3-reader-change");
+        assert!(reclamation_cursor(&f, &a) > cursor_b);
+        assert_eq!(reclamation_cursor(&f, &b), cursor_b);
+        assert_eq!(q3_consumer_snapshot(&f, &b), b_before);
+        assert_eq!(
+            q3_preserved_reader_state(&f, &a),
+            preserved,
+            "reader invalidation preserves every token, captured tuple, carry and partial byte"
+        );
+        assert_eq!(
+            f.state
+                .lock()
+                .get(&a_binding)
+                .map(|entry| entry.offers.clone()),
+            offers
+        );
+        for (consumer, passive, version) in before {
+            assert_eq!(f.db.query_row(
+                "SELECT ordinary_passive_generation,mod_version FROM invitation_presentation_consumers WHERE binding_id=?1 AND consumer=?2",
+                params![a_binding.as_str(), consumer], |row| Ok((row.get::<_, i64>(0)?,row.get::<_, i64>(1)?)),
+            ).unwrap(), (passive+1, version+1), "one coalesced change per existing current consumer");
+        }
+        let after = q3_consumer_snapshot(&f, &a);
+        reclamation_advance_displayed(&f, &a, std::slice::from_ref(&message), "q3-reader-change");
+        assert_eq!(
+            q3_consumer_snapshot(&f, &a),
+            after,
+            "retained replay changes nothing"
+        );
+        reclamation_advance_displayed(&f, &a, std::slice::from_ref(&message), "q3-reader-noop");
+        assert_eq!(
+            q3_consumer_snapshot(&f, &a),
+            after,
+            "fresh no-op creates no signal"
+        );
+        assert_eq!(wake_attention(&f), native);
+        assert_eq!(
+            authority(),
+            authority_before,
+            "reader signals grant no ACK, acceptance or Lazy completion authority"
+        );
+    }
+}
+
+// Kills invalidation that repairs old scope headers, ignores a current
+// refresh-only owner, or treats a foreign instance as this binding's state.
+#[test]
+fn presentation_q3_reader_change_respects_current_primary_or_refresh_scope() {
+    for scope in ["primary", "refresh_only", "both_stale", "foreign_instance"] {
+        let (f, a, b, message) = q3_reader_fixture(2);
+        let binding = binding_for_claim(&f, &a);
+        match scope {
+            "primary" => {
+                f.db.execute(
+                "UPDATE invitation_presentation_consumers SET mod_generation=mod_generation+1 WHERE binding_id=?1 AND consumer='watch'",
+                [binding.as_str()],
+            ).unwrap();
+            }
+            "refresh_only" => {
+                f.db.execute(
+                "UPDATE invitation_presentation_consumers SET generation=generation+1 WHERE binding_id=?1 AND consumer='watch'",
+                [binding.as_str()],
+            ).unwrap();
+            }
+            "both_stale" => {
+                f.db.execute(
+                "UPDATE invitation_presentation_consumers SET generation=generation+1,mod_generation=mod_generation+1 WHERE binding_id=?1 AND consumer='watch'",
+                [binding.as_str()],
+            ).unwrap();
+            }
+            "foreign_instance" => {
+                f.db.execute(
+                "UPDATE invitation_presentation_consumers SET instance_id='foreign-instance' WHERE binding_id=?1 AND consumer='watch'",
+                [binding.as_str()],
+            ).unwrap();
+            }
+            _ => unreachable!(),
+        }
+        let counter = || {
+            f.db.query_row(
+            "SELECT ordinary_passive_generation,mod_version FROM invitation_presentation_consumers WHERE binding_id=?1 AND consumer='watch'",
+            [binding.as_str()], |row| Ok((row.get::<_, i64>(0)?,row.get::<_, i64>(1)?)),
+        ).unwrap()
+        };
+        let before = counter();
+        let preserved = q3_preserved_reader_state(&f, &a);
+        let sibling = q3_consumer_snapshot(&f, &b);
+        reclamation_advance_displayed(&f, &a, std::slice::from_ref(&message), "q3-scoped-reader");
+        let delta = i64::from(matches!(scope, "primary" | "refresh_only"));
+        assert_eq!(counter(), (before.0 + delta, before.1 + delta), "{scope}");
+        assert_eq!(q3_preserved_reader_state(&f, &a), preserved);
+        assert_eq!(q3_consumer_snapshot(&f, &b), sibling);
+    }
+}
+
+// Kills private checked failures committing the canonical cursor first, and a
+// later SQL failure retaining an earlier consumer's tentative update.
+#[test]
+fn presentation_q3_reader_change_failure_rolls_back_cursor_and_private_state() {
+    for failure in ["ordinary_passive_generation", "mod_version", "later_write"] {
+        let (f, a, b, message) = q3_reader_fixture(2);
+        let binding = binding_for_claim(&f, &a);
+        if failure == "later_write" {
+            f.db.execute_batch("CREATE TRIGGER q3_late_reader_failure BEFORE UPDATE OF mod_version ON invitation_presentation_consumers WHEN NEW.consumer='watch' BEGIN SELECT RAISE(ABORT,'q3 late reader failure'); END;").unwrap();
+        } else {
+            f.db.execute(&format!("UPDATE invitation_presentation_consumers SET {failure}=?1 WHERE binding_id=?2 AND consumer='watch'"),
+                params![i64::MAX, binding.as_str()]).unwrap();
+        }
+        let before = q3_consumer_snapshot(&f, &a);
+        let sibling = q3_consumer_snapshot(&f, &b);
+        let cursor = reclamation_cursor(&f, &a);
+        let native = wake_attention(&f);
+        let result = f.service.handle(
+            Command::AdvanceCursors(crate::protocol::commands::AdvanceCursors {
+                claim: a.clone(),
+                operation: OperationId::new("q3-reader-rollback"),
+                displayed: vec![message],
+            }),
+            peer(),
+            &budget(),
+        );
+        assert!(
+            result.is_err(),
+            "applicable checked failure must abort: {failure}: {result:?}"
+        );
+        assert_eq!(reclamation_cursor(&f, &a), cursor);
+        assert_eq!(q3_consumer_snapshot(&f, &a), before);
+        assert_eq!(q3_consumer_snapshot(&f, &b), sibling);
+        assert_eq!(wake_attention(&f), native);
+    }
+}
+
 struct TestClock(AtomicI64);
 impl Clock for TestClock {
     fn utc_now(&self) -> UtcMillis {

@@ -1905,6 +1905,62 @@ mod activation {
         let failed_hook = elected.run("PreInvocation", true);
         let failed = observer.take();
         let pending = actual_page(&failed, &failed_hook, &elected.adapter_state());
+        // Diagnostic only: snapshot the first allocated Notice (this failure
+        // has one) at both boundaries, without changing replay eligibility.
+        // Fixed columns and exact keys; no bodies or unbounded row lists.
+        let notice = pending.items.iter().find_map(|item| match item {
+            PresentationItemV2::Notice {
+                warning, thread, ..
+            } => Some((warning, thread)),
+            _ => None,
+        });
+        let notice_snapshot = || -> Value {
+            let Some((warning, thread)) = notice else {
+                return Value::Null;
+            };
+            let raw: String = elected.fx.db().query_row(
+                r#"WITH own AS (
+                    SELECT * FROM occupant_bindings WHERE seat_id=?1 AND harness=?2
+                    AND native_session=?3 AND agent_id='' AND ended_at IS NULL
+                ) SELECT json_object(
+                    'binding',(SELECT json_object('id',binding_id,'generation',generation,
+                        'execution',execution_id,'liveness',liveness,'reason',disconnect_reason,
+                        'pid',liveness_pid,'start',liveness_start) FROM own),
+                    'physical',(SELECT json_object('kind',kind,'thread',thread_id,
+                        'instance',instance_id,'decision',decision_seq,'offset',event_offset)
+                        FROM messages WHERE id=?4),
+                    'logical',(SELECT json_object('ordinal',w.ordinal,'preparation',w.preparation_id,
+                        'offset',w.warning_offset,'affected',w.affected_seat_id,
+                        'episode',w.unavailability_episode,'thread',sm.thread_id,
+                        'instance',sm.instance_id,'source',sm.message_id,'decision',sm.decision_seq,
+                        'base_sequence',sm.base_sequence,'warning_count',sm.warning_count,
+                        'interval_high',sm.interval_high_water)
+                        FROM prepared_unavailable_warnings w JOIN send_manifests sm
+                        ON sm.preparation_id=w.preparation_id WHERE w.warning_id=?4),
+                    'recipient',(SELECT json_object('ordinal',ordinal,'generation',generation)
+                        FROM warning_recipients WHERE warning_id=?4 AND seat_id=?1),
+                    'digest',(SELECT json_object('ordinal',ordinal,'thread',thread_id,
+                        'event_seq',event_seq,'event_offset',event_offset)
+                        FROM digest_programmatic_warnings WHERE warning_id=?4 AND seat_id=?1),
+                    'frontier',(SELECT offered_ordinal FROM digest_notice_offer
+                        WHERE binding_id=(SELECT binding_id FROM own)),
+                    'outbox',(SELECT json_object('generation',generation,'execution',execution,
+                        'token',outbox_token,'retired_mask',outbox_retired_mask,
+                        'confirmed_mask',outbox_confirmed_mask,'last_token',last_token,
+                        'last_confirmed_mask',last_confirmed_mask,'codec',outbox_codec_key,
+                        'selection',outbox_selection)
+                        FROM invitation_presentation_consumers
+                        WHERE binding_id=(SELECT binding_id FROM own) AND consumer='hook')
+                )"#,
+                rusqlite::params![elected.recipient.seat.as_str(), elected.recipient.harness.as_str(),
+                    elected.recipient.native_session.as_str(), warning.as_str()],
+                |row| row.get(0),
+            ).unwrap();
+            json!({"notice":warning,"expected_thread":thread,"initial_claim":elected.recipient,
+                "allocated_token":pending.presentation_token,"allocated_controls":pending.emitted_controls,
+                "canonical":serde_json::from_str::<Value>(&raw).unwrap()})
+        };
+        let notice_before_retry = notice_snapshot();
         assert_eq!(
             elected.conversation_bytes(),
             before,
@@ -1934,8 +1990,15 @@ mod activation {
             .cloned()
             .collect();
         assert_eq!(
-            page.items, nonordinary,
-            "the exact durable invitation/control descriptors physically replay"
+            page.items,
+            nonordinary,
+            "the exact durable invitation/control descriptors physically replay; notice_before={}; notice_after={}; retry_checkins={}",
+            notice_before_retry,
+            notice_snapshot(),
+            replay
+                .iter()
+                .filter(|exchange| matches!(exchange.command, Command::CheckIn(_)))
+                .count()
         );
         assert_eq!(page.emitted_controls, pending.emitted_controls);
         assert_eq!(page.output_bytes as usize, hook.stdout.len());
