@@ -28,9 +28,12 @@ user config:
   inside the run is recorded (no contents) because it can rotate the source profile's refresh token. The agent
   working directory is pre-trusted in that scratch config.toml only.
 Agents work in the repository checkout (already trusted by Claude, so no folder-trust dialog is answered).
-The senders are two owned coordinator shell panes recorded as person seats of the local account (`human me init
---operator`, operator provenance), not models and never an agent identity, so the run works under any agent or a
-plain shell; the second one is a fresh first contact for every recipient (busy-invite/1:1).
+The senders are two owned coordinator shell panes recorded as person seats (`human me init`, which keeps its agent
+guard: the driver strips every registered agent marker from their commands and the panes run only a shell), not
+models and never an agent identity, so the run works under any agent or from a plain shell; the second one is a
+fresh first contact for every recipient (busy-invite/1:1). Their messages are person-authored: they carry the
+`[human]` frame marker and are priority, so they are never held by a recipient's catch-up hold; agent-to-agent
+delivery into a seat that is catching up is not covered by this gate.
 
 Exit codes: 0 every expected case passed and every owned resource was cleaned up; 1 a case failed or was missing, or
 cleanup left an owned workspace or daemon alive; 2 environment refusal. `--self-test` checks the driver's own
@@ -74,10 +77,11 @@ WAKE_WINDOW_S = 6.0     # a woken agent leaves idle well inside this (observed 0
 SPACING_S = 35.0        # the per-seat wake retry guard is 30 s after each reservation (src/notification/policy.rs)
 TURN_TIMEOUT_MS = 240_000
 IDLE = ("idle", "done")
-# Session variables and agent markers of whatever runs this script: never inherited by the commands it runs.
+# Session variables and agent env markers (every `AgentEnvMarker` the built-in adapters declare; the self-test
+# checks this list against src/harness) of whatever runs this script: never inherited by the commands it runs.
 CALLER_SESSION_ENV = ("CLAUDE_CODE_SESSION_ID", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CODEX_SESSION_ID",
                       "CODEX_THREAD_ID", "CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED", "HERMES_SESSION_ID",
-                      "ANTIGRAVITY_CONVERSATION_ID")
+                      "ANTIGRAVITY_CONVERSATION_ID", "ANTIGRAVITY_AGENT")
 DIALOG = re.compile(r"Trust this folder\?|trust (the files in )?this folder|Do you trust|Allow .* to run|"
                     r"Do you want to proceed\?|Would you like to run", re.I)
 
@@ -125,7 +129,7 @@ class Run:
         self.layout_attempted = False
         self.process_grace_s = 10.0
         self.stop_deadline_s = 20.0
-        self.coords = {}  # "main" / "fresh" -> {"pane", "seat", "session"}
+        self.coords = {}  # "main" / "fresh" -> {"pane", "seat"}
         self.auth_digest = None
         self.auth_refreshed = None
         self.cleanup_report = None
@@ -285,12 +289,12 @@ class Run:
         data = self.herdr("workspace", "create", "--label", self.workspace_label(), "--cwd", self.cwd, "--no-focus")
         self.workspace = data["result"]["workspace"]["workspace_id"]
         self.herdr("tab", "rename", data["result"]["tab"]["tab_id"], "coordinator")
-        # The senders are person seats of the local account (`human me init --operator`, operator provenance) in
-        # owned shell panes: test traffic is never attributed to an agent, whatever process runs this script.
+        # The senders are person seats (`human me init`, agent guard kept) in owned shell panes: test traffic is
+        # never attributed to an agent, whatever process runs this script.
         # "fresh" never contacts a recipient before busy-invite/1:1, so that case is a real first contact.
         for role, pane in (("main", data["result"]["root_pane"]["pane_id"]), ("fresh", None)):
             pane = pane or self.tab("coordinator-fresh")
-            out = self.ht("me", "init", "--operator", pane=pane, human=True, tag=f"coordinator:{role}:me-init")
+            out = self.ht("me", "init", pane=pane, human=True, tag=f"coordinator:{role}:me-init")
             seat = first_id(out, "s")
             if not seat:
                 raise RuntimeError(f"me init {pane}: no seat id in {out[:200]}")

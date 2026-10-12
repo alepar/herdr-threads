@@ -506,8 +506,48 @@ class CoordinatorCalls(TempDir):
         self.assertFalse(any(a.startswith("--cooperative") for a in argv))
         self.assertEqual(env["HERDR_PANE_ID"], "w1:p1")
         self.assertFalse(set(W.CALLER_SESSION_ENV) & set(env), "agent identity leaked into a coordinator call")
-        for marker in ("CLAUDECODE", "CODEX_SANDBOX", "CODEX_SANDBOX_NETWORK_DISABLED", "CODEX_THREAD_ID"):
-            self.assertIn(marker, W.CALLER_SESSION_ENV)
+
+    def test_every_registered_agent_env_marker_is_stripped(self):
+        """Read from the adapters' source: a new harness marker must join CALLER_SESSION_ENV."""
+        import re
+        src = Path(W.REPO) / "src" / "harness"
+        declared = set()
+        for path in src.rglob("*.rs"):
+            text = path.read_text(encoding="utf-8", errors="replace")
+            declared |= set(re.findall(r'AgentEnvMarker\s*\{\s*name:\s*"([A-Z0-9_]+)"', text))
+        self.assertTrue({"CLAUDECODE", "CODEX_SANDBOX"} <= declared, declared)  # the scan itself works
+        self.assertEqual(sorted(declared - set(W.CALLER_SESSION_ENV)), [])
+
+    def test_layout_records_person_seats_with_the_guard_kept(self):
+        """layout(): `human me init` without --operator in each coordinator pane, no check-in or cooperative claim."""
+        calls = []
+        r = object.__new__(W.Run)
+        r.state, r.endpoint, r.bin, r.cwd, r.run_id = self.tmp / "state", "/fake/sock", "/fake/ht", "/repo", "x"
+        r.args = SimpleNamespace(harness=[])
+        r.coords, r.layout_attempted, r.workspace = {}, False, None
+        panes = iter(["w1:p2", "w1:p3"])
+        seats = iter(["sCCCCCCCC", "sDDDDDDDD"])
+
+        def run(argv, env=None, timeout=60, tag=None, cleanup=False):
+            calls.append((argv, env))
+            words = " ".join(argv)
+            if "workspace create" in words:
+                return 0, json.dumps({"result": {"workspace": {"workspace_id": "w1"}, "tab": {"tab_id": "w1:t1"},
+                                                 "root_pane": {"pane_id": "w1:p1"}}}), ""
+            if "tab create" in words:
+                return 0, json.dumps({"result": {"root_pane": {"pane_id": next(panes)}}}), ""
+            if "me init" in words:
+                return 0, json.dumps({"result": {"seat": next(seats)}}), ""
+            return 0, "{}", ""
+        r.run = run
+        r.layout()
+        ht_calls = [(a, e) for a, e in calls if a[0] == "/fake/ht"]
+        self.assertEqual([a[a.index("me"):] for a, _ in ht_calls], [["me", "init"], ["me", "init"]])
+        self.assertTrue(all(a[1] == "human" for a, _ in ht_calls))
+        self.assertEqual([e["HERDR_PANE_ID"] for _, e in ht_calls], ["w1:p1", "w1:p2"])
+        self.assertFalse(any("--operator" in a or "check-in" in a or any(x.startswith("--cooperative") for x in a)
+                             for a, _ in ht_calls))
+        self.assertEqual({k: v["seat"] for k, v in r.coords.items()}, {"main": "sCCCCCCCC", "fresh": "sDDDDDDDD"})
 
 
 def row(recipient, case, result="PASS"):
