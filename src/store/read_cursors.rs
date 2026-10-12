@@ -136,11 +136,11 @@ pub fn seed_preview(db: &Connection, seat: &SeatId, thread: &ThreadId) -> Result
 /// A seat joined `thread`: every open binding of the seat gets a cursor at the join point,
 /// keeping a higher cursor it already has. Returns the number of bindings touched.
 ///
-/// The join point is the thread head, except that messages addressed to the seat before it
-/// joined (a direct send's frozen invited target, an ACK request to an invitee) stay unread: the
-/// cursor stops just short of the first such message past the seat's furthest-read point
-/// (ht-8y9). Lazy rows stay lazy and ordinary rows keep their own receipt obligations; only
-/// their visibility after the join changes.
+/// The join point is the thread head, except that lazy messages addressed to the seat before it
+/// joined (a direct send's frozen invited target) stay unread: the cursor stops just short of the
+/// first such message past the seat's furthest-read point (ht-8y9). Ordinary messages to an
+/// invitee already reach it as pending receipts before the join, so they keep the head and are
+/// not offered a second time.
 pub fn init_for_join(tx: &Connection, seat: &SeatId, thread: &ThreadId) -> Result<usize, ApiError> {
     let join_point: i64 = tx
         .query_row(
@@ -158,22 +158,14 @@ pub fn init_for_join(tx: &Connection, seat: &SeatId, thread: &ThreadId) -> Resul
     .map_err(store_error)
 }
 
-/// `?1` seat, `?2` thread: the head, lowered to one before the first published message addressed
-/// to the seat (lazy or ordinary recipient row) past the highest cursor any binding of the seat
-/// holds there. Both recipient scans are seat-indexed.
-const JOIN_POINT_SQL: &str = "WITH floor(seq) AS (SELECT COALESCE(MAX(c.seq),0) FROM binding_cursors c \
-       JOIN occupant_bindings o ON o.binding_id=c.binding_id WHERE o.seat_id=?1 AND c.thread_id=?2), \
-     addressed(seq) AS ( \
-       SELECT m.sequence FROM lazy_recipients r INDEXED BY lazy_recipients_seat_ordinal \
+/// `?1` seat, `?2` thread: the head, lowered to one before the first published lazy message
+/// addressed to the seat past the highest cursor any binding of the seat holds there. The
+/// recipient scan is seat-indexed.
+const JOIN_POINT_SQL: &str = "SELECT MIN(COALESCE((SELECT MAX(sequence) FROM messages WHERE thread_id=?2),0), \
+       COALESCE((SELECT MIN(m.sequence)-1 FROM lazy_recipients r INDEXED BY lazy_recipients_seat_ordinal \
          JOIN messages m ON m.id=r.message_id AND m.thread_id=r.thread_id \
-         WHERE r.seat_id=?1 AND r.thread_id=?2 \
-       UNION ALL \
-       SELECT m.sequence FROM prepared_recipients pr INDEXED BY prepared_recipients_seat_thread_ordinal \
-         JOIN send_manifests sm ON sm.preparation_id=pr.preparation_id \
-         JOIN messages m ON m.id=sm.message_id \
-         WHERE pr.seat_id=?1 AND pr.thread_id=?2 AND m.kind='ordinary' AND m.delivery_mode='ordinary') \
-     SELECT MIN(COALESCE((SELECT MAX(sequence) FROM messages WHERE thread_id=?2),0), \
-       COALESCE((SELECT MIN(a.seq)-1 FROM addressed a, floor f WHERE a.seq>f.seq), 1<<62))";
+         WHERE r.seat_id=?1 AND r.thread_id=?2 AND m.sequence>COALESCE((SELECT MAX(c.seq) FROM binding_cursors c \
+           JOIN occupant_bindings o ON o.binding_id=c.binding_id WHERE o.seat_id=?1 AND c.thread_id=?2),0)), 1<<62))";
 
 /// Copy the predecessor's cursors to the successor, keeping any higher cursor the successor
 /// already has. Returns the number of cursors written.
