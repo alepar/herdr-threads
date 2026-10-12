@@ -358,7 +358,12 @@ export function createCore(io) {
   function complete(items, via) {
     const ids = items.map((i) => i.id)
     for (const it of items) {
-      S.queue = S.queue.filter((q) => it.kind === 'invitation' ? q !== it : q.id !== it.id)
+      // A successful whole append also settles an identical pending replay from a
+      // successor run. A partial output, newer context or other inflight object does not.
+      S.queue = S.queue.filter((q) => it.kind === 'invitation'
+        ? q !== it && (it.truncated || q.inflight || q.kind !== 'invitation'
+          || q.id !== it.id || q.contextVersion !== it.contextVersion)
+        : q.id !== it.id)
       if (it.kind === 'attention') {
         S.runAttention.add(it.id)
         if (it.version !== undefined && !S.rec.attentionVersions.includes(it.version)) {

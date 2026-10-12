@@ -865,10 +865,12 @@ test('delivered-but-unacked ids in $.store are re-acked, not delivered again', a
 
 test('acks are capped at 100 ids per watch ack invocation', async () => {
   const idsOf = (run: string[]) => run.slice(run.indexOf('--via') + 2)
-  // one submit delivers 150 messages; they are acked in runs of 100 and 50
-  const h = await harness({ state: IDLE }).boot()
+  // One busy-turn context completion delivers 150 messages, independently of
+  // the idle append envelope; ACKs still split into runs of 100 and 50.
+  const h = await harness({ state: busyState() }).boot()
   const ids = Array.from({ length: 150 }, (_, n) => `m${n + 1}`)
   for (const id of ids) h.line(msg(id))
+  await h.core.onToolCall({ tool: 'Bash' }, answered)
   await flush()
   const runs = h.ackRuns()
   expect(runs.map((r: string[]) => idsOf(r).length)).toEqual([100, 50])
@@ -2204,6 +2206,37 @@ test('bounded invitation replay keeps the old inflight run distinct from its liv
   expect(h.core.snapshot().queue).toEqual([])
   expect(h.ackRuns()).toEqual([])
   h.core.dispose()
+})
+
+test('bounded invitation successful old-run whole append settles only an identical pending context', async () => {
+  for (const { old, replacement, redisplay } of [
+    { old: queuedInvitation(7), replacement: queuedInvitation(7), redisplay: false },
+    { old: queuedInvitation(7), replacement: queuedInvitation(8), redisplay: true },
+    { old: queuedInvitation(7, { truncated: true, body: 'goal omitted' }), replacement: queuedInvitation(7), redisplay: true },
+  ]) {
+    const h = await harness({ state: IDLE, appendMode: 'manual' }).boot()
+    h.line(old)
+    h.exit(1)
+    await h.advance(1000)
+    await h.connect()
+    h.line(replacement)
+    h.pendingAppends[0].res({})
+    await flush()
+    if (!redisplay) {
+      expect(h.appends.length).toBe(1)
+      expect(h.core.snapshot().queue).toEqual([])
+    } else {
+      expect(h.appends.length).toBe(2)
+      expect(h.appends[1]).toContain(replacement.topic_revision === '7' ? 'goal 7' : 'goal 8')
+      h.pendingAppends[1].res({})
+      await flush()
+      expect(h.core.snapshot().queue).toEqual([])
+    }
+    expect(h.core.snapshot().rec.invitationVersions['invitation:bounded']).toBe(
+      replacement.topic_revision === '7' ? '["7","7"]' : '["8","8"]')
+    expect(h.ackRuns()).toEqual([])
+    h.core.dispose()
+  }
 })
 
 for (const { name, count, body, active } of [
