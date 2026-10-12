@@ -2086,10 +2086,10 @@ pub(crate) fn doubled_events(
 /// The warning for [`doubled_events`].
 pub(crate) fn doubled_warning(file: &Path, events: &[String]) -> String {
     format!(
-        "{} registers the herdr-threads hook more than once for {} (another setup's marked \
-         groups beside the recorded ones, e.g. left by an earlier release's setup over a copied \
-         file): each runs on every event. Remove the groups whose owner marker differs from the \
-         recorded command by hand",
+        "{} registers the herdr-threads hook more than once for {} (marked groups of more \
+         than one setup, e.g. left by an earlier release's setup over a copied file): each runs \
+         on every event. Keep one group per event (the recorded owner's, when setup recorded \
+         one) and remove the others by hand",
         file.display(),
         events.join(", ")
     )
@@ -3128,7 +3128,9 @@ pub(crate) mod legacy {
         };
         // Another setup's groups for this command that cannot be adopted: unsetup cannot remove
         // them either, so name the hand edit instead of the generic conflict advice.
+        // A symlinked file keeps its own refusal (setup never follows the link).
         if recorded.is_none()
+            && !fs::symlink_metadata(&file.path).is_ok_and(|meta| meta.file_type().is_symlink())
             && lib::holds_marked_groups(kind, &base, &argv).unwrap_or(false)
             && !matches!(lib::find_adoptable(kind, &base, &argv), Ok(Some(_)))
         {
