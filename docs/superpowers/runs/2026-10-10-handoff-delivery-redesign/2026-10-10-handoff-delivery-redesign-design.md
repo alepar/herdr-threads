@@ -91,6 +91,13 @@ Receipt semantic capability: advertise messages.send_time_receipts_v1 only when 
 
 ## Post-Implementation Notes
 
+### 2026-10-12 — Changes vs. original design
+
+The implementation retains the original Goal and all accepted refinements. Composition now preserves Main SQL1–36 byte-for-byte and places unlanded additions at prospective37–46. Direct-invitation acceptance preserves each binding’s independent opening-message stream; generic join behavior stays separate. Accepted first-discovery rendering limits and canonical full-body/fitting-recapture controls remain explicit. Main in-turn offer evidence, V2 physical confirmation, receipt ACK and invitation acceptance retain distinct meanings.
+
+Final accepted source6abdf38f passed827/827 selected cases (821focused +6mandatory recovery), with all scoped leak checks clear; incremental build5.990s and strictlint20.626s satisfy the60s budgets. Three first-sweep corrections and one allowed regression-only correction changed diagnosed test oracles, with no production/cap/deadline relaxation. Known post-cap Should-fix findings stay on the punch list. See [final acceptance](final-acceptance-evidence/README.md), [run state](run.md) and [post-cap punch list](post-cap-punch-list.md). These are isolated candidate results; Main owns landing and release qualification.
+
+
 *As this design is implemented and iterated on — bug fixes, adjustments, anything that diverged from the assumptions above — append a dated note here, whether or not a formal debugging skill was used.*
 
 
