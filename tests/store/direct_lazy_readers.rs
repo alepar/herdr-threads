@@ -2,6 +2,7 @@
 //! No cursor, membership, delivery flag or publication is seeded by these tests.
 use super::*;
 use crate::{
+    ports::LocalService,
     protocol::{
         authority::{CallerRole, LivenessFingerprint, PeerIdentity},
         commands::{

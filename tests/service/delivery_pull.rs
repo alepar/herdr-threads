@@ -14458,3 +14458,7 @@ fn presentation_owner_replay_mid_work_budget_keeps_first_capture_uninstalled() {
             .is_empty()
     );
 }
+
+// Q4 body display and captured Lazy continuation controls.
+#[path = "q4_body_controls.rs"]
+mod q4_body_controls;
