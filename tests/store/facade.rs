@@ -494,7 +494,15 @@ fn one_candidate_due_budget_retains_unvisited_admitted_phase() {
     )
     .unwrap();
     assert_eq!(first.examined_candidates, 1);
-    assert!(!matches!(first.invitations, DuePhaseProgress::Skipped));
+    // The visited phase made progress (never Skipped or Failed); the unvisited one is retained.
+    assert!(
+        matches!(
+            first.invitations,
+            DuePhaseProgress::Complete | DuePhaseProgress::More
+        ),
+        "{:?}",
+        first.invitations
+    );
     assert!(matches!(first.receipts, DuePhaseProgress::Skipped));
     assert!(first.has_more);
     let second = StorePort::due_obligations(
