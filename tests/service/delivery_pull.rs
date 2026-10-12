@@ -34,6 +34,9 @@ use std::sync::{
 #[path = "q4_accept_controls.rs"]
 mod q4_accept_controls;
 
+#[path = "normal_unrenderable_controls.rs"]
+mod normal_unrenderable_controls;
+
 // Q3 controls keep publication, canonical reader changes and channel input in
 // separate steps. A parked client never obtains success by unconditional Pull.
 struct GuardModStoreReads(Arc<dyn StorePort>);
