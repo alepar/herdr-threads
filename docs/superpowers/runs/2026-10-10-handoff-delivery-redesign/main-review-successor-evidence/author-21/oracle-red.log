@@ -1,0 +1,35 @@
+FF..F
+======================================================================
+FAIL: test_idle_matrix_preserves_group_invite_and_send_modes (wake_e2e_selftest.IdleWakeOracle.test_idle_matrix_preserves_group_invite_and_send_modes) (case='invite/1:1', wake_on='nudge')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.21/scripts/wake_e2e_selftest.py", line 612, in test_idle_matrix_preserves_group_invite_and_send_modes
+    self.assertEqual(row_["expect_wake"], not passive)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: True != False
+
+======================================================================
+FAIL: test_lazy_direct_invitation_is_passive_under_nudge (wake_e2e_selftest.IdleWakeOracle.test_lazy_direct_invitation_is_passive_under_nudge)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.21/scripts/wake_e2e_selftest.py", line 598, in test_lazy_direct_invitation_is_passive_under_nudge
+    self.assertEqual(row_["expect_wake"], False)
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: True != False
+
+======================================================================
+FAIL: test_unexpected_direct_wake_fails (wake_e2e_selftest.IdleWakeOracle.test_unexpected_direct_wake_fails)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.21/scripts/wake_e2e_selftest.py", line 624, in test_unexpected_direct_wake_fails
+    self.assertEqual(row_["result"], "FAIL")
+    ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError: 'PASS' != 'FAIL'
+- PASS
++ FAIL
+
+
+----------------------------------------------------------------------
+Ran 5 tests in 0.004s
+
+FAILED (failures=3)

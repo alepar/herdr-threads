@@ -1,0 +1,13 @@
+PASS acks are capped at 100 ids per watch ack invocation
+PASS a whole same-revision goal arriving during partial append is retained
+PASS a changed command context arriving during complete append remains queued
+PASS bounded invitation retains only inflight and latest pending context while append stalls
+PASS bounded invitation coalesces refused revisions and preserves whole same-version context
+PASS bounded invitation late old-run denial leaves current whole context pending
+PASS bounded invitation replay keeps the old inflight run distinct from its live replacement
+PASS bounded invitation successful old-run whole append settles only an identical pending context
+PASS framed append batches bound passive item count without losing messages
+PASS framed append batches bound passive UTF-8 bytes without losing messages
+PASS framed append batches bound idle item count without losing messages
+PASS framed append batches bound idle UTF-8 bytes without losing messages
+12 passed, 0 failed, 12 selected

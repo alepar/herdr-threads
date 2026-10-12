@@ -1,0 +1,7 @@
+M	CHANGELOG.md
+M	docs/agent-usage.md
+M	docs/superpowers/specs/INDEX.md
+M	integrations/claude/mod/hooks/register.js
+M	integrations/claude/mod/tests/delivery.test.ts
+M	scripts/wake-e2e.py
+M	scripts/wake_e2e_selftest.py

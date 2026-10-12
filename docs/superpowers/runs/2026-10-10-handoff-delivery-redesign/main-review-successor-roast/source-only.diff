@@ -1,0 +1,465 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index e34b9a4761b9fe7362384027f6c3709a682f4016..593f36c2eadce63ffefdaa9a2ad1e5f189357b21 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -6,7 +6,7 @@
+ 
+ - **Codex turn-start delivery.** Pending lazy messages arrive on text-only turns through the owned `UserPromptSubmit` hook. Re-run `herdr-threads setup codex` and trust the updated hook contract in Codex.
+ - **Session-aware wake suppression.** Receipts and invitations fully presented inside a binding's turn no longer cause an extra wake after that turn. Native dispatch checks the actual foreground binding, preserving sibling delivery and recovery-hint behavior. Presentation remains separate from ACK and acceptance.
+-- **Pair opening messages.** Accepting an automatic one-to-one invitation preserves pending opening messages. Joining or rejoining seeds the head frontier and retains undisplayed lazy mail beyond the seat's furthest cursor for the first top-level reader; that pre-join pending mail settles once for the seat.
++- **Pair opening messages.** Accepting the active one-to-one invitation preserves existing binding cursors and seeds missing open-binding cursors at the invitation event; a sibling's display leaves each binding's unread stream intact. Fresh bindings after acceptance still start at the seat's furthest cursor, or the head if none exists. Generic join/rejoin and nonpair acceptance seed the head frontier and retain undisplayed lazy mail beyond the seat's furthest cursor for the first top-level reader; that pre-join pending mail settles once for the seat.
+ - **Fresh-attention retries and JSON output.** New attention immediately retries a refusal-backed-off seat without resetting its failure count. `send --seat --json` returns the versioned send envelope.
+ - **Upgrade and release checks.** Additive migration 36 records in-turn presentation; upgrade the CLI and daemon together. A private live wake matrix and startup/interruption cleanup controls accompany the fixes. Successful Claude evidence and the still-outstanding Codex gate are recorded separately in the release qualification.
+ 
+diff --git a/docs/agent-usage.md b/docs/agent-usage.md
+index 1fc710af2846adbba3cba9cfb07dfcf1f8b783a0..5ec013d2fa30f8fbab2a8be1e2e384c1d3f849d5 100644
+--- a/docs/agent-usage.md
++++ b/docs/agent-usage.md
+@@ -156,7 +156,11 @@ history: #review (thr_1): 42 earlier messages, 7 from people (1 open requests),
+ history: +3 more threads (herdr-threads thread list --joined)
+ ```
+ 
+-At most 8 threads are listed, most recent activity first. A resumed or reconnected binding whose unread backlog exceeds one ordinary inbox page is fast-forwarded: its cursors jump to the thread heads and it sees `history: resumed past N messages:` followed by the same stats line per thread (counts over the skipped gap) and the thread's last message (`last: #SEQ AUTHOR: preview`). Pending ACK obligations are not skipped. Joining a thread (accept, join) starts every session of the seat at the thread head; undisplayed lazy messages addressed to the seat past every session's read position (the opening of a direct send) stay pending for the seat until the first top-level session shows them, and that settles them for every session (subagents never see them). On a rejoin a session skips joined-era mail another session of the seat already read or passed (including by a fast-forward or a subagent's read), and lazy mail every session had passed unshown is not offered again. Under a tight hook budget a history line shrinks to `history: herdr-threads summary THREAD`; run it to catch up.
++At most 8 threads are listed, most recent activity first. A resumed or reconnected binding whose unread backlog exceeds one ordinary inbox page is fast-forwarded: its cursors jump to the thread heads and it sees `history: resumed past N messages:` followed by the same stats line per thread (counts over the skipped gap) and the thread's last message (`last: #SEQ AUTHOR: preview`). Pending ACK obligations are not skipped. Under a tight hook budget a history line shrinks to `history: herdr-threads summary THREAD`; run it to catch up.
++
++Generic `join` and nonpair invitation acceptance start every open binding of the seat at the thread head. Undisplayed lazy messages addressed to the seat beyond its furthest cursor stay pending for the seat until the first top-level binding shows them; that pending mail settles once for the seat (subagents never see it). On a generic rejoin a binding skips joined-era mail another binding already read or passed (including by a fast-forward or a subagent's read), and lazy mail every binding had passed unshown is not offered again.
++
++Accepting the active invitation to a direct one-to-one thread preserves each binding's existing cursor and seeds missing open-binding cursors at the invitation's timeline event, keeping opening messages available. Acceptance is not display: each binding retains its own unread stream even when a sibling shows the message. A new binding while the invitation is pending can independently receive that episode's addressed lazy messages; a new binding after acceptance uses the normal joined-thread seeding rule (the seat's furthest cursor, or the head if none exists).
+ 
+ **Human exclusivity.** A person's seat (`human me init`) holds only the person's binding and is refused (see `me init` refusals above) while an agent binding of the seat is connected, unless `--operator`. Any agent enrollment, reconnect or plain call on a human seat ends the human binding; a later resume enrolls a fresh binding.
+ 
+diff --git a/docs/superpowers/specs/INDEX.md b/docs/superpowers/specs/INDEX.md
+index 34fdb5ca6d551cf019630530e9e66b77ca5bac10..864ca30d8d53f2e213dbffcc5c9f7a8fa7d6329b 100644
+--- a/docs/superpowers/specs/INDEX.md
++++ b/docs/superpowers/specs/INDEX.md
+@@ -81,12 +81,12 @@ Columns: date · title · relative link · one-line summary · status · tags.
+ | 2026-10-10 | Thread list search discovery | [Design](../runs/2026-10-10-thread-search-discovery/2026-10-10-thread-search-discovery-design.md) | Literal name-or-topic CLI discovery with rename-aware bounded pagination and legacy wire fields. | implemented | cli, discovery, search, names, pagination |
+ | 2026-10-10 | Invitation rejection policy and warning delivery | [Design](../runs/2026-10-10-invitation-rejection-policy/2026-10-10-invitation-rejection-policy-design.md) | Require decided bad-fit rejection and deliver attributed reasons with stable replay | implemented | invitation, warning |
+ 
+-| 2026-10-10 | Handoff delivery redesign | [Design](../runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign-design.md) | Send-time receipt deadlines, lazy optional-confirmation invitations, full durable handoff instructions and stable owned native hook entrypoints. | draft | handoff, receipts, invitation, hooks |
++| 2026-10-10 | Handoff delivery redesign | [Design](../runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign-design.md) | Send-time receipt deadlines, lazy optional-confirmation invitations, full durable handoff instructions and stable owned native hook entrypoints. | implemented | handoff, receipts, invitation, hooks |
+ 
+-| 2026-10-10 | Handoff delivery: receipts | [Design](../runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign--receipts-design.md) | Every pending ACK-required message has a send-anchored original deadline and is scanned for overdue warning without requiring recipient availability. | draft | handoff-delivery-redesign, ht-0lo.1 |
++| 2026-10-10 | Handoff delivery: receipts | [Design](../runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign--receipts-design.md) | Every pending ACK-required message has a send-anchored original deadline and is scanned for overdue warning without requiring recipient availability. | implemented | handoff-delivery-redesign, ht-0lo.1 |
+ 
+-| 2026-10-10 | Handoff delivery: invitations | [Design](../runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign--invitations-design.md) | Ordinary invitations are lazy unless confirmation was explicitly requested; timed invitations settle at acceptance and notify originator on expiry independently of registration. | draft | handoff-delivery-redesign, ht-0lo.2 |
++| 2026-10-10 | Handoff delivery: invitations | [Design](../runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign--invitations-design.md) | Ordinary invitations are lazy unless confirmation was explicitly requested; timed invitations settle at acceptance and notify originator on expiry independently of registration. | implemented | handoff-delivery-redesign, ht-0lo.2 |
+ 
+-| 2026-10-10 | Handoff delivery: hooks | [Design](../runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign--hooks-design.md) | Equivalent reinstalls preserve stable native per-event command strings while exact ownership, conservative migration and native trust boundaries remain intact. | draft | handoff-delivery-redesign, ht-0lo.4 |
++| 2026-10-10 | Handoff delivery: hooks | [Design](../runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign--hooks-design.md) | Equivalent reinstalls preserve stable native per-event command strings while exact ownership, conservative migration and native trust boundaries remain intact. | implemented | handoff-delivery-redesign, ht-0lo.4 |
+ 
+-| 2026-10-10 | Handoff delivery: handoff | [Design](../runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign--handoff-design.md) | Complete bounded instructions and explicit confirmation policy freeze once into durable handoff retry across every delivery/launch path. | draft | handoff-delivery-redesign, ht-0lo.3 |
++| 2026-10-10 | Handoff delivery: handoff | [Design](../runs/2026-10-10-handoff-delivery-redesign/2026-10-10-handoff-delivery-redesign--handoff-design.md) | Complete bounded instructions and explicit confirmation policy freeze once into durable handoff retry across every delivery/launch path. | implemented | handoff-delivery-redesign, ht-0lo.3 |
+diff --git a/integrations/claude/mod/hooks/register.js b/integrations/claude/mod/hooks/register.js
+index 1aa0b7a718e00ac389346f0052e4afa7da9872e0..f41412ff8073f0e6db74299c5960ae8899a4bb83 100644
+--- a/integrations/claude/mod/hooks/register.js
++++ b/integrations/claude/mod/hooks/register.js
+@@ -19,6 +19,9 @@ const ACK_RETRY_MS = 30000
+ const ACK_BATCH_MAX = 100 // MAX_BATCH_ITEMS in src/protocol/commands.rs
+ const CONNECTED_RESET_MS = 60000
+ const LEDGER_CAP = 2000
++// Match the delivery envelope, counting the actual framed UTF-8 text.
++const APPEND_MAX_ITEMS = 32
++const APPEND_MAX_BYTES = 64 * 1024
+ 
+ const INTENTS = new Set(['query', 'request', 'rule'])
+ const canonicalEpoch = (v) => typeof v === 'string' && /^(0|[1-9][0-9]{0,19})$/.test(v)
+@@ -60,6 +63,18 @@ export function frame(items) {
+   return `${HEADER}\n\n${blocks.join('\n\n')}`
+ }
+ 
++/** Keep whole items queued when the next framed append would exceed its envelope. */
++function appendBatch(items) {
++  const batch = []
++  const encoder = new TextEncoder()
++  for (const item of items) {
++    if (batch.length === APPEND_MAX_ITEMS
++        || encoder.encode(frame([...batch, item])).length > APPEND_MAX_BYTES) break
++    batch.push(item)
++  }
++  return batch
++}
++
+ const emptyRec = () => ({ delivered: {}, unacked: {}, attentionVersions: [], invitationVersions: {} })
+ 
+ // Esc at a permission dialog (ht-j16.30, live stress D3): the engine ends that turn with a
+@@ -290,11 +305,17 @@ export function createCore(io) {
+         return
+       }
+       const dup = S.queue.find((q) => q.id === o.id && (o.kind !== 'invitation'
+-        || (q.contextVersion === contextVersion && (!q.truncated || o.truncated === true))))
++        || ((q.run === S.run || !q.inflight) && q.contextVersion === contextVersion
++          && (!q.truncated || o.truncated === true))))
+       if (dup) {
+         dup.run = S.run
+         return
+       }
++      // An append owns its exact object. Only the newest pending context is useful;
++      // the duplicate check above also prevents a same-version whole-to-partial downgrade.
++      if (o.kind === 'invitation') {
++        S.queue = S.queue.filter((q) => q.id !== o.id || q.inflight)
++      }
+       const truncated = o.kind !== 'notice' && o.truncated === true
+       S.queue.push({
+         id: o.id,
+@@ -323,11 +344,26 @@ export function createCore(io) {
+ 
+   // ---- delivery --------------------------------------------------------
+ 
++  /** A refused append is pending again; discard it if a newer context replaced it. */
++  function releaseBatch(batch) {
++    for (const it of batch) it.inflight = false
++    const newest = new Map()
++    for (const q of S.queue) {
++      if (q.kind === 'invitation' && !q.inflight) newest.set(q.id, q)
++    }
++    S.queue = S.queue.filter((q) => q.kind !== 'invitation' || q.inflight || newest.get(q.id) === q)
++  }
++
+   /** Marks `items` delivered through `via`, then acks the ackable ones. */
+   function complete(items, via) {
+     const ids = items.map((i) => i.id)
+     for (const it of items) {
+-      S.queue = S.queue.filter((q) => it.kind === 'invitation' ? q !== it : q.id !== it.id)
++      // A successful whole append also settles an identical pending replay from a
++      // successor run. A partial output, newer context or other inflight object does not.
++      S.queue = S.queue.filter((q) => it.kind === 'invitation'
++        ? q !== it && (it.truncated || q.inflight || q.kind !== 'invitation'
++          || q.id !== it.id || q.contextVersion !== it.contextVersion)
++        : q.id !== it.id)
+       if (it.kind === 'attention') {
+         S.runAttention.add(it.id)
+         if (it.version !== undefined && !S.rec.attentionVersions.includes(it.version)) {
+@@ -457,7 +493,7 @@ export function createCore(io) {
+         if (io.now() - S.draftSince < DRAFT_WAIT_MS) return held('draft', ids)
+       }
+       S.draftSince = null
+-      const batch = S.queue.filter((q) => !passive(q) && !q.inflight && q.run === S.run && !predHas(q.id))
++      const batch = appendBatch(S.queue.filter((q) => !passive(q) && !q.inflight && q.run === S.run && !predHas(q.id)))
+       if (!batch.length && !S.turns.wake) return
+       const gen = S.gen
+       for (const it of batch) it.inflight = true
+@@ -488,7 +524,7 @@ export function createCore(io) {
+       if (S.disposed) return
+       // a resolution from before a session change touches nothing
+       if (gen !== S.gen) return
+-      for (const it of batch) it.inflight = false
++      releaseBatch(batch)
+       if (r.missing) {
+         S.submitInflight = false
+         return goInert()
+@@ -546,7 +582,7 @@ export function createCore(io) {
+   async function pumpLazy() {
+     if (S.inert || S.disposed || S.appendInflight || !S.live) return
+     if (io.now() < S.appendBackoffUntil) return
+-    const batch = S.queue.filter((q) => passive(q) && !q.inflight && q.run === S.run)
++    const batch = appendBatch(S.queue.filter((q) => passive(q) && !q.inflight && q.run === S.run))
+     if (!batch.length) return
+     const gen = S.gen
+     for (const it of batch) it.inflight = true
+@@ -566,7 +602,7 @@ export function createCore(io) {
+       .then((r) => {
+         if (gen !== S.gen) return
+         S.appendInflight = false
+-        for (const it of batch) it.inflight = false
++        releaseBatch(batch)
+         if (r.missing) return goInert()
+         if (r.deny !== undefined) {
+           discardStale(batch, 'late_deny')
+diff --git a/integrations/claude/mod/tests/delivery.test.ts b/integrations/claude/mod/tests/delivery.test.ts
+index 34e1aabaf5618ae336432e83b7642d53d0acec09..f5701d435669a4e314834173448328a1f427a836 100644
+--- a/integrations/claude/mod/tests/delivery.test.ts
++++ b/integrations/claude/mod/tests/delivery.test.ts
+@@ -865,10 +865,12 @@ test('delivered-but-unacked ids in $.store are re-acked, not delivered again', a
+ 
+ test('acks are capped at 100 ids per watch ack invocation', async () => {
+   const idsOf = (run: string[]) => run.slice(run.indexOf('--via') + 2)
+-  // one submit delivers 150 messages; they are acked in runs of 100 and 50
+-  const h = await harness({ state: IDLE }).boot()
++  // One busy-turn context completion delivers 150 messages, independently of
++  // the idle append envelope; ACKs still split into runs of 100 and 50.
++  const h = await harness({ state: busyState() }).boot()
+   const ids = Array.from({ length: 150 }, (_, n) => `m${n + 1}`)
+   for (const id of ids) h.line(msg(id))
++  await h.core.onToolCall({ tool: 'Bash' }, answered)
+   await flush()
+   const runs = h.ackRuns()
+   expect(runs.map((r: string[]) => idsOf(r).length)).toEqual([100, 50])
+@@ -2119,6 +2121,152 @@ test('a changed command context arriving during complete append remains queued',
+ })
+ 
+ const notice = (warning: string) => ({ schema: 1, id: `notice:${warning}`, kind: 'notice', warning, thread: 'T1', body: `inspect ${warning}` })
++const queuedInvitation = (version: number, extra: Any = {}) => ({ schema: 1,
++  id: 'invitation:bounded', kind: 'invitation', thread: 'T1', topic_revision: String(version),
++  command_context_epoch: String(version), wakes: false, truncated: false,
++  body: `goal ${version}\nnext: herdr-threads accept T1`, ...extra })
++
++test('bounded invitation retains only inflight and latest pending context while append stalls', async () => {
++  const h = await harness({ state: IDLE, appendMode: 'manual' }).boot()
++  h.line(queuedInvitation(0))
++  for (let i = 1; i <= 2000; i++) h.line(queuedInvitation(i))
++  expect(h.core.snapshot().queue.length).toBe(2)
++  h.pendingAppends[0].res({})
++  await flush()
++  expect(h.appends.length).toBe(2)
++  expect(h.appends[1]).toContain('goal 2000')
++  expect(h.appends[1]).not.toContain('goal 1999')
++  h.pendingAppends[1].res({})
++  await flush()
++  expect(h.core.snapshot().queue).toEqual([])
++  expect(h.core.snapshot().rec.invitationVersions['invitation:bounded']).toBe('["2000","2000"]')
++  expect(h.ackRuns()).toEqual([])
++  expect(h.submits).toEqual([])
++  h.core.dispose()
++})
++
++test('bounded invitation coalesces refused revisions and preserves whole same-version context', async () => {
++  const h = await harness({ state: IDLE, appendMode: 'manual' }).boot()
++  h.line(queuedInvitation(0))
++  h.pendingAppends[0].res({ deny: 'refused' })
++  await flush()
++  for (let i = 1; i <= 2000; i++) h.line(queuedInvitation(i, { truncated: true, body: `partial ${i}` }))
++  h.line(queuedInvitation(2000))
++  h.line(queuedInvitation(2000, { truncated: true, body: 'goal omitted' }))
++  expect(h.core.snapshot().queue.length).toBe(1)
++  await h.advance(30000)
++  expect(h.appends.length).toBe(2)
++  expect(h.appends[1]).toContain('goal 2000')
++  expect(h.appends[1]).not.toContain('goal omitted')
++  h.pendingAppends[1].res({})
++  await flush()
++  expect(h.core.snapshot().queue).toEqual([])
++  expect(h.core.snapshot().rec.invitationVersions['invitation:bounded']).toBe('["2000","2000"]')
++  expect(h.ackRuns()).toEqual([])
++  h.core.dispose()
++})
++
++test('bounded invitation late old-run denial leaves current whole context pending', async () => {
++  const h = await harness({ state: IDLE, appendMode: 'manual' }).boot()
++  h.line(queuedInvitation(0, { truncated: true }))
++  h.exit(1)
++  await h.advance(1000)
++  await h.connect()
++  h.line(queuedInvitation(1))
++  h.line(queuedInvitation(2))
++  h.pendingAppends[0].res({ deny: 'late old-run failure' })
++  await flush()
++  expect(h.core.snapshot().queue).toEqual(['invitation:bounded'])
++  await h.advance(30000)
++  expect(h.appends[1]).toContain('goal 2')
++  h.pendingAppends[1].res({})
++  await flush()
++  expect(h.core.snapshot().rec.invitationVersions['invitation:bounded']).toBe('["2","2"]')
++  expect(h.core.snapshot().queue).toEqual([])
++  expect(h.ackRuns()).toEqual([])
++  h.core.dispose()
++})
++
++test('bounded invitation replay keeps the old inflight run distinct from its live replacement', async () => {
++  const h = await harness({ state: IDLE, appendMode: 'manual' }).boot()
++  h.line(queuedInvitation(7))
++  h.exit(1)
++  await h.advance(1000)
++  await h.connect()
++  h.line(queuedInvitation(7))
++  expect(h.core.snapshot().queue.length).toBe(2)
++  h.pendingAppends[0].res({ deny: 'old run refused' })
++  await flush()
++  expect(h.core.snapshot().queue).toEqual(['invitation:bounded'])
++  await h.advance(30000)
++  expect(h.appends.length).toBe(2)
++  expect(h.appends[1]).toContain('goal 7')
++  h.pendingAppends[1].res({})
++  await flush()
++  expect(h.core.snapshot().queue).toEqual([])
++  expect(h.ackRuns()).toEqual([])
++  h.core.dispose()
++})
++
++test('bounded invitation successful old-run whole append settles only an identical pending context', async () => {
++  for (const { old, replacement, redisplay } of [
++    { old: queuedInvitation(7), replacement: queuedInvitation(7), redisplay: false },
++    { old: queuedInvitation(7), replacement: queuedInvitation(8), redisplay: true },
++    { old: queuedInvitation(7, { truncated: true, body: 'goal omitted' }), replacement: queuedInvitation(7), redisplay: true },
++  ]) {
++    const h = await harness({ state: IDLE, appendMode: 'manual' }).boot()
++    h.line(old)
++    h.exit(1)
++    await h.advance(1000)
++    await h.connect()
++    h.line(replacement)
++    h.pendingAppends[0].res({})
++    await flush()
++    if (!redisplay) {
++      expect(h.appends.length).toBe(1)
++      expect(h.core.snapshot().queue).toEqual([])
++    } else {
++      expect(h.appends.length).toBe(2)
++      expect(h.appends[1]).toContain(replacement.topic_revision === '7' ? 'goal 7' : 'goal 8')
++      h.pendingAppends[1].res({})
++      await flush()
++      expect(h.core.snapshot().queue).toEqual([])
++    }
++    expect(h.core.snapshot().rec.invitationVersions['invitation:bounded']).toBe(
++      replacement.topic_revision === '7' ? '["7","7"]' : '["8","8"]')
++    expect(h.ackRuns()).toEqual([])
++    h.core.dispose()
++  }
++})
++
++for (const { name, count, body, active } of [
++  { name: 'passive item count', count: 80, body: 'small', active: false },
++  { name: 'passive UTF-8 bytes', count: 20, body: '界\n'.repeat(2000), active: false },
++  { name: 'idle item count', count: 80, body: 'small', active: true },
++  { name: 'idle UTF-8 bytes', count: 20, body: '界\n'.repeat(2000), active: true },
++]) {
++  test(`framed append batches bound ${name} without losing messages`, async () => {
++    const h = await harness({ state: active ? IDLE : busyState(), appendMode: 'manual' }).boot()
++    h.line(queuedInvitation(0, { wakes: active })) // Stall before the distinct IDs arrive.
++    await flush()
++    for (let i = 0; i < count; i++) h.line({ ...(active ? msg(`bounded-${i}`) : lazy(`bounded-${i}`)), body })
++    let completed = 0
++    while (h.core.snapshot().queue.length) {
++      const text = h.appends[completed]
++      expect(text).toBeDefined()
++      expect(new TextEncoder().encode(text).length).toBeLessThanOrEqual(64 * 1024)
++      expect((text.match(/^\[herdr-threads\] (?:message|lazy|invitation) /gm) ?? []).length).toBeLessThanOrEqual(32)
++      h.pendingAppends[completed++].res({})
++      await flush()
++    }
++    const ids = h.appends.join('\n').match(/^\[herdr-threads\] (?:message|lazy) bounded-\d+ /gm) ?? []
++    expect(ids.length).toBe(count)
++    expect(new Set(ids).size).toBe(count)
++    expect(Object.keys(h.core.snapshot().rec.delivered).length).toBe(count)
++    if (!active) expect(h.submits).toEqual([])
++    h.core.dispose()
++  })
++}
+ const epochAttention = (epoch: string) => ({ ...attention(7), id: `attention:${epoch}`, presentation_epoch: epoch, text: `episode ${epoch}` })
+ const epochCleared = (epoch: string) => ({ ...cleared(7), id: `attention_cleared:${epoch}`, presentation_epoch: epoch })
+ 
+diff --git a/scripts/wake-e2e.py b/scripts/wake-e2e.py
+index d0b0c2c4071204f73478146be8711166b1f42b1e..3c637db7cb36408ea957c59ba1328a8a0921b6b8 100755
+--- a/scripts/wake-e2e.py
++++ b/scripts/wake-e2e.py
+@@ -8,8 +8,9 @@ The matrix is every combination of
+   channel     ordinary thread | automatic 1:1 pair
+   wake-on     nudge (default) | all
+   harness     claude | codex
+-Expected: every case wakes the idle recipient except a lazy send to a `wake-on nudge` seat, which must keep it idle
+-and be delivered on the recipient's next turn (a neutral `hello` prompt). ACK requests must come back acknowledged,
++Expected: every case wakes the idle recipient except a lazy send or the Lazy invitation created by a first direct
++send to a `wake-on nudge` seat. These stay idle and arrive on the next turn (a neutral `hello` prompt).
++ACK requests must come back acknowledged,
+ invitations must be accepted, and the first message of a 1:1 pair must be delivered once the pair is accepted.
+ The busy-* cases repeat invite/lazy/nudge/ack while the recipient is mid-turn: a recipient is nudged only when idle,
+ so no wake prompt may be typed during or after that turn, and the item must arrive inside the turn instead.
+@@ -769,7 +770,8 @@ class Recipient:
+         if case.startswith("busy-"):
+             return self.busy_case(case)
+         action, channel = case.split("/")
+-        expect_wake = not (action == "send-lazy" and self.wake_on == "nudge")
++        passive = action == "send-lazy" or (action == "invite" and channel == "1:1")
++        expect_wake = not (passive and self.wake_on == "nudge")
+         gap = SPACING_S - (time.time() - self.last_wake)
+         if gap > 0:
+             self.run.stopping.wait(gap)  # spacing ends early when cleanup begins
+@@ -784,7 +786,7 @@ class Recipient:
+             self.coord("invite", self.group, "--seat", self.seat)
+             ref = {"thread": self.group}
+         elif action == "invite":
+-            # First contact: the direct send creates the pair and its invitation; the lazy body itself never wakes.
++            # First contact creates a Lazy invitation and opening body: only wake-on all wakes for these.
+             ref = {"message": self.send("lazy", f"pair-open {self.run.run_id}", direct=True)}
+             self.pair = "pending"
+         else:
+diff --git a/scripts/wake_e2e_selftest.py b/scripts/wake_e2e_selftest.py
+index a6e9b18f4f97860a0d9663f812bcfdb0ab358a18..ab5acefbd5fadc3642efdc5f201a6775e254d0ae 100644
+--- a/scripts/wake_e2e_selftest.py
++++ b/scripts/wake_e2e_selftest.py
+@@ -554,6 +554,85 @@ class CoordinatorCalls(TempDir):
+         self.assertEqual({k: v["seat"] for k, v in r.coords.items()}, {"main": "sCCCCCCCC", "fresh": "sDDDDDDDD"})
+ 
+ 
++class IdleWakeOracle(TempDir):
++    """Run the real case/producer path with private fake CLI and recipient observations."""
++
++    def run_case(self, case, wake_on, woke, delivered=True):
++        calls, rows, prompts, windows = [], [], [], []
++        r = object.__new__(W.Run)
++        r.state, r.endpoint, r.bin = self.tmp / "state", "/fake/sock", "/fake/herdr-threads"
++        r.run_id = "private-oracle"
++        r.coords = {"main": {"pane": "w1:p1", "seat": "sAAAAAAAA"}}
++        r.record = rows.append
++
++        def run(argv, env=None, timeout=60, tag=None, cleanup=False):
++            calls.append((argv, env))
++            data = "mAAAAAAAA" if "send" in argv else "tAAAAAAAA"
++            return 0, json.dumps({"result": {"data": data}}), ""
++        r.run = run
++        recipient = W.Recipient(r, "co-" + wake_on, "codex", wake_on, "w1:p2", "sBBBBBBBB")
++        recipient.group = "tAAAAAAAA"
++        recipient.wait_idle = lambda: None
++        recipient.prompt = prompts.append
++        recipient.joined = lambda thread: (True, "joined")
++        recipient.pair_thread = lambda: "tBBBBBBBB"
++        recipient.on_screen = lambda mid: delivered
++        recipient.receipt = lambda mid: "acknowledged"
++
++        def watch(window):
++            windows.append(window)
++            return 0.5 if woke else None
++        recipient.watch_for_wake = watch
++        recipient.case(case)
++        self.assertEqual(len(rows), 1)
++        return rows[0], calls, prompts, windows
++
++    def test_lazy_direct_invitation_is_passive_under_nudge(self):
++        row_, calls, prompts, windows = self.run_case("invite/1:1", "nudge", woke=False)
++        argv, env = calls[0]
++        self.assertEqual(argv[1], "human")
++        self.assertEqual(argv[argv.index("send"):],
++                         ["send", "--seat", "sBBBBBBBB", "--body", "pair-open private-oracle", "--lazy"])
++        self.assertEqual(env["HERDR_PANE_ID"], "w1:p1")
++        self.assertFalse(any(a.startswith("--cooperative") or a == "--operator" for a in argv))
++        self.assertEqual(row_["expect_wake"], False)
++        self.assertEqual(row_["result"], "PASS")
++        self.assertEqual(prompts, ["hello"])
++        self.assertEqual(windows, [W.WAKE_WINDOW_S])
++        self.assertEqual(row_["checks"]["opening_message_delivered"], True)
++
++    def test_idle_matrix_preserves_group_invite_and_send_modes(self):
++        for wake_on in ("nudge", "all"):
++            for action in ("invite", "send-lazy", "send-nudge", "send-ack"):
++                for channel in ("group", "1:1"):
++                    case = action + "/" + channel
++                    passive = wake_on == "nudge" and (action == "send-lazy" or case == "invite/1:1")
++                    with self.subTest(case=case, wake_on=wake_on):
++                        row_, calls, prompts, windows = self.run_case(case, wake_on, woke=not passive)
++                        self.assertEqual(row_["expect_wake"], not passive)
++                        self.assertEqual(row_["result"], "PASS")
++                        self.assertEqual(prompts, ["hello"] if passive else [])
++                        self.assertEqual(windows, [W.WAKE_WINDOW_S])
++                        self.assertTrue(all(argv[1] == "human" for argv, _ in calls))
++                        if case == "invite/group":
++                            argv = calls[-1][0]
++                            self.assertEqual(argv[argv.index("invite"):],
++                                             ["invite", "tAAAAAAAA", "--seat", "sBBBBBBBB"])
++
++    def test_unexpected_direct_wake_fails(self):
++        row_, _, _, _ = self.run_case("invite/1:1", "nudge", woke=True)
++        self.assertEqual(row_["result"], "FAIL")
++
++    def test_missing_all_direct_wake_fails(self):
++        row_, _, _, _ = self.run_case("invite/1:1", "all", woke=False)
++        self.assertEqual(row_["result"], "FAIL")
++
++    def test_passive_direct_opening_still_requires_delivery(self):
++        row_, _, _, _ = self.run_case("invite/1:1", "nudge", woke=False, delivered=False)
++        self.assertEqual(row_["checks"]["opening_message_delivered"], False)
++        self.assertEqual(row_["result"], "FAIL")
++
++
+ def row(recipient, case, result="PASS"):
+     return {"recipient": recipient, "case": case, "result": result, "wake_on": "nudge", "harness": "claude"}
+ 

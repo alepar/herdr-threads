@@ -1,0 +1,7 @@
+PASS a whole same-revision goal arriving during partial append is retained
+PASS a changed command context arriving during complete append remains queued
+PASS bounded invitation retains only inflight and latest pending context while append stalls
+PASS bounded invitation coalesces refused revisions and preserves whole same-version context
+PASS bounded invitation late old-run denial leaves current whole context pending
+PASS framed append batches bound distinct IDs and UTF-8 bytes without losing messages
+6 passed, 0 failed, 6 selected

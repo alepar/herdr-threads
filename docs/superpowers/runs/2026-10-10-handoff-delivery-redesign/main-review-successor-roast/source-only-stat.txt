@@ -1,0 +1,9 @@
+Diff 7ea79d3d8e598b01729b61be9c0faa31a6e046f4..ab2d0171c97d2046461eba14c496df9a9f93b6db (RUN/scratch excluded):
+M	CHANGELOG.md
+M	docs/agent-usage.md
+M	docs/superpowers/specs/INDEX.md
+M	integrations/claude/mod/hooks/register.js
+M	integrations/claude/mod/tests/delivery.test.ts
+M	scripts/wake-e2e.py
+M	scripts/wake_e2e_selftest.py
+ 7 files changed, 288 insertions(+), 19 deletions(-)

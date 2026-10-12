@@ -1,0 +1,185 @@
+# Review package: 7ea79d3d8e598b01729b61be9c0faa31a6e046f4..HEAD
+
+## Commits
+8efa319f fix: expect passive lazy direct invitations in wake driver
+
+## Files changed
+ scripts/wake-e2e.py          | 10 +++---
+ scripts/wake_e2e_selftest.py | 79 ++++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 85 insertions(+), 4 deletions(-)
+
+## Diff
+diff --git a/scripts/wake-e2e.py b/scripts/wake-e2e.py
+index d0b0c2c4..3c637db7 100755
+--- a/scripts/wake-e2e.py
++++ b/scripts/wake-e2e.py
+@@ -1,22 +1,23 @@
+ #!/usr/bin/env python3
+ """Pre-release wake e2e: does `invite` / `send` wake a real idle Claude Code and Codex agent exactly when it should?
+ 
+   scripts/wake-e2e.py [--bin PATH] [--harness claude,codex] [--cases CASE,...] [--evidence-dir DIR] [--keep]
+ 
+ The matrix is every combination of
+   action      invite | send lazy | send --nudge | send --require-ack
+   channel     ordinary thread | automatic 1:1 pair
+   wake-on     nudge (default) | all
+   harness     claude | codex
+-Expected: every case wakes the idle recipient except a lazy send to a `wake-on nudge` seat, which must keep it idle
+-and be delivered on the recipient's next turn (a neutral `hello` prompt). ACK requests must come back acknowledged,
++Expected: every case wakes the idle recipient except a lazy send or the Lazy invitation created by a first direct
++send to a `wake-on nudge` seat. These stay idle and arrive on the next turn (a neutral `hello` prompt).
++ACK requests must come back acknowledged,
+ invitations must be accepted, and the first message of a 1:1 pair must be delivered once the pair is accepted.
+ The busy-* cases repeat invite/lazy/nudge/ack while the recipient is mid-turn: a recipient is nudged only when idle,
+ so no wake prompt may be typed during or after that turn, and the item must arrive inside the turn instead.
+ 
+ Isolation: an isolated daemon and state dir (driven by --bin, default the repo's bin/herdr-threads), owned hooks
+ installed by the public `setup` CLI into scratch HOME / CLAUDE_CONFIG_DIR / CODEX_HOME copies, one owned Herdr
+ workspace on the current Herdr server (closed at the end unless --keep). The script itself never writes the real
+ user config:
+ - Claude keeps its real config directory (on macOS its keychain credentials are keyed by it) and loads the scratch
+   installation as a flag layer (`--setting-sources project,local --settings <scratch>/settings.json`), which also
+@@ -762,36 +763,37 @@ class Recipient:
+                          "woke": checks["self_started_turn_after_s"] is not None
+                          or checks["wake_prompts_since_busy_prompt"] != 0, "t_wake_s": None,
+                          "hello_sent": False, "checks": checks, "ref": ref,
+                          "result": "PASS" if passed else "FAIL", "utc": utc()})
+ 
+     # ---------- one case ----------
+     def case(self, case):
+         if case.startswith("busy-"):
+             return self.busy_case(case)
+         action, channel = case.split("/")
+-        expect_wake = not (action == "send-lazy" and self.wake_on == "nudge")
++        passive = action == "send-lazy" or (action == "invite" and channel == "1:1")
++        expect_wake = not (passive and self.wake_on == "nudge")
+         gap = SPACING_S - (time.time() - self.last_wake)
+         if gap > 0:
+             self.run.stopping.wait(gap)  # spacing ends early when cleanup begins
+         self.wait_idle()
+         body = f"{case} {self.run.run_id}"
+         checks = {}
+         if action == "invite" and channel == "group":
+             name = f"wake-e2e-{self.name}-{self.run.run_id}"
+             data = self.coord("thread", "create", "--name", name, "--topic", f"wake-e2e test thread for {self.name}",
+                               "--goal", "wake e2e test traffic")
+             self.group = data["result"]["data"]
+             self.coord("invite", self.group, "--seat", self.seat)
+             ref = {"thread": self.group}
+         elif action == "invite":
+-            # First contact: the direct send creates the pair and its invitation; the lazy body itself never wakes.
++            # First contact creates a Lazy invitation and opening body: only wake-on all wakes for these.
+             ref = {"message": self.send("lazy", f"pair-open {self.run.run_id}", direct=True)}
+             self.pair = "pending"
+         else:
+             ref = {"message": self.send(action.split("-")[1], body, direct=channel == "1:1")}
+         t_wake = self.watch_for_wake(WAKE_WINDOW_S)
+         woke = t_wake is not None
+         hello = False
+         if woke:
+             self.last_wake = time.time()
+         else:
+diff --git a/scripts/wake_e2e_selftest.py b/scripts/wake_e2e_selftest.py
+index a6e9b18f..ab5acefb 100644
+--- a/scripts/wake_e2e_selftest.py
++++ b/scripts/wake_e2e_selftest.py
+@@ -547,20 +547,99 @@ class CoordinatorCalls(TempDir):
+         r.layout()
+         ht_calls = [(a, e) for a, e in calls if a[0] == "/fake/ht"]
+         self.assertEqual([a[a.index("me"):] for a, _ in ht_calls], [["me", "init"], ["me", "init"]])
+         self.assertTrue(all(a[1] == "human" for a, _ in ht_calls))
+         self.assertEqual([e["HERDR_PANE_ID"] for _, e in ht_calls], ["w1:p1", "w1:p2"])
+         self.assertFalse(any("--operator" in a or "check-in" in a or any(x.startswith("--cooperative") for x in a)
+                              for a, _ in ht_calls))
+         self.assertEqual({k: v["seat"] for k, v in r.coords.items()}, {"main": "sCCCCCCCC", "fresh": "sDDDDDDDD"})
+ 
+ 
++class IdleWakeOracle(TempDir):
++    """Run the real case/producer path with private fake CLI and recipient observations."""
++
++    def run_case(self, case, wake_on, woke, delivered=True):
++        calls, rows, prompts, windows = [], [], [], []
++        r = object.__new__(W.Run)
++        r.state, r.endpoint, r.bin = self.tmp / "state", "/fake/sock", "/fake/herdr-threads"
++        r.run_id = "private-oracle"
++        r.coords = {"main": {"pane": "w1:p1", "seat": "sAAAAAAAA"}}
++        r.record = rows.append
++
++        def run(argv, env=None, timeout=60, tag=None, cleanup=False):
++            calls.append((argv, env))
++            data = "mAAAAAAAA" if "send" in argv else "tAAAAAAAA"
++            return 0, json.dumps({"result": {"data": data}}), ""
++        r.run = run
++        recipient = W.Recipient(r, "co-" + wake_on, "codex", wake_on, "w1:p2", "sBBBBBBBB")
++        recipient.group = "tAAAAAAAA"
++        recipient.wait_idle = lambda: None
++        recipient.prompt = prompts.append
++        recipient.joined = lambda thread: (True, "joined")
++        recipient.pair_thread = lambda: "tBBBBBBBB"
++        recipient.on_screen = lambda mid: delivered
++        recipient.receipt = lambda mid: "acknowledged"
++
++        def watch(window):
++            windows.append(window)
++            return 0.5 if woke else None
++        recipient.watch_for_wake = watch
++        recipient.case(case)
++        self.assertEqual(len(rows), 1)
++        return rows[0], calls, prompts, windows
++
++    def test_lazy_direct_invitation_is_passive_under_nudge(self):
++        row_, calls, prompts, windows = self.run_case("invite/1:1", "nudge", woke=False)
++        argv, env = calls[0]
++        self.assertEqual(argv[1], "human")
++        self.assertEqual(argv[argv.index("send"):],
++                         ["send", "--seat", "sBBBBBBBB", "--body", "pair-open private-oracle", "--lazy"])
++        self.assertEqual(env["HERDR_PANE_ID"], "w1:p1")
++        self.assertFalse(any(a.startswith("--cooperative") or a == "--operator" for a in argv))
++        self.assertEqual(row_["expect_wake"], False)
++        self.assertEqual(row_["result"], "PASS")
++        self.assertEqual(prompts, ["hello"])
++        self.assertEqual(windows, [W.WAKE_WINDOW_S])
++        self.assertEqual(row_["checks"]["opening_message_delivered"], True)
++
++    def test_idle_matrix_preserves_group_invite_and_send_modes(self):
++        for wake_on in ("nudge", "all"):
++            for action in ("invite", "send-lazy", "send-nudge", "send-ack"):
++                for channel in ("group", "1:1"):
++                    case = action + "/" + channel
++                    passive = wake_on == "nudge" and (action == "send-lazy" or case == "invite/1:1")
++                    with self.subTest(case=case, wake_on=wake_on):
++                        row_, calls, prompts, windows = self.run_case(case, wake_on, woke=not passive)
++                        self.assertEqual(row_["expect_wake"], not passive)
++                        self.assertEqual(row_["result"], "PASS")
++                        self.assertEqual(prompts, ["hello"] if passive else [])
++                        self.assertEqual(windows, [W.WAKE_WINDOW_S])
++                        self.assertTrue(all(argv[1] == "human" for argv, _ in calls))
++                        if case == "invite/group":
++                            argv = calls[-1][0]
++                            self.assertEqual(argv[argv.index("invite"):],
++                                             ["invite", "tAAAAAAAA", "--seat", "sBBBBBBBB"])
++
++    def test_unexpected_direct_wake_fails(self):
++        row_, _, _, _ = self.run_case("invite/1:1", "nudge", woke=True)
++        self.assertEqual(row_["result"], "FAIL")
++
++    def test_missing_all_direct_wake_fails(self):
++        row_, _, _, _ = self.run_case("invite/1:1", "all", woke=False)
++        self.assertEqual(row_["result"], "FAIL")
++
++    def test_passive_direct_opening_still_requires_delivery(self):
++        row_, _, _, _ = self.run_case("invite/1:1", "nudge", woke=False, delivered=False)
++        self.assertEqual(row_["checks"]["opening_message_delivered"], False)
++        self.assertEqual(row_["result"], "FAIL")
++
++
+ def row(recipient, case, result="PASS"):
+     return {"recipient": recipient, "case": case, "result": result, "wake_on": "nudge", "harness": "claude"}
+ 
+ 
+ class Completeness(TempDir):
+     def run_with(self, rows, recipients=("cl-nudge",)):
+         return SimpleNamespace(results=rows, recipients=[SimpleNamespace(name=n) for n in recipients])
+ 
+     def test_complete_all_pass(self):
+         run = self.run_with([row("cl-nudge", "invite/group"), row("cl-nudge", "send-lazy/group")])

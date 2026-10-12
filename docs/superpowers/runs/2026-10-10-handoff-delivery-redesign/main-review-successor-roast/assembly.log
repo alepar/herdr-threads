@@ -1,0 +1,4 @@
+args: /Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/main-review-successor-roast/args.json
+script: /Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/main-review-successor-roast/assembled.engine.mjs
+report: /Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/docs/superpowers/runs/2026-10-10-handoff-delivery-redesign/main-review-successor-roast/2026-10-12-handoff-main-review-successor-roast-pr-post-cap-audit.md
+round: post-cap audit (late: materiality bar + regression) · core correctness, security, premortem, simplicity-design, hot-path-perf, concurrency-async, regression · conditional data-migrations, deploy-safety, api-contract, observability, testing, dependency, hygiene-docs
