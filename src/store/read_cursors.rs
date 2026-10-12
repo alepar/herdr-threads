@@ -245,9 +245,22 @@ pub fn advance_through_displayed(
     thread: &ThreadId,
     displayed: &[u64],
 ) -> Result<u64, ApiError> {
+    advance_through_displayed_with_change(tx, binding, thread, displayed)
+        .map(|(reached, _)| reached)
+}
+
+/// The display walk's reached sequence and whether its canonical cursor actually changed.
+/// Owning operations coalesce the changed bit across their threads before invalidating private
+/// presentation state; the low-level cursor helpers never perform that maintenance themselves.
+pub(super) fn advance_through_displayed_with_change(
+    tx: &Connection,
+    binding: &BindingId,
+    thread: &ThreadId,
+    displayed: &[u64],
+) -> Result<(u64, bool), ApiError> {
     let current = cursor_for(tx, binding, thread)?.unwrap_or(0);
     let Some(seat) = seat_of(tx, binding)? else {
-        return Ok(current);
+        return Ok((current, false));
     };
     let mut stmt = tx
         .prepare(&format!(
@@ -288,10 +301,8 @@ pub fn advance_through_displayed(
         reached = sequence;
     }
     drop(stmt);
-    if reached > current {
-        advance(tx, binding, thread, reached)?;
-    }
-    Ok(reached)
+    let changed = reached > current && advance(tx, binding, thread, reached)?;
+    Ok((reached, changed))
 }
 
 #[cfg(test)]

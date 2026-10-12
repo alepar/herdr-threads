@@ -829,12 +829,134 @@ mod activation {
         }
     }
 
+    /// A model-free harness parent that lives for the elected fixture's whole
+    /// session. Every installed hook remains a real child with that ancestor.
+    struct HarnessProcess {
+        child: std::cell::RefCell<herdr_threads::test_support::spawn::OwnedChild>,
+        status: std::cell::RefCell<std::io::BufReader<UnixStream>>,
+        directory: PathBuf,
+        next: std::cell::Cell<u64>,
+    }
+    impl HarnessProcess {
+        fn start(fx: &continuity::Fixture, home: &Path, harness: Harness, pane: &str) -> Self {
+            let directory = home.join(format!("harness-{}", harness.as_str()));
+            fs::create_dir_all(&directory).unwrap();
+            // The shell dispatches one file per invocation. Hook stdin/stderr
+            // and successful stdout use private files; only completion status
+            // uses the dedicated socket. No hook output is interpreted as code.
+            let driver =
+                r#"while IFS= read -r script; do /bin/sh "$script"; printf '%s\n' "$?" >&2; done"#;
+            let mut command = herdr_threads::test_support::harness_shim::under_harness(
+                harness.as_str(),
+                Path::new("/bin/sh"),
+                &["-c", driver],
+                &[],
+            );
+            herdr_threads::test_support::isolation::scrub_env(&mut command);
+            let (status_reader, status_writer) = UnixStream::pair().unwrap();
+            status_reader
+                .set_read_timeout(Some(Duration::from_secs(30)))
+                .unwrap();
+            // Retain the original broken-stdout seam: the hook really writes
+            // to an inherited socket whose reader is closed, receiving EPIPE.
+            let (closed_reader, broken_writer) = UnixStream::pair().unwrap();
+            drop(closed_reader);
+            command
+                .env("HERDR_ENV", "1")
+                .env("HERDR_PANE_ID", pane)
+                .env("HERDR_SOCKET_PATH", &fx.host)
+                .env("PATH", harness_path(&fx.host))
+                .env("HOME", home)
+                .env("CLAUDE_CONFIG_DIR", home.join(".claude"))
+                .env_remove("ANTIGRAVITY_AGENT")
+                .env_remove("HERDR_PLUGIN_STATE_DIR")
+                .env_remove("HERDR_BIN_PATH")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::from(OwnedFd::from(broken_writer)))
+                .stderr(Stdio::from(OwnedFd::from(status_writer)));
+            Self {
+                child: std::cell::RefCell::new(command.spawn_owned().unwrap()),
+                status: std::cell::RefCell::new(std::io::BufReader::new(status_reader)),
+                directory,
+                next: std::cell::Cell::new(0),
+            }
+        }
+        fn run(&self, registered: &str, input: &[u8], broken_stdout: bool) -> Hook {
+            use std::io::BufRead;
+            let n = self.next.get();
+            self.next.set(n + 1);
+            let path = |kind| self.directory.join(format!("{n}.{kind}"));
+            let input_path = path("input");
+            let output_path = path("stdout");
+            let error_path = path("stderr");
+            let script_path = path("sh");
+            let quote = |path: &Path| {
+                herdr_threads::harness::setup::shell_command(&[path.to_str().unwrap().to_owned()])
+                    .unwrap()
+            };
+            fs::write(&input_path, input).unwrap();
+            let stdout = if broken_stdout {
+                String::new()
+            } else {
+                format!(" > {}", quote(&output_path))
+            };
+            fs::write(
+                &script_path,
+                format!(
+                    "{registered} < {}{stdout} 2> {}\n",
+                    quote(&input_path),
+                    quote(&error_path)
+                ),
+            )
+            .unwrap();
+            // The fixture creates this path, and the dispatcher accepts one
+            // literal path per line. Never send payload/body text on this pipe.
+            assert!(!script_path.to_str().unwrap().contains(['\n', '\r']));
+            let started = Instant::now();
+            {
+                let mut child = self.child.borrow_mut();
+                let stdin = child.stdin.as_mut().unwrap();
+                writeln!(stdin, "{}", script_path.display()).unwrap();
+                stdin.flush().unwrap();
+            }
+            let mut status = String::new();
+            assert_ne!(
+                self.status.borrow_mut().read_line(&mut status).unwrap(),
+                0,
+                "harness dispatcher exited"
+            );
+            Hook {
+                code: Some(status.trim().parse().expect("harness child exit status")),
+                stdout: if broken_stdout {
+                    Vec::new()
+                } else {
+                    fs::read(output_path).unwrap()
+                },
+                stderr: String::from_utf8_lossy(&fs::read(error_path).unwrap()).into_owned(),
+                elapsed: started.elapsed(),
+                timeout_scale: None,
+            }
+        }
+        fn stop(&self) {
+            self.child.borrow_mut().stop();
+        }
+    }
+
     struct Elected {
         fx: continuity::Fixture,
         home: PathBuf,
         state: PathBuf,
         identity: Identity,
         recipient: CallerClaim,
+        agy_parent: HarnessProcess,
+        claude_parent: HarnessProcess,
+    }
+    impl Drop for Elected {
+        fn drop(&mut self) {
+            // Stop owned process groups before Fixture removes its state root.
+            self.agy_parent.stop();
+            self.claude_parent.stop();
+        }
     }
     impl Elected {
         #[track_caller]
@@ -869,8 +991,15 @@ mod activation {
                 resolve_identity(None, Some(std::ffi::OsStr::new(&harness_path(&fx.host))))
                     .unwrap();
             let state = root.join("state");
+            let agy_parent = HarnessProcess::start(
+                &fx,
+                &home,
+                OccupantHarness::Agent(builtins().agent("agy").unwrap()).into(),
+                PANE,
+            );
+            let claude_parent = HarnessProcess::start(&fx, &home, Harness::Claude, "w9:p2");
             let observer = Observer::start(&fx, Fault::None);
-            let startup = Self::invoke(&fx, &home, &state, "SessionStart", false);
+            let startup = Self::invoke(&home, &state, &agy_parent, "SessionStart", false);
             assert_eq!(startup.code, Some(0), "{}", startup.stderr);
             assert!(!startup.stdout.is_empty(), "{}", startup.stderr);
             let exchanges = observer.take();
@@ -893,6 +1022,8 @@ mod activation {
                 state,
                 identity,
                 recipient,
+                agy_parent,
+                claude_parent,
             }
         }
         fn adapter_state(&self) -> PathBuf {
@@ -942,12 +1073,18 @@ mod activation {
             .unwrap();
         }
         fn run(&self, event: &str, broken_stdout: bool) -> Hook {
-            Self::invoke(&self.fx, &self.home, &self.state, event, broken_stdout)
+            Self::invoke(
+                &self.home,
+                &self.state,
+                &self.agy_parent,
+                event,
+                broken_stdout,
+            )
         }
         fn invoke(
-            fx: &continuity::Fixture,
             home: &Path,
             state: &Path,
+            parent: &HarnessProcess,
             event: &str,
             broken_stdout: bool,
         ) -> Hook {
@@ -956,65 +1093,11 @@ mod activation {
             let base = herdr_threads::harness::setup::shell_command(&argv).unwrap();
             let brain = home.join(".gemini/antigravity-cli/brain").join(TOP);
             let input = json!({"conversationId":TOP,"artifactDirectoryPath":brain,"transcriptPath":brain.join(".system_generated/logs/transcript_full.jsonl"),"workspacePaths":[home],"invocationNum":0,"initialNumSteps":1});
-            Self::run_process(
-                fx,
-                home,
-                harness,
+            parent.run(
                 &format!("{base} '--event' '{event}'"),
-                PANE,
                 &serde_json::to_vec(&input).unwrap(),
                 broken_stdout,
             )
-        }
-        fn run_process(
-            fx: &continuity::Fixture,
-            home: &Path,
-            harness: Harness,
-            registered: &str,
-            pane: &str,
-            input: &[u8],
-            broken_stdout: bool,
-        ) -> Hook {
-            // Exercise the real registered CLI beneath its declared harness,
-            // as run_hook_traced does; PATH alone is not process ancestry.
-            let mut command = herdr_threads::test_support::harness_shim::under_harness(
-                harness.as_str(),
-                Path::new("/bin/sh"),
-                &["-c", registered],
-                &[],
-            );
-            herdr_threads::test_support::isolation::scrub_env(&mut command);
-            command
-                .env("HERDR_ENV", "1")
-                .env("HERDR_PANE_ID", pane)
-                .env("HERDR_SOCKET_PATH", &fx.host)
-                .env("PATH", harness_path(&fx.host))
-                .env("HOME", home)
-                .env("CLAUDE_CONFIG_DIR", home.join(".claude"))
-                .env_remove("ANTIGRAVITY_AGENT")
-                .env_remove("HERDR_PLUGIN_STATE_DIR")
-                .env_remove("HERDR_BIN_PATH")
-                .stdin(Stdio::piped())
-                .stderr(Stdio::piped());
-            if broken_stdout {
-                let (reader, writer) = UnixStream::pair().unwrap();
-                drop(reader);
-                command.stdout(Stdio::from(OwnedFd::from(writer)));
-            } else {
-                command.stdout(Stdio::piped());
-            }
-            herdr_threads::test_support::spawn::tag(&mut command);
-            let started = Instant::now();
-            let mut child = command.spawn_owned().unwrap();
-            child.stdin.take().unwrap().write_all(input).unwrap();
-            let output = child.wait_with_output().unwrap();
-            Hook {
-                code: output.status.code(),
-                stdout: output.stdout,
-                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-                elapsed: started.elapsed(),
-                timeout_scale: None,
-            }
         }
         fn invite(&self) {
             // The sender is enrolled through its installed production hook too.
@@ -1025,12 +1108,8 @@ mod activation {
                 Harness::Claude,
             );
             let registered = herdr_threads::harness::setup::shell_command(&argv).unwrap();
-            let startup = Self::run_process(
-                &self.fx,
-                &self.home,
-                Harness::Claude,
+            let startup = self.claude_parent.run(
                 &registered,
-                "w9:p2",
                 &continuity::session_start("claude", "origin-session", "startup"),
                 false,
             );
@@ -1450,12 +1529,8 @@ mod activation {
         );
         let registered = herdr_threads::harness::setup::shell_command(&argv).unwrap();
         let startup_observer = Observer::start(&elected.fx, Fault::None);
-        let startup = Elected::run_process(
-            &elected.fx,
-            &elected.home,
-            Harness::Claude,
+        let startup = elected.claude_parent.run(
             &registered,
-            "w9:p2",
             &continuity::session_start("claude", "origin-session", "startup"),
             false,
         );

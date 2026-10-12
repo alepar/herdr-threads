@@ -271,6 +271,7 @@ fn capability_constants_are_stable() {
     assert_eq!(INBOX_BATCH, "inbox.batch_v1");
     assert_eq!(LAZY_HOOK_DELIVERY, "hook.lazy_delivery_v1");
     assert_eq!(DELIVERY_PRESENTATION_V2, "delivery.presentation_v2");
+    assert_eq!(MOD_WATCH_PRESENTATION_V2, "mod.watch_presentation_v2");
     assert_eq!(BINDING_CURSORS, "inbox.binding_cursors_v1");
     assert_eq!(BINDING_DIGEST, "attention.binding_digest_v1");
     assert_eq!(
@@ -297,6 +298,7 @@ fn capability_constants_are_stable() {
             "send.lazy_v1",
             "inbox.batch_v2",
             "mod.watch_v1",
+            "mod.watch_presentation_v2",
             "seat.wake_on_v1",
             "delivery.pull_v1",
             "hook.lazy_delivery_v1",
@@ -421,7 +423,8 @@ fn every_advertised_capability_has_a_handler() {
                     ErrorCode::NotFound
                 );
             }
-            MOD_WATCH => probe_mod_watch(),
+            MOD_WATCH => probe_mod_watch(false),
+            MOD_WATCH_PRESENTATION_V2 => probe_mod_watch(true),
             DELIVERY_PRESENTATION_V2 => presentation_capability_routes_use_configured_domain(),
             DELIVERY_PULL => {
                 // The command decodes and routes to the domain service (served by
@@ -569,7 +572,7 @@ fn probe_binding_cursors() {
 /// The daemon's domain decides a watch registration against its store: a
 /// claim for a seat the store does not know is refused `unresolved` (a
 /// service without the handler would answer `disabled`).
-fn probe_mod_watch() {
+fn probe_mod_watch(presentation_v2: bool) {
     use crate::{
         ports::{ModChannelSink, StorePort},
         protocol::{
@@ -598,6 +601,7 @@ fn probe_mod_watch() {
     );
     let domain = DomainService::new("probe-instance".into(), store, clock);
     let request = WatchRequest {
+        presentation_v2,
         claim: CallerClaim {
             instance: "probe-instance".into(),
             seat: SeatId::new("nobody"),
@@ -611,6 +615,11 @@ fn probe_mod_watch() {
             liveness: None,
         },
     };
+    assert_eq!(
+        serde_json::from_value::<WatchRequest>(serde_json::to_value(&request).unwrap()).unwrap(),
+        request,
+        "the explicit registration mode must survive the wire"
+    );
     let refusal = domain
         .watch_register(&request, Arc::new(NoSink), &budget())
         .unwrap_err();
@@ -681,6 +690,7 @@ fn bare_daemon_advertises_legacy_capabilities_without_v2_recorder() {
             "send.lazy_v1",
             "inbox.batch_v2",
             "mod.watch_v1",
+            "mod.watch_presentation_v2",
             "seat.wake_on_v1",
             "delivery.pull_v1",
             "hook.lazy_delivery_v1",

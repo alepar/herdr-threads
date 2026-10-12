@@ -260,6 +260,14 @@ impl WatchWireRequest {
 #[serde(deny_unknown_fields)]
 pub struct WatchRequest {
     pub claim: CallerClaim,
+    /// Explicitly negotiated presentation mode. Absent/false retains the
+    /// historical claim-only registration bytes and legacy channel behavior.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub presentation_v2: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
 }
 
 /// First daemon frame of a watch connection.

@@ -2636,6 +2636,7 @@ pub fn advance_cursors(
                 })?;
                 by_thread.entry(thread).or_default().push(sequence as u64);
             }
+            let mut reader_changed = false;
             for (thread, sequences) in by_thread {
                 let joined: bool = tx
                     .query_row(
@@ -2645,13 +2646,17 @@ pub fn advance_cursors(
                     )
                     .map_err(store_error)?;
                 if joined {
-                    super::read_cursors::advance_through_displayed(
+                    let (_, changed) = super::read_cursors::advance_through_displayed_with_change(
                         tx,
                         &binding,
                         &ThreadId::new(thread),
                         &sequences,
                     )?;
+                    reader_changed |= changed;
                 }
+            }
+            if reader_changed {
+                super::presentation_reader::note_binding_reader_change(tx, &binding)?;
             }
             Ok(CommandResult::CursorsAdvanced(request.displayed.clone()))
         },

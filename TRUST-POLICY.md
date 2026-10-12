@@ -1688,3 +1688,51 @@ ordinary recovery; no Message descriptor enters that outbox. Full stamp and
 incarnation pruning at snapshot/application cannot overwrite newer logical
 history. Recovery leaves current post-store native outlook unchanged, including
 empty, mixed, final and active-recovery outbox/control-only quanta.
+
+
+Canonical reader operations coalesce private presentation invalidation once per
+actually changed binding at their existing transaction boundary. The added
+source-derived envelope per changed operation/binding is one exact BindingId
+lookup statement joining two indexed canonical relations (occupant_bindings and
+seats), two fixed Hook/Watch consumer point reads, and at most two guarded
+consumer updates. No retained binding history or all-consumer scan is added.
+AdvanceCursors coalesces all its thread changes; complete-display coalesces each
+already selected target; first-contact fast-forward coalesces all gaps, including
+gaps beyond its returned-description cap. A historical unbound completion that
+already selects N targets adds N times this envelope; the whole operation has no
+new constant bound. This source accounting is not a measured SQLite VM, elapsed
+time or disk-I/O bound; the physical query controls still require execution.
+
+The exact canonical BindingId owns native session, seat, instance, generation and
+execution; presentation rows have no second native-session field. Only matching
+seat/instance rows whose primary generation/execution or passive-refresh
+generation/execution matches that canonical scope are invalidated. Both-stale or
+foreign rows remain unchanged. The helper updates only checked private passive
+generation and content version counters; it changes no captured scan tuple,
+cursor, carry, partial body, token or logical offer stamp. Zero consumers and
+no-change operations require no private update, including established subagent
+reader use. Counter corruption, exhaustion or later operation failure rolls back
+canonical reader writes and all tentative private updates together. This
+maintenance adds no V2 admission, receipt provenance, ACK, invitation acceptance,
+channel health or native-wake authority.
+
+Successful ordinary-or-Lazy completion may conservatively request a passive
+canonical recheck for the admitted seat's current Live capable channels. The
+registry holds one ephemeral pending bit per entry under its existing global
+64-channel cap; it visits only that seat's currently registered entries, never
+retained presentation rows. Repeated hints coalesce. A retained successful result
+may hint again and establishes no fresh receipt delta; all-refused/error outcomes
+and presentation confirmation do not hint. Registry bookkeeping follows release
+of the canonical writer turn. Hint consumption performs bounded canonical
+delivery work and confers no retry eligibility, offer stamp, reader advancement,
+receipt/acceptance evidence, extra health timestamp or idle-wake permission.
+Existing successful mod ACK health accounting, including AlreadySettled, remains
+separate. Replacement/restart can discard a bit; initial owner drain, ordinary
+canonical eligibility and the existing safety pass retain their own contracts.
+
+Proposed Q3 publication probe controls separately cover message-first ordinary
+and Lazy recipient point SQL and a mixed unrelated prefix. Until the production
+scanner adopts and validates those probes, they establish no ordinary publication
+signal or scanner runtime bound. The current Lazy-only 100-manifest/200-probe/
+three-seek source allowance above remains the implemented contract; prospective
+SQL witnesses do not enlarge it or certify physical work.

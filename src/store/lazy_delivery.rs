@@ -534,8 +534,18 @@ pub fn complete_displayed_for_binding(
         }
     }
     for target in &targets {
+        let mut reader_changed = false;
         for (thread, sequences) in &by_thread {
-            read_cursors::advance_through_displayed(tx, target, &ThreadId::new(thread), sequences)?;
+            let (_, changed) = read_cursors::advance_through_displayed_with_change(
+                tx,
+                target,
+                &ThreadId::new(thread),
+                sequences,
+            )?;
+            reader_changed |= changed;
+        }
+        if reader_changed {
+            super::presentation_reader::note_binding_reader_change(tx, target)?;
         }
     }
     // `binding_cursors` is WITHOUT ROWID, so SQLite's update hook never reports it. Touch the

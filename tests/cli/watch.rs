@@ -1,5 +1,5 @@
 use super::*;
-use crate::cli::{commands::parse_argv, CliAction, RunError};
+use crate::cli::{CliAction, RunError, commands::parse_argv};
 use crate::protocol::{
     authority::CallerRole,
     commands::Command,
@@ -861,9 +861,11 @@ fn the_attention_line_follows_the_command_prefix() {
     let WatchItem::Invitation(invitation) = &got[0].item else {
         panic!("invitation body missing")
     };
-    assert!(invitation
-        .body
-        .contains("next: /opt/ht --state-dir /s accept t1"));
+    assert!(
+        invitation
+            .body
+            .contains("next: /opt/ht --state-dir /s accept t1")
+    );
     assert_eq!(
         got[1].item,
         WatchItem::Attention(crate::protocol::watch::WatchAttention {
@@ -1040,16 +1042,43 @@ fn write_frame(stream: &mut UnixStream, value: &impl serde::Serialize) {
     stream.write_all(&framed).unwrap();
 }
 
-fn read_request(stream: &mut UnixStream) -> WatchWireRequest {
-    WatchWireRequest::decode(&read_raw_request(stream)).unwrap()
-}
-
-fn read_raw_request(stream: &mut UnixStream) -> Vec<u8> {
+fn read_raw_request(
+    stream: &mut UnixStream,
+    control: &ServerControl,
+    deadline: Instant,
+) -> io::Result<Vec<u8>> {
+    fn read_exact_bounded(
+        stream: &mut UnixStream,
+        mut bytes: &mut [u8],
+        control: &ServerControl,
+        deadline: Instant,
+    ) -> io::Result<()> {
+        while !bytes.is_empty() {
+            control.check(deadline)?;
+            match stream.read(bytes) {
+                Ok(0) => return Err(io::Error::from(io::ErrorKind::UnexpectedEof)),
+                Ok(read) => bytes = &mut bytes[read..],
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    control.wait(deadline)?
+                }
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(())
+    }
     let mut prefix = [0u8; 4];
-    stream.read_exact(&mut prefix).unwrap();
-    let mut body = vec![0u8; u32::from_be_bytes(prefix) as usize];
-    stream.read_exact(&mut body).unwrap();
-    body
+    read_exact_bounded(stream, &mut prefix, control, deadline)?;
+    let len = u32::from_be_bytes(prefix) as usize;
+    if len > 1024 * 1024 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "test Watch request exceeds 1 MiB",
+        ));
+    }
+    let mut body = vec![0u8; len];
+    read_exact_bounded(stream, &mut body, control, deadline)?;
+    Ok(body)
 }
 
 fn reply(request: &WatchWireRequest, outcome: WatchOutcome) -> WatchReply {
@@ -1069,55 +1098,167 @@ fn accepted(version: u64) -> WatchOutcome {
     })
 }
 
+#[derive(Default)]
+struct ServerState {
+    cancelled: bool,
+    stream: Option<UnixStream>,
+}
+
+#[derive(Default)]
+struct ServerControl {
+    state: Mutex<ServerState>,
+    changed: std::sync::Condvar,
+}
+
+impl ServerControl {
+    fn check(&self, deadline: Instant) -> io::Result<()> {
+        if self.state.lock().unwrap().cancelled {
+            return Err(io::Error::from(io::ErrorKind::Interrupted));
+        }
+        if Instant::now() >= deadline {
+            return Err(io::Error::from(io::ErrorKind::TimedOut));
+        }
+        Ok(())
+    }
+    fn wait(&self, deadline: Instant) -> io::Result<()> {
+        self.check(deadline)?;
+        let state = self.state.lock().unwrap();
+        if state.cancelled {
+            return Err(io::Error::from(io::ErrorKind::Interrupted));
+        }
+        let wait = deadline
+            .saturating_duration_since(Instant::now())
+            .min(Duration::from_millis(10));
+        drop(self.changed.wait_timeout(state, wait).unwrap());
+        self.check(deadline)
+    }
+    fn install(&self, stream: &UnixStream) -> io::Result<()> {
+        let mut state = self.state.lock().unwrap();
+        if state.cancelled {
+            return Err(io::Error::from(io::ErrorKind::Interrupted));
+        }
+        state.stream = Some(stream.try_clone()?);
+        Ok(())
+    }
+    fn cancel(&self) {
+        let mut state = self.state.lock().unwrap();
+        state.cancelled = true;
+        if let Some(stream) = state.stream.take() {
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+        }
+        self.changed.notify_all();
+    }
+}
+
 struct Server {
     dir: PathBuf,
     socket: PathBuf,
-    handle: Option<std::thread::JoinHandle<()>>,
+    control: Arc<ServerControl>,
+    handle: Option<std::thread::JoinHandle<io::Result<()>>>,
 }
 
 impl Server {
-    /// Accept one watch connection and hand it to `script` after reading the
-    /// registration frame.
+    /// Accept one watch connection and hand its decoded registration to `script`.
     fn start(script: impl FnOnce(&mut UnixStream, WatchWireRequest) + Send + 'static) -> Self {
-        let dir = temp_dir("srv");
-        let socket = dir.join("s");
-        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
-        let handle = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            let request = read_request(&mut stream);
-            script(&mut stream, request);
-        });
-        Self {
-            dir,
-            socket,
-            handle: Some(handle),
-        }
+        Self::start_raw(move |stream, bytes| {
+            script(stream, WatchWireRequest::decode(&bytes).unwrap());
+        })
     }
 
-    /// Preserve the actual first-frame bytes before any typed decoder can normalize them.
+    /// Capture raw first-frame bytes with a bounded, cancellable accept/receive.
     fn start_raw(script: impl FnOnce(&mut UnixStream, Vec<u8>) + Send + 'static) -> Self {
         let dir = temp_dir("raw-srv");
         let socket = dir.join("s");
         let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let control = Arc::new(ServerControl::default());
+        let worker = control.clone();
         let handle = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            stream
-                .set_read_timeout(Some(Duration::from_secs(2)))
-                .unwrap();
-            let request = read_raw_request(&mut stream);
-            script(&mut stream, request);
+            let result = (|| {
+                let deadline = Instant::now() + HANDSHAKE_TIMEOUT;
+                let mut stream = loop {
+                    worker.check(deadline)?;
+                    match listener.accept() {
+                        Ok((stream, _)) => break stream,
+                        Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                            worker.wait(deadline)?
+                        }
+                        Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                        Err(error) => return Err(error),
+                    }
+                };
+                worker.install(&stream)?;
+                stream.set_nonblocking(true)?;
+                let request = read_raw_request(&mut stream, &worker, deadline)?;
+                stream.set_nonblocking(false)?;
+                stream.set_read_timeout(Some(HANDSHAKE_TIMEOUT))?;
+                stream.set_write_timeout(Some(HANDSHAKE_TIMEOUT))?;
+                script(&mut stream, request);
+                Ok(())
+            })();
+            if worker.state.lock().unwrap().cancelled {
+                Ok(())
+            } else {
+                result
+            }
         });
         Self {
             dir,
             socket,
+            control,
             handle: Some(handle),
         }
     }
 
-    fn finish(mut self) {
-        self.handle.take().unwrap().join().unwrap();
-        std::fs::remove_dir_all(&self.dir).unwrap();
+    fn cleanup(&mut self) -> Result<(), String> {
+        self.control.cancel();
+        let joined = match self.handle.take() {
+            Some(handle) => match handle.join() {
+                Ok(result) => result.map_err(|error| error.to_string()),
+                Err(_) => Err("Watch test server panicked".into()),
+            },
+            None => Ok(()),
+        };
+        let removed = if self.dir.exists() {
+            std::fs::remove_dir_all(&self.dir).map_err(|error| error.to_string())
+        } else {
+            Ok(())
+        };
+        joined.and(removed)
     }
+
+    fn finish(mut self) {
+        self.cleanup()
+            .expect("Watch test server completes and removes its directory");
+    }
+}
+
+impl Drop for Server {
+    fn drop(&mut self) {
+        // Always join/remove, including a panic in the client or an assertion.
+        // Explicit finish reports helper failures; Drop never double-panics.
+        let _ = self.cleanup();
+    }
+}
+
+#[test]
+fn q3_raw_watch_server_finishes_when_the_client_never_connects() {
+    let server = Server::start_raw(|_, _| panic!("no client should connect"));
+    let dir = server.dir.clone();
+    server.finish();
+    assert!(!dir.exists());
+}
+
+#[test]
+fn q3_raw_watch_server_drop_joins_and_removes_socket_on_unwind() {
+    let server = Server::start_raw(|_, _| panic!("no client should connect"));
+    let dir = server.dir.clone();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _owned = server;
+        panic!("exercise client assertion unwind");
+    }));
+    assert!(result.is_err());
+    assert!(!dir.exists());
 }
 
 fn session<'a>(
@@ -1980,9 +2121,10 @@ fn watch_ack_over_the_batch_limit_sends_chunks_and_settles_every_id() {
     );
     let operations: HashSet<&str> = sent.iter().map(|ack| ack.operation.as_str()).collect();
     assert_eq!(operations.len(), 3, "each chunk has its own operation id");
-    assert!(sent
-        .iter()
-        .all(|ack| ack.via == ModDeliveryVia::Context && ack.claim == claim()));
+    assert!(
+        sent.iter()
+            .all(|ack| ack.via == ModDeliveryVia::Context && ack.claim == claim())
+    );
 }
 
 #[test]
@@ -2127,10 +2269,12 @@ fn watch_carries_a_passive_invitation_as_invitation_content_never_a_message() {
     let value = serde_json::to_value(&lines[0]).unwrap();
     assert_eq!(value["kind"], "invitation");
     assert_eq!(value["wakes"], false);
-    assert!(value["body"]
-        .as_str()
-        .unwrap()
-        .contains("review the passive handoff"));
+    assert!(
+        value["body"]
+            .as_str()
+            .unwrap()
+            .contains("review the passive handoff")
+    );
     assert!(value["body"].as_str().unwrap().contains("accept"));
     assert!(value.get("ack_required").is_none(), "not a message receipt");
 }
@@ -2164,6 +2308,7 @@ fn presentation_watch_requires_both_capability_and_valid_accepted_lease() {
         });
         client.presentation_capability = capability;
         client.cursors_capability = true;
+        client.watch_presentation_capability = true;
         let clock = clock();
         let mut out = Vec::new();
         assert_eq!(
@@ -2252,6 +2397,7 @@ fn capable_watch_streams_ordered_v2_then_explicitly_confirms_captured_controls()
     });
     client.presentation_capability = true;
     client.cursors_capability = true;
+    client.watch_presentation_capability = true;
     let clock = clock();
     let mut out = Vec::new();
     assert_eq!(

@@ -121,6 +121,7 @@ impl Q3Channel {
             .service
             .watch_register(
                 &WatchRequest {
+                    presentation_v2: true,
                     claim: recipient.clone(),
                 },
                 sink.clone(),
@@ -343,7 +344,10 @@ fn presentation_q3_quiet_ordinary_sibling_ack_before_materialization_drains_pass
         .f
         .service
         .watch_register(
-            &crate::protocol::watch::WatchRequest { claim: a.clone() },
+            &crate::protocol::watch::WatchRequest {
+                presentation_v2: true,
+                claim: a.clone(),
+            },
             Arc::new(Q3Sink::default()),
             &budget(),
         )
@@ -533,95 +537,123 @@ fn presentation_q3_capable_registry_uses_only_bounded_real_store_reads() {
     assert_eq!(q.native_version(), 0);
 }
 
-// Kills a receipt-success path that never requests bounded current-owner
-// maintenance, and retirement that mistakes a sibling's ACK for B's display.
+// Kills omission of the receipt recheck independently of B's own reader
+// invalidation: the latter is fully consumed before sibling A settles ID256.
 #[test]
 fn presentation_q3_shared_ack_rechecks_read_captured_body_but_keeps_unread_sibling() {
     use crate::protocol::{commands::DeliveryMode, delivery::DeliveryPullReplyV2};
     for read_b in [true, false] {
         let q = Q3Channel::new();
         let a = q.sibling();
-        let body = "b".repeat(58_000);
-        let first = q
+        let body = "\0".repeat(58_000);
+        let mut sent = (0..255)
+            .map(|n| {
+                q.window.send(
+                    n,
+                    DeliveryMode::Ordinary,
+                    "complete prefix before captured body",
+                )
+            })
+            .collect::<Vec<_>>();
+        let captured = q.window.send(255, DeliveryMode::Ordinary, &body);
+        sent.push(captured.clone());
+        let successor = q
             .window
-            .send(0, DeliveryMode::Ordinary, &"a".repeat(58_000));
-        let continued = q.window.send(1, DeliveryMode::Ordinary, &body);
-        q.finish_attention(&first);
-        let DeliveryPullReplyV2::Page(first_page) = q.frame_then_pull() else {
-            panic!("actual body capture")
-        };
-        assert!(first_page.truncated.contains(&first));
-        let partial = || {
+            .send(256, DeliveryMode::Ordinary, "successor after captured body");
+        q.finish_attention(&sent[0]);
+        let shown = q.drain_continuation(q.frame_then_pull());
+        assert_eq!(
+            shown,
+            sent.iter().cloned().collect(),
+            "SETUP: all 256 real offers precede parking"
+        );
+        let stamps = q.window.offers();
+        assert_eq!(stamps.len(), 256, "SETUP: full real logical ledger");
+        assert!(
+            stamps[&captured].truncated,
+            "SETUP: captured identity was actually offered"
+        );
+        assert!(!stamps.contains_key(&successor));
+        let captured_cursor = || {
             q.window.f.db.query_row(
-            "SELECT ordinary_partial FROM invitation_presentation_consumers WHERE binding_id=?1 AND consumer='watch'",
+            "SELECT ordinary_cursor,ordinary_skip_body,ordinary_partial FROM invitation_presentation_consumers WHERE binding_id=?1 AND consumer='watch'",
             [binding_for_claim(&q.window.f, &q.window.recipient).as_str()],
-            |row| row.get::<_, String>(0),
+            |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, Option<String>>(1)?, row.get::<_, String>(2)?)),
         ).unwrap()
         };
-        let captured: std::collections::HashMap<String, String> =
-            serde_json::from_str(&partial()).unwrap();
-        assert!(
-            captured
-                .get(continued.as_str())
-                .is_some_and(|v| !v.is_empty() && v.len() < WATCH_BODY_LIMIT_BYTES),
-            "source-created current body must actually be captured: {captured:?}"
+        let initial = captured_cursor();
+        assert_eq!(
+            initial.1.as_deref(),
+            Some(captured.as_str()),
+            "SETUP: actual offered skip-body remains captured at more:false"
         );
-        assert!(!q.window.offers().contains_key(&continued));
-        // Observe publication before the receipt event, so it cannot substitute
-        // for the later shared-settlement recheck.
-        q.registry().pass(now_utc(&q.window.f)).unwrap();
-        q.take_frames();
+        assert_eq!(initial.2, "{}");
+        let cursor = crate::protocol::pagination::InboxBatchV2CursorState::decode_for(
+            initial.0.as_deref().expect("SETUP: continued cursor"),
+            "i",
+            &q.window.recipient.seat,
+        )
+        .unwrap();
+        let position = cursor.body.expect("SETUP: actual captured continuation");
+        assert_eq!(position.message, captured);
+        assert!(
+            position.offset >= WATCH_BODY_LIMIT_BYTES as u64 && position.offset < body.len() as u64
+        );
+        // Consume publication and any existing frame with its real continuation.
+        q3_consume_frames_to_quiet(&q);
+        let parked = capacity_normal_state(&q.window);
         let native = q.native_version();
-        let before = partial();
+        let before_reader = reclamation_cursor(&q.window.f, &q.window.recipient);
         if read_b {
             assert_eq!(
-                reclamation_read_full_body(&q.window.f, &first),
-                "a".repeat(58_000)
+                reclamation_read_full_body_with_page(
+                    &q.window.f,
+                    &captured,
+                    crate::protocol::pagination::MAX_PAGE_BYTES
+                ),
+                body
             );
-            assert_eq!(reclamation_read_full_body(&q.window.f, &continued), body);
+            // The 255 small bodies were completely emitted by the real pages;
+            // only the truncated 256th needed a public body continuation.
             reclamation_advance_displayed(
                 &q.window.f,
                 &q.window.recipient,
-                &[first.clone(), continued.clone()],
+                &sent,
                 "q3-captured-b-read",
             );
-            let sequence: i64 = q
-                .window
-                .f
-                .db
-                .query_row(
-                    "SELECT sequence FROM messages WHERE id=?1",
-                    [continued.as_str()],
-                    |row| row.get(0),
-                )
-                .unwrap();
-            assert!(reclamation_cursor(&q.window.f, &q.window.recipient) >= sequence);
+            assert!(reclamation_cursor(&q.window.f, &q.window.recipient) > before_reader);
         }
+        // This is the causal fence: a reader-only production implementation can
+        // produce all of its frames now, and none survive to the A-only event.
+        q3_consume_frames_to_quiet(&q);
         assert_eq!(
-            partial(),
-            before,
-            "own body display cannot discard the still-Pending capture"
+            q.window.offers(),
+            stamps,
+            "Pending keeps every full offer stamp even after B read"
         );
+        assert_eq!(
+            capacity_normal_state(&q.window),
+            parked,
+            "Pending/full capacity keeps the captured body parked"
+        );
+        assert_eq!(captured_cursor(), initial);
+        assert!(q.take_frames().is_empty());
         assert_eq!(q.window.f.db.query_row(
             "SELECT COALESCE((SELECT state FROM receipt_state WHERE message_id=?1 AND seat_id='c'),'pending')",
-            [continued.as_str()], |row| row.get::<_, String>(0),
+            [captured.as_str()], |row| row.get::<_, String>(0),
         ).unwrap(), "pending");
-        q.ack_as(&a, &continued, "q3-captured-a-ack");
-        assert_eq!(
-            q.native_version(),
-            native,
-            "shared settlement needs no new native version"
-        );
+        // No send, read, display, notification or retained reader hint intervenes.
+        q.ack_as(&a, &captured, "q3-captured-a-only-ack");
+        assert_eq!(q.native_version(), native);
         let reply = q.frame_then_pull();
         assert!(!matches!(reply, DeliveryPullReplyV2::Refused { .. }));
-        let remaining: std::collections::HashMap<String, String> =
-            serde_json::from_str(&partial()).unwrap();
         if read_b {
             assert!(
-                !remaining.contains_key(continued.as_str()),
-                "terminal plus B's completed cursor retires the exact capture"
+                matches!(reply, DeliveryPullReplyV2::Page(ref page) if page.offered.contains(&successor)),
+                "A-only event releases the read offered ID256 and emits ID257: {reply:?}"
             );
-            assert!(!q.window.offers().contains_key(&continued));
+            assert!(!q.window.offers().contains_key(&captured));
+            assert_ne!(captured_cursor().1.as_deref(), Some(captured.as_str()));
             let work = q
                 .window
                 .f
@@ -633,30 +665,58 @@ fn presentation_q3_shared_ack_rechecks_read_captured_body_but_keeps_unread_sibli
                 .unwrap();
             assert!(
                 work.ordinary_continuation_key_probes > 0
-                    && work.ordinary_continuation_key_probes <= 15
+                    && work.ordinary_continuation_key_probes <= 15,
+                "same frame-driven Pull must actually retire the Q1 continued body: {work:?}"
             );
         } else {
-            assert!(
-                matches!(reply, DeliveryPullReplyV2::Page(ref page) if page.truncated.contains(&continued))
-                    || remaining.contains_key(continued.as_str()),
-                "unread B must retain or receive its passive body: {reply:?}"
+            assert_eq!(
+                q.window.offers(),
+                stamps,
+                "A's settlement cannot reclaim unread B's offered body"
             );
-            assert!(
-                reclamation_cursor(&q.window.f, &q.window.recipient)
-                    < q.window
-                        .f
-                        .db
-                        .query_row::<i64, _, _>(
-                            "SELECT sequence FROM messages WHERE id=?1",
-                            [continued.as_str()],
-                            |row| row.get(0)
-                        )
-                        .unwrap()
+            assert_eq!(capacity_normal_state(&q.window), parked);
+            assert_eq!(captured_cursor(), initial);
+            assert_eq!(
+                reclamation_cursor(&q.window.f, &q.window.recipient),
+                before_reader
             );
         }
-        assert_eq!(q.receipt(&continued), "acked");
+        assert_eq!(q.receipt(&captured), "acked");
         assert_eq!(q.native_version(), native);
     }
+}
+
+fn q3_consume_frames_to_quiet(q: &Q3Channel) {
+    let manifests: i64 = q
+        .window
+        .f
+        .db
+        .query_row(
+            "SELECT count(*) FROM send_manifests WHERE instance_id='i'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let passes = usize::try_from(manifests).unwrap().div_ceil(100) + 2;
+    for _ in 0..passes {
+        q.registry().pass(now_utc(&q.window.f)).unwrap();
+        let frames = q.take_frames();
+        if !frames.is_empty() {
+            assert!(frames.iter().all(|frame| matches!(
+                frame,
+                crate::protocol::watch::WatchFrame::Attention { .. }
+            )));
+            assert!(
+                q.drain_continuation(q.window.pull()).is_empty(),
+                "maintenance cannot allocate at fixed full capacity"
+            );
+        }
+    }
+    q.registry().pass(now_utc(&q.window.f)).unwrap();
+    assert!(
+        q.take_frames().is_empty(),
+        "SETUP: all prior reader/publication notifications must be consumed before A ACK"
+    );
 }
 
 fn q3_consumer_snapshot(
@@ -760,11 +820,543 @@ fn q3_reader_fixture(consumers: usize) -> (Fixture, CallerClaim, CallerClaim, Me
     else {
         panic!("canonical reader fixture send")
     };
+    let job: String = f.db.query_row("SELECT id FROM work_jobs WHERE kind='send_attention' AND subject_id=(SELECT preparation_id FROM send_manifests WHERE message_id=?1)", [message.as_str()], |row| row.get(0)).unwrap();
+    finish_presentation_attention_job(&f, &job);
     assert_eq!(
         reclamation_read_full_body(&f, &message),
         "reader invalidation canonical body"
     );
     (f, a, b, message)
+}
+
+// Kills ordinary publication observation borrowing DomainService's ACK hint.
+#[test]
+fn presentation_q3_ordinary_publication_generation_observes_early_store_ack_without_service_hint() {
+    use crate::protocol::commands::PermitMutation;
+    use crate::protocol::commands::{Ack, DeliveryMode};
+    let q = Q3Channel::new();
+    let a = q.sibling();
+    let binding = binding_for_claim(&q.window.f, &q.window.recipient);
+    let counters = || {
+        q.window.f.db.query_row(
+        "SELECT ordinary_passive_generation,mod_version FROM invitation_presentation_consumers WHERE binding_id=?1 AND consumer='watch'",
+        [binding.as_str()], |row| Ok((row.get::<_, i64>(0)?,row.get::<_, i64>(1)?)),
+    ).unwrap()
+    };
+    let before = counters();
+    let native = q.native_version();
+    let message = q.window.send(
+        0,
+        DeliveryMode::Ordinary,
+        "publication independent of receipt hint",
+    );
+    assert_eq!(
+        reclamation_read_full_body(&q.window.f, &message),
+        "publication independent of receipt hint"
+    );
+    reclamation_advance_displayed(
+        &q.window.f,
+        &a,
+        std::slice::from_ref(&message),
+        "q3-direct-a-read",
+    );
+    let mutation = PermitMutation::Ack(Ack {
+        claim: a,
+        messages: vec![message.clone()],
+        operation: OperationId::new("q3-direct-store-ack"),
+    });
+    let request = crate::store::cooperative_permit_request(&mutation).unwrap();
+    let permit = q
+        .window
+        .f
+        .store
+        .issue_cooperative_permit(request, &budget())
+        .unwrap();
+    assert!(matches!(
+        q.window
+            .f
+            .store
+            .mutate(mutation, permit, &budget())
+            .unwrap(),
+        CommandResult::Acknowledged(_)
+    ));
+    q.finish_attention(&message);
+    assert_eq!(q.receipt(&message), "acked");
+    assert_eq!(q.native_version(), native);
+    let progress = q
+        .window
+        .f
+        .store
+        .presentation_refresh(
+            &q.window.recipient.seat,
+            &binding,
+            q.window.recipient.binding_generation,
+            q.window.recipient.native_session.as_str(),
+            &budget(),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(progress.ordinary_publication_visits, 1);
+    assert!(progress.ordinary_publication_probes <= 2 && progress.ordinary_publication_seeks <= 3);
+    assert_eq!(
+        counters(),
+        (before.0 + 1, before.1 + 1),
+        "an addressed ordinary publication must change the private source even after early terminal ACK"
+    );
+    assert_eq!(q.native_version(), native);
+    assert_eq!(q.receipt(&message), "acked");
+}
+
+fn q3_receipt_snapshot(
+    f: &Fixture,
+) -> Vec<(
+    String,
+    String,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+)> {
+    let mut query = f.db.prepare("SELECT 'physical',message_id,seat_id,state,ack_binding_id,ack_observation FROM receipts UNION ALL SELECT 'sparse',message_id,seat_id,state,ack_binding_id,ack_observation FROM receipt_state ORDER BY 1,2,3").unwrap();
+    query
+        .query_map([], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+            ))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap()
+}
+
+// All additional membership, publication and gaps use public canonical writers.
+fn q3_many_thread_messages(
+    f: &Fixture,
+    a: &CallerClaim,
+    mode: crate::protocol::commands::DeliveryMode,
+) -> (Vec<ThreadId>, Vec<MessageId>) {
+    use crate::protocol::commands::{CreateThread, Join, SendMessage};
+    let sender = check_in(
+        f,
+        fixture_claim(f, "x", "px", fourth(), "q3-many-thread-sender"),
+        "q3-many-thread-sender-ci",
+    );
+    let mut threads = Vec::new();
+    let mut messages = Vec::new();
+    // Twelve new gaps plus the fixture's original thread exceeds the eight
+    // descriptions returned by fast-forward, without growing the input batch.
+    for n in 0..12 {
+        let CommandResult::ThreadCreated(thread) = f
+            .service
+            .handle(
+                Command::CreateThread(CreateThread {
+                    name: None,
+                    topic: format!("q3 real gap {n}"),
+                    goal: "coalesce reader changes".into(),
+                    operation: OperationId::new(format!("q3-many-create-{n}")),
+                    claim: a.clone(),
+                }),
+                peer(),
+                &budget(),
+            )
+            .unwrap()
+        else {
+            panic!("SETUP: canonical joined thread")
+        };
+        assert!(matches!(
+            f.service
+                .handle(
+                    Command::Join(Join {
+                        thread: thread.clone(),
+                        operation: OperationId::new(format!("q3-many-join-{n}")),
+                        claim: sender.clone(),
+                    }),
+                    peer(),
+                    &budget()
+                )
+                .unwrap(),
+            CommandResult::Joined(_)
+        ));
+        for ordinal in 0..2 {
+            let body = "m".repeat(2048);
+            let CommandResult::MessageSent(message) = f
+                .service
+                .handle(
+                    Command::SendMessage(SendMessage {
+                        delivery_mode: mode,
+                        user_intent: None,
+                        thread: thread.clone(),
+                        body: body.clone(),
+                        direct_recipient: None,
+                        invited_recipients: vec![],
+                        deadline_millis: None,
+                        operation: OperationId::new(format!("q3-many-send-{n}-{ordinal}")),
+                        claim: sender.clone(),
+                        relays_user: false,
+                    }),
+                    peer(),
+                    &budget(),
+                )
+                .unwrap()
+            else {
+                panic!("SETUP: canonical gap send")
+            };
+            assert_eq!(reclamation_read_full_body(f, &message), body);
+            messages.push(message);
+        }
+        threads.push(thread);
+    }
+    (threads, messages)
+}
+
+fn q3_reader_counters(f: &Fixture, claim: &CallerClaim) -> Vec<(String, i64, i64)> {
+    let mut query = f.db.prepare("SELECT consumer,ordinary_passive_generation,mod_version FROM invitation_presentation_consumers WHERE binding_id=?1 ORDER BY consumer").unwrap();
+    query
+        .query_map([binding_for_claim(f, claim).as_str()], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap()
+}
+
+fn q3_assert_one_reader_signal(before: &[(String, i64, i64)], after: &[(String, i64, i64)]) {
+    assert_eq!(before.len(), after.len());
+    for (prior, next) in before.iter().zip(after) {
+        assert_eq!(
+            next,
+            &(prior.0.clone(), prior.1 + 1, prior.2 + 1),
+            "one signal per operation/binding, independent of moved gap count"
+        );
+    }
+}
+
+fn q3_cursors(f: &Fixture, claim: &CallerClaim) -> Vec<(String, i64)> {
+    let mut query = f
+        .db
+        .prepare("SELECT thread_id,seq FROM binding_cursors WHERE binding_id=?1 ORDER BY thread_id")
+        .unwrap();
+    query
+        .query_map([binding_for_claim(f, claim).as_str()], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap()
+}
+
+#[test]
+fn presentation_q3_advance_cursors_coalesces_many_real_thread_gaps() {
+    let (f, a, b, first) = q3_reader_fixture(2);
+    let (threads, mut messages) =
+        q3_many_thread_messages(&f, &a, crate::protocol::commands::DeliveryMode::Ordinary);
+    messages.insert(0, first);
+    let before = q3_reader_counters(&f, &a);
+    let retained = q3_preserved_reader_state(&f, &a);
+    let sibling = q3_consumer_snapshot(&f, &b);
+    let sibling_cursors = q3_cursors(&f, &b);
+    let receipts = q3_receipt_snapshot(&f);
+    reclamation_advance_displayed(&f, &a, &messages, "q3-many-display");
+    q3_assert_one_reader_signal(&before, &q3_reader_counters(&f, &a));
+    assert_eq!(q3_preserved_reader_state(&f, &a), retained);
+    assert_eq!(q3_consumer_snapshot(&f, &b), sibling);
+    assert_eq!(q3_cursors(&f, &b), sibling_cursors);
+    assert_eq!(q3_receipt_snapshot(&f), receipts);
+    for thread in threads {
+        let head: i64 =
+            f.db.query_row(
+                "SELECT next_sequence-1 FROM threads WHERE id=?1",
+                [thread.as_str()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            f.db.query_row::<i64, _, _>(
+                "SELECT seq FROM binding_cursors WHERE binding_id=?1 AND thread_id=?2",
+                params![binding_for_claim(&f, &a).as_str(), thread.as_str()],
+                |row| row.get(0)
+            )
+            .unwrap(),
+            head
+        );
+    }
+    let after = q3_consumer_snapshot(&f, &a);
+    reclamation_advance_displayed(&f, &a, &messages, "q3-many-display");
+    assert_eq!(q3_consumer_snapshot(&f, &a), after);
+    reclamation_advance_displayed(&f, &a, &messages, "q3-many-fresh-noop");
+    assert_eq!(q3_consumer_snapshot(&f, &a), after);
+}
+
+#[test]
+fn presentation_q3_complete_inbox_delivery_coalesces_many_real_thread_gaps() {
+    use crate::protocol::commands::{CompleteInboxDelivery, DeliveryMode};
+    let (f, a, b, _) = q3_reader_fixture(2);
+    let (threads, messages) = q3_many_thread_messages(&f, &a, DeliveryMode::Lazy);
+    let before = q3_reader_counters(&f, &a);
+    let retained = q3_preserved_reader_state(&f, &a);
+    let sibling = q3_consumer_snapshot(&f, &b);
+    let sibling_cursors = q3_cursors(&f, &b);
+    let receipts = q3_receipt_snapshot(&f);
+    let request = CompleteInboxDelivery {
+        messages: messages.clone(),
+        operation: OperationId::new("q3-many-complete"),
+        claim: a.clone(),
+        via: None,
+    };
+    assert!(matches!(
+        f.service
+            .handle(
+                Command::CompleteInboxDelivery(request.clone()),
+                peer(),
+                &budget()
+            )
+            .unwrap(),
+        CommandResult::InboxDeliveryCompleted(_)
+    ));
+    q3_assert_one_reader_signal(&before, &q3_reader_counters(&f, &a));
+    assert_eq!(q3_preserved_reader_state(&f, &a), retained);
+    assert_eq!(q3_consumer_snapshot(&f, &b), sibling);
+    assert_eq!(q3_cursors(&f, &b), sibling_cursors);
+    assert_eq!(q3_receipt_snapshot(&f), receipts);
+    for message in &messages {
+        assert_eq!(
+            f.db.query_row::<String, _, _>(
+                "SELECT state FROM lazy_recipients WHERE message_id=?1 AND seat_id='s'",
+                [message.as_str()],
+                |row| row.get(0)
+            )
+            .unwrap(),
+            "displayed"
+        );
+    }
+    for thread in threads {
+        let head: i64 =
+            f.db.query_row(
+                "SELECT next_sequence-1 FROM threads WHERE id=?1",
+                [thread.as_str()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            f.db.query_row::<i64, _, _>(
+                "SELECT seq FROM binding_cursors WHERE binding_id=?1 AND thread_id=?2",
+                params![binding_for_claim(&f, &a).as_str(), thread.as_str()],
+                |row| row.get(0)
+            )
+            .unwrap(),
+            head
+        );
+    }
+    let after = q3_consumer_snapshot(&f, &a);
+    f.service
+        .handle(
+            Command::CompleteInboxDelivery(request.clone()),
+            peer(),
+            &budget(),
+        )
+        .unwrap();
+    assert_eq!(q3_consumer_snapshot(&f, &a), after);
+    f.service
+        .handle(
+            Command::CompleteInboxDelivery(CompleteInboxDelivery {
+                operation: OperationId::new("q3-many-complete-noop"),
+                ..request
+            }),
+            peer(),
+            &budget(),
+        )
+        .unwrap();
+    assert_eq!(q3_consumer_snapshot(&f, &a), after);
+}
+
+#[test]
+fn presentation_q3_fast_forward_coalesces_every_gap_beyond_description_cap() {
+    use crate::protocol::commands::{BindingEvent, BindingEventKind, DeliveryMode};
+    for consumers in [0, 2] {
+        let (f, a, b, _) = q3_reader_fixture(consumers);
+        let (threads, _) = q3_many_thread_messages(&f, &a, DeliveryMode::Ordinary);
+        let before = q3_reader_counters(&f, &a);
+        let retained = q3_preserved_reader_state(&f, &a);
+        let sibling = q3_consumer_snapshot(&f, &b);
+        let sibling_cursors = q3_cursors(&f, &b);
+        let receipts = q3_receipt_snapshot(&f);
+        f.service
+            .handle(
+                Command::BindingEvent(BindingEvent {
+                    claim: a.clone(),
+                    kind: BindingEventKind::SessionEnd,
+                    child_session: None,
+                    operation: OperationId::new("q3-many-end"),
+                }),
+                peer(),
+                &budget(),
+            )
+            .unwrap();
+        let CommandResult::CheckedIn(result) = f
+            .service
+            .handle(
+                Command::CheckIn(CheckIn {
+                    mode: CheckInMode::Lifecycle {
+                        expected_binding_generation: a.binding_generation,
+                    },
+                    claim: a.clone(),
+                    operation: OperationId::new("q3-many-resume"),
+                    lineage_parent: None,
+                }),
+                peer(),
+                &budget(),
+            )
+            .unwrap()
+        else {
+            panic!("SETUP: canonical lifecycle resume")
+        };
+        let fast_forward = result
+            .fast_forward
+            .expect("SETUP: actual backlog exceeds one ordinary page");
+        assert_eq!(fast_forward.threads.len(), 8);
+        assert_eq!(
+            fast_forward.more, 5,
+            "all thirteen joined gaps move; only eight descriptions fit"
+        );
+        q3_assert_one_reader_signal(&before, &q3_reader_counters(&f, &a));
+        assert_eq!(q3_preserved_reader_state(&f, &a), retained);
+        assert_eq!(q3_consumer_snapshot(&f, &b), sibling);
+        assert_eq!(q3_cursors(&f, &b), sibling_cursors);
+        assert_eq!(q3_receipt_snapshot(&f), receipts);
+        for thread in threads
+            .into_iter()
+            .chain(std::iter::once(ThreadId::new("t")))
+        {
+            let head: i64 =
+                f.db.query_row(
+                    "SELECT next_sequence-1 FROM threads WHERE id=?1",
+                    [thread.as_str()],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                f.db.query_row::<i64, _, _>(
+                    "SELECT seq FROM binding_cursors WHERE binding_id=?1 AND thread_id=?2",
+                    params![binding_for_claim(&f, &a).as_str(), thread.as_str()],
+                    |row| row.get(0)
+                )
+                .unwrap(),
+                head
+            );
+        }
+    }
+}
+
+// Kills invalidation that clears real retained body/carry/outbox bytes or full
+// logical stamps while empty/default consumer rows still appear unchanged.
+#[test]
+fn presentation_q3_reader_change_preserves_nonempty_progress_outbox_and_offers() {
+    use crate::protocol::{
+        commands::{DeliveryMode, SendMessage},
+        delivery::DeliveryPullReplyV2,
+    };
+    let (f, a, b, original) = q3_reader_fixture(2);
+    let sender = check_in(
+        &f,
+        fixture_claim(&f, "x", "px", fourth(), "q3-retained-sender"),
+        "q3-retained-sender-ci",
+    );
+    let send = |n, body: String| {
+        let CommandResult::MessageSent(id) = f
+            .service
+            .handle(
+                Command::SendMessage(SendMessage {
+                    delivery_mode: DeliveryMode::Ordinary,
+                    user_intent: None,
+                    thread: ThreadId::new("t"),
+                    body,
+                    direct_recipient: None,
+                    invited_recipients: vec![],
+                    deadline_millis: None,
+                    operation: OperationId::new(format!("q3-retained-send-{n}")),
+                    claim: sender.clone(),
+                    relays_user: false,
+                }),
+                peer(),
+                &budget(),
+            )
+            .unwrap()
+        else {
+            panic!("SETUP: retained body producer")
+        };
+        id
+    };
+    let first = send(0, "a".repeat(58_000));
+    let second = send(1, "\0".repeat(58_000));
+    let DeliveryPullReplyV2::Page(first_page) = presentation_test_pull(&f, &a) else {
+        panic!("SETUP: real ordinary page")
+    };
+    assert!(first_page.offered.contains(&original));
+    assert!(first_page.truncated.contains(&first));
+    canonical_lazy_invitation_backlog(&f, &a, &sender, 1, "q3-retained-outbox");
+    let DeliveryPullReplyV2::Page(outbox_page) = presentation_test_pull(&f, &a) else {
+        panic!("SETUP: real invitation outbox")
+    };
+    assert!(
+        outbox_page.presentation_token.is_some(),
+        "SETUP: genuine outstanding presentation token"
+    );
+    assert!(!presentation_invitations(&outbox_page).is_empty());
+    let binding = binding_for_claim(&f, &a);
+    let nonempty: (Option<String>,String,Option<String>,String) = f.db.query_row(
+        "SELECT ordinary_cursor,ordinary_partial,outbox_token,outbox_descriptors FROM invitation_presentation_consumers WHERE binding_id=?1 AND consumer='hook'",
+        [binding.as_str()], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?)),
+    ).unwrap();
+    assert!(
+        nonempty.0.is_some(),
+        "SETUP: source-created body continuation remains live"
+    );
+    assert!(
+        nonempty.2.is_some() && nonempty.3 != "[]",
+        "SETUP: nonempty outbox/token"
+    );
+    let offers = f.state.lock().get(&binding).unwrap().offers.clone();
+    assert!(offers.contains_key(&original) && offers.contains_key(&first));
+    assert!(
+        offers
+            .values()
+            .all(|stamp| stamp.count > 0 && stamp.first_at.0 > 0),
+        "SETUP: actual nontrivial full offer stamps"
+    );
+    // Reading first never claims that the second captured body was displayed.
+    assert_eq!(reclamation_read_full_body(&f, &first), "a".repeat(58_000));
+    assert_ne!(first, second);
+    let retained = q3_preserved_reader_state(&f, &a);
+    let sibling = q3_consumer_snapshot(&f, &b);
+    let receipts = q3_receipt_snapshot(&f);
+    let counters = q3_reader_counters(&f, &a);
+    reclamation_advance_displayed(
+        &f,
+        &a,
+        &[original.clone(), first.clone()],
+        "q3-retained-read",
+    );
+    q3_assert_one_reader_signal(&counters, &q3_reader_counters(&f, &a));
+    assert_eq!(q3_preserved_reader_state(&f, &a), retained);
+    assert_eq!(q3_consumer_snapshot(&f, &b), sibling);
+    assert_eq!(q3_receipt_snapshot(&f), receipts);
+    assert_eq!(f.state.lock().get(&binding).unwrap().offers, offers);
+    let after = q3_consumer_snapshot(&f, &a);
+    reclamation_advance_displayed(
+        &f,
+        &a,
+        &[original.clone(), first.clone()],
+        "q3-retained-read",
+    );
+    assert_eq!(q3_consumer_snapshot(&f, &a), after);
+    reclamation_advance_displayed(&f, &a, &[original, first], "q3-retained-noop");
+    assert_eq!(q3_consumer_snapshot(&f, &a), after);
+    assert_eq!(f.state.lock().get(&binding).unwrap().offers, offers);
 }
 
 // Kills seat-wide invalidation, per-message bumps, skipped refresh-only rows,
@@ -774,6 +1366,9 @@ fn presentation_q3_reader_change_is_binding_local_coalesced_and_noop_stable() {
     for consumers in 0..=2 {
         let (f, a, b, message) = q3_reader_fixture(consumers);
         let a_binding = binding_for_claim(&f, &a);
+        assert_eq!(q3_consumer_snapshot(&f, &a).len(), consumers);
+        assert_eq!(q3_consumer_snapshot(&f, &b).len(), consumers);
+        let receipts = q3_receipt_snapshot(&f);
         let b_before = q3_consumer_snapshot(&f, &b);
         let cursor_b = reclamation_cursor(&f, &b);
         let preserved = q3_preserved_reader_state(&f, &a);
@@ -839,6 +1434,7 @@ fn presentation_q3_reader_change_is_binding_local_coalesced_and_noop_stable() {
             "fresh no-op creates no signal"
         );
         assert_eq!(wake_attention(&f), native);
+        assert_eq!(q3_receipt_snapshot(&f), receipts);
         assert_eq!(
             authority(),
             authority_before,
@@ -924,10 +1520,19 @@ fn presentation_q3_reader_change_failure_rolls_back_cursor_and_private_state() {
             peer(),
             &budget(),
         );
-        assert!(
-            result.is_err(),
-            "applicable checked failure must abort: {failure}: {result:?}"
-        );
+        let error = result.expect_err("applicable checked failure must abort");
+        if failure == "later_write" {
+            assert!(
+                error.detail.contains("q3 late reader failure"),
+                "SQL abort, not admission failure: {error:?}"
+            );
+        } else {
+            assert_eq!(
+                error.code,
+                crate::protocol::results::ErrorCode::SequenceExhausted,
+                "checked exhaustion, not admission failure"
+            );
+        }
         assert_eq!(reclamation_cursor(&f, &a), cursor);
         assert_eq!(q3_consumer_snapshot(&f, &a), before);
         assert_eq!(q3_consumer_snapshot(&f, &b), sibling);
@@ -3270,6 +3875,7 @@ fn canonical_lazy_invitation_signals_a_passive_channel_drain_without_attention_h
     service
         .watch_register(
             &WatchRequest {
+                presentation_v2: true,
                 claim: recipient.clone(),
             },
             sink.clone(),
@@ -4887,6 +5493,7 @@ fn presentation_refresh_stub_allows_actual_watch_full_offer_and_replaced_owner_r
         .service
         .watch_register(
             &WatchRequest {
+                presentation_v2: true,
                 claim: recipient.clone(),
             },
             Arc::new(Sink),
@@ -4927,6 +5534,7 @@ fn presentation_refresh_stub_allows_actual_watch_full_offer_and_replaced_owner_r
         .service
         .watch_register(
             &WatchRequest {
+                presentation_v2: true,
                 claim: recipient.clone(),
             },
             Arc::new(Sink),
@@ -5254,6 +5862,7 @@ fn presentation_registry_pass_drives_bounded_passive_refresh_before_full_pull() 
         .service
         .watch_register(
             &WatchRequest {
+                presentation_v2: true,
                 claim: recipient.clone(),
             },
             sink.clone(),
@@ -6352,6 +6961,7 @@ fn presentation_quiet_channel_observes_new_lazy_ordinary_without_wake() {
         .service
         .watch_register(
             &WatchRequest {
+                presentation_v2: true,
                 claim: recipient.clone(),
             },
             sink.clone(),
@@ -6772,6 +7382,7 @@ fn presentation_watch_fresh_confirmation_records_exact_owner_publication_cutoff_
         .service
         .watch_register(
             &WatchRequest {
+                presentation_v2: true,
                 claim: recipient.clone(),
             },
             Arc::new(Sink),
@@ -7592,6 +8203,7 @@ fn presentation_registered_channel_materializes_each_published_warn_before_drain
         .service
         .watch_register(
             &WatchRequest {
+                presentation_v2: true,
                 claim: recipient.clone(),
             },
             sink.clone(),
@@ -8135,6 +8747,7 @@ impl OfferWindowFixture {
                 .service
                 .watch_register(
                     &WatchRequest {
+                        presentation_v2: true,
                         claim: recipient.clone(),
                     },
                     Arc::new(Sink),
@@ -8236,6 +8849,7 @@ impl OfferWindowFixture {
             .service
             .watch_register(
                 &WatchRequest {
+                    presentation_v2: true,
                     claim: self.recipient.clone(),
                 },
                 Arc::new(Sink),
@@ -8407,6 +9021,14 @@ impl Drop for OfferWindowFixture {
 // Read the public body continuation completely before claiming display of an
 // identity whose V2 frame was truncated. No ledger or cursor SQL is written.
 fn reclamation_read_full_body(f: &Fixture, message: &MessageId) -> String {
+    reclamation_read_full_body_with_page(f, message, 4096)
+}
+
+fn reclamation_read_full_body_with_page(
+    f: &Fixture,
+    message: &MessageId,
+    max_bytes: u32,
+) -> String {
     use crate::protocol::{
         commands::{BodyReadRequest, MessageQuery},
         results::MessageContent,
@@ -8430,7 +9052,7 @@ fn reclamation_read_full_body(f: &Fixture, message: &MessageId) -> String {
                     body: BodyReadRequest {
                         cursor,
                         offset: None,
-                        max_bytes: 4096,
+                        max_bytes,
                     },
                 }),
                 peer(),
@@ -9683,6 +10305,7 @@ fn presentation_publication_watch_reconnect_keeps_positive_frontier_without_nati
         .with_delivery_pull(f.state.clone())
         .with_mod_channels(registry.clone());
     let request = WatchRequest {
+        presentation_v2: true,
         claim: recipient.clone(),
     };
     let (first, _) = f
@@ -9865,6 +10488,7 @@ fn presentation_quiet_channel_observes_new_ordinary_ack_message() {
         .service
         .watch_register(
             &WatchRequest {
+                presentation_v2: true,
                 claim: recipient.clone(),
             },
             sink.clone(),
@@ -12140,6 +12764,7 @@ fn presentation_owner_replay_accepts_actual_v1_count_four_and_nonordinary_work()
     let channel = registry
         .register(
             ModChannelRegistration {
+                mode: crate::ports::ModChannelMode::PresentationV2,
                 binding: binding_for_claim(&window.f, &window.recipient),
                 seat: window.recipient.seat.clone(),
                 binding_generation: window.recipient.binding_generation,
@@ -12660,6 +13285,7 @@ fn presentation_owner_replay_owner_permit_fences_replacement_during_store() {
     let request = window.watch_request();
     let stale = request.clone();
     let register = WatchRequest {
+        presentation_v2: true,
         claim: window.recipient.clone(),
     };
     let (registry, _, _) = window.watch.as_ref().unwrap();

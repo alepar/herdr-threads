@@ -143,7 +143,10 @@ fn watch_request(instance: &str, boot: Option<&str>) -> WatchWireRequest {
         request_id: "w1".into(),
         expected_instance: instance.into(),
         expected_boot: boot.map(str::to_owned),
-        watch: WatchRequest { claim: claim() },
+        watch: WatchRequest {
+            claim: claim(),
+            presentation_v2: false,
+        },
     }
 }
 

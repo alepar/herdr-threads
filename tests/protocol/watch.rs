@@ -257,6 +257,7 @@ fn watch_wire_request_is_disjoint_from_other_first_frames() {
         expected_boot: None,
         watch: WatchRequest {
             claim: claim(CallerRole::TopLevel),
+            presentation_v2: false,
         },
     };
     let bytes = serde_json::to_vec(&request).unwrap();
@@ -631,6 +632,7 @@ fn no_mod_channels_is_inert() {
     assert!(!channels.binding_stalled(&seat, &binding, UtcMillis(0)));
     assert!(channels.status().is_none());
     let registration = ModChannelRegistration {
+        mode: crate::ports::ModChannelMode::Legacy,
         seat: seat.clone(),
         binding: binding.clone(),
         binding_generation: 1,

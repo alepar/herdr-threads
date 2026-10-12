@@ -273,6 +273,7 @@ pub fn fast_forward(db: &Connection, binding: &BindingId) -> Result<Option<FastF
     });
     let more = gaps.len().saturating_sub(MAX_THREADS) as u64;
     let mut threads = Vec::new();
+    let mut reader_changed = false;
     for (index, (mut history, cursor, head)) in gaps.into_iter().enumerate() {
         if index < MAX_THREADS {
             history.from_people = summary::people_message_count(db, &history.thread, cursor, head)?;
@@ -283,7 +284,10 @@ pub fn fast_forward(db: &Connection, binding: &BindingId) -> Result<Option<FastF
                 last_message: last,
             });
         }
-        read_cursors::advance(db, binding, &history.thread, head)?;
+        reader_changed |= read_cursors::advance(db, binding, &history.thread, head)?;
+    }
+    if reader_changed {
+        super::presentation_reader::note_binding_reader_change(db, binding)?;
     }
     Ok(Some(FastForward {
         skipped,

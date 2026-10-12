@@ -2954,3 +2954,7 @@ pub(super) fn refresh(
         ordinary_publication_seeks: publications.seeks,
     }))
 }
+
+#[cfg(all(test, feature = "test-support"))]
+#[path = "../../tests/store/notice_replay.rs"]
+mod notice_replay_tests;

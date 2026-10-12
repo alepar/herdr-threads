@@ -309,6 +309,136 @@ fn lost_committed_replies_restart_with_exact_keys_body_and_lazy_audience() {
     }
 }
 
+fn assert_direct_send_frozen_claim_survives_changed_caller(
+    fingerprint: Option<herdr_threads::protocol::authority::LivenessFingerprint>,
+) {
+    use herdr_threads::{cli::journal::SemanticMutation, protocol::authority::LivenessFingerprint};
+    use sha2::{Digest, Sha256};
+
+    let mut f = Fixture::new(false);
+    let original_context = f.contexts.current().unwrap().unwrap();
+    let mut expected = herdr_threads::harness::bridge::caller_claim(&original_context).unwrap();
+    expected.liveness = fingerprint;
+    let open_contexts = || {
+        ContextJournal::open(
+            &f.root.join("contexts"),
+            original_context.instance,
+            &original_context.seat,
+            Duration::from_secs(1),
+        )
+        .unwrap()
+    };
+    if let Some(fingerprint) = fingerprint {
+        f.contexts = open_contexts()
+            .with_agent_caller(original_context.clone(), fingerprint)
+            .unwrap();
+    }
+    // The legacy handle keeps the historical None representation without editing an intent.
+    *f.client.lose.lock().unwrap() = Some("before_send");
+    assert!(
+        f.run(
+            &["send", "--seat", "seat-b", "--body", "frozen caller body"],
+            &mut vec![],
+        )
+        .is_err()
+    );
+    let recovery = f.recovery();
+    let reopened = Journal::open(f.root.join("intents")).unwrap();
+    let reference = reopened.resolve_recovery_ref(&recovery).unwrap();
+    let original = reopened.load(&reference).unwrap();
+    let SemanticMutation::Frozen { claim, mutation } = &original.semantic else {
+        panic!("direct send must retain its original frozen claim")
+    };
+    assert!(matches!(mutation.as_ref(), SemanticMutation::DirectSend(_)));
+    assert_eq!(claim, &expected);
+    let original_bytes = serde_json::to_vec(&original.semantic).unwrap();
+    assert_eq!(
+        original.header.semantic_digest,
+        format!("{:x}", Sha256::digest(&original_bytes))
+    );
+
+    // Replace the environment-derived session, execution and fingerprint at the same seat.
+    let mut successor = original_context.clone();
+    successor.session = SessionReference::Native("successor-session".into());
+    successor.execution = uuid::Uuid::from_u128(3);
+    f.contexts = open_contexts()
+        .with_agent_caller(successor, LivenessFingerprint { pid: 2, start: 2 })
+        .unwrap();
+    let current = f.contexts.current().unwrap().unwrap();
+    let current_claim = f.contexts.claim(&current).unwrap();
+    assert_ne!(current_claim.native_session, expected.native_session);
+    assert_ne!(current_claim.execution, expected.execution);
+    assert_ne!(current_claim.liveness, expected.liveness);
+
+    // Commit the original send, but retain the durable intent through the real output seam.
+    let error = f
+        .run_with_journal(&["retry", &recovery], &mut LostOutput, &reopened)
+        .unwrap_err();
+    assert!(matches!(error, RunError::Io(ref e) if e.to_string().contains("lost output")));
+    let retained = reopened.load(&reference).unwrap();
+    assert_eq!(retained.semantic, original.semantic);
+    assert_eq!(
+        serde_json::to_vec(&retained.semantic).unwrap(),
+        original_bytes
+    );
+    assert_eq!(
+        serde_json::to_value(&retained.header).unwrap(),
+        serde_json::to_value(&original.header).unwrap()
+    );
+    f.run_with_journal(&["retry", &recovery], &mut vec![], &reopened)
+        .unwrap();
+    assert!(reopened.page(&Default::default()).unwrap().items.is_empty());
+    assert_eq!(f.count("direct_threads"), 1);
+    assert_eq!(f.count("invitations"), 1);
+    assert_eq!(
+        f.db.query_row(
+            "SELECT count(*) FROM messages WHERE body='frozen caller body'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap(),
+        1
+    );
+    let calls = f.client.calls.lock().unwrap();
+    let ensures: Vec<_> = calls
+        .iter()
+        .filter_map(|command| match command {
+            Command::EnsureDirectThread(request) => Some(request),
+            _ => None,
+        })
+        .collect();
+    let sends: Vec<_> = calls
+        .iter()
+        .filter_map(|command| match command {
+            Command::SendMessage(request) => Some(request),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ensures.len(), 3);
+    assert_eq!(sends.len(), 3);
+    for request in &ensures {
+        assert_eq!(*request, ensures[0]);
+        assert_eq!(request.claim, expected);
+    }
+    for request in &sends {
+        assert_eq!(*request, sends[0]);
+        assert_eq!(request.claim, expected);
+        assert_eq!(request.body, "frozen caller body");
+    }
+}
+
+#[test]
+fn frozen_some_claim_survives_direct_send_durable_retry_with_changed_caller() {
+    assert_direct_send_frozen_claim_survives_changed_caller(Some(
+        herdr_threads::protocol::authority::LivenessFingerprint::TEST,
+    ));
+}
+
+#[test]
+fn historical_none_claim_survives_direct_send_durable_retry_with_changed_caller() {
+    assert_direct_send_frozen_claim_survives_changed_caller(None);
+}
+
 #[test]
 fn completed_output_loss_replays_history_without_new_effects() {
     let f = Fixture::new(false);

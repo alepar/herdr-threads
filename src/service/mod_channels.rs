@@ -45,8 +45,8 @@
 use crate::{
     harness::adapter::IdleWake,
     ports::{
-        ModBindingRef, ModChannelId, ModChannelRegistration, ModChannelSink, ModChannels,
-        ModFingerprint, ModStoreReads, WatchReplayScope, WatchReplaySnapshot,
+        ModBindingRef, ModChannelId, ModChannelMode, ModChannelRegistration, ModChannelSink,
+        ModChannels, ModFingerprint, ModStoreReads, WatchReplayScope, WatchReplaySnapshot,
     },
     protocol::{
         authority::Harness,
@@ -75,7 +75,9 @@ const STALL_READ_BUDGET_MS: u64 = 1_000;
 struct Entry {
     seat: SeatId,
     channel: Option<ModChannelId>,
-    presentation_lease: String,
+    mode: ModChannelMode,
+    pending_delivery_recheck: bool,
+    presentation_lease: Option<String>,
     owner_replay: Option<WatchReplaySnapshot>,
     sink: Option<Arc<dyn ModChannelSink>>,
     generation: u64,
@@ -89,6 +91,15 @@ struct Entry {
     last_attention_push: Option<UtcMillis>,
     last_fingerprint: Option<ModFingerprint>,
     last_invitation_version: Option<u64>,
+}
+
+struct ChannelWork {
+    binding: BindingId,
+    seat: SeatId,
+    channel: ModChannelId,
+    mode: ModChannelMode,
+    native_session: String,
+    delivery_recheck: bool,
 }
 
 impl Entry {
@@ -152,6 +163,9 @@ impl State {
     }
 }
 
+#[cfg(test)]
+type BeforeFinalPush = Box<dyn FnOnce(&BindingId, ModChannelId, bool) + Send>;
+
 pub struct ModChannelRegistry {
     clock: Arc<dyn Clock>,
     store: Arc<dyn ModStoreReads>,
@@ -160,6 +174,8 @@ pub struct ModChannelRegistry {
     log: Arc<dyn Fn(&str) + Send + Sync>,
     wake_worker: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     dirty: AtomicBool,
+    #[cfg(test)]
+    before_final_push: Mutex<Option<BeforeFinalPush>>,
     /// Binding budget of `register`; production keeps `MAX_WATCH_CONNECTIONS`.
     cap: usize,
     state: Mutex<State>,
@@ -183,6 +199,8 @@ impl ModChannelRegistry {
             log: Arc::new(|_| {}),
             wake_worker: Mutex::new(None),
             dirty: AtomicBool::new(false),
+            #[cfg(test)]
+            before_final_push: Mutex::new(None),
             cap: MAX_WATCH_CONNECTIONS,
             state: Mutex::new(State {
                 entries: HashMap::new(),
@@ -335,10 +353,10 @@ impl ModChannelRegistry {
     /// pushes Attention where the binding's fingerprint changed. A store error is
     /// returned after every entry was tried.
     pub fn pass(&self, now: UtcMillis) -> Result<(), ApiError> {
-        let entries: Vec<(BindingId, SeatId, ModChannelId, String)> = self
+        let entries: Vec<ChannelWork> = self
             .lock()
             .entries
-            .iter()
+            .iter_mut()
             .filter(|(_, entry)| {
                 matches!(
                     entry.state,
@@ -346,77 +364,101 @@ impl ModChannelRegistry {
                 )
             })
             .filter_map(|(binding, entry)| {
-                Some((
-                    binding.clone(),
-                    entry.seat.clone(),
-                    entry.channel?,
-                    entry.native_session.clone(),
-                ))
+                let channel = entry.channel?;
+                let delivery_recheck = entry.mode == ModChannelMode::PresentationV2
+                    && entry.state == ModChannelState::Live
+                    && std::mem::take(&mut entry.pending_delivery_recheck);
+                Some(ChannelWork {
+                    binding: binding.clone(),
+                    seat: entry.seat.clone(),
+                    channel,
+                    mode: entry.mode,
+                    native_session: entry.native_session.clone(),
+                    delivery_recheck,
+                })
             })
             .collect();
         let budget = self.call_budget(2_000);
         let mut first_error = None;
-        for (binding, seat, channel, native_session) in entries {
+        for work in entries {
+            let ChannelWork {
+                binding,
+                seat,
+                channel,
+                native_session,
+                ..
+            } = &work;
+            let channel = *channel;
             let judged = Some(Judged { channel, ack: None });
-            let view =
-                match self
-                    .store
-                    .presentation_seat_view(&seat, ModBindingRef::Id(&binding), &budget)
-                {
-                    Ok(view) => view,
-                    Err(error) => {
-                        first_error.get_or_insert(error);
-                        continue;
-                    }
-                };
-            let Some(view) = view else {
-                self.close_inner(&binding, judged, WatchCloseReason::Unresolved, now);
-                continue;
-            };
-            if view.retired {
-                self.close_inner(&binding, judged, WatchCloseReason::Retired, now);
-                continue;
-            }
-            if !view.continuity_resolved {
-                self.close_inner(&binding, judged, WatchCloseReason::Unresolved, now);
-                continue;
-            }
-            let binding_holds = view.binding.as_ref().is_some_and(|held| {
-                held.binding_id == binding
-                    && held.holds_channel()
-                    && held.native_session == native_session
-            });
-            if !binding_holds {
-                self.close_inner(&binding, judged, WatchCloseReason::BindingChanged, now);
-                continue;
-            }
-            let invitation_version = match self.store.presentation_refresh(
-                &seat,
-                &binding,
-                view.binding
-                    .as_ref()
-                    .expect("binding checked above")
-                    .generation,
-                &native_session,
-                &budget,
-            ) {
-                Ok(Some(progress)) => {
-                    // Continue finite maintenance on the next worker tick;
-                    // it never wakes a seat or consumes presentation output.
-                    if progress.more {
-                        self.mark_dirty();
-                    }
-                    progress.version
+            let view = match match work.mode {
+                ModChannelMode::Legacy => {
+                    self.store
+                        .mod_binding_view(seat, ModBindingRef::Id(binding), &budget)
                 }
-                Ok(None) => view.pending_invitation_version,
+                ModChannelMode::PresentationV2 => {
+                    self.store
+                        .presentation_seat_view(seat, ModBindingRef::Id(binding), &budget)
+                }
+            } {
+                Ok(view) => view,
                 Err(error) => {
+                    self.restore_delivery_recheck(&work, work.delivery_recheck);
                     first_error.get_or_insert(error);
                     continue;
                 }
             };
+            let Some(view) = view else {
+                self.close_inner(binding, judged, WatchCloseReason::Unresolved, now);
+                continue;
+            };
+            if view.retired {
+                self.close_inner(binding, judged, WatchCloseReason::Retired, now);
+                continue;
+            }
+            if !view.continuity_resolved {
+                self.close_inner(binding, judged, WatchCloseReason::Unresolved, now);
+                continue;
+            }
+            let binding_holds = view.binding.as_ref().is_some_and(|held| {
+                &held.binding_id == binding
+                    && held.holds_channel()
+                    && &held.native_session == native_session
+            });
+            if !binding_holds {
+                self.close_inner(binding, judged, WatchCloseReason::BindingChanged, now);
+                continue;
+            }
+            let invitation_version = if work.mode == ModChannelMode::Legacy {
+                view.pending_invitation_version
+            } else {
+                match self.store.presentation_refresh(
+                    seat,
+                    binding,
+                    view.binding
+                        .as_ref()
+                        .expect("binding checked above")
+                        .generation,
+                    native_session,
+                    &budget,
+                ) {
+                    Ok(Some(progress)) => {
+                        // Continue finite maintenance on the next worker tick;
+                        // it never wakes a seat or consumes presentation output.
+                        if progress.more {
+                            self.mark_dirty();
+                        }
+                        progress.version
+                    }
+                    Ok(None) => view.pending_invitation_version,
+                    Err(error) => {
+                        self.restore_delivery_recheck(&work, work.delivery_recheck);
+                        first_error.get_or_insert(error);
+                        continue;
+                    }
+                }
+            };
             self.observe_fingerprint(
-                &binding,
-                channel,
+                &work,
                 view.attention_version,
                 view.fingerprint,
                 invitation_version,
@@ -424,6 +466,18 @@ impl ModChannelRegistry {
             );
         }
         first_error.map_or(Ok(()), Err)
+    }
+
+    fn restore_delivery_recheck(&self, work: &ChannelWork, pending: bool) {
+        if pending
+            && work.mode == ModChannelMode::PresentationV2
+            && let Some(entry) = self.lock().entries.get_mut(&work.binding)
+            && entry.channel == Some(work.channel)
+            && entry.mode == work.mode
+            && entry.state == ModChannelState::Live
+        {
+            entry.pending_delivery_recheck = true;
+        }
     }
 
     /// The body of [`ModChannels::close`]. With `judged`, it returns under the
@@ -541,28 +595,30 @@ impl ModChannelRegistry {
     /// registration's initial sweep). Does nothing when `channel` is no longer the binding's.
     fn observe_fingerprint(
         &self,
-        binding: &BindingId,
-        channel: ModChannelId,
+        work: &ChannelWork,
         version: u64,
         fingerprint: ModFingerprint,
         invitation_version: u64,
         now: UtcMillis,
     ) {
+        let binding = &work.binding;
+        let channel = work.channel;
         let (push, passive) = {
             let mut state = self.lock();
             let Some(entry) = state.entries.get_mut(binding) else {
                 return;
             };
-            if entry.channel != Some(channel) {
+            if entry.channel != Some(channel) || entry.mode != work.mode {
                 return;
             }
             let changed = match &entry.last_fingerprint {
                 None => fingerprint.has_pending(),
                 Some(last) => *last != fingerprint,
             };
-            let passive = entry
-                .last_invitation_version
-                .map_or(invitation_version != 0, |last| last != invitation_version);
+            let passive = work.delivery_recheck
+                || entry
+                    .last_invitation_version
+                    .map_or(invitation_version != 0, |last| last != invitation_version);
             entry.last_invitation_version = Some(invitation_version);
             entry.last_fingerprint = Some(fingerprint);
             (
@@ -570,34 +626,55 @@ impl ModChannelRegistry {
                 passive && entry.state == ModChannelState::Live,
             )
         };
+        #[cfg(test)]
+        if push || passive {
+            // The first state guard is gone. Take the per-registry hook out of
+            // its mutex before the test performs a real channel replacement.
+            let callback = self.before_final_push.lock().unwrap().take();
+            if let Some(callback) = callback {
+                callback(binding, channel, push);
+            }
+        }
         if push {
-            self.notify_binding(binding, version, now);
+            if !self.notify_binding(binding, version, now) {
+                self.restore_delivery_recheck(work, true);
+            }
         } else if passive {
-            let state = self.lock();
-            if let Some(entry) = state.entries.get(binding)
+            let mut state = self.lock();
+            if let Some(entry) = state.entries.get_mut(binding)
                 && entry.channel == Some(channel)
+                && entry.mode == work.mode
                 && entry.state == ModChannelState::Live
-                && let Some(sink) = &entry.sink
+                && let Some(sink) = entry.sink.clone()
             {
                 // Existing wire signal requests a drain; it does not arm stall detection.
-                sink.push(WatchFrame::Attention { version });
+                if !sink.push(WatchFrame::Attention { version })
+                    && entry.mode == ModChannelMode::PresentationV2
+                {
+                    // False means a closed receiver. The safety pass or reconnect
+                    // retries; immediately dirtying this entry would spin.
+                    entry.pending_delivery_recheck = true;
+                }
             }
         }
     }
 
-    fn notify_binding(&self, binding: &BindingId, version: u64, now: UtcMillis) {
+    fn notify_binding(&self, binding: &BindingId, version: u64, now: UtcMillis) -> bool {
         let mut state = self.lock();
         let Some(entry) = state.entries.get_mut(binding) else {
-            return;
+            return false;
         };
         if entry.state != ModChannelState::Live {
-            return;
+            return false;
         }
         let Some(sink) = entry.sink.clone() else {
-            return;
+            return false;
         };
         if sink.push(WatchFrame::Attention { version }) {
             entry.last_attention_push = Some(now);
+            true
+        } else {
+            false
         }
     }
 }
@@ -610,8 +687,12 @@ impl ModChannels for ModChannelRegistry {
         self.lock()
             .entries
             .values()
-            .find(|entry| entry.channel == Some(channel) && entry.state == ModChannelState::Live)
-            .map(|entry| entry.presentation_lease.clone())
+            .find(|entry| {
+                entry.channel == Some(channel)
+                    && entry.mode == ModChannelMode::PresentationV2
+                    && entry.state == ModChannelState::Live
+            })
+            .and_then(|entry| entry.presentation_lease.clone())
     }
     fn presentation_owner_live(
         &self,
@@ -623,10 +704,11 @@ impl ModChannels for ModChannelRegistry {
     ) -> bool {
         self.lock().entries.get(binding).is_some_and(|entry| {
             &entry.seat == seat
+                && entry.mode == ModChannelMode::PresentationV2
                 && entry.state == ModChannelState::Live
                 && entry.generation == generation
                 && entry.native_session == native
-                && entry.presentation_lease == lease
+                && entry.presentation_lease.as_deref() == Some(lease)
         })
     }
     fn presentation_replay_snapshot(
@@ -638,11 +720,12 @@ impl ModChannels for ModChannelRegistry {
         let state = self.lock();
         let entry = state.entries.get(&known.binding_id)?;
         if entry.seat != claim.seat
+            || entry.mode != ModChannelMode::PresentationV2
             || entry.harness != claim.harness
             || entry.state != ModChannelState::Live
             || entry.generation != claim.binding_generation
             || entry.native_session != claim.native_session.as_str()
-            || entry.presentation_lease != lease
+            || entry.presentation_lease.as_deref() != Some(lease)
             || known.generation != claim.binding_generation
         {
             return None;
@@ -698,10 +781,11 @@ impl ModChannels for ModChannelRegistry {
             return;
         };
         if entry.seat != snapshot.scope.seat
+            || entry.mode != ModChannelMode::PresentationV2
             || entry.state != ModChannelState::Live
             || entry.generation != snapshot.scope.generation
             || entry.native_session != snapshot.scope.native_session
-            || entry.presentation_lease != snapshot.scope.lease
+            || entry.presentation_lease.as_deref() != Some(snapshot.scope.lease.as_str())
         {
             return;
         }
@@ -761,8 +845,11 @@ impl ModChannels for ModChannelRegistry {
                 Entry {
                     seat: registration.seat.clone(),
                     channel: Some(id),
+                    mode: registration.mode,
+                    pending_delivery_recheck: false,
                     owner_replay: None,
-                    presentation_lease: uuid::Uuid::new_v4().simple().to_string(),
+                    presentation_lease: (registration.mode == ModChannelMode::PresentationV2)
+                        .then(|| uuid::Uuid::new_v4().simple().to_string()),
                     sink: Some(sink),
                     generation: registration.binding_generation,
                     native_session: registration.native_session.as_str().to_owned(),
@@ -856,6 +943,28 @@ impl ModChannels for ModChannelRegistry {
         }
     }
 
+    fn presentation_delivery_may_have_changed(&self, seat: &SeatId) {
+        let marked = {
+            let mut state = self.lock();
+            let bindings = state.seat_bindings(seat);
+            let mut marked = false;
+            for binding in bindings {
+                if let Some(entry) = state.entries.get_mut(&binding)
+                    && entry.mode == ModChannelMode::PresentationV2
+                    && entry.state == ModChannelState::Live
+                {
+                    entry.pending_delivery_recheck = true;
+                    marked = true;
+                }
+            }
+            marked
+        };
+        if marked {
+            self.mark_dirty();
+            self.wake_worker();
+        }
+    }
+
     fn seat_live(&self, seat: &SeatId) -> bool {
         let now = self.clock.utc_now();
         let state = self.lock();
@@ -906,10 +1015,11 @@ impl ModChannels for ModChannelRegistry {
         // or replacement cannot turn an old confirmation into new evidence.
         if let Some(entry) = self.lock().entries.get_mut(binding)
             && &entry.seat == seat
+            && entry.mode == ModChannelMode::PresentationV2
             && entry.state == ModChannelState::Live
             && entry.generation == binding_generation
             && entry.native_session == native_session
-            && entry.presentation_lease == lease
+            && entry.presentation_lease.as_deref() == Some(lease)
         {
             entry.last_attention_push = Some(now);
         }

@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    ports::{ModBindingRef, ModBindingView, ModSeatView},
+    ports::{ModBindingRef, ModBindingView, ModChannelMode, ModSeatView},
     protocol::{
         ids::NativeSessionId,
         results::ErrorCode,
@@ -68,14 +68,15 @@ impl ModStoreReads for FakeStore {
         binding: ModBindingRef<'_>,
         _budget: &CallBudget,
     ) -> Result<Option<ModSeatView>, ApiError> {
-        if self.fail_views.load(Ordering::SeqCst) {
-            return Err(ApiError::new(ErrorCode::StoreBusy, "busy".to_owned()));
-        }
+        let fail = self.fail_views.load(Ordering::SeqCst);
         let ModBindingRef::Id(binding) = binding else {
             panic!("the registry reads bindings by id");
         };
         let view = self.views.lock().unwrap().get(binding).cloned().flatten();
         self.run_hook();
+        if fail {
+            return Err(ApiError::new(ErrorCode::StoreBusy, "busy".to_owned()));
+        }
         Ok(view)
     }
     fn mod_stall_oldest(
@@ -167,16 +168,33 @@ impl Fixture {
         self.kicks.load(Ordering::SeqCst)
     }
     fn register(&self, seat: &str, generation: u64) -> (ModChannelId, Arc<RecordingSink>) {
-        self.try_register(seat, generation).unwrap()
+        self.register_mode(seat, generation, ModChannelMode::Legacy)
+    }
+    fn register_mode(
+        &self,
+        seat: &str,
+        generation: u64,
+        mode: ModChannelMode,
+    ) -> (ModChannelId, Arc<RecordingSink>) {
+        self.try_register_mode(seat, generation, mode).unwrap()
     }
     fn try_register(
         &self,
         seat: &str,
         generation: u64,
     ) -> Result<(ModChannelId, Arc<RecordingSink>), WatchRefusalReason> {
+        self.try_register_mode(seat, generation, ModChannelMode::Legacy)
+    }
+    fn try_register_mode(
+        &self,
+        seat: &str,
+        generation: u64,
+        mode: ModChannelMode,
+    ) -> Result<(ModChannelId, Arc<RecordingSink>), WatchRefusalReason> {
         let sink = Arc::new(RecordingSink::default());
         let id = self.registry.register(
             ModChannelRegistration {
+                mode,
                 seat: SeatId::new(seat),
                 binding: bid(seat, generation),
                 binding_generation: generation,
@@ -195,6 +213,7 @@ impl Fixture {
         let sink = Arc::new(RecordingSink::default());
         let registry = Arc::clone(&self.registry);
         let registration = ModChannelRegistration {
+            mode: ModChannelMode::Legacy,
             seat: seat(seat_name),
             binding: bid(seat_name, generation),
             binding_generation: generation,
@@ -868,7 +887,7 @@ mod domain {
             watch::WatchRequest,
         },
         service::dispatch::DomainService,
-        store::{connection::StoreContext, SqliteStore, StoreSettings},
+        store::{SqliteStore, StoreSettings, connection::StoreContext},
     };
 
     struct Rig {
@@ -969,6 +988,7 @@ mod domain {
 
     fn request() -> WatchRequest {
         WatchRequest {
+            presentation_v2: false,
             claim: CallerClaim {
                 instance: "i".into(),
                 seat: seat("s"),
@@ -1008,7 +1028,7 @@ mod domain {
             results::CommandResult,
         };
         let rig = rig();
-        let req = request();
+        let req = q3_request_for(&rig, "native", true);
         let (first, _) = register(&rig, &req).unwrap();
         let old = rig
             .registry
@@ -1364,8 +1384,16 @@ mod domain {
         (id, sink)
     }
 
-    fn q3_request_for(session: &str, presentation: bool) -> WatchRequest {
-        let mut value = serde_json::to_value(request_for(session)).unwrap();
+    fn q3_request_for(rig: &Rig, session: &str, presentation: bool) -> WatchRequest {
+        let mut req = request_for(session);
+        let (generation, execution, target): (u64, String, String) = db(rig).query_row(
+            "SELECT generation,execution_id,target_id FROM occupant_bindings WHERE seat_id='s' AND native_session=?1 AND agent_id='' AND ended_at IS NULL",
+            [session], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ).unwrap();
+        req.claim.binding_generation = generation;
+        req.claim.execution = ExecutionId::new(execution);
+        req.claim.target = HostTargetId::new(target);
+        let mut value = serde_json::to_value(req).unwrap();
         if presentation {
             value["presentation_v2"] = serde_json::json!(true);
         }
@@ -1482,10 +1510,11 @@ mod domain {
             .domain
             .watch_presentation_lease(channel)
             .unwrap_or_else(|| "0123456789abcdef0123456789abcdef".into());
-        assert!(rig
-            .registry
-            .presentation_replay_snapshot(&req.claim, &lease, &q3_due(rig.binding()))
-            .is_none());
+        assert!(
+            rig.registry
+                .presentation_replay_snapshot(&req.claim, &lease, &q3_due(rig.binding()))
+                .is_none()
+        );
     }
 
     #[test]
@@ -1509,15 +1538,44 @@ mod domain {
         use crate::protocol::delivery::{DeliveryPresentationConfirmationV2, DeliveryPullReplyV2};
         let rig = rig();
         let sibling_binding = rig.add_binding("native2");
-        let capable = q3_request_for("native", true);
-        let legacy = q3_request_for("native2", false);
+        assert_ne!(rig.binding(), sibling_binding);
+        let connected: u64 = db(&rig).query_row(
+            "SELECT COUNT(*) FROM occupant_bindings WHERE seat_id='s' AND liveness='connected' AND ended_at IS NULL", [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(connected, 2);
+        let capable = q3_request_for(&rig, "native", true);
+        let legacy = q3_request_for(&rig, "native2", false);
         let (first, _) = register(&rig, &capable).unwrap();
         let old = rig
             .domain
             .watch_presentation_lease(first)
             .expect("opted-in channel lease");
         assert!(crate::protocol::delivery::valid_presentation_token(&old));
+        let sibling_capable = q3_request_for(&rig, "native2", true);
+        assert_ne!(capable.claim.execution, sibling_capable.claim.execution);
+        let (sibling_owner, _) = register(&rig, &sibling_capable).unwrap();
+        let sibling_lease = rig.domain.watch_presentation_lease(sibling_owner).unwrap();
+        assert!(
+            matches!(
+                q3_pull(&rig, &sibling_capable.claim, &sibling_lease),
+                DeliveryPullReplyV2::Unchanged { .. }
+            ),
+            "the canonical sibling claim is positively admitted with its own capable lease"
+        );
+        let mut stale_execution = sibling_capable.claim.clone();
+        stale_execution.execution = capable.claim.execution.clone();
+        assert!(
+            matches!(
+                q3_pull(&rig, &stale_execution, &sibling_lease),
+                DeliveryPullReplyV2::Refused { .. }
+            ),
+            "execution mismatch remains a separate negative"
+        );
         let (sibling, _) = register(&rig, &legacy).unwrap();
+        assert!(matches!(
+            q3_pull(&rig, &sibling_capable.claim, &sibling_lease),
+            DeliveryPullReplyV2::Refused { .. }
+        ));
         assert_eq!(rig.domain.watch_presentation_lease(sibling), None);
         assert!(matches!(
             q3_pull(&rig, &capable.claim, &old),
@@ -1527,13 +1585,14 @@ mod domain {
             q3_pull(&rig, &legacy.claim, &old),
             DeliveryPullReplyV2::Refused { .. }
         ));
-        assert!(rig
-            .registry
-            .presentation_replay_snapshot(&legacy.claim, &old, &q3_due(sibling_binding))
-            .is_none());
+        assert!(
+            rig.registry
+                .presentation_replay_snapshot(&legacy.claim, &old, &q3_due(sibling_binding))
+                .is_none()
+        );
 
         // Capable -> Legacy replacement owns neither the old token nor replay.
-        let legacy_owner = q3_request_for("native", false);
+        let legacy_owner = q3_request_for(&rig, "native", false);
         let (replacement, _) = register(&rig, &legacy_owner).unwrap();
         assert_eq!(rig.domain.watch_presentation_lease(first), None);
         assert_eq!(rig.domain.watch_presentation_lease(replacement), None);
@@ -1545,10 +1604,11 @@ mod domain {
             q3_confirm(&rig, &capable.claim, &old),
             DeliveryPresentationConfirmationV2::StaleBinding
         );
-        assert!(rig
-            .registry
-            .presentation_replay_snapshot(&capable.claim, &old, &q3_due(rig.binding()))
-            .is_none());
+        assert!(
+            rig.registry
+                .presentation_replay_snapshot(&capable.claim, &old, &q3_due(rig.binding()))
+                .is_none()
+        );
 
         // Legacy -> Capable replacement gets fresh exact-owner authority.
         let (current, _) = register(&rig, &capable).unwrap();
@@ -1589,10 +1649,11 @@ mod domain {
             q3_confirm(&rig, &capable.claim, &new),
             DeliveryPresentationConfirmationV2::StaleBinding
         );
-        assert!(rig
-            .registry
-            .presentation_replay_snapshot(&capable.claim, &new, &q3_due(rig.binding()))
-            .is_none());
+        assert!(
+            rig.registry
+                .presentation_replay_snapshot(&capable.claim, &new, &q3_due(rig.binding()))
+                .is_none()
+        );
     }
 
     /// An ordinary message `id` (sequence `seq` of thread `t`) published to seat `s`.
@@ -1721,7 +1782,7 @@ mod domain {
 
     #[test]
     fn disconnect_closes_that_bindings_channel() {
-        use crate::store::bindings::{disconnect, DisconnectReason};
+        use crate::store::bindings::{DisconnectReason, disconnect};
         let rig = rig();
         let (a, b) = (rig.binding(), rig.add_binding("native2"));
         let (_, a_sink) = register_with(&rig, &request());
@@ -1988,7 +2049,7 @@ fn record_ack_and_attention_push_for_another_binding_are_ignored() {
 #[test]
 fn passive_invitation_drain_does_not_arm_attention_stall_history() {
     let f = fixture();
-    let (_, sink) = f.register("a", 1);
+    let (_, sink) = f.register_mode("a", 1, ModChannelMode::PresentationV2);
     f.set_view(&bid("a", 1), Some(view("a", 1, ModFingerprint::default())));
     f.registry.pass(f.now()).unwrap();
     let mut changed = view("a", 1, ModFingerprint::default());
@@ -2017,6 +2078,11 @@ fn q3_closed_receiver_preserves_passive_drain_without_an_immediate_kick_loop() {
         }
     }
     let f = fixture();
+    let worker_kicks = Arc::new(AtomicUsize::new(0));
+    let counted_worker = worker_kicks.clone();
+    f.registry.set_worker_wake(Arc::new(move || {
+        counted_worker.fetch_add(1, Ordering::SeqCst);
+    }));
     let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
     drop(receiver);
     let sink = Arc::new(ClosedReceiverSink {
@@ -2027,6 +2093,7 @@ fn q3_closed_receiver_preserves_passive_drain_without_an_immediate_kick_loop() {
         .registry
         .register(
             ModChannelRegistration {
+                mode: ModChannelMode::PresentationV2,
                 seat: seat("a"),
                 binding: bid("a", 1),
                 binding_generation: 1,
@@ -2040,7 +2107,12 @@ fn q3_closed_receiver_preserves_passive_drain_without_an_immediate_kick_loop() {
         .unwrap();
     assert!(
         f.registry.presentation_lease(channel).is_some(),
-        "V090 capable fixture; elect explicitly after mode lands"
+        "explicit capable fixture"
+    );
+    assert_eq!(
+        worker_kicks.swap(0, Ordering::SeqCst),
+        1,
+        "registration schedules its initial pass"
     );
     f.registry.take_dirty();
     let kicks = f.kicks();
@@ -2058,6 +2130,11 @@ fn q3_closed_receiver_preserves_passive_drain_without_an_immediate_kick_loop() {
         "a dead sink cannot spin the worker immediately"
     );
     assert_eq!(f.kicks(), kicks);
+    assert_eq!(
+        worker_kicks.load(Ordering::SeqCst),
+        0,
+        "closed receiver adds no worker kick"
+    );
     // The same clock, scope and private version: only failed-enqueue recovery
     // can make the existing safety pass retry this exact channel's drain.
     f.registry.pass(f.now()).unwrap();
@@ -2072,63 +2149,76 @@ fn q3_closed_receiver_preserves_passive_drain_without_an_immediate_kick_loop() {
     );
     assert!(!f.registry.take_dirty());
     assert_eq!(f.kicks(), kicks);
+    assert_eq!(
+        worker_kicks.load(Ordering::SeqCst),
+        0,
+        "closed receiver adds no worker kick"
+    );
 }
 
 #[test]
 fn presentation_owner_lease_is_exact_live_and_replacement_fenced() {
     let f = fixture();
     let a = seat("a");
-    let (first, _) = f.register("a", 1);
+    let (first, _) = f.register_mode("a", 1, ModChannelMode::PresentationV2);
     let old = f
         .registry
         .presentation_lease(first)
         .expect("attached channel gets presentation lease");
     assert!(crate::protocol::delivery::valid_presentation_token(&old));
-    let (sibling, _) = f.register("a", 2);
+    let (sibling, _) = f.register_mode("a", 2, ModChannelMode::PresentationV2);
     let sibling_lease = f.registry.presentation_lease(sibling).unwrap();
-    assert!(!f
-        .registry
-        .presentation_owner_live(&a, &bid("a", 2), 1, "native", &old));
-    assert!(f
-        .registry
-        .presentation_owner_live(&a, &bid("a", 1), 1, "native", &old));
-    assert!(!f
-        .registry
-        .presentation_owner_live(&a, &bid("a", 1), 2, "native", &old));
-    assert!(!f
-        .registry
-        .presentation_owner_live(&a, &bid("a", 1), 1, "different", &old));
-    let (second, _) = f.register("a", 1);
+    assert!(
+        !f.registry
+            .presentation_owner_live(&a, &bid("a", 2), 1, "native", &old)
+    );
+    assert!(
+        f.registry
+            .presentation_owner_live(&a, &bid("a", 1), 1, "native", &old)
+    );
+    assert!(
+        !f.registry
+            .presentation_owner_live(&a, &bid("a", 1), 2, "native", &old)
+    );
+    assert!(
+        !f.registry
+            .presentation_owner_live(&a, &bid("a", 1), 1, "different", &old)
+    );
+    let (second, _) = f.register_mode("a", 1, ModChannelMode::PresentationV2);
     let new = f
         .registry
         .presentation_lease(second)
         .expect("replacement gets fresh lease");
     assert_ne!(old, new);
     assert!(f.registry.presentation_lease(first).is_none());
-    assert!(!f
-        .registry
-        .presentation_owner_live(&a, &bid("a", 1), 1, "native", &old));
-    assert!(f
-        .registry
-        .presentation_owner_live(&a, &bid("a", 1), 1, "native", &new));
-    assert!(f
-        .registry
-        .presentation_owner_live(&a, &bid("a", 2), 2, "native", &sibling_lease));
+    assert!(
+        !f.registry
+            .presentation_owner_live(&a, &bid("a", 1), 1, "native", &old)
+    );
+    assert!(
+        f.registry
+            .presentation_owner_live(&a, &bid("a", 1), 1, "native", &new)
+    );
+    assert!(
+        f.registry
+            .presentation_owner_live(&a, &bid("a", 2), 2, "native", &sibling_lease)
+    );
     f.registry.unregister(second, f.now());
     assert!(
         f.registry.is_live(&a, &bid("a", 1)),
         "legacy ACK reconnect grace remains"
     );
-    assert!(!f
-        .registry
-        .presentation_owner_live(&a, &bid("a", 1), 1, "native", &new));
+    assert!(
+        !f.registry
+            .presentation_owner_live(&a, &bid("a", 1), 1, "native", &new)
+    );
     assert!(f.registry.presentation_lease(second).is_none());
 }
 
 #[test]
 fn presentation_owner_permit_serializes_replacement() {
     let f = fixture();
-    let (first, _) = f.register("a", 1);
+    let (first, _) = f.register_mode("a", 1, ModChannelMode::PresentationV2);
     let old = f.registry.presentation_lease(first).expect("live lease");
     let permit = f
         .registry
@@ -2145,6 +2235,7 @@ fn presentation_owner_permit_serializes_replacement() {
             started_tx.send(()).unwrap();
             let result = registry.register(
                 ModChannelRegistration {
+                    mode: ModChannelMode::PresentationV2,
                     seat: seat("a"),
                     binding: bid("a", 1),
                     binding_generation: 1,
@@ -2166,9 +2257,10 @@ fn presentation_owner_permit_serializes_replacement() {
             .is_err(),
         "replacement cannot cross an active allocation/confirm permit"
     );
-    assert!(f
-        .registry
-        .presentation_owner_live(&seat("a"), &bid("a", 1), 1, "native", &old));
+    assert!(
+        f.registry
+            .presentation_owner_live(&seat("a"), &bid("a", 1), 1, "native", &old)
+    );
     drop(owner);
     let second = done_rx
         .recv_timeout(std::time::Duration::from_secs(2))
@@ -2176,16 +2268,17 @@ fn presentation_owner_permit_serializes_replacement() {
         .unwrap();
     worker.join().unwrap();
     assert_ne!(first, second);
-    assert!(!f
-        .registry
-        .presentation_owner_live(&seat("a"), &bid("a", 1), 1, "native", &old));
+    assert!(
+        !f.registry
+            .presentation_owner_live(&seat("a"), &bid("a", 1), 1, "native", &old)
+    );
 }
 
 #[test]
 fn presentation_attention_cutoff_requires_exact_live_owner() {
     let f = fixture();
     let a = seat("a");
-    let (first, _) = f.register("a", 1);
+    let (first, _) = f.register_mode("a", 1, ModChannelMode::PresentationV2);
     let old = f.registry.presentation_lease(first).unwrap();
     for (binding, generation, native, lease) in [
         (bid("a", 2), 1, "native", old.as_str()),
@@ -2218,7 +2311,7 @@ fn presentation_attention_cutoff_requires_exact_live_owner() {
         f.registry.lock().entries[&bid("a", 1)].last_attention_push,
         Some(UtcMillis(101))
     );
-    let (second, _) = f.register("a", 1);
+    let (second, _) = f.register_mode("a", 1, ModChannelMode::PresentationV2);
     let new = f.registry.presentation_lease(second).unwrap();
     f.registry.record_presentation_attention_push(
         &a,
@@ -2381,12 +2474,14 @@ fn stall_cooldown_is_per_binding() {
     f.advance(over);
     // Binding 2 acked just now; binding 1 never did.
     f.registry.record_ack(&seat("a"), &bid("a", 2), f.now());
-    assert!(f
-        .registry
-        .binding_stalled(&seat("a"), &bid("a", 1), f.now()));
-    assert!(!f
-        .registry
-        .binding_stalled(&seat("a"), &bid("a", 2), f.now()));
+    assert!(
+        f.registry
+            .binding_stalled(&seat("a"), &bid("a", 1), f.now())
+    );
+    assert!(
+        !f.registry
+            .binding_stalled(&seat("a"), &bid("a", 2), f.now())
+    );
     assert!(
         !f.registry.stalled(&seat("a"), f.now()),
         "the seat is stalled only when every one of its channels is"
@@ -2430,4 +2525,387 @@ fn seat_stalled_needs_every_channel_stalled() {
     assert!(f.registry.stalled(&seat("a"), f.now()));
     f.registry.record_ack(&seat("a"), &bid("a", 2), f.now());
     assert!(!f.registry.stalled(&seat("a"), f.now()));
+}
+
+fn q3_replace_at_final_push_gap(
+    active: bool,
+    old_mode: ModChannelMode,
+    replacement_mode: ModChannelMode,
+) {
+    let f = fixture();
+    let (old_channel, old_sink) = f.register_mode("a", 1, old_mode);
+    let mut old_view = view(
+        "a",
+        1,
+        if active {
+            pending(3)
+        } else {
+            ModFingerprint::default()
+        },
+    );
+    old_view.pending_invitation_version = if active { 0 } else { 42 };
+    f.set_view(&bid("a", 1), Some(old_view));
+    let replacement = Arc::new(Mutex::new(None));
+    let captured = replacement.clone();
+    let weak_registry = Arc::downgrade(&f.registry);
+    let now = f.now();
+    *f.registry.before_final_push.lock().unwrap() =
+        Some(Box::new(move |binding, judged_channel, is_active| {
+            assert_eq!(binding, &bid("a", 1));
+            assert_eq!(judged_channel, old_channel);
+            assert_eq!(is_active, active);
+            let registry = weak_registry.upgrade().unwrap();
+            {
+                // Fail immediately if the seam accidentally runs under the first
+                // guard. The synchronous callback is a deterministic scheduling
+                // boundary, so no racing lock acquisition or sleep is needed.
+                let state = registry
+                    .state
+                    .try_lock()
+                    .expect("first observation guard must be dropped");
+                let observed = &state.entries[binding];
+                assert_eq!(observed.channel, Some(old_channel));
+                assert_eq!(observed.mode, old_mode);
+                assert!(
+                    observed.last_fingerprint.is_some(),
+                    "the real observation completed before replacement"
+                );
+            }
+            let sink = Arc::new(RecordingSink::default());
+            let current = registry
+                .register(
+                    ModChannelRegistration {
+                        mode: replacement_mode,
+                        seat: seat("a"),
+                        binding: binding.clone(),
+                        binding_generation: 1,
+                        native_session: NativeSessionId::new("native"),
+                        harness: Harness::Claude,
+                        idle_wake: IdleWake::Channel,
+                        registered_at: now,
+                    },
+                    sink.clone(),
+                )
+                .unwrap();
+            *captured.lock().unwrap() = Some((current, sink));
+        }));
+    // Runs the actual store read, observation, callback and final push path.
+    f.registry.pass(now).unwrap();
+    let (current, sink) = replacement
+        .lock()
+        .unwrap()
+        .take()
+        .expect("real gap callback ran");
+    assert_ne!(old_channel, current);
+    assert_eq!(
+        old_sink.frames(),
+        vec![WatchFrame::Close {
+            reason: WatchCloseReason::Replaced
+        }]
+    );
+    let state = f.registry.lock();
+    let entry = &state.entries[&bid("a", 1)];
+    assert_eq!(entry.channel, Some(current));
+    assert_eq!(entry.mode, replacement_mode);
+    assert!(!entry.pending_delivery_recheck);
+    assert_eq!(
+        (
+            sink.frames(),
+            entry.last_attention_push,
+            entry.last_fingerprint.is_none(),
+            entry.last_invitation_version
+        ),
+        (vec![], None, true, None),
+        "a replaced channel must receive no old frame, health or observation state"
+    );
+}
+
+#[test]
+fn q3_replacement_after_observation_cannot_receive_the_old_active_push() {
+    q3_replace_at_final_push_gap(true, ModChannelMode::Legacy, ModChannelMode::PresentationV2);
+}
+
+#[test]
+fn q3_replacement_after_observation_cannot_receive_the_old_passive_push() {
+    q3_replace_at_final_push_gap(
+        false,
+        ModChannelMode::PresentationV2,
+        ModChannelMode::Legacy,
+    );
+}
+
+#[test]
+fn q3_capable_to_legacy_replacement_cannot_receive_the_old_active_push() {
+    q3_replace_at_final_push_gap(true, ModChannelMode::PresentationV2, ModChannelMode::Legacy);
+}
+
+#[test]
+fn q3_legacy_to_capable_replacement_cannot_receive_the_old_passive_push() {
+    q3_replace_at_final_push_gap(
+        false,
+        ModChannelMode::Legacy,
+        ModChannelMode::PresentationV2,
+    );
+}
+
+fn q3_worker_counter(f: &Fixture) -> Arc<AtomicUsize> {
+    let counter = Arc::new(AtomicUsize::new(0));
+    let counted = counter.clone();
+    f.registry.set_worker_wake(Arc::new(move || {
+        counted.fetch_add(1, Ordering::SeqCst);
+    }));
+    counter
+}
+
+fn q3_quiet_capable(f: &Fixture) -> (ModChannelId, Arc<RecordingSink>) {
+    let owner = f.register_mode("a", 1, ModChannelMode::PresentationV2);
+    f.set_view(&bid("a", 1), Some(view("a", 1, ModFingerprint::default())));
+    f.registry.pass(f.now()).unwrap();
+    assert!(owner.1.frames().is_empty());
+    f.registry.take_dirty();
+    owner
+}
+
+#[test]
+fn q3_passive_hints_coalesce_without_health_or_crossing_legacy_and_seat_scope() {
+    let f = fixture();
+    let worker = q3_worker_counter(&f);
+    let (owner, sink) = q3_quiet_capable(&f);
+    let (_, legacy) = f.register("a", 2);
+    f.set_view(&bid("a", 2), Some(view("a", 2, ModFingerprint::default())));
+    let (_, foreign) = f.register_mode("b", 1, ModChannelMode::PresentationV2);
+    f.set_view(&bid("b", 1), Some(view("b", 1, ModFingerprint::default())));
+    f.registry.pass(f.now()).unwrap();
+    assert_eq!(worker.swap(0, Ordering::SeqCst), 3);
+    f.registry.take_dirty();
+    let health = f.registry.lock().entries[&bid("a", 1)].last_ack_or_registration;
+    let native_kicks = f.kicks();
+    f.registry
+        .presentation_delivery_may_have_changed(&seat("unknown"));
+    assert_eq!(worker.load(Ordering::SeqCst), 0);
+    f.registry
+        .presentation_delivery_may_have_changed(&seat("a"));
+    assert_eq!(worker.load(Ordering::SeqCst), 1);
+    f.registry
+        .presentation_delivery_may_have_changed(&seat("a"));
+    assert_eq!(
+        worker.load(Ordering::SeqCst),
+        2,
+        "one worker callback per explicit hint; pending work is one bit"
+    );
+    assert!(f.registry.take_dirty());
+    f.registry.pass(f.now()).unwrap();
+    assert_eq!(sink.frames(), vec![WatchFrame::Attention { version: 0 }]);
+    assert!(legacy.frames().is_empty());
+    assert!(foreign.frames().is_empty());
+    {
+        let state = f.registry.lock();
+        let entry = &state.entries[&bid("a", 1)];
+        assert_eq!(entry.channel, Some(owner));
+        assert!(!entry.pending_delivery_recheck);
+        assert_eq!(entry.last_attention_push, None);
+        assert_eq!(entry.last_ack_or_registration, health);
+        assert!(!state.entries[&bid("a", 2)].pending_delivery_recheck);
+        assert!(!state.entries[&bid("b", 1)].pending_delivery_recheck);
+    }
+    f.registry.pass(f.now()).unwrap();
+    assert_eq!(
+        sink.frames().len(),
+        1,
+        "fixed eligibility duplicate safety pass is quiet"
+    );
+    assert_eq!(
+        worker.load(Ordering::SeqCst),
+        2,
+        "consumption adds no worker callback"
+    );
+    assert_eq!(f.kicks(), native_kicks);
+    assert!(!f.registry.take_dirty());
+}
+
+#[test]
+fn q3_second_hint_during_store_work_survives_the_first_successful_pass() {
+    let f = fixture();
+    let worker = q3_worker_counter(&f);
+    let (owner, sink) = q3_quiet_capable(&f);
+    assert_eq!(worker.swap(0, Ordering::SeqCst), 1);
+    f.registry
+        .presentation_delivery_may_have_changed(&seat("a"));
+    f.registry.take_dirty();
+    let weak = Arc::downgrade(&f.registry);
+    *f.store.on_read.lock().unwrap() = Some(Box::new(move || {
+        let registry = weak.upgrade().unwrap();
+        {
+            let state = registry.lock();
+            let entry = &state.entries[&bid("a", 1)];
+            assert_eq!(entry.channel, Some(owner));
+            assert!(
+                !entry.pending_delivery_recheck,
+                "the first hint was taken before this real registry store call"
+            );
+        }
+        registry.presentation_delivery_may_have_changed(&seat("a"));
+    }));
+    f.registry.pass(f.now()).unwrap();
+    assert_eq!(sink.frames().len(), 1);
+    assert!(
+        f.registry.lock().entries[&bid("a", 1)].pending_delivery_recheck,
+        "success cannot clear the newer event"
+    );
+    assert!(f.registry.take_dirty());
+    f.registry.pass(f.now()).unwrap();
+    assert_eq!(sink.frames().len(), 2);
+    assert!(!f.registry.lock().entries[&bid("a", 1)].pending_delivery_recheck);
+    f.registry.pass(f.now()).unwrap();
+    assert_eq!(sink.frames().len(), 2);
+    assert_eq!(worker.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        f.registry.lock().entries[&bid("a", 1)].last_attention_push,
+        None
+    );
+    assert_eq!(f.kicks(), 0);
+}
+
+fn q3_failed_hint_work(replacement_mode: Option<ModChannelMode>) {
+    let f = fixture();
+    let worker = q3_worker_counter(&f);
+    let (old, old_sink) = q3_quiet_capable(&f);
+    assert_eq!(worker.swap(0, Ordering::SeqCst), 1);
+    f.registry
+        .presentation_delivery_may_have_changed(&seat("a"));
+    f.registry.take_dirty();
+    let replacement = Arc::new(Mutex::new(None));
+    if let Some(mode) = replacement_mode {
+        let weak = Arc::downgrade(&f.registry);
+        let replaced = replacement.clone();
+        let now = f.now();
+        *f.store.on_read.lock().unwrap() = Some(Box::new(move || {
+            let registry = weak.upgrade().unwrap();
+            assert!(!registry.lock().entries[&bid("a", 1)].pending_delivery_recheck);
+            let sink = Arc::new(RecordingSink::default());
+            let id = registry
+                .register(
+                    ModChannelRegistration {
+                        mode,
+                        seat: seat("a"),
+                        binding: bid("a", 1),
+                        binding_generation: 1,
+                        native_session: NativeSessionId::new("native"),
+                        harness: Harness::Claude,
+                        idle_wake: IdleWake::Channel,
+                        registered_at: now,
+                    },
+                    sink.clone(),
+                )
+                .unwrap();
+            *replaced.lock().unwrap() = Some((id, sink));
+        }));
+    }
+    f.store.fail_views.store(true, Ordering::SeqCst);
+    assert_eq!(
+        f.registry.pass(f.now()).unwrap_err().code,
+        ErrorCode::StoreBusy
+    );
+    let expected_worker = if replacement_mode.is_some() { 2 } else { 1 };
+    assert_eq!(
+        worker.load(Ordering::SeqCst),
+        expected_worker,
+        "only the original hint and actual replacement schedule work"
+    );
+    {
+        let state = f.registry.lock();
+        let entry = &state.entries[&bid("a", 1)];
+        assert_eq!(entry.last_attention_push, None);
+        if let Some(mode) = replacement_mode {
+            let saved = replacement.lock().unwrap();
+            let (id, sink) = saved.as_ref().unwrap();
+            assert_ne!(*id, old);
+            assert_eq!(entry.channel, Some(*id));
+            assert_eq!(entry.mode, mode);
+            assert!(
+                !entry.pending_delivery_recheck,
+                "failed old work cannot transfer to a replacement"
+            );
+            assert!(entry.last_fingerprint.is_none());
+            assert_eq!(entry.last_invitation_version, None);
+            assert!(sink.frames().is_empty());
+            assert_eq!(
+                old_sink.frames(),
+                vec![WatchFrame::Close {
+                    reason: WatchCloseReason::Replaced
+                }]
+            );
+        } else {
+            assert_eq!(entry.channel, Some(old));
+            assert!(
+                entry.pending_delivery_recheck,
+                "same exact owner retains the failed captured hint"
+            );
+            assert!(old_sink.frames().is_empty());
+        }
+    }
+    f.store.fail_views.store(false, Ordering::SeqCst);
+    f.registry.pass(f.now()).unwrap();
+    if replacement_mode.is_none() {
+        assert_eq!(
+            old_sink.frames(),
+            vec![WatchFrame::Attention { version: 0 }]
+        );
+        assert!(!f.registry.lock().entries[&bid("a", 1)].pending_delivery_recheck);
+    } else {
+        assert!(
+            replacement
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .1
+                .frames()
+                .is_empty()
+        );
+    }
+    assert_eq!(f.kicks(), 0);
+}
+
+#[test]
+fn q3_failed_hint_work_restores_the_same_exact_owner() {
+    q3_failed_hint_work(None);
+}
+
+#[test]
+fn q3_failed_store_work_keeps_a_newer_hint_without_a_captured_hint() {
+    let f = fixture();
+    let worker = q3_worker_counter(&f);
+    let (_, sink) = q3_quiet_capable(&f);
+    assert_eq!(worker.swap(0, Ordering::SeqCst), 1);
+    let weak = Arc::downgrade(&f.registry);
+    *f.store.on_read.lock().unwrap() = Some(Box::new(move || {
+        let registry = weak.upgrade().unwrap();
+        assert!(!registry.lock().entries[&bid("a", 1)].pending_delivery_recheck);
+        registry.presentation_delivery_may_have_changed(&seat("a"));
+    }));
+    f.store.fail_views.store(true, Ordering::SeqCst);
+    assert_eq!(
+        f.registry.pass(f.now()).unwrap_err().code,
+        ErrorCode::StoreBusy
+    );
+    assert!(f.registry.lock().entries[&bid("a", 1)].pending_delivery_recheck);
+    assert!(sink.frames().is_empty());
+    assert_eq!(worker.load(Ordering::SeqCst), 1);
+    f.store.fail_views.store(false, Ordering::SeqCst);
+    f.registry.pass(f.now()).unwrap();
+    assert_eq!(sink.frames(), vec![WatchFrame::Attention { version: 0 }]);
+    assert!(!f.registry.lock().entries[&bid("a", 1)].pending_delivery_recheck);
+    assert_eq!(
+        f.registry.lock().entries[&bid("a", 1)].last_attention_push,
+        None
+    );
+    assert_eq!(worker.load(Ordering::SeqCst), 1);
+    assert_eq!(f.kicks(), 0);
+}
+
+#[test]
+fn q3_failed_hint_work_does_not_transfer_to_either_replacement_mode() {
+    q3_failed_hint_work(Some(ModChannelMode::PresentationV2));
+    q3_failed_hint_work(Some(ModChannelMode::Legacy));
 }

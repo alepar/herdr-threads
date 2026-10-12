@@ -65,6 +65,10 @@ pub const ATTENTION_NOTICE_DELIVERY: &str = "attention.notice_delivery_v1";
 /// with ht-j16.2.
 pub const MOD_WATCH: &str = "mod.watch_v1";
 
+/// Explicit Watch presentation opt-in and mode-bound Accepted lease.
+/// Advertise only with the complete registration, registry and lease handlers.
+pub const MOD_WATCH_PRESENTATION_V2: &str = "mod.watch_presentation_v2";
+
 /// Hook-pull delivery (`protocol::delivery`, delivery-policy DP4). Defined by the
 /// ht-poh.3.1 seam; its handlers (`service::delivery_pull`) landed with L4.
 pub const DELIVERY_PULL: &str = "delivery.pull_v1";
@@ -99,6 +103,7 @@ pub const ADVERTISED: &[&str] = &[
     LAZY_SEND,
     INBOX_BATCH_V2,
     MOD_WATCH,
+    MOD_WATCH_PRESENTATION_V2,
     SEAT_WAKE_ON_V1,
     DELIVERY_PULL,
     LAZY_HOOK_DELIVERY,

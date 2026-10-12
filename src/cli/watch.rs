@@ -19,7 +19,9 @@ use crate::{
     ports::LocalClient,
     protocol::{
         authority::CallerClaim,
-        capabilities::{BINDING_CURSORS, MOD_WATCH},
+        capabilities::{
+            BINDING_CURSORS, DELIVERY_PRESENTATION_V2, MOD_WATCH, MOD_WATCH_PRESENTATION_V2,
+        },
         commands::{AckModDelivered, Command, InboxQuery},
         ids::{MessageId, NativeSessionId, OperationId, SeatId},
         pagination::{Page, PageRequest},
@@ -270,6 +272,7 @@ fn open_watch(
     socket: &Path,
     instance: uuid::Uuid,
     claim: CallerClaim,
+    presentation_v2: bool,
 ) -> Result<(WatchReply, SocketConn), OpenError> {
     let mut stream = UnixStream::connect(socket).map_err(|_| OpenError::Unavailable)?;
     let request_id = uuid::Uuid::new_v4().to_string();
@@ -278,7 +281,10 @@ fn open_watch(
         request_id: request_id.clone(),
         expected_instance: instance.to_string(),
         expected_boot: None,
-        watch: WireWatch { claim },
+        watch: WireWatch {
+            claim,
+            presentation_v2,
+        },
     };
     let body = serde_json::to_vec(&request).map_err(|_| OpenError::Other)?;
     stream
@@ -333,7 +339,7 @@ pub(crate) struct WatchSession<'a> {
     pub hint_path: Option<PathBuf>,
 }
 
-/// What the `mod.watch_v1` capability probe learned.
+/// What discovery learned about Watch registration and its presentation mode.
 enum Probe {
     Supported {
         presentation: bool,
@@ -353,12 +359,13 @@ fn probe_mod_watch(client: &dyn LocalClient, budget: &CallBudget) -> Probe {
     match client.call_definitive(Command::Capabilities, budget) {
         Ok(Ok(CommandResult::Capabilities(list))) => {
             if list.capabilities.iter().any(|c| c == MOD_WATCH) {
+                let supports = |name: &str| list.capabilities.iter().any(|c| c == name);
+                let cursors = supports(BINDING_CURSORS);
                 Probe::Supported {
-                    presentation: list
-                        .capabilities
-                        .iter()
-                        .any(|c| c == crate::protocol::capabilities::DELIVERY_PRESENTATION_V2),
-                    cursors: list.capabilities.iter().any(|c| c == BINDING_CURSORS),
+                    presentation: supports(DELIVERY_PRESENTATION_V2)
+                        && supports(MOD_WATCH_PRESENTATION_V2)
+                        && cursors,
+                    cursors,
                 }
             } else {
                 Probe::Unsupported
@@ -404,17 +411,21 @@ fn run_session_marked(
     // The historical fallback reads this binding's stream only after negotiation.
     let reader = cursors.then(|| session.claim.clone());
     let seat = session.claim.seat.clone();
-    let (reply, mut conn) =
-        match open_watch(session.socket, session.instance, session.claim.clone()) {
-            Ok(opened) => opened,
-            Err(OpenError::Unavailable) => {
-                return refuse(&mut state, out, WatchStatusReason::DaemonUnavailable);
-            }
-            Err(OpenError::Unsupported) => {
-                return refuse(&mut state, out, WatchStatusReason::Unsupported);
-            }
-            Err(OpenError::Other) => return refuse(&mut state, out, WatchStatusReason::Error),
-        };
+    let (reply, mut conn) = match open_watch(
+        session.socket,
+        session.instance,
+        session.claim.clone(),
+        presentation,
+    ) {
+        Ok(opened) => opened,
+        Err(OpenError::Unavailable) => {
+            return refuse(&mut state, out, WatchStatusReason::DaemonUnavailable);
+        }
+        Err(OpenError::Unsupported) => {
+            return refuse(&mut state, out, WatchStatusReason::Unsupported);
+        }
+        Err(OpenError::Other) => return refuse(&mut state, out, WatchStatusReason::Error),
+    };
     match reply.outcome {
         WatchOutcome::Refused(refusal) => {
             refuse(&mut state, out, WatchStatusReason::from(refusal.reason))

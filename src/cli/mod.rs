@@ -3287,7 +3287,8 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
             .map_err(bridge_run_error)?;
         }
         CliAction::Mutation(MutationSpec::DirectSend(request)) => {
-            let claim = bridge::caller_claim(&current()?).map_err(context_run_error)?;
+            let context = current()?;
+            let claim = contexts.claim(&context).map_err(context_run_error)?;
             direct_send::start(
                 request,
                 claim,

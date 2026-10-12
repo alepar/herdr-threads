@@ -6354,3 +6354,260 @@ fn presentation_publication_observes_old_staging_only_after_late_manifest() {
         "reopen does not rescan completed prefix"
     );
 }
+
+// This inventory is extracted from the actual helper, not an independently
+// rewritten query. Its full source SHA256 is printed with the physical witness.
+fn q3_reader_sql(prefix: &str) -> String {
+    let source = include_str!("../../src/store/presentation_reader.rs");
+    let start = source.find(&format!("\"{prefix}")).unwrap() + 1;
+    let literal = &source[start..];
+    literal[..literal.find('"').unwrap()]
+        .replace("\\\n", "")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn q3_indexed_sql_work(
+    db: &rusqlite::Connection,
+    sql: &str,
+    values: Vec<rusqlite::types::Value>,
+    searches: usize,
+) -> (Vec<Vec<rusqlite::types::Value>>, i32) {
+    use rusqlite::{StatementStatus, params_from_iter};
+    let plan = db
+        .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+        .unwrap()
+        .query_map(params_from_iter(&values), |r| r.get::<_, String>(3))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(
+        plan.iter().filter(|line| line.contains("SEARCH ")).count(),
+        searches,
+        "{plan:?}"
+    );
+    assert!(
+        !plan
+            .iter()
+            .any(|line| line.contains("SCAN ") || line.contains("TEMP B-TREE")),
+        "{plan:?}"
+    );
+    let mut statement = db.prepare(sql).unwrap();
+    let columns = statement.column_count();
+    let rows = statement
+        .query_map(params_from_iter(&values), |row| {
+            (0..columns).map(|column| row.get(column)).collect()
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(
+        statement.get_status(StatementStatus::FullscanStep),
+        0,
+        "{plan:?}"
+    );
+    let vm = statement.get_status(StatementStatus::VmStep);
+    eprintln!("Q3 exactSQL VM={vm} plan={plan:?}");
+    (rows, vm)
+}
+
+/// Kills: replacing the exact binding/consumer keys with a retained-history
+/// walk, or a hidden scan/write in the real reader-maintenance helper.
+#[test]
+fn presentation_q3_reader_helper_exact_keys_have_constant_sqlite_work() {
+    use crate::protocol::ids::BindingId;
+    use crate::test_support::isolation::{CostCounter, count_vm_units};
+    use rusqlite::types::Value;
+    use sha2::{Digest, Sha256};
+    let canonical_sql = q3_reader_sql("SELECT b.seat_id");
+    let consumer_sql =
+        q3_reader_sql("SELECT seat_id,instance_id,generation,execution,mod_generation");
+    let mut work = Vec::new();
+    for retained in [128, 8192] {
+        let (_store, mut db) = fixture();
+        bind_query_agent(&db);
+        let binding = BindingId::new(
+            db.query_row(
+                "SELECT binding_id FROM occupant_bindings WHERE native_session='session'",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .unwrap(),
+        );
+        crate::store::invitation_content::refresh(
+            &db,
+            "i",
+            &SeatId::new("s"),
+            &binding,
+            1,
+            "session",
+        )
+        .unwrap()
+        .unwrap();
+        db.execute("WITH RECURSIVE n(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM n WHERE n<?1) INSERT INTO seats(id,instance_id,state,role,generation,created_at) SELECT 'retained-'||n,'i','resolved','native',1,0 FROM n", [retained]).unwrap();
+        db.execute("INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,ended_at,terminal_id,incarnation) SELECT id,1,1,'w:p1','host',1,'codex',id,'exec','cooperative_top_level',0,0,1,'term','inc' FROM seats WHERE id<>'s'", []).unwrap();
+        // Copy the real bounded consumer shape, changing only canonical owner
+        // fields. Include retained ended bindings: no seat/history shortcut is safe.
+        let columns = db
+            .prepare("PRAGMA table_info(invitation_presentation_consumers)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        let projection = columns
+            .iter()
+            .map(|column| match column.as_str() {
+                "binding_id" => "b.binding_id".into(),
+                "seat_id" => "b.seat_id".into(),
+                "consumer" => "c.consumer".into(),
+                _ => format!("p.\"{column}\""),
+            })
+            .collect::<Vec<String>>()
+            .join(",");
+        let column_list = columns
+            .iter()
+            .map(|column| format!("\"{column}\""))
+            .collect::<Vec<_>>()
+            .join(",");
+        db.execute(&format!("INSERT INTO invitation_presentation_consumers({column_list}) SELECT {projection} FROM invitation_presentation_consumers p CROSS JOIN occupant_bindings b CROSS JOIN (SELECT 'hook' AS consumer UNION ALL SELECT 'watch') c WHERE p.binding_id=?1 AND p.consumer='watch' AND (b.binding_id<>?1 OR c.consumer='hook')"), [binding.as_str()]).unwrap();
+        let canonical = q3_indexed_sql_work(
+            &db,
+            &canonical_sql,
+            vec![Value::Text(binding.as_str().into())],
+            2,
+        );
+        assert_eq!(
+            canonical.0,
+            [vec![
+                Value::Text("s".into()),
+                Value::Text("i".into()),
+                Value::Integer(1),
+                Value::Text("exec".into()),
+                Value::Text("session".into())
+            ]]
+        );
+        let mut points = Vec::new();
+        for consumer in ["hook", "watch"] {
+            let point = q3_indexed_sql_work(
+                &db,
+                &consumer_sql,
+                vec![
+                    Value::Text(binding.as_str().into()),
+                    Value::Text(consumer.into()),
+                ],
+                1,
+            );
+            assert_eq!(point.0.len(), 1);
+            points.push(point.1);
+        }
+        let tx = db.transaction().unwrap();
+        let counter = CostCounter::default();
+        count_vm_units(&tx, &counter, || {
+            crate::store::presentation_reader::note_binding_reader_change(&tx, &binding).unwrap();
+        });
+        assert_eq!(tx.query_row("SELECT COUNT(*) FROM invitation_presentation_consumers WHERE ordinary_passive_generation=1 AND mod_version=1 AND binding_id=?1", [binding.as_str()], |r| r.get::<_, i64>(0)).unwrap(), 2);
+        assert_eq!(tx.query_row("SELECT COUNT(*) FROM invitation_presentation_consumers WHERE binding_id<>?1 AND (ordinary_passive_generation<>0 OR mod_version<>0)", [binding.as_str()], |r| r.get::<_, i64>(0)).unwrap(), 0);
+        work.push((canonical.1, points, counter.units()));
+        eprintln!(
+            "Q3 reader SQLite={} retained={retained} helper_VM_units={} source_SHA256={:x}",
+            tx.query_row("SELECT sqlite_version()", [], |r| r.get::<_, String>(0))
+                .unwrap(),
+            counter.units(),
+            Sha256::digest(include_str!("../../src/store/presentation_reader.rs").as_bytes())
+        );
+        tx.rollback().unwrap();
+    }
+    assert_eq!(
+        work[0], work[1],
+        "reader work must follow one exact owner and two fixed consumers, not retained cardinality"
+    );
+}
+
+fn q3_table_ddl(source: &str, name: &str) -> String {
+    let start = source.find(&format!("CREATE TABLE {name} (")).unwrap();
+    let end = start + source[start..].find(") STRICT;").unwrap() + ") STRICT;".len();
+    source[start..end].to_owned()
+}
+
+/// Prospective interface-plan SQL only until the production scanner adopts the
+/// message-first, mode-selected recipient inventory. This is NOT scanner runtime
+/// or 100/200/3 accounting evidence. The production range control stays separate.
+/// Kills: losing unique exact recipient keys or widening either proposed probe
+/// into an audience/history walk, including mixed and unrelated publications.
+#[test]
+fn presentation_q3_prospective_publication_recipient_keys_have_constant_sqlite_work() {
+    use rusqlite::types::Value;
+    const MESSAGE: &str = "SELECT delivery_mode FROM messages WHERE id=?1 AND instance_id=?2 AND thread_id=?3 AND decision_seq=?4 AND kind='ordinary'";
+    const ORDINARY: &str =
+        "SELECT thread_id FROM prepared_recipients WHERE preparation_id=?1 AND seat_id=?2";
+    const LAZY: &str =
+        "SELECT message_id,thread_id FROM lazy_recipients WHERE preparation_id=?1 AND seat_id=?2";
+    let initial = include_str!("../../migrations/0001_initial.sql");
+    let lazy = include_str!("../../migrations/0026_lazy_message_delivery.sql");
+    let mut work = Vec::new();
+    for retained in [128, 8192] {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        // Exact canonical table/unique-key DDL; omit unrelated FK relations and
+        // publication triggers, since this is solely a proposed point-SQL witness.
+        db.execute_batch(&q3_table_ddl(initial, "messages"))
+            .unwrap();
+        db.execute_batch(&q3_table_ddl(initial, "prepared_recipients"))
+            .unwrap();
+        db.execute_batch(&q3_table_ddl(lazy, "lazy_recipients"))
+            .unwrap();
+        db.execute_batch(&lazy[..lazy.find(';').unwrap() + 1])
+            .unwrap();
+        db.execute("WITH RECURSIVE n(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM n WHERE n<?1) INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_seq,decision_at,delivery_mode) SELECT 'msg-'||n,'i','t',n,'ordinary','body',n,0,CASE WHEN n%2=0 THEN 'lazy' ELSE 'ordinary' END FROM n", [retained]).unwrap();
+        db.execute("WITH RECURSIVE n(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM n WHERE n<?1) INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) SELECT 'prep-'||n,'t','other',1,100,1 FROM n WHERE n%2=1", [retained]).unwrap();
+        db.execute("WITH RECURSIVE n(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM n WHERE n<?1) INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) SELECT 'prep-'||n,'msg-'||n,'t','other' FROM n WHERE n%2=0", [retained]).unwrap();
+        db.execute("INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES ('prep-1','t','s',2,100,1)", []).unwrap();
+        db.execute("INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES ('prep-2','msg-2','t','s')", []).unwrap();
+        let mut quantum = Vec::new();
+        // The literal first100 manifest identities are mixed mode; only 1 and 2
+        // address s. Every rejected recipient still executes its unique-key probe.
+        for n in 1..=100 {
+            let message = q3_indexed_sql_work(
+                &db,
+                MESSAGE,
+                vec![
+                    Value::Text(format!("msg-{n}")),
+                    Value::Text("i".into()),
+                    Value::Text("t".into()),
+                    Value::Integer(n),
+                ],
+                1,
+            );
+            let (sql, expected) = if n % 2 == 0 {
+                (LAZY, "lazy")
+            } else {
+                (ORDINARY, "ordinary")
+            };
+            assert_eq!(message.0, [vec![Value::Text(expected.into())]]);
+            let recipient = q3_indexed_sql_work(
+                &db,
+                sql,
+                vec![Value::Text(format!("prep-{n}")), Value::Text("s".into())],
+                1,
+            );
+            let wanted = match n {
+                1 => vec![vec![Value::Text("t".into())]],
+                2 => vec![vec![Value::Text("msg-2".into()), Value::Text("t".into())]],
+                _ => vec![],
+            };
+            assert_eq!(recipient.0, wanted);
+            quantum.push((message.1, recipient.1));
+        }
+        eprintln!(
+            "Q3 PROSPECTIVE publication pointSQL SQLite={} retained={retained} mixed100 VM={quantum:?}",
+            db.query_row("SELECT sqlite_version()", [], |r| r.get::<_, String>(0))
+                .unwrap()
+        );
+        work.push(quantum);
+    }
+    assert_eq!(
+        work[0], work[1],
+        "proposed mode-specific point work must not follow unrelated retained recipients"
+    );
+}

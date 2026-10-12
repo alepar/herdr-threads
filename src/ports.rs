@@ -3775,9 +3775,17 @@ pub struct HostCallContext {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ModChannelId(pub u64);
 
+/// Immutable delivery contract elected by this Watch registration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModChannelMode {
+    Legacy,
+    PresentationV2,
+}
+
 /// A registration the transport has decided against A2 (spec D2).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModChannelRegistration {
+    pub mode: ModChannelMode,
     pub seat: SeatId,
     /// The binding that holds the channel (spec §3 Wake): the registry is keyed by it.
     pub binding: BindingId,
@@ -3936,6 +3944,9 @@ pub trait ModChannels: Send + Sync {
     }
     /// Push `Attention{version}` to every Live channel of the seat.
     fn notify(&self, _seat: &SeatId, _attention_version: u64) {}
+    /// Successful ordinary or Lazy display/settlement may have changed eligibility.
+    /// A bounded local recheck hint, never receipt, read, wake or health evidence.
+    fn presentation_delivery_may_have_changed(&self, _seat: &SeatId) {}
     /// Post-emission presentation confirmation for the exact current Live
     /// Watch owner. This records a receipt-publication cutoff, not an ACK or
     /// a fresh stall countdown. Unsupported registries remain inert.

@@ -71,6 +71,7 @@ fn register(registry: &ModChannelRegistry, seat: &str, idle_wake: IdleWake) {
     registry
         .register(
             ModChannelRegistration {
+                mode: crate::ports::ModChannelMode::Legacy,
                 seat: SeatId::new(seat),
                 binding: binding_of(seat),
                 binding_generation: 1,

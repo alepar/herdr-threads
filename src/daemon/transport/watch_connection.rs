@@ -157,8 +157,15 @@ pub(super) async fn serve(
     let accepted = WatchOutcome::Accepted(WatchAccepted {
         attention_version,
         presentation_lease: advertised_presentation_lease(
-            crate::protocol::capabilities::ADVERTISED
-                .contains(&crate::protocol::capabilities::DELIVERY_PRESENTATION_V2),
+            request.watch.presentation_v2
+                && [
+                    crate::protocol::capabilities::MOD_WATCH,
+                    crate::protocol::capabilities::MOD_WATCH_PRESENTATION_V2,
+                    crate::protocol::capabilities::DELIVERY_PRESENTATION_V2,
+                    crate::protocol::capabilities::BINDING_CURSORS,
+                ]
+                .iter()
+                .all(|capability| crate::protocol::capabilities::ADVERTISED.contains(capability)),
             handler.watch_presentation_lease(channel),
         ),
     });

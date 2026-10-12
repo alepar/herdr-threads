@@ -17,6 +17,7 @@ pub mod messages;
 pub mod operator;
 pub mod page_fit;
 pub mod poke;
+mod presentation_reader;
 mod presentation_relevance;
 pub(crate) mod public_ids;
 pub mod queries;
