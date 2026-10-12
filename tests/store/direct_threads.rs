@@ -1002,3 +1002,6 @@ fn manual_two_member_channel_is_not_adopted_and_normal_send_is_unchanged() {
     drop(db);
     let _ = std::fs::remove_file(path);
 }
+
+#[path = "direct_lazy_readers.rs"]
+mod reader_controls;
