@@ -1,5 +1,5 @@
 status: clean [degraded: low coverage, plan roast skipped]
-metrics: pending (upstream-feedback not yet run)
+metrics: none (no upstream-worthy findings; nothing filed)
 
 ## Implemented
 

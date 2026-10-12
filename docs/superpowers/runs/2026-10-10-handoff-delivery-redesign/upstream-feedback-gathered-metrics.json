@@ -1,0 +1,409 @@
+{
+  "plugin": {
+    "name": "superpowers",
+    "description": "Core skills library for Claude Code: TDD, debugging, collaboration patterns, and proven techniques",
+    "version": "6.4.2-alepar5.1",
+    "author": {
+      "name": "Jesse Vincent",
+      "email": "jesse@fsck.com"
+    },
+    "homepage": "https://github.com/alepar/superpowers",
+    "repository": "https://github.com/alepar/superpowers",
+    "license": "MIT",
+    "keywords": [
+      "skills",
+      "tdd",
+      "debugging",
+      "collaboration",
+      "best-practices",
+      "workflows"
+    ]
+  },
+  "graph": {
+    "beads": 34,
+    "closed": 34,
+    "edges": [
+      {
+        "dependent": "ht-0lo.8.4",
+        "blocker": "ht-0lo.8.1",
+        "reason": "unstated"
+      },
+      {
+        "dependent": "ht-0lo.8.3",
+        "blocker": "ht-0lo.8.4",
+        "reason": "unstated"
+      },
+      {
+        "dependent": "ht-0lo.8.3",
+        "blocker": "ht-0lo.10",
+        "reason": "unstated"
+      },
+      {
+        "dependent": "ht-0lo.8.3",
+        "blocker": "ht-0lo.9",
+        "reason": "unstated"
+      },
+      {
+        "dependent": "ht-0lo.8.3",
+        "blocker": "ht-0lo.8.2",
+        "reason": "unstated"
+      },
+      {
+        "dependent": "ht-0lo.8.3",
+        "blocker": "ht-0lo.19",
+        "reason": "unstated"
+      },
+      {
+        "dependent": "ht-0lo.8.3",
+        "blocker": "ht-0lo.11",
+        "reason": "unstated"
+      },
+      {
+        "dependent": "ht-0lo.8.2",
+        "blocker": "ht-0lo.8.1",
+        "reason": "unstated"
+      },
+      {
+        "dependent": "ht-0lo.5",
+        "blocker": "ht-0lo.2.3",
+        "reason": "blocked-by ht-0lo.2.3: consumes all leaves (integration sweep)"
+      },
+      {
+        "dependent": "ht-0lo.5",
+        "blocker": "ht-0lo.2.2",
+        "reason": "blocked-by ht-0lo.2.2: consumes all leaves (integration sweep)"
+      },
+      {
+        "dependent": "ht-0lo.5",
+        "blocker": "ht-0lo.6",
+        "reason": "blocked-by ht-0lo.6: consumes all leaves (integration sweep)"
+      },
+      {
+        "dependent": "ht-0lo.5",
+        "blocker": "ht-0lo.1.3",
+        "reason": "blocked-by ht-0lo.1.3: consumes all leaves (integration sweep)"
+      },
+      {
+        "dependent": "ht-0lo.5",
+        "blocker": "ht-0lo.1.1",
+        "reason": "blocked-by ht-0lo.1.1: consumes all leaves (integration sweep)"
+      },
+      {
+        "dependent": "ht-0lo.5",
+        "blocker": "ht-0lo.7",
+        "reason": "blocked-by ht-0lo.7: consumes all leaves (integration sweep)"
+      },
+      {
+        "dependent": "ht-0lo.5",
+        "blocker": "ht-0lo.3.2",
+        "reason": "blocked-by ht-0lo.3.2: consumes all leaves (integration sweep)"
+      },
+      {
+        "dependent": "ht-0lo.5",
+        "blocker": "ht-0lo.2.1",
+        "reason": "blocked-by ht-0lo.2.1: consumes all leaves (integration sweep)"
+      },
+      {
+        "dependent": "ht-0lo.5",
+        "blocker": "ht-0lo.4.1",
+        "reason": "blocked-by ht-0lo.4.1: consumes all leaves (integration sweep)"
+      },
+      {
+        "dependent": "ht-0lo.5",
+        "blocker": "ht-0lo.4.2",
+        "reason": "blocked-by ht-0lo.4.2: consumes all leaves (integration sweep)"
+      },
+      {
+        "dependent": "ht-0lo.5",
+        "blocker": "ht-0lo.3.1",
+        "reason": "blocked-by ht-0lo.3.1: consumes all leaves (integration sweep)"
+      },
+      {
+        "dependent": "ht-0lo.5",
+        "blocker": "ht-0lo.1.2",
+        "reason": "blocked-by ht-0lo.1.2: consumes all leaves (integration sweep)"
+      },
+      {
+        "dependent": "ht-0lo.1.3",
+        "blocker": "ht-0lo.1.1",
+        "reason": "blocked-by ht-0lo.1.1: consumes canonical send-time receipt projection"
+      },
+      {
+        "dependent": "ht-0lo.3.2",
+        "blocker": "ht-0lo.1.1",
+        "reason": "blocked-by ht-0lo.1.1: consumes send-time receipt semantics"
+      },
+      {
+        "dependent": "ht-0lo.3.2",
+        "blocker": "ht-0lo.2.2",
+        "reason": "blocked-by ht-0lo.2.2: consumes canonical invitation lifecycle"
+      },
+      {
+        "dependent": "ht-0lo.3.2",
+        "blocker": "ht-0lo.2.1",
+        "reason": "blocked-by ht-0lo.2.1: consumes invitation confirmation wire contract"
+      },
+      {
+        "dependent": "ht-0lo.3.2",
+        "blocker": "ht-0lo.1.2",
+        "reason": "blocked-by ht-0lo.1.2: consumes overdue receipt warning lifecycle"
+      },
+      {
+        "dependent": "ht-0lo.3.2",
+        "blocker": "ht-0lo.3.1",
+        "reason": "blocked-by ht-0lo.3.1: consumes frozen handoff payload"
+      },
+      {
+        "dependent": "ht-0lo.4.2",
+        "blocker": "ht-0lo.4.1",
+        "reason": "blocked-by ht-0lo.4.1: consumes stable native per-event command grammar"
+      },
+      {
+        "dependent": "ht-0lo.2.3",
+        "blocker": "ht-0lo.2.2",
+        "reason": "blocked-by ht-0lo.2.2: consumes invitation confirmation store behavior"
+      },
+      {
+        "dependent": "ht-0lo.2.2",
+        "blocker": "ht-0lo.2.1",
+        "reason": "blocked-by ht-0lo.2.1: consumes invitation mode schema/wire contract"
+      },
+      {
+        "dependent": "ht-0lo.1.2",
+        "blocker": "ht-0lo.1.3",
+        "reason": "blocked-by ht-0lo.1.3: consumes historical dormant receipt upgrade"
+      },
+      {
+        "dependent": "ht-0lo.1.2",
+        "blocker": "ht-0lo.1.1",
+        "reason": "blocked-by ht-0lo.1.1: consumes send-anchored canonical receipt projection"
+      },
+      {
+        "dependent": "ht-0lo.1.2",
+        "blocker": "ht-0lo.2.2",
+        "reason": "unstated"
+      }
+    ],
+    "nodes": [
+      {
+        "id": "ht-0lo.19",
+        "issue_type": "bug",
+        "title": "Regression-only final C: compose genuine receipt prefix and direct JSON oracle",
+        "status": "closed"
+      },
+      {
+        "id": "ht-0lo.18",
+        "issue_type": "bug",
+        "title": "Sweep fix: reconcile exact recovery probe oracle with Q4",
+        "status": "closed"
+      },
+      {
+        "id": "ht-0lo.17",
+        "issue_type": "bug",
+        "title": "Sweep fix: deliberately establish real carried body at full capacity",
+        "status": "closed"
+      },
+      {
+        "id": "ht-0lo.16",
+        "issue_type": "bug",
+        "title": "Sweep fix: elect modern lease request and retain legacy wire control",
+        "status": "closed"
+      },
+      {
+        "id": "ht-0lo.15",
+        "issue_type": "bug",
+        "title": "Roast1: cancel expired presentation owner waiters",
+        "status": "closed"
+      },
+      {
+        "id": "ht-0lo.14",
+        "issue_type": "bug",
+        "title": "Roast1: preserve receipt upgrade oracle with migration45 triggers",
+        "status": "closed"
+      },
+      {
+        "id": "ht-0lo.13",
+        "issue_type": "bug",
+        "title": "Roast1: bound private ordinary warning discovery",
+        "status": "closed"
+      },
+      {
+        "id": "ht-0lo.12",
+        "issue_type": "bug",
+        "title": "Roast1: preserve replacement invitation context after stale denial",
+        "status": "closed"
+      },
+      {
+        "id": "ht-0lo.11",
+        "issue_type": "task",
+        "title": "Gate: code roast fix loop exited before final C evidence",
+        "status": "closed"
+      },
+      {
+        "id": "ht-0lo.10",
+        "issue_type": "bug",
+        "title": "Enforce send-time negotiation in specialized ordinary retries",
+        "status": "closed"
+      },
+      {
+        "id": "ht-0lo.9",
+        "issue_type": "bug",
+        "title": "Repair finite normal delivery after standalone render overflow",
+        "status": "closed"
+      },
+      {
+        "id": "ht-0lo.8.4",
+        "issue_type": "task",
+        "title": "AGY delivery setup and launch semantic composition",
+        "status": "closed"
+      },
+      {
+        "id": "ht-0lo.8.3",
+        "issue_type": "task",
+        "title": "Combined upstream composition focused integration proof",
+        "status": "closed"
+      },
+      {
+        "id": "ht-0lo.8.2",
+        "issue_type": "task",
+        "title": "Automatic Ensure creation policy and durable handoff composition",
+        "status": "closed"
+      },
+      {
+        "id": "ht-0lo.8.1",
+        "issue_type": "task",
+        "title": "Released schema preservation and isolated upstream composition",
+        "status": "closed"
+      },
+      {
+        "id": "ht-0lo.8",
+        "issue_type": "epic",
+        "title": "Compose released automatic handoffs with delivery redesign",
+        "status": "closed"
+      },
+      {
+        "id": "ht-0lo.7",
+        "issue_type": "task",
+        "title": "Define ordinary-send receipt semantic compatibility boundary",
+        "status": "closed"
+      },
+      {
+        "id": "ht-0lo.6",
+        "issue_type": "task",
+        "title": "Define fair due-scan progress and conditional detection bound",
+        "status": "closed"
+      },
+      {
+        "id": "ht-0lo.5",
+        "issue_type": "task",
+        "title": "Integration sweep: handoff delivery redesign",
+        "status": "closed"
+      },
+      {
+        "id": "ht-0lo.1.3",
+        "issue_type": "task",
+        "title": "Upgrade dormant historical receipt obligations",
+        "status": "closed"
+      },
+      {
+        "id": "ht-0lo.3.2",
+        "issue_type": "task",
+        "title": "Handoff confirmation policy wiring and recovery documentation",
+        "status": "closed"
+      },
+      {
+        "id": "ht-0lo.3.1",
+        "issue_type": "task",
+        "title": "Handoff instruction source acquisition and frozen payload",
+        "status": "closed"
+      },
+      {
+        "id": "ht-0lo.4.2",
+        "issue_type": "task",
+        "title": "Owned stable registration migration and tooling",
+        "status": "closed"
+      },
+      {
+        "id": "ht-0lo.4.1",
+        "issue_type": "task",
+        "title": "Stable native event dispatch and command generation",
+        "status": "closed"
+      },
+      {
+        "id": "ht-0lo.2.3",
+        "issue_type": "task",
+        "title": "Invitation CLI and presentation contract",
+        "status": "closed"
+      },
+      {
+        "id": "ht-0lo.2.2",
+        "issue_type": "task",
+        "title": "Invitation acceptance, due and delivery lifecycle",
+        "status": "closed"
+      },
+      {
+        "id": "ht-0lo.2.1",
+        "issue_type": "task",
+        "title": "Invitation confirmation protocol and schema contract",
+        "status": "closed"
+      },
+      {
+        "id": "ht-0lo.1.2",
+        "issue_type": "task",
+        "title": "Due discovery and originating-seat warning lifecycle",
+        "status": "closed"
+      },
+      {
+        "id": "ht-0lo.1.1",
+        "issue_type": "task",
+        "title": "Canonical send-time receipt projection",
+        "status": "closed"
+      },
+      {
+        "id": "ht-0lo.4",
+        "issue_type": "epic",
+        "title": "Stable hooks",
+        "status": "closed"
+      },
+      {
+        "id": "ht-0lo.3",
+        "issue_type": "epic",
+        "title": "Handoff payload",
+        "status": "closed"
+      },
+      {
+        "id": "ht-0lo.2",
+        "issue_type": "epic",
+        "title": "Invitation lifecycle",
+        "status": "closed"
+      },
+      {
+        "id": "ht-0lo.1",
+        "issue_type": "epic",
+        "title": "Receipt deadlines",
+        "status": "closed"
+      },
+      {
+        "id": "ht-0lo",
+        "issue_type": "epic",
+        "title": "Handoff delivery redesign",
+        "status": "closed"
+      }
+    ]
+  },
+  "roasts": [
+    "2026-10-10-handoff-delivery-redesign-roast-design-1.md\nmode: design        iteration: 1 of 3\nindependence: same-family (OpenAI) \u2014 seat-differentiated panel\nseat-agreement: panels 5 \u00b7 rr 0.80 \u00b7 rg 0.60 \u00b7 fg 0.80 \u00b7 unanimous 0.60 \u00b7 ground-loo 0.75 (n=4) \u00b7 reproduce 1/4/0 \u00b7 refute 2/3/0 \u00b7 ground 3/2/0",
+    "2026-10-10-handoff-delivery-redesign-roast-design-2.md\nmode: design        iteration: 2 of 3\ndelta vs prior: 0 new confirmed (0 Blocking) \u00b7 0 carried (0 Blocking) \u00b7 2 resolved \u00b7 0 regressed (0 Blocking)\nindependence: same-family (OpenAI) \u2014 fresh review contexts; no judge panels were applicable this round",
+    "2026-10-10-handoff-delivery-redesign-roast-pr-1-roast1-scope-filter-complete-scope.prompt.md\n",
+    "2026-10-10-handoff-delivery-redesign-roast-pr-1-roast1-scope-filter-input-correction.md\n",
+    "2026-10-10-handoff-delivery-redesign-roast-pr-1-roast1-scope-filter.prompt.md\n",
+    "2026-10-10-handoff-delivery-redesign-roast-pr-1-step-back.md\n",
+    "2026-10-10-handoff-delivery-redesign-roast-pr-1.md\nmode: pr        iteration: 1 of 3\nindependence: same-family (OpenAI) \u2014 seat-differentiated panel \u00b7 rung: manual fan-out\nseat-agreement: panels 12 \u00b7 rr 0.83 \u00b7 rg 0.50 \u00b7 fg 0.67 \u00b7 unanimous 0.50 \u00b7 ground-loo 0.60 (n=10) \u00b7 reproduce 4/8/0 \u00b7 refute 6/6/0 \u00b7 ground 10/2/0",
+    "2026-10-10-handoff-delivery-redesign-roast-pr-2.md\nmode: pr        iteration: 2 of 3\ndelta vs prior: 0 new confirmed (0 Blocking) \u00b7 0 carried (0 Blocking) \u00b7 4 resolved \u00b7 0 regressed (0 Blocking) \u00b7 1 punch-listed (open)\nindependence: same-family (OpenAI) \u2014 seat-differentiated panel \u00b7 rung: manual fan-out",
+    "2026-10-12-handoff-delivery-redesign-roast-pr-post-cap-audit.md\nmode: pr        iteration: post-cap audit\ndelta vs prior: 2 new confirmed (0 Blocking) \u00b7 0 carried (0 Blocking) \u00b7 0 resolved \u00b7 0 regressed (0 Blocking) \u00b7 1 punch-listed (open)\nindependence: same-family (OpenAI) \u2014 seat-differentiated panel \u00b7 rung: manual fan-out\nseat-agreement: panels 2 \u00b7 rr 1.00 \u00b7 rg 1.00 \u00b7 fg 1.00 \u00b7 unanimous 1.00 \u00b7 ground-loo 1.00 (n=2) \u00b7 reproduce 2/0/0 \u00b7 refute 2/0/0 \u00b7 ground 2/0/0",
+    "roast-fix-ledger.md\n"
+  ],
+  "metrics": "Slowness: repeated reviews and pre-roast final matrix would force serial duplicate work \u2192 one light review per family, parallel cold matrix/official roast preparation, batch parent-owned runtime per target/source epoch, final matrix once after fix loop. Project ht-zo4 fullsuite restriction preserved; final C remains expanded focused selection, not fullsuite.\nMerge: upstream-composition-v090 \u2014 rebase none (frozen89ef) \u00b7 seam-review none (clean merge; all product files identical) \u00b7 check pass (allfeaturestrictclippy73.087/default46.223; broad rebuild, final controlled speed pending). Merge67315185/tree33f1fcb0 preserves existing ROOT run/plan evidence. Implementation fixes/.9 /.10 completed; C/.11/root pending caller-gated final evidence. Finish informational finalreview consumed; phase4 formalroast1 begins under current5.1 skillSource59cbc with caller-owned deferSweep.\nMerge: ht-0lo.12 \u00b7 feaeca1d \u00b7 allcompile-onlymergedgatesPASS \u00b7 closed.\nMerge: ht-0lo.13 \u00b7 30efaed7 \u00b7 allcompile-onlymergedgatesPASS \u00b7 closed.\nMerge: ht-0lo.14 \u00b7 a8134628 \u00b7 allcompile-onlymergedgatesPASS \u00b7 closed.\nMerge: ht-0lo.15 \u00b7 e934c0ce \u00b7 exactGit tree equals full validation1b07e9f0fcaa9bca8a605eb1019d16575543fcca \u00b7 all4lightreviewsCLEAN \u00b7 actualmergegate95957 pending.\nMerge: ht-0lo.12 \u2014 rebase clean \u00b7 seam-review none \u00b7 check pass\nMerge: ht-0lo.13 \u2014 rebase clean \u00b7 seam-review none \u00b7 check pass\nMerge: ht-0lo.14 \u2014 rebase clean \u00b7 seam-review none \u00b7 check pass\nMerge: ht-0lo.15 \u2014 rebase clean \u00b7 seam-review none \u00b7 check pass\nMetrics: merges 4 \u00b7 merge-failed 0 \u00b7 rebase-conflicts 0 \u00b7 seam-reviews 0 (fixed 0) \u00b7 check-fails 0 (fixed 0)\nMetrics: completions \u2014 review clean 4 \u00b7 after fix pass 0 \u00b7 parked 0 \u00b7 re-entry closes 0 \u00b7 dispatched early 0 \u00b7 cancelled 0\nMetrics: fix-pass \u2014 entered 0 \u00b7 FIXED 0 \u00b7 BLOCKED 0\nMetrics: ledger-check ok \u00b7 append-failed 0 \u00b7 append-retried 0\nMerge: ht-0lo.17 \u2014 rebase clean \u00b7 seam-review none \u00b7 check pass\nMerge: ht-0lo.16 \u2014 rebase clean \u00b7 seam-review none \u00b7 check pass\nMerge: ht-0lo.18 \u2014 rebase clean \u00b7 seam-review none \u00b7 check pass\nMetrics: merges3 \u00b7 merge-failed0 \u00b7 rebase-conflicts0 \u00b7 seam-reviews0 (fixed0) \u00b7 check-fails0 (fixed0)\nMetrics: completions \u2014 review clean3 \u00b7 after fix pass0 \u00b7 parked0 \u00b7 re-entry closes0 \u00b7 dispatched early0 \u00b7 cancelled0\nMetrics: fix-pass \u2014 entered0 \u00b7 FIXED0 \u00b7 BLOCKED0\nMetrics: ledger-check ok \u00b7 append-failed0 \u00b7 append-retried0\nMerge: ht-0lo.19 \u2014 rebase clean \u00b7 seam-review none \u00b7 check pass\nMetrics: merges1 \u00b7 merge-failed0 \u00b7 rebase-conflicts0 \u00b7 seam-reviews0 (fixed0) \u00b7 check-fails0 (fixed0)\nMetrics: completions \u2014 review clean1 \u00b7 after fix pass0 \u00b7 parked0 \u00b7 re-entry closes0 \u00b7 dispatched early0 \u00b7 cancelled0\nMetrics: fix-pass \u2014 entered0 \u00b7 FIXED0 \u00b7 BLOCKED0\nMetrics: ledger-check ok \u00b7 append-failed0 \u00b7 append-retried0",
+  "merge_commits": "6abdf38f931f5ad3d386ae85890cbcf6af0912c3 merge: verified final C regression fixture corrections\n79a0c3dd160a5733ba2018e8337c042eca7bd438 compose: integrate reviewed Main36 and preserved direct reader policy\nf4b74f311b28c39eec0c1a4a8d726c1fbd8e5c10 test: retain decomposed Q4 recovery work accounting\n4829c3c771396cb351c0e2e4d798768ef72a1946 test: explicitly negotiate presentation watch lease\na773f8c8ee6246107e3e72ed41a36b8cbd8d96af test: establish canonical nonempty carry before acceptance\ne934c0cee8f72ce6610fca4da5493c57117866fb Merge reviewed roast1 presentation-owner budget fix\na813462811fafb1272f811a680fd2dc842261bd7 Merge reviewed roast1 receipt preservation oracle\n30efaed726b845eeb56e445d00c8039ecc88c4d7 Merge reviewed roast1 bounded private-source fix\nfeaeca1df637e24dc2746771eeda976e17a794a1 Merge reviewed roast1 replacement-context fix\n673151853b3b6d0e71a6b4baed0dd0730e767b2b merge: promote verified delivery redesign composition\n07d783f5b04c79109554c3da2439ded942d89c27 Merge task ht-0lo.5: handoff delivery integration regressions\ndd1a53d43c6adaffdcbbe3b14080969660e2788f Merge task ht-0lo.3.2: handoff confirmation policy and recovery guidance\naa9533d3a23fe040f91a56ea986a1d364c695695 Merge task ht-0lo.1.2: fair due discovery and original sender warnings\nc92d5d3a0ea20fad0ed103a2f730686d4a44e98b Merge task ht-0lo.2.3: invitation CLI and presentation contract\na411c7c4321c727c9df7223643fea1f86e3c1bc8 Merge upstream topology fixture continuation fixes\na7a6970243e8057a0fc3c896573c388da83b31a9 Merge task ht-0lo.4.2: stable native hook setup and ownership\nbfe1044e3755e6aba1f3c860db6ec0751617cbfe Merge main v0.6.4 release and Claude mod log update\n54796f2d5da5797b8c13208258bf8078e7b4d26e Merge task ht-0lo.2.2: invitation confirmation lifecycle\n9e876f39528c48efa0193ef93c496c2c1d1f7902 Merge task ht-0lo.1.3: bounded historical receipt deadline repair\n217a47e21976c223307ca80e14d53e2e4ee7a991 Merge task ht-0lo.4.1: stable native event entrypoints\nb780abf2890faad5cc3f1573fafdea8f294e8208 Merge task ht-0lo.3.1: bounded handoff instruction sources and envelopes\n06ebad5b9e877a2b50b694f106d2154e7e141487 Merge branch 'task-ht-0lo.1.1' into super-auto/handoff-delivery-redesign\n3529aa0d42429e589a4afbf08775fbf8dcfefd6b Merge task ht-0lo.2.1: invitation confirmation contract\n1eda351dc43cc7462d52affde6db343f86031cd1 Merge branch 'main' into super-auto/handoff-delivery-redesign\n",
+  "profiles": []
+}
