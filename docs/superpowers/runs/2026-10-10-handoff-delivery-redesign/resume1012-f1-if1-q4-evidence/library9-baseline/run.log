@@ -1,0 +1,157 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+────────────
+ Nextest run ID a0345892-df35-482f-ab80-02dff239c529 with nextest profile: default
+    Starting 9 tests across 1 binary (4928 tests skipped)
+        FAIL [   0.155s] (1/9) herdr-threads cli::handoff_delivery::tests::historical_none_automatic_existing_retry_requires_receipts_before_effects_and_preserves_origin
+  stdout ───
+
+    running 1 test
+    test cli::handoff_delivery::tests::historical_none_automatic_existing_retry_requires_receipts_before_effects_and_preserves_origin ... FAILED
+
+    failures:
+
+    failures:
+        cli::handoff_delivery::tests::historical_none_automatic_existing_retry_requires_receipts_before_effects_and_preserves_origin
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4936 filtered out; finished in 0.14s
+
+  stderr ───
+
+    thread 'cli::handoff_delivery::tests::historical_none_automatic_existing_retry_requires_receipts_before_effects_and_preserves_origin' (57735753) panicked at src/cli/../../tests/cli/handoff_delivery.rs:4441:5:
+    pending None original must negotiate receipts: Ok(Object {"compound": String("retained-receipt-existing"), "launch": Null, "message": Object {"data": String("m-pair"), "kind": String("message_sent")}, "outcome": String("staged"), "recipient": String("recipient"), "recovery_ref": String("local:1"), "thread": String("t-pair")})
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.614s] (2/9) herdr-threads cli::topology_handoff::tests::live::automatic_live::public_historical_none_new_tab_retry_requires_receipts_before_any_effect_and_preserves_origin
+  stdout ───
+
+    running 1 test
+    test cli::topology_handoff::tests::live::automatic_live::public_historical_none_new_tab_retry_requires_receipts_before_any_effect_and_preserves_origin ... FAILED
+
+    failures:
+
+    failures:
+        cli::topology_handoff::tests::live::automatic_live::public_historical_none_new_tab_retry_requires_receipts_before_any_effect_and_preserves_origin
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4936 filtered out; finished in 0.60s
+
+  stderr ───
+
+    thread 'cli::topology_handoff::tests::live::automatic_live::public_historical_none_new_tab_retry_requires_receipts_before_any_effect_and_preserves_origin' (57735757) panicked at src/cli/../../tests/cli/topology_handoff.rs:7401:13:
+    historical pending None bootstrap must negotiate receipts: Ok(AutomaticBootstrapResult { identity: AutomaticBootstrapIdentity { version: 2, scope: Cooperative { instance: "i", seat: SeatId("sender") }, claim: CallerClaim { instance: "i", seat: SeatId("sender"), binding_generation: 1, role: TopLevel, harness: Agent(AgentHarnessId { id: "codex", context_spelling: "Codex" }), native_session: NativeSessionId("session"), execution: ExecutionId("00000000-0000-4000-8000-000000000001"), target: HostTargetId("w1:p1"), agent_id: None, liveness: None }, digest: "28f3ae312771712ac60fd7a64c856f64e6d440d619d708c565f2ae15a9d442bc", plan: AutomaticBootstrapPlan { version: 2, payload: AutomaticBootstrapPayload { handoff: AutomaticHandoffPayload { policy: None, namespace: HandoffNamespace { instance: "i", state_dir: "/private/var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-qhz4-37a4f680-7d96-4fdd-940f-1d332012cac8/state dir", host_endpoint: "/private/var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-qhz4-37a4f680-7d96-4fdd-940f-1d332012cac8/host.sock" }, keys: AutomaticHandoffKeys { compound: OperationId("e2347c73-eef5-4173-b5a1-d4c2e687403d"), begin: OperationId("automatic-153099de1b989643027b23d8fdc801c4855554a27d67533c907fa7a79778c07c"), ensure: OperationId("automatic-ad97aa58a67b59216c26dcccf49ab528025d915abf924ad9b734e39732c7b061"), send: OperationId("automatic-e15f696e7fb62678d04a5286a9dce84b5472ba9d6fcfb1a504488b20b63bc508"), complete: OperationId("automatic-ed078f9264cc9d15c493c6f91e0a88d1515ffbde76d768d907edc93f4bfcac2a") }, channel: Automatic, body: "literal work" }, keys: AutomaticBootstrapKeys { compound: OperationId("75a866f2-e43c-47dd-982a-7debc756fb0e"), begin: OperationId("automatic-bootstrap-0014429eacd2268e03db396d2caeda461c47daeb9f17294b510a3f8d50420584"), resolve: OperationId("automatic-bootstrap-f66e4bb2c990b1de4ef046ef70f47b386e953ba972a3fc1a9e8ec1f4f534c795"), attach: OperationId("automatic-bootstrap-7168a1da492f2f84afcc1e80d97e8c57ccf2df800615acc0a2e5fe09e5d87f24"), complete: OperationId("automatic-bootstrap-6b094ab4fb95f4370d12c47853b1e19b052bb1173b48d1e8bb585886b863f243") }, workspace: HostTargetId("w1"), cwd: "/private/var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-qhz4-37a4f680-7d96-4fdd-940f-1d332012cac8", label: "new peer", focus: false, env: {}, launch: BootstrapLaunch { harness: Agent(AgentHarnessId { id: "codex", context_spelling: "Codex" }), binary: None, name: None, argv: [], composed_argv: None, startup_input: None }, startup_input: Some(StartupInputTemplate { insertion_index: 0, before: [], after: [], prefix: "", suffix: "", max_arg_bytes: 16384 }) } } }, state: Completed, attempt: BootstrapAttempt(1), attempt_state: Created, administrative_revision: 0, creation: Some(CreatedTab { correlation: HostCallId("df94905a-4250-4e39-9967-73deb181ad2f"), workspace: HostTargetId("w1"), tab: HostTargetId("w1:t2"), root_pane: HostTargetId("w1:p2"), terminal: TerminalId("terminal"), host_incarnation: HostBootId("herdr-server:pid=42:start=1.000002:uid=501"), witness: LocalEndpointWitness { schema: 1, platform: "macos-proc-bsdinfo-v1", endpoint: "/private/var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-qhz4-37a4f680-7d96-4fdd-940f-1d332012cac8/host.sock", peer_uid: 501, peer_pid: 42, start_seconds: 1, start_microseconds: 2, socket: SocketIdentity { device: 1, inode: 2, birth_seconds: 1, birth_nanoseconds: 0, change_seconds: 1, change_nanoseconds: 0 } } }), attachment: Some(AutomaticBootstrapAttachment { attempt: BootstrapAttempt(1), created: CreatedTab { correlation: HostCallId("df94905a-4250-4e39-9967-73deb181ad2f"), workspace: HostTargetId("w1"), tab: HostTargetId("w1:t2"), root_pane: HostTargetId("w1:p2"), terminal: TerminalId("terminal"), host_incarnation: HostBootId("herdr-server:pid=42:start=1.000002:uid=501"), witness: LocalEndpointWitness { schema: 1, platform: "macos-proc-bsdinfo-v1", endpoint: "/private/var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-qhz4-37a4f680-7d96-4fdd-940f-1d332012cac8/host.sock", peer_uid: 501, peer_pid: 42, start_seconds: 1, start_microseconds: 2, socket: SocketIdentity { device: 1, inode: 2, birth_seconds: 1, birth_nanoseconds: 0, change_seconds: 1, change_nanoseconds: 0 } } }, resolve_operation: OperationId("automatic-bootstrap-f66e4bb2c990b1de4ef046ef70f47b386e953ba972a3fc1a9e8ec1f4f534c795"), resolved_seat: SeatId("sZMK324hY"), child: AutomaticDeliveryMutation { version: 2, scope: Cooperative { instance: "i", seat: SeatId("sender") }, claim: CallerClaim { instance: "i", seat: SeatId("sender"), binding_generation: 1, role: TopLevel, harness: Agent(AgentHarnessId { id: "codex", context_spelling: "Codex" }), native_session: NativeSessionId("session"), execution: ExecutionId("00000000-0000-4000-8000-000000000001"), target: HostTargetId("w1:p1"), agent_id: None, liveness: None }, digest: "e69f0b0367d15f1d35d262f7443f58e685a8bd748c4bc3604d2ae56187df43ed", original: Handoff(AutomaticHandoffPlan { version: 2, delivery: AutomaticDeliveryPlan { version: 2, payload: AutomaticHandoffPayload { policy: None, namespace: HandoffNamespace { instance: "i", state_dir: "/private/var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-qhz4-37a4f680-7d96-4fdd-940f-1d332012cac8/state dir", host_endpoint: "/private/var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-qhz4-37a4f680-7d96-4fdd-940f-1d332012cac8/host.sock" }, keys: AutomaticHandoffKeys { compound: OperationId("e2347c73-eef5-4173-b5a1-d4c2e687403d"), begin: OperationId("automatic-153099de1b989643027b23d8fdc801c4855554a27d67533c907fa7a79778c07c"), ensure: OperationId("automatic-ad97aa58a67b59216c26dcccf49ab528025d915abf924ad9b734e39732c7b061"), send: OperationId("automatic-e15f696e7fb62678d04a5286a9dce84b5472ba9d6fcfb1a504488b20b63bc508"), complete: OperationId("automatic-ed078f9264cc9d15c493c6f91e0a88d1515ffbde76d768d907edc93f4bfcac2a") }, channel: Automatic, body: "literal work" }, recipient: SeatId("sZMK324hY") }, launch: LaunchRequest { target: HostTargetId("w1:p2"), harness: Harness(Agent(AgentHarnessId { id: "codex", context_spelling: "Codex" })), harness_binary: None, argv: [], name: None, pane_label: Some("new peer") }, context: ContinuationContext { state_dir: Some("/private/var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-qhz4-37a4f680-7d96-4fdd-940f-1d332012cac8/state dir"), host: Some("/private/var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-qhz4-37a4f680-7d96-4fdd-940f-1d332012cac8/host.sock") }, startup_input: Some(StartupInputTemplate { insertion_index: 0, before: [], after: [], prefix: "", suffix: "", max_arg_bytes: 16384 }) }), action: Prepare } }), thread: Some(ThreadId("tNn2d1l3W")), completed: Some(LinkedBootstrapReport { thread: ThreadId("tNn2d1l3W"), recipient: SeatId("sZMK324hY"), pane: HostTargetId("w1:p2"), kind: "launch", launch: BootstrapLaunch { harness: Agent(AgentHarnessId { id: "codex", context_spelling: "Codex" }), binary: None, name: None, argv: [], composed_argv: None, startup_input: None }, report: Object {"argv": Array [String("Expected handoff command routing (JSON data): null Prefer a startup hook command group only when its instance UUID, canonical state directory and canonical host endpoint exactly match every expected routing field above. Missing (null), different or ambiguous routing cannot supersede this handoff's target. Open your durable inbox using that matching group. Otherwise use the exact fallback: `herdr-threads --state-dir '/private/var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-qhz4-37a4f680-7d96-4fdd-940f-1d332012cac8/state dir' --host-endpoint /private/var/folders/d3/rsgv6zk54y5dd7137_cmcc100000gn/T/ht-qhz4-37a4f680-7d96-4fdd-940f-1d332012cac8/host.sock inbox`. The task for thread tNn2d1l3W is stored in inbox; follow its printed next: commands for complete bodies. Do not reread it with read/body. When waiting for replies, finish your turn and let hooks notify you of new mail; do not poll or run follow. Launch does not accept invitations or ACK messages. Accept invitations separately; default text inbox ACKs fully displayed messages.")], "harness": String("codex"), "outcome": String("started"), "pane": String("w1:p2"), "seat": String("sZMK324hY")}, report_digest: "0aa22c9ed062508a3caf966f83a233b644a60a64ff3bd2a094dc580c9ec1f609", terminal: TerminalId("terminal"), host_incarnation: HostBootId("herdr-server:pid=42:start=1.000002:uid=501") }), recovery: None })
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.626s] (3/9) herdr-threads service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_unrenderable_lazy_head_preserves_pending_and_serves_later_lazy
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_unrenderable_lazy_head_preserves_pending_and_serves_later_lazy ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_unrenderable_lazy_head_preserves_pending_and_serves_later_lazy
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4936 filtered out; finished in 0.61s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_unrenderable_lazy_head_preserves_pending_and_serves_later_lazy' (57735752) panicked at src/service/../../tests/service/normal_unrenderable_controls.rs:166:5:
+    assertion `left == right` failed: normal unrenderable Lazy carry must not starve later Lazy messages within 16 pulls
+      left: 0
+     right: 4
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.649s] (4/9) herdr-threads service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_unrenderable_head_preserves_pending_and_serves_later_lazy
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_unrenderable_head_preserves_pending_and_serves_later_lazy ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_unrenderable_head_preserves_pending_and_serves_later_lazy
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4936 filtered out; finished in 0.64s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_unrenderable_head_preserves_pending_and_serves_later_lazy' (57735758) panicked at src/service/../../tests/service/normal_unrenderable_controls.rs:166:5:
+    assertion `left == right` failed: normal unrenderable Ordinary carry must not starve later Lazy messages within 16 pulls
+      left: 0
+     right: 4
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.966s] (5/9) herdr-threads store::queries::tests::query_work_q4::q4_episode_private_and_reconciliation_points_have_constant_sqlite_work
+  stdout ───
+
+    running 1 test
+    test store::queries::tests::query_work_q4::q4_episode_private_and_reconciliation_points_have_constant_sqlite_work ... FAILED
+
+    failures:
+
+    failures:
+        store::queries::tests::query_work_q4::q4_episode_private_and_reconciliation_points_have_constant_sqlite_work
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4936 filtered out; finished in 0.95s
+
+  stderr ───
+    Q4 actualSQL plan=["SCAN CONSTANT ROW", "SCALAR SUBQUERY 5", "SEARCH m USING INDEX sqlite_autoindex_messages_1 (id=?)", "SEARCH sm USING INDEX sqlite_autoindex_send_manifests_2 (message_id=?)", "SEARCH r USING INDEX sqlite_autoindex_lazy_recipients_1 (preparation_id=? AND seat_id=?)", "SEARCH b USING INDEX sqlite_autoindex_occupant_bindings_1 (binding_id=?)", "CORRELATED SCALAR SUBQUERY 1", "SEARCH lc USING PRIMARY KEY (binding_id=? AND thread_id=?)", "CORRELATED SCALAR SUBQUERY 2", "SEARCH lc USING PRIMARY KEY (binding_id=? AND thread_id=?)", "CORRELATED SCALAR SUBQUERY 4", "SEARCH lm USING INDEX sqlite_autoindex_memberships_1 (thread_id=? AND seat_id=?)", "CORRELATED SCALAR SUBQUERY 3", "SEARCH ls USING INDEX sqlite_autoindex_seats_1 (id=?)", "SEARCH li USING INDEX sqlite_autoindex_invitations_2 (thread_id=? AND seat_id=? AND episode=?)", "SEARCH ld USING INDEX sqlite_autoindex_direct_threads_1 (thread_id=?)"]
+
+    thread 'store::queries::tests::query_work_q4::q4_episode_private_and_reconciliation_points_have_constant_sqlite_work' (57735756) panicked at src/store/../../tests/store/query_work_q4.rs:300:13:
+    alias=r must constrain a complete unique equality key: ["SCAN CONSTANT ROW", "SCALAR SUBQUERY 5", "SEARCH m USING INDEX sqlite_autoindex_messages_1 (id=?)", "SEARCH sm USING INDEX sqlite_autoindex_send_manifests_2 (message_id=?)", "SEARCH r USING INDEX sqlite_autoindex_lazy_recipients_1 (preparation_id=? AND seat_id=?)", "SEARCH b USING INDEX sqlite_autoindex_occupant_bindings_1 (binding_id=?)", "CORRELATED SCALAR SUBQUERY 1", "SEARCH lc USING PRIMARY KEY (binding_id=? AND thread_id=?)", "CORRELATED SCALAR SUBQUERY 2", "SEARCH lc USING PRIMARY KEY (binding_id=? AND thread_id=?)", "CORRELATED SCALAR SUBQUERY 4", "SEARCH lm USING INDEX sqlite_autoindex_memberships_1 (thread_id=? AND seat_id=?)", "CORRELATED SCALAR SUBQUERY 3", "SEARCH ls USING INDEX sqlite_autoindex_seats_1 (id=?)", "SEARCH li USING INDEX sqlite_autoindex_invitations_2 (thread_id=? AND seat_id=? AND episode=?)", "SEARCH ld USING INDEX sqlite_autoindex_direct_threads_1 (thread_id=?)"]
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.966s] (6/9) herdr-threads store::queries::tests::query_work_q4::q4_raw_hundred_scope_charge_and_lazy_due_fourteen_use_actual_helpers
+  stdout ───
+
+    running 1 test
+    test store::queries::tests::query_work_q4::q4_raw_hundred_scope_charge_and_lazy_due_fourteen_use_actual_helpers ... FAILED
+
+    failures:
+
+    failures:
+        store::queries::tests::query_work_q4::q4_raw_hundred_scope_charge_and_lazy_due_fourteen_use_actual_helpers
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4936 filtered out; finished in 0.95s
+
+  stderr ───
+
+    thread 'store::queries::tests::query_work_q4::q4_raw_hundred_scope_charge_and_lazy_due_fourteen_use_actual_helpers' (57735759) panicked at src/store/../../tests/store/query_work_q4.rs:574:9:
+    assertion `left == right` failed
+      left: 99
+     right: 100
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.986s] (7/9) herdr-threads store::queries::tests::query_work_q4::q4_scalar_agreement_and_strict_retirement_use_exact_scope
+  stdout ───
+
+    running 1 test
+    test store::queries::tests::query_work_q4::q4_scalar_agreement_and_strict_retirement_use_exact_scope ... FAILED
+
+    failures:
+
+    failures:
+        store::queries::tests::query_work_q4::q4_scalar_agreement_and_strict_retirement_use_exact_scope
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4936 filtered out; finished in 0.97s
+
+  stderr ───
+    Q4 actualSQL plan=["SEARCH sm USING INDEX sqlite_autoindex_send_manifests_2 (message_id=?)", "SEARCH r USING INDEX sqlite_autoindex_lazy_recipients_1 (preparation_id=? AND seat_id=?)", "SEARCH b USING INDEX sqlite_autoindex_occupant_bindings_1 (binding_id=?)", "CORRELATED SCALAR SUBQUERY 1", "SEARCH lc USING PRIMARY KEY (binding_id=? AND thread_id=?)", "CORRELATED SCALAR SUBQUERY 2", "SEARCH lc USING PRIMARY KEY (binding_id=? AND thread_id=?)", "CORRELATED SCALAR SUBQUERY 4", "SEARCH lm USING INDEX sqlite_autoindex_memberships_1 (thread_id=? AND seat_id=?)", "CORRELATED SCALAR SUBQUERY 3", "SEARCH ls USING INDEX sqlite_autoindex_seats_1 (id=?)", "SEARCH li USING INDEX sqlite_autoindex_invitations_2 (thread_id=? AND seat_id=? AND episode=?)", "SEARCH ld USING INDEX sqlite_autoindex_direct_threads_1 (thread_id=?)"]
+
+    thread 'store::queries::tests::query_work_q4::q4_scalar_agreement_and_strict_retirement_use_exact_scope' (57735760) panicked at src/store/../../tests/store/query_work_q4.rs:300:13:
+    alias=r must constrain a complete unique equality key: ["SEARCH sm USING INDEX sqlite_autoindex_send_manifests_2 (message_id=?)", "SEARCH r USING INDEX sqlite_autoindex_lazy_recipients_1 (preparation_id=? AND seat_id=?)", "SEARCH b USING INDEX sqlite_autoindex_occupant_bindings_1 (binding_id=?)", "CORRELATED SCALAR SUBQUERY 1", "SEARCH lc USING PRIMARY KEY (binding_id=? AND thread_id=?)", "CORRELATED SCALAR SUBQUERY 2", "SEARCH lc USING PRIMARY KEY (binding_id=? AND thread_id=?)", "CORRELATED SCALAR SUBQUERY 4", "SEARCH lm USING INDEX sqlite_autoindex_memberships_1 (thread_id=? AND seat_id=?)", "CORRELATED SCALAR SUBQUERY 3", "SEARCH ls USING INDEX sqlite_autoindex_seats_1 (id=?)", "SEARCH li USING INDEX sqlite_autoindex_invitations_2 (thread_id=? AND seat_id=? AND episode=?)", "SEARCH ld USING INDEX sqlite_autoindex_direct_threads_1 (thread_id=?)"]
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   1.141s] (8/9) herdr-threads store::queries::tests::query_work_q4::q4_actual_continued_tail_checks_scope_once_and_charges_retirement
+        PASS [  12.643s] (9/9) herdr-threads store::queries::tests::query_work_q4::q4_three_event_keys_and_actual_floor_have_constant_sqlite_work
+────────────
+     Summary [  12.658s] 9 tests run: 2 passed, 7 failed, 4928 skipped
+        FAIL [   0.155s] (1/9) herdr-threads cli::handoff_delivery::tests::historical_none_automatic_existing_retry_requires_receipts_before_effects_and_preserves_origin
+        FAIL [   0.614s] (2/9) herdr-threads cli::topology_handoff::tests::live::automatic_live::public_historical_none_new_tab_retry_requires_receipts_before_any_effect_and_preserves_origin
+        FAIL [   0.626s] (3/9) herdr-threads service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_unrenderable_lazy_head_preserves_pending_and_serves_later_lazy
+        FAIL [   0.649s] (4/9) herdr-threads service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_unrenderable_head_preserves_pending_and_serves_later_lazy
+        FAIL [   0.966s] (5/9) herdr-threads store::queries::tests::query_work_q4::q4_episode_private_and_reconciliation_points_have_constant_sqlite_work
+        FAIL [   0.966s] (6/9) herdr-threads store::queries::tests::query_work_q4::q4_raw_hundred_scope_charge_and_lazy_due_fourteen_use_actual_helpers
+        FAIL [   0.986s] (7/9) herdr-threads store::queries::tests::query_work_q4::q4_scalar_agreement_and_strict_retirement_use_exact_scope
+error: test run failed

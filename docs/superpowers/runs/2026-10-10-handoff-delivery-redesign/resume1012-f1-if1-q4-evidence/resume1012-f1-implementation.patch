@@ -1,0 +1,175 @@
+--- a/src/delivery/presentation.rs
++++ b/src/delivery/presentation.rs
+@@ -235,13 +235,34 @@
+         Ok(())
+     }
+ }
++/// Internal distinction: only counted encoded-byte overflow proves a size limit.
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub(crate) enum SizingFailure {
++    OutputLimit(usize),
++    InvalidRendering(usize),
++    AllowanceExhausted,
++}
++impl SizingFailure {
++    fn bytes(self) -> usize {
++        match self {
++            Self::OutputLimit(bytes) | Self::InvalidRendering(bytes) => bytes,
++            Self::AllowanceExhausted => OUTPUT_LIMIT + 1,
++        }
++    }
++}
+ /// Exact serializer, including native envelope, all Watch typed fields and LF.
+ pub fn measure(
+     profile: &PresentationRenderProfile,
+     items: &[Item],
+ ) -> Result<(Selection, usize), usize> {
++    measure_classified(profile, items).map_err(SizingFailure::bytes)
++}
++fn measure_classified(
++    profile: &PresentationRenderProfile,
++    items: &[Item],
++) -> Result<(Selection, usize), SizingFailure> {
+     if !valid_items(items) {
+-        return Err(OUTPUT_LIMIT + 1);
++        return Err(SizingFailure::InvalidRendering(OUTPUT_LIMIT + 1));
+     }
+     let selection = profile.selection(items);
+     if items.is_empty() {
+@@ -269,9 +290,14 @@
+         }
+         Ok(())
+     })();
+-    result
+-        .map(|()| (selection, count.bytes))
+-        .map_err(|_| count.bytes.max(OUTPUT_LIMIT + 1))
++    result.map(|()| (selection, count.bytes)).map_err(|_| {
++        let bytes = count.bytes.max(OUTPUT_LIMIT + 1);
++        if count.bytes > OUTPUT_LIMIT && profile.validate() {
++            SizingFailure::OutputLimit(bytes)
++        } else {
++            SizingFailure::InvalidRendering(bytes)
++        }
++    })
+ }
+ 
+ impl PresentationRenderProfile {
+@@ -350,14 +376,22 @@
+         profile: &PresentationRenderProfile,
+         items: &[Item],
+     ) -> Result<(Selection, usize), usize> {
++        self.measure_classified(profile, items)
++            .map_err(SizingFailure::bytes)
++    }
++    pub(crate) fn measure_classified(
++        &mut self,
++        profile: &PresentationRenderProfile,
++        items: &[Item],
++    ) -> Result<(Selection, usize), SizingFailure> {
+         if self.work.output_passes >= 352 {
+-            return Err(OUTPUT_LIMIT + 1);
++            return Err(SizingFailure::AllowanceExhausted);
+         }
+         self.work.output_passes += 1;
+-        let result = measure(profile, items);
++        let result = measure_classified(profile, items);
+         self.work.output_bytes += match result {
+             Ok((_, bytes)) => bytes,
+-            Err(bytes) => bytes,
++            Err(failure) => failure.bytes(),
+         };
+         result
+     }
+--- a/src/store/invitation_content.rs
++++ b/src/store/invitation_content.rs
+@@ -2511,7 +2511,7 @@
+     let mut truncated = Vec::new();
+     let mut descriptors = Vec::new();
+     let mut carried_notices = Vec::new();
+-    let mut shown_message_count = 0;
++    let mut processed_message_count = 0;
+     let mut message_slots = input.new_message_slots;
+     for n in 0..if control_only { 0 } else { 5 } {
+         let class = (state.rotation as usize + n) % 5;
+@@ -2615,7 +2615,7 @@
+                 if input.blocked_messages.contains(&message.content.id)
+                     || (!input.retry_messages && input.known_messages.contains(&message.content.id))
+                 {
+-                    shown_message_count += 1;
++                    processed_message_count += 1;
+                     continue;
+                 }
+                 if outputs.len() == 32 {
+@@ -2627,14 +2627,26 @@
+                 let output = message_output(message, &carry.prefix);
+                 let mut trial = outputs.clone();
+                 trial.push(output.clone());
+-                if sizer.measure(&input.render_profile, &trial).is_err() {
+-                    break;
++                match sizer.measure_classified(&input.render_profile, &trial) {
++                    Ok(_) => {}
++                    Err(presentation::SizingFailure::OutputLimit(_))
++                        if outputs.is_empty() && message_slots > 0 =>
++                    {
++                        // Finish only this private rendering attempt. Canonical
++                        // pending content and logical offer stamps stay intact.
++                        processed_message_count += 1;
++                        continue;
++                    }
++                    Err(presentation::SizingFailure::InvalidRendering(_)) => {
++                        return Err(corrupt("invalid normal presentation rendering"));
++                    }
++                    Err(_) => break,
+                 }
+                 if !input.known_messages.contains(&message.content.id) {
+                     message_slots -= 1;
+                 }
+                 outputs.push(output);
+-                shown_message_count += 1;
++                processed_message_count += 1;
+                 if message.content.content.truncated {
+                     truncated.push(message.content.id.clone());
+                 } else {
+@@ -2714,7 +2726,7 @@
+     }
+     state.control_state = encode(&controls)?;
+     if normal_mode && !control_only {
+-        messages.drain(..shown_message_count);
++        messages.drain(..processed_message_count);
+         carry.items = messages.clone();
+         state.ordinary_pending = ordinary_carry_json(&carry)?;
+     }
+--- a/TRUST-POLICY.md
++++ b/TRUST-POLICY.md
+@@ -1752,6 +1752,31 @@
+ such a scope change occurs. This adds no wake timer, delivery guarantee, larger
+ output limit or receipt authority.
+ 
++Accepted normal render limit: at positive post-reconciliation logical capacity,
++a canonically validated normal candidate whose unchanged inherited rendering
++actually exceeds the standalone encoded-output bound on an empty page may be
++deferred for that finite captured normal pass, including a previously unoffered
++ID. An exhausted sizing allowance, nonempty-page failure, invalid authority,
++malformed item or unavailable/drifted codec does not establish this size failure.
++Deferral advances only existing bounded private traversal; it does not change
++the candidate's canonical full body, exact addressing/publication, pending receipt,
++Lazy display state, binding read cursor or any preexisting full logical Offer
++stamp, and allocates no new logical offer. It supplies no ACK, acceptance,
++display, output or presentation-confirmation evidence. Later renderable mail may
++progress in the same capture, and a completed stable pass is quiet once its
++independent work is exhausted. A later independently admitted normal capture
++retries the pending candidate; automatic in-context delivery of its unrenderable
++shape and a new retry wake/timer are not promised. Unknown deferred IDs may remain
++unknown to the model; canonical inbox/history/body inspection remains available.
++No normal per-ID negative cache, body fragment or recovery cursor is introduced;
++existing source, sizing, output, carry, partial and ledger bounds remain unchanged.
++Pre-commit refusal or transaction rollback installs no deferral progress. After a
++successful private commit, response/transport/write/flush loss retains that
++private progress without granting delivery, ACK, display or confirmation authority.
++A caller-visible error with an uncertain commit outcome is not proof of rollback.
++Existing due-cache, owner-replay, capacity parking and downstream-loss limits
++remain unchanged.
++
+ 
+ A newly admitted live Watch owner may physically restream its captured pending
+ ordinary offers once per presentation lease, independently of DP5 logical retry

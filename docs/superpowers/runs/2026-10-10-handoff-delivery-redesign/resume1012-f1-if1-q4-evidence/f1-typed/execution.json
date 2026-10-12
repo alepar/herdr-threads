@@ -1,0 +1,56 @@
+{
+  "head": "101edb65c161de1cf27a35b728e64c0027549c59",
+  "tree": "58a68f3945b944d16be9590dd9c0a024f0d960b2",
+  "run_id": "251a2002-7cb3-4040-8b6e-76061003dfd3",
+  "expected": [
+    "service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_unrenderable_head_preserves_pending_and_serves_later_lazy",
+    "service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_unrenderable_lazy_head_preserves_pending_and_serves_later_lazy"
+  ],
+  "commands": [],
+  "list": {
+    "exit": 0,
+    "seconds": 94.70646770799067
+  },
+  "selected": [
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_unrenderable_head_preserves_pending_and_serves_later_lazy"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_unrenderable_lazy_head_preserves_pending_and_serves_later_lazy"
+    ]
+  ],
+  "binaries": [
+    {
+      "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target/debug/deps/herdr_threads-bc80e388954f6954",
+      "sha256": "9177aa8e33f85d065b21e34025b5e98a13b8c993cc377307d70fc4edae88fae7"
+    }
+  ],
+  "run": {
+    "exit": 100,
+    "seconds": 0.9863233329961076,
+    "argv": [
+      "nice",
+      "cargo",
+      "nextest",
+      "run",
+      "--locked",
+      "--all-features",
+      "--lib",
+      "--no-fail-fast",
+      "-E",
+      "test(=service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_unrenderable_head_preserves_pending_and_serves_later_lazy) | test(=service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_unrenderable_lazy_head_preserves_pending_and_serves_later_lazy)"
+    ]
+  },
+  "leaks": {
+    "exit": 0,
+    "seconds": 0.2607355839572847,
+    "argv": [
+      "scripts/check-no-leaked-processes",
+      "--run-id",
+      "251a2002-7cb3-4040-8b6e-76061003dfd3"
+    ]
+  },
+  "leak_exit": 0
+}

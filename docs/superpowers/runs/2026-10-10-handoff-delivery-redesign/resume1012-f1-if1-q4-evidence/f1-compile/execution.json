@@ -1,0 +1,24 @@
+{
+  "head": "f44d616b73580ce5d9ed7de13bca2d642059e1cb",
+  "tree": "939c0f5488cde5a7e58cc3a014671131a0992eef",
+  "run_id": "4567aeb8-e8d8-4438-a11e-a986a803051c",
+  "expected": [
+    "service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_unrenderable_head_preserves_pending_and_serves_later_lazy",
+    "service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_unrenderable_lazy_head_preserves_pending_and_serves_later_lazy"
+  ],
+  "commands": [],
+  "list": {
+    "exit": 101,
+    "seconds": 20.18757370894309
+  },
+  "leaks": {
+    "exit": 0,
+    "seconds": 0.6214638340752572,
+    "argv": [
+      "scripts/check-no-leaked-processes",
+      "--run-id",
+      "4567aeb8-e8d8-4438-a11e-a986a803051c"
+    ]
+  },
+  "leak_exit": 0
+}

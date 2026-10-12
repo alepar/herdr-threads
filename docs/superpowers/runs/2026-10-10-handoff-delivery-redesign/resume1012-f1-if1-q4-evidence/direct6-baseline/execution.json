@@ -1,0 +1,77 @@
+{
+  "head": "1d1c6112384dbc95b29fdb20da2484522751fd61",
+  "tree": "2ba0635e970df5d60bdf0178bd8e5f3f044261f2",
+  "run_id": "e0f3ed41-5a65-40b6-b265-7fc430b88a77",
+  "expected": [
+    "direct_send::modern_ordinary_direct_send_requires_receipt_capability_before_any_effect",
+    "direct_send::modern_ordinary_direct_send_with_receipt_capability_commits_exact_ordinary_body",
+    "direct_send::modern_lazy_direct_send_is_exempt_from_receipt_capability",
+    "direct_send::pending_historical_ordinary_direct_retry_requires_receipts_without_rewriting_original",
+    "direct_send::historical_lazy_direct_retry_is_exempt_from_receipt_capability",
+    "direct_send::committed_direct_ordinary_output_retry_does_not_require_receipt_capability"
+  ],
+  "commands": [],
+  "list": {
+    "exit": 0,
+    "seconds": 26.72335641598329
+  },
+  "selected": [
+    [
+      "herdr-threads::combined",
+      "direct_send::committed_direct_ordinary_output_retry_does_not_require_receipt_capability"
+    ],
+    [
+      "herdr-threads::combined",
+      "direct_send::historical_lazy_direct_retry_is_exempt_from_receipt_capability"
+    ],
+    [
+      "herdr-threads::combined",
+      "direct_send::modern_lazy_direct_send_is_exempt_from_receipt_capability"
+    ],
+    [
+      "herdr-threads::combined",
+      "direct_send::modern_ordinary_direct_send_requires_receipt_capability_before_any_effect"
+    ],
+    [
+      "herdr-threads::combined",
+      "direct_send::modern_ordinary_direct_send_with_receipt_capability_commits_exact_ordinary_body"
+    ],
+    [
+      "herdr-threads::combined",
+      "direct_send::pending_historical_ordinary_direct_retry_requires_receipts_without_rewriting_original"
+    ]
+  ],
+  "binaries": [
+    {
+      "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target/debug/deps/combined-1ca8fb8a6401d78a",
+      "sha256": "5f36c5990447434e938c782b9cdfb3056eae394aa5aba083850944f0aa611407"
+    }
+  ],
+  "run": {
+    "exit": 100,
+    "seconds": 1.5529534170636907,
+    "argv": [
+      "nice",
+      "cargo",
+      "nextest",
+      "run",
+      "--locked",
+      "--all-features",
+      "--test",
+      "combined",
+      "--no-fail-fast",
+      "-E",
+      "test(=direct_send::modern_ordinary_direct_send_requires_receipt_capability_before_any_effect) | test(=direct_send::modern_ordinary_direct_send_with_receipt_capability_commits_exact_ordinary_body) | test(=direct_send::modern_lazy_direct_send_is_exempt_from_receipt_capability) | test(=direct_send::pending_historical_ordinary_direct_retry_requires_receipts_without_rewriting_original) | test(=direct_send::historical_lazy_direct_retry_is_exempt_from_receipt_capability) | test(=direct_send::committed_direct_ordinary_output_retry_does_not_require_receipt_capability)"
+    ]
+  },
+  "leaks": {
+    "exit": 0,
+    "seconds": 0.4985612080199644,
+    "argv": [
+      "scripts/check-no-leaked-processes",
+      "--run-id",
+      "e0f3ed41-5a65-40b6-b265-7fc430b88a77"
+    ]
+  },
+  "leak_exit": 0
+}

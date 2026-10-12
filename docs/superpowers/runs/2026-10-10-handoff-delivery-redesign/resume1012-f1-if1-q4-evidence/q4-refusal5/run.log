@@ -1,0 +1,11 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+────────────
+ Nextest run ID ab3ea6f6-86e1-4808-86d6-9491bf52f069 with nextest profile: default
+    Starting 5 tests across 1 binary (4923 tests skipped)
+        PASS [   0.335s] (1/5) herdr-threads service::delivery_pull::tests::q4_body_controls::q4_retirement_refusal_controls::public_lazy_continuation_refuses_real_old_episode_audience_loss
+        PASS [   0.341s] (2/5) herdr-threads service::delivery_pull::tests::q4_body_controls::q4_retirement_refusal_controls::legacy_lazy_tail_keeps_strict_refusal_when_modern_reader_scope_is_lost
+        PASS [   0.342s] (3/5) herdr-threads service::delivery_pull::tests::q4_body_controls::q4_retirement_refusal_controls::modern_lazy_scope_retirement_rolls_back_when_final_private_save_fails
+        PASS [   0.798s] (4/5) herdr-threads service::delivery_pull::tests::q4_body_controls::q4_retirement_refusal_controls::modern_lazy_scope_loss_cannot_hide_corrupt_accumulator_or_utf8_offset
+        PASS [   0.815s] (5/5) herdr-threads service::delivery_pull::tests::q4_body_controls::q4_retirement_refusal_controls::modern_lazy_retirement_requires_intact_captured_publication_and_recipient_authority
+────────────
+     Summary [   0.829s] 5 tests run: 5 passed, 4923 skipped

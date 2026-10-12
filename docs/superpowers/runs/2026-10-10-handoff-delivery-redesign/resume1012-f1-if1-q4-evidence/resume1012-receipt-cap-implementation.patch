@@ -1,0 +1,89 @@
+--- a/src/cli/direct_send.rs
++++ b/src/cli/direct_send.rs
+@@ -261,6 +261,9 @@
+         send_key: OperationId::new(uuid::Uuid::new_v4().to_string()),
+     };
+     p.validate_claim(&claim)?;
++    if p.request.delivery_mode == DeliveryMode::Ordinary {
++        super::require_send_time_receipts_capability(client, clock)?;
++    }
+     capability(
+         client,
+         clock,
+@@ -375,6 +378,9 @@
+     let result = (|| -> Result<(), RunError> {
+         let mut progress: Progress = super::handoff::load_progress(journal, reference)?;
+         progress.validate(p, claim)?;
++        if p.request.delivery_mode == DeliveryMode::Ordinary && progress.message.is_none() {
++            super::require_send_time_receipts_capability(client, clock)?;
++        }
+         capability(
+             client,
+             clock,
+--- a/src/cli/handoff_delivery.rs
++++ b/src/cli/handoff_delivery.rs
+@@ -1804,17 +1804,15 @@
+         File::open(journal.root())?.sync_all()?;
+         terminal
+     } else {
+-        if original.delivery().payload.policy.is_some() {
+-            let mut query = envelope.clone();
+-            query.action = crate::protocol::handoff::AutomaticDeliveryAction::Status;
+-            let completed = matches!(call(query), Ok(CommandResult::Handoff(s)) if s.state == HandoffState::Completed);
+-            if !completed {
+-                require_policy_capabilities(
+-                    client,
+-                    clock,
+-                    original.delivery().payload.policy.as_ref(),
+-                )?;
+-            }
++        let mut query = envelope.clone();
++        query.action = crate::protocol::handoff::AutomaticDeliveryAction::Status;
++        let completed = matches!(call(query), Ok(CommandResult::Handoff(s)) if s.state == HandoffState::Completed);
++        if !completed {
++            require_policy_capabilities(
++                client,
++                clock,
++                original.delivery().payload.policy.as_ref(),
++            )?;
+         }
+         let exact_original = journal.snapshot_automatic_origin(reference)?;
+         let mut progress: AutomaticProgress = handoff::load_progress(journal, reference)?;
+--- a/src/cli/topology_handoff/automatic.rs
++++ b/src/cli/topology_handoff/automatic.rs
+@@ -335,16 +335,14 @@
+     let id = super::automatic_bootstrap_identity(&pending)?;
+     exact_namespace(&id, namespace)?;
+     let _lock = super::super::handoff::lock(journal, reference)?;
+-    if id.plan.payload.handoff.policy.is_some() {
+-        let completed =
+-            matches!(status(client, clock, &id), Ok(s) if s.state == BootstrapState::Completed);
+-        if !completed {
+-            super::super::handoff_delivery::require_policy_capabilities(
+-                client,
+-                clock,
+-                id.plan.payload.handoff.policy.as_ref(),
+-            )?;
+-        }
++    let completed =
++        matches!(status(client, clock, &id), Ok(s) if s.state == BootstrapState::Completed);
++    if !completed {
++        super::super::handoff_delivery::require_policy_capabilities(
++            client,
++            clock,
++            id.plan.payload.handoff.policy.as_ref(),
++        )?;
+     }
+     let mut local = load_parent(journal, reference, &id)?;
+     let begun = call(
+--- a/src/protocol/handoff/automatic_bootstrap.rs
++++ b/src/protocol/handoff/automatic_bootstrap.rs
+@@ -163,7 +163,7 @@
+                 131072
+             }
+         {
+-            return Err("automatic bootstrap original exceeds 512 KiB");
++            return Err("automatic bootstrap original exceeds retained capacity");
+         }
+         Ok(())
+     }

@@ -1,0 +1,101 @@
+{
+  "head": "0c07f19016d05459cb369d93c8b659d44443b6a7",
+  "tree": "4969198905977e5188af798861e79c6bf9c9de8b",
+  "run_id": "1204b4dc-622e-4b5b-b6be-5086f06e5519",
+  "expected": [
+    "service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_unrenderable_head_preserves_pending_and_serves_later_lazy",
+    "service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_unrenderable_lazy_head_preserves_pending_and_serves_later_lazy",
+    "store::queries::tests::query_work_q4::q4_episode_private_and_reconciliation_points_have_constant_sqlite_work",
+    "store::queries::tests::query_work_q4::q4_scalar_agreement_and_strict_retirement_use_exact_scope",
+    "store::queries::tests::query_work_q4::q4_three_event_keys_and_actual_floor_have_constant_sqlite_work",
+    "store::queries::tests::query_work_q4::q4_raw_hundred_scope_charge_and_lazy_due_fourteen_use_actual_helpers",
+    "store::queries::tests::query_work_q4::q4_actual_continued_tail_checks_scope_once_and_charges_retirement",
+    "cli::handoff_delivery::tests::historical_none_automatic_existing_retry_requires_receipts_before_effects_and_preserves_origin",
+    "cli::topology_handoff::tests::live::automatic_live::public_historical_none_new_tab_retry_requires_receipts_before_any_effect_and_preserves_origin",
+    "service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_mixed_page_retains_alone_fitting_lazy_successor",
+    "delivery::presentation::sizing_failure_tests::actual_overflow_is_distinct_from_exhaustion_and_invalid_rendering"
+  ],
+  "commands": [],
+  "list": {
+    "exit": 0,
+    "seconds": 173.7945446249796
+  },
+  "selected": [
+    [
+      "herdr-threads",
+      "cli::handoff_delivery::tests::historical_none_automatic_existing_retry_requires_receipts_before_effects_and_preserves_origin"
+    ],
+    [
+      "herdr-threads",
+      "cli::topology_handoff::tests::live::automatic_live::public_historical_none_new_tab_retry_requires_receipts_before_any_effect_and_preserves_origin"
+    ],
+    [
+      "herdr-threads",
+      "delivery::presentation::sizing_failure_tests::actual_overflow_is_distinct_from_exhaustion_and_invalid_rendering"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_mixed_page_retains_alone_fitting_lazy_successor"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_unrenderable_head_preserves_pending_and_serves_later_lazy"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_unrenderable_lazy_head_preserves_pending_and_serves_later_lazy"
+    ],
+    [
+      "herdr-threads",
+      "store::queries::tests::query_work_q4::q4_actual_continued_tail_checks_scope_once_and_charges_retirement"
+    ],
+    [
+      "herdr-threads",
+      "store::queries::tests::query_work_q4::q4_episode_private_and_reconciliation_points_have_constant_sqlite_work"
+    ],
+    [
+      "herdr-threads",
+      "store::queries::tests::query_work_q4::q4_raw_hundred_scope_charge_and_lazy_due_fourteen_use_actual_helpers"
+    ],
+    [
+      "herdr-threads",
+      "store::queries::tests::query_work_q4::q4_scalar_agreement_and_strict_retirement_use_exact_scope"
+    ],
+    [
+      "herdr-threads",
+      "store::queries::tests::query_work_q4::q4_three_event_keys_and_actual_floor_have_constant_sqlite_work"
+    ]
+  ],
+  "binaries": [
+    {
+      "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target/debug/deps/herdr_threads-bc80e388954f6954",
+      "sha256": "8b0e9ad625b6fa19aa07025863fc52250ae9591dc206aa7dbcd69d33c26a5a93"
+    }
+  ],
+  "run": {
+    "exit": 100,
+    "seconds": 45.94944491703063,
+    "argv": [
+      "nice",
+      "cargo",
+      "nextest",
+      "run",
+      "--locked",
+      "--all-features",
+      "--lib",
+      "--no-fail-fast",
+      "-E",
+      "test(=service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_unrenderable_head_preserves_pending_and_serves_later_lazy) | test(=service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_unrenderable_lazy_head_preserves_pending_and_serves_later_lazy) | test(=store::queries::tests::query_work_q4::q4_episode_private_and_reconciliation_points_have_constant_sqlite_work) | test(=store::queries::tests::query_work_q4::q4_scalar_agreement_and_strict_retirement_use_exact_scope) | test(=store::queries::tests::query_work_q4::q4_three_event_keys_and_actual_floor_have_constant_sqlite_work) | test(=store::queries::tests::query_work_q4::q4_raw_hundred_scope_charge_and_lazy_due_fourteen_use_actual_helpers) | test(=store::queries::tests::query_work_q4::q4_actual_continued_tail_checks_scope_once_and_charges_retirement) | test(=cli::handoff_delivery::tests::historical_none_automatic_existing_retry_requires_receipts_before_effects_and_preserves_origin) | test(=cli::topology_handoff::tests::live::automatic_live::public_historical_none_new_tab_retry_requires_receipts_before_any_effect_and_preserves_origin) | test(=service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_mixed_page_retains_alone_fitting_lazy_successor) | test(=delivery::presentation::sizing_failure_tests::actual_overflow_is_distinct_from_exhaustion_and_invalid_rendering)"
+    ]
+  },
+  "leaks": {
+    "exit": 0,
+    "seconds": 0.3150540000060573,
+    "argv": [
+      "scripts/check-no-leaked-processes",
+      "--run-id",
+      "1204b4dc-622e-4b5b-b6be-5086f06e5519"
+    ]
+  },
+  "leak_exit": 0
+}

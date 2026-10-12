@@ -2,6 +2,7 @@
 
 flags: planOneShot=true skipPlanRoast=true skipCodeRoast=false autonomous=true
 phase: code
+codeMechanism: ordinary-subagents
 
 idea: ok back to the handoff redesign. let's $super-auto from here, fully autonomous, both roasts are on. once integration branch is ready for merge, lets $herdr-threads notify main tab that it is
 branch: super-auto/handoff-delivery-redesign
@@ -31,7 +32,8 @@ codeBuckets:
   pendingRetry: ht-0lo.8.3, ht-0lo.8, ht-0lo
   parked:
   stalled: false
-  review: pending
+  review: not ready (F1 normal-render starvation and IF1 specialized receipt-capability gaps; final measurement deferred)
+  sweep: SWEEP DEFERRED (caller-owned)
 
 - resume2026-10-11 · user explicitly requested "$super-auto this, fully autonomous, design roast off, code roast on"; skipPlanRoast=true applies prospectively; retained completed designRound2 and low-coverage history, code phase/counters/epic unchanged.
 
@@ -93,3 +95,12 @@ Resumed C verified checkpoint68fab47e/tree3074: Q3 current60PASS retained; Q4 re
 
 
 Safe pause on explicit user request "lets pause at a safe boundary": no new test/build/source fix/review started afterward. Candidate89fce486/tree6ec03 clean, current89gates allPASS fmt4.839/neutral1.359/clippy40.203/default23.505; printed65536UTF8body1PASS1.289/leaks0 at M2048; Q3current60PASS7242 and Q5public6PASSccf retained. Fresh cumulativewhole/interface withholdclearance for F1 normal-source standalone-unrenderablecarry starvation and IF1 specializedordinary receiptcapability gaps; sourceproofs only, causaltests/fixes pending. Schema scopedreview findsnodefect with measurementlimits. Q4SQL81c qualityREVISE fornoise/pointkeycoverage; Q4refusal282a staticPASSbutunrun/unapplied. InterruptedF1design0ee552 overclaims postcommitoutputrollback andrequireswordingreview, modernDirect9516testpatch unreviewed/unrun, automaticretrytests/F1test notdelivered, specializedfix before/after copiespartial. All6active nativeagentsinterrupted, no activeCargo/runtime, freshps0worktreeprocesses, latestscopedleaks0. Sourceunpromoted; C/.8/root remainopen, phasecode/caps/designRound2lowcoverage/formalCodeRound0unchanged. Paused until explicitresume; noMainready/merge/push/stash/config/serverchanges. SESSION-HANDOFF latestpause +resume-pause-89fce486-evidence manifests are recovery authority.
+
+
+Resume2026-10-12: user explicitly said lets resume; previouspause revoked. Sameepic/caps/counters/phasecode/designroastOFF/coderoastON retained. Candidate89fce486/tree6ec03 clean andMain/origin565def86 unchanged; healthreadhealthy0.9.0/protocol7, inboxempty, activepsa-global joined. Freshscratchagents preparing F1causalcontrol/designrefinement, IF1specializedreceiptcapcontrols andQ4SQLnoise/exactkeysuccessor. ParentsoleCargo lane remains, noMainmerge/push/stash/config/servermutation. Continueautonomously toreviewedexacttipreadiness andauthorizedMainnotification.
+
+
+Resume2026-10-12 skill/spec/speed reassessment: user asked to reread super-* and critically reassess originalspec/finishplan. Currentcache6.4.2-alepar5.1 super-auto/code/design/roast reread; independent audit resume1012-plan-skill-spec-speed-audit.md adopted. Use one light focusedreview perremainingfix, onefixpass/no repeateddeepclearance; officialdetailedroast uses shippedassemble-args+enginehelpers, triage/coreconcurrent. Necessarycausal/taskfocusedchecks remainpremerge; final expensivefocusedmatrix historical657+newregistrations+mandatory6 moved AFTERroastfixloop to exactclearedtip, projectfullsuitepolicyretained. F1newfirstdiscoveryrenderlimit cannotcountasdelivery; preservependingfullbody+actualfittingrecapture andsamecommitTRUSTtruthfullimit. IF1direct/historicalordinarycapabilityrequirementandQ4actualindexedworkproofareoriginal/acceptedloadbearing, notscopecreep. Originalepic/counters unchanged, currentC stillinprogress. Q4refusal5actualPASS0.829s/wrapper1.055/list53.912 at43558e98, UUID1868a4dd/leaks0; no duplicateunchangedrun merelyforreview. F1testcompileE0282 firstattempt preserved; explicitMessageId/Stringmaptype onlycorrection, typedbaselinecurrentlyrunning. No productionfixruntimeclearanceyet.
+
+
+Resume1012 checkpoint0c07f190/tree49691989: reviewedF1/IF1+Q4oraclecorrections committed afterfmt/neutral/clippy40.961/default25.885PASS. Library11 actual8PASS3F1fixture-oracleFAIL45.321s/wrapper45.949/list173.795/leaks0UUID1204b4dc; allfiveQ4actualSQLworkcontrolsPASS, bothautomaticreceiptgatesPASS, classifiedSizerPASS. BothF1later4progressreachedbutquietassertion used unsupportedV2Unchangedpremise; mixedcarryidpathunderdiagnosis. Direct6actual6PASS0.961s/wrapper1.176/list36.907/leaks0UUID0eb84f14. ht-0lo.10 closedonitsactual8PASS unchangedcontrols+onefamilyreview/sourcegates; F1/.9 remainsinprogress. Lightwhole-epicreview findsnonewstaticMustfix; roastconditionalonremainingF1focusedproof. FinalCmeasurementdeferredgate. Coldmatrixauditall22newcontrolsincluded/historical657+mandatory6preserved, coldunion768NOTseal/PASS. Officialassembleargs+fullshippedengineNodebridgepreparedonly, formalCodeRound0unchanged. Evidence resume1012-f1-if1-q4-evidence/.

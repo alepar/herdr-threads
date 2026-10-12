@@ -1,0 +1,108 @@
+--- a/tests/service/normal_unrenderable_controls.rs
++++ b/tests/service/normal_unrenderable_controls.rs
+@@ -304,3 +304,105 @@
+         );
+     }
+ }
++
++// Kills treating a nonempty-page fit failure as standalone-unrenderable: the
++// withheld candidate fits alone and must retain its next normal opportunity.
++#[test]
++fn presentation_normal_mixed_page_retains_alone_fitting_lazy_successor() {
++    use crate::protocol::{
++        commands::DeliveryMode,
++        delivery::{DeliveryPullReplyV2, PresentationItemV2},
++    };
++    let window = OfferWindowFixture::new(true);
++    let binding = binding_for_claim(&window.f, &window.recipient);
++    let cursor = || {
++        window.f.db.query_row::<i64, _, _>(
++            "SELECT COALESCE((SELECT seq FROM binding_cursors WHERE binding_id=?1 AND thread_id='t'),0)",
++            [binding.as_str()],
++            |r| r.get(0),
++        ).unwrap()
++    };
++    let original_cursor = cursor();
++    // Full bodies, no continuation marker: actual JSON control expansion gives
++    // 49152 and 24576 body bytes. Each fits 65536; together 73728 cannot fit.
++    let first_body = "\0".repeat(8192);
++    let second_body = "\0".repeat(4096);
++    let first = window.send(0, DeliveryMode::Lazy, &first_body);
++    let second = window.send(1, DeliveryMode::Lazy, &second_body);
++    let DeliveryPullReplyV2::Page(page) = window.pull() else {
++        panic!("actual registered Watch first page");
++    };
++    assert_capacity_watch_page_bound(&page);
++    let first_work = window.f.service.presentation.last_work.lock().unwrap().unwrap();
++    assert!(first_work.output_passes <= 352);
++    assert!(first_work.initial + first_work.context + first_work.revisit + first_work.ordinary + first_work.notices <= 433);
++    assert_eq!(page.offered, vec![first.clone()]);
++    assert!(page.truncated.is_empty());
++    let first_content = page.items.iter().find_map(|item| match item {
++        PresentationItemV2::Message { id, lazy, content } if id == &first => {
++            assert!(*lazy && !content.truncated && !content.ack_required);
++            Some(content)
++        }
++        _ => None,
++    }).expect("first full body actually emitted");
++    assert_eq!(first_content.body, first_body);
++    assert!(page.more, "withheld normal candidate has another opportunity");
++    let carry: String = window.f.db.query_row(
++        "SELECT ordinary_pending FROM invitation_presentation_consumers WHERE binding_id=?1 AND consumer='watch'",
++        [binding.as_str()],
++        |r| r.get(0),
++    ).unwrap();
++    assert!(carry.len() <= 155731);
++    let retained: serde_json::Value = serde_json::from_str(&carry).unwrap();
++    assert!(retained["items"].as_array().unwrap().iter().any(|item|
++        item["content"]["id"] == second.as_str()
++    ), "nonempty-page failure retains the canonical successor in carry");
++    assert_eq!(window.offers().len(), 1);
++    assert!(!window.offers().contains_key(&second));
++    assert_normal_unrenderable_pending(&window, &first, DeliveryMode::Lazy);
++    assert_normal_unrenderable_pending(&window, &second, DeliveryMode::Lazy);
++    assert_eq!(cursor(), original_cursor);
++
++    let mut shown = false;
++    let mut quiet = false;
++    for _ in 0..8 {
++        let reply = window.pull();
++        match reply {
++            DeliveryPullReplyV2::Page(page) => {
++                assert_capacity_watch_page_bound(&page);
++                assert!(page.truncated.is_empty());
++                for item in &page.items {
++                    if let PresentationItemV2::Message { id, lazy, content } = item {
++                        assert_eq!(id, &second, "first offer does not repeat early");
++                        assert!(!shown, "successor is offered once");
++                        assert!(*lazy && !content.truncated && !content.ack_required);
++                        assert_eq!(content.body, second_body);
++                        assert_eq!(content.body_len, 4096);
++                        assert!(page.offered.contains(&second));
++                        shown = true;
++                    }
++                }
++                quiet = !page.more;
++            }
++            DeliveryPullReplyV2::Unchanged { .. } => quiet = true,
++            other => panic!("same registered Watch lease refused: {other:?}"),
++        }
++        let work = window.f.service.presentation.last_work.lock().unwrap().unwrap();
++        assert!(work.output_passes <= 352);
++        assert!(work.initial + work.context + work.revisit + work.ordinary + work.notices <= 433);
++        assert!(window.offers().len() <= 256);
++        assert!(window.offers().values().all(|offer| offer.count <= MAX_OFFERS_PER_GENERATION));
++        assert_normal_unrenderable_pending(&window, &first, DeliveryMode::Lazy);
++        assert_normal_unrenderable_pending(&window, &second, DeliveryMode::Lazy);
++        assert_eq!(cursor(), original_cursor, "body emission is not full display");
++        if shown && quiet {
++            break;
++        }
++    }
++    assert!(shown && quiet, "alone-fitting carry must emit and finish its pass");
++    assert!(matches!(window.pull(), DeliveryPullReplyV2::Unchanged { .. }));
++    let offers = window.offers();
++    assert_eq!(offers.len(), 2);
++    assert_eq!(offers[&first].count, 1);
++    assert_eq!(offers[&second].count, 1);
++}
