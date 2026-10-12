@@ -897,6 +897,78 @@ fn relocated_runtime_descriptor_is_read_and_cleaned_up() {
     fs::remove_dir_all(root).unwrap();
 }
 
+/// Review I1: an older (pre-ht-910) Linux daemon whose per-boot natural
+/// pathname was too long bound `/private/tmp/herdr-threads-<uid>/<digest>-<boot>.sock`
+/// while today's natural `daemon.sock` fits. Its descriptor is read (doctor,
+/// handshake, stop) and, after it crashed, stale cleanup removes the verified
+/// socket so a new owner binds the natural pathname. Kills: "endpoint
+/// descriptor mismatch" blocking doctor, stop and ensure on upgrade.
+#[test]
+fn historical_per_boot_runtime_descriptor_is_read_and_cleaned_up_when_natural_fits() {
+    use sha2::{Digest, Sha256};
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::MetadataExt;
+    let root = fixture();
+    // An instance directory whose natural `daemon.sock` fits (94 bytes)
+    // but whose historical `daemon-<boot>.sock` (131 bytes) did not.
+    let state = root.sock("st");
+    let prefix = state.join("instances");
+    let pad = 82 - prefix.as_os_str().len() - 1;
+    let instance_dir = prefix.join("a".repeat(pad));
+    assert_eq!(instance_dir.as_os_str().len(), 82);
+    let instance = InstancePaths {
+        socket_path: instance_dir.join("daemon.sock"),
+        lock_path: instance_dir.join("owner.lock"),
+        descriptor_path: instance_dir.join("endpoint.json"),
+        locator_path: instance_dir.join("locator"),
+        namespace_path: instance_dir.join("namespace"),
+        database_path: instance_dir.join(crate::daemon::paths::DATABASE_FILE),
+        locator: "historical".into(),
+        instance_dir: instance_dir.clone(),
+    };
+    assert!(instance.socket_path.as_os_str().len() < crate::daemon::paths::SOCKET_PATH_LIMIT);
+    let owner = OwnerLock::acquire(&instance).unwrap();
+    let boot = uuid::Uuid::new_v4();
+    let digest = format!("{:x}", Sha256::digest(instance_dir.as_os_str().as_bytes()));
+    let old_dir = root.sock("rt-hist");
+    fs::create_dir(&old_dir).unwrap();
+    fs::set_permissions(&old_dir, fs::Permissions::from_mode(0o700)).unwrap();
+    let old_path = old_dir.join(format!("{}-{boot}.sock", &digest[..16]));
+    assert!(old_path.as_os_str().len() < crate::daemon::paths::SOCKET_PATH_LIMIT);
+    let old = std::os::unix::net::UnixListener::bind(&old_path).unwrap();
+    fs::set_permissions(&old_path, fs::Permissions::from_mode(0o600)).unwrap();
+    let meta = fs::metadata(&old_path).unwrap();
+    let descriptor = EndpointDescriptor {
+        software_version: "0.0.9".into(),
+        protocol_version: 1,
+        instance_uuid: owner.instance_uuid(),
+        boot_id: boot,
+        endpoint: old_path.clone(),
+        pid: 1,
+        socket_device: meta.dev(),
+        socket_inode: meta.ino(),
+    };
+    fs::write(
+        &instance.descriptor_path,
+        serde_json::to_vec(&descriptor).unwrap(),
+    )
+    .unwrap();
+    fs::set_permissions(&instance.descriptor_path, fs::Permissions::from_mode(0o600)).unwrap();
+    assert_eq!(
+        read_descriptor(&instance, owner.instance_uuid()).unwrap(),
+        descriptor
+    );
+    drop(old); // the old daemon crashed
+    owner.remove_stale_endpoint().unwrap();
+    assert!(!old_path.exists());
+    assert!(!instance.descriptor_path.exists());
+    let bound = owner.bind_socket().unwrap();
+    assert_eq!(bound.path(), instance.socket_path);
+    drop(bound);
+    drop(owner);
+    fs::remove_dir_all(&state).unwrap();
+}
+
 /// A relocated runtime endpoint is accepted by name only; the socket itself
 /// must still be a real socket owned by this user with mode 0600. A
 /// symlink, a wrong-mode socket or a foreign-owned socket at a relocated

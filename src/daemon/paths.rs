@@ -292,31 +292,47 @@ fn select_runtime_socket_dir(
 /// a directory another rule chose: on Linux an older build's `/private/tmp`
 /// directory (picked whenever `/private/tmp` existed) versus today's `/tmp`,
 /// in either direction. The check is platform-neutral, so it relaxes
-/// acceptance on macOS too, where the chosen paths are unchanged. The runtime socket's
-/// file name (a digest of the instance directory, or its pre-ht-910 per-boot
-/// form for `boot_id`) identifies the instance wherever the socket lives;
-/// the descriptor is the owner's private record and the socket is still
-/// verified (owner, mode, recorded inode) before use. A natural socket inside
-/// the instance directory has no relocated form.
+/// acceptance on macOS too, where the chosen paths are unchanged.
+///
+/// The runtime socket's file name identifies the instance wherever the
+/// socket lives: `<digest>.sock` (`digest` = sha256 of the instance
+/// directory, first 16 hex) or the pre-ht-910 per-boot `<digest>-<boot_id>.sock`
+/// while today's socket is in a runtime directory; and, when today's natural
+/// `daemon.sock` fits, only the per-boot `<digest>-<boot_id>.sock`, and only
+/// if the old per-boot natural pathname (`<instance>/daemon-<boot>.sock`)
+/// did not fit, which is when the old rule sent it to a runtime directory. A
+/// relocated `daemon.sock` is never accepted. The descriptor is the owner's
+/// private record and the socket is still verified (not a symlink, owner,
+/// mode, recorded inode) before use.
 fn relocated_endpoint_matches(
     instance_dir: &Path,
     socket_path: &Path,
     endpoint: &Path,
     boot_id: uuid::Uuid,
 ) -> bool {
-    if socket_path.starts_with(instance_dir)
-        || !endpoint.is_absolute()
+    if !endpoint.is_absolute()
         || endpoint.as_os_str().as_bytes().len() >= SOCKET_PATH_LIMIT
         || endpoint.parent().is_none_or(|dir| dir.parent().is_none())
     {
         return false;
     }
-    let (Some(name), Some(stem)) = (endpoint.file_name(), socket_path.file_stem()) else {
+    let Some(name) = endpoint.file_name() else {
         return false;
     };
-    let mut per_boot = stem.to_os_string();
-    per_boot.push(format!("-{boot_id}.sock"));
-    Some(name) == socket_path.file_name() || name == per_boot
+    if socket_path.starts_with(instance_dir) {
+        let historical_natural = instance_dir.join(format!("daemon-{}.sock", uuid::Uuid::nil()));
+        let digest = format!("{:x}", Sha256::digest(instance_dir.as_os_str().as_bytes()));
+        historical_natural.as_os_str().as_bytes().len() >= SOCKET_PATH_LIMIT
+            && name == format!("{}-{boot_id}.sock", &digest[..16]).as_str()
+    } else {
+        // Today's runtime socket is `<digest>.sock`: its stem is the digest.
+        let Some(stem) = socket_path.file_stem() else {
+            return false;
+        };
+        let mut per_boot = stem.to_os_string();
+        per_boot.push(format!("-{boot_id}.sock"));
+        Some(name) == socket_path.file_name() || name == per_boot
+    }
 }
 
 /// The instance directory for a runtime context: `<state>/instances/<sha256(host endpoint)>`.
@@ -531,6 +547,75 @@ mod tests {
                 .any(|path| path.starts_with("/run/user") || path.starts_with("$env")),
             "probed {probed:?}"
         );
+    }
+
+    /// Review I1: a pre-ht-910 daemon whose per-boot natural pathname
+    /// (`<instance>/daemon-<boot>.sock`) did not fit bound
+    /// `<runtime>/<digest>-<boot>.sock`, under `/private/tmp` on Linux when
+    /// it existed; today's natural `daemon.sock` fits. That exact historical
+    /// basename is accepted in any absolute runtime directory; a relocated
+    /// `daemon.sock` or `<digest>.sock` is not, nor another boot's name, nor
+    /// anything once the historical natural pathname would have fit.
+    #[test]
+    fn historical_per_boot_runtime_endpoint_is_accepted_when_natural_now_fits() {
+        let instance = PathBuf::from(format!("/tmp/ht/instances/{}", "a".repeat(64)));
+        let natural = instance.join("daemon.sock");
+        assert_eq!(natural.as_os_str().len(), 94);
+        let historical_natural = instance.join(format!("daemon-{}.sock", uuid::Uuid::nil()));
+        assert_eq!(historical_natural.as_os_str().len(), 131);
+        let boot = uuid::Uuid::parse_str("00000000-0000-4000-8000-000000000001").unwrap();
+        let digest = format!("{:x}", Sha256::digest(instance.as_os_str().as_bytes()));
+        let name = format!("{}-{boot}.sock", &digest[..16]);
+        let accepts = |instance: &Path, endpoint: &str, boot_id| {
+            relocated_endpoint_matches(
+                instance,
+                &instance.join("daemon.sock"),
+                Path::new(endpoint),
+                boot_id,
+            )
+        };
+        for dir in ["/private/tmp/herdr-threads-1000", "/tmp/herdr-threads-1000"] {
+            let endpoint = format!("{dir}/{name}");
+            assert!(endpoint.len() < SOCKET_PATH_LIMIT);
+            assert!(accepts(&instance, &endpoint, boot), "{endpoint}");
+            assert!(
+                !accepts(&instance, &endpoint, uuid::Uuid::new_v4()),
+                "{endpoint}"
+            );
+            for other in [
+                "daemon.sock".to_owned(),
+                format!("daemon-{boot}.sock"),
+                format!("{}.sock", &digest[..16]),
+            ] {
+                assert!(
+                    !accepts(&instance, &format!("{dir}/{other}"), boot),
+                    "{other}"
+                );
+            }
+        }
+        // Boundary: once the historical natural per-boot pathname fits
+        // (99 bytes), the old rule kept it natural; no runtime form exists.
+        let short = PathBuf::from(format!("/tmp/ht/instances/{}", "a".repeat(32)));
+        assert_eq!(
+            short
+                .join(format!("daemon-{}.sock", uuid::Uuid::nil()))
+                .as_os_str()
+                .len(),
+            99
+        );
+        let digest = format!("{:x}", Sha256::digest(short.as_os_str().as_bytes()));
+        let endpoint = format!(
+            "/private/tmp/herdr-threads-1000/{}-{boot}.sock",
+            &digest[..16]
+        );
+        assert!(!accepts(&short, &endpoint, boot));
+        let just_over = PathBuf::from(format!("/tmp/ht/instances/{}", "a".repeat(33)));
+        let digest = format!("{:x}", Sha256::digest(just_over.as_os_str().as_bytes()));
+        let endpoint = format!(
+            "/private/tmp/herdr-threads-1000/{}-{boot}.sock",
+            &digest[..16]
+        );
+        assert!(accepts(&just_over, &endpoint, boot));
     }
 
     /// A descriptor names a socket in a runtime directory chosen by another
