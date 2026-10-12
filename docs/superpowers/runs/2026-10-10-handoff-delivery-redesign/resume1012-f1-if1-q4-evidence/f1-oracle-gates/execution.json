@@ -1,0 +1,59 @@
+{
+  "staged_tree": "eeabbd47d694e028435fa9290c8d0954d76ec44b",
+  "index_sha256": "cd8d28dbe45c984761996da86f1f3d07f865991a5c1b1dca26489bad72d5986a",
+  "commands": [
+    {
+      "stage": "fmt",
+      "argv": [
+        "cargo",
+        "fmt",
+        "--",
+        "--check"
+      ],
+      "exit": 0,
+      "seconds": 4.612112165894359,
+      "log": "/private/tmp/ht-C-resume1012-f1-oracle-source-gates/fmt.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "stage": "neutral",
+      "argv": [
+        "scripts/check-harness-neutral"
+      ],
+      "exit": 0,
+      "seconds": 1.354582667001523,
+      "log": "/private/tmp/ht-C-resume1012-f1-oracle-source-gates/neutral.log",
+      "sha256": "7561605afc0af5f27527d99451825bc26c55fa2f7083bb392ad4244e406b0536"
+    },
+    {
+      "stage": "clippy",
+      "argv": [
+        "nice",
+        "cargo",
+        "clippy",
+        "--locked",
+        "--all-targets",
+        "--all-features",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit": 0,
+      "seconds": 22.985486458055675,
+      "log": "/private/tmp/ht-C-resume1012-f1-oracle-source-gates/clippy.log",
+      "sha256": "652db9bc467aae1c862360c9467a95e79a4ed81b2c9a8c5cc719057d2a9db0e0"
+    },
+    {
+      "stage": "default",
+      "argv": [
+        "nice",
+        "scripts/check-default-features"
+      ],
+      "exit": 0,
+      "seconds": 0.12043395801447332,
+      "log": "/private/tmp/ht-C-resume1012-f1-oracle-source-gates/default.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "exit": 0
+}

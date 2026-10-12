@@ -1,5 +1,7 @@
 # Handoff Delivery Redesign Continuation Plan
 
+> Current continuation, 2026-10-12: the user resumed fully autonomous super-auto, design roast off and code roast on. Execute the existing beads epic with current 6.4.2-alepar5.1 super-code ordinary-subagent coordination; these original plan steps and snapshots are historical. Use one light task/family review, then formal code roast. Final expanded focused C evidence is deferred until the roast fix loop exits (gate ht-0lo.11), preserving the historical657 floor and six separate recovery commands. Published Main565def86/schema35 is composed; published migrations1–35 remain byte-exact and this branch's unlanded additions are prospective36–45. The user-authorized cleanup of completed owned helper worktrees is complete; active source, cache, baselines and all branches/commits remain protected. Current decisions and actual failures/passes: RUN/run.md and resume1012-plan-skill-spec-speed-audit.md. No Main merge/push or production activation.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or superpowers:executing-plans for execution. This session reassesses and plans; it does not execute implementation or validation.
 
 **Goal:** Complete the existing ht-0lo integration branch with current-source activation evidence, combined validation and review, then issue the previously authorized Main readiness notification.

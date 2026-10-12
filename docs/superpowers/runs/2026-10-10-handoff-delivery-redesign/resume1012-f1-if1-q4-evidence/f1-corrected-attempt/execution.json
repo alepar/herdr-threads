@@ -1,0 +1,61 @@
+{
+  "head": "8009d3afb4802531e85f9bda12d6a5b6fb22f229",
+  "tree": "eeabbd47d694e028435fa9290c8d0954d76ec44b",
+  "run_id": "16f18190-87e2-4401-b4bf-8779b87d619d",
+  "expected": [
+    "service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_unrenderable_head_preserves_pending_and_serves_later_lazy",
+    "service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_unrenderable_lazy_head_preserves_pending_and_serves_later_lazy",
+    "service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_mixed_page_retains_alone_fitting_lazy_successor"
+  ],
+  "commands": [],
+  "list": {
+    "exit": 0,
+    "seconds": 68.23018016701099
+  },
+  "selected": [
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_mixed_page_retains_alone_fitting_lazy_successor"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_unrenderable_head_preserves_pending_and_serves_later_lazy"
+    ],
+    [
+      "herdr-threads",
+      "service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_unrenderable_lazy_head_preserves_pending_and_serves_later_lazy"
+    ]
+  ],
+  "binaries": [
+    {
+      "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target/debug/deps/herdr_threads-bc80e388954f6954",
+      "sha256": "45f4fd64f3f2233573bfd4a56114ba26a8ab726bd65dde1abb7ed5405860fb2d"
+    }
+  ],
+  "run": {
+    "exit": 100,
+    "seconds": 1.8050017909845337,
+    "argv": [
+      "nice",
+      "cargo",
+      "nextest",
+      "run",
+      "--locked",
+      "--all-features",
+      "--lib",
+      "--no-fail-fast",
+      "-E",
+      "test(=service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_unrenderable_head_preserves_pending_and_serves_later_lazy) | test(=service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_unrenderable_lazy_head_preserves_pending_and_serves_later_lazy) | test(=service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_mixed_page_retains_alone_fitting_lazy_successor)"
+    ]
+  },
+  "leaks": {
+    "exit": 0,
+    "seconds": 0.47289274993818253,
+    "argv": [
+      "scripts/check-no-leaked-processes",
+      "--run-id",
+      "16f18190-87e2-4401-b4bf-8779b87d619d"
+    ]
+  },
+  "leak_exit": 0
+}

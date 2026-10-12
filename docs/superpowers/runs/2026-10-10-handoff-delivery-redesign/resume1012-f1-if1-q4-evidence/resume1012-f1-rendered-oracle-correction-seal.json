@@ -1,0 +1,10 @@
+{
+  "status": "scratch/unapplied/uncompiled/unrun",
+  "head": "0c07f19016d05459cb369d93c8b659d44443b6a7",
+  "tree": "4969198905977e5188af798861e79c6bf9c9de8b",
+  "before_sha256": "8c4dac2f6032505e0021bbd8ef8df375512c1742ab2f22d174eaebe757f3a711",
+  "after_sha256": "a27df3cfdb329bddc50fe6a486c155f99f90a7466a030077b7b5da0abd90b96b",
+  "patch_sha256": "8906df673c4c8b8ccc0a98c04fc8235ced562111be8539301160b53d57def5ee",
+  "target": "tests/service/normal_unrenderable_controls.rs",
+  "cause": "V2 retry_messages=true restarts capture; mixed original geometry exceeded source quantum before presentation."
+}

@@ -1,0 +1,23 @@
+--- a/tests/service/normal_unrenderable_controls.rs
++++ b/tests/service/normal_unrenderable_controls.rs
+@@ -203,7 +203,19 @@
+                     if id == &blocked {
+                         assert!(!recovered, "one actual retry offer");
+                         assert_eq!(*lazy, mode == DeliveryMode::Lazy);
+-                        assert_eq!(content.ack_required, mode == DeliveryMode::Ordinary);
++                        // The source body is byte-chunked, so it deliberately
++                        // carries no full-display ACK candidate. The canonical
++                        // Ordinary obligation remains independently Pending.
++                        assert!(!content.ack_required, "partial source body has no display ACK candidate");
++                        assert_normal_unrenderable_pending(&window, &blocked, mode);
++                        if mode == DeliveryMode::Ordinary {
++                            let required: bool = window.f.db.query_row(
++                                "SELECT pr.ack_required=1 FROM send_manifests sm JOIN prepared_recipients pr ON pr.preparation_id=sm.preparation_id WHERE sm.message_id=?1 AND pr.seat_id=?2",
++                                params![blocked.as_str(), window.recipient.seat.as_str()],
++                                |r| r.get(0),
++                            ).unwrap();
++                            assert!(required, "canonical Ordinary ACK obligation is unchanged");
++                        }
+                         assert!(content.truncated);
+                         assert_eq!(content.body_len, 65536);
+                         assert!(content.body.starts_with(&"\0".repeat(8192)));

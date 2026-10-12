@@ -1,0 +1,31 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.12s
+────────────
+ Nextest run ID 203bf0ba-06f1-44f0-a5aa-5096517de13f with nextest profile: default
+    Starting 3 tests across 1 binary (4936 tests skipped)
+        PASS [   0.471s] (1/3) herdr-threads service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_mixed_page_retains_alone_fitting_lazy_successor
+        FAIL [   1.103s] (2/3) herdr-threads service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_unrenderable_head_preserves_pending_and_serves_later_lazy
+  stdout ───
+
+    running 1 test
+    test service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_unrenderable_head_preserves_pending_and_serves_later_lazy ... FAILED
+
+    failures:
+
+    failures:
+        service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_unrenderable_head_preserves_pending_and_serves_later_lazy
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4938 filtered out; finished in 1.08s
+
+  stderr ───
+
+    thread 'service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_unrenderable_head_preserves_pending_and_serves_later_lazy' (57961994) panicked at src/service/../../tests/service/normal_unrenderable_controls.rs:206:25:
+    assertion `left == right` failed
+      left: false
+     right: true
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   1.233s] (3/3) herdr-threads service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_unrenderable_lazy_head_preserves_pending_and_serves_later_lazy
+────────────
+     Summary [   1.258s] 3 tests run: 2 passed, 1 failed, 4936 skipped
+        FAIL [   1.103s] (2/3) herdr-threads service::delivery_pull::tests::normal_unrenderable_controls::presentation_normal_unrenderable_head_preserves_pending_and_serves_later_lazy
+error: test run failed
