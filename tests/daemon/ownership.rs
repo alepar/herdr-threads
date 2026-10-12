@@ -897,6 +897,125 @@ fn relocated_runtime_descriptor_is_read_and_cleaned_up() {
     fs::remove_dir_all(root).unwrap();
 }
 
+/// A relocated runtime endpoint is accepted by name only; the socket itself
+/// must still be a real socket owned by this user with mode 0600. A
+/// symlink, a wrong-mode socket or a foreign-owned socket at a relocated
+/// name is refused by read and by stale cleanup, and nothing is removed.
+/// Kills: the descriptor relaxation bypassing `validate_socket`.
+#[test]
+fn relocated_runtime_endpoint_must_be_a_private_owned_socket() {
+    use std::os::unix::fs::{FileTypeExt, MetadataExt};
+    let root = fixture();
+    let mut instance = paths(&root, root.sock("relocated-neg.sock"));
+    let name = "0123456789abcdef.sock";
+    let new_dir = root.sock("rn-new");
+    let old_dir = root.sock("rn-old");
+    for dir in [&new_dir, &old_dir] {
+        fs::create_dir(dir).unwrap();
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    instance.socket_path = new_dir.join(name);
+    let owner = OwnerLock::acquire(&instance).unwrap();
+    let publish = |instance: &InstancePaths, endpoint: &std::path::Path, meta: &fs::Metadata| {
+        let descriptor = EndpointDescriptor {
+            software_version: "0.9.0".into(),
+            protocol_version: 1,
+            instance_uuid: owner.instance_uuid(),
+            boot_id: uuid::Uuid::new_v4(),
+            endpoint: endpoint.to_path_buf(),
+            pid: 1,
+            socket_device: meta.dev(),
+            socket_inode: meta.ino(),
+        };
+        fs::write(
+            &instance.descriptor_path,
+            serde_json::to_vec(&descriptor).unwrap(),
+        )
+        .unwrap();
+        fs::set_permissions(&instance.descriptor_path, fs::Permissions::from_mode(0o600)).unwrap();
+    };
+    let refused = |instance: &InstancePaths, what: &str| {
+        let error = read_descriptor(instance, owner.instance_uuid()).unwrap_err();
+        assert_eq!(
+            error.kind(),
+            io::ErrorKind::PermissionDenied,
+            "{what}: {error}"
+        );
+        let error = owner.remove_stale_endpoint().unwrap_err();
+        assert_eq!(
+            error.kind(),
+            io::ErrorKind::PermissionDenied,
+            "{what}: {error}"
+        );
+        assert!(instance.descriptor_path.exists(), "{what}");
+    };
+
+    // A real owned socket elsewhere, reached through a symlink at the name.
+    let target = root.sock("rn-target.sock");
+    let live = std::os::unix::net::UnixListener::bind(&target).unwrap();
+    fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
+    let link = old_dir.join(name);
+    symlink(&target, &link).unwrap();
+    publish(&instance, &link, &fs::metadata(&target).unwrap());
+    refused(&instance, "symlink");
+    assert!(
+        fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert!(target.exists());
+    fs::remove_file(&link).unwrap();
+    drop(live);
+    fs::remove_file(&target).unwrap();
+
+    // An owned socket at the name with a group/other-accessible mode.
+    let path = old_dir.join(name);
+    let wrong = std::os::unix::net::UnixListener::bind(&path).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o666)).unwrap();
+    publish(&instance, &path, &fs::metadata(&path).unwrap());
+    refused(&instance, "wrong mode");
+    assert!(path.exists());
+    drop(wrong);
+    fs::remove_file(&path).unwrap();
+
+    // A socket owned by another user (any system socket not ours), named as
+    // this instance's runtime socket.
+    // Prefer a 0600 one, so only the owner check can refuse it.
+    let sockets: Vec<(std::path::PathBuf, u32)> = ["/var/run", "/run", "/private/var/run"]
+        .iter()
+        .filter_map(|dir| fs::read_dir(dir).ok())
+        .flat_map(|entries| entries.flatten())
+        .filter_map(|entry| {
+            let meta = fs::symlink_metadata(entry.path()).ok()?;
+            (meta.file_type().is_socket() && meta.uid() != crate::daemon::paths::effective_uid())
+                .then(|| (entry.path(), meta.permissions().mode() & 0o777))
+        })
+        .collect();
+    let foreign = sockets
+        .iter()
+        .find(|(_, mode)| *mode == 0o600)
+        .or(sockets.first())
+        .map(|(path, _)| path.clone());
+    match foreign {
+        Some(foreign) => {
+            instance.socket_path = new_dir.join(foreign.file_name().unwrap());
+            let owner_paths = instance.clone();
+            publish(&owner_paths, &foreign, &fs::metadata(&foreign).unwrap());
+            let error = read_descriptor(&owner_paths, owner.instance_uuid()).unwrap_err();
+            assert_eq!(
+                error.kind(),
+                io::ErrorKind::PermissionDenied,
+                "foreign: {error}"
+            );
+            assert!(foreign.exists());
+        }
+        None => eprintln!("no foreign-owned socket on this host; foreign case skipped"),
+    }
+    drop(owner);
+    fs::remove_dir_all(root).unwrap();
+}
+
 /// Releasing the lease releases the lock even while another copy of its
 /// descriptor exists, as when a process spawned concurrently by another
 /// thread still holds the transient copy it inherited until its exec
