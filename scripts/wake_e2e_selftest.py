@@ -511,11 +511,15 @@ class CoordinatorCalls(TempDir):
         """Read from the adapters' source: a new harness marker must join CALLER_SESSION_ENV."""
         import re
         src = Path(W.REPO) / "src" / "harness"
-        declared = set()
+        declared, literals = set(), 0
         for path in src.rglob("*.rs"):
             text = path.read_text(encoding="utf-8", errors="replace")
-            declared |= set(re.findall(r'AgentEnvMarker\s*\{\s*name:\s*"([A-Z0-9_]+)"', text))
-        self.assertTrue({"CLAUDECODE", "CODEX_SANDBOX"} <= declared, declared)  # the scan itself works
+            names = re.findall(r'AgentEnvMarker\s*\{\s*name:\s*"([A-Z0-9_]+)"', text)
+            declared |= set(names)
+            # every struct literal must have been parsed: a declaration in another shape fails here, not silently
+            literals += len(re.findall(r'(?<!struct )AgentEnvMarker\s*\{', text))
+            self.assertEqual(len(names), len(re.findall(r'(?<!struct )AgentEnvMarker\s*\{', text)), path)
+        self.assertTrue(literals >= 5 and {"CLAUDECODE", "CODEX_SANDBOX", "ANTIGRAVITY_AGENT"} <= declared, declared)
         self.assertEqual(sorted(declared - set(W.CALLER_SESSION_ENV)), [])
 
     def test_layout_records_person_seats_with_the_guard_kept(self):
