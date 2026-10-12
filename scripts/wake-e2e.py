@@ -324,7 +324,13 @@ class Run:
     def cleanup(self):
         """Attempt every owned resource independently, then verify it is gone. Returns the problems found;
         any problem makes the run fail. `--keep` is the explicit diagnostic opt-out."""
-        problems, steps = self.drain(), []
+        with self.lock:  # stop admission first, whatever the drain then does
+            self.stopping.set()
+        try:
+            problems = self.drain()
+        except BaseException as e:  # a drain error never skips the owned resources below
+            problems = [f"drain raised: {e!r}"]
+        steps = []
         if self.args.keep:
             self.cleanup_report = {"skipped": "--keep", "workspace": self.workspace,
                                    "daemon_attempted": self.daemon_attempted, "problems": problems}
@@ -408,6 +414,8 @@ class Run:
                     problems.append(f"helper pid {p.pid} did not exit: {p.args[:3]}")
         end = time.time() + self.drain_timeout_s
         for w in self.workers:
+            if w.ident is None:  # never started (interrupted or failed start): nothing to drain
+                continue
             w.join(timeout=max(0.0, end - time.time()))
             if w.is_alive():
                 problems.append(f"worker {w.name} did not stop within {self.drain_timeout_s:.0f}s")
@@ -961,12 +969,15 @@ def main(argv=None):
         run.layout()
         workers = [threading.Thread(target=r.run_cases, args=(cases,), name=r.name, daemon=True)
                    for r in run.recipients]
-        run.workers = workers
+        run.workers = workers  # registered before starting; drain skips any that never started
         for w in workers:
+            if run.stopping.is_set():
+                break
             w.start()
         while any(w.is_alive() for w in workers):  # short joins keep Ctrl-C / SIGTERM responsive
             for w in workers:
-                w.join(timeout=0.5)
+                if w.ident is not None:
+                    w.join(timeout=0.5)
         rc = EXIT_OK if summary(run, cases) else EXIT_FAIL
     except Refused as e:
         print(f"wake-e2e: refused: {e}", file=sys.stderr)

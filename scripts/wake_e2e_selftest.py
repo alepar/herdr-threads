@@ -319,6 +319,125 @@ class Interruption(TempDir):
         self.assertIsNotNone(self.started[0].poll())
 
 
+class PartialStartAndDrainErrors(TempDir):
+    """Cleanup must reach every owned resource even when worker startup was cut short or the drain itself fails.
+    Herdr and the daemon are faked at the helper boundary; the blocked worker helper is a real `sleep`."""
+
+    def setUp(self):
+        super().setUp()
+        self.saved = {k: getattr(W.Run, k) for k in ("preflight", "scratch", "layout", "run", "drain")}
+        self.saved_threading = W.threading
+        self.addCleanup(self.restore)
+        self.resource_calls, self.after_stop = [], []
+        self.roots = []
+        test = self
+        real_run = W.Run.run
+
+        def run(self_, argv, env=None, timeout=60, tag=None, cleanup=False):
+            words = " ".join(str(a) for a in argv)
+            if argv[0] == "herdr" or argv[0] == "/fake/herdr-threads":
+                test.resource_calls.append(words.replace("/fake/herdr-threads", "ht"))
+                if "workspace list" in words:
+                    return 0, json.dumps({"result": {"workspaces": []}}), ""
+                if "daemon health" in words:
+                    return 1, "", "down"
+                return 0, "", ""
+            return real_run(self_, argv, env=env, timeout=timeout, tag=tag, cleanup=cleanup)
+
+        def preflight(run_):
+            test.roots.append(run_.root)
+            run_.facts = {"run_id": run_.run_id}
+            run_.bin, run_.endpoint = "/fake/herdr-threads", "/fake/sock"
+            run_.drain_timeout_s, run_.child_term_grace_s, run_.process_grace_s = 5.0, 1.0, 0.5
+
+        def scratch(run_):
+            run_.daemon_attempted = True
+            run_.codex_home.mkdir(parents=True)
+            (test.tmp / "src-auth.json").write_bytes(FAKE_AUTH)
+            run_.auth_digest = W.provision_codex_auth(test.tmp / "src-auth.json", run_.codex_home / "auth.json")
+            test.auth_copy = run_.codex_home / "auth.json"
+
+        def layout(run_):
+            run_.layout_attempted, run_.workspace = True, "wfake"
+            test.run_obj = run_
+
+            def blocked(cases):
+                try:
+                    run_.run(["sleep", "30"], tag="blocked-helper")
+                    run_.run(["true"], tag="after-stop")
+                    test.after_stop.append("launched")
+                except W.Stopped:
+                    pass
+            run_.recipients = [SimpleNamespace(name="cl-nudge", run_cases=blocked),
+                               SimpleNamespace(name="cl-all", run_cases=lambda cases: None)]
+        W.Run.run, W.Run.preflight, W.Run.scratch, W.Run.layout = run, preflight, scratch, layout
+
+    def restore(self):
+        for k, v in self.saved.items():
+            setattr(W.Run, k, v)
+        W.threading = self.saved_threading
+        for root in self.roots:
+            shutil.rmtree(root, True)
+
+    def fail_second_start(self, exc):
+        """Thread.start succeeds for the first worker, which then blocks in its helper, and raises for the second."""
+        test = self
+        real = threading.Thread
+
+        class Thread(real):
+            def start(self):
+                if self.name == "cl-all":
+                    end = time.time() + 5  # the first worker is inside its helper before the failure
+                    while not test.run_obj.children and time.time() < end:
+                        time.sleep(0.02)
+                    raise exc
+                super().start()
+        W.threading = SimpleNamespace(**{**vars(threading), "Thread": Thread})
+
+    def main(self):
+        ev = self.tmp / "ev"
+        rc = W.main(["--harness", "claude", "--cases", "invite/group", "--evidence-dir", str(ev)])
+        return rc, json.loads((ev / "results.json").read_text())
+
+    def assert_all_resources_attempted(self, doc):
+        self.assertIn("herdr workspace close wfake", self.resource_calls)
+        self.assertTrue(any(c.endswith("daemon stop") for c in self.resource_calls), self.resource_calls)
+        self.assertFalse(self.auth_copy.exists())  # credential copy retired
+        self.assertEqual(self.after_stop, [])      # no helper admitted after the stop
+        self.assertEqual(self.run_obj.children, set())
+        self.assertFalse(any(w.is_alive() for w in self.run_obj.workers))
+        self.assertEqual(doc["facts"]["exit_code"], W.EXIT_FAIL)
+
+    def test_failed_second_thread_start(self):
+        self.fail_second_start(RuntimeError("can't start new thread"))
+        rc, doc = self.main()
+        self.assertEqual(rc, W.EXIT_FAIL)
+        self.assert_all_resources_attempted(doc)
+        self.assertEqual(doc["cleanup"]["problems"], [])
+
+    def test_interrupt_between_thread_starts(self):
+        self.fail_second_start(KeyboardInterrupt("signal 15"))
+        rc, doc = self.main()
+        self.assertEqual(rc, W.EXIT_FAIL)
+        self.assert_all_resources_attempted(doc)
+        self.assertEqual(doc["cleanup"]["problems"], [])
+
+    def test_a_drain_error_does_not_skip_owned_resources(self):
+        def drain(run_):
+            raise RuntimeError("drain exploded")
+        W.Run.drain = drain
+        self.fail_second_start(KeyboardInterrupt("signal 2"))
+        rc, doc = self.main()
+        self.assertEqual(rc, W.EXIT_FAIL)
+        self.assertIn("herdr workspace close wfake", self.resource_calls)
+        self.assertTrue(any(c.endswith("daemon stop") for c in self.resource_calls))
+        self.assertFalse(self.auth_copy.exists())
+        self.assertTrue(self.run_obj.stopping.is_set())  # admission closed before the drain ran
+        self.assertTrue(any("drain raised" in p for p in doc["cleanup"]["problems"]))
+        # the real drain never ran here: stop the still-blocked helper so the test leaves nothing behind
+        self.saved["drain"](self.run_obj)
+
+
 def row(recipient, case, result="PASS"):
     return {"recipient": recipient, "case": case, "result": result, "wake_on": "nudge", "harness": "claude"}
 
