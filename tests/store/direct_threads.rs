@@ -233,8 +233,9 @@ fn send_direct(store: &SqliteStore, thread: &ThreadId, mode: DeliveryMode, key: 
         .unwrap();
 }
 
-/// ht-8y9: the opening messages of a first-contact direct send (lazy or ordinary) stay unread for
-/// the invited target until it accepts, and accepting does not skip them.
+/// ht-8y9: the opening lazy messages of a first-contact direct send stay unread for the invited
+/// target until it accepts, and accepting does not skip them. Ordinary ones already reached it as
+/// pending receipts, so accepting moves the cursor to the head (no second offer).
 #[test]
 fn accepting_a_pair_invitation_keeps_the_opening_messages_unread() {
     for mode in [DeliveryMode::Lazy, DeliveryMode::Ordinary] {
@@ -281,13 +282,22 @@ fn accepting_a_pair_invitation_keeps_the_opening_messages_unread() {
             )
             .unwrap();
         let binding = BindingId::parse(binding).unwrap();
+        let last: i64 = db
+            .query_row(
+                "SELECT MAX(sequence) FROM messages WHERE thread_id=?1 AND kind='ordinary'",
+                [pair.as_str()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let lazy = mode == DeliveryMode::Lazy;
         assert_eq!(
             crate::store::read_cursors::cursor_for(&db, &binding, &pair).unwrap(),
-            Some(u64::try_from(first - 1).unwrap()),
+            Some(u64::try_from(if lazy { first - 1 } else { last }).unwrap()),
             "{mode:?}"
         );
-        assert!(
+        assert_eq!(
             crate::store::read_cursors::has_unread(&db, &binding).unwrap(),
+            lazy,
             "{mode:?}"
         );
         drop(store);
