@@ -202,6 +202,100 @@ fn direct_lazy_invited_target_is_frozen_without_receipt() {
     let _ = std::fs::remove_file(path);
 }
 
+fn send_direct(store: &SqliteStore, thread: &ThreadId, mode: DeliveryMode, key: &str) {
+    let v = SendMessage {
+        delivery_mode: mode,
+        thread: thread.clone(),
+        body: key.into(),
+        direct_recipient: Some(SeatId::new("s2")),
+        invited_recipients: vec![],
+        deadline_millis: None,
+        operation: OperationId::new(key),
+        claim: claim("s1"),
+        relays_user: false,
+        user_intent: None,
+    };
+    while let crate::ports::SendPreparationProgress::More { .. } = store
+        .prepare_send_step(
+            &v,
+            crate::ports::DurableWorkAdmission::new(16).unwrap(),
+            &budget(),
+        )
+        .unwrap()
+    {}
+    let hash = schema::canonical_digest(&crate::store::messages::send_payload(&v)).unwrap();
+    store
+        .mutate(
+            PermitMutation::SendMessage(v),
+            permit("s1", key, ObligationRef::Control(thread.clone()), hash, 100),
+            &budget(),
+        )
+        .unwrap();
+}
+
+/// ht-8y9: the opening messages of a first-contact direct send (lazy or ordinary) stay unread for
+/// the invited target until it accepts, and accepting does not skip them.
+#[test]
+fn accepting_a_pair_invitation_keeps_the_opening_messages_unread() {
+    for mode in [DeliveryMode::Lazy, DeliveryMode::Ordinary] {
+        let (store, db, path) = store_fixture();
+        let pair = thread(ensure(&store, "s1", "s2", "ensure").unwrap());
+        send_direct(&store, &pair, mode, "open-1");
+        send_direct(&store, &pair, mode, "open-2");
+        let first: i64 = db
+            .query_row(
+                "SELECT MIN(sequence) FROM messages WHERE thread_id=?1 AND kind='ordinary'",
+                [pair.as_str()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let invitation: String = db
+            .query_row("SELECT id FROM invitations WHERE seat_id='s2'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let v = crate::protocol::commands::Accept {
+            thread: pair.clone(),
+            operation: OperationId::new("accept"),
+            claim: claim("s2"),
+        };
+        let hash = cooperative_payload_hash("accept", &v).unwrap();
+        store
+            .mutate(
+                PermitMutation::Accept(v),
+                permit(
+                    "s2",
+                    "accept",
+                    ObligationRef::Invitation(InvitationId::new(invitation)),
+                    hash,
+                    100,
+                ),
+                &budget(),
+            )
+            .unwrap();
+        let binding: String = db
+            .query_row(
+                "SELECT binding_id FROM occupant_bindings WHERE seat_id='s2' AND ended_at IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let binding = BindingId::parse(binding).unwrap();
+        assert_eq!(
+            crate::store::read_cursors::cursor_for(&db, &binding, &pair).unwrap(),
+            Some(u64::try_from(first - 1).unwrap()),
+            "{mode:?}"
+        );
+        assert!(
+            crate::store::read_cursors::has_unread(&db, &binding).unwrap(),
+            "{mode:?}"
+        );
+        drop(store);
+        drop(db);
+        let _ = std::fs::remove_file(path);
+    }
+}
+
 #[test]
 fn pair_refuses_third_self_join() {
     let (store, db, path) = store_fixture();
