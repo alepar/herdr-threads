@@ -903,3 +903,6 @@ fn private_old_episode_lazy_tail_retires_and_reaches_fresh_preaccept_body() {
     assert!(!partial.contains_key(old.as_str()));
     f.assert_pending();
 }
+
+#[path = "q4_retirement_refusal_controls.rs"]
+mod q4_retirement_refusal_controls;
