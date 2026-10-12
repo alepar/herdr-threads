@@ -4,9 +4,11 @@ Status: adopted 2026-10-01; B5 guards implemented (epic `ht-rzi`). Normative for
 attribution, receipt provenance and operator repair. Where an older design document requires adversarial
 proof of who is calling, this policy supersedes it. C5's guard is owned by B4 (`ht-p03.2`) and is the one
 guard still marked **required**. Amended 2026-10-02 for thread summaries and deadline extension (epic ht-1ip), and 2026-10-03 for the
-`managed_launch` binding (ht-5n6), and 2026-10-03 for human receipt waivers, and 2026-10-12 for the text accept's thread-scoped opening-mail display (ht-br0), and 2026-10-10 for cooperative peer-data wording (ht-poh.41). Amended 2026-10-10 for the session-keyed binding vocabulary (ht-54r; implemented
+`managed_launch` binding (ht-5n6), and 2026-10-03 for human receipt waivers, and 2026-10-10 for cooperative peer-data wording (ht-poh.41). Amended 2026-10-10 for the session-keyed binding vocabulary (ht-54r; implemented
 end to end, swept by ht-54r.25: every provenance value below has a production writer), and 2026-10-11 for absorbing
 the agy adapter into it (agy's conversation id is a harness session variable under `cooperative_env_session`).
+Amended 2026-10-12 for the text accept's thread-scoped opening-mail display (ht-br0), bounded by the display walk's
+ordinary stop and, with a live mod channel, by a bounded channel grace.
 
 ## Abstract
 
@@ -763,12 +765,23 @@ is live for the caller's binding, it reads one `InboxBatchV2` page of the caller
 accepted thread's unread lazy rows (`InboxQuery.thread`, `inbox.thread_scope_v1`; no ordinary, receipt,
 invitation or warning row). The thread scope only narrows the unchanged lazy eligibility (the binding's own
 cursor/scope branch and the top-level legacy-pending branch); it never admits a row the unscoped text inbox
-would not show that binding. It writes and flushes the page, then advances the binding's cursors and completes
-the lazy rows it showed whole exactly as the text inbox does, under the same claim (via none; no new
+would not show that binding. It narrows it further to rows below the binding's first ordinary walk stop in
+that thread: the first receivable ordinary message past the binding's cursor that the binding has not
+display-ACKed (`read_cursors::first_ordinary_walk_stop`, where the display walk below stops when a display
+shows no ordinary row). So every row the page shows whole is passed by the binding's own walk, and no later
+hook, `inbox` or channel offers it to that binding again; lazy rows above the stop stay in the binding's own
+stream and are shown once, with the ordinary rows, by its next hook or `inbox`. A claim that names no binding
+of the seat gets no scoped row. It writes and flushes the page, then advances the binding's cursors and
+completes the lazy rows it showed whole exactly as the text inbox does, under the same claim (via none; no new
 provenance). The accept is already committed and its result and exit status do not depend on this display; a
-failure leaves the rows pending for the next hook, wake or `inbox`. A JSON, `--machine` or `human` accept, a
-subagent, and a binding whose mod channel is live show no rows and complete nothing; an `accept` retry presents
-only its retained result. Local display journals are cooperative hints, never authority. Completion is idempotent
+failure leaves the rows pending for the next hook, wake or `inbox` (one diagnostics line when the page was
+already shown). While a mod channel is live for the caller's binding, the accept first gives the channel a
+bounded grace (2 s, 100 ms peeks): it re-reads the scoped page read-only (no display, no bookkeeping) until
+every row of its first read has been completed by the channel (`watch ack --via append`, which runs the same
+walk), and then shows nothing. When the grace runs out it shows and completes the remaining rows itself as
+above; a channel append that lands later may repeat them in the transcript (at least once; the channel's ACK
+then finds them `already_settled`). A JSON, `--machine` or `human` accept and a subagent show no rows and
+complete nothing; an `accept` retry presents only its retained result. Local display journals are cooperative hints, never authority. Completion is idempotent
 presentation bookkeeping: it records no ACK actor, receipt provenance, timeline ACK, agreement,
 instruction adoption, task completion or proof of model consumption. Partial output and changed
 bindings cannot manufacture complete display. Frozen completion retries preserve their original full
@@ -910,11 +923,11 @@ retain their head policy; no new binding fanout occurs at publication or reading
 The accepting top-level binding's own text `accept` then shows its own unread Lazy rows of the pair
 above that floor in its output (A8, ht-br0) and completes them as its text inbox would: only that
 binding's cursors advance, and each sibling binding keeps its independent own stream (no seat-wide
-settlement, no legacy-pending marking). Accepted limit: the page carries no ordinary row and Lazy and
-ordinary rows share that one cursor, so its progress stops at the thread's first unread ordinary row;
-Lazy rows it showed above that row stay in the binding's own stream and the next hook or `inbox` shows
-them again together with the ordinary rows (pinned by
-`text_pair_accept_shows_the_lazy_opening_mail_once_and_leaves_ordinary_mail`).
+settlement, no legacy-pending marking). Lazy and ordinary rows share that one cursor and the page carries
+no ordinary row, so it shows only the Lazy rows below the binding's first ordinary walk stop (A8); the Lazy
+rows above it stay in the binding's own stream and its next hook or `inbox` shows them once, together with
+the ordinary rows (pinned by
+`text_pair_accept_shows_each_lazy_opening_row_once_across_accept_and_hooks`).
 
 A new binding while the invitation is pending can independently receive that episode's addressed work,
 even if a sibling displayed it. A new binding after acceptance retains normal joined-thread seat-maximum
@@ -1012,12 +1025,16 @@ The narrow active direct-invitation acceptance exception preserves independent o
 described above; its mixed-mode read behavior differs from this generic join frontier.
 The text accept's thread-scoped display (A8, ht-br0) is pinned by `tests/hook_entrypoint.rs`
 `codex_pair_accept_output_carries_the_opening_message`,
-`text_pair_accept_shows_the_lazy_opening_mail_once_and_leaves_ordinary_mail`,
+`text_pair_accept_shows_each_lazy_opening_row_once_across_accept_and_hooks`,
+`text_pair_accept_with_more_than_a_page_prints_one_working_inbox_next_line`,
 `text_pair_accept_completes_the_opener_for_the_accepting_binding_only`,
 `text_generic_accept_shows_seat_pending_lazy_mail_once` and
-`human_json_and_machine_accept_leave_the_opening_message_pending`, the mod test
-`text_accept_with_a_live_mod_channel_leaves_the_opener_to_the_watch`, and the store test
-`thread_scoped_page_lists_only_that_threads_lazy_rows`.
+`human_json_and_machine_accept_leave_the_opening_message_pending`, the mod tests
+`text_accept_with_a_live_mod_channel_prints_nothing_when_the_channel_completes_in_time` and
+`text_accept_with_a_live_mod_channel_shows_the_opener_after_the_grace`, the store tests
+`thread_scoped_page_lists_only_that_threads_lazy_rows` and
+`thread_scoped_page_stops_at_the_first_unread_ordinary_row`, and the CLI unit tests in
+`tests/cli/accept_delivery.rs`.
 
 Delivery-only cleanup recovery retains a private, bounded versioned terminal record after
 intent/progress removal. It preserves exact original immutable intent bytes and the genuine
@@ -1411,6 +1428,9 @@ These are decisions, not bugs. Each is safe to rely on only as stated.
   immediately previous generation of the same native session), and otherwise the agent may see it again
   through `inbox` or the native wake. Never lost. `/branch` keeps the transcript under a new session id, so
   items delivered but not ACKed before a branch may be delivered again.
+- **A text accept with a slow live channel is at-least-once.** When a live mod channel has not completed the
+  accepted thread's lazy rows within the accept's bounded grace (A8), the accept shows and completes them itself;
+  a channel append that lands afterwards may show them again in the transcript. Never lost, never settled twice.
 - **An outer mod could strip context.** A mod wrapping `tool.call` outside herdr-threads' hook could remove
   the attached context after the herdr-threads hook returned; the receipt is already settled.
 - **Re-registration resets the stall clock.** Each registration starts a fresh channel whose stall clock

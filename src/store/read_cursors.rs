@@ -280,6 +280,45 @@ pub fn binding_unread_stats(
 /// display, mod or hook-pull delivery). Another binding's ACK and an explicit `ack` do not count
 /// (ht-54r F1). Monotonic. Returns the cursor.
 // ht-54r.22 adds lazy-mode messages to the receivable set.
+/// Whether message `x` carries this binding's own display ACK (`?1` seat, `?4` binding): the walk
+/// passes such a message without it being displayed again. The single copy, shared by the walk
+/// and [`first_ordinary_walk_stop`].
+const WALK_DISPLAY_ACKED: &str = "(EXISTS(SELECT 1 FROM receipt_state rs WHERE rs.message_id=x.id AND rs.seat_id=?1 AND rs.state='acked' \
+    AND rs.ack_binding_id=?4 AND json_extract(rs.ack_observation,'$.action_provenance') IS NOT NULL) \
+    OR EXISTS(SELECT 1 FROM receipts rc WHERE rc.message_id=x.id AND rc.seat_id=?1 AND rc.state='acked' \
+    AND rc.ack_binding_id=?4 AND json_extract(rc.ack_observation,'$.action_provenance') IS NOT NULL))";
+
+/// The first ordinary message of `thread` past `binding`'s cursor (0 without one) at which the
+/// display walk ([`advance_through_displayed`]) stops when a display shows only lazy rows: a
+/// receivable ordinary message the binding has not display-ACKed. `None` when there is none.
+/// A display of lazy rows below it can be passed whole by the walk; a lazy row above it cannot
+/// (ht-br0: the text accept's thread-scoped page shows only rows below this stop, so its
+/// completion never leaves a shown row unread in the binding's own stream).
+pub fn first_ordinary_walk_stop(
+    db: &Connection,
+    binding: &BindingId,
+    seat: &SeatId,
+    thread: &ThreadId,
+) -> Result<Option<u64>, ApiError> {
+    let after = cursor_for(db, binding, thread)?.unwrap_or(0);
+    let stop: Option<i64> = db
+        .query_row(
+            &format!(
+                "SELECT MIN(x.sequence) FROM messages x WHERE x.thread_id=?2 AND x.sequence>?3 \
+                 AND EXISTS(SELECT 1 FROM {RECEIVABLE_FROM} WHERE {RECEIVABLE_WHERE} AND m.id=x.id) \
+                 AND NOT {WALK_DISPLAY_ACKED}"
+            ),
+            params![seat.as_str(), thread.as_str(), to_i64(after)?, binding.as_str()],
+            |r| r.get(0),
+        )
+        .map_err(store_error)?;
+    stop.map(|v| {
+        u64::try_from(v)
+            .map_err(|_| api_error(ErrorCode::StoreCorrupt, "negative message sequence"))
+    })
+    .transpose()
+}
+
 pub fn advance_through_displayed(
     tx: &Connection,
     binding: &BindingId,
@@ -314,10 +353,7 @@ pub(super) fn advance_through_displayed_with_change(
         .prepare(&format!(
             "SELECT x.sequence, EXISTS(SELECT 1 FROM {RECEIVABLE_FROM} WHERE {RECEIVABLE_WHERE} AND m.id=x.id) \
              OR EXISTS(SELECT 1 FROM lazy_recipients lr WHERE lr.message_id=x.id AND lr.seat_id=?1), \
-             EXISTS(SELECT 1 FROM receipt_state rs WHERE rs.message_id=x.id AND rs.seat_id=?1 AND rs.state='acked' \
-               AND rs.ack_binding_id=?4 AND json_extract(rs.ack_observation,'$.action_provenance') IS NOT NULL) \
-             OR EXISTS(SELECT 1 FROM receipts rc WHERE rc.message_id=x.id AND rc.seat_id=?1 AND rc.state='acked' \
-               AND rc.ack_binding_id=?4 AND json_extract(rc.ack_observation,'$.action_provenance') IS NOT NULL) \
+             {WALK_DISPLAY_ACKED} \
              FROM messages x WHERE x.thread_id=?2 AND x.sequence>?3 ORDER BY x.sequence"
         ))
         .map_err(store_error)?;

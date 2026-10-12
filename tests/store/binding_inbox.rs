@@ -911,8 +911,10 @@ fn thread_scoped_page_lists_only_that_threads_lazy_rows() {
     }
     use crate::protocol::commands::DeliveryMode::{Lazy, Ordinary};
     let lazy_t = send_lazy(&mut fx, "lazy in t");
-    let ordinary_t2 = send_in(&mut fx, "t2", "ordinary in t2", Ordinary);
+    // The lazy row precedes the ordinary one: the binding-scoped page stops at the first unread
+    // ordinary row (`thread_scoped_page_stops_at_the_first_unread_ordinary_row`).
     let lazy_t2 = send_in(&mut fx, "t2", "lazy in t2", Lazy);
+    let ordinary_t2 = send_in(&mut fx, "t2", "ordinary in t2", Ordinary);
     let lazy = |id: &MessageId| Row::Lazy(id.as_str().to_owned());
     let b1 = claim_b1();
     assert_eq!(page_in(&fx, Some(&b1), Some("t2")), [lazy(&lazy_t2)]);
@@ -944,4 +946,23 @@ fn thread_scoped_page_lists_only_that_threads_lazy_rows() {
     )
     .unwrap_err();
     assert_eq!(refused.code, ErrorCode::InvalidRequest, "{refused:?}");
+}
+
+// ht-br0: the binding-scoped thread page stops at the binding's first unread ordinary row (the
+// display walk's stop): a lazy row above it could be shown but not passed, so the scoped page
+// leaves it to the binding's unscoped stream. The seat form is unchanged.
+#[test]
+fn thread_scoped_page_stops_at_the_first_unread_ordinary_row() {
+    let mut fx = fx("binding-inbox-thread-scope-stop");
+    use crate::protocol::commands::DeliveryMode::Ordinary;
+    let before = send_lazy(&mut fx, "lazy before");
+    let ordinary = send_in(&mut fx, "t", "ordinary between", Ordinary);
+    let after = send_lazy(&mut fx, "lazy after");
+    let lazy = |id: &MessageId| Row::Lazy(id.as_str().to_owned());
+    let b1 = claim_b1();
+    assert_eq!(page_in(&fx, Some(&b1), Some("t")), [lazy(&before)]);
+    let all = page(&fx, Some(&b1));
+    for row in [lazy(&before), msg(&ordinary, true), lazy(&after)] {
+        assert!(all.contains(&row), "{row:?} in {all:?}");
+    }
 }

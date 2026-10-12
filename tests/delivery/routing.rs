@@ -47,9 +47,13 @@ fn hook_inbox_page_is_never_read_for_a_hook_pull_seat() {
     }
 }
 
-// ht-br0: a text accept shows the accepted thread's lazy rows exactly while no mod channel is live.
+// ht-br0: a text accept shows the accepted thread's lazy rows at once while no mod channel is
+// live, and only after the channel's bounded grace while one is.
 #[test]
-fn accept_output_page_is_withheld_only_by_a_live_mod_channel() {
-    assert!(accept_output_page(false));
-    assert!(!accept_output_page(true));
+fn accept_output_page_waits_for_a_live_mod_channel_only() {
+    assert_eq!(accept_output_page(false), AcceptOutputPage::Show);
+    assert_eq!(
+        accept_output_page(true),
+        AcceptOutputPage::AfterChannelGrace
+    );
 }

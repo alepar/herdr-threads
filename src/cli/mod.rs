@@ -3614,15 +3614,19 @@ pub fn run_cooperative<C: LocalClient + ?Sized, W: Write>(
                 )
             {
                 accept_delivery::show(
-                    parsed.presentation != output::Presentation::Machine,
-                    &thread,
-                    &claim,
-                    &parsed.output,
-                    journal,
+                    &accept_delivery::AcceptPage {
+                        presentation: parsed.presentation,
+                        thread: &thread,
+                        claim: &claim,
+                        output: &parsed.output,
+                        journal,
+                        grace: accept_delivery::ChannelGrace::configured(),
+                    },
                     client,
                     clock,
                     &|| cooperative_budget(clock),
                     writer,
+                    &mut io::stderr(),
                 );
             }
         }

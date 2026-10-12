@@ -7216,6 +7216,11 @@ mod inbox_v2 {
             if let Some(unread) = &mut state.unread {
                 unread.after_ordinal = unread.high_water_ordinal;
             }
+            // A claim that names no binding of the seat would complete in the pre-binding
+            // seat-wide form, whose cursor walks this page cannot bound: it shows no row.
+            if matches!(reader, Reader::Unknown) {
+                state.lazy_after_ordinal = state.lazy_high_water_ordinal;
+            }
         }
         // Progress is compared to the original capture, before retirement.
         let initial = state.clone();

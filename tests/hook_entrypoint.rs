@@ -1780,15 +1780,17 @@ fn pair_accept_delivers_mixed_opening_mail_once() {
 }
 
 // ht-br0: the text-accept twin of `pair_accept_delivers_mixed_opening_mail_once`. The accept's
-// own output is the binding's own text inbox restricted to the thread's lazy rows: it shows each
-// lazy opening message once and neither shows nor ACKs the ordinary (receipt) messages. Direct
-// acceptance inserts the accepting binding's cursor at the invitation's event floor, so the
-// display completes the opener for this binding; the binding's cursor then stops at the first
-// unread ordinary row (Lazy and ordinary rows share one per-binding cursor), so the later lazy
-// rows stay in this binding's own stream and the next hook shows them with the ordinary rows,
-// exactly as after a hook display in `pair_accept_delivers_mixed_opening_mail_once`.
+// own output is the binding's own text inbox restricted to the thread's lazy rows, and only to
+// those its display can settle: Lazy and ordinary rows share one per-binding cursor, and the
+// cursor walk stops at the first unread ordinary row (an explicit, non-display ACK does not let
+// it pass), so a lazy row past that row would be shown again by the next hook. The accept
+// therefore shows only the lazy rows before the thread's first unread ordinary row (here the
+// opener) and neither shows nor ACKs the ordinary (receipt) messages; the next hook shows the
+// rest of the stream (ordinary rows and the later lazy rows) once, as the hook does in the base
+// test. Each lazy row is shown exactly once across the accept output, the following hooks and a
+// text `inbox`. Kills: an accept page that shows lazy rows its bookkeeping cannot settle.
 #[test]
-fn text_pair_accept_shows_the_lazy_opening_mail_once_and_leaves_ordinary_mail() {
+fn text_pair_accept_shows_each_lazy_opening_row_once_across_accept_and_hooks() {
     let fx = Fixture::start();
     let started = fx.hook("w9:p1", &start("sess-1"));
     assert_eq!(started.code, Some(0), "{}", started.stderr);
@@ -1823,16 +1825,16 @@ fn text_pair_accept_shows_the_lazy_opening_mail_once_and_leaves_ordinary_mail() 
         &["accept", &thread],
     );
     let times = |context: &str, body: &str| context.matches(&format!("\\n  {body}")).count();
-    let shown = |body: &str| text.matches(&format!("\n  {body}\n")).count();
+    let shown = |out: &str, body: &str| out.matches(&format!("\n  {body}\n")).count();
     assert!(text.starts_with("accepted"), "{text}");
     for (body, n) in [
         ("ordinary-acked", 0),
         ("ordinary-pending", 0),
         ("lazy-open", 1),
-        ("lazy-middle", 1),
-        ("lazy-last", 1),
+        ("lazy-middle", 0),
+        ("lazy-last", 0),
     ] {
-        assert_eq!(shown(body), n, "accept output, {body}: {text}");
+        assert_eq!(shown(&text, body), n, "accept output, {body}: {text}");
     }
     assert!(!text.contains("next:"), "one page holds the opener: {text}");
     let sequence = |body: &str| {
@@ -1845,18 +1847,18 @@ fn text_pair_accept_shows_the_lazy_opening_mail_once_and_leaves_ordinary_mail() 
     ));
     assert!(
         read_position >= sequence("lazy-open") && read_position < sequence("ordinary-acked"),
-        "the accept's display completes the opener for this binding only up to the ordinary gap: {read_position}"
+        "the accept's display passes the opener for this binding, up to the ordinary gap: {read_position}"
     );
-    let hook = fx.hook("w9:p1", &tool("sess-1"));
-    assert_eq!(hook.code, Some(0), "{}", hook.stderr);
-    let after = if hook.stdout.is_empty() {
-        String::new()
-    } else {
-        context_of(&hook)
+    let hook = |label: &str| {
+        let hook = fx.hook("w9:p1", &tool("sess-1"));
+        assert_eq!(hook.code, Some(0), "{label}: {}", hook.stderr);
+        if hook.stdout.is_empty() {
+            String::new()
+        } else {
+            context_of(&hook)
+        }
     };
-    // The opener is never shown again. The ordinary rows the accept did not show stay in the
-    // binding's stream (the pending one also as the owed receipt), and the lazy rows past the
-    // first ordinary row ride that stream with them (base direct-acceptance semantics).
+    let after = hook("after accept");
     for (body, n) in [
         ("ordinary-acked", 1),
         ("ordinary-pending", 1),
@@ -1866,11 +1868,97 @@ fn text_pair_accept_shows_the_lazy_opening_mail_once_and_leaves_ordinary_mail() 
     ] {
         assert_eq!(times(&after, body), n, "after accept, {body}: {after}");
     }
+    let again = hook("after delivery");
+    for body in ["lazy-open", "lazy-middle", "lazy-last"] {
+        assert_eq!(times(&again, body), 0, "second hook, {body}: {again}");
+    }
+    let inbox = text_cli(&fx, "claude", "sess-1", "seat", "w9:p1", &["inbox"]);
+    for body in ["lazy-open", "lazy-middle", "lazy-last"] {
+        assert!(!inbox.contains(body), "inbox, {body}: {inbox}");
+    }
     assert_eq!(
         fx.count("SELECT count(*) FROM lazy_recipients WHERE legacy_pending=1"),
         0,
         "direct acceptance marks no seat-wide legacy rows"
     );
+}
+
+// ht-br0: an opening larger than one default inbox page (20 rows). The accept shows the first
+// page and exactly one `next:` line naming the caller's plain `inbox` (the daemon's scoped
+// continuation is not offered); running that line verbatim shows only the rest, never a row the
+// accept already showed, and nothing remains for the next hook.
+#[test]
+fn text_pair_accept_with_more_than_a_page_prints_one_working_inbox_next_line() {
+    let fx = Fixture::start();
+    let started = fx.hook("w9:p1", &start("sess-1"));
+    assert_eq!(started.code, Some(0), "{}", started.stderr);
+    let peer = fx.hook("w9:p2", &start("sess-1"));
+    assert_eq!(peer.code, Some(0), "{}", peer.stderr);
+    let bodies: Vec<String> = (0..23).map(|n| format!("opening-row-{n:02}")).collect();
+    for body in &bodies {
+        fx.cooperative("peer", "w9:p2", &["send", "--seat", "seat", "--body", body]);
+    }
+    let thread = fx.count_text("SELECT thread_id FROM direct_threads");
+    let text = text_cli(
+        &fx,
+        "claude",
+        "sess-1",
+        "seat",
+        "w9:p1",
+        &["accept", &thread],
+    );
+    assert!(text.starts_with("accepted"), "{text}");
+    let shown = |out: &str, body: &str| out.matches(&format!("\n  {body}\n")).count();
+    let in_accept: Vec<&String> = bodies.iter().filter(|b| shown(&text, b) == 1).collect();
+    assert!(
+        !in_accept.is_empty() && in_accept.len() < bodies.len(),
+        "{text}"
+    );
+    let next: Vec<&str> = text.lines().filter(|l| l.starts_with("next:")).collect();
+    assert_eq!(next.len(), 1, "{text}");
+    let argv: Vec<String> = next[0]["next:".len()..]
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(argv.last().map(String::as_str), Some("inbox"), "{text}");
+    assert_eq!(argv[0], "herdr-threads", "{text}");
+    // Run the printed line verbatim, as the same agent (cooperative stand-in flags before the
+    // subcommand, as `text_cli` passes them).
+    let mut args: Vec<String> = argv[..argv.len() - 1].to_vec();
+    for flag in [
+        "--cooperative-seat",
+        "seat",
+        "--cooperative-target",
+        "w9:p1",
+        "--cooperative-harness",
+        "claude",
+        "--cooperative-role",
+        "top-level",
+        "inbox",
+    ] {
+        args.push(flag.into());
+    }
+    let mut out = Vec::new();
+    {
+        let _agent = agent_origin("claude", "sess-1");
+        herdr_threads::cli::run(args, &mut out).unwrap();
+    }
+    let inbox = String::from_utf8(out).unwrap();
+    for body in &bodies {
+        let total = shown(&text, body) + shown(&inbox, body);
+        assert_eq!(
+            total, 1,
+            "{body} once across accept and inbox:\n{text}\n{inbox}"
+        );
+    }
+    let hook = fx.hook("w9:p1", &tool("sess-1"));
+    assert_eq!(hook.code, Some(0), "{}", hook.stderr);
+    let after = if hook.stdout.is_empty() {
+        String::new()
+    } else {
+        context_of(&hook)
+    };
+    assert!(!after.contains("opening-row-"), "{after}");
 }
 
 // ht-br0 negatives: a person's `human accept`, a JSON accept and a `--machine` accept print no

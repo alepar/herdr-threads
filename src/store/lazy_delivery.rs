@@ -134,11 +134,14 @@ pub const THREAD_PENDING_CANDIDATES_SQL: &str = concat!(
     seat_unread_sql!(),
     ") AND r.ordinal>?2 AND r.ordinal<=?3 ORDER BY r.ordinal LIMIT ?4"
 );
-/// `BINDING_PENDING_CANDIDATES_SQL` restricted to one thread (`?6`; ht-br0 thread-scoped page).
+/// `BINDING_PENDING_CANDIDATES_SQL` restricted to one thread (`?6`; ht-br0 thread-scoped page)
+/// and to messages below `?7`, the binding's first ordinary walk stop in that thread
+/// (`read_cursors::first_ordinary_walk_stop`): a lazy row above it could be shown but not passed
+/// by the display walk, so the next hook or inbox would show it again.
 pub const BINDING_THREAD_PENDING_CANDIDATES_SQL: &str = concat!(
-    "SELECT r.ordinal,r.preparation_id,r.message_id,r.thread_id,r.seat_id FROM lazy_recipients r INDEXED BY lazy_recipients_seat_ordinal LEFT JOIN messages m ON m.id=r.message_id JOIN occupant_bindings b ON b.binding_id=?5 AND b.seat_id=r.seat_id WHERE r.seat_id=?1 AND r.thread_id=?6 AND (m.id IS NULL OR ",
+    "SELECT r.ordinal,r.preparation_id,r.message_id,r.thread_id,r.seat_id FROM lazy_recipients r INDEXED BY lazy_recipients_seat_ordinal LEFT JOIN messages m ON m.id=r.message_id JOIN occupant_bindings b ON b.binding_id=?5 AND b.seat_id=r.seat_id WHERE r.seat_id=?1 AND r.thread_id=?6 AND (m.id IS NULL OR (m.sequence<?7 AND ",
     binding_lazy_unread_sql!(),
-    ") AND r.ordinal>?2 AND r.ordinal<=?3 ORDER BY r.ordinal LIMIT ?4"
+    ")) AND r.ordinal>?2 AND r.ordinal<=?3 ORDER BY r.ordinal LIMIT ?4"
 );
 pub const ADDRESSED_SQL: &str = "SELECT EXISTS(SELECT 1 FROM lazy_recipients r JOIN send_manifests sm ON sm.preparation_id=r.preparation_id AND sm.message_id=r.message_id WHERE r.seat_id=?1 AND r.message_id=?2 AND sm.instance_id=?3)";
 pub const CLEANUP_CANDIDATES_SQL: &str = "SELECT ordinal FROM lazy_recipients INDEXED BY lazy_recipients_preparation_ordinal WHERE preparation_id=?1 AND ordinal>?2 AND ordinal<=?3 ORDER BY ordinal LIMIT ?4";
@@ -530,23 +533,28 @@ pub fn pending_page_in(
             .map_err(store_error)?
             .collect::<Result<Vec<_>, _>>()
             .map_err(store_error)?,
-        (Some(binding), Some(thread)) => conn
-            .prepare(BINDING_THREAD_PENDING_CANDIDATES_SQL)
-            .map_err(store_error)?
-            .query_map(
-                params![
-                    seat.as_str(),
-                    after,
-                    high_water.recipient_ordinal,
-                    work_limit as i64,
-                    binding.as_str(),
-                    thread.as_str()
-                ],
-                read_row,
-            )
-            .map_err(store_error)?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(store_error)?,
+        (Some(binding), Some(thread)) => {
+            let stop = read_cursors::first_ordinary_walk_stop(conn, binding, seat, thread)?
+                .map_or(Ok(i64::MAX), i64::try_from)
+                .map_err(|_| api_error(ErrorCode::StoreCorrupt, "message sequence out of range"))?;
+            conn.prepare(BINDING_THREAD_PENDING_CANDIDATES_SQL)
+                .map_err(store_error)?
+                .query_map(
+                    params![
+                        seat.as_str(),
+                        after,
+                        high_water.recipient_ordinal,
+                        work_limit as i64,
+                        binding.as_str(),
+                        thread.as_str(),
+                        stop
+                    ],
+                    read_row,
+                )
+                .map_err(store_error)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(store_error)?
+        }
         (None, None) => conn
             .prepare(PENDING_CANDIDATES_SQL)
             .map_err(store_error)?

@@ -40,12 +40,23 @@ pub fn hook_inbox_page(policy: Option<&dyn DeliveryPolicy>, channel_live: bool) 
         )
 }
 
-/// Whether a caller's own text `accept` appends the accepted thread's pending lazy rows to its
-/// output (ht-br0). The accept output is the caller's own text-inbox display, a completion source
-/// every harness has (a hook-pull seat's rows complete through it too, A8); only a live mod
-/// channel, which delivers the binding's lazy rows itself, keeps them out of the accept.
-pub fn accept_output_page(channel_live: bool) -> bool {
-    !channel_live
+/// How a caller's own text `accept` treats the accepted thread's pending lazy rows (ht-br0).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AcceptOutputPage {
+    /// Show them in the accept's output now: its own text-inbox display, a completion source
+    /// every harness has (a hook-pull seat's rows complete through it too, A8).
+    Show,
+    /// A live mod channel delivers the binding's lazy rows itself: give it a bounded grace to
+    /// complete them, then show what it left (at least once).
+    AfterChannelGrace,
+}
+
+pub fn accept_output_page(channel_live: bool) -> AcceptOutputPage {
+    if channel_live {
+        AcceptOutputPage::AfterChannelGrace
+    } else {
+        AcceptOutputPage::Show
+    }
 }
 
 #[cfg(test)]
