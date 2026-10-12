@@ -58,8 +58,8 @@ pub(crate) use binding_lazy_unread_sql;
 
 /// A lazy recipient row `r` (with its message `m`, possibly absent) is unread at seat level when
 /// it is legacy pending (carried from before V34) or some connected top-level binding of the seat
-/// finds it unread (`binding_lazy_unread_sql!`). Post-V34 delivery never reads
-/// `lazy_recipients.state`.
+/// finds it unread (`binding_lazy_unread_sql!`). Post-V34 delivery predicates never read
+/// `lazy_recipients.state`; only `read_cursors::init_for_join` does, to skip displayed rows.
 macro_rules! seat_unread_sql {
     () => {
         concat!(
@@ -458,8 +458,8 @@ pub fn seat_lazy_pending(db: &Connection, seat: &SeatId, cap: i64) -> Result<(u6
 /// Displays completed for `binding`: advances the binding's cursor over the displayed messages
 /// and, when the binding is top-level, clears the seat's displayed legacy rows. With `None` (a
 /// caller that matches no open binding, a pre-binding client) the display counts for the whole
-/// seat as before V34: every open top-level binding advances. Also keeps the historical `state`
-/// column. The completion handlers validate the caller and the messages before calling.
+/// seat as before V34: every open top-level binding advances. Also sets `state` to `displayed`,
+/// which `read_cursors::init_for_join` reads so a join never re-marks a displayed row. The completion handlers validate the caller and the messages before calling.
 pub fn complete_for_binding(
     tx: &Transaction<'_>,
     instance: &str,
@@ -565,8 +565,8 @@ pub const PENDING_SUMMARY_CAP: i64 = 1000;
 /// to the mod and to wake, and its publication (manifest + message) must change
 /// both. Shared by `mod_seat_view` and `wake_seat_attention`.
 pub fn pending_summary(conn: &Connection, seat: &SeatId) -> Result<(i64, i64), ApiError> {
-    // Pending means unread at seat level (`seat_unread_sql!`): post-V34 delivery never reads
-    // `lazy_recipients.state`.
+    // Pending means unread at seat level (`seat_unread_sql!`): post-V34 delivery predicates never
+    // read `lazy_recipients.state` (only `init_for_join` does, to skip displayed rows).
     let (count, max) = seat_lazy_pending(conn, seat, PENDING_SUMMARY_CAP)?;
     Ok((i64::try_from(count).unwrap_or(i64::MAX), max))
 }
