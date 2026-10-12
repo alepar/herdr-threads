@@ -41,13 +41,10 @@ use crate::{
         output::{OutputFormat, OutputSpec},
         pagination::{Page, PageRequest},
         results::{ApiError, CommandResult, InboxBatchV2Item},
-        time::{CallBudget, Clock},
+        time::{CallBudget, Clock, MonoInstant},
     },
 };
-use std::{
-    io::Write,
-    time::{Duration, Instant},
-};
+use std::{io::Write, time::Duration};
 
 /// How long a text accept waits for a live mod channel to complete the accepted thread's lazy
 /// rows, and how often it peeks. The channel's path is a daemon push to the `watch` child, one
@@ -113,7 +110,7 @@ pub fn show<C: LocalClient + ?Sized, W: Write>(
         let error = error.to_string().replace(['\n', '\r'], " ");
         let _ = writeln!(
             diagnostics,
-            "herdr-threads: accepted; opening mail display not recorded, it stays pending: {error}"
+            "herdr-threads: accepted; opening mail display bookkeeping failed, rows may be offered again: {error}"
         );
     }
 }
@@ -149,29 +146,46 @@ fn message_ids(page: &Page<InboxBatchV2Item>) -> Vec<MessageId> {
         .collect()
 }
 
-/// Whether the live channel completed every row of the first peek within the grace. A failed
-/// peek counts as completed: nothing is shown and the rows stay pending for the channel.
+/// Whether the live channel completed every row of the first peek within the grace. The grace
+/// is one interval from before the first peek: every peek's budget is capped at its end (and at
+/// the caller's own budget and cancellation), and no peek starts after it, so the whole wait
+/// stays within the bound however slow the reads are. A peek that fails inside the grace counts
+/// as completed (nothing is shown; the rows stay pending for the channel); one cut off by the
+/// grace's end is the grace running out, so the accept falls back to showing the rows itself.
 fn channel_completes<C: LocalClient + ?Sized>(
     request: &AcceptPage<'_>,
     client: &C,
+    clock: &dyn Clock,
     budget: &dyn Fn() -> CallBudget,
 ) -> bool {
-    let Some(first) = scoped_page(request, client, budget) else {
-        return true;
+    let bound_ms = u64::try_from(request.grace.bound.as_millis()).unwrap_or(u64::MAX);
+    let deadline = MonoInstant(clock.monotonic_now().0.saturating_add(bound_ms));
+    let remaining = || deadline.0.saturating_sub(clock.monotonic_now().0);
+    let within_grace = || {
+        let caller = budget();
+        CallBudget {
+            deadline: MonoInstant(caller.deadline.0.min(deadline.0)),
+            cancellation: caller.cancellation,
+        }
+    };
+    let Some(first) = scoped_page(request, client, &within_grace) else {
+        return remaining() > 0;
     };
     let offered = message_ids(&first);
     if offered.is_empty() {
         return true;
     }
-    let deadline = Instant::now() + request.grace.bound;
     loop {
-        let now = Instant::now();
-        if now >= deadline {
+        let left = remaining();
+        if left == 0 {
             return false;
         }
-        std::thread::sleep(request.grace.interval.min(deadline - now));
-        let Some(page) = scoped_page(request, client, budget) else {
-            return true;
+        std::thread::sleep(request.grace.interval.min(Duration::from_millis(left)));
+        if remaining() == 0 {
+            return false;
+        }
+        let Some(page) = scoped_page(request, client, &within_grace) else {
+            return remaining() > 0;
         };
         if !message_ids(&page).iter().any(|id| offered.contains(id)) {
             return true;
@@ -214,7 +228,7 @@ fn run<C: LocalClient + ?Sized, W: Write>(
         return Ok(());
     };
     if accept_output_page(digest.mod_channel_live) == AcceptOutputPage::AfterChannelGrace
-        && channel_completes(request, client, budget)
+        && channel_completes(request, client, clock, budget)
     {
         return Ok(());
     }

@@ -777,11 +777,14 @@ stream and are shown once, with the ordinary rows, by its next hook or `inbox`. 
 of the seat gets no scoped row. It writes and flushes the page, then advances the binding's cursors and
 completes the lazy rows it showed whole exactly as the text inbox does, under the same claim (via none; no new
 provenance). The accept is already committed and its result and exit status do not depend on this display; a
-failure leaves the rows pending for the next hook, wake or `inbox` (one diagnostics line when the page was
-already shown). While a mod channel is live for the caller's binding, the accept first gives the channel a
-bounded grace (2 s, 100 ms peeks): it re-reads the scoped page read-only (no display, no bookkeeping) until
+failure leaves the rows to be offered again by the next hook, wake or `inbox` (one diagnostics line when the
+page was already shown; a bookkeeping step that did succeed is kept, so the line asserts no pending state). While a mod channel is live for the caller's binding, the accept first gives the channel a
+bounded grace (2 s from before its first peek, 100 ms peeks; every peek's call budget is capped at the
+grace's end and at the caller's own budget, and no peek starts after it, so slow reads cannot extend the
+wait): it re-reads the scoped page read-only (no display, no bookkeeping) until
 every row of its first read has been completed by the channel (`watch ack --via append`, which runs the same
-walk), and then shows nothing. When the grace runs out it shows and completes the remaining rows itself as
+walk), and then shows nothing; a peek refused inside the grace also shows nothing (the rows stay with the
+channel). When the grace runs out, including a peek cut off by its end, it shows and completes the remaining rows itself as
 above; a channel append that lands later may repeat them in the transcript (at least once; the channel's ACK
 then finds them `already_settled`). A JSON, `--machine` or `human` accept and a subagent show no rows and
 complete nothing; an `accept` retry presents only its retained result. Local display journals are cooperative hints, never authority. Completion is idempotent
