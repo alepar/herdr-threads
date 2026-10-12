@@ -136,20 +136,7 @@ fn normal_unrenderable_head_control(mode: crate::protocol::commands::DeliveryMod
             )
             .unwrap();
         assert_eq!(saved_body, body, "full canonical body remains available");
-        let blocked_state: String = window
-            .f
-            .db
-            .query_row(
-                if mode == DeliveryMode::Lazy {
-                    "SELECT state FROM lazy_recipients WHERE message_id=?1 AND seat_id=?2"
-                } else {
-                    "SELECT state FROM receipt_state WHERE message_id=?1 AND seat_id=?2"
-                },
-                params![blocked.as_str(), window.recipient.seat.as_str()],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(blocked_state, "pending", "failed render settles nothing");
+        assert_normal_unrenderable_pending(&window, &blocked, mode);
         for id in later.keys() {
             let state: String = window
                 .f
@@ -271,18 +258,49 @@ fn normal_unrenderable_head_control(mode: crate::protocol::commands::DeliveryMod
         "failed original fit was never a logical offer"
     );
     assert!(offer.truncated);
-    let (saved_body, pending): (String, String) = window.f.db.query_row(
-        if mode == DeliveryMode::Lazy {
-            "SELECT m.body,l.state FROM messages m JOIN lazy_recipients l ON l.message_id=m.id WHERE m.id=?1 AND l.seat_id=?2"
-        } else {
-            "SELECT m.body,r.state FROM messages m JOIN receipt_state r ON r.message_id=m.id WHERE m.id=?1 AND r.seat_id=?2"
-        },
-        params![blocked.as_str(), window.recipient.seat.as_str()],
-        |r| Ok((r.get(0)?, r.get(1)?)),
-    ).unwrap();
+    let saved_body: String = window
+        .f
+        .db
+        .query_row(
+            "SELECT body FROM messages WHERE id=?1",
+            [blocked.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap();
     assert_eq!(saved_body, body);
-    assert_eq!(
-        pending, "pending",
-        "retry output cannot ACK or finish Lazy display"
-    );
+    assert_normal_unrenderable_pending(&window, &blocked, mode);
+}
+
+// Ordinary sends can remain manifest-first without a materialized receipt row.
+// Read canonical effective authority; never create a receipt to satisfy a test.
+fn assert_normal_unrenderable_pending(
+    window: &OfferWindowFixture,
+    message: &MessageId,
+    mode: crate::protocol::commands::DeliveryMode,
+) {
+    if mode == crate::protocol::commands::DeliveryMode::Lazy {
+        let state: String = window
+            .f
+            .db
+            .query_row(
+                "SELECT state FROM lazy_recipients WHERE message_id=?1 AND seat_id=?2",
+                params![message.as_str(), window.recipient.seat.as_str()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(state, "pending", "rendering cannot finish Lazy display");
+    } else {
+        let receipt = crate::store::effective::effective_receipt(
+            &window.f.db,
+            message.as_str(),
+            window.recipient.seat.as_str(),
+        )
+        .unwrap()
+        .expect("canonical ordinary recipient obligation exists");
+        assert_eq!(
+            receipt.state,
+            crate::store::effective::EffectiveReceiptState::Pending,
+            "rendering cannot ACK the canonical ordinary obligation"
+        );
+    }
 }
