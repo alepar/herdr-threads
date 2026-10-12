@@ -175,6 +175,10 @@ const INSERTS: &[(&str, &str)] = &[
         "INSERT INTO warning_offer(binding_id,seat_id) VALUES ('b1','s1')",
     ),
     (
+        "in_turn_offer",
+        "INSERT INTO in_turn_offer(binding_id,seat_id,item_id) VALUES ('b1','s1','m1')",
+    ),
+    (
         "work_jobs",
         "INSERT INTO work_jobs(id,kind,subject_id,high_water) VALUES ('j','send_attention','sub',0)",
     ),

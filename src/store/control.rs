@@ -137,6 +137,11 @@ pub(crate) fn begin_retirement_fence(
             [seat.as_str()],
         )
         .map_err(store_error)?;
+        tx.execute(
+            "DELETE FROM in_turn_offer WHERE seat_id=?1",
+            [seat.as_str()],
+        )
+        .map_err(store_error)?;
         Ok(changed == 1)
     })?;
     tx.execute("UPDATE wake_work SET reason_bits=0,reservation_id=NULL,reservation_boot=NULL,binding_generation=NULL WHERE seat_id=?1",[seat.as_str()]).map_err(store_error)?;
@@ -2486,6 +2491,40 @@ pub fn advance_cursors(
                         &ThreadId::new(thread),
                         &sequences,
                     )?;
+                }
+            }
+            // An in-turn top-level display of a message whose receipt is still pending, or of a
+            // pending invitation, served this occupant (ht-705): the wake candidate owes it no
+            // idle wake for that item. Nothing is settled or accepted; the item stays pending.
+            let top_level: bool = tx
+                .query_row(
+                    "SELECT role='top_level' FROM occupant_bindings WHERE binding_id=?1",
+                    [binding.as_str()],
+                    |r| r.get(0),
+                )
+                .map_err(store_error)?;
+            if top_level && request.in_turn {
+                for id in &request.displayed {
+                    let pending =
+                        effective::effective_receipt(tx, id.as_str(), claim.seat.as_str())?
+                            .is_some_and(|receipt| {
+                                receipt.state == effective::EffectiveReceiptState::Pending
+                            });
+                    if pending {
+                        tx.execute(
+                            "INSERT OR IGNORE INTO in_turn_offer(binding_id,seat_id,item_id) VALUES (?1,?2,?3)",
+                            params![binding.as_str(), claim.seat.as_str(), id.as_str()],
+                        )
+                        .map_err(store_error)?;
+                    }
+                }
+                for id in &request.invitations {
+                    // An unknown or settled invitation records nothing.
+                    tx.execute(
+                        "INSERT OR IGNORE INTO in_turn_offer(binding_id,seat_id,item_id) SELECT ?1,?2,id FROM invitations WHERE id=?3 AND seat_id=?2 AND state='pending'",
+                        params![binding.as_str(), claim.seat.as_str(), id.as_str()],
+                    )
+                    .map_err(store_error)?;
                 }
             }
             Ok(CommandResult::CursorsAdvanced(request.displayed.clone()))

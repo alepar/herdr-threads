@@ -206,6 +206,20 @@ pub fn load_candidate(
             warning_offer = None;
         }
     }
+    let receipts_offered_to_current_occupant = attention.has_pending_receipt
+        && current_binding.is_some()
+        && all_offered(
+            db,
+            seat,
+            super::attention::pending_receipts(db, seat.as_str(), None)?,
+        )?;
+    let invitations_offered_to_current_occupant = attention.has_pending_invitation
+        && current_binding.is_some()
+        && all_offered(
+            db,
+            seat,
+            super::attention::pending_invitations(db, seat.as_str(), None, decision_seq)?,
+        )?;
     let latest_warning_seq = attention.latest_warning_seq.map(nonnegative).transpose()?;
     let witness = WakeAttentionWitness::from_complete(
         instance.into(),
@@ -244,6 +258,8 @@ pub fn load_candidate(
         },
         actionable_warning_seq: latest_warning_seq,
         warning_offer,
+        receipts_offered_to_current_occupant,
+        invitations_offered_to_current_occupant,
         attention_version: nonnegative(attention_version)?,
         checkpoint_version: nonnegative(checkpoint_version)?,
         retry_step: u32::try_from(retry_step)
@@ -526,12 +542,38 @@ fn cooperative_authority(
     }))
 }
 
+/// Whether every item of `pending` (the seat's pending receipts or invitations) was shown whole
+/// to the seat's current occupant (the binding a seat-level reader follows) inside its turn
+/// (ht-705). A saturated walk may hide an unshown item, so it counts as not offered.
+fn all_offered(
+    db: &Connection,
+    seat: &SeatId,
+    pending: super::attention::PendingSet,
+) -> Result<bool, ApiError> {
+    if pending.saturated || pending.items.is_empty() {
+        return Ok(false);
+    }
+    let sql = format!(
+        "SELECT EXISTS(SELECT 1 FROM in_turn_offer WHERE binding_id=({}) AND item_id=?2)",
+        super::attention::SEAT_NOTICE_BINDING_SQL
+    );
+    for item in &pending.items {
+        let offered: bool = db
+            .query_row(&sql, params![seat.as_str(), item.id], |r| r.get(0))
+            .map_err(store_error)?;
+        if !offered {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 fn reason_labels(candidate: &WakeCandidate) -> Vec<String> {
     let mut reasons = Vec::with_capacity(3);
-    if candidate.has_pending_invitation {
+    if candidate.has_unoffered_invitation() {
         reasons.push("pending_invitation".into());
     }
-    if candidate.has_pending_receipt {
+    if candidate.has_unoffered_receipt() {
         reasons.push("pending_receipt".into());
     }
     if candidate.actionable_warning_seq.is_some()
@@ -588,7 +630,9 @@ pub fn reserve(
         if !current.has_actionable_work() || !current.continuity_resolved || current.reservation_id.is_some()
             || current.binding_generation!=candidate.binding_generation || current.binding_execution!=candidate.binding_execution
             || current.target!=candidate.target || current.reason_bits!=candidate.reason_bits
-            || current.warning_offer!=candidate.warning_offer || current.attention_version!=candidate.attention_version
+            || current.warning_offer!=candidate.warning_offer || current.receipts_offered_to_current_occupant!=candidate.receipts_offered_to_current_occupant
+            || current.invitations_offered_to_current_occupant!=candidate.invitations_offered_to_current_occupant
+            || current.attention_version!=candidate.attention_version
             || current.checkpoint_version!=candidate.checkpoint_version || current.retry_step!=candidate.retry_step
             || current.reservation_boot!=candidate.reservation_boot || current.last_reservation_id!=candidate.last_reservation_id
             || current.last_reservation_boot!=candidate.last_reservation_boot || current.minimum_delay_ms!=candidate.minimum_delay_ms

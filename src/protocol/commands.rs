@@ -888,6 +888,14 @@ pub struct AdvanceCursors {
     pub claim: CallerClaim,
     pub operation: OperationId,
     pub displayed: Vec<MessageId>,
+    /// The display happened inside the occupant's turn (a tool-boundary or turn-start hook),
+    /// so the messages it showed whole with a pending receipt, and `invitations`, were served
+    /// in-turn (ht-705). Sent only to a daemon advertising `inbox.in_turn_offer_v1`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub in_turn: bool,
+    /// Invitations the in-turn display showed (only with `in_turn`). Nothing is accepted.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub invitations: Vec<InvitationId>,
 }
 
 /// What a [`BindingEvent`] reports.
@@ -951,7 +959,7 @@ pub struct AckModDelivered {
     pub operation: OperationId,
     pub claim: CallerClaim,
 }
-fn has_duplicate(ids: &[MessageId]) -> bool {
+fn has_duplicate<T: Ord>(ids: &[T]) -> bool {
     let mut seen = std::collections::BTreeSet::new();
     !ids.iter().all(|id| seen.insert(id))
 }
@@ -1317,7 +1325,12 @@ impl Command {
                 advance.claim.validate_binding_fields()?;
                 // An empty batch only enrolls the caller's binding (a read that showed history
                 // stats and no message): it moves no cursor.
-                if advance.displayed.len() > MAX_BATCH_ITEMS || has_duplicate(&advance.displayed) {
+                if advance.displayed.len() > MAX_BATCH_ITEMS
+                    || has_duplicate(&advance.displayed)
+                    || advance.invitations.len() > MAX_BATCH_ITEMS
+                    || has_duplicate(&advance.invitations)
+                    || (!advance.in_turn && !advance.invitations.is_empty())
+                {
                     return Err("invalid cursor advance batch");
                 }
                 Ok(())

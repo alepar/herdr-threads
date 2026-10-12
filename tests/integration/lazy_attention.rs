@@ -993,3 +993,120 @@ fn lazy_attention_backlog_allows_qualified_quiet_archive() {
     assert!(f.inbox("agent").is_empty());
     assert_eq!(f.count("receipts"), 0);
 }
+
+/// ht-705: a nudge shown whole inside the recipient's turn (a tool-boundary hook page, which
+/// sends `AdvanceCursors { in_turn: true }` after its output is flushed) was served in-turn, so
+/// the idle wake after that turn is owed to no one (delivery contract rule 4). The receipt stays
+/// pending (presentation is not an ACK). Kills: the post-turn duplicate wake on Codex; a display
+/// outside a turn (lifecycle hook, CLI) suppressing the wake; one shown receipt hiding a newer
+/// unshown one; a new occupant (lifecycle check-in) inheriting the old one's presentation.
+#[test]
+fn in_turn_display_of_a_nudge_owes_no_idle_wake() {
+    let f = Fixture::new();
+    let wake_owed = || {
+        f.store
+            .wake_candidates(PageRequest::default(), &budget())
+            .unwrap()
+            .items
+            .iter()
+            .any(|c| c.seat.as_str() == "agent" && c.has_actionable_work())
+    };
+    let display = |op: &str, displayed: Vec<MessageId>, in_turn: bool| {
+        f.store
+            .advance_cursors(
+                &AdvanceCursors {
+                    claim: f.claim("agent"),
+                    operation: OperationId::new(op),
+                    displayed,
+                    in_turn,
+                    invitations: Vec::new(),
+                },
+                &budget(),
+            )
+            .unwrap();
+    };
+    let receipt_pending = || {
+        attention::wake_seat_attention(&f.db, "agent")
+            .unwrap()
+            .attention
+            .has_pending_receipt
+    };
+    let first = f.send("nudge-1", DeliveryMode::Ordinary);
+    assert!(
+        wake_owed(),
+        "control: an unshown nudge wakes an idle session"
+    );
+    display("shown-idle", vec![first.clone()], false);
+    assert!(wake_owed(), "a display outside a turn leaves the wake owed");
+    display("shown-in-turn", vec![first.clone()], true);
+    assert!(!wake_owed(), "served in-turn: no idle wake");
+    assert!(receipt_pending(), "presentation settles nothing");
+    let second = f.send("nudge-2", DeliveryMode::Ordinary);
+    assert!(wake_owed(), "a newer unshown nudge still wakes");
+    display("shown-2", vec![second], true);
+    assert!(!wake_owed());
+    f.check("agent", "current", false);
+    assert!(!wake_owed(), "a Current check-in keeps the presentation");
+    f.check("agent", "new-session", true);
+    assert!(wake_owed(), "a new occupant was not served");
+}
+
+/// ht-705: an invitation shown inside the invitee's turn (tool-boundary hook page) owes no idle
+/// wake after the turn; it stays pending (nothing is accepted). (Warnings a Current check-in
+/// carried are already spared by `warning_offer`: `scheduler::policy` tests.) Kills: the
+/// post-turn invitation wake on Codex; an in-turn display accepting the invitation; a new
+/// occupant inheriting it.
+#[test]
+fn in_turn_display_of_an_invitation_owes_no_idle_wake() {
+    let f = Fixture::new();
+    f.member("outsider", "resolved", "left", Harness::Codex);
+    let wake_owed = |seat: &str| {
+        f.store
+            .wake_candidates(PageRequest::default(), &budget())
+            .unwrap()
+            .items
+            .iter()
+            .any(|c| c.seat.as_str() == seat && c.has_actionable_work())
+    };
+    f.mutate(PermitMutation::Invite(Invite {
+        thread: ThreadId::new("t"),
+        seat: SeatId::new("outsider"),
+        deadline_millis: None,
+        operation: OperationId::new("invite"),
+        claim: f.claim("author"),
+    }))
+    .unwrap();
+    let invitation: String =
+        f.db.query_row(
+            "SELECT id FROM invitations WHERE seat_id='outsider'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        wake_owed("outsider"),
+        "control: an unshown invitation wakes"
+    );
+    f.store
+        .advance_cursors(
+            &AdvanceCursors {
+                claim: f.claim("outsider"),
+                operation: OperationId::new("shown-in-turn"),
+                displayed: Vec::new(),
+                in_turn: true,
+                invitations: vec![InvitationId::new(invitation.clone())],
+            },
+            &budget(),
+        )
+        .unwrap();
+    assert!(!wake_owed("outsider"), "served in-turn: no idle wake");
+    assert!(
+        attention::wake_seat_attention(&f.db, "outsider")
+            .unwrap()
+            .attention
+            .has_pending_invitation,
+        "presentation accepts nothing"
+    );
+    f.check("outsider", "new-session", true);
+    assert!(wake_owed("outsider"), "a new occupant was not served");
+}

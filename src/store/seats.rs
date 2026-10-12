@@ -1708,6 +1708,11 @@ fn mark_seat_unresolved(
     )
     .map_err(store_error)?;
     tx.execute(
+        "DELETE FROM in_turn_offer WHERE seat_id=?1",
+        [seat.as_str()],
+    )
+    .map_err(store_error)?;
+    tx.execute(
         "UPDATE wake_work SET reservation_id=NULL,reservation_boot=NULL,binding_generation=NULL WHERE seat_id=?1",
         [seat.as_str()],
     )
@@ -3336,6 +3341,11 @@ fn rebind_unresolved_seat(
         [seat.as_str()],
     )
     .map_err(store_error)?;
+    tx.execute(
+        "DELETE FROM in_turn_offer WHERE seat_id=?1",
+        [seat.as_str()],
+    )
+    .map_err(store_error)?;
     schema::ensure_unavailability_episode(tx, seat)?;
     Ok(())
 }
@@ -4618,6 +4628,11 @@ pub fn register_available(
                 // bindings keep theirs (ht-54r.9).
                 tx.execute(
                     "DELETE FROM warning_offer WHERE binding_id=?1",
+                    [binding_id.as_str()],
+                )
+                .map_err(store_error)?;
+                tx.execute(
+                    "DELETE FROM in_turn_offer WHERE binding_id=?1",
                     [binding_id.as_str()],
                 )
                 .map_err(store_error)?;
