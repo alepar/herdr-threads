@@ -19,6 +19,9 @@ const ACK_RETRY_MS = 30000
 const ACK_BATCH_MAX = 100 // MAX_BATCH_ITEMS in src/protocol/commands.rs
 const CONNECTED_RESET_MS = 60000
 const LEDGER_CAP = 2000
+// Match the delivery envelope, counting the actual framed UTF-8 text.
+const APPEND_MAX_ITEMS = 32
+const APPEND_MAX_BYTES = 64 * 1024
 
 const INTENTS = new Set(['query', 'request', 'rule'])
 const canonicalEpoch = (v) => typeof v === 'string' && /^(0|[1-9][0-9]{0,19})$/.test(v)
@@ -58,6 +61,18 @@ export function frame(items) {
       : `[herdr-threads] ${oneLine(it.kind)} ${oneLine(it.id)} in ${label(it.thread, it.threadName)} from ${label(it.sender, it.senderName)}${markers(it)}:\n${indent(it.body)}`,
   )
   return `${HEADER}\n\n${blocks.join('\n\n')}`
+}
+
+/** Keep whole items queued when the next framed append would exceed its envelope. */
+function appendBatch(items) {
+  const batch = []
+  const encoder = new TextEncoder()
+  for (const item of items) {
+    if (batch.length === APPEND_MAX_ITEMS
+        || encoder.encode(frame([...batch, item])).length > APPEND_MAX_BYTES) break
+    batch.push(item)
+  }
+  return batch
 }
 
 const emptyRec = () => ({ delivered: {}, unacked: {}, attentionVersions: [], invitationVersions: {} })
@@ -290,10 +305,16 @@ export function createCore(io) {
         return
       }
       const dup = S.queue.find((q) => q.id === o.id && (o.kind !== 'invitation'
-        || (q.contextVersion === contextVersion && (!q.truncated || o.truncated === true))))
+        || ((q.run === S.run || !q.inflight) && q.contextVersion === contextVersion
+          && (!q.truncated || o.truncated === true))))
       if (dup) {
         dup.run = S.run
         return
+      }
+      // An append owns its exact object. Only the newest pending context is useful;
+      // the duplicate check above also prevents a same-version whole-to-partial downgrade.
+      if (o.kind === 'invitation') {
+        S.queue = S.queue.filter((q) => q.id !== o.id || q.inflight)
       }
       const truncated = o.kind !== 'notice' && o.truncated === true
       S.queue.push({
@@ -323,11 +344,26 @@ export function createCore(io) {
 
   // ---- delivery --------------------------------------------------------
 
+  /** A refused append is pending again; discard it if a newer context replaced it. */
+  function releaseBatch(batch) {
+    for (const it of batch) it.inflight = false
+    const newest = new Map()
+    for (const q of S.queue) {
+      if (q.kind === 'invitation' && !q.inflight) newest.set(q.id, q)
+    }
+    S.queue = S.queue.filter((q) => q.kind !== 'invitation' || q.inflight || newest.get(q.id) === q)
+  }
+
   /** Marks `items` delivered through `via`, then acks the ackable ones. */
   function complete(items, via) {
     const ids = items.map((i) => i.id)
     for (const it of items) {
-      S.queue = S.queue.filter((q) => it.kind === 'invitation' ? q !== it : q.id !== it.id)
+      // A successful whole append also settles an identical pending replay from a
+      // successor run. A partial output, newer context or other inflight object does not.
+      S.queue = S.queue.filter((q) => it.kind === 'invitation'
+        ? q !== it && (it.truncated || q.inflight || q.kind !== 'invitation'
+          || q.id !== it.id || q.contextVersion !== it.contextVersion)
+        : q.id !== it.id)
       if (it.kind === 'attention') {
         S.runAttention.add(it.id)
         if (it.version !== undefined && !S.rec.attentionVersions.includes(it.version)) {
@@ -457,7 +493,7 @@ export function createCore(io) {
         if (io.now() - S.draftSince < DRAFT_WAIT_MS) return held('draft', ids)
       }
       S.draftSince = null
-      const batch = S.queue.filter((q) => !passive(q) && !q.inflight && q.run === S.run && !predHas(q.id))
+      const batch = appendBatch(S.queue.filter((q) => !passive(q) && !q.inflight && q.run === S.run && !predHas(q.id)))
       if (!batch.length && !S.turns.wake) return
       const gen = S.gen
       for (const it of batch) it.inflight = true
@@ -488,7 +524,7 @@ export function createCore(io) {
       if (S.disposed) return
       // a resolution from before a session change touches nothing
       if (gen !== S.gen) return
-      for (const it of batch) it.inflight = false
+      releaseBatch(batch)
       if (r.missing) {
         S.submitInflight = false
         return goInert()
@@ -546,7 +582,7 @@ export function createCore(io) {
   async function pumpLazy() {
     if (S.inert || S.disposed || S.appendInflight || !S.live) return
     if (io.now() < S.appendBackoffUntil) return
-    const batch = S.queue.filter((q) => passive(q) && !q.inflight && q.run === S.run)
+    const batch = appendBatch(S.queue.filter((q) => passive(q) && !q.inflight && q.run === S.run))
     if (!batch.length) return
     const gen = S.gen
     for (const it of batch) it.inflight = true
@@ -566,7 +602,7 @@ export function createCore(io) {
       .then((r) => {
         if (gen !== S.gen) return
         S.appendInflight = false
-        for (const it of batch) it.inflight = false
+        releaseBatch(batch)
         if (r.missing) return goInert()
         if (r.deny !== undefined) {
           discardStale(batch, 'late_deny')
