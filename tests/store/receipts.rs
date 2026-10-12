@@ -4862,7 +4862,8 @@ fn receipt_discovery_four_historical_streams_charge_every_visit_and_reset_once()
 
 #[test]
 fn receipt_discovery_upgrade_combined_reset_warning_and_cursors_roll_back_together() {
-    let (context, mut db, _) = receipt_discovery_historical(37);
+    // Main36 shifts the genuine post-send-time, pre-backfill prefix to 38.
+    let (context, mut db, _) = receipt_discovery_historical(38);
     discovery_receipt(&db, "rollback-source", 1, 500);
     db.execute("INSERT INTO receipt_state(message_id,seat_id,state,ack_required,deadline_at) VALUES ('rollback-source','c','pending',1,5000)",[]).unwrap();
     db.execute("UPDATE threads SET next_sequence=2 WHERE id='t'", [])
