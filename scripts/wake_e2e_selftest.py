@@ -829,6 +829,28 @@ class CaseSpacing(unittest.TestCase):
         self.assertIsNone(rows["invite/1:1"]["checks"].get("trailing_wake_s"))
 
 
+class RunRoot(TempDir):
+    """The run root lives under a short, existing temp dir on every platform (Linux has no /private/tmp)."""
+
+    def test_platform_roots(self):
+        self.assertEqual(W.short_tmp_root("darwin"), Path("/private/tmp"))
+        self.assertEqual(W.short_tmp_root("linux"), Path("/tmp"))
+
+    def test_this_hosts_root_exists_and_leaves_room_for_sockets(self):
+        root = W.short_tmp_root()
+        self.assertTrue(root.is_dir(), root)
+        # a run root plus the deepest socket the run binds stays under the 104-byte macOS limit
+        self.assertLess(len(str(root / "ht-wake-e2e.abcdefgh" / "state" / "instances" / ("0" * 16) / "d.sock")), 104)
+
+    def test_a_run_creates_its_private_root_there(self):
+        r = W.Run(SimpleNamespace(evidence_dir=None, bin="/bin/sh"))
+        self.addCleanup(shutil.rmtree, r.root, True)
+        self.addCleanup(r.cmdlog.close)
+        self.assertEqual(r.root.parent, W.short_tmp_root())
+        self.assertTrue(r.root.name.startswith("ht-wake-e2e."))
+        self.assertEqual(stat.S_IMODE(r.root.stat().st_mode), 0o700)
+
+
 def row(recipient, case, result="PASS"):
     return {"recipient": recipient, "case": case, "result": result, "wake_on": "nudge", "harness": "claude"}
 

@@ -103,6 +103,13 @@ def utc():
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def short_tmp_root(platform=None):
+    """The run root's parent: short enough for the Unix sockets the daemon and Herdr bind under it (104 bytes
+    on macOS, 108 on Linux). macOS's per-user $TMPDIR (/var/folders/...) is too long, so macOS uses /private/tmp
+    (what /tmp resolves to there); elsewhere /tmp. $TMPDIR is deliberately not consulted."""
+    return Path("/private/tmp") if (platform or sys.platform) == "darwin" else Path("/tmp")
+
+
 class Refused(Exception):
     pass
 
@@ -115,7 +122,7 @@ class Run:
     def __init__(self, args):
         self.args = args
         self.run_id = time.strftime("%H%M%S") + "-" + uuid.uuid4().hex[:4]
-        self.root = Path(tempfile.mkdtemp(prefix="ht-wake-e2e.", dir="/private/tmp"))
+        self.root = Path(tempfile.mkdtemp(prefix="ht-wake-e2e.", dir=short_tmp_root()))
         os.chmod(self.root, 0o700)
         self.ev = Path(args.evidence_dir) if args.evidence_dir else self.root / "evidence"
         self.ev.mkdir(parents=True, exist_ok=True)
