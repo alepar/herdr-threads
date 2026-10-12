@@ -2133,16 +2133,71 @@ fn receipt_send_time_upgrade_preserves_populated_v28_and_v29_graph_and_restarts_
             .map(|name| receipt_upgrade_snapshot(&db, name))
             .collect();
         let objects = |db: &Connection| {
-            let mut statement=db.prepare("SELECT sql FROM sqlite_master WHERE tbl_name IN ('receipts','receipt_state') AND type IN ('trigger','index') AND name NOT IN ('receipt_due_sparse_delete','receipt_due_sparse_insert','receipt_due_sparse_update','receipt_warning_origin_receipt_state_insert','receipt_warning_origin_receipt_state_update','receipt_warning_origin_receipts_insert','receipt_warning_origin_receipts_update','receipts_required_due_ordinal') AND sql IS NOT NULL ORDER BY name").unwrap();
+            // These eight migration42 additions are separate from the exact
+            // historical catalog; all other receipt objects remain compared.
+            let mut statement=db.prepare("SELECT name,sql FROM sqlite_master WHERE tbl_name IN ('receipts','receipt_state') AND type IN ('trigger','index') AND name NOT IN ('receipt_due_sparse_delete','receipt_due_sparse_insert','receipt_due_sparse_update','receipt_warning_origin_receipt_state_insert','receipt_warning_origin_receipt_state_update','receipt_warning_origin_receipts_insert','receipt_warning_origin_receipts_update','receipts_required_due_ordinal') AND sql IS NOT NULL ORDER BY name").unwrap();
             statement
-                .query_map([], |r| r.get::<_, String>(0))
+                .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
                 .unwrap()
                 .collect::<Result<Vec<_>, _>>()
                 .unwrap()
         };
         let old_objects = objects(&db);
+        let presentation_triggers = [
+            (
+                "presentation_fence_receipt_state_delete",
+                "receipt_state",
+                "DELETE",
+            ),
+            (
+                "presentation_fence_receipt_state_insert",
+                "receipt_state",
+                "INSERT",
+            ),
+            (
+                "presentation_fence_receipt_state_update",
+                "receipt_state",
+                "UPDATE",
+            ),
+            ("presentation_fence_receipts_delete", "receipts", "DELETE"),
+            ("presentation_fence_receipts_insert", "receipts", "INSERT"),
+            ("presentation_fence_receipts_update", "receipts", "UPDATE"),
+        ];
         schema::initialize(&db, || UtcMillis(0)).unwrap();
-        assert_eq!(objects(&db), old_objects);
+        let (new_triggers, retained_objects): (Vec<_>, Vec<_>) =
+            objects(&db).into_iter().partition(|(name, _)| {
+                presentation_triggers
+                    .iter()
+                    .any(|(expected, _, _)| name == expected)
+            });
+        assert_eq!(
+            retained_objects, old_objects,
+            "v{version} historical catalog"
+        );
+        // Assert the six migration45 additions independently, including their
+        // event, table and fail-closed fence updates, rather than ignoring them.
+        let expected_triggers: Vec<_> = presentation_triggers
+            .iter()
+            .map(|(name, table, event)| {
+                (
+                    (*name).to_owned(),
+                    format!(
+                        r#"CREATE TRIGGER {name} AFTER {event} ON {table}
+BEGIN
+    SELECT CASE WHEN COALESCE((SELECT version FROM presentation_warning_fence WHERE singleton=1),-1)<0
+        THEN RAISE(ABORT,'presentation warning fence missing') END;
+    SELECT CASE WHEN (SELECT version FROM presentation_warning_fence WHERE singleton=1)>=9223372036854775807
+        THEN RAISE(ABORT,'presentation warning fence exhausted') END;
+    UPDATE presentation_warning_fence SET version=version+1 WHERE singleton=1;
+END"#
+                    ),
+                )
+            })
+            .collect();
+        assert_eq!(
+            new_triggers, expected_triggers,
+            "v{version} migration45 triggers"
+        );
         assert_eq!(
             db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
                 .unwrap(),
