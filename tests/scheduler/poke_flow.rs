@@ -990,9 +990,11 @@ fn receipt_discovery_original_senders_use_actual_native_guard_and_recovery_path(
     ] {
         let fx = Fixture::new(&[]);
         let db = fx.conn();
+        // s2's binding carries the fingerprint pid RecordingHost reports as the
+        // pane foreground process: a composer wake needs that match (ht-54r.82).
         db.execute_batch("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('s2','i','resolved','native','pane2',1,1,0),('recipient','i','unresolved','native',NULL,0,0,0);
         INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observed_at,provenance,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('i','pane2','host',1,1,0,'fresh','term-pane','inc','native_current_target',1);
-        INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation) VALUES ('s2',1,1,'pane2','host',0,'codex','session2','original-sender2','cooperative_top_level',0,0,'term-pane','inc');
+        INSERT INTO occupant_bindings(seat_id,generation,target_generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,registered_at,terminal_id,incarnation,liveness_pid,liveness_start) VALUES ('s2',1,1,'pane2','host',0,'codex','session2','original-sender2','cooperative_top_level',0,0,'term-pane','inc',4242,1);
         INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES ('t','i','topic','goal',0,0,3);
         INSERT INTO memberships(thread_id,seat_id,state) VALUES ('t','s','left'),('t','s2','left');").unwrap();
         for (n, seat) in [(1, "s"), (2, "s2")] {

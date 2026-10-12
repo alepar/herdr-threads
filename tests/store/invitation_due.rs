@@ -410,7 +410,7 @@ fn failed_page_retries_from_its_original_physical_cursor() {
 fn lazy_invitation_is_discoverable_but_never_due_or_waking() {
     let (context, mut conn, _, _) = setup(1_000);
     let binding = crate::protocol::ids::BindingId::new(conn.query_row(
-        "INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at) VALUES('seat',1,'recipient-pane','binding-boot',1,'claude','lazy-recipient-session','00000000-0000-4000-8000-000000000001','cooperative_top_level',0) RETURNING binding_id",
+        "INSERT INTO occupant_bindings(seat_id,generation,target_id,host_boot,host_epoch,harness,native_session,execution_id,observation_provenance,observed_at,terminal_id,incarnation) VALUES('seat',1,'recipient-pane','binding-boot',1,'claude','lazy-recipient-session','00000000-0000-4000-8000-000000000001','cooperative_top_level',0,'recipient-terminal','binding-boot') RETURNING binding_id",
         [],
         |row| row.get::<_, String>(0),
     ).unwrap());
