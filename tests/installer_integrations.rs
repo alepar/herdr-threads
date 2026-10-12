@@ -751,12 +751,38 @@ fn setup_and_status_flag_a_hook_file_with_doubled_owned_groups() {
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
-    // Setup's own conflict handling refuses the recorded file holding a foreign registration.
+    // Setup refuses the recorded file holding another registration beside its own groups.
     assert!(!out.status.success(), "{text}");
-    assert!(
-        text.contains("conflicting herdr-threads registration"),
-        "{text}"
-    );
+    assert!(text.contains("beside the recorded installation"), "{text}");
+    let out = f.run(&["internal", "installer-integrations"]);
+    assert!(!out.status.success());
     // Never resolved by adding yet another registration.
     assert_eq!(spellings(&hooks)["SessionStart"], ["legacy", "native"]);
+
+    // An edited copy (TAB before its owner comment) beside a recorded installation is refused
+    // before the recorded groups are touched.
+    let g = Fixture::new();
+    success(&g.install());
+    let hooks = g.0.join("codex/hooks.json");
+    let mut value: serde_json::Value = serde_json::from_slice(&fs::read(&hooks).unwrap()).unwrap();
+    let mut stray = value["hooks"]["PreToolUse"][0].clone();
+    stray["hooks"][0]["command"] = serde_json::json!(format!(
+        "{} '--event' 'PreToolUse'\t# herdr-threads-owner:{}",
+        g.legacy_base(),
+        uuid::Uuid::new_v4()
+    ));
+    value["hooks"]["PreToolUse"]
+        .as_array_mut()
+        .unwrap()
+        .push(stray);
+    let bytes = serde_json::to_vec(&value).unwrap();
+    fs::write(&hooks, &bytes).unwrap();
+    let out = g.run(&["setup", "codex"]);
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("beside the recorded installation"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(fs::read(&hooks).unwrap(), bytes);
 }

@@ -2412,7 +2412,11 @@ impl Registration {
     fn exact_unmarked(&self) -> bool {
         self.canonical
             && self.marker.is_none()
-            && (!self.native || self.argument.as_deref() == Some(self.event.as_str()))
+            && match self.argument.as_deref() {
+                Some(argument) => argument == self.event,
+                // The pre-per-event legacy spelling runs for any event; native always names one.
+                None => !self.native,
+            }
     }
 }
 
@@ -2562,6 +2566,24 @@ pub(crate) fn holds_registrations(
     Ok(registrations(&root(bytes)?, &routes(kind, hook_argv)?)
         .iter()
         .any(|registration| !registration.exact_unmarked()))
+}
+
+/// `bytes` without the groups exactly equal to `entries` (a recorded installation's own groups),
+/// so the rest can be checked for other registrations of the hook.
+pub(crate) fn without_groups(bytes: &[u8], entries: &[OwnedEntry]) -> Result<Vec<u8>, SetupError> {
+    let mut value = root(bytes)?;
+    if let Some(hooks) = value.get_mut("hooks").and_then(Value::as_object_mut) {
+        for (event, groups) in hooks.iter_mut() {
+            if let Some(groups) = groups.as_array_mut() {
+                groups.retain(|group| {
+                    !entries
+                        .iter()
+                        .any(|entry| &entry.event == event && &entry.group == group)
+                });
+            }
+        }
+    }
+    serde_json::to_vec(&value).map_err(|_| SetupError::Invalid)
 }
 
 /// [`find_adoptable`] over the current file; `None` when the file does not exist.
@@ -2781,6 +2803,41 @@ mod adoption_tests {
         moved["hooks"]["SessionStart"][0]["hooks"][0]["command"] =
             json!(command(&value, "PreToolUse"));
         assert!(holds_registrations(kind, &bytes(&moved), &argv()).unwrap());
+        // A bare legacy command moved under another event's array is not the unowned identical
+        // hook setup's own handling refuses: it is counted.
+        let mut moved_legacy = value.clone();
+        moved_legacy["hooks"]["PreToolUse"]
+            .as_array_mut()
+            .unwrap()
+            .push(
+                json!({"hooks": [{"type": "command", "command": event_command(
+                    &shell_command(&argv()).unwrap(),
+                    "SessionStart",
+                )}]}),
+            );
+        assert!(holds_registrations(kind, &bytes(&moved_legacy), &argv()).unwrap());
+        let mut own_legacy = value.clone();
+        own_legacy["hooks"]["PreToolUse"]
+            .as_array_mut()
+            .unwrap()
+            .push(
+                json!({"hooks": [{"type": "command", "command": event_command(
+                    &shell_command(&argv()).unwrap(),
+                    "PreToolUse",
+                )}]}),
+            );
+        assert!(!holds_registrations(kind, &bytes(&own_legacy), &argv()).unwrap());
+        // A recorded installation's own groups are excluded before checking the rest.
+        let rest = without_groups(&bytes(&moved_legacy), &native).unwrap();
+        assert!(holds_registrations(kind, &rest, &argv()).unwrap());
+        assert!(
+            !holds_registrations(
+                kind,
+                &without_groups(&bytes(&value), &native).unwrap(),
+                &argv()
+            )
+            .unwrap()
+        );
         let mut beside = value.clone();
         let legacy = marked(&uuid::Uuid::new_v4().to_string())["hooks"]["SessionStart"][0].clone();
         beside["hooks"]["SessionStart"]
@@ -3713,6 +3770,30 @@ pub(crate) mod legacy {
                      Setup does not add a second set beside them, and unsetup does not own them: \
                      remove those groups from the file by hand, then set up again; nothing was \
                      changed",
+                    file.path.display()
+                ),
+            ));
+        }
+        // Beside a recorded installation: any other registration of the hook that setup's own
+        // conflict handling does not refuse (edited, moved, doubled) is refused the same way
+        // before the recorded groups are upgraded or migrated next to it.
+        if let Some(recorded) = &recorded
+            && !fs::symlink_metadata(&file.path).is_ok_and(|meta| meta.file_type().is_symlink())
+            && let Ok(current) = fs::read(&file.path)
+            && let Ok(rest) = lib::without_groups(
+                &current,
+                &[recorded.owned.as_slice(), recorded.superseded.as_slice()].concat(),
+            )
+            && lib::holds_registrations(kind, &rest, &argv).unwrap_or(false)
+        {
+            return Err(api(
+                ErrorCode::Conflict,
+                format!(
+                    "{} holds herdr-threads hook registrations beside the recorded installation \
+                     that setup does not own: copies of the hook command that are edited, \
+                     moved to another event or duplicated. Setup does not add or migrate groups \
+                     beside them: remove them from the file by hand, then set up again; nothing \
+                     was changed",
                     file.path.display()
                 ),
             ));

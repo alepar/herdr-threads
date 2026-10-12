@@ -641,17 +641,23 @@ impl AllowanceInspection {
     }
 }
 
-/// No key setup added is left in the file with any value (a hand-removed allowance).
+/// No key setup added is left in the file with any value (a hand-removed allowance), at least one
+/// was added, and every key the user already held keeps its value.
 fn owned_absent(doc: &DocumentMut, keys: &[AllowanceKey]) -> bool {
-    keys.iter().filter(|key| !key.pre_existing).all(|key| {
-        match (lookup(doc, &key.path), &key.value) {
-            (None, _) => true,
-            (Some(item), AllowanceValue::Member(_)) => {
-                item.as_array().is_some() && !matches(item, &key.value)
+    keys.iter().any(|key| !key.pre_existing)
+        && keys
+            .iter()
+            .filter(|key| key.pre_existing)
+            .all(|key| lookup(doc, &key.path).is_some_and(|item| matches(item, &key.value)))
+        && keys.iter().filter(|key| !key.pre_existing).all(|key| {
+            match (lookup(doc, &key.path), &key.value) {
+                (None, _) => true,
+                (Some(item), AllowanceValue::Member(_)) => {
+                    item.as_array().is_some() && !matches(item, &key.value)
+                }
+                (Some(_), _) => false,
             }
-            (Some(_), _) => false,
-        }
-    })
+        })
 }
 
 pub fn inspect(config: &Path, manifest_path: &Path) -> Result<AllowanceInspection, SetupError> {
@@ -785,6 +791,29 @@ mod tests {
         doc["sandbox_workspace_write"]["writable_roots"] =
             toml_edit::value(toml_edit::Array::new());
         assert_eq!(state(&doc.to_string()), (false, false));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Kills: a changed key the user already held (pre-existing) read as a hand-removed
+    /// allowance.
+    #[test]
+    fn a_changed_pre_existing_key_is_not_a_removal() {
+        let dir = tmp();
+        let config = dir.join("config.toml");
+        let manifest = dir.join("m.json");
+        let user = "[sandbox_workspace_write]\nnetwork_access = true\n";
+        std::fs::write(&config, user).unwrap();
+        install(&config, &manifest, SOCK, &[]).unwrap();
+        let record = read_manifest(&manifest).unwrap().unwrap();
+        assert!(record.keys.iter().any(|key| key.pre_existing));
+        std::fs::write(&config, user).unwrap();
+        assert!(inspect(&config, &manifest).unwrap().removed);
+        std::fs::write(
+            &config,
+            "[sandbox_workspace_write]\nnetwork_access = false\n",
+        )
+        .unwrap();
+        assert!(!inspect(&config, &manifest).unwrap().removed);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
