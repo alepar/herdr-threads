@@ -277,7 +277,7 @@ Creation joins the caller and ordinarily invites the recipient. The immutable pa
 
 Lifecycle decisions require explicit repair on the reported channel: `reopen THREAD` after archive, `join THREAD` after the caller leaves, `accept THREAD` for an invited caller, and `invite THREAD --seat SEAT` after the target leaves or rejects. Required invitations retain their ordinary acceptance rules. Direct routing never reopens, rejoins or reinvites automatically and never creates a replacement pair. Repair reuses the same channel and preserves existing messages and obligations.
 
-Direct send durably ensures the channel, then uses ordinary send. A later refusal or crash can leave an empty channel and invitation; use the reported `retry REF` or `pending-ops` rather than sending again. Retry keeps the original recipient, body and operation keys. A completed retry prints historical thread/message results without repeating effects.
+Direct send durably ensures the channel, then uses ordinary send. A later refusal or crash can leave an empty channel and invitation; use the reported `retry REF` or `pending-ops` rather than sending again. Retry keeps the original recipient, body and operation keys. A completed retry prints historical thread/message results without repeating effects. With `--json`, direct send prints the same versioned envelope as `send THREAD` (`result.kind` `message_sent`, `result.data` the message id) plus `result.thread`, the channel id.
 
 ### Durable handoff and recovery
 

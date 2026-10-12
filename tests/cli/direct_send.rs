@@ -950,3 +950,35 @@ fn public_completed_retry_missing_endpoint_retains_files_and_one_frozen_hint() {
         }
     }
 }
+
+#[test]
+fn json_output_uses_the_versioned_send_envelope_with_the_thread() {
+    let f = Fixture::new(false);
+    let mut direct = vec![];
+    f.run(
+        &["send", "--seat", "seat-b", "--body", "hello", "--json"],
+        &mut direct,
+    )
+    .unwrap();
+    let direct: serde_json::Value = serde_json::from_slice(&direct).unwrap();
+    let thread = direct["result"]["thread"].as_str().unwrap().to_owned();
+    let mut ordinary = vec![];
+    f.run(
+        &["send", &thread, "--body", "again", "--json"],
+        &mut ordinary,
+    )
+    .unwrap();
+    let ordinary: serde_json::Value = serde_json::from_slice(&ordinary).unwrap();
+    assert_eq!(direct["version"], ordinary["version"]);
+    assert_eq!(direct["result"]["kind"], ordinary["result"]["kind"]);
+    let message: String =
+        f.db.query_row("SELECT id FROM messages WHERE body='hello'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(direct["result"]["data"], message.as_str());
+    assert_eq!(
+        serde_json::from_value::<CommandResult>(direct["result"].clone()).unwrap(),
+        CommandResult::MessageSent(herdr_threads::protocol::ids::MessageId::new(message))
+    );
+}
