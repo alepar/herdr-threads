@@ -96,6 +96,8 @@ mod graph_send;
 mod lanes;
 #[path = "service/operator.rs"]
 mod operator;
+#[path = "service/presentation_owner_budget_controls.rs"]
+mod presentation_owner_budget_controls;
 #[path = "service/resolution.rs"]
 mod resolution;
 #[path = "service/retirement_health.rs"]

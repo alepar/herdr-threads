@@ -19,7 +19,8 @@ use crate::{
 };
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex, Weak},
+    sync::{Arc, Mutex, MutexGuard, TryLockError, Weak},
+    time::Duration,
 };
 
 #[derive(Default)]
@@ -48,6 +49,40 @@ impl PresentationState {
     }
 }
 impl DomainService {
+    fn acquire_presentation_owner<'a>(
+        &self,
+        permit: &'a Mutex<()>,
+        budget: &CallBudget,
+    ) -> Result<MutexGuard<'a, ()>, ApiError> {
+        loop {
+            if budget.is_exhausted(self.clock.as_ref()) {
+                return Err(super::workers::budget_error(budget));
+            }
+            let owner = match permit.try_lock() {
+                Ok(owner) => Some(owner),
+                Err(TryLockError::Poisoned(error)) => Some(error.into_inner()),
+                Err(TryLockError::WouldBlock) => None,
+            };
+            if let Some(owner) = owner {
+                // A budget may expire while the mutex is being acquired. Never
+                // begin admission with an exhausted budget, even after poison.
+                if budget.is_exhausted(self.clock.as_ref()) {
+                    return Err(super::workers::budget_error(budget));
+                }
+                return Ok(owner);
+            }
+            let remaining = budget
+                .deadline
+                .0
+                .saturating_sub(self.clock.monotonic_now().0);
+            // Cancellation wakes this wait directly; bounded polling observes
+            // owner release and the caller's clock without holding any lock.
+            budget
+                .cancellation
+                .wait_blocking(Duration::from_millis(remaining.min(10)));
+        }
+    }
+
     pub(super) fn presentation_pull(
         &self,
         pull: &DeliveryPullV2,
@@ -59,7 +94,7 @@ impl DomainService {
             Some(permit) => permit,
             None => self.presentation.permit(&pull.claim.seat)?,
         };
-        let _owner = permit.lock().unwrap_or_else(|e| e.into_inner());
+        let _owner = self.acquire_presentation_owner(&permit, budget)?;
         let admitted = match pull.consumer {
             PresentationConsumer::Hook => self.hook_presentation_view(&pull.claim, peer, budget),
             PresentationConsumer::Watch => self.watch_presentation_view(&pull.claim, budget),
@@ -303,7 +338,7 @@ impl DomainService {
             Some(permit) => permit,
             None => self.presentation.permit(&request.claim.seat)?,
         };
-        let _owner = permit.lock().unwrap_or_else(|e| e.into_inner());
+        let _owner = self.acquire_presentation_owner(&permit, budget)?;
         let admitted = match request.consumer {
             PresentationConsumer::Hook => self.hook_presentation_view(&request.claim, peer, budget),
             PresentationConsumer::Watch => self.watch_presentation_view(&request.claim, budget),
