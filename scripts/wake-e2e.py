@@ -73,8 +73,11 @@ CASES = ("invite/group", "invite/1:1",
 BUSY_PROMPT = ("Busy-turn test {tag}: run the shell command `sleep 12`, then run the shell command `sleep 1`, then "
                "handle any herdr-threads items exactly as your standing instructions say, and finally print BUSY-DONE.")
 BUSY_AFTER_S = 40.0
-# The busy turn's native end: the agent's own BUSY-DONE output line (the prompt's "print BUSY-DONE." never matches).
-BUSY_DONE_LINE = re.compile(r"^[^\w.\n]*BUSY-DONE[ \t]*$", re.M)
+# The busy turn's native end: a line of the agent's output that is BUSY-DONE apart from bullets, markup or a final
+# period. It is searched only after the prompt's own "BUSY-DONE." so a wrapped prompt line never matches.
+BUSY_DONE_LINE = re.compile(r"^[^\w\n]*BUSY-DONE[^\w\n]*$", re.M)
+BUSY_PROMPT_END = "BUSY-DONE."
+BUSY_END_GRACE_S = 10.0  # idle this long with no BUSY-DONE line: the turn is over without one
 WAKE_MARKERS = ("herdr-threads: wake up", "herdr-threads: attention pending")
 WAKE_WINDOW_S = 6.0     # a woken agent leaves idle well inside this (observed 0.3-1.1 s)
 SPACING_S = 35.0        # the per-seat wake retry guard is 30 s after each reservation (src/notification/policy.rs)
@@ -556,7 +559,8 @@ def busy_turn_split(text, anchor):
     if at < 0:
         return None
     rest = text[at:]
-    end = BUSY_DONE_LINE.search(rest)
+    prompt_end = rest.find(BUSY_PROMPT_END)
+    end = BUSY_DONE_LINE.search(rest, prompt_end + len(BUSY_PROMPT_END) if prompt_end >= 0 else 0)
     if end is None:
         return rest, "", False
     return rest[:end.end()], rest[end.end():], True
@@ -749,8 +753,11 @@ class Recipient:
         anchor = f"Busy-turn test {tag}"
         # The quiet window starts at the busy turn's native end (its BUSY-DONE line, then the first idle status),
         # not after a confirmed-idle wait: that wait would absorb a short wake turn typed right after the turn.
-        end = time.time() + TURN_TIMEOUT_MS / 1000
+        end, idle_since = time.time() + TURN_TIMEOUT_MS / 1000, None
         while time.time() < end and not (busy_turn_split(self.screen(), anchor) or ("", "", False))[2]:
+            idle_since = (idle_since or time.time()) if self.status() in IDLE else None
+            if idle_since and time.time() - idle_since > BUSY_END_GRACE_S:
+                break  # recorded below as busy_turn_end_seen False, without waiting out the turn timeout
             time.sleep(0.5)
         while time.time() < end and self.status() not in IDLE:
             time.sleep(0.25)

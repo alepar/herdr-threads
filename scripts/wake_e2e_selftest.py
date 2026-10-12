@@ -682,10 +682,66 @@ class BusyTurnBoundary(unittest.TestCase):
         self.assertEqual(after, "\n")
 
     def test_the_prompt_text_is_never_the_turn_end(self):
-        for line in ("  BUSY-DONE.", "and finally print BUSY-DONE.", "  `sleep 1`, then print BUSY-DONE."):
-            self.assertIsNone(W.BUSY_DONE_LINE.search(line), line)
-        self.assertEqual(W.busy_turn_split(f"\u203a {self.ANCHOR}: ...\n  BUSY-DONE.\n", self.ANCHOR)[2], False)
+        for wrapped in ("and finally print\n  BUSY-DONE.\n", "and finally print BUSY-DONE.\n"):
+            text = f"\u203a {self.ANCHOR}: run the shell commands, {wrapped}\n\u2022 Ran sleep 12\n"
+            self.assertEqual(W.busy_turn_split(text, self.ANCHOR)[2], False, wrapped)
         self.assertIsNone(W.busy_turn_split("no prompt here", self.ANCHOR))
+
+    def test_agent_end_line_shapes(self):
+        prompt = f"\u203a {self.ANCHOR}: ... and finally print\n  BUSY-DONE.\n\n"
+        for line in ("\u2022 BUSY-DONE", "  BUSY-DONE", "\u23fa BUSY-DONE.", "**BUSY-DONE**", "`BUSY-DONE`"):
+            self.assertTrue(W.busy_turn_split(prompt + line + "\n", self.ANCHOR)[2], line)
+        for line in ("\u2022 I'll run both sleeps, then print BUSY-DONE", "Done. BUSY-DONE"):
+            self.assertFalse(W.busy_turn_split(prompt + line + "\n", self.ANCHOR)[2], line)
+
+
+class BusyQuietWindow(unittest.TestCase):
+    """A wake typed into the idle composer right after the busy turn ends (v0.9.1 Codex busy-invite/1:1, co-all) is
+    seen by the quiet window and counted after the turn, and the opener it delivers is not in-turn delivery. The old
+    driver's confirmed-idle wait swallowed that 2 s turn (self_started_turn_after_s null) and accepted the opener."""
+
+    def setUp(self):
+        saved = {k: getattr(W, k) for k in ("BUSY_AFTER_S", "SPACING_S")}
+        self.addCleanup(lambda: [setattr(W, k, v) for k, v in saved.items()])
+        W.BUSY_AFTER_S, W.SPACING_S = 3.0, 0.0
+        self.rows = []
+
+    def test_post_turn_wake_is_seen_and_the_opener_is_not_in_turn(self):
+        t0 = []
+        mid = "mOPENER01"
+        tag = "busy-invite/1:1 000000-test"
+        script = [  # (seconds after the busy prompt, screen text appended)
+            (0.0, f"\u203a Busy-turn test {tag}: run the shell command `sleep 12`, ... and finally print BUSY-DONE.\n"),
+            (0.5, "\u2022 Ran herdr-threads accept tPAIR\n  \u2514 accepted\n"),
+            (4.0, "\u2022 BUSY-DONE\n\n  Worked for 4s\n"),
+            (4.6, "\u203a herdr-threads: attention pending; run herdr-threads inbox\n"),
+            (4.8, f"\u2022 RECEIVED {mid}: pair-open-busy\n"),
+        ]
+        turns = [(0.0, 4.0), (4.6, 6.6)]
+
+        def since():
+            return time.time() - t0[0] if t0 else -1.0
+
+        r = object.__new__(W.Recipient)
+
+        def herdr(*argv, **kw):
+            if argv[:2] == ("agent", "prompt"):
+                t0.append(time.time())
+            return {}
+        run = SimpleNamespace(run_id="000000-test", record=self.rows.append, stopping=threading.Event(), herdr=herdr)
+        r.run, r.name, r.harness, r.wake_on, r.pane, r.seat = run, "co-all", "codex", "all", "w9:p1", "sREC"
+        r.last_wake, r.group, r.pair = 0.0, "tGROUP", None
+        r.status = lambda: "working" if any(a <= since() < b for a, b in turns) else "idle"
+        r.screen = lambda lines=400: "".join(text for at, text in script if since() >= at)
+        r.send = lambda mode, body, direct, role="main": mid
+        r.pair_thread = lambda role="main": "tPAIR"
+        r.joined = lambda thread, role="main": (True, "joined")
+        r.busy_case("busy-invite/1:1")
+        checks = self.rows[0]["checks"]
+        self.assertIsNotNone(checks["self_started_turn_after_s"], checks)
+        self.assertIs(checks.get("opening_message_delivered_in_turn"), False, checks)
+        self.assertEqual((checks["wake_prompts_in_busy_turn"], checks["wake_prompts_after_busy_turn"]), (0, 1))
+        self.assertEqual(self.rows[0]["result"], "FAIL")
 
 
 class FakeAgent:
