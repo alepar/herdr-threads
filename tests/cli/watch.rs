@@ -1110,6 +1110,23 @@ struct ServerControl {
     changed: std::sync::Condvar,
 }
 
+struct ServerStreamGuard<'a>(&'a ServerControl);
+
+impl Drop for ServerStreamGuard<'_> {
+    fn drop(&mut self) {
+        // The cancellation clone must not outlive this exchange: the client
+        // needs natural EOF before it can return and call Server::finish.
+        let stream = self
+            .0
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .stream
+            .take();
+        drop(stream);
+    }
+}
+
 impl ServerControl {
     fn check(&self, deadline: Instant) -> io::Result<()> {
         if self.state.lock().unwrap().cancelled {
@@ -1132,13 +1149,13 @@ impl ServerControl {
         drop(self.changed.wait_timeout(state, wait).unwrap());
         self.check(deadline)
     }
-    fn install(&self, stream: &UnixStream) -> io::Result<()> {
+    fn install(&self, stream: &UnixStream) -> io::Result<ServerStreamGuard<'_>> {
         let mut state = self.state.lock().unwrap();
         if state.cancelled {
             return Err(io::Error::from(io::ErrorKind::Interrupted));
         }
         state.stream = Some(stream.try_clone()?);
-        Ok(())
+        Ok(ServerStreamGuard(self))
     }
     fn cancel(&self) {
         let mut state = self.state.lock().unwrap();
@@ -1187,7 +1204,7 @@ impl Server {
                         Err(error) => return Err(error),
                     }
                 };
-                worker.install(&stream)?;
+                let _stream_owner = worker.install(&stream)?;
                 stream.set_nonblocking(true)?;
                 let request = read_raw_request(&mut stream, &worker, deadline)?;
                 stream.set_nonblocking(false)?;
@@ -1239,6 +1256,40 @@ impl Drop for Server {
         // Explicit finish reports helper failures; Drop never double-panics.
         let _ = self.cleanup();
     }
+}
+
+#[test]
+fn q3_raw_watch_server_success_closes_the_socket_before_finish() {
+    let server = Server::start_raw(|stream, bytes| {
+        assert_eq!(bytes, br#"{"request":"raw"}"#);
+        write_frame(stream, &serde_json::json!({"received": true}));
+    });
+    let mut client = UnixStream::connect(&server.socket).unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    client
+        .set_write_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    write_frame(&mut client, &serde_json::json!({"request": "raw"}));
+    let mut prefix = [0; 4];
+    client.read_exact(&mut prefix).unwrap();
+    let mut reply = vec![0; u32::from_be_bytes(prefix) as usize];
+    client.read_exact(&mut reply).unwrap();
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&reply).unwrap(),
+        serde_json::json!({"received": true})
+    );
+    let mut tail = [0; 1];
+    assert_eq!(
+        client
+            .read(&mut tail)
+            .expect("successful raw exchange must reach EOF before finish"),
+        0
+    );
+    let dir = server.dir.clone();
+    server.finish();
+    assert!(!dir.exists());
 }
 
 #[test]

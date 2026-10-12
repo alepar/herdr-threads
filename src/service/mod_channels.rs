@@ -636,7 +636,7 @@ impl ModChannelRegistry {
             }
         }
         if push {
-            if !self.notify_binding(binding, version, now) {
+            if !self.notify_binding(binding, channel, work.mode, version, now) {
                 self.restore_delivery_recheck(work, true);
             }
         } else if passive {
@@ -659,12 +659,22 @@ impl ModChannelRegistry {
         }
     }
 
-    fn notify_binding(&self, binding: &BindingId, version: u64, now: UtcMillis) -> bool {
+    fn notify_binding(
+        &self,
+        binding: &BindingId,
+        channel: ModChannelId,
+        mode: ModChannelMode,
+        version: u64,
+        now: UtcMillis,
+    ) -> bool {
         let mut state = self.lock();
         let Some(entry) = state.entries.get_mut(binding) else {
             return false;
         };
-        if entry.state != ModChannelState::Live {
+        if entry.channel != Some(channel)
+            || entry.mode != mode
+            || entry.state != ModChannelState::Live
+        {
             return false;
         }
         let Some(sink) = entry.sink.clone() else {
@@ -674,6 +684,9 @@ impl ModChannelRegistry {
             entry.last_attention_push = Some(now);
             true
         } else {
+            if mode == ModChannelMode::PresentationV2 {
+                entry.pending_delivery_recheck = true;
+            }
             false
         }
     }
@@ -937,9 +950,19 @@ impl ModChannels for ModChannelRegistry {
 
     fn notify(&self, seat: &SeatId, attention_version: u64) {
         let now = self.clock.utc_now();
-        let bindings = self.lock().seat_bindings(seat);
-        for binding in bindings {
-            self.notify_binding(&binding, attention_version, now);
+        let channels: Vec<_> = {
+            let state = self.lock();
+            state
+                .seat_bindings(seat)
+                .into_iter()
+                .filter_map(|binding| {
+                    let entry = state.entries.get(&binding)?;
+                    Some((binding, entry.channel?, entry.mode))
+                })
+                .collect()
+        };
+        for (binding, channel, mode) in channels {
+            self.notify_binding(&binding, channel, mode, attention_version, now);
         }
     }
 

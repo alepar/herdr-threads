@@ -1509,10 +1509,18 @@ semantics. Corrupt or genuinely oversized records are refused.
 Private capable-delivery ordinary carry stores at most32 structured <=8KiB presentation bodies with one <=8-argument/4096-byte frozen marker prefix. Its serialized cap is155731 bytes:65536 fetched-page bytes +49146 escaped previous-partial bytes +32*512 metadata +24601 prefix +64 framing. This does not increase model output, canonical body or RPC limits. Marker reconstruction uses only the exact producer-generated suffix and frozen prefix; it is not receipt or identity authority. Checked loads refuse malformed or out-of-contract private records.
 
 
-Ordinary Lazy publication observation uses a fixed per-binding/fixed-consumer
+Ordinary and Lazy publication observation uses a fixed per-binding/fixed-consumer
 cursor over immutable instance publication order. Each admitted pull or passive
 refresh inspects at most100 manifests before recipient filtering, with at most200
-keyed probes and three publication range/head seeks. This adds100 source visits:
+keyed probes and three publication range/head seeks. Each visited manifest first
+probes its exact message key, checking instance, thread, decision sequence and
+ordinary kind while reading immutable delivery mode. A matching message then
+uses one mode-selected recipient point probe by preparation/seat: ordinary reads
+prepared_recipients and matches thread, while Lazy reads lazy_recipients and
+matches message and thread. The canonical manifest supplies the ordinary
+recipient's message association; that recipient relation has no message-id column.
+No effective-receipt read, audience fanout or materialization occurs in this scan.
+This adds100 source visits:
 refresh visits at most160, fresh pull433, plus separately declared indexed probes.
 No publication audience fanout, global output version or native wake is added.
 Initial/rebound consumers may traverse all retained instance publications before
@@ -1730,9 +1738,25 @@ Existing successful mod ACK health accounting, including AlreadySettled, remains
 separate. Replacement/restart can discard a bit; initial owner drain, ordinary
 canonical eligibility and the existing safety pass retain their own contracts.
 
-Proposed Q3 publication probe controls separately cover message-first ordinary
-and Lazy recipient point SQL and a mixed unrelated prefix. Until the production
-scanner adopts and validates those probes, they establish no ordinary publication
-signal or scanner runtime bound. The current Lazy-only 100-manifest/200-probe/
-three-seek source allowance above remains the implemented contract; prospective
-SQL witnesses do not enlarge it or certify physical work.
+Q3 publication observation uses the message-first ordinary/Lazy point SQL above
+without enlarging the 100-manifest/200-probe/three-seek source allowance. The
+production constants are shared with query-plan controls so those controls can
+measure the actual statements, including mixed unrelated prefixes. This source
+accounting is not a measured SQLite VM, elapsed-time or disk-I/O claim; physical
+work still requires execution of those controls. Addressed ordinary publication
+changes only the existing private passive generation/content counters. It does
+not recreate a sibling-settled receipt or change native attention. The subsequent
+canonical pull decides whether content is pending or passive and whether this
+binding's own cursor still needs it.
+
+Watch presentation mode is an explicit per-channel election, advertised by
+mod.watch_presentation_v2 together with the existing generic presentation and
+binding-cursor capabilities. Absent/false election keeps the historical Watch
+wire and aggregate view; only capable Live owners receive presentation leases.
+Worker and direct-producer sends compare their captured channel id and immutable
+mode under the same registry lock as final enqueue and any existing active-push
+health update. A replacement cannot inherit the old owner's frame or health.
+Passive sends and failed enqueue add no health. A closed receiver retains a
+capable owner's recheck bit only while that exact owner remains Live, without an
+immediate retry kick; existing safety passes and reconnect's initial drain retain
+their recovery roles. Enqueue is not socket-flush or model-uptake evidence.

@@ -652,6 +652,11 @@ struct PublicationProgress {
     more: bool,
 }
 pub(super) const PUBLICATION_RANGE_SQL: &str = "SELECT preparation_id,message_id,thread_id,decision_seq FROM send_manifests INDEXED BY send_manifests_instance_decision WHERE instance_id=?1 AND decision_seq>?2 AND decision_seq<=?3 ORDER BY decision_seq LIMIT 100";
+pub(super) const PUBLICATION_MESSAGE_SQL: &str = "SELECT delivery_mode FROM messages WHERE id=?1 AND instance_id=?2 AND thread_id=?3 AND decision_seq=?4 AND kind='ordinary'";
+pub(super) const PUBLICATION_ORDINARY_RECIPIENT_SQL: &str =
+    "SELECT thread_id FROM prepared_recipients WHERE preparation_id=?1 AND seat_id=?2";
+pub(super) const PUBLICATION_LAZY_RECIPIENT_SQL: &str =
+    "SELECT message_id,thread_id FROM lazy_recipients WHERE preparation_id=?1 AND seat_id=?2";
 fn publication_head(db: &Connection, instance: &str) -> Result<i64, ApiError> {
     db.query_row("SELECT decision_seq FROM send_manifests INDEXED BY send_manifests_instance_decision WHERE instance_id=?1 ORDER BY decision_seq DESC LIMIT 1",[instance],|r|r.get(0)).optional().map_err(store_error).map(|v|v.unwrap_or(0))
 }
@@ -696,16 +701,47 @@ fn advance_ordinary_publications(
         work.visits += 1;
         state.ordinary_publication_after = seq;
         work.probes += 1;
-        let recipient:Option<(String,String,String)>=db.query_row("SELECT message_id,thread_id,state FROM lazy_recipients WHERE preparation_id=?1 AND seat_id=?2",params![preparation,claim.seat.as_str()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(store_error)?;
-        if recipient
-            .as_ref()
-            .is_none_or(|(m, t, _)| m != &message || t != &thread)
-        {
-            continue;
-        }
-        work.probes += 1;
-        let published:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM messages WHERE id=?1 AND instance_id=?2 AND thread_id=?3 AND decision_seq=?4 AND delivery_mode='lazy')",params![message,claim.instance,thread,seq],|r|r.get(0)).map_err(store_error)?;
-        changed |= published;
+        let mode: Option<String> = db
+            .query_row(
+                PUBLICATION_MESSAGE_SQL,
+                params![message, claim.instance, thread, seq],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(store_error)?;
+        let addressed = match mode.as_deref() {
+            Some("ordinary") => {
+                work.probes += 1;
+                // The captured manifest supplies the message association;
+                // prepared_recipients has only preparation/seat/thread identity.
+                let recipient: Option<String> = db
+                    .query_row(
+                        PUBLICATION_ORDINARY_RECIPIENT_SQL,
+                        params![preparation, claim.seat.as_str()],
+                        |r| r.get(0),
+                    )
+                    .optional()
+                    .map_err(store_error)?;
+                recipient.as_ref() == Some(&thread)
+            }
+            Some("lazy") => {
+                work.probes += 1;
+                let recipient: Option<(String, String)> = db
+                    .query_row(
+                        PUBLICATION_LAZY_RECIPIENT_SQL,
+                        params![preparation, claim.seat.as_str()],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )
+                    .optional()
+                    .map_err(store_error)?;
+                recipient.is_some_and(|(id, recipient_thread)| {
+                    id == message && recipient_thread == thread
+                })
+            }
+            None => false,
+            Some(_) => return Err(corrupt("invalid ordinary publication delivery mode")),
+        };
+        changed |= addressed;
     }
     if work.visits < 100 {
         state.ordinary_publication_after = state.ordinary_publication_high;
@@ -1606,6 +1642,44 @@ fn page(
         emitted_controls,
     }))
 }
+/// A carried notice remains replayable after its offer frontier advances.
+/// Published warning recipes are canonical even without a physical message.
+/// Five exact-key probes at most: physical message, recipient digest, published
+/// manifest, prepared offset and recipient attribution. CROSS JOIN fixes the
+/// logical probe order; each relation is unique at the preceding captured key.
+/// Do not test current condition actionability: this is a retained event, not a
+/// fresh Attention witness or a request to rediscover unoffered notices.
+const NOTICE_REPLAY_APPLICABLE_SQL: &str = "SELECT EXISTS(SELECT 1 FROM messages WHERE id=?1 AND thread_id=?2 AND kind='warn') \
+         OR EXISTS(SELECT 1 FROM digest_programmatic_warnings d \
+         CROSS JOIN send_manifests sm INDEXED BY send_manifests_instance_decision \
+         CROSS JOIN prepared_unavailable_warnings w \
+         CROSS JOIN warning_recipients r \
+         WHERE d.seat_id=?3 AND d.warning_id=?1 AND d.thread_id=?2 \
+         AND sm.instance_id=?4 AND sm.decision_seq=d.event_seq AND sm.thread_id=?2 \
+         AND d.event_offset>0 AND d.event_offset<=sm.warning_count \
+         AND w.preparation_id=sm.preparation_id AND w.warning_offset=d.event_offset \
+         AND w.warning_id=?1 \
+         AND r.warning_id=?1 AND r.seat_id=?3 AND r.generation=d.event_seq)";
+
+fn notice_replay_applicable(
+    db: &Connection,
+    claim: &CallerClaim,
+    warning: &MessageId,
+    thread: &ThreadId,
+) -> Result<bool, ApiError> {
+    db.query_row(
+        NOTICE_REPLAY_APPLICABLE_SQL,
+        params![
+            warning.as_str(),
+            thread.as_str(),
+            claim.seat.as_str(),
+            claim.instance
+        ],
+        |row| row.get(0),
+    )
+    .map_err(store_error)
+}
+
 fn replay(
     db: &Connection,
     input: &PresentationInput,
@@ -1650,11 +1724,18 @@ fn replay(
         {
             continue;
         }
-        let valid=match &descriptor.item {
-            Item::Invitation{id,..}=>current.get(id).is_some_and(|(context,_)|descriptor.context_key.as_deref()==Some(context.key().as_str())),
-            Item::Notice{warning,thread,..}=>db.query_row("SELECT EXISTS(SELECT 1 FROM messages WHERE id=?1 AND thread_id=?2 AND kind='warn')",params![warning.as_str(),thread.as_str()],|r|r.get::<_,bool>(0)).map_err(store_error)?,
-            Item::Attention{..}|Item::AttentionCleared{..}=>controls.applicable(&control_stamp(&descriptor.item).ok_or_else(||corrupt("missing presentation stamp"))?),
-            Item::Message{..}=>return Err(corrupt("ordinary message in recovery outbox")),
+        let valid = match &descriptor.item {
+            Item::Invitation { id, .. } => current.get(id).is_some_and(|(context, _)| {
+                descriptor.context_key.as_deref() == Some(context.key().as_str())
+            }),
+            Item::Notice {
+                warning, thread, ..
+            } => notice_replay_applicable(db, &input.pull.claim, warning, thread)?,
+            Item::Attention { .. } | Item::AttentionCleared { .. } => controls.applicable(
+                &control_stamp(&descriptor.item)
+                    .ok_or_else(|| corrupt("missing presentation stamp"))?,
+            ),
+            Item::Message { .. } => return Err(corrupt("ordinary message in recovery outbox")),
         };
         if valid {
             kept.push(descriptor.clone());

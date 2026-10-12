@@ -6525,48 +6525,36 @@ fn presentation_q3_reader_helper_exact_keys_have_constant_sqlite_work() {
     );
 }
 
-fn q3_table_ddl(source: &str, name: &str) -> String {
-    let start = source.find(&format!("CREATE TABLE {name} (")).unwrap();
-    let end = start + source[start..].find(") STRICT;").unwrap() + ") STRICT;".len();
-    source[start..end].to_owned()
-}
-
-/// Prospective interface-plan SQL only until the production scanner adopts the
-/// message-first, mode-selected recipient inventory. This is NOT scanner runtime
-/// or 100/200/3 accounting evidence. The production range control stays separate.
-/// Kills: losing unique exact recipient keys or widening either proposed probe
+/// Actual production message-first and mode-selected recipient SQL on the
+/// complete canonical schema. This isolates indexed point work; it does not run
+/// the scanner or prove its total 100/200/3 accounting. The range control remains
+/// separate. Kills: losing exact recipient keys or widening either point probe
 /// into an audience/history walk, including mixed and unrelated publications.
 #[test]
-fn presentation_q3_prospective_publication_recipient_keys_have_constant_sqlite_work() {
+fn presentation_q3_publication_recipient_keys_have_constant_sqlite_work() {
+    use crate::store::invitation_content::{
+        PUBLICATION_LAZY_RECIPIENT_SQL as LAZY, PUBLICATION_MESSAGE_SQL as MESSAGE,
+        PUBLICATION_ORDINARY_RECIPIENT_SQL as ORDINARY,
+    };
     use rusqlite::types::Value;
-    const MESSAGE: &str = "SELECT delivery_mode FROM messages WHERE id=?1 AND instance_id=?2 AND thread_id=?3 AND decision_seq=?4 AND kind='ordinary'";
-    const ORDINARY: &str =
-        "SELECT thread_id FROM prepared_recipients WHERE preparation_id=?1 AND seat_id=?2";
-    const LAZY: &str =
-        "SELECT message_id,thread_id FROM lazy_recipients WHERE preparation_id=?1 AND seat_id=?2";
-    let initial = include_str!("../../migrations/0001_initial.sql");
-    let lazy = include_str!("../../migrations/0026_lazy_message_delivery.sql");
+    use sha2::{Digest, Sha256};
     let mut work = Vec::new();
     for retained in [128, 8192] {
-        let db = rusqlite::Connection::open_in_memory().unwrap();
-        // Exact canonical table/unique-key DDL; omit unrelated FK relations and
-        // publication triggers, since this is solely a proposed point-SQL witness.
-        db.execute_batch(&q3_table_ddl(initial, "messages"))
-            .unwrap();
-        db.execute_batch(&q3_table_ddl(initial, "prepared_recipients"))
-            .unwrap();
-        db.execute_batch(&q3_table_ddl(lazy, "lazy_recipients"))
-            .unwrap();
-        db.execute_batch(&lazy[..lazy.find(';').unwrap() + 1])
-            .unwrap();
+        let (_store, db) = fixture();
+        // Keep the complete migrated canonical schema, foreign keys and triggers.
+        // Valid building preparations own the staged recipient rows; only the
+        // point-query workload below is measured, not this fixture's setup.
+        db.execute("INSERT INTO seats(id,instance_id,state,role,generation,created_at) VALUES ('other','i','resolved','native',1,0)", []).unwrap();
+        db.execute("WITH RECURSIVE n(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM n WHERE n<?1) INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status,delivery_mode) SELECT 'prep-'||n,'i','actor','probe-'||n,zeroblob(32),'t',0,0,0,0,0,0,0,'building',CASE WHEN n%2=0 THEN 'lazy' ELSE 'ordinary' END FROM n", [retained]).unwrap();
         db.execute("WITH RECURSIVE n(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM n WHERE n<?1) INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_seq,decision_at,delivery_mode) SELECT 'msg-'||n,'i','t',n,'ordinary','body',n,0,CASE WHEN n%2=0 THEN 'lazy' ELSE 'ordinary' END FROM n", [retained]).unwrap();
         db.execute("WITH RECURSIVE n(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM n WHERE n<?1) INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) SELECT 'prep-'||n,'t','other',1,100,1 FROM n WHERE n%2=1", [retained]).unwrap();
         db.execute("WITH RECURSIVE n(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM n WHERE n<?1) INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) SELECT 'prep-'||n,'msg-'||n,'t','other' FROM n WHERE n%2=0", [retained]).unwrap();
         db.execute("INSERT INTO prepared_recipients(preparation_id,thread_id,seat_id,receipt_ordinal,frozen_duration_ms,eligible_at_snapshot) VALUES ('prep-1','t','s',2,100,1)", []).unwrap();
         db.execute("INSERT INTO lazy_recipients(preparation_id,message_id,thread_id,seat_id) VALUES ('prep-2','msg-2','t','s')", []).unwrap();
         let mut quantum = Vec::new();
-        // The literal first100 manifest identities are mixed mode; only 1 and 2
-        // address s. Every rejected recipient still executes its unique-key probe.
+        // A fixed slice of100 candidate identities mixes both modes; only 1
+        // and 2 address s. Misses still execute the selected recipient point SQL.
+        // No manifest traversal, output or private signal allocation runs here.
         for n in 1..=100 {
             let message = q3_indexed_sql_work(
                 &db,
@@ -6600,14 +6588,15 @@ fn presentation_q3_prospective_publication_recipient_keys_have_constant_sqlite_w
             quantum.push((message.1, recipient.1));
         }
         eprintln!(
-            "Q3 PROSPECTIVE publication pointSQL SQLite={} retained={retained} mixed100 VM={quantum:?}",
+            "Q3 production publication pointSQL SQLite={} retained={retained} mixed100 VM={quantum:?} source_SHA256={:x}",
             db.query_row("SELECT sqlite_version()", [], |r| r.get::<_, String>(0))
-                .unwrap()
+                .unwrap(),
+            Sha256::digest(include_str!("../../src/store/invitation_content.rs").as_bytes())
         );
         work.push(quantum);
     }
     assert_eq!(
         work[0], work[1],
-        "proposed mode-specific point work must not follow unrelated retained recipients"
+        "production mode-specific point work must not follow unrelated retained recipients"
     );
 }

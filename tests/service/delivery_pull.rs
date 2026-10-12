@@ -265,15 +265,20 @@ impl Q3Channel {
         panic!("canonical change never requested the parked channel's next Pull")
     }
     fn receipt(&self, message: &MessageId) -> String {
-        self.window
-            .f
-            .db
-            .query_row(
-                "SELECT state FROM receipt_state WHERE message_id=?1 AND seat_id='c'",
-                [message.as_str()],
-                |row| row.get(0),
-            )
+        use crate::store::effective::{EffectiveReceiptState, effective_receipt};
+        let receipt = effective_receipt(&self.window.f.db, message.as_str(), "c")
             .unwrap()
+            .expect("canonical addressed receipt exists");
+        assert_eq!(receipt.message_id, message.as_str());
+        assert_eq!(receipt.seat_id, "c");
+        assert_eq!(receipt.thread_id, "t");
+        match receipt.state {
+            EffectiveReceiptState::Pending => "pending",
+            EffectiveReceiptState::Acknowledged => "acked",
+            EffectiveReceiptState::RecipientRetired => "recipient_retired",
+            EffectiveReceiptState::NotRequired => "not_required",
+        }
+        .into()
     }
 }
 
@@ -943,7 +948,10 @@ fn q3_many_thread_messages(
     use crate::protocol::commands::{CreateThread, Join, SendMessage};
     let sender = check_in(
         f,
-        fixture_claim(f, "x", "px", fourth(), "q3-many-thread-sender"),
+        fresh_execution(
+            fixture_claim(f, "x", "px", fourth(), "q3-many-thread-sender"),
+            17,
+        ),
         "q3-many-thread-sender-ci",
     );
     let mut threads = Vec::new();
@@ -1263,7 +1271,10 @@ fn presentation_q3_reader_change_preserves_nonempty_progress_outbox_and_offers()
     let (f, a, b, original) = q3_reader_fixture(2);
     let sender = check_in(
         &f,
-        fixture_claim(&f, "x", "px", fourth(), "q3-retained-sender"),
+        fresh_execution(
+            fixture_claim(&f, "x", "px", fourth(), "q3-retained-sender"),
+            18,
+        ),
         "q3-retained-sender-ci",
     );
     let send = |n, body: String| {
@@ -1445,11 +1456,69 @@ fn presentation_q3_reader_change_is_binding_local_coalesced_and_noop_stable() {
 
 // Kills invalidation that repairs old scope headers, ignores a current
 // refresh-only owner, or treats a foreign instance as this binding's state.
+fn q3_foreign_consumer(f: &Fixture) -> CallerClaim {
+    // A foreign consumer must satisfy its composite canonical binding FK;
+    // changing an own row's instance would manufacture impossible state.
+    f.db.execute("INSERT INTO host_instances(id,created_at,host_boot,host_epoch,decision_seq) VALUES ('foreign-instance',0,'b',1,3)", []).unwrap();
+    f.db.execute("INSERT INTO seats(id,instance_id,state,role,target_id,generation,target_generation,created_at) VALUES ('foreign-seat','foreign-instance','resolved','native','foreign-p',1,0,0)", []).unwrap();
+    f.db.execute("INSERT INTO observed_targets(instance_id,target_id,host_boot,epoch,generation,observation_sequence,provenance,occupancy,ui_state,top_level_occupant,observed_at,terminal_id,incarnation,incarnation_source_kind,connection_epoch) VALUES ('foreign-instance','foreign-p','b',1,0,1,'fresh','unknown','unknown',0,0,'foreign-term','inc','coherent_enumeration',1)", []).unwrap();
+    let store: Arc<dyn StorePort> = Arc::new(
+        SqliteStore::new(
+            StoreContext::new(f.directory.join("store.db"), f.clock.clone()),
+            "foreign-instance",
+            StoreSettings::default(),
+        )
+        .unwrap(),
+    );
+    let service = DomainService::new("foreign-instance".into(), store.clone(), f.clock.clone())
+        .with_cooperative_owner(501, Arc::new(FairWriter::new(32)));
+    let mut foreign = fresh_execution(
+        claim("foreign-seat", "foreign-p", fourth(), "foreign-session", 1),
+        77,
+    );
+    foreign.instance = "foreign-instance".into();
+    foreign.liveness.as_mut().unwrap().pid = 31337;
+    let CommandResult::CheckedIn(result) = service
+        .handle(
+            Command::CheckIn(CheckIn {
+                mode: CheckInMode::Lifecycle {
+                    expected_binding_generation: foreign.binding_generation,
+                },
+                claim: foreign,
+                operation: OperationId::new("q3-foreign-ci"),
+                lineage_parent: None,
+            }),
+            peer(),
+            &budget(),
+        )
+        .unwrap()
+    else {
+        panic!("SETUP: foreign canonical binding")
+    };
+    let foreign = result.context;
+    store
+        .presentation_refresh(
+            &foreign.seat,
+            &binding_for_claim(f, &foreign),
+            foreign.binding_generation,
+            foreign.native_session.as_str(),
+            &budget(),
+        )
+        .unwrap()
+        .expect("SETUP: foreign canonical consumer");
+    assert_eq!(q3_consumer_snapshot(f, &foreign).len(), 1);
+    foreign
+}
+
 #[test]
 fn presentation_q3_reader_change_respects_current_primary_or_refresh_scope() {
     for scope in ["primary", "refresh_only", "both_stale", "foreign_instance"] {
         let (f, a, b, message) = q3_reader_fixture(2);
         let binding = binding_for_claim(&f, &a);
+        let foreign = (scope == "foreign_instance").then(|| q3_foreign_consumer(&f));
+        let foreign_before = foreign
+            .as_ref()
+            .map(|claim| q3_consumer_snapshot(&f, claim));
         match scope {
             "primary" => {
                 f.db.execute(
@@ -1469,12 +1538,7 @@ fn presentation_q3_reader_change_respects_current_primary_or_refresh_scope() {
                 [binding.as_str()],
             ).unwrap();
             }
-            "foreign_instance" => {
-                f.db.execute(
-                "UPDATE invitation_presentation_consumers SET instance_id='foreign-instance' WHERE binding_id=?1 AND consumer='watch'",
-                [binding.as_str()],
-            ).unwrap();
-            }
+            "foreign_instance" => {}
             _ => unreachable!(),
         }
         let counter = || {
@@ -1487,10 +1551,20 @@ fn presentation_q3_reader_change_respects_current_primary_or_refresh_scope() {
         let preserved = q3_preserved_reader_state(&f, &a);
         let sibling = q3_consumer_snapshot(&f, &b);
         reclamation_advance_displayed(&f, &a, std::slice::from_ref(&message), "q3-scoped-reader");
-        let delta = i64::from(matches!(scope, "primary" | "refresh_only"));
+        let delta = i64::from(matches!(
+            scope,
+            "primary" | "refresh_only" | "foreign_instance"
+        ));
         assert_eq!(counter(), (before.0 + delta, before.1 + delta), "{scope}");
         assert_eq!(q3_preserved_reader_state(&f, &a), preserved);
         assert_eq!(q3_consumer_snapshot(&f, &b), sibling);
+        assert_eq!(
+            foreign
+                .as_ref()
+                .map(|claim| q3_consumer_snapshot(&f, claim)),
+            foreign_before,
+            "own current rows change once; a genuine foreign-instance consumer stays untouched"
+        );
     }
 }
 

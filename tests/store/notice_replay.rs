@@ -499,3 +499,197 @@ fn presentation_virtual_notice_replays_and_confirms_original_slots_without_mater
     assert_eq!(frontier(&f), offered_frontier);
     no_physical(&f);
 }
+
+// The measured SQL is the production literal, not a hand-maintained lookalike.
+// Unpublished same-ID recipes must neither become authority nor lengthen replay.
+#[test]
+fn retained_virtual_notice_lookup_uses_indexed_constant_vm_work() {
+    use rusqlite::StatementStatus;
+    let (f, recipient, _, message, warning) = published_notice();
+    let sql = super::NOTICE_REPLAY_APPLICABLE_SQL;
+    let mut measured = Vec::new();
+    let mut previous = 0;
+    for count in [0, 64, 4096] {
+        f.db.execute(
+            "WITH RECURSIVE n(n) AS (SELECT ?1+1 WHERE ?1<?2 UNION ALL SELECT n+1 FROM n WHERE n<?2) INSERT INTO send_preparations(id,instance_id,operation_scope,operation_key,digest,thread_id,captured_membership_revision,captured_lifecycle_revision,captured_eligibility_revision,captured_timeline_revision,captured_config_revision,interval_high_water,recipient_high_water,status) SELECT 'lookup-unpublished-'||n,'i','actor','lookup-unpublished-'||n,zeroblob(32),'t',0,0,0,0,0,0,0,'building' FROM n",
+            params![previous, count],
+        ).unwrap();
+        f.db.execute(
+            "WITH RECURSIVE n(n) AS (SELECT ?1+1 WHERE ?1<?2 UNION ALL SELECT n+1 FROM n WHERE n<?2) INSERT INTO prepared_unavailable_warnings(preparation_id,warning_key,warning_id,affected_seat_id,unavailability_episode,warning_offset,event_json) SELECT 'lookup-unpublished-'||n,w.warning_key,w.warning_id,w.affected_seat_id,w.unavailability_episode,w.warning_offset,w.event_json FROM n CROSS JOIN send_manifests sm ON sm.message_id=?3 CROSS JOIN prepared_unavailable_warnings w ON w.preparation_id=sm.preparation_id AND w.warning_id=?4",
+            params![previous, count, message.as_str(), warning],
+        ).unwrap();
+        f.db.execute(
+            "WITH RECURSIVE n(n) AS (SELECT ?1+1 WHERE ?1<?2 UNION ALL SELECT n+1 FROM n WHERE n<?2) INSERT INTO digest_programmatic_warnings(seat_id,warning_id,thread_id,event_seq,event_offset) SELECT ?3,'lookup-unrelated-'||n,'t',1,1 FROM n",
+            params![previous, count, recipient.seat.as_str()],
+        ).unwrap();
+        assert_eq!(
+            f.db.query_row(
+                "SELECT count(*) FROM prepared_unavailable_warnings WHERE warning_id=?1",
+                [&warning],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            count + 1
+        );
+        assert_eq!(
+            f.db.query_row(
+                "SELECT count(*) FROM messages WHERE id=?1",
+                [&warning],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0
+        );
+        assert!(
+            super::notice_replay_applicable(
+                &f.db,
+                &recipient,
+                &MessageId::new(&warning),
+                &ThreadId::new("t")
+            )
+            .unwrap()
+        );
+        for (label, id, thread, seat, instance, expected) in [
+            (
+                "published",
+                warning.as_str(),
+                "t",
+                recipient.seat.as_str(),
+                "i",
+                true,
+            ),
+            (
+                "missing-warning",
+                "lookup-missing",
+                "t",
+                recipient.seat.as_str(),
+                "i",
+                false,
+            ),
+            (
+                "wrong-thread",
+                warning.as_str(),
+                "lookup-other-thread",
+                recipient.seat.as_str(),
+                "i",
+                false,
+            ),
+            (
+                "wrong-recipient",
+                warning.as_str(),
+                "t",
+                "lookup-other-seat",
+                "i",
+                false,
+            ),
+            (
+                "wrong-instance",
+                warning.as_str(),
+                "t",
+                recipient.seat.as_str(),
+                "lookup-other-instance",
+                false,
+            ),
+        ] {
+            let plan =
+                f.db.prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+                    .unwrap()
+                    .query_map(params![id, thread, seat, instance], |row| {
+                        row.get::<_, String>(3)
+                    })
+                    .unwrap()
+                    .collect::<Result<Vec<_>, _>>()
+                    .unwrap();
+            for relation in ["messages", "d", "sm", "w", "r"] {
+                assert!(
+                    plan.iter()
+                        .any(|step| step.contains(&format!("SEARCH {relation} "))),
+                    "exact indexed search for {relation}: {plan:?}"
+                );
+            }
+            assert!(
+                plan.iter()
+                    .any(|step| step.contains("send_manifests_instance_decision")),
+                "published instance/decision uses its unique index: {plan:?}"
+            );
+            assert!(
+                !plan
+                    .iter()
+                    .any(|step| step.starts_with("SCAN ") && !step.contains("CONSTANT ROW")),
+                "no relation scan: {plan:?}"
+            );
+            let mut statement = f.db.prepare(sql).unwrap();
+            let applicable: bool = statement
+                .query_row(params![id, thread, seat, instance], |row| row.get(0))
+                .unwrap();
+            assert_eq!(applicable, expected, "{label}");
+            let vm = statement.get_status(StatementStatus::VmStep);
+            let scans = statement.get_status(StatementStatus::FullscanStep);
+            let sorts = statement.get_status(StatementStatus::Sort);
+            let version: String =
+                f.db.query_row("SELECT sqlite_version()", [], |row| row.get(0))
+                    .unwrap();
+            eprintln!(
+                "SQLite {version} retained Notice unpublished={count} case={label} VM={vm} fullscan={scans} sorts={sorts} plan={plan:?}"
+            );
+            assert_eq!(scans, 0, "{label}");
+            assert_eq!(sorts, 0, "{label}");
+            assert!(
+                vm <= 256,
+                "bounded exact lookup: rows={count} case={label} VM={vm}"
+            );
+            measured.push((count, label, vm));
+        }
+        previous = count;
+    }
+    for label in [
+        "published",
+        "missing-warning",
+        "wrong-thread",
+        "wrong-recipient",
+        "wrong-instance",
+    ] {
+        let values = measured
+            .iter()
+            .filter(|(_, case, _)| *case == label)
+            .map(|(_, _, vm)| *vm)
+            .collect::<Vec<_>>();
+        assert!(
+            values.iter().max().unwrap() - values.iter().min().unwrap() <= 16,
+            "backlog-independent VM work for {label}: {measured:?}"
+        );
+    }
+    // Each distinct logical authority component must survive a keyed lookup;
+    // the matching retained id alone does not authorize an unpublished recipe.
+    for mutation in [
+        "UPDATE digest_programmatic_warnings SET event_seq=event_seq+100000 WHERE warning_id=?1 AND seat_id=?2",
+        "UPDATE digest_programmatic_warnings SET event_offset=event_offset+100000 WHERE warning_id=?1 AND seat_id=?2",
+        "DELETE FROM warning_recipients WHERE warning_id=?1 AND seat_id=?2",
+    ] {
+        f.db.execute_batch("SAVEPOINT notice_lookup_control")
+            .unwrap();
+        f.db.execute(mutation, params![warning, recipient.seat.as_str()])
+            .unwrap();
+        assert!(
+            !super::notice_replay_applicable(
+                &f.db,
+                &recipient,
+                &MessageId::new(&warning),
+                &ThreadId::new("t")
+            )
+            .unwrap(),
+            "missing canonical authority: {mutation}"
+        );
+        f.db.execute_batch("ROLLBACK TO notice_lookup_control; RELEASE notice_lookup_control")
+            .unwrap();
+        assert!(
+            super::notice_replay_applicable(
+                &f.db,
+                &recipient,
+                &MessageId::new(&warning),
+                &ThreadId::new("t")
+            )
+            .unwrap()
+        );
+    }
+}

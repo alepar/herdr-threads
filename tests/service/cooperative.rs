@@ -2593,3 +2593,236 @@ fn direct_thread_real_service_ensure_and_lazy_send() {
         0
     );
 }
+
+/// Re-entering foreground admission from the real post-store callback proves
+/// the outer cooperative turn has ended. A real clock makes failure bounded
+/// even though the store fixture intentionally uses a fixed clock.
+struct CompletionHintChannels {
+    writer: Arc<crate::service::fair_writer::FairWriter>,
+    calls: std::sync::Mutex<Vec<(SeatId, Result<(), ErrorCode>)>>,
+    effects: std::sync::atomic::AtomicUsize,
+}
+impl crate::ports::ModChannels for CompletionHintChannels {
+    fn presentation_delivery_may_have_changed(&self, seat: &SeatId) {
+        let clock = crate::app::SystemClock::new();
+        let callback_budget = CallBudget {
+            deadline: MonoInstant(clock.monotonic_now().0 + 200),
+            cancellation: Default::default(),
+        };
+        let admitted = self
+            .writer
+            .enter_foreground(&callback_budget, &clock)
+            .map(drop)
+            .map_err(|error| error.code);
+        self.calls.lock().unwrap().push((seat.clone(), admitted));
+    }
+    fn notify(&self, _: &SeatId, _: u64) {
+        self.effects
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+    fn record_ack(&self, _: &SeatId, _: &BindingId, _: UtcMillis) {
+        self.effects
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+    fn record_attention_push(&self, _: &SeatId, _: &BindingId, _: UtcMillis) {
+        self.effects
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+    fn record_presentation_attention_push(
+        &self,
+        _: &SeatId,
+        _: &BindingId,
+        _: u64,
+        _: &str,
+        _: &str,
+        _: UtcMillis,
+    ) {
+        self.effects
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+fn completion_hint_channels(service: &mut DomainService) -> Arc<CompletionHintChannels> {
+    let channels = Arc::new(CompletionHintChannels {
+        writer: service.cooperative_runtime.as_ref().unwrap().1.clone(),
+        calls: Default::default(),
+        effects: Default::default(),
+    });
+    service.mod_channels = channels.clone();
+    channels
+}
+fn completion_hint_mail(db: &Connection) {
+    db.execute("INSERT INTO threads(id,instance_id,topic,goal,created_at,updated_at,next_sequence) VALUES ('hint-thread','i','topic','goal',0,0,3)", []).unwrap();
+    db.execute(
+        "INSERT INTO memberships(thread_id,seat_id,state) VALUES ('hint-thread','s','joined')",
+        [],
+    )
+    .unwrap();
+    db.execute("INSERT INTO membership_intervals(thread_id,seat_id,episode,joined_seq) VALUES ('hint-thread','s',1,1)", []).unwrap();
+    for (index, id) in ["hint-m1", "hint-m2"].into_iter().enumerate() {
+        db.execute("INSERT INTO messages(id,instance_id,thread_id,sequence,kind,body,decision_at,decision_seq) VALUES (?1,'i','hint-thread',?2,'ordinary','hello',0,?3)", rusqlite::params![id, index as i64 + 1, index as i64 + 2]).unwrap();
+        db.execute("INSERT INTO receipts(message_id,thread_id,seat_id,state,frozen_duration_ms) VALUES (?1,'hint-thread','s','pending',300000)", [id]).unwrap();
+    }
+    db.execute(
+        "UPDATE host_instances SET decision_seq=MAX(decision_seq,3) WHERE id='i'",
+        [],
+    )
+    .unwrap();
+}
+#[test]
+fn q3_completion_hint_ack_and_displayed_release_foreground_writer() {
+    use crate::protocol::commands::Ack;
+    for displayed in [false, true] {
+        let (mut service, db) = fixture();
+        let channels = completion_hint_channels(&mut service.value);
+        let context = checked(&service, lifecycle(claim(), "hint-ci")).context;
+        completion_hint_mail(&db);
+        assert!(
+            channels.calls.lock().unwrap().is_empty(),
+            "check-in is unrelated"
+        );
+        let invoke = |operation| {
+            let ack = Ack {
+                messages: vec![MessageId::new("hint-m1")],
+                operation: OperationId::new(operation),
+                claim: context.clone(),
+            };
+            service
+                .handle(
+                    if displayed {
+                        Command::AckDisplayed(ack)
+                    } else {
+                        Command::Ack(ack)
+                    },
+                    PeerIdentity::from_kernel(501),
+                    &budget(),
+                )
+                .unwrap()
+        };
+        let CommandResult::Acknowledged(first) = invoke("hint-first") else {
+            panic!("ACK result")
+        };
+        assert_eq!(first.acknowledged, vec![MessageId::new("hint-m1")]);
+        assert!(first.already_acknowledged.is_empty());
+        let receipt_snapshot = || {
+            db.query_row(
+            "SELECT json_group_array(json_array(message_id,state,available_at,deadline_at,ack_actor_seat_id,ack_generation,acked_at,ack_observation,ack_binding_id)) FROM receipts WHERE thread_id='hint-thread'",
+            [], |r| r.get::<_, String>(0),
+        ).unwrap()
+        };
+        let committed = receipt_snapshot();
+        let operation_snapshot = || {
+            db.query_row(
+            "SELECT json_array(actor_scope,operation_key,hex(digest),result_json,decided_at) FROM operations WHERE actor_scope='seat:s' AND operation_key='hint-first'",
+            [], |r| r.get::<_, String>(0),
+        ).unwrap()
+        };
+        let retained_operation = operation_snapshot();
+        assert_eq!(
+            invoke("hint-first"),
+            CommandResult::Acknowledged(first.clone()),
+            "the exact successful operation key replays its original result"
+        );
+        assert_eq!(
+            receipt_snapshot(),
+            committed,
+            "idempotent replay makes no second receipt transition"
+        );
+        assert_eq!(
+            operation_snapshot(),
+            retained_operation,
+            "the exact retained operation record is unchanged"
+        );
+        assert_eq!(
+            *channels.calls.lock().unwrap(),
+            vec![(context.seat.clone(), Ok(())); 2],
+            "a retained successful replay may make a harmless post-writer hint"
+        );
+        let CommandResult::Acknowledged(repeat) = invoke("hint-already") else {
+            panic!("ACK result")
+        };
+        assert!(repeat.acknowledged.is_empty());
+        assert_eq!(repeat.already_acknowledged, vec![MessageId::new("hint-m1")]);
+        assert_eq!(
+            *channels.calls.lock().unwrap(),
+            vec![(context.seat.clone(), Ok(())); 3],
+            "fresh and retained canonical results hint the exact seat after releasing the writer"
+        );
+        assert_eq!(
+            channels.effects.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "a hint provides no wake, ACK health or presentation health evidence"
+        );
+        assert_eq!(channels.writer.waiting(), (0, 0));
+    }
+}
+#[test]
+fn q3_completion_hint_ack_errors_and_rollback_are_inert() {
+    use crate::protocol::commands::Ack;
+    let (mut service, db) = fixture();
+    let channels = completion_hint_channels(&mut service.value);
+    let context = checked(&service, lifecycle(claim(), "hint-ci")).context;
+    completion_hint_mail(&db);
+    let invoke = |messages: Vec<MessageId>, operation: &str, claim| {
+        service.handle(
+            Command::Ack(Ack {
+                messages,
+                operation: OperationId::new(operation),
+                claim,
+            }),
+            PeerIdentity::from_kernel(501),
+            &budget(),
+        )
+    };
+    assert!(invoke(vec![], "hint-empty", context.clone()).is_err());
+    assert!(
+        invoke(
+            vec![MessageId::new("ghost")],
+            "hint-unknown",
+            context.clone()
+        )
+        .is_err()
+    );
+    let mut stale = context.clone();
+    stale.binding_generation += 1;
+    assert!(invoke(vec![MessageId::new("hint-m1")], "hint-stale", stale).is_err());
+    db.execute_batch("CREATE TRIGGER hint_abort_second_receipt BEFORE UPDATE ON receipts WHEN OLD.message_id='hint-m2' AND NEW.state='acked' BEGIN SELECT RAISE(ABORT,'hint rollback'); END;").unwrap();
+    let rollback = invoke(
+        vec![MessageId::new("hint-m1"), MessageId::new("hint-m2")],
+        "hint-rollback",
+        context,
+    )
+    .unwrap_err();
+    assert_eq!(rollback.code, ErrorCode::Conflict);
+    assert!(
+        rollback.detail.contains("hint rollback"),
+        "the canonical receipt trigger caused rollback: {rollback:?}"
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM receipts WHERE thread_id='hint-thread' AND state='pending'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        2,
+        "the first receipt write rolls back with the failed second one"
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM operations WHERE operation_key='hint-rollback'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    assert!(
+        channels.calls.lock().unwrap().is_empty(),
+        "no committed completion means no callback"
+    );
+    assert_eq!(
+        channels.effects.load(std::sync::atomic::Ordering::SeqCst),
+        0
+    );
+    assert_eq!(channels.writer.waiting(), (0, 0));
+}
