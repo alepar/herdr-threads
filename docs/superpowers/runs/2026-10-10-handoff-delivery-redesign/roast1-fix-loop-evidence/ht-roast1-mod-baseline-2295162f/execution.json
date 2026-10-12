@@ -1,0 +1,40 @@
+{
+  "head": "d70c10b215d649c1556347217a0666eadcfb3cda",
+  "tree": "3949feec8141fa6b5e6a2b91873bdc32ac1cfe7f",
+  "run_id": "94dd6afc-194f-4b08-9fd2-0181f1caf032",
+  "validate": {
+    "exit": 0,
+    "seconds": 0.4020969170378521,
+    "argv": [
+      "nice",
+      "claude",
+      "plugin",
+      "validate",
+      "--strict",
+      "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/integrations/claude/mod"
+    ]
+  },
+  "mod": {
+    "exit": 1,
+    "seconds": 0.7467911660205573,
+    "argv": [
+      "nice",
+      "claude",
+      "plugin",
+      "test",
+      "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/integrations/claude/mod"
+    ]
+  },
+  "leaks": {
+    "exit": 0,
+    "seconds": 0.20306179206818342,
+    "argv": [
+      "scripts/check-no-leaked-processes",
+      "--run-id",
+      "94dd6afc-194f-4b08-9fd2-0181f1caf032"
+    ]
+  },
+  "head_after": "d70c10b215d649c1556347217a0666eadcfb3cda",
+  "tree_after": "3949feec8141fa6b5e6a2b91873bdc32ac1cfe7f",
+  "clean_after": true
+}

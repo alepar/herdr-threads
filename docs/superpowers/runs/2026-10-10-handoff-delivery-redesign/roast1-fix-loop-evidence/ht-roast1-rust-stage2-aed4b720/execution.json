@@ -1,0 +1,74 @@
+{
+  "head": "d0e5cfd420bbcffe22f91f611910321f8deb8b61",
+  "tree": "22a9dae1b5d8ea4a7c79cf51a34806d2a7c5189c",
+  "run_id": "1ec36781-5719-4549-aeea-e3194cac4ff8",
+  "expected": [
+    [
+      "herdr-threads",
+      "store::queries::tests::query_work_q4::q4_private_fresh_excludes_warning_history"
+    ],
+    [
+      "herdr-threads",
+      "store::queries::tests::query_work_q4::q4_private_resumed_excludes_warning_history"
+    ],
+    [
+      "herdr-threads",
+      "store::queries::tests::query_work_q4::q4_public_and_origin_warning_sources_remain_enabled"
+    ],
+    [
+      "herdr-threads",
+      "store::queries::tests::query_work_q4::q4_raw_hundred_scope_charge_and_lazy_due_fourteen_use_actual_helpers"
+    ],
+    [
+      "herdr-threads",
+      "store::queries::tests::query_work_q4::q4_actual_continued_tail_checks_scope_once_and_charges_retirement"
+    ],
+    [
+      "herdr-threads",
+      "store::effective::tests::receipt_send_time_upgrade_preserves_populated_v28_and_v29_graph_and_restarts_once"
+    ],
+    [
+      "herdr-threads",
+      "store::effective::tests::receipt_send_time_upgrade_failure_rolls_back_constraint_and_cutover_then_retries"
+    ],
+    [
+      "herdr-threads::service",
+      "presentation_owner_budget_controls::presentation_pull_cancelled_owner_waiter_returns_before_release_without_effects"
+    ],
+    [
+      "herdr-threads::service",
+      "presentation_owner_budget_controls::presentation_pull_expired_owner_waiter_returns_before_release_without_effects"
+    ],
+    [
+      "herdr-threads::service",
+      "presentation_owner_budget_controls::presentation_confirm_cancelled_owner_waiter_returns_before_release_without_effects"
+    ],
+    [
+      "herdr-threads::service",
+      "presentation_owner_budget_controls::presentation_confirm_expired_owner_waiter_returns_before_release_without_effects"
+    ],
+    [
+      "herdr-threads::service",
+      "presentation_owner_budget_controls::presentation_live_owner_waiters_serialize_and_succeed_after_release"
+    ],
+    [
+      "herdr-threads::service",
+      "presentation_owner_budget_controls::presentation_poisoned_owner_recovers_for_pull_and_confirm"
+    ]
+  ],
+  "commands": [],
+  "list": {
+    "exit": 101,
+    "seconds": 98.56432383297943
+  },
+  "leaks": {
+    "exit": 0,
+    "seconds": 0.20751891692634672,
+    "argv": [
+      "scripts/check-no-leaked-processes",
+      "--run-id",
+      "1ec36781-5719-4549-aeea-e3194cac4ff8"
+    ]
+  },
+  "leak_exit": 0
+}

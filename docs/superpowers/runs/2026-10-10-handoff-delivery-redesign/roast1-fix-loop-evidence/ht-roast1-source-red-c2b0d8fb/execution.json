@@ -1,0 +1,70 @@
+{
+  "head": "c2b0d8fbda2f1ff39cd2aaf513cd14ecc85c7c22",
+  "tree": "f04e56cec5ff260563c428eaa3b50ed62bf69192",
+  "run_id": "71e746eb-890d-406a-823d-4161338e45d9",
+  "expected": [
+    [
+      "herdr-threads",
+      "store::queries::tests::query_work_q4::q4_private_fresh_excludes_warning_history"
+    ],
+    [
+      "herdr-threads",
+      "store::queries::tests::query_work_q4::q4_private_resumed_excludes_warning_history"
+    ],
+    [
+      "herdr-threads",
+      "store::queries::tests::query_work_q4::q4_public_and_origin_warning_sources_remain_enabled"
+    ]
+  ],
+  "commands": [],
+  "list": {
+    "exit": 0,
+    "seconds": 56.20800700003747
+  },
+  "selected": [
+    [
+      "herdr-threads",
+      "store::queries::tests::query_work_q4::q4_private_fresh_excludes_warning_history"
+    ],
+    [
+      "herdr-threads",
+      "store::queries::tests::query_work_q4::q4_private_resumed_excludes_warning_history"
+    ],
+    [
+      "herdr-threads",
+      "store::queries::tests::query_work_q4::q4_public_and_origin_warning_sources_remain_enabled"
+    ]
+  ],
+  "binaries": [
+    {
+      "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target/debug/deps/herdr_threads-bc80e388954f6954",
+      "sha256": "f68a40e3e9345433aee890ff6fd6d261a1f971a13d95efa84593c3d3d20e1380"
+    }
+  ],
+  "run": {
+    "exit": 100,
+    "seconds": 0.5225827499525622,
+    "argv": [
+      "nice",
+      "cargo",
+      "nextest",
+      "run",
+      "--locked",
+      "--all-features",
+      "--lib",
+      "--no-fail-fast",
+      "-E",
+      "test(=store::queries::tests::query_work_q4::q4_private_fresh_excludes_warning_history) | test(=store::queries::tests::query_work_q4::q4_private_resumed_excludes_warning_history) | test(=store::queries::tests::query_work_q4::q4_public_and_origin_warning_sources_remain_enabled)"
+    ]
+  },
+  "leaks": {
+    "exit": 0,
+    "seconds": 0.22554749995470047,
+    "argv": [
+      "scripts/check-no-leaked-processes",
+      "--run-id",
+      "71e746eb-890d-406a-823d-4161338e45d9"
+    ]
+  },
+  "leak_exit": 0
+}

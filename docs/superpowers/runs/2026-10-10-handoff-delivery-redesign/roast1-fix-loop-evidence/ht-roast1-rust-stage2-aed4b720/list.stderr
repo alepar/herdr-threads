@@ -1,0 +1,16 @@
+   Compiling herdr-threads v0.9.0 (/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign)
+error[E0624]: associated function `from_kernel` is private
+   --> tests/service/presentation_owner_budget_controls.rs:130:19
+    |
+130 |     PeerIdentity::from_kernel(501)
+    |                   ^^^^^^^^^^^ private associated function
+    |
+   ::: src/protocol/authority.rs:170:5
+    |
+170 |     pub(crate) fn from_kernel(effective_uid: u32) -> Self {
+    |     ----------------------------------------------------- private associated function defined here
+
+For more information about this error, try `rustc --explain E0624`.
+error: could not compile `herdr-threads` (test "service") due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: command `/Users/alepar/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo '--color=auto' test --no-run --message-format json-render-diagnostics --lib --test service --all-features --locked` exited with code 101

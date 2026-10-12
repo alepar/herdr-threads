@@ -1,0 +1,52 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.04s
+────────────
+ Nextest run ID 96ea93da-8aee-4b3d-ac47-2cb8ac0aae2f with nextest profile: default
+    Starting 3 tests across 1 binary (4939 tests skipped)
+        FAIL [   0.263s] (1/3) herdr-threads store::queries::tests::query_work_q4::q4_private_resumed_excludes_warning_history
+  stdout ───
+
+    running 1 test
+    test store::queries::tests::query_work_q4::q4_private_resumed_excludes_warning_history ... FAILED
+
+    failures:
+
+    failures:
+        store::queries::tests::query_work_q4::q4_private_resumed_excludes_warning_history
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4941 filtered out; finished in 0.25s
+
+  stderr ───
+
+    thread 'store::queries::tests::query_work_q4::q4_private_resumed_excludes_warning_history' (58783052) panicked at src/store/../../tests/store/query_work_q4.rs:863:9:
+    assertion `left == right` failed: private resumed read skips warning audience SQL
+      left: 1
+     right: 0
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        FAIL [   0.279s] (2/3) herdr-threads store::queries::tests::query_work_q4::q4_private_fresh_excludes_warning_history
+  stdout ───
+
+    running 1 test
+    test store::queries::tests::query_work_q4::q4_private_fresh_excludes_warning_history ... FAILED
+
+    failures:
+
+    failures:
+        store::queries::tests::query_work_q4::q4_private_fresh_excludes_warning_history
+
+    test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 4941 filtered out; finished in 0.27s
+
+  stderr ───
+
+    thread 'store::queries::tests::query_work_q4::q4_private_fresh_excludes_warning_history' (58783054) panicked at src/store/../../tests/store/query_work_q4.rs:806:9:
+    assertion `left == right` failed: private fresh read skips warning audience SQL
+      left: 1
+     right: 0
+    note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+        PASS [   0.284s] (3/3) herdr-threads store::queries::tests::query_work_q4::q4_public_and_origin_warning_sources_remain_enabled
+────────────
+     Summary [   0.298s] 3 tests run: 1 passed, 2 failed, 4939 skipped
+        FAIL [   0.263s] (1/3) herdr-threads store::queries::tests::query_work_q4::q4_private_resumed_excludes_warning_history
+        FAIL [   0.279s] (2/3) herdr-threads store::queries::tests::query_work_q4::q4_private_fresh_excludes_warning_history
+error: test run failed

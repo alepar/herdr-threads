@@ -1,0 +1,95 @@
+{
+  "head": "1bf42f80ffa2cb7ea2438fb05d12b7c26f02d57a",
+  "tree": "1b07e9f0fcaa9bca8a605eb1019d16575543fcca",
+  "run_id": "9d10c393-8aa2-499c-83e0-4b04eaa83aa5",
+  "expected": [
+    [
+      "herdr-threads::service",
+      "presentation_owner_budget_controls::presentation_pull_cancelled_owner_waiter_returns_before_release_without_effects"
+    ],
+    [
+      "herdr-threads::service",
+      "presentation_owner_budget_controls::presentation_pull_expired_owner_waiter_returns_before_release_without_effects"
+    ],
+    [
+      "herdr-threads::service",
+      "presentation_owner_budget_controls::presentation_confirm_cancelled_owner_waiter_returns_before_release_without_effects"
+    ],
+    [
+      "herdr-threads::service",
+      "presentation_owner_budget_controls::presentation_confirm_expired_owner_waiter_returns_before_release_without_effects"
+    ],
+    [
+      "herdr-threads::service",
+      "presentation_owner_budget_controls::presentation_live_owner_waiters_serialize_and_succeed_after_release"
+    ],
+    [
+      "herdr-threads::service",
+      "presentation_owner_budget_controls::presentation_poisoned_owner_recovers_for_pull_and_confirm"
+    ]
+  ],
+  "commands": [],
+  "list": {
+    "exit": 0,
+    "seconds": 11.074633374926634
+  },
+  "selected": [
+    [
+      "herdr-threads::service",
+      "presentation_owner_budget_controls::presentation_confirm_cancelled_owner_waiter_returns_before_release_without_effects"
+    ],
+    [
+      "herdr-threads::service",
+      "presentation_owner_budget_controls::presentation_confirm_expired_owner_waiter_returns_before_release_without_effects"
+    ],
+    [
+      "herdr-threads::service",
+      "presentation_owner_budget_controls::presentation_live_owner_waiters_serialize_and_succeed_after_release"
+    ],
+    [
+      "herdr-threads::service",
+      "presentation_owner_budget_controls::presentation_poisoned_owner_recovers_for_pull_and_confirm"
+    ],
+    [
+      "herdr-threads::service",
+      "presentation_owner_budget_controls::presentation_pull_cancelled_owner_waiter_returns_before_release_without_effects"
+    ],
+    [
+      "herdr-threads::service",
+      "presentation_owner_budget_controls::presentation_pull_expired_owner_waiter_returns_before_release_without_effects"
+    ]
+  ],
+  "binaries": [
+    {
+      "path": "/Users/alepar/AleCode/herdr-threads/.worktrees/handoff-delivery-redesign/.worktrees/super-auto-handoff-delivery-redesign--task-ht-0lo.3.2/target/debug/deps/service-fad88159955e5df5",
+      "sha256": "386627a5e9eda78437d86c07877cda691d80bb7000834f6263c2046f3d60555d"
+    }
+  ],
+  "run": {
+    "exit": 0,
+    "seconds": 1.4168626670725644,
+    "argv": [
+      "nice",
+      "cargo",
+      "nextest",
+      "run",
+      "--locked",
+      "--all-features",
+      "--test",
+      "service",
+      "--no-fail-fast",
+      "-E",
+      "test(=presentation_owner_budget_controls::presentation_pull_cancelled_owner_waiter_returns_before_release_without_effects) | test(=presentation_owner_budget_controls::presentation_pull_expired_owner_waiter_returns_before_release_without_effects) | test(=presentation_owner_budget_controls::presentation_confirm_cancelled_owner_waiter_returns_before_release_without_effects) | test(=presentation_owner_budget_controls::presentation_confirm_expired_owner_waiter_returns_before_release_without_effects) | test(=presentation_owner_budget_controls::presentation_live_owner_waiters_serialize_and_succeed_after_release) | test(=presentation_owner_budget_controls::presentation_poisoned_owner_recovers_for_pull_and_confirm)"
+    ]
+  },
+  "leaks": {
+    "exit": 0,
+    "seconds": 0.2108870840165764,
+    "argv": [
+      "scripts/check-no-leaked-processes",
+      "--run-id",
+      "9d10c393-8aa2-499c-83e0-4b04eaa83aa5"
+    ]
+  },
+  "leak_exit": 0
+}
