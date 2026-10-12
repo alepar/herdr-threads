@@ -854,8 +854,13 @@ impl DispatchState {
                     actionable_warning: seen.actionable_warning.max(reserved.actionable_warning),
                     lazy: seen.lazy.max(reserved.lazy),
                 });
-        if state.guard.durable().ever_reserved && current.advanced_beyond(&prior) {
-            state.guard = state.guard.new_attention()?;
+        if current.advanced_beyond(&prior) {
+            if state.guard.durable().ever_reserved {
+                state.guard = state.guard.new_attention()?;
+            }
+            // A new item is retried at once even when the pane refused earlier
+            // wakes for a while (ht-bz1); a further refusal resumes the backoff.
+            state.refusal.retry_now();
         }
         state.seen_frontier = Some(crate::ports::LogicalAttentionFrontier {
             invitation: prior.invitation.max(current.invitation),

@@ -317,6 +317,10 @@ On completion, the scheduler passes the pre-reservation ladder state it reserved
 - Amended by coverage r2, 2026-10-01: `unsubmitted` is carried in `WakeDriveOutcome`; `last_outcome` keeps the existing `OutcomeUnknown` string (no new disposition string is written).
 - `Submitted` resets the seat's refusal backoff. `OutcomeUnknown`, `TimedOut` (post-send) and
   `Cancelled` keep today's ladder behaviour.
+- Amended by ht-bz1, 2026-10-12: new attention (the seat's logical attention frontier advances) makes a
+  backed-off seat's refusal retry due at once and keeps its attempt count, so a further refusal resumes the
+  schedule. A pane that refused for a while (a harness modal over the composer) no longer defers a new item by
+  up to the 30 s cap; the extra cost is one attempt per new item.
 - `WakeDriveOutcome` gains `next_due_at: Option<MonoInstant>`, the earliest ladder or refusal instant
   among seats this runner tracks. The wake lane (D2) wakes at `min(safety tick, next_due_at)`, so
   refusal retries keep sub-second precision.
